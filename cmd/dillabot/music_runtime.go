@@ -14,9 +14,11 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
+	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/jonasthim/dilla/internal/bot/spotifyauth"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -117,6 +119,26 @@ type musicCallStarter interface {
 type installationMusicNative interface {
 	Binding() native.Binding
 	livekit.EpochSource
+}
+
+type installationSpotifyCredentials interface {
+	Load(context.Context) (spotifyauth.Token, error)
+}
+
+type installationSpotifyCatalogResolver struct {
+	credentials installationSpotifyCredentials
+	catalog     *spotify.Catalog
+}
+
+func (r installationSpotifyCatalogResolver) ResolveSpotify(ctx context.Context, input string, requester id.ID) ([]music.Track, error) {
+	if r.credentials == nil || r.catalog == nil {
+		return nil, service.ErrSpotifyCredentials
+	}
+	token, err := r.credentials.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.catalog.Expand(ctx, token.AccessToken, input, requester)
 }
 
 // musicRuntimeDeps contains the process-wide dependencies and the channel
@@ -251,7 +273,7 @@ type runtimeMusicAuthorityStore struct {
 	community    id.ID
 }
 
-func newRuntimeMusicInteractions(installation, community id.ID, capabilities uint64, runtime *client.Runtime, session *client.Session, registry *musicQueueRegistry, logger *slog.Logger) (*service.MusicInteractions, error) {
+func newRuntimeMusicInteractions(installation, community id.ID, capabilities uint64, runtime *client.Runtime, session *client.Session, registry *musicQueueRegistry, logger *slog.Logger, spotifyResolvers ...service.SpotifyMusicTrackResolver) (*service.MusicInteractions, error) {
 	if capabilities&botMusicCapability == 0 {
 		return nil, nil
 	}
@@ -272,6 +294,9 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		InstallationID: installation, CommunityID: community,
 		CurrentState:        registry.CurrentState,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
+	}
+	if len(spotifyResolvers) > 0 {
+		handlers.SpotifyResolver = spotifyResolvers[0]
 	}
 	if resolver, err := newYouTubeMetadataResolver(); err == nil {
 		handlers.Resolver = resolver

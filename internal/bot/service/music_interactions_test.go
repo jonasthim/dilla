@@ -23,6 +23,19 @@ type musicInteractionResolverFake struct {
 	onResolve func()
 }
 
+type musicSpotifyResolverFake struct {
+	tracks     []music.Track
+	err        error
+	inputs     []string
+	requesters []id.ID
+}
+
+func (r *musicSpotifyResolverFake) ResolveSpotify(_ context.Context, input string, requester id.ID) ([]music.Track, error) {
+	r.inputs = append(r.inputs, input)
+	r.requesters = append(r.requesters, requester)
+	return append([]music.Track(nil), r.tracks...), r.err
+}
+
 func (r *musicInteractionResolverFake) Resolve(_ context.Context, input string) ([]music.Track, error) {
 	r.inputs = append(r.inputs, input)
 	if r.onResolve != nil {
@@ -338,6 +351,51 @@ func TestMusicEnqueueImportsResolvedPlaylistAtomicallyWithStableQueueIDs(t *test
 	}
 	if store.snapshot.State.Queue[0].ID == store.snapshot.State.Queue[1].ID || authority.callChecks != 2 || authority.roleChecks != 2 {
 		t.Fatalf("queue IDs=%q/%q call checks=%d role checks=%d, want unique IDs and final authorization recheck", store.snapshot.State.Queue[0].ID, store.snapshot.State.Queue[1].ID, authority.callChecks, authority.roleChecks)
+	}
+}
+
+func TestMusicEnqueueImportsSpotifyPlaylistAtomicallyForActor(t *testing.T) {
+	channel, community, actorID := interactionID(165), interactionID(162), interactionID(168)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	input := "https://open.spotify.com/playlist/BBBBBBBBBBBBBBBBBBBBBB"
+	resolver := &musicSpotifyResolverFake{tracks: []music.Track{
+		{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "One"},
+		{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:1123456789012345678901", Title: "Two"},
+	}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, SpotifyResolver: resolver}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{input}}
+	result, err := h.handle(context.Background(), InteractionActor{User: actorID}, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 {
+		t.Fatalf("Spotify enqueue result=%+v err=%v resolver inputs=%v, want committed revision 1", result, err, resolver.inputs)
+	}
+	if len(resolver.inputs) != 1 || resolver.inputs[0] != input || len(resolver.requesters) != 1 || resolver.requesters[0] != actorID {
+		t.Fatalf("Spotify resolver inputs=%v requesters=%v, want one input with actor requester", resolver.inputs, resolver.requesters)
+	}
+	if store.saves != 1 || len(store.snapshot.State.Queue) != 2 || store.snapshot.State.Queue[0].Provider != music.ProviderSpotify || store.snapshot.State.Queue[1].Provider != music.ProviderSpotify {
+		t.Fatalf("saved=%d queue=%+v, want one atomic Spotify playlist import", store.saves, store.snapshot.State.Queue)
+	}
+	for _, track := range store.snapshot.State.Queue {
+		if track.ID == "" || track.RequesterID != actorID.String() {
+			t.Fatalf("queued track=%+v, want stable ID and actor requester", track)
+		}
+	}
+}
+
+func TestMusicEnqueueRejectsOversizedSpotifyImportWithoutPartialWrite(t *testing.T) {
+	channel, community := interactionID(175), interactionID(172)
+	tracks := make([]music.Track, 501)
+	for i := range tracks {
+		tracks[i] = music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "Track"}
+	}
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicSpotifyResolverFake{tracks: tracks}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, SpotifyResolver: resolver}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"spotify:playlist:BBBBBBBBBBBBBBBBBBBBBB"}}
+	result, err := h.handle(context.Background(), InteractionActor{User: interactionID(178)}, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != interactionStatusUnavailable || store.saves != 0 || len(store.snapshot.State.Queue) != 0 {
+		t.Fatalf("oversized Spotify enqueue result=%+v err=%v saves=%d queue=%d, want unavailable without partial write", result, err, store.saves, len(store.snapshot.State.Queue))
 	}
 }
 

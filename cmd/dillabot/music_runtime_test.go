@@ -20,11 +20,46 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
+	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/spotifyauth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
+
+type spotifyCredentialsFake struct {
+	token spotifyauth.Token
+	err   error
+}
+
+func (f spotifyCredentialsFake) Load(context.Context) (spotifyauth.Token, error) {
+	return f.token, f.err
+}
+
+type spotifyCatalogRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f spotifyCatalogRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestInstallationSpotifyCatalogResolverUsesCredentialAndActor(t *testing.T) {
+	requester := id.New()
+	client := &http.Client{Transport: spotifyCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://api.spotify.com/v1/tracks/0123456789012345678901" || request.Header.Get("Authorization") != "Bearer installation-access-token" {
+			t.Fatalf("Spotify request URL=%q authorization=%q", request.URL, request.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"0123456789012345678901","type":"track","name":"Song","uri":"spotify:track:0123456789012345678901","duration_ms":123000,"artists":[{"name":"Artist"}],"album":{"name":"Record"}}`))}, nil
+	})}
+	resolver := installationSpotifyCatalogResolver{
+		credentials: spotifyCredentialsFake{token: spotifyauth.Token{AccessToken: "installation-access-token"}},
+		catalog:     spotify.NewCatalog(client),
+	}
+	tracks, err := resolver.ResolveSpotify(context.Background(), "spotify:track:0123456789012345678901", requester)
+	if err != nil || len(tracks) != 1 || tracks[0].Provider != music.ProviderSpotify || tracks[0].RequesterID != requester.String() || tracks[0].Title != "Song" {
+		t.Fatalf("resolved tracks=%+v err=%v, want one authenticated Spotify track attributed to actor", tracks, err)
+	}
+}
 
 type runtimeCalls struct {
 	call    client.Call

@@ -526,16 +526,38 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							}
 							var musicInteractions *service.MusicInteractions
 							var spotifyPCM session.PCMStarter
+							var spotifyCatalogResolver service.SpotifyMusicTrackResolver
 							if result.Installation.Capabilities&botMusicCapability != 0 {
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
-									if cfg.SpotifyHelperExecutable != "" && spotifyGuard != nil {
-										credentials, credentialErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+									var spotifyCredentials *service.SpotifyCredentials
+									if cfg.SpotifyClientID != "" && spotifyGuard != nil {
+										var credentialErr error
+										spotifyCredentials, credentialErr = service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
 										if credentialErr == nil {
+											if _, credentialErr = spotifyCredentials.Load(ctx); credentialErr == nil {
+												spotifyCatalogResolver = installationSpotifyCatalogResolver{credentials: spotifyCredentials, catalog: spotify.NewCatalog(nil)}
+											} else {
+												logger.Info("Spotify catalog enqueue unavailable until this installation links an account", "installation_id", installation.ID.String())
+											}
+										}
+										if credentialErr != nil {
+											logger.Info("Spotify catalog enqueue unavailable", "installation_id", installation.ID.String())
+											spotifyCredentials = nil
+										}
+									}
+									if cfg.SpotifyHelperExecutable != "" && spotifyGuard != nil {
+										if spotifyCredentials == nil {
+											spotifyCredentials, _ = service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+										}
+										var credentialErr error
+										if spotifyCredentials != nil {
 											spotifyPCM, credentialErr = spotify.NewPCMStarter(cfg.SpotifyHelperExecutable, cfg.StateDir, func(loadCtx context.Context) (string, error) {
-												token, loadErr := credentials.Load(loadCtx)
+												token, loadErr := spotifyCredentials.Load(loadCtx)
 												return token.AccessToken, loadErr
 											})
+										} else {
+											credentialErr = service.ErrSpotifyCredentials
 										}
 										if credentialErr != nil {
 											logger.Warn("bot Spotify PCM provider unavailable", "installation_id", installation.ID.String())
@@ -552,7 +574,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									ensureErr = errors.Join(ensureErr, channelsErr)
 								} else {
 									var musicErr error
-									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger)
+									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger, spotifyCatalogResolver)
 									if musicErr != nil {
 										logger.Warn("bot music interaction handlers unavailable", "installation_id", installation.ID.String(), "error", musicErr.Error())
 									}
