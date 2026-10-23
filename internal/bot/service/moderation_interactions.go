@@ -54,14 +54,15 @@ type ModerationInteractions struct {
 func (h ModerationInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
 		protocol.OpModerationCases:    {RecomputeOnReplay: true, Handle: h.listCases},
-		protocol.OpModerationEvidence: {Handle: h.saveManualEvidence},
+		protocol.OpModerationEvidence: {RevisionInHandler: true, Handle: h.saveManualEvidence},
 	}
 }
 
 func (h ModerationInteractions) saveManualEvidence(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if ctx == nil || h.CommunityID.IsZero() || request.CommunityID != h.CommunityID || actor.User.IsZero() || actor.Device.IsZero() ||
 		h.InstallationID.IsZero() || h.ManualRemovalLookup == nil || h.EvidenceWriter == nil ||
-		!h.EvidenceWriter.BoundTo(h.InstallationID, h.CommunityID) || len(request.Args) != 3 {
+		!h.EvidenceWriter.BoundTo(h.InstallationID, h.CommunityID) || len(request.Args) != 3 ||
+		request.Revision != nil && *request.Revision != 0 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	requestID, ok := request.Args[0].(id.ID)

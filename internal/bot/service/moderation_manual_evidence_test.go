@@ -97,6 +97,7 @@ func TestManualModerationEvidenceRejectsCrossCommunityRequestAndInvalidFieldsBef
 		{CommunityID: interactionID(10), Args: []any{request, "reason", "excerpt"}},
 		{CommunityID: community, Args: []any{request, "  ", "excerpt"}},
 		{CommunityID: community, Args: []any{request, "reason", string(make([]byte, moderation.ExcerptMaxBytes+1))}},
+		{CommunityID: community, Revision: func() *uint64 { value := uint64(1); return &value }(), Args: []any{request, "reason", "excerpt"}},
 	} {
 		_, _ = handler.Handle(context.Background(), InteractionActor{User: actor, Device: device}, req)
 	}
