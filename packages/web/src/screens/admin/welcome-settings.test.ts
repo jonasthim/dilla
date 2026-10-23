@@ -4,7 +4,7 @@ import { decodeWelcomeSettings, encodeWelcomeSettings } from './welcome-settings
 const CHANNEL = 'ab'.repeat(16);
 
 describe('welcome settings interaction documents', () => {
-  it('encodes and decodes the versioned encrypted welcome configuration', () => {
+  it('encodes and decodes the versioned welcome configuration', () => {
     const config = { channelId: CHANNEL, template: 'Hej {member} 👋', serverName: 'Midgård' };
     expect(decodeWelcomeSettings(encodeWelcomeSettings(config))).toEqual(config);
   });

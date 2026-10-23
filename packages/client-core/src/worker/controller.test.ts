@@ -204,12 +204,12 @@ describe('Controller', () => {
     expect(w.core.sendEncrypt).not.toHaveBeenCalled();expect(w.routes.postMessage).not.toHaveBeenCalled();
   });
 
-  it('encodes the destination as an ID and expiry for an encrypted role-panel publish', async () => {
+  it('encodes the destination as an ID and expiry for a role-panel publish', async () => {
     const w = world(); await toReady(w);
     const groupId = new Uint8Array(16).fill(0x52); const requestId = new Uint8Array(16).fill(0x54);
     const destination = new Uint8Array(16).fill(0x55); const options = encode([['✅', new Uint8Array(16).fill(0x56), 'Readers']]);
     w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
-    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'encrypted role panel request', type: 0, replyTo: null, attachments: [] });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'role panel request', type: 0, replyTo: null, attachments: [] });
     w.call(10_191, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
       operation: 31, args: [toHex(destination), options], revision: '0' });
     await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));

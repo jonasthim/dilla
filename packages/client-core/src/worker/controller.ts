@@ -1434,11 +1434,11 @@ export class Controller {
       if (outbox === undefined) return { requestId: requestHex, upload: 'unknown' };
       if (outbox.state === 1) return { requestId: requestHex, upload: 'pending' };
       if (outbox.state === 2) core.sendRetry(prepared);
-      const encrypted = core.sendEncrypt(prepared);
-      if (toHex(encrypted.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+      const ciphertext = core.sendEncrypt(prepared);
+      if (toHex(ciphertext.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
       let receipt: Awaited<ReturnType<Routes['postMessage']>>;
       try {
-        receipt = await this.routes.postMessage(groupId, encrypted.messageBody);
+        receipt = await this.routes.postMessage(groupId, ciphertext.messageBody);
       } catch (error) {
         if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
           core.sendFail(prepared, error.code);
@@ -1531,11 +1531,11 @@ export class Controller {
       if (outbox.state === 1) return { requestId: command.requestId, status: 'pending' };
       if (outbox.state === 2) core.sendRetry(prepared);
 
-      const encrypted = core.sendEncrypt(prepared);
-      if (toHex(encrypted.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+      const ciphertext = core.sendEncrypt(prepared);
+      if (toHex(ciphertext.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
       let receipt: Awaited<ReturnType<Routes['postMessage']>>;
       try {
-        receipt = await this.routes.postMessage(groupId, encrypted.messageBody);
+        receipt = await this.routes.postMessage(groupId, ciphertext.messageBody);
       } catch (error) {
         if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
           core.sendFail(prepared, error.code);

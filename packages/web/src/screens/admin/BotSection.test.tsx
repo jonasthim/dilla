@@ -64,7 +64,7 @@ describe('the server bot settings', () => {
     expect(screen.getByRole('button',{name:en['admin.bot.automod.load']})).toBeInTheDocument();
   });
 
-  it('loads automatic moderation over op 62 and prepares a step-up protected encrypted op 63 save', async () => {
+  it('loads automatic moderation over op 62 and prepares a step-up protected op 63 save', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
     const { fake, user } = setup(ready);
     const latest = new Map<number, { requestId: string; operation: number }>();

@@ -109,8 +109,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     try {
       const sent = await client.call({ m: 'humanInteractionRequest', communityId, channelId, requestId, operation, args, revision }) as UploadResult;
       if (sent.upload !== 'accepted') throw new Error(sent.upload === 'pending'
-        ? 'The encrypted music request is still pending upload.'
-        : sent.upload === 'rejected' ? 'The encrypted music request was rejected.' : 'The encrypted music request upload is unknown.');
+        ? 'The music request is still pending upload.'
+        : sent.upload === 'rejected' ? 'The music request was rejected.' : 'The music request upload is unknown.');
       return await waitFor(resultPromise);
     } finally {
       waiters.delete(requestId);
