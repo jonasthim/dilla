@@ -33,6 +33,13 @@ type automodGrantRedeemerFake struct {
 	token    string
 }
 
+type automodConfigRuntimeFake struct{ persists int }
+
+func (r *automodConfigRuntimeFake) PersistConfig(_ moderation.Config, persist func() error) error {
+	r.persists++
+	return persist()
+}
+
 func (g *automodGrantRedeemerFake) RedeemAutoModerationGrant(_ context.Context, token string, binding AutoModerationGrantBinding) (bool, error) {
 	g.calls++
 	g.binding, g.token = binding, token
@@ -86,7 +93,7 @@ func automodConfigFixture() (AutoModerationConfigInteractions, *automodConfigAut
 	community := id.New()
 	n := &automodConfigNativeFake{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}}
 	authority := &automodConfigAuthorityFake{present: true, authority: client.ActorAuthority{EffectiveBits: manageCommunityBit}}
-	h := AutoModerationConfigInteractions{Authority: authority, Store: moderation.NewStore(n), GrantRedeemer: &automodGrantRedeemerFake{accepted: true}, CommunityID: community}
+	h := AutoModerationConfigInteractions{Authority: authority, Store: moderation.NewStore(n), GrantRedeemer: &automodGrantRedeemerFake{accepted: true}, Runtime: &automodConfigRuntimeFake{}, CommunityID: community}
 	return h, authority, n, InteractionActor{User: id.New(), Device: id.New(), Kind: 0, Group: id.New()}
 }
 
@@ -153,6 +160,18 @@ func TestAutoModerationConfigPutEnforcesActionPermissionsAndRevisionCAS(t *testi
 	result, err = put(context.Background(), actor, stale)
 	if err != nil || result.Status != interactionStatusConflict || result.Revision == nil || *result.Revision != 1 || n.writes != 1 {
 		t.Fatalf("stale put=%+v writes=%d err=%v", result, n.writes, err)
+	}
+}
+
+func TestAutoModerationConfigPutFailsClosedWhenRuntimeUnavailable(t *testing.T) {
+	h, _, n, actor := automodConfigFixture()
+	h.Runtime = nil
+	request := automodConfigPutRequest(h.CommunityID, id.New(), 0,
+		automodConfigDocument(t, false, moderation.ActionLog, moderation.ActionLog, moderation.ActionLog))
+	grant := h.GrantRedeemer.(*automodGrantRedeemerFake)
+	result, err := h.Handlers()[protocol.OpAutoModerationPut].Handle(context.Background(), actor, request)
+	if err != nil || result.Status != interactionStatusUnavailable || n.writes != 0 || grant.calls != 0 {
+		t.Fatalf("PUT without active runtime result=%+v writes=%d grant calls=%d err=%v", result, n.writes, grant.calls, err)
 	}
 }
 

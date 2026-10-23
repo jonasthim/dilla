@@ -140,6 +140,12 @@ func (h AutoModerationConfigInteractions) put(ctx context.Context, actor Interac
 	if !configActionsAuthorized(resolved, cfg) {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	// A successful PUT must be fenced against the live evaluator. Persisting
+	// without Runtime could report success while moderation continues using an
+	// older policy, so treat runtime startup failure as unavailable.
+	if h.Runtime == nil {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
 	if h.GrantRedeemer == nil {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
@@ -155,11 +161,7 @@ func (h AutoModerationConfigInteractions) put(ctx context.Context, actor Interac
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	persist := func() error { return h.Store.SaveWithID(ctx, request.RequestID, cfg, *request.Revision) }
-	if h.Runtime != nil {
-		err = h.Runtime.PersistConfig(cfg, persist)
-	} else {
-		err = persist()
-	}
+	err = h.Runtime.PersistConfig(cfg, persist)
 	if err != nil {
 		if errors.Is(err, moderation.ErrConfigConflict) {
 			_, latest, loadErr := h.Store.Load(ctx)
