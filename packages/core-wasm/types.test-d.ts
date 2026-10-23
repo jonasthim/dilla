@@ -30,11 +30,17 @@ interface ExpectedCoreHandle {
   prepare_manual_removal_evidence(proof_request_id: Uint8Array, evidence_request_id: Uint8Array, community_id: Uint8Array,
     group_id: Uint8Array, channel_id: Uint8Array, message_id: Uint8Array, target_sequence: bigint, reason: string,
     excerpt: string, created_at: bigint, expires: bigint, now: bigint): Uint8Array;
+  prepare_manual_warning_evidence(request_id: Uint8Array, evidence_request_id: Uint8Array, community_id: Uint8Array,
+    target_user_id: Uint8Array, reason: string, created_at: bigint, now: bigint): void;
   manual_removal_evidence(): Uint8Array;
+  manual_warning_evidence(): Uint8Array;
   ensure_manual_removal_evidence_request(proof_request_id: Uint8Array, candidate_request_id: Uint8Array, now: bigint): Uint8Array;
+  ensure_manual_warning_evidence_request(request_id: Uint8Array, candidate_request_id: Uint8Array, now: bigint): Uint8Array;
   mark_manual_removal_submitted(request_id: Uint8Array): void;
   mark_manual_removal_accepted(request_id: Uint8Array): void;
   complete_manual_removal_evidence(request_id: Uint8Array, now: bigint): void;
+  complete_manual_warning_evidence(request_id: Uint8Array, now: bigint): void;
+  mark_manual_warning_accepted(request_id: Uint8Array, action_id: Uint8Array, revision: bigint, accepted_at: bigint): void;
   reject_unsubmitted_manual_removal(request_id: Uint8Array, now: bigint): void;
   reject_manual_removal(request_id: Uint8Array, now: bigint): void;
   session_store(token: string, expires: bigint, idle_expires: bigint): void;
@@ -149,11 +155,16 @@ expectTrue<Equals<H['device_list_drop'], E['device_list_drop']>>();
 expectTrue<Equals<H['session_sign'], E['session_sign']>>();
 expectTrue<Equals<H['sign_removal'], E['sign_removal']>>();
 expectTrue<Equals<H['prepare_manual_removal_evidence'], E['prepare_manual_removal_evidence']>>();
+expectTrue<Equals<H['prepare_manual_warning_evidence'], E['prepare_manual_warning_evidence']>>();
 expectTrue<Equals<H['manual_removal_evidence'], E['manual_removal_evidence']>>();
+expectTrue<Equals<H['manual_warning_evidence'], E['manual_warning_evidence']>>();
 expectTrue<Equals<H['ensure_manual_removal_evidence_request'], E['ensure_manual_removal_evidence_request']>>();
+expectTrue<Equals<H['ensure_manual_warning_evidence_request'], E['ensure_manual_warning_evidence_request']>>();
 expectTrue<Equals<H['mark_manual_removal_submitted'], E['mark_manual_removal_submitted']>>();
 expectTrue<Equals<H['mark_manual_removal_accepted'], E['mark_manual_removal_accepted']>>();
 expectTrue<Equals<H['complete_manual_removal_evidence'], E['complete_manual_removal_evidence']>>();
+expectTrue<Equals<H['complete_manual_warning_evidence'], E['complete_manual_warning_evidence']>>();
+expectTrue<Equals<H['mark_manual_warning_accepted'], E['mark_manual_warning_accepted']>>();
 expectTrue<Equals<H['reject_unsubmitted_manual_removal'], E['reject_unsubmitted_manual_removal']>>();
 expectTrue<Equals<H['reject_manual_removal'], E['reject_manual_removal']>>();
 expectTrue<Equals<H['session_store'], E['session_store']>>();
