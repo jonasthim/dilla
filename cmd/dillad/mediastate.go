@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// mediaStateFile is the running SFU's self-description, in the state directory. A web3.12+
+// mediaStateFile is the running SFU's self-description, in the state directory. A web3.13+
 // `dillad media` writes it once the SFU accepts RoomService requests, just before READY=1, and
 // removes it on a clean stop. The installer, the refresh timer and `dillad doctor` read it to learn
 // which build the running SFU is (R-UP3).

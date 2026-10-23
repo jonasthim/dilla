@@ -25,7 +25,7 @@ import (
 // The control sockets of R-UP11. TURN runs in `dillad media` while the call routes run in `dillad
 // serve`, so the two talk over two local unix sockets in the state directory:
 //
-//   - media.sock, served by every web3.12+ `dillad media`: GET /media/self says what the running
+//   - media.sock, served by every web3.13+ `dillad media`: GET /media/self says what the running
 //     media process is (its version, media level, capabilities and pid, as media.json does), and
 //     only while it serves TURN, POST /relay/cut and PUT /relay/cuts feed the media relay's cut map
 //     (MergeCuts) and GET /relay/state reports it.

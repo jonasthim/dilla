@@ -480,7 +480,8 @@ make_release "$N13" "$TMP/fake-n13"
 make_fake_nojson "$TMP/fake-w123" 0.1.0-web3.12.3
 W123="$TMP/w123-release"
 make_release "$W123" "$TMP/fake-w123"
-# The media unit install.sh writes for a dillad older than web3.12, which sends no READY=1.
+# The media unit install.sh writes for a dillad below the new scheme (web3.13; every web3.12.x
+# included), which sends no READY=1.
 sed -e '/^# READY: /d' -e '/^NotifyAccess=main$/d' -e 's/^Type=notify$/Type=simple/' \
 	-e 's/^TimeoutStartSec=60s$/TimeoutStartSec=30s/' "$MEDIA_UNIT" >"$TMP/dilla-media.simple.service"
 

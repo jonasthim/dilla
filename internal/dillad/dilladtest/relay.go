@@ -23,7 +23,7 @@ import (
 // hands out a TURN relay on that address and, like `dillad serve` (cmd/dillad turnowner.go), asks
 // the media process's media.json who serves it:
 //
-//   - media.json lists "turn" (a web3.12+ `dillad media`): every cut is applied to the host's own
+//   - media.json lists "turn" (a web3.13+ `dillad media`): every cut is applied to the host's own
 //     RelayRevocations first and forwarded to the media relay over media.sock
 //     (server.RelayRevoker), and the host serves api.sock, the media relay's barred lookup;
 //   - it does not (a web3.11 SFU, DILLA_SFU_BIN): the host binds turn.listen and serves the relay

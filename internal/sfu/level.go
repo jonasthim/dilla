@@ -5,7 +5,7 @@ package sfu
 // webhook events dillad uses. TestMediaLevelGuard pins those inputs, so a change to one of them
 // without a bump here fails.
 //
-// Level 1 is v0.1.0-web3.11, the baseline CI proves. Level 2 (web3.12) is an SFU that also serves
+// Level 1 is v0.1.0-web3.11, the baseline CI proves. Level 2 (web3.13) is an SFU that also serves
 // TURN (docs/superpowers/plans/2026-10-21-calls-survive-upgrade.md, R-UP1 and R-UP11).
 const MediaLevel = 2
 

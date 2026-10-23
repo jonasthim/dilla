@@ -38,8 +38,9 @@ ALTER TABLE mls_handshakes_v24 RENAME TO mls_handshakes;
 CREATE INDEX mls_handshakes_by_epoch ON mls_handshakes(group_id, epoch, kind);
 
 -- +goose Down
--- A rollback below web3.12 (I5): web3.11's core refuses a whole page that carries a kind-3 row
--- (wire.rs `kind > 2`), so every withdrawn row goes, and so does every withdrawn proposal: it is
+-- A rollback below web3.13 (I5), to any web3.12.x too: the web3.11 and web3.12.x cores refuse a
+-- whole page that carries a kind-3 row (wire.rs `kind > 2`), so such a rollback needs this step
+-- (migrate down --to=23) first. Every withdrawn row goes, and so does every withdrawn proposal: it is
 -- deleted, never revived (clients that dropped it stay consistent with a DS that no longer lists
 -- it).
 DELETE FROM mls_handshakes WHERE kind = 3;

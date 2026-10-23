@@ -306,7 +306,7 @@ func TestLevelConstantsAreConsistent(t *testing.T) {
 		t.Fatalf("MinSFUMediaLevel %d must be in 1..MediaLevel (%d)", MinSFUMediaLevel, MediaLevel)
 	}
 	if MediaLevel != 2 || MinSFUMediaLevel != 1 {
-		t.Fatalf("web3.12 is MediaLevel 2, MinSFUMediaLevel 1; got %d, %d", MediaLevel, MinSFUMediaLevel)
+		t.Fatalf("web3.13 is MediaLevel 2, MinSFUMediaLevel 1; got %d, %d", MediaLevel, MinSFUMediaLevel)
 	}
 	if len(Capabilities) != 1 || Capabilities[0] != "turn" {
 		t.Fatalf("Capabilities = %v, want [turn]", Capabilities)

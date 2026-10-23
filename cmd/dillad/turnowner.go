@@ -28,7 +28,7 @@ import (
 // turnCapability is the media.json capability a `dillad media` lists once it has bound turn.listen.
 const turnCapability = "turn"
 
-// mediaTURNLevel is the first media level whose `dillad media` serves TURN (web3.12, R-UP11).
+// mediaTURNLevel is the first media level whose `dillad media` serves TURN (web3.13, R-UP11).
 const mediaTURNLevel = 2
 
 // turnPlan is who serves TURN while this `dillad serve` runs, decided once at its start (R-UP11).

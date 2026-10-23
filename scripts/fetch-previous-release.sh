@@ -6,7 +6,8 @@
 #   fetch-previous-release.sh DIR [--exclude-from TAG] [--binary]
 #
 # DIR gets: previous-tag (empty when there is no earlier release), SHA256SUMS, release.json when SHA256SUMS lists it
-# (a release from before web3.12 has none: release-meta.mjs then counts web3.11 and later as media level 1), and with
+# (a release from before web3.13 has none, every web3.12.x included: release-meta.mjs then counts web3.11 and later as
+# media level 1), and with
 # --binary dillad-linux-amd64 (executable). The previous release is the newest one below TAG on the web3 line, or the
 # newest of all without --exclude-from. Needs gh and GH_TOKEN. Writes previous_tag= to $GITHUB_OUTPUT when it is set.
 set -euo pipefail
