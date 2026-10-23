@@ -484,8 +484,10 @@ export function world(opts: {
     deps: null as SyncDeps | null,
     builds: 0,                                   // parts.sync calls: 1 at ready, +1 for each resume() after a refused wipe call
     start: vi.fn(() => { calls.push('sync.start'); }), stop: vi.fn(() => { calls.push('sync.stop'); }),
+    stopped: vi.fn(() => false),
     setChannels: vi.fn(), setExpected: vi.fn((_groups: unknown) => {}), send: vi.fn(), retry: vi.fn(), discard: vi.fn(),
     sendRequest: vi.fn((_g: Uint8Array, _r: SendRequest): Uint8Array => new Uint8Array(16).fill(0x77)),
+    runOnGroup: vi.fn((_g: Uint8Array, send: () => Promise<unknown>) => send()),
     openChannel: vi.fn((_c: unknown) => Promise.resolve({ groupId: GROUP, state: 2 as const })),
     rejoined: vi.fn((_communityId: Uint8Array) => {}),
   };

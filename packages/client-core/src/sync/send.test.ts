@@ -25,6 +25,34 @@ const sent = (): string[] => ds.view(g).messages.map((m) => m.body);
 const states = (): number[] => d.core.outbox(g).map((r) => r.state);
 
 describe('sending (rule 5)', () => {
+  it('serializes a human interaction upload with concurrent group drains', async () => {
+    const msgId = d.core.sendPrepare(g, textRequest('human interaction'), 1_700_000_000n);
+    const gate = deferred();
+    ds.inject('postMessage', { gate: gate.promise });
+
+    const send = d.engine.runOnGroup(g, async () => {
+      const encrypted = d.core.sendEncrypt(msgId);
+      const receipt = await ds.routesFor(ME.device).postMessage(g, encrypted.messageBody);
+      d.core.sendConfirm(msgId, receipt.raw);
+    });
+    await settle();
+    expect(posts()).toBe(1);
+    expect(states()).toEqual([1]);
+
+    d.engine.requestDrain(g);
+    await settle();
+    await clock.advance(15_000);
+    await settle();
+    expect(posts()).toBe(1);
+
+    gate.resolve();
+    await send;
+    await settle();
+    expect(posts()).toBe(1);
+    expect(sent()).toEqual(['human interaction']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
   it('sends oldest first with one message of a group in flight, and confirms each', async () => {
     const gate = deferred();
     ds.inject('postMessage', { gate: gate.promise });

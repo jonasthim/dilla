@@ -1298,6 +1298,7 @@ export class Controller {
     const acceptedKey = `${command.communityId}:${command.requestId}`;
     if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: command.requestId, status: 'accepted' };
     const core = this.requireCore();
+    const sync = this.requireSync();
     const communityId = fromHex(command.communityId);
     const groupRows = core.groups().filter((row) => row.kind === 3 && row.state === 2
       && row.communityId !== null && toHex(row.communityId) === command.communityId);
@@ -1305,46 +1306,50 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
     const requestId = fromHex(command.requestId);
-    const now = BigInt(Math.floor(this.deps.now() / 1000));
-    const request = { requestId, communityId, channelId: null, operation: 60, revision: null, expires: null, args: [null] };
-    // Structural encoding enforces operation 60, its sole null cursor, and read-only null
-    // revision/expiry. Context validation binds it to this community and the trusted clock.
-    validateBotContext(request, { community: communityId, now });
-    const requestBody = encodeBotRequestBytes(request);
-    const prepared = core.humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
-    if (toHex(prepared) !== command.requestId) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
+    return sync.runOnGroup(groupId, async () => {
+      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: command.requestId, status: 'accepted' };
+      const now = BigInt(Math.floor(this.deps.now() / 1000));
+      const request = { requestId, communityId, channelId: null, operation: 60, revision: null, expires: null, args: [null] };
+      // Structural encoding enforces operation 60, its sole null cursor, and read-only null
+      // revision/expiry. Context validation binds it to this community and the trusted clock.
+      validateBotContext(request, { community: communityId, now });
+      const requestBody = encodeBotRequestBytes(request);
+      const prepared = core.humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
+      if (toHex(prepared) !== command.requestId) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
 
-    const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === command.requestId);
-    if (outbox === undefined) return { requestId: command.requestId, status: 'unknown' };
-    if (outbox.state === 1) return { requestId: command.requestId, status: 'pending' };
-    if (outbox.state === 2) core.sendRetry(prepared);
+      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === command.requestId);
+      if (outbox === undefined) return { requestId: command.requestId, status: 'unknown' };
+      if (outbox.state === 1) return { requestId: command.requestId, status: 'pending' };
+      if (outbox.state === 2) core.sendRetry(prepared);
 
-    const encrypted = core.sendEncrypt(prepared);
-    if (toHex(encrypted.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
-    let receipt: Awaited<ReturnType<Routes['postMessage']>>;
-    try {
-      receipt = await this.routes.postMessage(groupId, encrypted.messageBody);
-    } catch (error) {
-      if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
-        core.sendFail(prepared, error.code);
-        return { requestId: command.requestId, status: 'rejected' };
+      const encrypted = core.sendEncrypt(prepared);
+      if (toHex(encrypted.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+      let receipt: Awaited<ReturnType<Routes['postMessage']>>;
+      try {
+        receipt = await this.routes.postMessage(groupId, encrypted.messageBody);
+      } catch (error) {
+        if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
+          core.sendFail(prepared, error.code);
+          return { requestId: command.requestId, status: 'rejected' };
+        }
+        // A timeout or server failure does not establish whether the upload committed. The durable
+        // in-flight outbox is retained and the sync lane can resolve it after this POST has settled.
+        return { requestId: command.requestId, status: 'pending' };
       }
-      // A timeout or server failure does not establish whether the upload committed. The durable
-      // in-flight outbox is retained and this command will report pending on an exact retry.
-      return { requestId: command.requestId, status: 'pending' };
-    }
-    try {
-      core.sendConfirm(prepared, receipt.raw);
-    } catch {
-      // The server accepted the ciphertext, but the local receipt commit did not complete.
-      return { requestId: command.requestId, status: 'pending' };
-    }
-    this.acceptedHumanInteractionSends.add(acceptedKey);
-    if (this.acceptedHumanInteractionSends.size > 128) {
-      const oldest = this.acceptedHumanInteractionSends.values().next().value;
-      if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
-    }
-    return { requestId: command.requestId, status: 'accepted' };
+      try {
+        core.sendConfirm(prepared, receipt.raw);
+      } catch {
+        // The server accepted the ciphertext, but the local receipt commit did not complete.
+        return { requestId: command.requestId, status: 'pending' };
+      }
+      this.acceptedHumanInteractionSends.add(acceptedKey);
+      if (this.acceptedHumanInteractionSends.size > 128) {
+        const oldest = this.acceptedHumanInteractionSends.values().next().value;
+        if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
+      }
+      return { requestId: command.requestId, status: 'accepted' };
+    });
   }
 
   private async getBotJoinRole(communityId: string): Promise<{ roleId: string | null; installationId: string } | null> {

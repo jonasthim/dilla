@@ -125,6 +125,7 @@ describe('Controller', () => {
     w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
     w.call(10_199, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 });
     await vi.waitFor(() => expect(w.ret(10_199)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'accepted' } }));
+    expect(w.sync.runOnGroup).toHaveBeenCalledWith(groupId, expect.any(Function));
     expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledWith(requestId, COMMUNITY, groupId, expect.any(Uint8Array), NOW_S);
     expect(w.core.sendEncrypt).toHaveBeenCalledWith(requestId);
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
