@@ -307,10 +307,12 @@ func TestMembershipTreatsNonmemberCallGroupSourceAsPending(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		kind    uint64
+		code    string
 		wantErr bool
 	}{
-		{name: "call group", kind: 1},
-		{name: "text group", kind: 0, wantErr: true},
+		{name: "call group", kind: 1, code: "E_NOT_FOUND"},
+		{name: "unexpected call error", kind: 1, code: "E_OTHER", wantErr: true},
+		{name: "text group", kind: 0, code: "E_NOT_FOUND", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, n, s, community, channel, group := membershipFixture(t)
@@ -322,7 +324,7 @@ func TestMembershipTreatsNonmemberCallGroupSourceAsPending(t *testing.T) {
 			info := native.GroupInfo{ID: group, Kind: tc.kind, Community: &community, Target: channel, State: 2, NextSequence: 1}
 			n.groups, n.inspected = []native.GroupInfo{info}, info
 			s.groupInfo = client.GroupInfo{NextSequence: 2}
-			s.groupPageErr = &client.APIError{Status: 404, Code: "E_NOT_FOUND"}
+			s.groupPageErr = &client.APIError{Status: 404, Code: tc.code}
 			_, err := r.reconcileOnce(context.Background(), s)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("reconcile error = %v, wantErr %v", err, tc.wantErr)

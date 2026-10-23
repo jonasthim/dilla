@@ -240,7 +240,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			// intentionally answer 404 in that case. Keep reconciliation of unrelated
 			// groups and interactions moving; a later pass will retry if membership returns.
 			var apiErr *client.APIError
-			if g.Kind == 1 && errors.As(e, &apiErr) && apiErr.Status == 404 {
+			if g.Kind == 1 && errors.As(e, &apiErr) && apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
 				continue
 			}
 			return out, e
