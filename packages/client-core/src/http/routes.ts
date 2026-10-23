@@ -4,6 +4,7 @@ import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
+import { negotiateSession, type SessionCapabilities } from './negotiate-session';
 
 export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
@@ -344,6 +345,11 @@ function passkeyRow(value: CborValue): PasskeyRow {
 }
 export class Routes {
   constructor(private readonly http: HttpClient) {}
+
+  /** Negotiate capabilities for the current authenticated HTTP bearer session. */
+  negotiateSession(): Promise<SessionCapabilities> {
+    return negotiateSession(this.http);
+  }
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
     options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes' | 'signal'> = {}): Promise<Uint8Array> {

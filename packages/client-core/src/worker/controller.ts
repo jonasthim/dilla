@@ -2401,6 +2401,13 @@ export class Controller {
   /** A refused join is a result, never a failed signup (ruling 34). */
   private async joinAfterReady(communityId: Id, invite: string): Promise<{ communityId: string | null; joinError: WorkerError | null }> {
     try {
+      try {
+        await this.routes.negotiateSession();
+      } catch (e) {
+        // Older instances have no capability endpoint. Only an explicit unsupported-route response falls back;
+        // transient, authentication, and malformed negotiation failures must not race the gateway negotiation.
+        if (!(e instanceof DillaHttpError) || ![404, 405, 501].includes(e.status)) throw e;
+      }
       const joined = await this.joinPath(communityId, invite);
       return { communityId: joined.communityId, joinError: null };
     } catch (e) {

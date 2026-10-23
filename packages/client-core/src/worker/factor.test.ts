@@ -40,6 +40,8 @@ const plain = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => (typ
 describe('the factor-setup phase (web3.6 C2)', () => {
   it('a signup owing a factor stops at factor-setup; factorSetupDone refuses while owed, then enters ready and joins', async () => {
     const w = world({ phase: 0, owed: true });
+    const negotiation = vi.fn(async () => ({ wire: 3, e2ee: 1, media: 1, botAvailable: true }));
+    (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
     w.routes.getInvite.mockImplementation(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
     await toKeys(w);
     w.call(3, SUBMIT);
@@ -49,6 +51,7 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(factors(w)).toMatchObject({ owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
     expect(w.gateway.starts).toBe(0);
     expect(w.routes.joinCommunity).not.toHaveBeenCalled();
+    expect(negotiation).not.toHaveBeenCalled();
     expect(w.routes.postKeyPackages).not.toHaveBeenCalled();
     expect(w.account.ensureBackups).not.toHaveBeenCalled();
 
@@ -57,6 +60,7 @@ describe('the factor-setup phase (web3.6 C2)', () => {
       error: { code: 'E_FACTOR_REQUIRED', detail: '', status: 0, retryAfterMs: null } });
     expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signup' } });
     expect(w.routes.joinCommunity).not.toHaveBeenCalled();
+    expect(negotiation).not.toHaveBeenCalled();
 
     w.state.owed = false;
     w.call(5, { m: 'factorSetupDone', invite: null });
@@ -64,6 +68,8 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(w.account()).toMatchObject({ phase: 'ready', factorSetup: null });
     expect(factors(w)).toMatchObject({ owed: false, totp: { confirmedAt: 1_700_000_000 } });
     expect(w.routes.joinCommunity).toHaveBeenCalledWith(COMMUNITY, 'friends-code');
+    expect(negotiation).toHaveBeenCalledTimes(1);
+    expect(negotiation.mock.invocationCallOrder[0]).toBeLessThan(w.routes.joinCommunity.mock.invocationCallOrder[0]);
     // The KeyPackages (a V route, refused while owed) go up once the debt is paid, before the join.
     expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(1);
     expect(w.routes.postKeyPackages.mock.invocationCallOrder[0]).toBeLessThan(w.routes.joinCommunity.mock.invocationCallOrder[0]);

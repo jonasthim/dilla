@@ -2544,11 +2544,17 @@ describe('Controller in the ready phase', () => {
   it('a server invite lands in the server', async () => {
     const w = world({ phase: 0 });
     w.routes.getInvite.mockImplementationOnce(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
+    const ordering: string[] = [];
+    const negotiation = vi.fn(async () => { ordering.push('negotiate'); return { wire: 3, e2ee: 1, media: 1, botAvailable: true }; });
+    (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
+    w.routes.joinCommunity.mockImplementationOnce(async () => { ordering.push('join'); w.state.joined = true; });
     await toKeys(w);
     w.call(3, SUBMIT);
     await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { communityId: toHex(COMMUNITY), joinError: null } });
     expect(w.signup.submit).toHaveBeenCalledWith({ invite: 'friends-code', username: 'web', display: 'Web', password: null });
+    expect(ordering).toEqual(['negotiate', 'join']);
+    expect(negotiation).toHaveBeenCalledTimes(1);
     expect(w.routes.joinCommunity).toHaveBeenCalledWith(COMMUNITY, 'friends-code');
     expect(w.account()?.phase).toBe('ready');
     const retAt = w.posted.findIndex((m) => m.t === 'ret' && m.id === 3);
@@ -2556,6 +2562,19 @@ describe('Controller in the ready phase', () => {
     expect(listedAt).toBeGreaterThan(-1);
     expect(listedAt).toBeLessThan(retAt);
     expect(w.last<CommunitySummary[]>('communities')).toEqual([{ id: toHex(COMMUNITY), name: 'friends', owner: toHex(USER) }]);
+  });
+
+  it('joins once when an older server does not implement session negotiation', async () => {
+    const w = world({ phase: 0 });
+    w.routes.getInvite.mockImplementationOnce(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
+    const negotiation = vi.fn(async () => { throw refusal(404, 'E_NOT_FOUND'); });
+    (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
+    await toKeys(w);
+    w.call(3, SUBMIT);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    expect(w.ret(3)).toMatchObject({ t: 'ret', id: 3, ok: true, value: { communityId: toHex(COMMUNITY), joinError: null } });
+    expect(negotiation).toHaveBeenCalledTimes(1);
+    expect(w.routes.joinCommunity).toHaveBeenCalledTimes(1);
   });
 
   it('a refused join is not a failed signup', async () => {
