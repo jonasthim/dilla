@@ -8,7 +8,7 @@ export type * from './state/types';
 export { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './state/settings';
 export { CALL_IDLE, VOICE_EMPTY, RINGS_EMPTY } from './state/types';
 export { createVoiceMusicAdapter, voiceMusicAdapter } from './voice/music';
-export type { VoiceMusicAdapter, VoiceMusicState, VoiceMusicTrack, VoiceMusicQueueItem, VoiceMusicPermissions } from './voice/music';
+export type { VoiceMusicAdapter, VoiceMusicState, VoiceMusicTrack, VoiceMusicQueueItem, VoiceMusicSearchResult, VoiceMusicPermissions } from './voice/music';
 export { attachmentKind } from './state/derive';
 export type { NotifyMode } from './state/settings';
 export type { Command, ToWorker, FromWorker, TestHook } from './worker/protocol';

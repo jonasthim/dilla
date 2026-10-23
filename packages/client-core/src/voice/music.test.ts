@@ -62,6 +62,40 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
+  it('searches YouTube through authenticated operation 11 and returns stable result IDs', async () => {
+    const f = fixture();
+    const search = f.adapter.search(CHANNEL, 'harbor north');
+    await vi.waitFor(() => expect(f.getRequest(11)).toBeDefined());
+    const request = f.getRequest(11);
+    expect(request.args).toEqual(['harbor north']);
+    expect(request.revision).toBeNull();
+    f.answer(request, 0, null, encode([1n, [['yt:abcdefghijk', 'youtube', 'abcdefghijk', 'North', 'Harbor', '', 120_000n, '']]]));
+
+    await expect(search).resolves.toEqual([{
+      id: 'yt:abcdefghijk', title: 'North', artist: 'Harbor', durationMs: 120_000,
+      input: 'https://www.youtube.com/watch?v=abcdefghijk',
+    }]);
+  });
+
+  it('enqueues one YouTube input with the current revision and waits for confirmed state', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://www.youtube.com/watch?v=abcdefghijk');
+    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
+    expect(f.getRequest(12).args).toEqual(['https://www.youtube.com/watch?v=abcdefghijk']);
+    expect(f.getRequest(12).revision).toBe('1');
+    f.answer(f.getRequest(12), 0, '2', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
+    const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[1], 0, '2', snapshot(2n, false));
+    await expect(enqueue).resolves.toBeUndefined();
+    unsubscribe();
+  });
+
   it('does not resolve a mutation on upload receipt and waits for the operation and resulting snapshot', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);

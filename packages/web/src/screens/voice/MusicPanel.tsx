@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { voiceMusicAdapter, type VoiceMusicAdapter } from '@dilla/client-core';
 import { t } from '../../strings/index.ts';
 
@@ -8,6 +8,15 @@ function time(ms: number): string {
 }
 
 const RANGE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+
+function isSpotifyURL(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === 'spotify.link' || host === 'spotify.com' || host.endsWith('.spotify.com');
+  } catch {
+    return false;
+  }
+}
 
 /** Authenticated transport is not shipped yet; tests and future clients may inject an explicit adapter. */
 export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
@@ -20,6 +29,13 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const [actionError, setActionError] = useState(false);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState<'none' | 'error' | 'empty' | 'spotify'>('none');
+  const [searchResults, setSearchResults] = useState<Awaited<ReturnType<VoiceMusicAdapter['search']>>>([]);
+  const [queueInput, setQueueInput] = useState('');
+  const [enqueueMessage, setEnqueueMessage] = useState<'idle' | 'pending' | 'added' | 'error' | 'spotify'>('idle');
+  const searchSequence = useRef(0);
   const pendingRef = useRef(false);
   const queuedSliders = useRef(new Map<'seek' | 'volume', () => void | Promise<void>>());
   const seekEditing = useRef(false);
@@ -91,6 +107,60 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
     if (pendingRef.current) queuedSliders.current.set(key, command);
     else execute(command);
   };
+  const search = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const query = searchQuery.trim();
+    if (searching || query.length === 0) {
+      if (query.length === 0) setSearchMessage('error');
+      return;
+    }
+    if (isSpotifyURL(query)) {
+      setSearchResults([]);
+      setSearchMessage('spotify');
+      return;
+    }
+    const sequence = ++searchSequence.current;
+    setSearching(true);
+    setSearchMessage('none');
+    setSearchResults([]);
+    try {
+      const results = await adapter.search(channelId, query);
+      if (sequence === searchSequence.current) {
+        setSearchResults(results);
+        setSearchMessage(results.length === 0 ? 'empty' : 'none');
+      }
+    } catch {
+      if (sequence === searchSequence.current) setSearchMessage('error');
+    } finally {
+      if (sequence === searchSequence.current) setSearching(false);
+    }
+  };
+  const enqueue = (input: string) => {
+    if (pendingRef.current || !manage || enqueueMessage === 'pending') return;
+    setEnqueueMessage('pending');
+    run(async () => {
+      try {
+        await adapter.enqueue(channelId, input);
+        setEnqueueMessage('added');
+        setQueueInput('');
+      } catch {
+        setEnqueueMessage('error');
+      }
+    });
+  };
+  const submitQueueInput = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const input = queueInput.trim();
+    if (isSpotifyURL(input)) {
+      setEnqueueMessage('spotify');
+      return;
+    }
+    if (input.length === 0) {
+      setEnqueueMessage('error');
+      return;
+    }
+    enqueue(input);
+  };
   const queue = <ol className="dw-voice-music__queue" aria-label={t('voice.music.queue')}>
     {current.queue.map((item, index) => <li key={item.id}>
       <span>{item.track.title} <span className="dw-voice-music__artist">{item.track.artist}</span></span>
@@ -153,6 +223,36 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
           onKeyUp={event => { if (RANGE_KEYS.has(event.key)) { const value = Number(event.currentTarget.value); volumeEditing.current = false; setVolumeDraft(value); runSlider('volume', () => adapter.setVolume(channelId, value)); } }}
           onBlur={event => { if (volumeEditing.current) { const value = Number(event.currentTarget.value); volumeEditing.current = false; setVolumeDraft(value); runSlider('volume', () => adapter.setVolume(channelId, value)); } }} />
       </label>
+      <section className="dw-voice-music__search" aria-label={t('voice.music.searchLabel')}>
+        <form onSubmit={event => { void search(event); }}>
+          <label>{t('voice.music.searchLabel')}
+            <input type="search" value={searchQuery} placeholder={t('voice.music.searchPlaceholder')}
+              onChange={event => { setSearchQuery(event.currentTarget.value); setSearchMessage('none'); }} />
+          </label>
+          <button type="submit" disabled={searching}>{t('voice.music.searchAction')}</button>
+        </form>
+        {searching && <p role="status">{t('voice.music.searching')}</p>}
+        {searchMessage !== 'none' && <p role="status">{t(searchMessage === 'spotify' ? 'voice.music.spotifyUnavailable'
+          : searchMessage === 'empty' ? 'voice.music.searchEmpty' : 'voice.music.searchError')}</p>}
+        {searchResults.length > 0 && <ol className="dw-voice-music__results" aria-label={t('voice.music.results')}>
+          {searchResults.map(result => <li key={result.id}>
+            <span>{result.title} <span className="dw-voice-music__artist">{result.artist}</span></span>
+            <button type="button" aria-label={t('voice.music.addResult', { title: result.title })}
+              disabled={pending || !manage || enqueueMessage === 'pending'}
+              onClick={() => enqueue(result.input)}>{t('voice.music.enqueueAction')}</button>
+          </li>)}
+        </ol>}
+        <form onSubmit={submitQueueInput}>
+          <label>{t('voice.music.urlLabel')}
+            <input type="url" value={queueInput} placeholder={t('voice.music.urlPlaceholder')}
+              onChange={event => { setQueueInput(event.currentTarget.value); setEnqueueMessage('idle'); }} />
+          </label>
+          <button type="submit" disabled={pending || !manage || enqueueMessage === 'pending'}>{t('voice.music.enqueueAction')}</button>
+        </form>
+        {enqueueMessage !== 'idle' && <p role="status">{t(enqueueMessage === 'pending' ? 'voice.music.enqueuePending'
+          : enqueueMessage === 'added' ? 'voice.music.enqueueSuccess'
+            : enqueueMessage === 'spotify' ? 'voice.music.spotifyUnavailable' : 'voice.music.enqueueError')}</p>}
+      </section>
       <div id="dw-voice-music-queue" className="dw-voice-music__queue-wrap" role="region" aria-labelledby="dw-voice-music-queue-title"
         hidden={!queueOpen}>
         <h3 id="dw-voice-music-queue-title">{t('voice.music.queue')}</h3>

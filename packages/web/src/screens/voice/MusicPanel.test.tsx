@@ -23,6 +23,7 @@ function adapter(permissions = { control: true, manageQueue: true }): TestAdapte
     setVolume: vi.fn<VoiceMusicAdapter['setVolume']>(), setShuffle: vi.fn<VoiceMusicAdapter['setShuffle']>(),
     setRepeat: vi.fn<VoiceMusicAdapter['setRepeat']>(), remove: vi.fn<VoiceMusicAdapter['remove']>(),
     move: vi.fn<VoiceMusicAdapter['move']>(),
+    search: vi.fn<VoiceMusicAdapter['search']>(), enqueue: vi.fn<VoiceMusicAdapter['enqueue']>(),
   };
   calls.pause.mockImplementation((_channelId, paused) => {
     current = { ...current, paused };
@@ -90,6 +91,65 @@ describe('MusicPanel', () => {
     expect(setRepeat).toHaveBeenCalledWith('channel-1', 'all');
     expect(move).toHaveBeenCalledWith('channel-1', 'q1', 0);
     expect(remove).toHaveBeenCalledWith('channel-1', 'q1');
+  });
+
+  it('searches YouTube and lets an authorized DJ enqueue a result', async () => {
+    const music = adapter();
+    music.calls.search.mockResolvedValue([{
+      id: 'yt:abcdefghijk', title: 'North', artist: 'Harbor', durationMs: 120_000,
+      input: 'https://www.youtube.com/watch?v=abcdefghijk',
+    }]);
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search music' }), { target: { value: 'harbor north' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByRole('button', { name: 'Add North to queue' })).toBeInTheDocument();
+    expect(music.calls.search).toHaveBeenCalledWith('channel-1', 'harbor north');
+    fireEvent.click(screen.getByRole('button', { name: 'Add North to queue' }));
+    await waitFor(() => expect(music.calls.enqueue).toHaveBeenCalledWith('channel-1', 'https://www.youtube.com/watch?v=abcdefghijk'));
+  });
+
+  it('explains that Spotify URLs are unsupported without submitting them', () => {
+    const music = adapter();
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'YouTube or Spotify URL' }), {
+      target: { value: 'https://open.spotify.com/track/1234567890123456789012' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add URL to queue' }));
+
+    expect(screen.getByRole('status')).toHaveTextContent("Spotify links aren't supported yet. Paste a YouTube link instead.");
+    expect(music.calls.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('announces search loading and a retryable failure', async () => {
+    const music = adapter();
+    let rejectSearch: ((reason: Error) => void) | undefined;
+    music.calls.search.mockImplementation(() => new Promise((_resolve, reject) => { rejectSearch = reject; }));
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search music' }), { target: { value: 'harbor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Searching YouTube…');
+    await act(() => { rejectSearch?.(new Error('resolver failed')); return Promise.resolve(); });
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('YouTube search failed. Try again.'));
+    expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
+  });
+
+  it('announces enqueue loading and a retryable failure', async () => {
+    const music = adapter();
+    let rejectEnqueue: ((reason: Error) => void) | undefined;
+    music.calls.enqueue.mockImplementation(() => new Promise((_resolve, reject) => { rejectEnqueue = reject; }));
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'YouTube or Spotify URL' }), {
+      target: { value: 'https://www.youtube.com/watch?v=abcdefghijk' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add URL to queue' }));
+    expect(screen.getByText('Adding to queue…')).toBeInTheDocument();
+    await act(() => { rejectEnqueue?.(new Error('resolver unavailable')); return Promise.resolve(); });
+    await waitFor(() => expect(screen.getByText('Could not add that input to the queue. Check it and try again.')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Add URL to queue' })).toBeEnabled();
   });
 
   it('refreshes from the adapter subscription after an action succeeds', async () => {
@@ -179,6 +239,8 @@ describe('MusicPanel', () => {
     expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Move South up' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Remove South from queue' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Add URL to queue' })).toBeDisabled();
     expect(screen.getByRole('slider', { name: 'Seek' })).toBeDisabled();
     expect(pause).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();

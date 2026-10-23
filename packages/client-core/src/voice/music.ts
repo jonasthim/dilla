@@ -11,6 +11,7 @@ export interface VoiceMusicTrack {
 }
 
 export interface VoiceMusicQueueItem { id: string; track: VoiceMusicTrack; }
+export interface VoiceMusicSearchResult extends VoiceMusicTrack { input: string; }
 export interface VoiceMusicPermissions { control: boolean; manageQueue: boolean; }
 export type VoiceMusicState =
   | { status: 'unavailable'; reason: 'authenticated-transport-missing' | 'bot-unavailable' }
@@ -29,6 +30,8 @@ export interface VoiceMusicAdapter {
   setRepeat(channelId: string, repeat: 'off' | 'one' | 'all'): void | Promise<void>;
   remove(channelId: string, queueItemId: string): void | Promise<void>;
   move(channelId: string, queueItemId: string, destinationIndex: number): void | Promise<void>;
+  search(channelId: string, query: string): Promise<readonly VoiceMusicSearchResult[]>;
+  enqueue(channelId: string, input: string): void | Promise<void>;
 }
 
 const MUSIC_OPERATIONS = Array.from({ length: 14 }, (_, i) => i + 10);
@@ -164,6 +167,12 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     },
     setRepeat: (id, repeat) => mutate(id, 20, [repeat === 'off' ? 0 : repeat === 'one' ? 1 : 2]),
     remove: (id, queueId) => mutate(id, 21, [queueId]),
+    search: async (id, query) => {
+      const response = await request(id, 11, [validatedInput(query, 200, 'search query')], null);
+      if (response.status !== 0) throw responseError(response.status);
+      return decodeSearchResults(response.data);
+    },
+    enqueue: (id, input) => mutate(id, 12, [validatedInput(input, 2048, 'queue input')]),
     move: (id, queueId, destinationIndex) => {
       const state = states.get(id);
       if (state?.status !== 'available') return Promise.reject(new Error('Music state is unavailable.'));
@@ -184,6 +193,7 @@ export const voiceMusicAdapter: VoiceMusicAdapter = {
   state: () => EMPTY, subscribe: () => () => undefined,
   pause: unavailable, skip: unavailable, stop: unavailable, seek: unavailable, setVolume: unavailable,
   setShuffle: unavailable, setRepeat: unavailable, remove: unavailable, move: unavailable,
+  search: unavailable, enqueue: unavailable,
 };
 
 interface InteractionResponse { requestId: string; channelId: string | null; operation: number; status: number; revision: string | null; data: Uint8Array; }
@@ -258,4 +268,33 @@ function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: s
   return { revision, state: { status: 'available', track: current, queue, positionMs: uint(field(row, 4)), paused: uint(field(row, 5), 1) === 1,
     volume: uint(field(row, 6), 100), shuffle: uint(field(row, 7), 1) === 1,
     repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: canControl, manageQueue: canControl } } };
+}
+function decodeSearchResults(data: Uint8Array): VoiceMusicSearchResult[] {
+  const result = array(decode(data), 2);
+  if (uint(field(result, 0), 1) !== 1) throw new Error('Unsupported music search response.');
+  return array(field(result, 1)).map(value => {
+    const row = array(value, 8);
+    const id = text(field(row, 0));
+    const provider = text(field(row, 1));
+    const canonicalId = text(field(row, 2));
+    const requesterId = text(field(row, 7));
+    if (provider !== 'youtube' || !/^[A-Za-z0-9_-]{11}$/u.test(canonicalId) || id !== `yt:${canonicalId}`) {
+      throw new Error('Unsupported music search result.');
+    }
+    if (requesterId !== '') throw new Error('Malformed music search result.');
+    const album = text(field(row, 5));
+    const track: VoiceMusicSearchResult = {
+      id, title: text(field(row, 3)), artist: text(field(row, 4)), durationMs: uint(field(row, 6)),
+      input: `https://www.youtube.com/watch?v=${canonicalId}`,
+    };
+    if (album !== '') track.album = album;
+    return track;
+  });
+}
+function validatedInput(value: string, limit: number, label: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || new TextEncoder().encode(trimmed).length > limit || /[\u0000-\u001f\u007f]/u.test(trimmed)) {
+    throw new Error(`Invalid music ${label}.`);
+  }
+  return trimmed;
 }
