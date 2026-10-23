@@ -25,6 +25,7 @@ const (
 	evidenceVersion                   = uint64(3)
 	evidenceScanLimit                 = uint64(100)
 	evidenceCursorMax                 = 128
+	evidencePurgeCursorVersion        = uint64(1)
 	permViewAuditLog                  = uint64(1 << 17)
 	maxEvidenceBytes                  = 4 << 10
 	MaxEvidenceReasonBytes            = 1024
@@ -91,6 +92,28 @@ type EvidenceWriter struct {
 
 type evidenceRetentionState interface {
 	StateScan(context.Context, uint64, []byte, uint64) (native.StatePage, error)
+}
+
+func encodeEvidencePurgeCursor(cursor []byte) ([]byte, error) {
+	if len(cursor) == 0 || len(cursor) > evidenceCursorMax {
+		return nil, ErrEvidenceWrite
+	}
+	return cborx.Marshal([]any{evidencePurgeCursorVersion, cursor})
+}
+
+func decodeEvidencePurgeCursor(raw []byte) ([]byte, error) {
+	if len(raw) == 0 || len(raw) > evidenceCursorMax+16 || cborx.CheckDeterministic(raw) != nil {
+		return nil, ErrEvidenceWrite
+	}
+	var fields []any
+	if cborx.Unmarshal(raw, &fields) != nil || len(fields) != 2 || fields[0] != evidencePurgeCursorVersion {
+		return nil, ErrEvidenceWrite
+	}
+	cursor, ok := fields[1].([]byte)
+	if !ok || len(cursor) == 0 || len(cursor) > evidenceCursorMax {
+		return nil, ErrEvidenceWrite
+	}
+	return append([]byte(nil), cursor...), nil
 }
 
 func NewEvidenceWriter(state configStateClient) *EvidenceWriter {
@@ -486,23 +509,29 @@ func (w *EvidenceWriter) PurgeExpiredResumable(ctx context.Context) (int, error)
 		return 0, ErrEvidenceWrite
 	}
 	cursor, err := w.state.StateGet(ctx, evidencePurgeCursorArea, evidencePurgeCursorKey)
-	if err != nil || cursor.Revision > 0 && !cursor.Tombstone && (len(cursor.Value) == 0 || len(cursor.Value) > evidenceCursorMax) {
+	if err != nil {
 		return 0, ErrEvidenceWrite
 	}
 	var after []byte
 	if cursor.Revision > 0 && !cursor.Tombstone {
-		after = append([]byte(nil), cursor.Value...)
+		after, err = decodeEvidencePurgeCursor(cursor.Value)
+		if err != nil {
+			return 0, ErrEvidenceWrite
+		}
 	}
 	removed, next, err := w.PurgeExpired(ctx, after)
 	if err != nil {
 		return removed, err
 	}
-	if (next == nil && (cursor.Revision == 0 || cursor.Tombstone)) || (next != nil && !cursor.Tombstone && bytes.Equal(next, cursor.Value)) {
+	if next == nil && (cursor.Revision == 0 || cursor.Tombstone) || next != nil && !cursor.Tombstone && bytes.Equal(next, after) {
 		return removed, nil
 	}
 	var value []byte
 	if next != nil {
-		value = next
+		value, err = encodeEvidencePurgeCursor(next)
+		if err != nil {
+			return removed, ErrEvidenceWrite
+		}
 	}
 	_, txErr := w.state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: evidencePurgeCursorArea, Key: evidencePurgeCursorKey,
 		ExpectedRevision: cursor.Revision, Value: value}})
@@ -510,7 +539,7 @@ func (w *EvidenceWriter) PurgeExpiredResumable(ctx context.Context) (int, error)
 		return removed, nil
 	}
 	actual, readErr := w.state.StateGet(ctx, evidencePurgeCursorArea, evidencePurgeCursorKey)
-	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, next) {
+	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, value) {
 		return removed, nil
 	}
 	return removed, ErrEvidenceWrite

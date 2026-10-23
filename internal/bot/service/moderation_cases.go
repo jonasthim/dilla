@@ -21,16 +21,39 @@ import (
 )
 
 const (
-	moderationCaseStateArea   = uint64(4)
-	moderationPurgeCursorArea = uint64(8)
-	moderationCaseVersion     = uint64(2)
-	moderationCaseRetention   = 90 * 24 * time.Hour
-	moderationCaseScanLimit   = uint64(100)
-	moderationCaseMaxValue    = 16 << 10
-	moderationCaseMaxCursor   = 128
+	moderationCaseStateArea      = uint64(4)
+	moderationPurgeCursorArea    = uint64(8)
+	moderationCaseVersion        = uint64(2)
+	moderationCaseRetention      = 90 * 24 * time.Hour
+	moderationCaseScanLimit      = uint64(100)
+	moderationCaseMaxValue       = 16 << 10
+	moderationCaseMaxCursor      = 128
+	moderationPurgeCursorVersion = uint64(1)
 )
 
 var moderationPurgeCursorKey = []byte("dilla.bot.moderation.purge-cursor.v1")
+
+func encodeModerationPurgeCursor(cursor []byte) ([]byte, error) {
+	if len(cursor) == 0 || len(cursor) > moderationCaseMaxCursor {
+		return nil, ErrModerationCaseState
+	}
+	return cborx.Marshal([]any{moderationPurgeCursorVersion, cursor})
+}
+
+func decodeModerationPurgeCursor(raw []byte) ([]byte, error) {
+	if len(raw) == 0 || len(raw) > moderationCaseMaxCursor+16 || cborx.CheckDeterministic(raw) != nil {
+		return nil, ErrModerationCaseState
+	}
+	var fields []any
+	if cborx.Unmarshal(raw, &fields) != nil || len(fields) != 2 || fields[0] != moderationPurgeCursorVersion {
+		return nil, ErrModerationCaseState
+	}
+	cursor, ok := fields[1].([]byte)
+	if !ok || len(cursor) == 0 || len(cursor) > moderationCaseMaxCursor {
+		return nil, ErrModerationCaseState
+	}
+	return append([]byte(nil), cursor...), nil
+}
 
 var (
 	ErrModerationCaseState              = errors.New("invalid moderation case state")
@@ -516,12 +539,12 @@ func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, er
 	if err != nil {
 		return evidenceRemoved, err
 	}
-	if cursor.Revision > 0 && !cursor.Tombstone && (len(cursor.Value) == 0 || len(cursor.Value) > moderationCaseMaxCursor) {
-		return evidenceRemoved, ErrModerationCaseState
-	}
 	var after []byte
 	if cursor.Revision > 0 && !cursor.Tombstone {
-		after = append([]byte(nil), cursor.Value...)
+		after, err = decodeModerationPurgeCursor(cursor.Value)
+		if err != nil {
+			return evidenceRemoved, ErrModerationCaseState
+		}
 	}
 	removed, next, err := s.PurgeExpired(ctx, after)
 	if err != nil {
@@ -530,12 +553,15 @@ func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, er
 	if len(next) > moderationCaseMaxCursor {
 		return evidenceRemoved + removed, ErrModerationCaseState
 	}
-	if next == nil && (cursor.Revision == 0 || cursor.Tombstone) || next != nil && !cursor.Tombstone && bytes.Equal(next, cursor.Value) {
+	if next == nil && (cursor.Revision == 0 || cursor.Tombstone) || next != nil && !cursor.Tombstone && bytes.Equal(next, after) {
 		return evidenceRemoved + removed, nil
 	}
 	var value []byte
 	if next != nil {
-		value = next
+		value, err = encodeModerationPurgeCursor(next)
+		if err != nil {
+			return evidenceRemoved + removed, ErrModerationCaseState
+		}
 	}
 	_, txErr := s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationPurgeCursorArea, Key: moderationPurgeCursorKey,
 		ExpectedRevision: cursor.Revision, Value: value}})
@@ -543,7 +569,7 @@ func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, er
 		return evidenceRemoved + removed, nil
 	}
 	actual, readErr := s.native.StateGet(ctx, moderationPurgeCursorArea, moderationPurgeCursorKey)
-	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, next) {
+	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, value) {
 		return evidenceRemoved + removed, nil
 	}
 	return evidenceRemoved + removed, fmt.Errorf("persist moderation purge cursor: %w", txErr)

@@ -220,6 +220,25 @@ func TestStateTransactionRejectsUnincrementableRevisionLocally(t *testing.T) {
 	}
 }
 
+func TestStateTransactionRequiresCanonicalCBORForPersistedCursor(t *testing.T) {
+	f := &fakeTransport{}
+	c := newFakeClient(t, f)
+	_, err := c.StateTransaction(context.Background(), testID(8), []StateChange{{Area: 8, Key: []byte("cursor"), ExpectedRevision: 0, Value: []byte("raw-state-key")}})
+	if err == nil || len(f.calls) != 0 {
+		t.Fatalf("raw state cursor was dispatched: calls=%d err=%v", len(f.calls), err)
+	}
+
+	value, err := cborx.Marshal([]any{uint64(1), []byte("raw-state-key")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f = &fakeTransport{responses: [][]any{{uint64(1)}}}
+	c = newFakeClient(t, f)
+	if _, err := c.StateTransaction(context.Background(), testID(8), []StateChange{{Area: 8, Key: []byte("cursor"), ExpectedRevision: 0, Value: value}}); err != nil {
+		t.Fatalf("canonical CBOR cursor rejected: %v", err)
+	}
+}
+
 func TestCanceledRequestDoesNotRetry(t *testing.T) {
 	f := &fakeTransport{err: context.Canceled}
 	c := newFakeClient(t, f)
