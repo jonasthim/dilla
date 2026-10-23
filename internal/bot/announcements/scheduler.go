@@ -69,6 +69,7 @@ type ReceiptLookup interface {
 
 type SendRequest struct {
 	OperationID, AttemptID                               id.ID
+	PredecessorAttemptID                                 *id.ID
 	CommunityID, InstallationID, AnnouncementID, GroupID id.ID
 	Text                                                 string
 	OriginalNow                                          uint64
@@ -105,6 +106,7 @@ type scheduledState struct {
 	Occurrence   Occurrence
 	Status       occurrenceStatus
 	GroupID      id.ID
+	Attempt      uint64
 }
 
 // MutationOutcome is the stable application result of a schedule mutation.
@@ -512,6 +514,17 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 					return lookupErr
 				}
 				if found {
+					if validClosedReceipt(receipt, req) {
+						state.Attempt++
+						if err := s.replaceOne(ctx, state, revision); err != nil {
+							return err
+						}
+						states, revision, err = s.snapshot(ctx)
+						if err != nil {
+							return err
+						}
+						continue
+					}
 					if !validAcceptedReceipt(receipt, req) {
 						return errors.New("announcement receipt lookup returned an invalid receipt")
 					}
@@ -577,6 +590,17 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			return lookupErr
 		}
 		if found {
+			if validClosedReceipt(receipt, req) {
+				state.Attempt++
+				if err := s.replaceOne(ctx, state, revision); err != nil {
+					return err
+				}
+				states, revision, err = s.snapshot(ctx)
+				if err != nil {
+					return err
+				}
+				continue
+			}
 			if !validAcceptedReceipt(receipt, req) {
 				return errors.New("announcement receipt lookup returned an invalid receipt")
 			}
@@ -697,6 +721,17 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		if sendErr != nil {
 			return sendErr
 		}
+		if validClosedReceipt(receipt, req) {
+			state.Attempt++
+			if err = s.replaceOne(ctx, state, start.revision); err != nil {
+				return err
+			}
+			states, revision, err = s.snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		if !validAcceptedReceipt(receipt, req) {
 			return errors.New("announcement send has no authoritative accepted receipt")
 		}
@@ -739,7 +774,12 @@ func (s *Scheduler) sendRequest(state scheduledState) (SendRequest, error) {
 	if seconds < 0 {
 		return SendRequest{}, ErrInvalidSchedule
 	}
-	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(seconds)}, nil
+	request := SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence, state.Attempt), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(seconds)}
+	if state.Attempt > 0 {
+		previous := attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence, state.Attempt-1)
+		request.PredecessorAttemptID = &previous
+	}
+	return request, nil
 }
 
 func (s *Scheduler) snapshot(ctx context.Context) ([]scheduledState, uint64, error) {
@@ -860,9 +900,16 @@ func operationID(installation, announcement id.ID, occurrence Occurrence) id.ID 
 	h := sha256.Sum256(append(append(append([]byte("dilla.bot.announcement.operation.v1\x00"), installation[:]...), announcement[:]...), []byte(occurrence.Key)...))
 	return nonzeroID(h[:16])
 }
-func attemptID(installation, announcement id.ID, occurrence Occurrence) id.ID {
+func attemptID(installation, announcement id.ID, occurrence Occurrence, sequence ...uint64) id.ID {
 	op := operationID(installation, announcement, occurrence)
 	h := sha256.Sum256(append([]byte("dilla.bot.announcement.attempt.v1\x00"), op[:]...))
+	if len(sequence) > 0 && sequence[0] > 0 {
+		var counter [8]byte
+		for i := range counter {
+			counter[7-i] = byte(sequence[0] >> (8 * i))
+		}
+		h = sha256.Sum256(append(append([]byte("dilla.bot.announcement.attempt.retry.v1\x00"), op[:]...), counter[:]...))
+	}
 	return nonzeroID(h[:16])
 }
 func nonzeroID(b []byte) id.ID {
@@ -878,6 +925,12 @@ func validAcceptedReceipt(r protocol.SendReceipt, req SendRequest) bool {
 		return false
 	}
 	return r.Outcome == protocol.ReceiptAccepted && r.OperationID == req.OperationID && r.AttemptID == req.AttemptID && r.CommunityID == req.CommunityID && r.GroupID == req.GroupID && r.SendResponse != nil && protocol.ValidateReceiptContext(r, req.CommunityID, req.GroupID) == nil
+}
+func validClosedReceipt(r protocol.SendReceipt, req SendRequest) bool {
+	if _, err := protocol.EncodeReceipt(r); err != nil {
+		return false
+	}
+	return r.Outcome == protocol.ReceiptClosedNotAccepted && r.OperationID == req.OperationID && r.AttemptID == req.AttemptID && r.CommunityID == req.CommunityID && r.GroupID == req.GroupID && protocol.ValidateReceiptContext(r, req.CommunityID, req.GroupID) == nil
 }
 
 func encodeStates(states []scheduledState) ([]byte, error) {
@@ -905,7 +958,7 @@ func encodeStateDocument(states []scheduledState, receipts []mutationReceipt) ([
 		if s.Announcement.Enabled {
 			enabled = 1
 		}
-		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(max(sched.Hour, 0)), uint64(max(sched.Minute, 0)), uint64(max(int(sched.Weekday), 0)), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID}
+		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(max(sched.Hour, 0)), uint64(max(sched.Minute, 0)), uint64(max(int(sched.Weekday), 0)), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID, s.Attempt}
 		a = append(a, row)
 	}
 	encodedReceipts := make([]any, 0, len(receipts))
@@ -1011,7 +1064,7 @@ func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, erro
 	seen := map[id.ID]bool{}
 	for _, raw := range rows {
 		a, ok := raw.([]any)
-		if !ok || (len(a) != 14 && len(a) != 15) || a[0] != uint64(1) {
+		if !ok || (len(a) != 14 && len(a) != 15 && len(a) != 16) || a[0] != uint64(1) {
 			return nil, nil, ErrSchedulerMalformed
 		}
 		idb, iok := a[1].([]byte)
@@ -1028,12 +1081,20 @@ func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, erro
 		rawOcc, ook := a[12].([]any)
 		status, sok := a[13].(uint64)
 		var groupID id.ID
-		if len(a) == 15 {
+		var attempt uint64
+		if len(a) >= 15 {
 			groupBytes, groupOK := a[14].([]byte)
 			if !groupOK || len(groupBytes) != 16 {
 				return nil, nil, ErrSchedulerMalformed
 			}
 			copy(groupID[:], groupBytes)
+		}
+		if len(a) == 16 {
+			var attemptOK bool
+			attempt, attemptOK = a[15].(uint64)
+			if !attemptOK || attempt > math.MaxInt64 {
+				return nil, nil, ErrSchedulerMalformed
+			}
 		}
 		if !iok || len(idb) != 16 || !dok || len(destb) != 16 || !tok || !kok || !zok || !daok || !hok || hour > 23 || !mok || minute > 59 || !wok || weekday > 6 || !rok || !eok || enabledValue > 1 || !ook || !sok || status > uint64(occurrenceSkipped) {
 			return nil, nil, ErrSchedulerMalformed
@@ -1049,7 +1110,7 @@ func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, erro
 		if err := validateAnnouncement(value); err != nil {
 			return nil, nil, ErrSchedulerMalformed
 		}
-		state := scheduledState{Announcement: value, Status: occurrenceStatus(status), GroupID: groupID}
+		state := scheduledState{Announcement: value, Status: occurrenceStatus(status), GroupID: groupID, Attempt: attempt}
 		if len(rawOcc) == 1 && rawOcc[0] == uint64(0) {
 			if state.Status != occurrenceNone {
 				return nil, nil, ErrSchedulerMalformed

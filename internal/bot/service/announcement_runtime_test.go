@@ -74,7 +74,8 @@ func (f *announcementCoordinatorFake) Send(_ context.Context, _ *client.Session,
 func TestAnnouncementSenderChecksGateOnceAndUsesResolvedGroup(t *testing.T) {
 	coordinator := &announcementCoordinatorFake{}
 	sender := AnnouncementSender{Coordinator: coordinator, Authority: announcementAuthorityFake{generation: 12}, Session: &client.Session{}, CommunityID: testID(1), InstallationID: testID(2)}
-	req := announcements.SendRequest{OperationID: testID(3), AttemptID: testID(4), CommunityID: testID(1), InstallationID: testID(2), GroupID: testID(5), Text: "private announcement", OriginalNow: 99}
+	predecessor := testID(6)
+	req := announcements.SendRequest{OperationID: testID(3), AttemptID: testID(4), PredecessorAttemptID: &predecessor, CommunityID: testID(1), InstallationID: testID(2), GroupID: testID(5), Text: "private announcement", OriginalNow: 99}
 	gateCalls := 0
 	req.BeforeSend = func() bool { gateCalls++; return false }
 	if _, err := sender.SendAnnouncement(context.Background(), req); err == nil {
@@ -87,7 +88,7 @@ func TestAnnouncementSenderChecksGateOnceAndUsesResolvedGroup(t *testing.T) {
 	if _, err := sender.SendAnnouncement(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if gateCalls != 2 || coordinator.calls != 1 || coordinator.input.GroupID != req.GroupID || coordinator.input.ExpectedGeneration != 12 || coordinator.input.OriginalNow != 99 {
+	if gateCalls != 2 || coordinator.calls != 1 || coordinator.input.GroupID != req.GroupID || coordinator.input.ExpectedGeneration != 12 || coordinator.input.OriginalNow != 99 || coordinator.input.PredecessorAttemptID == nil || *coordinator.input.PredecessorAttemptID != predecessor {
 		t.Fatalf("unexpected send: gate calls=%d input=%+v", gateCalls, coordinator.input)
 	}
 	if coordinator.input.RequestBody == nil {

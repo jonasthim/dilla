@@ -72,7 +72,7 @@ func (s AnnouncementSender) SendAnnouncement(ctx context.Context, req announceme
 	if req.BeforeSend == nil || !req.BeforeSend() {
 		return protocol.SendReceipt{}, errors.New("announcement send authorization changed")
 	}
-	return s.Coordinator.Send(ctx, s.Session, SendInput{OperationID: req.OperationID, AttemptID: req.AttemptID, GroupID: req.GroupID, RequestBody: body, OriginalNow: req.OriginalNow, ExpectedGeneration: discovery.Generation})
+	return s.Coordinator.Send(ctx, s.Session, SendInput{OperationID: req.OperationID, AttemptID: req.AttemptID, PredecessorAttemptID: req.PredecessorAttemptID, GroupID: req.GroupID, RequestBody: body, OriginalNow: req.OriginalNow, ExpectedGeneration: discovery.Generation})
 }
 
 // AnnouncementReceiptLookup recovers an attempt receipt and confirms it in the

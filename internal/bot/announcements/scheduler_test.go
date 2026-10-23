@@ -109,6 +109,7 @@ func (s *schedulerSender) SendAnnouncement(_ context.Context, req SendRequest) (
 		s.receipts = make(map[id.ID]protocol.SendReceipt)
 	}
 	s.receipts[req.OperationID] = receipt
+	s.receipts[req.AttemptID] = receipt
 	s.mu.Unlock()
 	return receipt, s.err
 }
@@ -117,7 +118,10 @@ func (s *schedulerSender) LookupAnnouncement(_ context.Context, req SendRequest)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lookups = append(s.lookups, req)
-	receipt, ok := s.receipts[req.OperationID]
+	receipt, ok := s.receipts[req.AttemptID]
+	if !ok {
+		receipt, ok = s.receipts[req.OperationID]
+	}
 	return receipt, ok, nil
 }
 
@@ -622,6 +626,55 @@ func TestSchedulerRetriesUncertainSendWithSameOperationID(t *testing.T) {
 	}
 	if len(retry.requests) != 1 || retry.requests[0].OperationID != first.OperationID || retry.requests[0].AttemptID != first.AttemptID {
 		t.Fatalf("retry did not reuse durable IDs: first=%+v retry=%+v", first, retry.requests)
+	}
+}
+
+func TestSchedulerStartsNewAttemptAfterClosedNotAcceptedReceipt(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, _, sender, community, destination := schedulerFixture(t, &now)
+	if err := s.Put(context.Background(), dailyAnnouncement(destination, "retry closed attempt", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	states, err := decodeStates(s.native.(*schedulerNative).value.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states[0].Status = occurrenceSending
+	states[0].GroupID = schedulerID(5)
+	req, err := s.sendRequest(states[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := req
+	closed := protocol.SendReceipt{OperationID: first.OperationID, AttemptID: first.AttemptID, CommunityID: community, GroupID: first.GroupID, ExpectedGeneration: 7, CiphertextHash: make([]byte, 32), Outcome: protocol.ReceiptClosedNotAccepted}
+	sender.mu.Lock()
+	if sender.receipts == nil {
+		sender.receipts = make(map[id.ID]protocol.SendReceipt)
+	}
+	sender.receipts[first.AttemptID] = closed
+	sender.mu.Unlock()
+	if err := s.replaceOne(context.Background(), states[0], 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _, retrySender, _, _ := schedulerFixture(t, &now)
+	restarted.native = s.native
+	restarted.receiptLookup = sender
+	if err := restarted.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(retrySender.requests) != 1 {
+		t.Fatalf("closed attempt did not trigger a new send after restart: requests=%+v", retrySender.requests)
+	}
+	second := retrySender.requests[0]
+	if second.OperationID != first.OperationID || second.AttemptID == first.AttemptID || second.PredecessorAttemptID == nil || *second.PredecessorAttemptID != first.AttemptID {
+		t.Fatalf("retry did not preserve operation and chain to closed attempt: first=%+v second=%+v", first, second)
 	}
 }
 
