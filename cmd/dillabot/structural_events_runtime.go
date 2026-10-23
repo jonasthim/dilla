@@ -11,6 +11,28 @@ const maxStructuralEventPollPasses = 4
 
 type structuralEventPoll func(context.Context) (service.StructuralEventPollResult, error)
 
+// finishStructuralGap leaves the old event cursor untouched until the current
+// member scan is durable and the server confirms that its fixed high-water is
+// still readable. The caller retries an incomplete scan on its next pass.
+func finishStructuralGap(
+	ctx context.Context,
+	gap *service.StructuralEventGapError,
+	stage func(context.Context, uint64, uint64) (service.StructuralGapRecoveryResult, error),
+	complete func(context.Context, uint64) error,
+) (bool, error) {
+	if ctx == nil || gap == nil || stage == nil || complete == nil {
+		return false, errors.New("invalid structural gap recovery")
+	}
+	result, err := stage(ctx, gap.Floor, gap.HighWater)
+	if err != nil || !result.Done {
+		return false, err
+	}
+	if err = complete(ctx, result.HighWater); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // drainStructuralEvents follows the poller's bounded More signal for a small,
 // fixed number of passes so a busy installation cannot monopolize reconciliation.
 func drainStructuralEvents(ctx context.Context, poll structuralEventPoll) (service.StructuralEventPollResult, error) {

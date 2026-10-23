@@ -548,6 +548,28 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										pollResult, pollErr := drainStructuralEvents(ctx, func(pollCtx context.Context) (service.StructuralEventPollResult, error) {
 											return poller.PollOnce(pollCtx, result.Session, handler)
 										})
+										var gap *service.StructuralEventGapError
+										if errors.As(pollErr, &gap) {
+											recovery, recoveryErr := service.NewStructuralGapRecovery(nativeClient, 0)
+											if recoveryErr == nil {
+												var finished bool
+												finished, recoveryErr = finishStructuralGap(ctx, gap,
+													func(recoveryCtx context.Context, floor, highWater uint64) (service.StructuralGapRecoveryResult, error) {
+														return recovery.StageOnce(recoveryCtx, registrationMembers, registration, floor, highWater)
+													},
+													func(recoveryCtx context.Context, highWater uint64) error {
+														return poller.CompleteGapReconciliation(recoveryCtx, result.Session, highWater)
+													})
+												if finished {
+													pollErr = nil
+													pollResult.More = true // Poll events newer than the recovered snapshot next pass.
+													logger.Warn("bot structural event history reconciled from current members", "installation_id", installation.ID.String(), "high_water", gap.HighWater)
+												}
+											}
+											if recoveryErr != nil {
+												pollErr = recoveryErr
+											}
+										}
 										if pollErr != nil {
 											logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
 											ensureErr = pollErr
