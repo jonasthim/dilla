@@ -33,7 +33,7 @@ pub use removals::RemovalFeedEntry;
 pub use schema::test_force_missing_fts5;
 pub use schema::{APP_SCHEMA_SUPPORTED, HANDSHAKE_TAIL, migrate_app};
 
-use crate::identity::CredentialIdentity;
+use crate::identity::{CredentialIdentity, Kind, Tier};
 use crate::mls::{
     CIPHERSUITE, ConnHandle, DillaGroup, DillaProvider, DillaStorage, StorageError, UnitScope,
 };
@@ -119,6 +119,15 @@ impl ClientCore {
     /// only ever holds a group that passed this check or that a join of this core wrote.
     fn take_group(&mut self, group_id: &[u8; 16]) -> Result<Option<DillaGroup>, ClientError> {
         if let Some(group) = self.groups.remove(group_id) {
+            if group.kind() == crate::mls::GroupKind::Interaction {
+                let row = self
+                    .read(|c| groups::group_row(c, group_id))?
+                    .ok_or_else(mismatched)?;
+                let own = self.own()?;
+                if !matches_row(&group, group_id, &row, &own) {
+                    return Err(mismatched());
+                }
+            }
             return Ok(Some(group));
         }
         let Some(group) = self.take_group_unchecked(group_id)? else {
@@ -130,6 +139,25 @@ impl ClientCore {
             if !matches_row(&group, group_id, &row, &own) {
                 return Err(mismatched());
             }
+        }
+        Ok(Some(group))
+    }
+
+    /// Load a kind-3 group only from the proof-bearing Bot sync path. The caller has already
+    /// revalidated the signed admission snapshot; this check binds the stored Bot leaf and row.
+    fn take_bot_interaction_group(
+        &mut self,
+        group_id: &[u8; 16],
+    ) -> Result<Option<DillaGroup>, ClientError> {
+        let Some(group) = self.take_group_unchecked(group_id)? else {
+            return Ok(None);
+        };
+        let row = self
+            .read(|c| groups::group_row(c, group_id))?
+            .ok_or_else(mismatched)?;
+        let own = self.own()?;
+        if !matches_bot_interaction_row(&group, group_id, &row, &own) {
+            return Err(mismatched());
         }
         Ok(Some(group))
     }
@@ -279,10 +307,10 @@ fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow, 
             return false;
         };
         return row.kind == i64::from(crate::mls::GroupKind::Interaction.as_u8())
-            && interaction_binding_matches_own(&binding, own)
-            && binding.bot_user_id.as_slice() == row.target_id.as_slice()
             && binding.community_id.as_bytes().as_slice()
-                == row.community_id.as_deref().unwrap_or_default();
+                == row.community_id.as_deref().unwrap_or_default()
+            && interaction_binding_matches_own(&binding, own)
+            && binding.bot_user_id.as_slice() == row.target_id.as_slice();
     }
     let Ok(binding) = group.binding() else {
         return false;
@@ -299,18 +327,90 @@ fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow, 
             == row.community_id.as_deref()
 }
 
+fn matches_bot_interaction_row(
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+    row: &groups::GroupRow,
+    own: &Own,
+) -> bool {
+    if group.group_id().as_slice() != group_id
+        || row.kind != i64::from(crate::mls::GroupKind::Interaction.as_u8())
+    {
+        return false;
+    }
+    let Ok(binding) = group.interaction_binding() else {
+        return false;
+    };
+    binding.community_id.as_bytes().as_slice() == row.community_id.as_deref().unwrap_or_default()
+        && interaction_binding_matches_bot(group, &binding, row, own)
+}
+
 fn interaction_binding_matches_own(
     binding: &crate::mls::DillaInteractionBinding,
     own: &Own,
 ) -> bool {
-    binding.instance_id.as_bytes() == &own.instance_id
+    own.kind == Kind::User.as_u8()
+        && binding.instance_id.as_bytes() == &own.instance_id
         && binding.participant_user_id.as_slice() == own.user_id
         && binding.participant_device_id.as_bytes() == &own.device_id
 }
 
+fn interaction_binding_matches_bot(
+    group: &DillaGroup,
+    binding: &crate::mls::DillaInteractionBinding,
+    row: &groups::GroupRow,
+    own: &Own,
+) -> bool {
+    if !interaction_bot_binding_matches_identity(binding, &row.target_id, own)
+        || group.members().len() != 2
+    {
+        return false;
+    }
+    let Some(own_leaf) = group.member_at(group.own_leaf_index().u32()) else {
+        return false;
+    };
+    let Ok(basic) = openmls::prelude::BasicCredential::try_from(own_leaf.credential) else {
+        return false;
+    };
+    interaction_bot_leaf_identity_matches(own, basic.identity(), &own_leaf.signature_key)
+}
+
+fn interaction_bot_binding_matches_identity(
+    binding: &crate::mls::DillaInteractionBinding,
+    row_target: &[u8],
+    own: &Own,
+) -> bool {
+    own.kind == Kind::Bot.as_u8()
+        && own.tier == Tier::Native.as_u8()
+        && binding.instance_id.as_bytes() == &own.instance_id
+        && binding.bot_user_id == own.user_id
+        && row_target == binding.participant_user_id
+}
+
+fn interaction_bot_leaf_identity_matches(
+    own: &Own,
+    credential: &[u8],
+    signature_key: &[u8],
+) -> bool {
+    let Ok(identity) = CredentialIdentity::decode(credential) else {
+        return false;
+    };
+    own.kind == Kind::Bot.as_u8()
+        && own.tier == Tier::Native.as_u8()
+        && credential == own.credential.as_slice()
+        && signature_key == own.dsk_pub
+        && identity.kind == Kind::Bot
+        && identity.tier == Tier::Native
+        && identity.user_id.as_bytes() == &own.user_id
+        && identity.device_id.as_bytes() == &own.device_id
+}
+
 #[cfg(test)]
 mod interaction_reload_tests {
-    use super::{Own, interaction_binding_matches_own};
+    use super::{
+        Own, interaction_binding_matches_own, interaction_bot_binding_matches_identity,
+        interaction_bot_leaf_identity_matches,
+    };
     use crate::{
         ids::{CommunityId, DeviceId, InstanceId},
         mls::DillaInteractionBinding,
@@ -337,9 +437,20 @@ mod interaction_reload_tests {
             device_id: [6; 16],
             dsk_pub: [0; 32],
             credential: Vec::new(),
-            kind: 1,
+            kind: crate::identity::Kind::User.as_u8(),
             tier: 1,
         }
+    }
+
+    fn bot() -> Own {
+        let mut own = own();
+        own.user_id = [2; 16];
+        own.device_id = [3; 16];
+        own.dsk_pub = [9; 32];
+        own.credential = vec![0x42];
+        own.kind = crate::identity::Kind::Bot.as_u8();
+        own.tier = crate::identity::Tier::Native.as_u8();
+        own
     }
 
     #[test]
@@ -363,6 +474,60 @@ mod interaction_reload_tests {
             !interaction_binding_matches_own(&b, &own()),
             "wrong participant device"
         );
+        let mut human = own();
+        human.kind = crate::identity::Kind::Bot.as_u8();
+        assert!(
+            !interaction_binding_matches_own(&binding(), &human),
+            "Bot identity cannot load the human participant path"
+        );
+    }
+
+    #[test]
+    fn bot_interaction_reload_binds_bot_identity_and_participant_target() {
+        let b = binding();
+        let own = bot();
+        assert!(interaction_bot_binding_matches_identity(&b, &[5; 16], &own));
+
+        let mut wrong_user = bot();
+        wrong_user.user_id = [9; 16];
+        assert!(!interaction_bot_binding_matches_identity(
+            &b,
+            &[5; 16],
+            &wrong_user
+        ));
+
+        assert!(!interaction_bot_binding_matches_identity(
+            &b, &[9; 16], &own
+        ));
+
+        let mut wrong_instance = bot();
+        wrong_instance.instance_id = [9; 16];
+        assert!(!interaction_bot_binding_matches_identity(
+            &b,
+            &[5; 16],
+            &wrong_instance
+        ));
+
+        let mut wrong_tier = bot();
+        wrong_tier.tier = crate::identity::Tier::Browser.as_u8();
+        assert!(!interaction_bot_binding_matches_identity(
+            &b,
+            &[5; 16],
+            &wrong_tier
+        ));
+
+        let mut wrong_device = bot();
+        wrong_device.device_id = [8; 16];
+        assert!(!interaction_bot_leaf_identity_matches(
+            &wrong_device,
+            &[0x42],
+            &[9; 32],
+        ));
+        assert!(!interaction_bot_leaf_identity_matches(
+            &own,
+            &[0x43],
+            &[9; 32],
+        ));
     }
 }
 

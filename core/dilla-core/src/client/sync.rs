@@ -740,6 +740,29 @@ impl ClientCore {
         messages: &[u8],
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
+        self.group_apply_scoped(id, handshakes, messages, through, false)
+    }
+
+    /// Kind-3 source apply is available only to the caller that just verified its signed
+    /// interaction admission snapshot. Generic group apply remains unable to load kind 3.
+    pub(super) fn group_apply_interaction(
+        &mut self,
+        id: &[u8; 16],
+        handshakes: &[u8],
+        messages: &[u8],
+        through: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.group_apply_scoped(id, handshakes, messages, through, true)
+    }
+
+    fn group_apply_scoped(
+        &mut self,
+        id: &[u8; 16],
+        handshakes: &[u8],
+        messages: &[u8],
+        through: u64,
+        allow_bot_interaction: bool,
+    ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let handshakes = wire::decode_handshake_rows(handshakes)?;
         let messages = wire::decode_message_rows(messages)?;
@@ -768,6 +791,10 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_INPUT, "through out of range"));
         }
         let r = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        let is_interaction = r.kind == super::groups::row_kind(crate::mls::GroupKind::Interaction);
+        if is_interaction != allow_bot_interaction {
+            return Err(super::mismatched());
+        }
         if r.state != STATE_ACTIVE {
             return Err(ClientError::new(
                 E_CORE_STATE,
@@ -786,7 +813,12 @@ impl ClientCore {
             }
             checked("seq", seq)?;
             let (changed, adopted, epoch_changed, stop) = self.retry_reload(id, |this| {
-                let mut group = this.take_group(id)?.ok_or_else(absent)?;
+                let loaded = if allow_bot_interaction {
+                    this.take_bot_interaction_group(id)?
+                } else {
+                    this.take_group(id)?
+                };
+                let mut group = loaded.ok_or_else(absent)?;
                 let mut mls_failed = false;
                 let result = this.write(|ctx, u| {
                     let mut changed = false;

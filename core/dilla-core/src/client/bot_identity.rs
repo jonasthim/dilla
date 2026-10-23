@@ -487,7 +487,7 @@ impl ClientCore {
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
         self.bot_inspect_stored_interaction_group(group_id, snapshot_wire, expected)?;
-        self.group_apply(group_id, handshakes, messages, through)
+        self.group_apply_interaction(group_id, handshakes, messages, through)
     }
 
     /// Read an interaction source cursor only after current admission and roster verification.
@@ -1589,48 +1589,54 @@ mod interaction_snapshot_tests {
 
         core.group_registered(renewed_expected.group.as_bytes(), 1)
             .expect("registration activates interaction group");
+        let mut source_messages = crate::cbor::Encoder::new();
+        source_messages
+            .array(1)
+            .array(9)
+            .uint(1)
+            .uint(1)
+            .bytes(&HUMAN_DEVICE)
+            .null()
+            .null()
+            .bytes(&[0; 32])
+            .uint(1_800_000_000)
+            .uint(1)
+            .null();
+        let source_messages = source_messages.into_vec();
+        assert_eq!(
+            core.group_apply(
+                renewed_expected.group.as_bytes(),
+                &[0x80],
+                &source_messages,
+                1,
+            )
+            .expect_err("generic apply cannot mutate a kind-3 group")
+            .code,
+            E_CORE_STATE
+        );
+        core.unload(); // Reconcile after helper restart: force the authenticated row reload path.
         let apply = core
             .bot_apply_interaction_group(
                 renewed_expected.group.as_bytes(),
                 &renewed_wire,
                 &renewed_expected,
                 &[0x80],
-                &[0x80],
-                0,
+                &source_messages,
+                1,
             )
             .expect("freshly admitted kind-3 apply");
         crate::cbor::decode_strict(&apply, |d| {
             d.array(6)?;
             assert_eq!(d.uint()?, 2, "group remains active after an empty apply");
             assert_eq!(d.uint()?, 1, "epoch remains stable after an empty apply");
-            assert_eq!(d.uint()?, 1, "apply preserves the registration sequence");
-            d.array(0)?;
+            assert_eq!(d.uint()?, 2, "apply advances past the source row");
+            d.array(1)?;
+            assert_eq!(d.uint()?, 1);
             d.uint()?;
             d.uint()?;
             Ok(())
         })
         .expect("apply result");
-        let no_cursor = core
-            .bot_interaction_group_cursor(
-                renewed_expected.group.as_bytes(),
-                &renewed_wire,
-                &renewed_expected,
-            )
-            .expect("freshly admitted cursor read");
-        crate::cbor::decode_strict(&no_cursor, |d| {
-            assert!(d.try_null()?);
-            Ok(())
-        })
-        .expect("empty interaction cursor");
-
-        connection
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE app_groups SET next_seq=2 WHERE group_id=?1",
-                rusqlite::params![renewed_expected.group.as_bytes().as_slice()],
-            )
-            .unwrap();
         let cursor = core
             .bot_interaction_group_cursor(
                 renewed_expected.group.as_bytes(),
