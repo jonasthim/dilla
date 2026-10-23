@@ -11,6 +11,7 @@ mod calls;
 mod error;
 mod fold;
 mod groups;
+mod human_interaction_events;
 mod identity;
 mod messages;
 mod moderation;

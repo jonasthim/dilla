@@ -9,13 +9,15 @@ mod client_support;
 
 use client_support::{Core, GROUP, INSTANCE, NOW};
 use dilla_core::{
+    bot::Response,
     cbor::{Encoder, decode_strict},
     client::ClientCore,
+    envelope::{Envelope, EnvelopeType},
     identity::{
         CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier,
         SskSigner, Tier, UmkSigner,
     },
-    ids::{CommunityId, DeviceId, InstanceId, UserId},
+    ids::{CommunityId, DeviceId, InstanceId, MsgId, UserId},
     mls::{CIPHERSUITE, DILLA_BINDING_ID, DillaInteractionBinding},
 };
 use ed25519_dalek::{Signer, SigningKey};
@@ -600,15 +602,30 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .bytes(&request_id)
         .bytes(&COMMUNITY)
         .null()
-        .uint(0)
+        .uint(60)
         .null()
         .null()
-        .array(0);
+        .array(1)
+        .null();
     let bot_request = bot_request.into_vec();
     let prepared = human
         .core
         .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now)
         .expect("prepare encrypted human interaction request");
+    let empty_events = human
+        .core
+        .human_interaction_events_read(0, 10)
+        .expect("read empty human interaction event journal");
+    let empty_page = decode_strict(&empty_events, |d| {
+        d.array(3)?;
+        let count = d.array_len()?;
+        let next = d.uint()?;
+        let high = d.uint()?;
+        Ok((count, next, high))
+    })
+    .expect("empty event page shape");
+    assert_eq!(empty_page, (0, 0, 0));
+    assert!(human.core.human_interaction_events_ack(1).is_err());
     let encrypted = human
         .core
         .send_encrypt(&request_id)
@@ -618,6 +635,14 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         Ok((d.bytes_exact::<16>()?, d.bytes()?.to_vec()))
     })
     .expect("encrypted upload shape");
+    let (request_epoch, request_blob) = decode_strict(&upload, |d| {
+        d.array(3)?;
+        let epoch = d.uint()?;
+        let blob = d.bytes()?.to_vec();
+        d.uint()?;
+        Ok((epoch, blob))
+    })
+    .expect("encoded upload body");
     assert_eq!(encrypted_group, GROUP_ID);
     assert!(!upload.is_empty());
     assert_eq!(
@@ -627,6 +652,33 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             .expect("idempotent request retry"),
         prepared
     );
+    // The response journal only accepts a reply to a request that the local device uploaded.
+    let mut confirm = Encoder::new();
+    confirm.array(3).uint(2).bytes(&[2; 32]).uint(now + 2);
+    human
+        .core
+        .send_confirm(&request_id, &confirm.into_vec())
+        .expect("confirm the local request upload");
+    let request_echo = client_support::MsgRow {
+        seq: 2,
+        epoch: request_epoch,
+        uploader: human.device,
+        commitment: client_support::commitment_of(&request_blob),
+        blob: Some(request_blob.clone()),
+        franking_tag: [0x32; 32],
+        recv_ts: now + 2,
+        deleted: false,
+        class: None,
+    };
+    human
+        .core
+        .group_apply(
+            &GROUP_ID,
+            &[0x80],
+            &client_support::encode_messages(&[&request_echo]),
+            2,
+        )
+        .expect("apply local request echo");
     human
         .probe
         .lock()
@@ -642,6 +694,241 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now,)
             .expect("completed interaction request remains idempotent"),
         prepared
+    );
+    let request_message = MlsMessageIn::tls_deserialize_exact(&request_blob)
+        .expect("deserialize request echo")
+        .try_into_protocol_message()
+        .expect("request echo protocol message");
+    group
+        .process_message(&provider, request_message)
+        .expect("advance Bot group with request echo");
+
+    let response = Response {
+        request_id: MsgId::from_bytes(request_id),
+        community_id: CommunityId::from_bytes(COMMUNITY),
+        status: 0,
+        revision: None,
+        data: vec![],
+    }
+    .encode_body()
+    .expect("encode Bot response");
+    let response_envelope = Envelope {
+        v: 1,
+        msg_id: MsgId::from_bytes([0x4a; 16]),
+        kind: EnvelopeType::Message,
+        thread_id: None,
+        reply_to: None,
+        body: response,
+        attachments: Vec::new(),
+        previews: Vec::new(),
+        k_f: [0x06; 32],
+    };
+    let response_commitment = response_envelope.commitment().expect("response commitment");
+    let response_plaintext = response_envelope.encode().expect("encode envelope");
+    group.set_aad(response_commitment.to_vec());
+    let response_blob = group
+        .create_message(&provider, &bot.signer, &response_plaintext)
+        .expect("encrypt Bot response")
+        .tls_serialize_detached()
+        .expect("serialize Bot response");
+    let response_row = client_support::MsgRow {
+        seq: 3,
+        epoch: 1,
+        uploader: BOT_DEVICE,
+        commitment: Some(response_commitment),
+        blob: Some(response_blob),
+        franking_tag: [0x33; 32],
+        recv_ts: now + 3,
+        deleted: false,
+        class: None,
+    };
+    human
+        .core
+        .group_apply(
+            &GROUP_ID,
+            &[0x80],
+            &client_support::encode_messages(&[&response_row]),
+            3,
+        )
+        .expect("apply authenticated Bot response");
+    let received = human
+        .core
+        .human_interaction_events_read(0, 10)
+        .expect("read authenticated Bot response");
+    let response_count = decode_strict(&received, |d| {
+        d.array(3)?;
+        let count = d.array_len()?;
+        for _ in 0..count {
+            d.array(11)?;
+            d.uint()?;
+            d.bytes_exact::<16>()?;
+            d.bytes_exact::<16>()?;
+            d.bytes_exact::<16>()?;
+            d.uint()?;
+            d.uint()?;
+            d.uint()?;
+            d.bytes_exact::<16>()?;
+            d.bytes_exact::<16>()?;
+            d.bytes_exact::<16>()?;
+            d.text()?;
+        }
+        d.uint()?;
+        d.uint()?;
+        Ok(count)
+    })
+    .expect("response page shape");
+    assert_eq!(response_count, 1);
+
+    // The event is durable across a core restart and an exact source replay cannot duplicate it.
+    human = human.reopen();
+    let after_restart = human
+        .core
+        .human_interaction_events_read(0, 10)
+        .expect("read persisted Bot response");
+    assert_eq!(
+        decode_strict(&after_restart, |d| {
+            d.array(3)?;
+            let count = d.array_len()?;
+            for _ in 0..count {
+                d.array(11)?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.text()?;
+            }
+            d.uint()?;
+            d.uint()?;
+            Ok(count)
+        })
+        .expect("persisted response page"),
+        1
+    );
+    {
+        let connection = human.probe.lock().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO app_human_interaction_events(group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) SELECT group_id,community_id,request_id,source_seq+1,epoch,recv_ts,?1,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body FROM app_human_interaction_events WHERE delivery_id=1",
+                [[0xfe; 16].as_slice()],
+            )
+            .expect("insert forged sender journal row");
+        connection
+            .execute(
+                "INSERT INTO app_human_interaction_events(group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) SELECT ?1,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body FROM app_human_interaction_events WHERE delivery_id=1",
+                [[0xfd; 16].as_slice()],
+            )
+            .expect("insert wrong-group journal row");
+        connection
+            .execute(
+                "UPDATE app_human_interaction_event_state SET high_water=(SELECT max(delivery_id) FROM app_human_interaction_events) WHERE singleton=1",
+                [],
+            )
+            .expect("advance test journal high water");
+    }
+    let with_forged_rows = human
+        .core
+        .human_interaction_events_read(0, 10)
+        .expect("filter forged sender and wrong group events");
+    assert_eq!(
+        decode_strict(&with_forged_rows, |d| {
+            d.array(3)?;
+            let count = d.array_len()?;
+            for _ in 0..count {
+                d.array(11)?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.text()?;
+            }
+            d.uint()?;
+            d.uint()?;
+            Ok(count)
+        })
+        .expect("forged provenance page"),
+        1
+    );
+    human
+        .core
+        .group_apply(
+            &GROUP_ID,
+            &[0x80],
+            &client_support::encode_messages(&[&response_row]),
+            3,
+        )
+        .expect("replay already-applied response row");
+    let replayed = human
+        .core
+        .human_interaction_events_read(0, 10)
+        .expect("read after response replay");
+    assert_eq!(
+        decode_strict(&replayed, |d| {
+            d.array(3)?;
+            let count = d.array_len()?;
+            for _ in 0..count {
+                d.array(11)?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.text()?;
+            }
+            d.uint()?;
+            d.uint()?;
+            Ok(count)
+        })
+        .expect("replayed response page"),
+        1
+    );
+    human
+        .core
+        .human_interaction_events_ack(3)
+        .expect("ack response");
+    human
+        .core
+        .human_interaction_events_ack(3)
+        .expect("repeated response ack is idempotent");
+    human
+        .core
+        .group_apply(
+            &GROUP_ID,
+            &[0x80],
+            &client_support::encode_messages(&[&response_row]),
+            3,
+        )
+        .expect("replay acknowledged response row");
+    let after_ack = human
+        .core
+        .human_interaction_events_read(0, 10)
+        .expect("read after acknowledgement");
+    assert_eq!(
+        decode_strict(&after_ack, |d| {
+            d.array(3)?;
+            let count = d.array_len()?;
+            d.uint()?;
+            d.uint()?;
+            Ok(count)
+        })
+        .expect("empty acknowledged page"),
+        0
     );
     let mut changed_request = Encoder::new();
     changed_request

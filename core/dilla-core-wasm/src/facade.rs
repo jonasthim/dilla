@@ -742,6 +742,21 @@ impl CoreHandle {
         })
         .map(Vec::into_boxed_slice)
     }
+    /// Reads durable human kind-3 responses as CBOR `[events,next,high_water]`. Each plaintext
+    /// body is returned only after the core rechecks the exact admitted Bot MLS leaf and local
+    /// moderation request against the current interaction group and trust state.
+    pub fn human_interaction_events_read(
+        &self,
+        after: u64,
+        limit: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.human_interaction_events_read(after, limit))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Durably acknowledges and clears human interaction response bodies through a delivery id.
+    pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
+        self.with_core(|c| c.human_interaction_events_ack(through))
+    }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {
         let msg_id = js_fixed_arg::<16>("msg_id", msg_id)?;

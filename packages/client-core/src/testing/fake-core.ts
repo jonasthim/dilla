@@ -3,7 +3,7 @@ import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
   type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest, type ThreadRow,
-  type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch } from '../core-port';
+  type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch, type HumanInteractionEventPage } from '../core-port';
 import { toHex } from '../hex';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
@@ -399,6 +399,8 @@ export class FakeCore implements CorePort {
   humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
     return this.notModelled('humanInteractionSendPrepare', requestId, communityId, groupId, requestBody, now);
   }
+  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage { return this.notModelled('humanInteractionEventsRead', after, limit); }
+  humanInteractionEventsAck(through: bigint): void { return this.notModelled('humanInteractionEventsAck', through); }
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult { return this.notModelled('groupApply', groupId, handshakes, messages, through); }
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array { return this.notModelled('commitBuild', groupId, proposalsBody); }
   commitConfirm(groupId: Id): ApplyResult { return this.notModelled('commitConfirm', groupId); }

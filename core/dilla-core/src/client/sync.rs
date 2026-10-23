@@ -204,6 +204,7 @@ fn apply_message(
         )?;
         if changed > 0 {
             super::bot_events::suppress_source(c, id, row.seq as i64)?;
+            super::human_interaction_events::suppress_source(c, id, row.seq as i64)?;
             c.execute(
                 "DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2",
                 params![id.as_slice(), row.seq as i64],
@@ -399,6 +400,10 @@ impl ClientCore {
                                 envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
                                 envelope.reply_to.as_ref().map(|v| v.as_bytes()),
                                 envelope.thread_id.as_ref().map(|v| v.as_bytes()),
+                            )?;
+                            super::human_interaction_events::record_accepted(
+                                c, &group, id, *seq, &own, &sender, *leaf, &member.signature_key,
+                                *epoch, *recv_ts, envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
                             )?;
                             refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
                                 sender.device_id.as_bytes(), Some(&own))?;
@@ -698,7 +703,10 @@ impl ClientCore {
         let (changed, proposals): (usize, i64) = self.write(|_, u| Ok(u.with_conn(|c| {
             let stored = stored_kind(c, id, seq)?;
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
-            if changed > 0 { super::bot_events::suppress_source(c, id, seq_i)?; }
+            if changed > 0 {
+                super::bot_events::suppress_source(c, id, seq_i)?;
+                super::human_interaction_events::suppress_source(c, id, seq_i)?;
+            }
             c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), seq_i])?;
             if changed == 1 { refold_deleted(c, id, stored)?; }
             if changed == 1 { super::search::index_fold(c,id,seq)?; }
@@ -998,6 +1006,11 @@ impl ClientCore {
                                                 r.envelope.kind.as_u8(), &r.envelope.body,
                                                 r.envelope.reply_to.as_ref().map(|v| v.as_bytes()),
                                                 r.envelope.thread_id.as_ref().map(|v| v.as_bytes()),
+                                            )?;
+                                            super::human_interaction_events::record_accepted(
+                                                c, &group, id, m.seq, &own, &r.sender, r.sender_leaf,
+                                                &member.signature_key, r.epoch, m.recv_ts,
+                                                r.envelope.msg_id.as_bytes(), r.envelope.kind.as_u8(), &r.envelope.body,
                                             )?;
                                         }
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;

@@ -96,6 +96,11 @@ export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; statu
  *  held), its shown reply count and the latest reply's `recvTs`. */
 export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: number; lastTs: bigint; excerpt: string; }
 export interface RemovalFeedEntry { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
+export interface HumanInteractionEvent {
+  deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
+  senderUser: Id; senderDevice: Id; messageId: Id; body: string;
+}
+export interface HumanInteractionEventPage { events: HumanInteractionEvent[]; next: bigint; highWater: bigint; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
@@ -121,6 +126,8 @@ export interface CorePort {
   /** The core verifies this opaque signed context and derives the expected kind-3 binding itself. */
   humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array): WelcomeOutcome[];
   humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
+  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
+  humanInteractionEventsAck(through: bigint): void;
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array;
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
@@ -263,6 +270,8 @@ export interface CoreHandle {
       welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
       human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array): Uint8Array;
       human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
+      human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
+      human_interaction_events_ack(through: bigint): void;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
       commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
       commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -515,6 +524,23 @@ export function wrapCore(handle: CoreHandle): CorePort {
       handle.human_interaction_send_prepare(requestId, communityId, groupId, requestBody, now),
       (v) => bin(field(arr(v, 1), 0), 16),
     )),
+    humanInteractionEventsRead: (after, limit) => call(() => decoded(
+      'humanInteractionEventsRead', handle.human_interaction_events_read(after, BigInt(limit)), (v) => {
+        const page = arr(v, 3);
+        return {
+          events: arr(page[0]!).map((item) => {
+            const row = arr(item, 11);
+            return {
+              deliveryId: u64(row[0]!), groupId: bin(row[1]!, 16), communityId: bin(row[2]!, 16),
+              requestId: bin(row[3]!, 16), sourceSeq: u64(row[4]!), epoch: u64(row[5]!), receivedAt: u64(row[6]!),
+              senderUser: bin(row[7]!, 16), senderDevice: bin(row[8]!, 16), messageId: bin(row[9]!, 16), body: str(row[10]!),
+            };
+          }),
+          next: u64(page[1]!), highWater: u64(page[2]!),
+        };
+      },
+    )),
+    humanInteractionEventsAck: (through) => call(() => handle.human_interaction_events_ack(through)),
     groupApply: (groupId, handshakes, messages, through) => call(() => decoded('groupApply', handle.group_apply(groupId, handshakes, messages, through), readApply)),
     commitBuild: (groupId, proposalsBody) => call(() => handle.commit_build(groupId, proposalsBody)),
     commitConfirm: (groupId) => call(() => decoded('commitConfirm', handle.commit_confirm(groupId), readApply)),

@@ -32,6 +32,7 @@ import {
   type SignedLists,
   type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
   type CallMediaEpoch, readCallMediaEpoch,
+  type HumanInteractionEventPage,
 } from '../../core-port';
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
@@ -1299,6 +1300,14 @@ export class ModelCore implements CorePort {
   humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
     void requestId; void communityId; void groupId; void requestBody; void now;
     throw new CoreError('E_CORE_STATE', 'human interaction sends are not modelled');
+  }
+  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage {
+    void after; void limit;
+    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
+  }
+  humanInteractionEventsAck(through: bigint): void {
+    void through;
+    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
   }
 
   // --- ordered processing (L-CORE-08) ---

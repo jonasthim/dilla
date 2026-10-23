@@ -350,6 +350,36 @@ CREATE TABLE IF NOT EXISTS app_bot_event_state (
 INSERT OR IGNORE INTO app_bot_event_state(singleton,ack_delivery_id) VALUES(1,0);
 ";
 
+/// Durable bounded-on-pending human kind-3 Bot response journal. Event bodies are exposed only
+/// after the human interaction binding, Bot MLS leaf, current trust and local request are rechecked.
+pub(super) const APP_HUMAN_INTERACTION_EVENTS: &str = "
+CREATE TABLE IF NOT EXISTS app_human_interaction_events (
+  delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  community_id BLOB NOT NULL CHECK(length(community_id)=16),
+  request_id BLOB NOT NULL CHECK(length(request_id)=16),
+  source_seq INTEGER NOT NULL CHECK(source_seq>0),
+  epoch INTEGER NOT NULL,
+  recv_ts INTEGER NOT NULL,
+  sender_user BLOB NOT NULL CHECK(length(sender_user)=16),
+  sender_device BLOB NOT NULL CHECK(length(sender_device)=16),
+  sender_leaf INTEGER NOT NULL,
+  sender_credential BLOB NOT NULL,
+  sender_sig_key BLOB NOT NULL CHECK(length(sender_sig_key)=32),
+  message_id BLOB NOT NULL CHECK(length(message_id)=16),
+  body TEXT,
+  disposition INTEGER NOT NULL DEFAULT 0 CHECK(disposition IN (0,1,2)),
+  UNIQUE(group_id,source_seq)
+);
+CREATE INDEX IF NOT EXISTS app_human_interaction_events_page ON app_human_interaction_events(delivery_id);
+CREATE TABLE IF NOT EXISTS app_human_interaction_event_state (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  ack_delivery_id INTEGER NOT NULL DEFAULT 0,
+  high_water INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO app_human_interaction_event_state(singleton,ack_delivery_id,high_water) VALUES(1,0,0);
+";
+
 /// web3.5 (W2a) authority, created by every open of a store at schema 4 or below, so a v3 store
 /// and a schema-4 store from before W2a both gain the tables (empty: no group has a known view).
 ///
@@ -520,6 +550,7 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
         meta_put(c, SCHEMA, &[6])?;
     }
     c.execute_batch(APP_BOT_EVENTS)?;
+    c.execute_batch(APP_HUMAN_INTERACTION_EVENTS)?;
     if found <= 6 {
         meta_put(c, SCHEMA, &[6])?;
     }

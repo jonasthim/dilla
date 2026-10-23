@@ -90,6 +90,20 @@ it('passes an opaque human interaction context proof to the dedicated Welcome ex
   expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof] }]);
 });
 
+it('decodes authenticated human interaction events and passes a durable cursor', () => {
+  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response'];
+  const page = encode([[event], 5, 7]);
+  const s = stub({ human_interaction_events_read: (...args) => { expect(args).toEqual([2n, 10n]); return page; },
+    human_interaction_events_ack: (...args) => { expect(args).toEqual([5n]); } });
+  expect(s.port.humanInteractionEventsRead(2n, 10)).toEqual({
+    events: [{ deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
+      receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2, body: 'dilla.bot/1:response' }],
+    next: 5n, highWater: 7n,
+  });
+  s.port.humanInteractionEventsAck(5n);
+  expect(s.calls.map((call) => call.method)).toEqual(['human_interaction_events_read', 'human_interaction_events_ack']);
+});
+
 it('fails closed when the generated WASM handle predates moderator-removal signing', () => {
   const staleHandle = { sign_removal: undefined } as unknown as CoreHandle;
   const error = caught(() => wrapCore(staleHandle).signRemoval(new Uint8Array(16), G, 9n, 140n, 110n));
