@@ -145,7 +145,7 @@ func (r *StructuralGapRecovery) StageOnce(ctx context.Context, session memberReg
 		}
 		if len(page.Members) < client.MaxCommunityMemberPage {
 			state.Done = true
-			revision, err = r.save(ctx, revision, state)
+			_, err = r.save(ctx, revision, state)
 			if err != nil {
 				return out, err
 			}

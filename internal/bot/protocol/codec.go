@@ -656,7 +656,8 @@ func validateEventData(k EventKind, d []any, ts uint64) error {
 			return invalid()
 		}
 	case 8:
-		if !ii(0) || !u(1, math.MaxInt64) || d[1].(uint64) == 0 {
+		version, ok := d[1].(uint64)
+		if !ii(0) || !ok || version == 0 || version > math.MaxInt64 {
 			return invalid()
 		}
 	}

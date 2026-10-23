@@ -145,7 +145,7 @@ func (p *StructuralEventPoller) completeGapReconciliation(ctx context.Context, s
 	}
 	if cursor.Sequence < highWater {
 		cursor = structuralEventCursor{Sequence: highWater}
-		revision, err = p.saveCursor(ctx, revision, cursor)
+		_, err = p.saveCursor(ctx, revision, cursor)
 		if err != nil {
 			return fmt.Errorf("persist structural reconciliation cursor: %w", err)
 		}
