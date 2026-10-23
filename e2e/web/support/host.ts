@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
@@ -15,7 +15,8 @@ export interface HostConfig { port: number; control: number; webRoot: string | n
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
-export const BOT_HELPER_BIN = join(REPO_ROOT, 'target', 'release', 'dilla-bot-core');
+const CARGO_TARGET_ROOT = resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR ?? 'target');
+export const BOT_HELPER_BIN = join(CARGO_TARGET_ROOT, 'release', 'dilla-bot-core');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';
@@ -40,6 +41,15 @@ function ensureShippingCoreWasm(): void {
     'build', 'core/dilla-core-wasm', '--target', 'web', '--profile', 'wasm-release', '--mode', 'no-install',
     '--out-dir', '../../packages/core-wasm/pkg',
   ], { cwd: REPO_ROOT, stdio: 'inherit' });
+}
+
+function rebuildShippingWasiCore(): void {
+  // The Bot helper executes this module, so rebuild it from the same source snapshot as the browser core.
+  execFileSync(process.env.CARGO ?? 'cargo', [
+    'build', '-p', 'dilla-core-wasi', '--target', 'wasm32-wasip1', '--release', '--locked',
+  ], { cwd: REPO_ROOT, stdio: 'inherit' });
+  const targetDir = process.env.CARGO_TARGET_DIR ?? join(REPO_ROOT, 'target');
+  copyFileSync(join(targetDir, 'wasm32-wasip1', 'release', 'dilla_core_wasi.wasm'), WASI_CORE);
 }
 
 export function hostArgs(c: HostConfig, dataDir: string): string[] {
@@ -102,6 +112,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   // bundle from current source so the acceptance flow cannot pass on stale UI.
   if (c.botRuntime === true && c.webRoot !== null) {
     ensureShippingCoreWasm();
+    rebuildShippingWasiCore();
     execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
   }
   const dataDir = hostDataDir(c.port);
@@ -144,7 +155,13 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number): 
 
   execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot'], { stdio: 'inherit' });
   execFileSync(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked'], { cwd: REPO_ROOT, stdio: 'inherit' });
-  if (!existsSync(BOT_HELPER_BIN)) throw new Error(`${BOT_HELPER_BIN} is missing after cargo build -p dilla-bot-core --release --locked`);
+  let helperInfo;
+  try { helperInfo = statSync(BOT_HELPER_BIN); } catch {
+    throw new Error(`${BOT_HELPER_BIN} is missing after cargo build -p dilla-bot-core --release --locked`);
+  }
+  if (!helperInfo.isFile() || (helperInfo.mode & 0o111) === 0) {
+    throw new Error(`${BOT_HELPER_BIN} is not the executable emitted by cargo build -p dilla-bot-core --release --locked`);
+  }
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   chmodSync(dataDir, 0o700);
   const quote = (value: string): string => JSON.stringify(value);
