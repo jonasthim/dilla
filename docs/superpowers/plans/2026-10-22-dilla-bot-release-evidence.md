@@ -1,5 +1,15 @@
 # Dilla Bot release evidence — 22 October 2026
 
+## 23 October continuation checkpoint
+
+This remains an integrated development branch, not a release. The complete `@dilla/client-core` suite passes (58 files, 2,105 tests), the complete `@dilla/web` suite passes (115 files, 2,286 tests), and the full Rust core/vector and Bot helper suites pass. The complete Go suite passed before the latest accepted-removal evidence and Bot-device finalization changes; focused Go API/store/client/service/runtime tests pass after those changes, and a new complete Go rerun is in progress. Typechecks, lint, protocol docs, vectors, and UI copy checks pass.
+
+The role-panel browser run exposed two real installation/admission defects. A normal Browser device did not have `verified_at`, so the kind-3 gate now uses its active signed-list eligibility proof instead. Bot credential finalization now also marks the native Bot device verified in the same transaction. The live Chromium scenario has progressed to native interaction-group creation, where a participant device-list trust-state mismatch remains under investigation. Role-panel browser acceptance is therefore still open.
+
+The Bot now resolves an accepted signed human message removal through an installation-scoped, removal-capability-gated structural receipt endpoint before accepting encrypted manual evidence. The interaction handler checks the authenticated actor and device against the immutable receipt and writes bounded evidence into encrypted Bot state. Evidence keys fit the native state scan limit; bounded restart-safe retention tombstones expired records. This does not yet prove the complete browser outbox and moderator retrieval flow, nor cover manual warning/timeout evidence.
+
+Spotify remains unqualified without a dedicated connected Premium account and real playback. The shipping music queue/control path still lacks whole-browser playback acceptance. No deployment or release has occurred.
+
 This is an implementation checkpoint for `feat/dilla-bot`, not a release sign-off. The complete-release gate in [the plan](2026-10-21-dilla-bot.md) remains in force. The bot is a separate Linux service on the same host as `dillad`; Spotify authorization belongs in Dilla server settings. Librespot is the selected Spotify playback backend.
 
 ## Verified on this branch
