@@ -1,5 +1,13 @@
 # Dilla Bot release evidence — 22 October 2026
 
+## 23 October PR review and release gate checkpoint
+
+Draft PR #87 received nine GitHub Advanced Security CodeQL review comments; it has no Copilot review comments as of this checkpoint. Six concern unsigned-to-signed conversions in role-panel and reaction-grant persistence. The two `DeleteRolePanel` paths lacked a direct range check; both now reject zero and values above `MaxInt64`, with SQLite and PostgreSQL boundary coverage. The reaction-grant paths validate the range before conversion; direct guards are being added to make that boundary visible at the conversion sites. The other three alerts concern a random-filled temporary filename buffer and fixed keys used only in test fixtures. The updated branch has been pushed for a fresh scan; review threads still need reconciliation against the new scan.
+
+The pushed branch also includes CI repairs for Rust formatting, browser-spike ABI expectations, wasm test gating, pinned Binaryen optimization, duplicate `base64` resolution, and a patched `ctutils` dependency. Local docs/copy checks, Rust formatting, `cargo deny`, wasm compilation, optimized wasm size, targeted browser tests, and focused Go suites passed. Whole-repository Go lint remains open while scoped fixes are integrated. CI run 39986432566 is in progress; its early `deny`, `go-sqlc`, `go-vuln`, and arm64 FTS5 jobs passed.
+
+The genuine testhost `restore_heal_from_tail.scn` passed with the Rust testkit required: server generation increased to 2 and messaging worked in both directions after member healing. It does not restore encrypted Bot state or run a managed Bot send, so the coordinated Bot/server restore acceptance gate remains open. The dedicated Spotify account is still unpaired and actual Spotify audio is unqualified.
+
 ## 23 October continuation checkpoint
 
 ### 17:32 CEST automatic moderation and music concurrency
