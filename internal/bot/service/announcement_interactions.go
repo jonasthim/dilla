@@ -51,9 +51,8 @@ func (h AnnouncementInteractions) Handlers() map[protocol.Operation]InteractionH
 	return handlers
 }
 
-// ReadOnlyHandlers exposes only encrypted schedule listing for production
-// interaction dispatch. Schedule mutations remain unavailable until their
-// registration policy is explicitly enabled.
+// ReadOnlyHandlers exposes encrypted schedule listing for call sites that
+// intentionally need a read-only announcement surface.
 func (h AnnouncementInteractions) ReadOnlyHandlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
 		protocol.OpAnnouncementsList: {RecomputeOnReplay: true, Handle: h.list},
