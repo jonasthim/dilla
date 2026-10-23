@@ -575,3 +575,36 @@ func TestMusicQueueRegistryClosesRuntimesForRemovedInstallations(t *testing.T) {
 		t.Fatalf("removed installation cleanup closed=%v retained=%d", nativeClient.closed, len(registry.runtimes))
 	}
 }
+
+func TestMusicSupervisorSyncFailureKeepsNativeHelperUsableForOtherInteractions(t *testing.T) {
+	community, installation, voiceA, voiceB := id.New(), id.New(), id.New(), id.New()
+	nativeClient := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	registry := newMusicQueueRegistry()
+	channels := []client.Channel{{ID: voiceA, CommunityID: community, Kind: musicVoiceChannelKind}}
+	if _, err := registry.Reconcile(context.Background(), installation, community, botMusicCapability, channels, nativeClient, unavailableMusicQueueStarter()); err != nil {
+		t.Fatal(err)
+	}
+
+	channels = append(channels, client.Channel{ID: voiceB, CommunityID: community, Kind: musicVoiceChannelKind})
+	if _, err := registry.Reconcile(context.Background(), installation, community, botMusicCapability, channels, nativeClient, session.QueueStarter{}); err == nil {
+		t.Fatal("supervisor sync succeeded with unavailable music dependencies")
+	}
+	if nativeClient.closed {
+		t.Fatal("music sync failure closed the helper needed by non-music interactions")
+	}
+	if got := registry.Native(installation, community); got != nativeClient {
+		t.Fatal("music sync failure discarded the live helper")
+	}
+	if _, err := nativeClient.StateGet(context.Background(), 0, []byte("still-live")); err != nil {
+		t.Fatalf("native helper unusable after music failure: %v", err)
+	}
+	if _, ok := registry.QueueStore(installation, community); ok {
+		t.Fatal("failed music runtime retained an interaction queue store")
+	}
+	if _, err := registry.Reconcile(context.Background(), installation, community, botMusicCapability, channels, nativeClient, unavailableMusicQueueStarter()); err != nil {
+		t.Fatalf("music runtime did not recover on a later reconcile: %v", err)
+	}
+	if _, ok := registry.QueueStore(installation, community); !ok {
+		t.Fatal("successful later reconcile did not restore the music queue store")
+	}
+}

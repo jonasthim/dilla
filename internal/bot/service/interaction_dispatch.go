@@ -54,6 +54,10 @@ type InteractionResult struct {
 // InteractionHandlerSpec allows mutations to check the current operator
 // configuration revision before performing their effect.
 type InteractionHandlerSpec struct {
+	// AllowMusicChannelContext lets a handler authorize Request.ChannelID as a
+	// voice-channel target for a snapshot-validated kind-3 participant event.
+	// The handler must independently bind that channel to current call state.
+	AllowMusicChannelContext bool
 	// RecomputeOnReplay marks read handlers whose authorization and response
 	// must be refreshed for an exact duplicate request. Mutations must leave
 	// this false so their effects remain deduplicated.
@@ -243,7 +247,7 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		response.Status = interactionStatusForbidden
 		return finish()
 	}
-	if request.ChannelID != nil && *request.ChannelID != event.Channel {
+	if request.ChannelID != nil && *request.ChannelID != event.Channel && !(group.Kind == 3 && handler.AllowMusicChannelContext) {
 		response.Status = interactionStatusForbidden
 		return finish()
 	}

@@ -402,7 +402,7 @@ func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, install
 	}
 	r.mu.Lock()
 	retained := r.runtimes[installation]
-	if retained == nil || retained.community != community {
+	if retained == nil || retained.community != community || retained.queues == nil {
 		r.mu.Unlock()
 		return errors.New("music voice session is unavailable")
 	}
@@ -429,8 +429,16 @@ func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, commun
 		if existing.community != community {
 			_ = r.disableLocked(installation)
 		} else {
+			if existing.queues == nil {
+				queues, err := restoreMusicQueuesIfEnabled(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, nativeClient, starter)
+				if err != nil {
+					return false, err
+				}
+				existing.queues = queues
+				return false, nil
+			}
 			if err := syncMusicSupervisors(ctx, existing.queues, channels, starter); err != nil {
-				_ = r.disableLocked(installation)
+				_ = r.pauseMusicLocked(installation)
 				return false, err
 			}
 			return false, nil
@@ -513,8 +521,22 @@ func (r *musicQueueRegistry) disableLocked(installation id.ID) error {
 	}
 	retained := r.runtimes[installation]
 	delete(r.runtimes, installation)
-	_ = retained.queues.Close()
+	if retained.queues != nil {
+		_ = retained.queues.Close()
+	}
 	return retained.native.Close()
+}
+
+// pauseMusicLocked disables only queue state after a recoverable music error.
+// The native helper also serves non-music interactions, so it stays retained.
+func (r *musicQueueRegistry) pauseMusicLocked(installation id.ID) error {
+	retained := r.runtimes[installation]
+	if retained == nil || retained.queues == nil {
+		return nil
+	}
+	queues := retained.queues
+	retained.queues = nil
+	return queues.Close()
 }
 
 func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {

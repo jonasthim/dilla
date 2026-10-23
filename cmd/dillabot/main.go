@@ -580,7 +580,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									logger.Error("bot music runtime cleanup incomplete", "installation_id", installation.ID.String(), "error", err.Error())
 								}
 							} else {
-								if retained := musicRegistry.runtimes[installation.ID]; retained != nil {
+								if retained := musicRegistry.runtimes[installation.ID]; retained != nil && retained.queues != nil {
 									musicQueueCount = retained.queues.Len()
 								}
 								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "providers", "unavailable_pcm")

@@ -526,3 +526,78 @@ func TestInteractionDispatcherReportsClearUnavailable(t *testing.T) {
 func idPtr(v id.ID) *id.ID       { return &v }
 func ptrString(v string) *string { return &v }
 func cborEmptyArray() []byte     { b, _ := cborx.Marshal([]any{}); return b }
+
+func TestInteractionDispatcherAllowsAuthorizedMusicVoiceContextOnlyForKind3(t *testing.T) {
+	participant, device, voice := interactionID(6), interactionID(7), interactionID(15)
+	called := false
+	d, event, binding := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
+		protocol.OpMusicState: {
+			AllowMusicChannelContext: true,
+			Handle: func(_ context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
+				called = true
+				if actor.User != participant || actor.Device != device || request.ChannelID == nil || *request.ChannelID != voice {
+					t.Errorf("actor=%+v channel=%v; want authenticated participant and requested voice channel", actor, request.ChannelID)
+				}
+				return InteractionResult{Status: 0}, nil
+			},
+		},
+	})
+	event.SenderTier = 1
+	n := d.native.(*interactionNativeFake)
+	n.group = native.GroupInfo{ID: event.Group, Kind: 3, Community: &binding.Community, Target: event.Channel, State: 2}
+	expected := native.InteractionGroupExpected{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: interactionID(10), BotDevice: interactionID(11), ParticipantUser: participant, ParticipantDevice: device, Group: event.Group, PolicyVersion: 3, ServerNow: 100}
+	d, err := newInteractionDispatcherWithSnapshots(n, d.handlers, d.now, interactionSnapshotSourceFunc(func(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+		return expected, []byte{0x81}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.interaction = native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: expected.BotUser, ParticipantUser: participant, ParticipantDevice: device, PolicyVersion: 3, E2EEVersion: 1}, BotDevice: expected.BotDevice, Epoch: 1, State: 2}
+	request := protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community, ChannelID: &voice, Operation: protocol.OpMusicState, Args: []any{}}
+	body, err := protocol.EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Body = &body
+	got, err := d.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := interactionResponse(t, got); response.Status != 0 || !called {
+		t.Fatalf("kind-3 Music response=%+v handler called=%v", response, called)
+	}
+	unauthorized, err := newInteractionDispatcherWithSnapshots(n, map[protocol.Operation]InteractionHandlerSpec{
+		protocol.OpMusicState: {Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
+			t.Fatal("kind-3 handler without voice-channel authorization reached")
+			return InteractionResult{}, nil
+		}}}, d.now, interactionSnapshotSourceFunc(func(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+		return expected, []byte{0x81}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = unauthorized.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := interactionResponse(t, got); response.Status != interactionStatusForbidden {
+		t.Fatalf("kind-3 handler without channel authorization status=%d, want forbidden", response.Status)
+	}
+
+	// The same voice-channel request remains bound to the native text channel
+	// for kind-0 events, even if a handler opts into Music context.
+	ordinary, ordinaryEvent, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
+		protocol.OpMusicState: {AllowMusicChannelContext: true, Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
+			t.Fatal("ordinary kind-0 channel mismatch reached handler")
+			return InteractionResult{}, nil
+		}},
+	})
+	ordinaryEvent.Body = &body
+	got, err = ordinary.Dispatch(context.Background(), ordinaryEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := interactionResponse(t, got); response.Status != interactionStatusForbidden {
+		t.Fatalf("kind-0 channel mismatch status=%d, want forbidden", response.Status)
+	}
+}

@@ -58,7 +58,7 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 	result := make(map[protocol.Operation]InteractionHandlerSpec, len(ops))
 	for _, op := range ops {
 		operation := op
-		spec := InteractionHandlerSpec{Handle: func(ctx context.Context, actor InteractionActor, req protocol.Request) (InteractionResult, error) {
+		spec := InteractionHandlerSpec{AllowMusicChannelContext: true, Handle: func(ctx context.Context, actor InteractionActor, req protocol.Request) (InteractionResult, error) {
 			return h.handle(ctx, actor, req, operation)
 		}}
 		if operation != protocol.OpMusicState && operation != protocol.OpMusicSearch {
