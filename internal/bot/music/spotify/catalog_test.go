@@ -46,6 +46,26 @@ func TestExpandTrackReturnsCanonicalTrackMetadata(t *testing.T) {
 	}
 }
 
+func TestParseCatalogInputAcceptsOnlyKnownLocalizedPathShape(t *testing.T) {
+	for _, input := range []string{
+		"https://open.spotify.com/intl-de/track/0123456789012345678901",
+		"https://www.spotify.com/intl-en-US/album/AAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		if _, err := parseCatalogInput(input); err != nil {
+			t.Errorf("localized Spotify URL %q rejected: %v", input, err)
+		}
+	}
+	for _, input := range []string{
+		"https://open.spotify.com/arbitrary/track/0123456789012345678901",
+		"https://open.spotify.com/intl-1/track/0123456789012345678901",
+		"https://open.spotify.com.evil.example/intl-de/track/0123456789012345678901",
+	} {
+		if _, err := parseCatalogInput(input); err == nil {
+			t.Errorf("accepted non-localized or untrusted Spotify path %q", input)
+		}
+	}
+}
+
 func TestExpandAlbumPaginatesAndEnrichesTrackMetadata(t *testing.T) {
 	cat := catalogClient(t, func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {

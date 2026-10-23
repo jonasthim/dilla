@@ -117,6 +117,9 @@ func parseCatalogInput(value string) (catalogInput, error) {
 	if len(segments) == 2 && segments[0] == "" {
 		segments = segments[1:]
 	}
+	if len(segments) == 3 && validSpotifyIntlLocale(segments[0]) {
+		segments = segments[1:]
+	}
 	if len(segments) == 3 && len(segments[0]) == 2 && segments[0][0] == 'i' && segments[0][1] == 'n' {
 		segments = segments[1:]
 	}
@@ -124,6 +127,34 @@ func parseCatalogInput(value string) (catalogInput, error) {
 		return catalogInput{}, ErrCatalogInput
 	}
 	return catalogInput{kind: segments[0], id: segments[1]}, nil
+}
+
+// validSpotifyIntlLocale accepts Spotify's localized share-link prefix with a
+// two-letter language tag and an optional two-letter uppercase region.
+func validSpotifyIntlLocale(segment string) bool {
+	if !strings.HasPrefix(segment, "intl-") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(segment, "intl-"), "-")
+	if len(parts) < 1 || len(parts) > 2 || len(parts[0]) != 2 {
+		return false
+	}
+	for _, c := range parts[0] {
+		if c < 'a' || c > 'z' {
+			return false
+		}
+	}
+	if len(parts) == 2 {
+		if len(parts[1]) != 2 {
+			return false
+		}
+		for _, c := range parts[1] {
+			if c < 'A' || c > 'Z' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validSpotifyID(id string) bool {
