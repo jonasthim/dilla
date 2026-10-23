@@ -94,7 +94,8 @@ func isPrivateBotDiagnostic(line string) bool {
 		return false
 	}
 	switch line[len(prefix):] {
-	case "binding", "credential", "device_list_stale", "device_unlisted", "tier_mismatch", "umk_changed", "core_input", "core_state", "core_storage", "other":
+	case "binding", "credential", "device_list_stale", "device_unlisted", "tier_mismatch", "umk_changed", "core_input", "core_state", "core_storage", "other",
+		"snapshot_verification", "snapshot_pin_unavailable", "key_package_decode", "key_package_kind", "key_package_validation", "clock_unavailable", "snapshot_expired", "welcome_missing", "candidate_shape":
 		return true
 	default:
 		return false

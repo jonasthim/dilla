@@ -13,8 +13,13 @@ use tls_codec::Deserialize as _;
 
 const INTERACTION_CLOCK_TOLERANCE_SECS: u64 = 5;
 
-fn rejected() -> ClientError {
-    ClientError::new(E_CORE_INPUT, "interaction group creation evidence rejected")
+fn rejected(reason: &'static str) -> ClientError {
+    // This fixed reason is private to the native helper boundary; the helper still returns its
+    // generic status. It lets opt-in test diagnostics distinguish validation paths safely.
+    ClientError::new(
+        E_CORE_INPUT,
+        format!("interaction create rejected: {reason}"),
+    )
 }
 
 pub(super) fn snapshot_is_fresh(snapshot_now: u64, not_after: u64, local_now: u64) -> bool {
@@ -138,21 +143,21 @@ impl ClientCore {
             };
 
             let input = MlsMessageIn::tls_deserialize_exact(participant_key_package)
-                .map_err(|_| rejected())?;
+                .map_err(|_| rejected("key_package_decode"))?;
             let MlsMessageBodyIn::KeyPackage(input) = input.extract() else {
-                return Err(rejected());
+                return Err(rejected("key_package_kind"));
             };
             let key_package = crate::public_group::validate_key_package(ctx.provider.crypto(), input)
-                .map_err(|_| rejected())?;
+                .map_err(|_| rejected("key_package_validation"))?;
 
             // Re-sample after acquiring the outer write transaction, immediately before the
             // first provider mutation, so lock contention cannot admit an expired snapshot.
             let local_now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| rejected())?
+                .map_err(|_| rejected("clock_unavailable"))?
                 .as_secs();
             if !snapshot_is_fresh(snapshot.now, snapshot.not_after, local_now) {
-                return Err(rejected());
+                return Err(rejected("snapshot_expired"));
             }
 
             let mut candidate = DillaGroup::create_interaction(
@@ -169,7 +174,7 @@ impl ClientCore {
                 .find(|(device, _)| device.as_bytes() == expected.participant_device.as_bytes())
                 .map(|(_, message)| wire::tls(message))
                 .transpose()?
-                .ok_or_else(rejected)?;
+                .ok_or_else(|| rejected("welcome_missing"))?;
             candidate.merge_pending_commit(ctx.provider)?;
 
             bot_identity::verify_interaction_group_snapshot(
@@ -180,7 +185,7 @@ impl ClientCore {
                 &own.device_id,
             )?;
             if candidate.kind() != GroupKind::Interaction || candidate.epoch() != 1 {
-                return Err(rejected());
+                return Err(rejected("candidate_shape"));
             }
 
             let group_info = wire::tls(&candidate.export_group_info(ctx.provider, signer)?)?;

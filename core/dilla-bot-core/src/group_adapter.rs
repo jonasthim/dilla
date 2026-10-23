@@ -1,7 +1,7 @@
 use crate::helper::{DispatchError, body, empty, map_client};
 use dilla_core::{
     cbor::{Decoder, Encoder, decode_strict},
-    client::ClientCore,
+    client::{ClientCore, ClientError},
 };
 use zeroize::Zeroizing;
 
@@ -348,7 +348,14 @@ fn interaction_create(
     let result = core
         .bot_interaction_group_create(&operation, &group, &snapshot, &expected, &key_package)
         .map_err(|error| {
-            log_private_core_refusal("interaction_create_refusal", error.code);
+            if std::env::var_os("DILLA_BOT_PRIVATE_DIAGNOSTICS").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                eprintln!(
+                    "dilla_bot_helper interaction_create_refusal={}",
+                    interaction_create_refusal_class(&error)
+                );
+            }
             map_client(error)
         })?;
     Ok(Zeroizing::new(body(result)))
@@ -844,6 +851,24 @@ fn private_core_error_class(code: &str) -> &'static str {
     }
 }
 
+fn interaction_create_refusal_class(error: &ClientError) -> &'static str {
+    if error.code != "E_CORE_INPUT" {
+        return private_core_error_class(error.code);
+    }
+    match error.detail.as_str() {
+        "interaction context snapshot rejected" => "snapshot_verification",
+        "interaction user-key pin is unavailable" => "snapshot_pin_unavailable",
+        "interaction create rejected: key_package_decode" => "key_package_decode",
+        "interaction create rejected: key_package_kind" => "key_package_kind",
+        "interaction create rejected: key_package_validation" => "key_package_validation",
+        "interaction create rejected: clock_unavailable" => "clock_unavailable",
+        "interaction create rejected: snapshot_expired" => "snapshot_expired",
+        "interaction create rejected: welcome_missing" => "welcome_missing",
+        "interaction create rejected: candidate_shape" => "candidate_shape",
+        _ => "core_input",
+    }
+}
+
 fn log_private_core_refusal(kind: &'static str, code: &'static str) {
     if std::env::var_os("DILLA_BOT_PRIVATE_DIAGNOSTICS").as_deref()
         != Some(std::ffi::OsStr::new("1"))
@@ -1050,6 +1075,20 @@ mod tests {
         assert_eq!(
             private_core_error_class("arbitrary sensitive text"),
             "other"
+        );
+        assert_eq!(
+            interaction_create_refusal_class(&ClientError {
+                code: "E_CORE_INPUT",
+                detail: "interaction create rejected: snapshot_expired".into(),
+            }),
+            "snapshot_expired"
+        );
+        assert_eq!(
+            interaction_create_refusal_class(&ClientError {
+                code: "E_CORE_INPUT",
+                detail: "private identity material".into(),
+            }),
+            "core_input"
         );
     }
 
