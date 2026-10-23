@@ -677,7 +677,7 @@ func cloneNullable(v []byte) any {
 	return append([]byte(nil), v...)
 }
 func validAreaKey(area uint64, key []byte) error {
-	if area > 8 || len(key) < 1 || len(key) > 128 {
+	if area > 9 || len(key) < 1 || len(key) > 128 {
 		return errors.New("invalid state area or key")
 	}
 	return nil

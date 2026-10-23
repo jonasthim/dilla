@@ -213,7 +213,7 @@ pub(crate) fn transaction(store: &mut Store, payload: &[u8]) -> Result<Vec<u8>, 
 
 fn read_area(d: &mut Decoder<'_>) -> Result<i64, dilla_core::cbor::CborError> {
     let a = d.uint()?;
-    if a > 8 {
+    if a > 9 {
         return Err(cbor_shape());
     }
     Ok(a as i64)
@@ -291,6 +291,24 @@ mod tests {
             Ok((d.uint()?, d.opt_bytes()?.map(ToOwned::to_owned)))
         })
         .unwrap()
+    }
+
+    #[test]
+    fn member_registration_catchup_area_is_available() {
+        let path = temp_dir();
+        let s = store(&path, [0x35; 32]);
+        let mut request = Encoder::new();
+        request
+            .array(3)
+            .uint(0)
+            .uint(9)
+            .bytes(b"dilla.bot.member-registration-catchup.v1");
+        assert_eq!(
+            decoded_pair(&get(&s, &request.into_vec()).unwrap()),
+            (0, None)
+        );
+        drop(s);
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]

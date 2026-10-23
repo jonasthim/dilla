@@ -167,6 +167,14 @@ func TestStateTombstoneAndTransactionConflictDoNotRetry(t *testing.T) {
 	}
 }
 
+func TestStateAreaNineSupportsMemberRegistrationCatchup(t *testing.T) {
+	f := &fakeTransport{responses: [][]any{{uint64(0), nil}}}
+	c := newFakeClient(t, f)
+	if _, err := c.StateGet(context.Background(), 9, []byte("dilla.bot.member-registration-catchup.v1")); err != nil {
+		t.Fatalf("state area 9 refused: %v", err)
+	}
+}
+
 func TestStateGetRejectsValueAtRevisionZeroWithoutMutationOutcomeUnknown(t *testing.T) {
 	f := &fakeTransport{responses: [][]any{{uint64(0), []byte{0x80}}, {uint64(0), nil}}}
 	c := newFakeClient(t, f)
@@ -239,7 +247,7 @@ func TestStateScanRejectsOrderingAndLocalInvalidInputDoesNotDispatch(t *testing.
 	if _, err := c.StateScan(context.Background(), 1, nil, 10); err == nil {
 		t.Fatal("unordered scan accepted")
 	}
-	if _, err := c.StateGet(context.Background(), 9, []byte("k")); err == nil {
+	if _, err := c.StateGet(context.Background(), 10, []byte("k")); err == nil {
 		t.Fatal("invalid local area accepted")
 	}
 	if len(f.calls) != 1 {
