@@ -1215,6 +1215,7 @@ meanings. Owners and administrators are exempt from automatic moderation.
 | `GET /v1/communities/{community}/members/{member}/timeout` | E, own member or moderate_members | — | `[expires|null]` |
 | `POST /v1/communities/{community}/moderation/actions` | E or capability-approved B | `[request_id, action, target_user|null, expires|null]` | `[action_id]` |
 | `POST /v1/groups/{group}/moderation/removals` | E or capability-approved B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
+| `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B, ready installation with removal capability | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
 | `GET /v1/communities/{community}/moderation/actions?after=N&limit=L` | E, view_audit_log or B | — | `[structural_actions, next_seq]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B, group access | — | `[removal_rows, next_revision]` |
 

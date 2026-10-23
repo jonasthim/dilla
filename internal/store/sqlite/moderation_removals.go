@@ -72,6 +72,19 @@ func (r *Repo) GetModerationRemoval(ctx context.Context, groupID, requestID id.I
 	return scanModerationRemoval(q.QueryRowContext(ctx, `SELECT request_id,action_id,community_id,group_id,target_seq,revision,proof,signature,accepted_at FROM moderation_removals WHERE group_id=? AND request_id=?`, groupID, requestID))
 }
 
+func (r *Repo) GetModerationRemovalByRequest(ctx context.Context, requestID id.ID) (store.ModerationRemovalRow, error) {
+	if requestID.IsZero() {
+		return store.ModerationRemovalRow{}, store.ErrConflict
+	}
+	var q interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	} = r.read
+	if r.tx != nil {
+		q = r.tx
+	}
+	return scanModerationRemoval(q.QueryRowContext(ctx, `SELECT request_id,action_id,community_id,group_id,target_seq,revision,proof,signature,accepted_at FROM moderation_removals WHERE request_id=?`, requestID))
+}
+
 func (r *Repo) ListModerationRemovals(ctx context.Context, groupID id.ID, after uint64, limit int32) (store.ModerationRemovalPage, error) {
 	var out store.ModerationRemovalPage
 	if groupID.IsZero() || after > math.MaxInt64 || limit < 1 || limit > 250 {

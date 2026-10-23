@@ -48,6 +48,13 @@ func TestModerationRemovalReceiptAndFeedAreDurableAndAtomic(t *testing.T) {
 			if err != nil || len(page.Rows) != 1 || page.Rows[0].Revision != 1 || page.NextRevision != 1 {
 				t.Fatalf("feed = %+v, %v", page, err)
 			}
+			byRequest, err := repo.GetModerationRemovalByRequest(ctx, v.RequestID)
+			if err != nil || byRequest.ActionID != got.ActionID || byRequest.GroupID != group || byRequest.Revision != got.Revision {
+				t.Fatalf("lookup by accepted request = %+v, %v", byRequest, err)
+			}
+			if _, err := repo.GetModerationRemovalByRequest(ctx, id.New()); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown removal request = %v", err)
+			}
 			if _, err := repo.AcceptModerationRemoval(ctx, v); err == nil {
 				t.Fatal("accept outside transaction succeeded")
 			}

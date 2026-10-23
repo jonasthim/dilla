@@ -113,6 +113,7 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	m.Handle("PUT /v1/bot-runtime/installations/{installation}/credential", botSession("PUT /v1/bot-runtime/installations/{installation}/credential", http.HandlerFunc(d.FinalizeBotCredential)))
 	m.Handle("POST /v1/bot-runtime/installations/{installation}/ready", botSession("POST /v1/bot-runtime/installations/{installation}/ready", http.HandlerFunc(d.MarkBotReady)))
 	m.Handle("POST /v1/bot-runtime/installations/{installation}/moderation/actions", botSession("POST /v1/bot-runtime/installations/{installation}/moderation/actions", http.HandlerFunc(d.AcceptBotModerationAction)))
+	d.registerBotRemovalReceipt(m)
 	d.registerBotInteractionAdmissions(m)
 	d.registerBotRuntimeDJRoles(m)
 	registerBotSpotifyAttempt(m, d)

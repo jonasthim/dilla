@@ -195,6 +195,7 @@ type ModerationRemovalPage struct {
 type ModerationRemovals interface {
 	AcceptModerationRemoval(context.Context, ModerationRemovalRow) (ModerationRemovalRow, error)
 	GetModerationRemoval(context.Context, id.ID, id.ID) (ModerationRemovalRow, error)
+	GetModerationRemovalByRequest(context.Context, id.ID) (ModerationRemovalRow, error)
 	ListModerationRemovals(context.Context, id.ID, uint64, int32) (ModerationRemovalPage, error)
 }
 

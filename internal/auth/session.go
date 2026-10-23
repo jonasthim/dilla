@@ -1215,6 +1215,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}":
+		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "GET /v1/communities/{community}/bot/actors/{actor}/authority":
