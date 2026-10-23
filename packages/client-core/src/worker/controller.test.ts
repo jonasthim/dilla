@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encode } from '../cbor';
+import { decode, encode } from '../cbor';
 import { encodeBotResponse } from '../bot/protocol';
 import { Enrol } from '../account/enrol';
 import { FakeCore } from '../testing/fake-core';
@@ -140,6 +140,53 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(10_198)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
   });
 
+  it('sends a revision-bound human interaction mutation and reports only the ciphertext upload receipt', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 1, mode: 0, visibility: 0, parentId: null,
+      name: 'voice', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_193, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL),
+      requestId: toHex(requestId), operation: 13, args: [], revision: '7' });
+    await vi.waitFor(() => expect(w.ret(10_193)).toMatchObject({ ok: true,
+      value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
+    const wire = decode(prepared[3]);
+    expect(wire).toEqual([1n, requestId, COMMUNITY, CHANNEL, 13n, 7n, NOW_S + 30n, []]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+    expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
+  });
+
+  it('reads generic Bot responses and offers acknowledgement only for the requested contiguous prefix', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const channelId = new Uint8Array(16).fill(0x55);
+    const responseBody = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: 8n, data: encode([]) });
+    const musicEvent = { deliveryId: 2n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 4n,
+      epoch: 1n, receivedAt: NOW_S, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61),
+      body: responseBody, operation: 13, channelId };
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [musicEvent], next: 2n, highWater: 2n });
+    w.call(10_192, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
+    await vi.waitFor(() => expect(w.ret(10_192)).toMatchObject({ ok: true, value: { through: '2', blocked: false,
+      responses: [{ requestId: toHex(requestId), operation: 13, channelId: toHex(channelId), status: 0, revision: '8', data: encode([]) }] } }));
+    w.call(10_191, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+
+    const moderationEvent = { ...musicEvent, deliveryId: 3n, operation: 60, channelId: null };
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [moderationEvent, { ...musicEvent, deliveryId: 4n }], next: 4n, highWater: 4n });
+    w.call(10_190, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
+    await vi.waitFor(() => expect(w.ret(10_190)).toMatchObject({ ok: true, value: { through: null, blocked: true,
+      responses: [{ requestId: toHex(requestId), operation: 13 }] } }));
+    w.call(10_189, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '4' });
+    await vi.waitFor(() => expect(w.ret(10_189)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['no kind-3 group', [], COMMUNITY],
     ['wrong community', [{ ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, communityId: new Uint8Array(16).fill(0x77) }], COMMUNITY],
@@ -182,7 +229,7 @@ describe('Controller', () => {
       data: encode([1, [row], null]) });
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 2n, groupId, communityId: COMMUNITY,
       requestId, sourceSeq: 4n, epoch: 1n, receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE,
-      messageId: new Uint8Array(16).fill(0x61), body }], next: 2n, highWater: 2n });
+      messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null }], next: 2n, highWater: 2n });
     w.call(90, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(90)).toMatchObject({ ok: true, value: { authorized: true, through: '2', responses: [
       { deliveryId: '2', requestId: toHex(requestId), status: 0, hasMore: false,
@@ -215,9 +262,9 @@ describe('Controller', () => {
     const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1, [row], null]) });
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [
       { deliveryId: 2n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 4n, epoch: 1n,
-        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body },
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null },
       { deliveryId: 3n, groupId: GROUP, communityId: NEW_COMMUNITY, requestId, sourceSeq: 5n, epoch: 1n,
-        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body },
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body, operation: 60, channelId: null },
     ], next: 3n, highWater: 3n });
     w.call(93, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(93)).toMatchObject({ ok: true, value: { blocked: true, through: '2', responses: [{
@@ -240,9 +287,9 @@ describe('Controller', () => {
     const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1, [row], null]) });
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [
       { deliveryId: 2n, groupId: GROUP, communityId: NEW_COMMUNITY, requestId, sourceSeq: 4n, epoch: 1n,
-        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body },
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body, operation: 60, channelId: null },
       { deliveryId: 3n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 5n, epoch: 1n,
-        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body },
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null },
     ], next: 3n, highWater: 3n });
     w.call(97, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true, value: { blocked: true, through: null, responses: [

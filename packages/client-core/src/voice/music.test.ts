@@ -1,28 +1,101 @@
-import { describe, expect, it } from 'vitest';
-import { voiceMusicAdapter, type VoiceMusicAdapter } from './music.ts';
+import { describe, expect, it, vi } from 'vitest';
+import { encode } from '../cbor';
+import type { CoreClient } from '../bridge';
+import { createVoiceMusicAdapter, voiceMusicAdapter } from './music.ts';
 
-describe('voice music adapter', () => {
-  it('reports unavailable until the authenticated music transport exists', async () => {
-    expect(voiceMusicAdapter.state('ab'.repeat(16))).toEqual({
-      status: 'unavailable', reason: 'authenticated-transport-missing',
-    });
-    await expect(voiceMusicAdapter.pause('channel', true)).rejects.toThrow(/transport is unavailable/);
+const COMMUNITY = 'ab'.repeat(16);
+const CHANNEL = 'cd'.repeat(16);
+const ITEM = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
+
+function snapshot(revision: bigint, paused: boolean) {
+  return encode([1n, revision, ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, ITEM], [], 0n,
+    paused ? 1n : 0n, 75n, 0n, 0n, 0n]);
+}
+
+function response(request: Record<string, unknown>, deliveryId: string, status: number, revision: string | null, data: Uint8Array) {
+  return { deliveryId, requestId: request.requestId as string, communityId: COMMUNITY, operation: request.operation as number,
+    channelId: CHANNEL, status, revision, data, sourceSeq: deliveryId };
+}
+
+function fixture() {
+  const commands: Record<string, unknown>[] = [];
+  const events: ReturnType<typeof response>[] = [];
+  let id = 0;
+  const client = {
+    call: vi.fn((command: Record<string, unknown>) => {
+      commands.push(command);
+      if (command.m === 'humanInteractionRequest') return Promise.resolve({ upload: 'accepted' });
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: events.splice(0), through: null, blocked: false });
+      return Promise.resolve(null);
+    }),
+    get: () => undefined,
+    subscribe: () => () => undefined,
+    onCallKeys: () => () => undefined,
+    dispose: () => undefined,
+  } as unknown as CoreClient;
+  return {
+    client, commands,
+    adapter: createVoiceMusicAdapter(client, COMMUNITY),
+    getRequest(operation: number) { return [...commands].reverse().find(command => command.m === 'humanInteractionRequest' && command.operation === operation)!; },
+    answer(request: Record<string, unknown>, status: number, revision: string | null, data: Uint8Array) {
+      events.push(response(request, String(++id), status, revision, data));
+    },
+  };
+}
+
+describe('authenticated voice music adapter', () => {
+  it('keeps the unavailable fallback until it receives an authenticated state snapshot', async () => {
+    expect(voiceMusicAdapter.state(CHANNEL)).toEqual({ status: 'unavailable', reason: 'authenticated-transport-missing' });
+    await expect(voiceMusicAdapter.pause(CHANNEL, true)).rejects.toThrow(/transport is unavailable/);
   });
 
-  it('defines typed track, queue, state and authorized commands for an injected client', () => {
-    const adapter: VoiceMusicAdapter = {
-      state: () => ({
-        status: 'available',
-        track: { id: 'track-1', title: 'North', artist: 'Harbor', durationMs: 180_000 },
-        queue: [{ id: 'queue-1', track: { id: 'track-2', title: 'South', artist: 'Harbor', durationMs: 190_000 } }],
-        positionMs: 30_000, volume: 75, paused: false, shuffle: true, repeat: 'all',
-        permissions: { control: true, manageQueue: false },
-      }),
-      subscribe: () => () => undefined,
-      pause: () => undefined, skip: () => undefined, stop: () => undefined, seek: () => undefined,
-      setVolume: () => undefined, setShuffle: () => undefined, setRepeat: () => undefined,
-      remove: () => undefined, move: () => undefined,
-    };
-    expect(adapter.state('channel').status).toBe('available');
+  it('decodes a Bot state response and acks only after applying it', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const state = f.adapter.state(CHANNEL);
+    expect(state).toMatchObject({ status: 'available', track: { id: 'ef'.repeat(16), title: 'Track', artist: 'Artist' },
+      queue: [], positionMs: 0, volume: 75, paused: false, shuffle: false, repeat: 'off' });
+    unsubscribe();
+  });
+
+  it('does not resolve a mutation on upload receipt and waits for the operation and resulting snapshot', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false }));
+
+    let settled = false;
+    const command = Promise.resolve(f.adapter.pause(CHANNEL, true)).then(() => { settled = true; });
+    await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
+    expect(f.getRequest(13)?.revision).toBe('1');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+
+    f.answer(f.getRequest(13), 0, '2', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
+    const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[1], 0, '2', snapshot(2n, true));
+    await command;
+    expect(settled).toBe(true);
+    expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+    unsubscribe();
+  });
+
+  it('surfaces a Bot rejection without changing the confirmed snapshot', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const command = Promise.resolve(f.adapter.pause(CHANNEL, true));
+    await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
+    f.answer(f.getRequest(13), 2, '1', encode([]));
+    await expect(command).rejects.toThrow(/permission/);
+    expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
+    unsubscribe();
   });
 });

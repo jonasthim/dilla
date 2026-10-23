@@ -954,7 +954,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
     onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
   const voiceCtx: VoiceContext = {
-    call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
+    client, call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
@@ -973,7 +973,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
-    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
+    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} communityId={voiceChannel.communityId} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
     main = noServerState;
   } else if (community !== null && channels !== undefined && ordered.length === 0) {

@@ -40,11 +40,29 @@ fn response_matches_request(
     ) else {
         return false;
     };
-    request.operation == 60
+    ((request.operation == 60
         && request.channel_id.is_none()
         && request.revision.is_none()
         && request.expires.is_none()
-        && matches!(request.args, RequestArgs::Cursor(_))
+        && matches!(request.args, RequestArgs::Cursor(_)))
+        || (request.operation == 1
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::Section { .. }))
+        || (request.operation == 2
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::SettingsPut { .. }))
+        || ((10..=11).contains(&request.operation)
+            && request.channel_id.is_some()
+            && request.revision.is_none()
+            && request.expires.is_none())
+        || ((12..=23).contains(&request.operation)
+            && request.channel_id.is_some()
+            && request.revision.is_some()
+            && request.expires.is_some()))
         && request.community_id.as_bytes() == community
         && response.community_id.as_bytes() == community
         && response.request_id == request.request_id
@@ -292,9 +310,9 @@ fn fetch_rows(
     .map_err(Into::into)
 }
 
-fn encode_event(row: &EventRow) -> Vec<u8> {
+fn encode_event(row: &EventRow, request: &Request) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.array(11)
+    e.array(13)
         .uint(row.delivery as u64)
         .bytes(&row.group)
         .bytes(&row.community)
@@ -305,7 +323,14 @@ fn encode_event(row: &EventRow) -> Vec<u8> {
         .bytes(&row.sender_user)
         .bytes(&row.sender_device)
         .bytes(&row.message_id)
-        .text(row.body.as_deref().unwrap_or_default());
+        .text(row.body.as_deref().unwrap_or_default())
+        .uint(request.operation)
+        .opt_bytes(
+            request
+                .channel_id
+                .as_ref()
+                .map(|id| id.as_bytes().as_slice()),
+        );
     e.into_vec()
 }
 
@@ -343,6 +368,7 @@ impl ClientCore {
         let mut next = after.max(ack as u64);
         for row in rows {
             let mut visible = row.body.is_some() && row.disposition == 0;
+            let mut event_request = None;
             if visible {
                 let group_id: [u8; 16] = row.group.as_slice().try_into().map_err(|_| {
                     ClientError::new("E_CORE_STORAGE", "interaction event group malformed")
@@ -421,6 +447,9 @@ impl ClientCore {
                 } else {
                     false
                 };
+                event_request = request_body
+                    .as_deref()
+                    .and_then(|body| Request::decode_body(body.as_bytes()).ok());
                 visible = valid_binding
                     && member_matches
                     && live
@@ -439,8 +468,11 @@ impl ClientCore {
                 }
             }
             if visible {
+                let request = event_request.as_ref().ok_or_else(|| {
+                    ClientError::new("E_CORE_STORAGE", "interaction request metadata is missing")
+                })?;
                 let mut candidate = events.clone();
-                candidate.push(encode_event(&row));
+                candidate.push(encode_event(&row, request));
                 let mut page = Encoder::new();
                 page.array(3).array(candidate.len());
                 for event in &candidate {
@@ -453,7 +485,7 @@ impl ClientCore {
                         "human interaction event page exceeds response limit",
                     ));
                 }
-                events.push(encode_event(&row));
+                events.push(encode_event(&row, request));
             }
             next = row.delivery as u64;
         }
@@ -519,10 +551,12 @@ mod tests {
         Request {
             request_id: MsgId::from_bytes(request_id),
             community_id: CommunityId::from_bytes(community),
-            channel_id: None,
+            channel_id: (10..=23)
+                .contains(&operation)
+                .then(|| crate::ids::ChannelId::from_bytes([3; 16])),
             operation,
-            revision: None,
-            expires: None,
+            revision: (operation == 13 || operation == 2).then_some(7),
+            expires: (operation == 13 || operation == 2).then_some(20),
             args,
         }
         .encode_body()
@@ -561,6 +595,60 @@ mod tests {
         assert!(!response_matches_request(
             response([1; 16], [2; 16]).as_bytes(),
             other_operation.as_bytes(),
+            &[2; 16]
+        ));
+    }
+
+    #[test]
+    fn music_response_requires_exact_local_channel_request_and_community() {
+        let request_body = request([1; 16], [2; 16], 13, RequestArgs::None);
+        assert!(response_matches_request(
+            response([1; 16], [2; 16]).as_bytes(),
+            request_body.as_bytes(),
+            &[2; 16]
+        ));
+        assert!(!response_matches_request(
+            response([3; 16], [2; 16]).as_bytes(),
+            request_body.as_bytes(),
+            &[2; 16]
+        ));
+        assert!(!response_matches_request(
+            response([1; 16], [4; 16]).as_bytes(),
+            request_body.as_bytes(),
+            &[2; 16]
+        ));
+    }
+
+    #[test]
+    fn settings_responses_require_their_exact_read_or_mutation_context() {
+        let read = request([1; 16], [2; 16], 1, RequestArgs::Section { section: 5 });
+        assert!(response_matches_request(
+            response([1; 16], [2; 16]).as_bytes(),
+            read.as_bytes(),
+            &[2; 16]
+        ));
+        let write = request(
+            [1; 16],
+            [2; 16],
+            2,
+            RequestArgs::SettingsPut {
+                section: 5,
+                document: vec![0x80],
+            },
+        );
+        assert!(response_matches_request(
+            response([1; 16], [2; 16]).as_bytes(),
+            write.as_bytes(),
+            &[2; 16]
+        ));
+        assert!(!response_matches_request(
+            response([3; 16], [2; 16]).as_bytes(),
+            write.as_bytes(),
+            &[2; 16]
+        ));
+        assert!(!response_matches_request(
+            response([1; 16], [4; 16]).as_bytes(),
+            write.as_bytes(),
             &[2; 16]
         ));
     }

@@ -7,7 +7,7 @@ export type { CoreClient } from './bridge';
 export type * from './state/types';
 export { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './state/settings';
 export { CALL_IDLE, VOICE_EMPTY, RINGS_EMPTY } from './state/types';
-export { voiceMusicAdapter } from './voice/music';
+export { createVoiceMusicAdapter, voiceMusicAdapter } from './voice/music';
 export type { VoiceMusicAdapter, VoiceMusicState, VoiceMusicTrack, VoiceMusicQueueItem, VoiceMusicPermissions } from './voice/music';
 export { attachmentKind } from './state/derive';
 export type { NotifyMode } from './state/settings';

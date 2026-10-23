@@ -98,7 +98,7 @@ export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: numbe
 export interface RemovalFeedEntry { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
 export interface HumanInteractionEvent {
   deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
-  senderUser: Id; senderDevice: Id; messageId: Id; body: string;
+  senderUser: Id; senderDevice: Id; messageId: Id; body: string; operation: number; channelId: Id | null;
 }
 export interface HumanInteractionEventPage { events: HumanInteractionEvent[]; next: bigint; highWater: bigint; }
 export interface CorePort {
@@ -529,11 +529,12 @@ export function wrapCore(handle: CoreHandle): CorePort {
         const page = arr(v, 3);
         return {
           events: arr(page[0]).map((item) => {
-            const row = arr(item, 11);
+            const row = arr(item, 13);
             return {
               deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
               requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
               senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
+              operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
             };
           }),
           next: u64(page[1]), highWater: u64(page[2]),

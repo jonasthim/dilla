@@ -14,7 +14,7 @@ import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
-import { arr, decode as decodeCbor } from '../cbor';
+import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
@@ -197,6 +197,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'listModerationCases',
+  'humanInteractionRequest',
+  'readBotInteractionResponses',
+  'ackBotInteractionResponses',
   'readHumanInteractionResponses',
   'ackHumanInteractionResponses',
   'getBotJoinRole',
@@ -329,6 +332,9 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
+  humanInteractionRequest: ['communityId', 'requestId'],
+  readBotInteractionResponses: ['communityId'],
+  ackBotInteractionResponses: ['communityId'],
   readHumanInteractionResponses: ['communityId'],
   ackHumanInteractionResponses: ['communityId'],
   getBotJoinRole: ['communityId'],
@@ -428,6 +434,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'listModerationCases',
+    'humanInteractionRequest',
+    'readBotInteractionResponses',
+    'ackBotInteractionResponses',
     'readHumanInteractionResponses',
     'ackHumanInteractionResponses',
     'getBotJoinRole',
@@ -606,7 +615,34 @@ function invalid(command: Record<string, unknown>): string | null {
     || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
   if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
   if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+  if (m === 'humanInteractionRequest') {
+    const operation = command.operation;
+    if (typeof operation !== 'number' || !Number.isInteger(operation)
+      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23)) return 'interaction operation is invalid';
+    if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+    const music = operation >= 10;
+    if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
+    if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
+    const count = operation === 1 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1 : operation === 2 || operation === 22 ? 2 : 0;
+    if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
+    if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
+    if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';
+    if ((operation === 11 || operation === 12) && (typeof command.args[0] !== 'string' || command.args[0].trim().length === 0)) return 'music query is invalid';
+    if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
+      || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
+    if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
+    if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
+    const mutation = operation === 2 || operation >= 12 && operation <= 23;
+    const revision = command.revision;
+    if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
+      : revision !== null) return 'interaction revision is invalid';
+  }
+  if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
+    || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
+      || !(op === 1 || op === 2 || op >= 10 && op <= 23)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
+    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
+  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
     || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
@@ -778,6 +814,7 @@ export class Controller {
   private core: CorePort | null = null;
   private readonly acceptedHumanInteractionSends = new Set<string>();
   private readonly pendingHumanInteractionAcks = new Map<string, string>();
+  private readonly pendingBotInteractionAcks = new Map<string, string>();
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1183,6 +1220,9 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'listModerationCases': return this.listModerationCases(command);
+      case 'humanInteractionRequest': return this.humanInteractionRequest(command);
+      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations));
+      case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
       case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId);
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
@@ -1302,6 +1342,112 @@ export class Controller {
     return row === null ? null : botInstallationView(row);
   }
 
+  /** Sends a revision-bound built-in Bot request. The result describes ciphertext upload only. */
+  private async humanInteractionRequest(command: Extract<Command, { m: 'humanInteractionRequest' }>): Promise<{
+    requestId: string; upload: 'accepted' | 'pending' | 'rejected' | 'unknown';
+  }> {
+    const { communityId: communityHex, channelId: channelHex, requestId: requestHex, operation } = command;
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const channelId = channelHex === null ? null : fromHex(channelHex);
+    if (channelHex !== null) {
+      const channel = this.channels.get(channelHex);
+      if (channel === undefined || channel.communityId !== communityHex || channel.row.kind !== 1) {
+        throw new Refusal('E_BAD_INPUT', 'music requests require a voice channel in this community');
+      }
+    }
+    const acceptedKey = `interaction:${operation}:${communityHex}:${requestHex}`;
+    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
+    const communityId = fromHex(communityHex);
+    const requestId = fromHex(requestHex);
+    const groupRows = this.requireCore().groups().filter((row) => row.kind === 3 && row.state === 2
+      && row.communityId !== null && toHex(row.communityId) === communityHex);
+    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
+      ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
+    const groupId = groupRows[0].groupId;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23;
+    const args: CborInput[] = command.args.map((value, index) =>
+      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1)) && typeof value === 'string'
+        ? fromHex(value) : value);
+    const sync = this.requireSync();
+    return sync.runOnGroup(groupId, async () => {
+      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
+      const now = BigInt(Math.floor(this.deps.now() / 1000));
+      const request = { requestId, communityId, channelId, operation, revision: mutation ? BigInt(command.revision!) : null,
+        expires: mutation ? now + 30n : null, args };
+      validateBotContext(request, { community: communityId, now });
+      const requestBody = encodeBotRequestBytes(request);
+      const prepared = this.requireCore().humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
+      if (toHex(prepared) !== requestHex) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
+      const core = this.requireCore();
+      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === requestHex);
+      if (outbox === undefined) return { requestId: requestHex, upload: 'unknown' };
+      if (outbox.state === 1) return { requestId: requestHex, upload: 'pending' };
+      if (outbox.state === 2) core.sendRetry(prepared);
+      const encrypted = core.sendEncrypt(prepared);
+      if (toHex(encrypted.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+      let receipt: Awaited<ReturnType<Routes['postMessage']>>;
+      try {
+        receipt = await this.routes.postMessage(groupId, encrypted.messageBody);
+      } catch (error) {
+        if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
+          core.sendFail(prepared, error.code);
+          return { requestId: requestHex, upload: 'rejected' };
+        }
+        return { requestId: requestHex, upload: 'pending' };
+      }
+      try { core.sendConfirm(prepared, receipt.raw); }
+      catch { return { requestId: requestHex, upload: 'pending' }; }
+      this.acceptedHumanInteractionSends.add(acceptedKey);
+      if (this.acceptedHumanInteractionSends.size > 128) {
+        const oldest = this.acceptedHumanInteractionSends.values().next().value;
+        if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
+      }
+      return { requestId: requestHex, upload: 'accepted' };
+    });
+  }
+
+  private readBotInteractionResponses(communityHex: string, operations: readonly number[]): {
+    responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
+      status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
+    through: string | null; blocked: boolean;
+  } {
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const allowed = new Set(operations);
+    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    const responses = page.events.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)).map(event => {
+      const response = decodeBotResponse(event.body);
+      validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
+      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
+        operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
+        status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
+        sourceSeq: String(event.sourceSeq) };
+    });
+    const firstBlocked = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !allowed.has(event.operation));
+    const ackable = firstBlocked < 0 ? page.events : page.events.slice(0, firstBlocked);
+    const throughValue = firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
+    const through = throughValue > 0n ? String(throughValue) : null;
+    if (through !== null) {
+      this.pendingBotInteractionAcks.set(`${communityHex}:${through}`, through);
+      while (this.pendingBotInteractionAcks.size > 32) {
+        const oldest = this.pendingBotInteractionAcks.keys().next().value;
+        if (oldest === undefined) break;
+        this.pendingBotInteractionAcks.delete(oldest);
+      }
+    }
+    return { responses, through, blocked: firstBlocked >= 0 };
+  }
+
+  private ackBotInteractionResponses(communityHex: string, through: string): null {
+    const key = `${communityHex}:${through}`;
+    if (!this.listed(communityHex) || this.pendingBotInteractionAcks.get(key) !== through) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
+    }
+    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    this.pendingBotInteractionAcks.delete(key);
+    return null;
+  }
+
   /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
    *  ciphertext stay inside the worker/core boundary; the page receives only the stable request id
    *  and whether the upload was accepted, remains uncertain, was refused, or cannot be resolved. */
@@ -1382,13 +1528,13 @@ export class Controller {
       return { authorized: false, responses: [], through: null, blocked: false };
     }
     const page = this.requireCore().humanInteractionEventsRead(0n, 100);
-    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex);
+    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || event.operation !== 60);
     // The journal ack is global, so this screen may consume only the contiguous prefix for its
     // community. Events for another server stay pending and are handled in that server's Bot tab.
     // The journal is global and read pages are bounded. Show only this community's decoded
     // responses even when another community occurs earlier in the page; only the contiguous
     // current-community prefix is eligible for acknowledgement below.
-    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex);
+    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && event.operation === 60);
     const responses = visibleEvents.map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, communityId, event.requestId);
