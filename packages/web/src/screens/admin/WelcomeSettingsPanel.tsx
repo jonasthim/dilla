@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Button, SettingsRow } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 import { decodeWelcomeSettings, encodeWelcomeSettings, type WelcomeSettingsValue } from './welcome-settings.ts';
@@ -32,6 +32,7 @@ interface WelcomeSettingsPanelProps {
 }
 
 interface PendingRequest {
+  communityId: string;
   requestId: string;
   operation: 1 | 2;
   saved?: WelcomeSettingsValue;
@@ -53,16 +54,26 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
   const [pending, setPending] = useState<PendingRequest | null>(null);
   const [ackThrough, setAckThrough] = useState<string | null>(null);
   const [ackRetry, setAckRetry] = useState(0);
-  const sending = useRef(false);
+  const generation = useRef(0);
+  const currentCommunity = useRef(communityId);
+  const sendingRequest = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    currentCommunity.current = communityId;
+    generation.current += 1;
+    sendingRequest.current = null;
+  }, [communityId]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const unavailable = !enabled || !canManage || channels.length === 0;
   const channelIdsKey = channels.map(channel => channel.id).join(',');
+  const configuredDraft = config !== null && config.channelId === selectedChannel
+    && config.template === template && config.serverName === serverName;
 
   const request = async (operation: 1 | 2, saved?: WelcomeSettingsValue): Promise<void> => {
-    if (sending.current || pending !== null || unavailable) return;
-    sending.current = true;
+    if (sendingRequest.current !== null || pending?.communityId === communityId || unavailable) return;
     const requestId = newRequestId();
+    const requestGeneration = generation.current;
+    sendingRequest.current = requestId;
     setError(null);
     setNotice(null);
     try {
@@ -71,21 +82,23 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
         : [5, encodeWelcomeSettings(saved!)];
       const upload = await gateway.request({ communityId, channelId: null, requestId, operation, args,
         revision: operation === 1 ? null : revision });
+      if (requestGeneration !== generation.current || currentCommunity.current !== communityId) return;
       if (upload.requestId !== requestId || upload.upload === 'rejected') {
         setError(t('admin.bot.welcomeSettings.uploadFailed'));
         return;
       }
-      setPending({ requestId, operation, ...(saved === undefined ? {} : { saved }) });
+      setPending({ communityId, requestId, operation, ...(saved === undefined ? {} : { saved }) });
       setNotice(t(upload.upload === 'accepted' ? 'admin.bot.welcomeSettings.waiting' : 'admin.bot.welcomeSettings.uploadUncertain'));
     } catch {
-      setError(t('admin.bot.welcomeSettings.uploadFailed'));
+      if (requestGeneration === generation.current && currentCommunity.current === communityId) {
+        setError(t('admin.bot.welcomeSettings.uploadFailed'));
+      }
     } finally {
-      sending.current = false;
+      if (sendingRequest.current === requestId) sendingRequest.current = null;
     }
   };
 
   useEffect(() => {
-    sending.current = false;
     setConfig(null);
     setRevision(null);
     setSelectedChannel('');
@@ -100,14 +113,14 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
   }, [communityId]);
 
   useEffect(() => {
-    if (pending === null) return;
+    if (pending === null || pending.communityId !== communityId) return;
     let canceled = false;
     let timer: number | undefined;
     const poll = async (): Promise<void> => {
       try {
         const page = await gateway.read(communityId, [1, 2]);
         if (canceled) return;
-        const response = page.responses.find(row => row.requestId === pending.requestId && row.communityId === communityId
+        const response = page.responses.find(row => row.requestId === pending.requestId && row.communityId === pending.communityId
           && row.operation === pending.operation && row.channelId === null);
         if (response !== undefined) {
           if (response.status === 0 && validRevision(response.revision)) {
@@ -139,7 +152,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
           const through = page.through === null ? null : BigInt(page.through);
           const ackableRows = through === null ? [] : page.responses.filter(row => BigInt(row.deliveryId) <= through);
           const ownResponse = (row: WelcomeResponse): boolean => row.requestId === pending.requestId
-            && row.communityId === communityId && row.operation === pending.operation && row.channelId === null;
+            && row.communityId === pending.communityId && row.operation === pending.operation && row.channelId === null;
           if (through !== null && BigInt(response.deliveryId) <= through && ackableRows.every(ownResponse)) {
             setAckRetry(0);
             setAckThrough(page.through);
@@ -208,6 +221,6 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
     </>}
     {notice !== null ? <p role="status" aria-live="polite">{notice}</p> : null}
     {error !== null ? <p role="alert">{error}</p> : null}
-    {config !== null && loaded ? <p>{t('admin.bot.welcomeSettings.configured')}</p> : null}
+    {configuredDraft && loaded ? <p>{t('admin.bot.welcomeSettings.configured')}</p> : null}
   </section>;
 }

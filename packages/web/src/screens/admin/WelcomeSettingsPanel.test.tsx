@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { en } from '../../strings/index.ts';
 import { encodeWelcomeSettings } from './welcome-settings.ts';
 import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSettingsPanel.tsx';
@@ -99,5 +99,55 @@ describe('welcome settings panel', () => {
     setResponse({ requestId: request.requestId, operation: 1, status: 0, revision: '8', data: encodeWelcomeSettings(latest) });
     expect(await screen.findByDisplayValue(latest.template)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.save'] })).not.toHaveAttribute('aria-disabled', 'true'));
+  });
+
+  it('hides the configured-message claim while the form has unsaved changes', async () => {
+    const { getRequest, setResponse } = setup();
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await waitFor(() => expect(getRequest()).toBeDefined());
+    const request = getRequest()!;
+    setResponse({ requestId: request.requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
+    expect(await screen.findByText(en['admin.bot.welcomeSettings.configured'])).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('textbox', { name: en['admin.bot.welcomeSettings.template'] }),
+      { target: { value: 'An unsaved draft' } });
+    expect(screen.queryByText(en['admin.bot.welcomeSettings.configured'])).not.toBeInTheDocument();
+  });
+
+  it('keeps a new community request intact when the previous community upload finishes late', async () => {
+    const communityA = 'c3'.repeat(16);
+    const communityB = 'd4'.repeat(16);
+    const channelB = 'e5'.repeat(16);
+    const configB = { channelId: channelB, template: 'Welcome to B, {member}!', serverName: 'Server B' };
+    let resolveA: ((value: { requestId: string; upload: 'accepted' }) => void) | undefined;
+    const requests: Parameters<WelcomeSettingsGateway['request']>[0][] = [];
+    let response: { requestId: string; operation: number; status: number; revision: string | null; data: Uint8Array } | null = null;
+    const gateway: WelcomeSettingsGateway = {
+      request: input => {
+        requests.push(input);
+        return input.communityId === communityA
+          ? new Promise(resolve => { resolveA = resolve; })
+          : Promise.resolve({ requestId: input.requestId, upload: 'accepted' as const });
+      },
+      read: vi.fn(async communityId => ({ responses: response === null || communityId !== communityB ? [] : [{ deliveryId: '1',
+        communityId: communityB, channelId: null, sourceSeq: '1', ...response }], through: response === null ? null : '1', blocked: false })),
+      ack: vi.fn(async () => null),
+    };
+    const view = render(<WelcomeSettingsPanel communityId={communityA} serverName="Server A" channels={[{ id: CHANNEL, name: 'general' }]}
+      enabled canManage gateway={gateway} />);
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await waitFor(() => expect(requests).toHaveLength(1));
+
+    view.rerender(<WelcomeSettingsPanel communityId={communityB} serverName="Server B" channels={[{ id: channelB, name: 'general-b' }]}
+      enabled canManage gateway={gateway} />);
+    fireEvent.click(await screen.findByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    const requestB = requests[1]!;
+    await act(async () => { resolveA?.({ requestId: requests[0]!.requestId, upload: 'accepted' }); });
+    response = { requestId: requestB.requestId, operation: 1, status: 0, revision: '9', data: encodeWelcomeSettings(configB) };
+
+    expect(await screen.findByDisplayValue(configB.template)).toBeInTheDocument();
+    expect(gateway.ack).toHaveBeenCalledWith(communityB, '1');
+    expect(gateway.read).toHaveBeenCalledWith(communityB, [1, 2]);
   });
 });
