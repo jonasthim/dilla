@@ -96,13 +96,6 @@ async function interactionResponse(page: import('@playwright/test').Page, commun
   return found;
 }
 
-function stockholmMinuteAfter(seconds: number): { date: string; hour: number; minute: number } {
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(Date.now() + seconds * 1000));
-  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  return { date: `${value.year}-${value.month}-${value.day}`, hour: Number(value.hour), minute: Number(value.minute) };
-}
-
 function stockholmMinuteAfterWithTime(seconds: number): { date: string; hour: number; minute: number; at: number } {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' }).formatToParts(new Date(Date.now() + seconds * 1000));
@@ -197,7 +190,10 @@ appTest('creates and sends a one-off announcement through the browser client, th
     const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);
     expect((await interactionResponse(page, communityId, 1, welcomeSettingsId)).status).toBe(0);
 
-    const runAt = stockholmMinuteAfter(30);
+    // The schedule stores minute precision. Thirty seconds ahead can truncate back to the
+    // current, already elapsed minute when this request happens early in that minute.
+    const runAt = stockholmMinuteAfterWithTime(90);
+    expect(runAt.at).toBeGreaterThan(Date.now() + 25_000);
     const schedule = encode([1n, new Uint8Array(16).fill(0x31), Uint8Array.from(channel.channelId.match(/../gu)!.map(byte => Number.parseInt(byte, 16))),
       MESSAGE, 'one_off', 'Europe/Stockholm', runAt.date, runAt.hour, runAt.minute, 0, 1, 1]);
     const putId = await botInteraction(page, communityId, 51, [null, schedule], '0');
