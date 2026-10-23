@@ -15,13 +15,13 @@ import { join, relative, resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { addServerVia, REPO_ROOT, attachInput, drawImage, messageRow, trayEntries,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, completeSignUp, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, homeTile, makeInviteLink, newAccount, openSettings, railItem, railNav,
-  sendText, settingsDialog, signIn, signUp, test, type Account,
+  sendText, settingsDialog, signIn, signUp, test, isExpectedInteractionAdmissionContextRefusal, type Account,
 } from './support/app';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { PROFILE_ROOT } from './support/persistent';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { chromiumMediaArgs, FIREFOX_MEDIA_PREFS, writeFixtures } from '../media/support/fixtures';
-import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { mkdirSync, rmSync } from 'node:fs';
 
 const CHECK_WEBROOT = process.env.DILLA_E2E_CHECK_WEBROOT === undefined ? null : relative(REPO_ROOT, resolve(process.env.DILLA_E2E_CHECK_WEBROOT));
@@ -45,6 +45,18 @@ const SIZES = [
 ] as const;
 type Size = (typeof SIZES)[number];
 const PHONE = { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } as const;
+
+test('the guard accepts only the expected refusal of an ordinary Welcome context probe', () => {
+  const group = '3ee4e8578f407046d67ab993704ad745';
+  const url = `http://127.0.0.1:8615/v1/groups/${group}/interaction-admission-context`;
+  const refusal = encode(['E_FORBIDDEN', 'current interaction context unavailable', null]);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url, refusal)).toBe(true);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, `${url}?other=1`, refusal)).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url.replace('/v1/groups/', '/v1/channels/'), refusal)).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url.replace('127.0.0.1', 'example.com'), refusal)).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url, encode(['E_FORBIDDEN', 'missing permission', null]))).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(401, url, refusal)).toBe(false);
+});
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -332,6 +344,9 @@ test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playw
     await expect(page.locator('.d-chrow', { hasText: RAID })).toHaveAttribute('data-unread', /^[1-9]/, { timeout: WAIT });
 
     lap('world: Mira, DM, voice');
+    expect(guard.interactionAdmissionRefusals.length,
+      'ordinary Welcome rows are refused only by the signed kind-3 interaction-context endpoint')
+      .toBeGreaterThan(0);
     if (CHECK_WEBROOT !== null) {
       // The red runs: the same server data and the same browsers, served the other build (the live call does not survive the restart).
       await h.stop();
