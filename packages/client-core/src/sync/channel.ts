@@ -41,7 +41,8 @@ async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, rows: CborVal
 
     let outcomes: WelcomeOutcome[];
     try {
-      outcomes = s.deps.core.humanInteractionWelcomeApply(encode([row]), encode([proof.payload, proof.signature]));
+      const now = BigInt(Math.floor(s.deps.now() / 1000));
+      outcomes = s.deps.core.humanInteractionWelcomeApply(encode([row]), encode([proof.payload, proof.signature]), now);
     } catch {
       // A successful proof lookup identifies a kind-3 candidate. Any local verification or
       // storage refusal leaves the Welcome queued for recovery; generic apply could delete it.

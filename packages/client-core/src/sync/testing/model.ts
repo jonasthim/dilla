@@ -1290,7 +1290,7 @@ export class ModelCore implements CorePort {
     return out;
   }
 
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array): WelcomeOutcome[] {
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, _now: bigint): WelcomeOutcome[] {
     void welcomesBody;
     void currentContextProof;
     this.log('humanInteractionWelcomeApply', new Uint8Array(16));

@@ -24,6 +24,7 @@ pub(crate) const STATE_GONE: i64 = 4;
 
 struct HumanInteractionWelcome {
     context: crate::bot::human_interaction_context::CurrentContext,
+    now: u64,
 }
 
 #[allow(dead_code)] // The full persisted row is shared with task 6.
@@ -127,11 +128,11 @@ fn human_interaction_welcome_receipt(
     receipt.into_vec()
 }
 
-fn unix_time() -> Result<u64, ClientError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|_| ClientError::new(E_CORE_STATE, "system clock is before Unix epoch"))
+fn interaction_now(now: u64) -> Result<u64, ClientError> {
+    if now == 0 || now > i64::MAX as u64 {
+        return Err(ClientError::new(E_CORE_INPUT, "interaction time is out of range"));
+    }
+    Ok(now)
 }
 
 fn interaction_target_matches(target: &[u8; 16], binding: &DillaInteractionBinding) -> bool {
@@ -861,7 +862,9 @@ impl ClientCore {
         &mut self,
         welcomes_body: &[u8],
         current_context_proof: &[u8],
+        now: u64,
     ) -> Result<Vec<u8>, ClientError> {
+        let now = interaction_now(now)?;
         let own = self.own()?;
         if own.kind != Kind::User.as_u8() {
             return Err(ClientError::new(
@@ -877,7 +880,6 @@ impl ClientCore {
             ));
         }
         let item = &items[0];
-        let now = unix_time()?;
         let pinned_key = self.pinned_instance_signer_key()?;
         let expected_context = crate::bot::human_interaction_context::Expected {
             instance: crate::ids::InstanceId::from_bytes(own.instance_id),
@@ -916,7 +918,7 @@ impl ClientCore {
             &expected,
             GroupKind::Interaction,
             None,
-            Some(HumanInteractionWelcome { context }),
+            Some(HumanInteractionWelcome { context, now }),
         )
     }
 
@@ -1380,7 +1382,7 @@ impl ClientCore {
             let signer = ctx
                 .signer
                 .ok_or_else(|| ClientError::new(E_CORE_STATE, "identity signer is unavailable"))?;
-            let fresh_now = unix_time()?;
+            let fresh_now = human.now;
             if fresh_now < context.issued_at || fresh_now >= context.not_after {
                 return Err(ClientError::new(E_BINDING, "interaction Welcome context expired"));
             }
@@ -1504,6 +1506,13 @@ impl ClientCore {
 #[cfg(test)]
 mod interaction_welcome_tests {
     use super::*;
+
+    #[test]
+    fn interaction_welcome_clock_is_bounded_at_the_core_boundary() {
+        assert_eq!(interaction_now(1).unwrap(), 1);
+        assert_eq!(interaction_now(0).unwrap_err().code, E_CORE_INPUT);
+        assert_eq!(interaction_now(i64::MAX as u64 + 1).unwrap_err().code, E_CORE_INPUT);
+    }
 
     fn test_context() -> crate::bot::human_interaction_context::CurrentContext {
         use crate::bot::human_interaction_context::{CurrentContext, Registration, RosterEntry};

@@ -645,8 +645,9 @@ impl CoreHandle {
         &self,
         welcomes_body: &[u8],
         current_context_proof: &[u8],
+        now: u64,
     ) -> Result<Box<[u8]>, JsError> {
-        self.with_core(|c| c.human_interaction_welcome_apply(welcomes_body, current_context_proof))
+        self.with_core(|c| c.human_interaction_welcome_apply(welcomes_body, current_context_proof, now))
             .map(Vec::into_boxed_slice)
     }
     /// Calls ClientCore::group_apply; CBOR [state, epoch, next_seq, new_seqs, proposals_pending, flags].

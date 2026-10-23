@@ -391,13 +391,14 @@ describe('human interaction Welcomes', () => {
       await originalDelete(welcomeId);
     };
     const interactionCore = d.engine.deps.core as typeof d.engine.deps.core & {
-      humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array) => {
+      humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array, now: bigint) => {
         welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string;
       }[];
     };
-    interactionCore.humanInteractionWelcomeApply = (body, proof) => {
+    interactionCore.humanInteractionWelcomeApply = (body, proof, now) => {
       expect(proof).toEqual(expect.any(Uint8Array));
       expect(body).toEqual(expect.any(Uint8Array));
+      expect(now).toBe(1_700_000_000n);
       events.push(`apply:${toHex(group)}`);
       return [{ welcomeId: 1n, groupId: group, outcome: 0, reason: '' }];
     };

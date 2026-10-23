@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
@@ -20,6 +20,27 @@ export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dil
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';
 const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${String(port)}`);
+
+function ensureShippingCoreWasm(): void {
+  const artifact = join(REPO_ROOT, 'packages', 'core-wasm', 'pkg', 'dilla_core_wasm_bg.wasm');
+  const inputs = [join(REPO_ROOT, 'Cargo.toml'), join(REPO_ROOT, 'Cargo.lock')];
+  for (const root of ['core/dilla-core', 'core/dilla-core-wasm']) {
+    const visit = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (entry.name === 'Cargo.toml' || entry.name.endsWith('.rs')) inputs.push(path);
+      }
+    };
+    visit(join(REPO_ROOT, root));
+  }
+  const newestInput = Math.max(...inputs.map((path) => statSync(path).mtimeMs));
+  if (existsSync(artifact) && statSync(artifact).mtimeMs >= newestInput) return;
+  execFileSync(process.env.WASM_PACK ?? 'wasm-pack', [
+    'build', 'core/dilla-core-wasm', '--target', 'web', '--profile', 'wasm-release', '--mode', 'no-install',
+    '--out-dir', '../../packages/core-wasm/pkg',
+  ], { cwd: REPO_ROOT, stdio: 'inherit' });
+}
 
 export function hostArgs(c: HostConfig, dataDir: string): string[] {
   return ['-listen', `127.0.0.1:${c.port}`, '-control', `127.0.0.1:${c.control}`,
@@ -80,6 +101,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   // The bot acceptance host serves the web bundle from disk; always rebuild that
   // bundle from current source so the acceptance flow cannot pass on stale UI.
   if (c.botRuntime === true && c.webRoot !== null) {
+    ensureShippingCoreWasm();
     execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
   }
   const dataDir = hostDataDir(c.port);

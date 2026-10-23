@@ -124,7 +124,7 @@ export interface CorePort {
   groupJoined(groupId: Id, seq: bigint): void;
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[];
   /** The core verifies this opaque signed context and derives the expected kind-3 binding itself. */
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array): WelcomeOutcome[];
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[];
   humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
   humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
   humanInteractionEventsAck(through: bigint): void;
@@ -268,7 +268,7 @@ export interface CoreHandle {
       group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
       group_joined(group_id: Uint8Array, seq: bigint): void;
       welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
-      human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array): Uint8Array;
+      human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
       human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
       human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
       human_interaction_events_ack(through: bigint): void;
@@ -514,9 +514,9 @@ export function wrapCore(handle: CoreHandle): CorePort {
     groupJoined: (groupId, seq) => call(() => handle.group_joined(groupId, seq)),
     welcomesApply: (welcomesBody, expected) => call(() => decoded('welcomesApply', handle.welcomes_apply(welcomesBody,
       encode(expected.map((e) => [e.groupId, e.communityId, e.channelId, e.policyVersion]))), (v) => arr(v).map(readWelcome))),
-    humanInteractionWelcomeApply: (welcomesBody, currentContextProof) => call(() => decoded(
+    humanInteractionWelcomeApply: (welcomesBody, currentContextProof, now) => call(() => decoded(
       'humanInteractionWelcomeApply',
-      handle.human_interaction_welcome_apply(welcomesBody, currentContextProof),
+      handle.human_interaction_welcome_apply(welcomesBody, currentContextProof, now),
       (v) => arr(v).map(readWelcome),
     )),
     humanInteractionSendPrepare: (requestId, communityId, groupId, requestBody, now) => call(() => decoded(

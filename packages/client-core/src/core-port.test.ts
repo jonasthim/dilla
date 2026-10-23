@@ -81,13 +81,13 @@ it('passes an opaque human interaction context proof to the dedicated Welcome ex
   const proof = new Uint8Array([0x81, 0x00]);
   const result = encode([[1, G, 0, '']]);
   const s = stub({ human_interaction_welcome_apply: (...args) => {
-    expect(args).toEqual([welcomes, proof]);
+    expect(args).toEqual([welcomes, proof, 100n]);
     return result;
   } });
-  expect(s.port.humanInteractionWelcomeApply(welcomes, proof)).toEqual([
+  expect(s.port.humanInteractionWelcomeApply(welcomes, proof, 100n)).toEqual([
     { welcomeId: 1n, groupId: G, outcome: 0, reason: '' },
   ]);
-  expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof] }]);
+  expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof, 100n] }]);
 });
 
 it('decodes authenticated human interaction events and passes a durable cursor', () => {
