@@ -17,6 +17,8 @@ use openmls_basic_credential::SignatureKeyPair;
 use rusqlite::OptionalExtension;
 use zeroize::Zeroizing;
 
+const MAX_BOT_INTERACTION_GROUP_DESCRIPTORS: usize = 2048;
+
 #[derive(Clone, Copy)]
 pub(super) struct BotBinding {
     pub instance_id: [u8; 16],
@@ -334,34 +336,43 @@ impl ClientCore {
         if &own.instance_id != expected_instance {
             return Err(binding_mismatch());
         }
-        let groups = self.groups()?;
-        let rows = decode_strict(&groups, |d| {
-            let n = d.array_len()?;
-            let mut out = Vec::with_capacity(n);
-            for _ in 0..n {
-                d.array(9)?;
-                let group = d.bytes_exact::<16>()?;
-                let kind = d.uint()?;
-                let community = d.opt_bytes()?.map(|v| v.to_vec());
-                let target = d.bytes_exact::<16>()?;
-                let state = d.uint()?;
-                let epoch = d.uint()?;
-                d.skip()?;
-                d.skip()?;
-                d.skip()?;
-                out.push((group, kind, community, target, state, epoch));
-            }
-            Ok(out)
-        })
-        .map_err(|_| ClientError::new(E_CORE_STORAGE, "interaction group rows rejected"))?;
+        // Bound candidate work in SQLite before loading OpenMLS state. The extra row is a
+        // sentinel: discovery fails closed if the complete result would exceed the wire cap.
+        let candidates = self.read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT group_id,target_id,state,epoch FROM app_groups \
+                 WHERE kind=3 AND community_id=?1 AND state<4 ORDER BY group_id LIMIT 2049",
+            )?;
+            let rows = stmt.query_map([expected_community.as_slice()], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })?;
+        if candidates.len() > MAX_BOT_INTERACTION_GROUP_DESCRIPTORS {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "interaction group discovery exceeds native descriptor limit",
+            ));
+        }
         let mut out = Vec::new();
-        for (group_id, kind, community, target, state, epoch) in rows {
-            if kind != 3 || community.as_deref() != Some(expected_community.as_slice()) {
-                continue;
-            }
-            if state >= 4 {
-                continue;
-            }
+        for (group_id, target, state, epoch) in candidates {
+            let group_id: [u8; 16] = group_id.try_into().map_err(|_| {
+                ClientError::new(E_CORE_STORAGE, "interaction group identifier rejected")
+            })?;
+            let target: [u8; 16] = target.try_into().map_err(|_| {
+                ClientError::new(E_CORE_STORAGE, "interaction group target rejected")
+            })?;
+            let state = u64::try_from(state).map_err(|_| {
+                ClientError::new(E_CORE_STORAGE, "interaction group state rejected")
+            })?;
+            let epoch = u64::try_from(epoch).map_err(|_| {
+                ClientError::new(E_CORE_STORAGE, "interaction group epoch rejected")
+            })?;
             let group = DillaGroup::load(&self.provider, &GroupId::from_slice(&group_id))
                 .map_err(|_| {
                     ClientError::new(E_CORE_STATE, "interaction group could not be loaded")
@@ -1071,6 +1082,43 @@ mod interaction_snapshot_tests {
                 Ok::<_, rusqlite::Error>(total + count)
             })
             .unwrap()
+    }
+
+    #[test]
+    fn interaction_discovery_rejects_overflow_before_loading_any_group() {
+        let connection = conn();
+        let instance_key = SigningKey::from_bytes(&[42; 32]);
+        let mut core = ClientCore::open(connection.clone()).unwrap();
+        core.bot_bootstrap_begin(
+            &INSTANCE,
+            &COMMUNITY,
+            &INSTALLATION,
+            &instance_key.verifying_key().to_bytes(),
+        )
+        .unwrap();
+        core.bot_bootstrap_complete(&BOT_USER, "bot", 100).unwrap();
+        {
+            let db = connection.lock().unwrap();
+            for n in 1_u32..=2049 {
+                let mut group = [0u8; 16];
+                group[12..].copy_from_slice(&n.to_be_bytes());
+                let mut target = [0u8; 16];
+                target[12..].copy_from_slice(&n.to_be_bytes());
+                db.execute(
+                    "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,3,?2,?3,0)",
+                    rusqlite::params![group.as_slice(), COMMUNITY.as_slice(), target.as_slice()],
+                ).unwrap();
+            }
+        }
+
+        let err = core
+            .bot_interaction_group_descriptors(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .expect_err("descriptor overflow must stop before MLS lookup");
+        assert_eq!(err.code, E_CORE_INPUT);
+        assert!(
+            err.detail.contains("exceeds native descriptor limit"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
