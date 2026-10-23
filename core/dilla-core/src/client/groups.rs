@@ -33,6 +33,8 @@ pub(super) struct GroupRow {
     pub kind: i64,
     pub community_id: Option<Vec<u8>>,
     pub target_id: Vec<u8>,
+    pub interaction_installation_id: Option<Vec<u8>>,
+    pub interaction_device_id: Option<Vec<u8>>,
     pub state: i64,
     pub next_seq: i64,
     pub resync: i64,
@@ -196,7 +198,7 @@ pub(super) fn group_row(
     id: &[u8; 16],
 ) -> Result<Option<GroupRow>, StorageError> {
     c.query_row(
-        "SELECT kind, community_id, target_id, state, next_seq, resync, was_gone, max_epoch \
+        "SELECT kind, community_id, target_id, interaction_installation_id, interaction_device_id, state, next_seq, resync, was_gone, max_epoch \
          FROM app_groups WHERE group_id = ?1",
         [id.as_slice()],
         |r| {
@@ -204,11 +206,13 @@ pub(super) fn group_row(
                 kind: r.get(0)?,
                 community_id: r.get(1)?,
                 target_id: r.get(2)?,
-                state: r.get(3)?,
-                next_seq: r.get(4)?,
-                resync: r.get(5)?,
-                was_gone: r.get(6)?,
-                max_epoch: r.get(7)?,
+                interaction_installation_id: r.get(3)?,
+                interaction_device_id: r.get(4)?,
+                state: r.get(5)?,
+                next_seq: r.get(6)?,
+                resync: r.get(7)?,
+                was_gone: r.get(8)?,
+                max_epoch: r.get(9)?,
             })
         },
     )
@@ -231,6 +235,137 @@ pub(super) fn holder(
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// Find another active kind-3 group only when its authenticated binding names this exact
+/// installation/community/user/device tuple. The app row alone stores the participant user and
+/// cannot distinguish a second device for the same account.
+const MAX_INTERACTION_HOLDER_CANDIDATES: usize = 2048;
+
+fn interaction_row_matches_binding(
+    binding: &DillaInteractionBinding,
+    community: &[u8; 16],
+    target: &[u8; 16],
+    participant: &[u8; 16],
+    stored_installation: Option<&[u8]>,
+    stored_device: Option<&[u8]>,
+) -> bool {
+    if binding.community_id.as_bytes() != community
+        || binding.bot_user_id != *target
+        || binding.participant_user_id.as_slice() != participant
+    {
+        return false;
+    }
+    match (stored_installation, stored_device) {
+        (None, None) => true,
+        (Some(installation), Some(device)) => {
+            installation == binding.installation_id.as_slice()
+                && device == binding.participant_device_id.as_bytes()
+        }
+        _ => false,
+    }
+}
+
+/// Decide whether a candidate is a duplicate only after its authenticated v2 binding is available.
+/// Legacy kind-3 v1 contexts do not carry a participant device ID, so they cannot establish safe
+/// per-device uniqueness and must fail closed.
+fn interaction_candidate_is_duplicate(
+    binding: Option<&DillaInteractionBinding>,
+    is_interaction: bool,
+    community: &[u8; 16],
+    target: &[u8; 16],
+    participant: &[u8; 16],
+    installation: &[u8; 16],
+    device: &[u8; 16],
+    stored_installation: Option<&[u8]>,
+    stored_device: Option<&[u8]>,
+) -> Result<bool, ()> {
+    let binding = binding.filter(|_| is_interaction).ok_or(())?;
+    if !interaction_row_matches_binding(
+        binding,
+        community,
+        target,
+        participant,
+        stored_installation,
+        stored_device,
+    ) {
+        return Err(());
+    }
+    Ok(
+        binding.installation_id.as_slice() == installation.as_slice()
+            && binding.participant_device_id.as_bytes() == device,
+    )
+}
+
+fn interaction_holder(
+    core: &mut ClientCore,
+    installation: &[u8; 16],
+    community: &[u8; 16],
+    target: &[u8; 16],
+    participant: &[u8; 16],
+    device: &[u8; 16],
+    except: &[u8; 16],
+) -> Result<Option<[u8; 16]>, ClientError> {
+    let candidates = core.read(|c| {
+        let mut statement = c.prepare(
+            "SELECT group_id,interaction_installation_id,interaction_device_id FROM app_groups WHERE kind=3 AND community_id=?1 AND target_id=?2 AND state<>4 AND group_id<>?3 ORDER BY group_id LIMIT ?4",
+        )?;
+        let rows = statement.query_map(
+            params![community.as_slice(), target.as_slice(), except.as_slice(), (MAX_INTERACTION_HOLDER_CANDIDATES + 1) as i64],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?, row.get::<_, Option<Vec<u8>>>(2)?)),
+        )?;
+        rows.map(|row| {
+            let (raw, installation, device) = row?;
+            let group_id = raw.try_into().map_err(|_| StorageError::Codec("interaction group id malformed".into()))?;
+            Ok((group_id, installation, device))
+        }).collect::<Result<Vec<([u8; 16], Option<Vec<u8>>, Option<Vec<u8>>)>, StorageError>>()
+    })?;
+    if candidates.len() > MAX_INTERACTION_HOLDER_CANDIDATES {
+        return Err(ClientError::new(
+            E_CORE_STATE,
+            "interaction group scope exceeds the local candidate limit",
+        ));
+    }
+    for (group_id, stored_installation, stored_device) in candidates {
+        if stored_installation.is_some() != stored_device.is_some() {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "interaction group device scope is malformed",
+            ));
+        }
+        let Some(group) = core.take_group_unchecked(&group_id)? else {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "interaction group state is unavailable",
+            ));
+        };
+        let binding = group.interaction_binding().ok();
+        let duplicate = match interaction_candidate_is_duplicate(
+            binding.as_ref(),
+            group.kind() == GroupKind::Interaction,
+            community,
+            target,
+            participant,
+            installation,
+            device,
+            stored_installation.as_deref(),
+            stored_device.as_deref(),
+        ) {
+            Ok(duplicate) => duplicate,
+            Err(()) => {
+                core.keep_group(group_id, group);
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "interaction group binding or scope is unavailable",
+                ));
+            }
+        };
+        core.keep_group(group_id, group);
+        if duplicate {
+            return Ok(Some(group_id));
+        }
+    }
+    Ok(None)
 }
 fn binding(
     own: &Own,
@@ -1033,9 +1168,19 @@ impl ClientCore {
                             reason = E_BINDING;
                         }
                     }
-                } else if self
-                    .read(|c| holder(c, &want.channel_id, row_kind(group_kind), id))?
-                    .is_some()
+                } else if match human_interaction.as_ref() {
+                    Some(human) => interaction_holder(
+                        self,
+                        human.context.registration.installation.as_bytes(),
+                        human.context.binding.community_id.as_bytes(),
+                        &want.channel_id,
+                        &human.context.binding.participant_user_id,
+                        human.context.binding.participant_device_id.as_bytes(),
+                        id,
+                    )?,
+                    None => self.read(|c| holder(c, &want.channel_id, row_kind(group_kind), id))?,
+                }
+                .is_some()
                 {
                     outcome = 2;
                     reason = E_CORE_STATE;
@@ -1500,8 +1645,8 @@ impl ClientCore {
             let held = checked("epoch", group.epoch())?;
             unit.with_conn(|c| {
                 c.execute(
-                    "INSERT INTO app_groups (group_id,kind,community_id,target_id,state,next_seq,max_epoch,epoch) VALUES(?1,3,?2,?3,2,?4,?5,?5)",
-                    params![id.as_slice(), want.community_id.as_ref().map(|v| v.as_slice()), want.channel_id.as_slice(), next_seq, held],
+                    "INSERT INTO app_groups (group_id,kind,community_id,target_id,state,next_seq,max_epoch,epoch,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,2,?4,?5,?5,?6,?7)",
+                    params![id.as_slice(), want.community_id.as_ref().map(|v| v.as_slice()), want.channel_id.as_slice(), next_seq, held, context.registration.installation.as_bytes().as_slice(), context.binding.participant_device_id.as_bytes().as_slice()],
                 )?;
                 super::schema::meta_put(c, &receipt_key, &receipt)
             })?;
@@ -1643,5 +1788,59 @@ mod interaction_welcome_tests {
             &binding.participant_user_id,
             &binding
         ));
+    }
+
+    #[test]
+    fn legacy_interaction_rows_are_matched_from_the_authenticated_binding() {
+        let binding = DillaInteractionBinding {
+            instance_id: InstanceId::from_bytes([1; 16]),
+            bot_user_id: [2; 16],
+            installation_id: [3; 16],
+            community_id: CommunityId::from_bytes([4; 16]),
+            participant_user_id: [5; 16],
+            participant_device_id: DeviceId::from_bytes([6; 16]),
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        assert!(interaction_row_matches_binding(
+            &binding, &[4; 16], &[2; 16], &[5; 16], None, None,
+        ));
+        assert!(interaction_row_matches_binding(
+            &binding,
+            &[4; 16],
+            &[2; 16],
+            &[5; 16],
+            Some(&[3; 16]),
+            Some(&[6; 16]),
+        ));
+        assert!(!interaction_row_matches_binding(
+            &binding,
+            &[4; 16],
+            &[2; 16],
+            &[5; 16],
+            Some(&[7; 16]),
+            Some(&[6; 16]),
+        ));
+        assert!(!interaction_row_matches_binding(
+            &binding,
+            &[4; 16],
+            &[2; 16],
+            &[5; 16],
+            Some(&[3; 16]),
+            None,
+        ));
+    }
+
+    #[test]
+    fn legacy_v1_interaction_binding_fails_closed_for_duplicate_admission() {
+        // A v1 kind-3 context has no authenticated participant device identity. Treat its
+        // unavailable v2 binding as an error instead of admitting a potentially duplicate group.
+        assert!(
+            interaction_candidate_is_duplicate(
+                None, true, &[4; 16], &[2; 16], &[5; 16], &[3; 16], &[6; 16], None, None,
+            )
+            .is_err()
+        );
     }
 }

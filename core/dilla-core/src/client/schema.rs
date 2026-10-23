@@ -21,7 +21,7 @@ pub const HANDSHAKE_TAIL: usize = 64;
 
 /// The highest app schema this build reads and migrates to. A store whose `app_meta` schema is
 /// above it was written by a newer client and is refused untouched (`StorageError::StoreNewer`).
-pub const APP_SCHEMA_SUPPORTED: u32 = 11;
+pub const APP_SCHEMA_SUPPORTED: u32 = 12;
 
 pub(crate) const SCHEMA: &str = "schema";
 pub(crate) const SIGNUP: &str = "signup";
@@ -155,9 +155,13 @@ CREATE TABLE IF NOT EXISTS app_groups (
   was_gone     INTEGER NOT NULL DEFAULT 0 CHECK (was_gone IN (0, 1)),
   max_epoch    INTEGER NOT NULL DEFAULT 0,
   epoch          INTEGER NOT NULL DEFAULT 0,
-  pending_commit INTEGER NOT NULL DEFAULT 0
+  pending_commit INTEGER NOT NULL DEFAULT 0,
+  interaction_installation_id BLOB CHECK (interaction_installation_id IS NULL OR length(interaction_installation_id)=16),
+  interaction_device_id BLOB CHECK (interaction_device_id IS NULL OR length(interaction_device_id)=16),
+  CHECK ((interaction_installation_id IS NULL AND interaction_device_id IS NULL) OR
+         (interaction_installation_id IS NOT NULL AND interaction_device_id IS NOT NULL))
 ) WITHOUT ROWID;
-CREATE UNIQUE INDEX IF NOT EXISTS app_groups_by_target ON app_groups (target_id, kind) WHERE state <> 4;
+CREATE INDEX IF NOT EXISTS app_groups_by_target ON app_groups (target_id, kind) WHERE state <> 4;
 CREATE TABLE IF NOT EXISTS app_handshake_tail (
   group_id BLOB NOT NULL, seq INTEGER NOT NULL, epoch INTEGER NOT NULL, kind INTEGER NOT NULL,
   sender INTEGER, blob BLOB NOT NULL, PRIMARY KEY (group_id, seq)
@@ -610,6 +614,29 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found <= 11 {
         meta_put(c, SCHEMA, &[11])?;
     }
+    if found < 12 {
+        if !has_column(c, "app_groups", "interaction_installation_id")? {
+            c.execute_batch("ALTER TABLE app_groups ADD COLUMN interaction_installation_id BLOB CHECK (interaction_installation_id IS NULL OR length(interaction_installation_id)=16)")?;
+        }
+        if !has_column(c, "app_groups", "interaction_device_id")? {
+            c.execute_batch("ALTER TABLE app_groups ADD COLUMN interaction_device_id BLOB CHECK (interaction_device_id IS NULL OR length(interaction_device_id)=16)")?;
+        }
+        // Kind-3 interaction groups are scoped by the authenticated participant device and
+        // installation. Legacy rows keep NULL metadata and are checked against their MLS binding
+        // before a new group is accepted.
+        c.execute_batch(
+            "DROP INDEX IF EXISTS app_groups_by_target;
+             CREATE UNIQUE INDEX app_groups_by_target ON app_groups(target_id,kind) WHERE state<>4 AND kind<>3;
+             CREATE UNIQUE INDEX IF NOT EXISTS app_groups_by_interaction_device ON app_groups(community_id,target_id,interaction_installation_id,interaction_device_id) WHERE kind=3 AND state<>4 AND interaction_installation_id IS NOT NULL AND interaction_device_id IS NOT NULL;
+             CREATE TRIGGER IF NOT EXISTS app_groups_interaction_scope_insert BEFORE INSERT ON app_groups
+               WHEN (NEW.interaction_installation_id IS NULL AND NEW.interaction_device_id IS NOT NULL) OR (NEW.interaction_installation_id IS NOT NULL AND NEW.interaction_device_id IS NULL)
+               BEGIN SELECT RAISE(ABORT,'interaction scope pair required'); END;
+             CREATE TRIGGER IF NOT EXISTS app_groups_interaction_scope_update BEFORE UPDATE OF interaction_installation_id,interaction_device_id ON app_groups
+               WHEN (NEW.interaction_installation_id IS NULL AND NEW.interaction_device_id IS NOT NULL) OR (NEW.interaction_installation_id IS NOT NULL AND NEW.interaction_device_id IS NULL)
+               BEGIN SELECT RAISE(ABORT,'interaction scope pair required'); END;",
+        )?;
+        meta_put(c, SCHEMA, &[12])?;
+    }
     Ok(found)
 }
 
@@ -904,7 +931,7 @@ mod search_upgrade_tests {
 /// touches it; schema 6 and below migrate as before (web3.7 TB1 moved the prior bound from 4 to 5).
 #[cfg(test)]
 mod newer_store_tests {
-    use super::{APP_SCHEMA_SUPPORTED, has_column, migrate_conn};
+    use super::{APP_SCHEMA_SUPPORTED, SCHEMA, has_column, meta_get, migrate_conn};
     use crate::mls::StorageError;
 
     type Snapshot = (
@@ -948,13 +975,13 @@ mod newer_store_tests {
         .expect("index query")
     }
 
-    /// A store as this build leaves it, then moved on as a newer client might: schema 12 and one
+    /// A store as this build leaves it, then moved on as a newer client might: schema 13 and one
     /// app table gone (renamed or dropped by its migration), which `APP_SCHEMA` would recreate.
-    fn v11_store() -> rusqlite::Connection {
+    fn v13_store() -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        db.execute_batch("UPDATE app_meta SET v = x'0c' WHERE k = 'schema'; DROP TABLE app_roles;")
-            .expect("simulate a v11 store");
+        db.execute_batch("UPDATE app_meta SET v = x'0d' WHERE k = 'schema'; DROP TABLE app_roles;")
+            .expect("simulate a v13 store");
         db
     }
 
@@ -975,8 +1002,105 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn the_supported_schema_is_11() {
-        assert_eq!(APP_SCHEMA_SUPPORTED, 11);
+    fn the_supported_schema_is_12() {
+        assert_eq!(APP_SCHEMA_SUPPORTED, 12);
+    }
+
+    #[test]
+    fn kind3_groups_allow_one_authenticated_group_per_device_for_a_shared_user() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh schema");
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[1u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice(), [7u8; 16].as_slice(), [8u8; 16].as_slice()],
+        ).expect("first per-device interaction group");
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[4u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice(), [7u8; 16].as_slice(), [9u8; 16].as_slice()],
+        ).expect("second per-device interaction group for the same user");
+        assert!(db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[10u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice(), [7u8; 16].as_slice(), [8u8; 16].as_slice()],
+        ).is_err(), "the same device cannot hold two live groups for one installation");
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[11u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice(), [12u8; 16].as_slice(), [8u8; 16].as_slice()],
+        ).expect("another installation has a separate per-device group");
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[13u8; 16].as_slice(), [14u8; 16].as_slice(), [3u8; 16].as_slice(), [7u8; 16].as_slice(), [8u8; 16].as_slice()],
+        ).expect("same device can hold a separate community's interaction group");
+        assert!(db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_device_id) VALUES(?1,3,?2,?3,0,?4)",
+            rusqlite::params![[15u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice(), [16u8; 16].as_slice()],
+        ).is_err(), "interaction scope metadata must be complete");
+        assert!(db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,0,?2,?3,0)",
+            rusqlite::params![[5u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice()],
+        ).is_ok());
+        assert!(db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,0,?2,?3,0)",
+            rusqlite::params![[6u8; 16].as_slice(), [2u8; 16].as_slice(), [3u8; 16].as_slice()],
+        ).is_err(), "text channel uniqueness remains enforced");
+    }
+
+    #[test]
+    fn schema11_migration_replaces_the_shared_user_unique_index() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
+             INSERT INTO app_meta(k,v) VALUES('schema',x'0b');
+             CREATE TABLE app_groups (
+               group_id BLOB PRIMARY KEY CHECK(length(group_id)=16),
+               kind INTEGER NOT NULL,
+               community_id BLOB CHECK(community_id IS NULL OR length(community_id)=16),
+               target_id BLOB NOT NULL CHECK(length(target_id)=16),
+               state INTEGER NOT NULL,
+               next_seq INTEGER NOT NULL DEFAULT 1,
+               acked_seq INTEGER NOT NULL DEFAULT 0,
+               acked_epoch INTEGER NOT NULL DEFAULT 0,
+               resync INTEGER NOT NULL DEFAULT 0 CHECK(resync IN(0,1)),
+               was_gone INTEGER NOT NULL DEFAULT 0 CHECK(was_gone IN(0,1)),
+               max_epoch INTEGER NOT NULL DEFAULT 0,
+               epoch INTEGER NOT NULL DEFAULT 0,
+               pending_commit INTEGER NOT NULL DEFAULT 0
+             ) WITHOUT ROWID;
+             CREATE TABLE app_device_lists (
+               user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+               version INTEGER NOT NULL, list BLOB NOT NULL,
+               umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+               ssk_pub BLOB NOT NULL CHECK(length(ssk_pub)=32)
+             );
+             CREATE UNIQUE INDEX app_groups_by_target ON app_groups(target_id,kind) WHERE state<>4;",
+        ).expect("create schema 11 shape");
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,3,?2,?3,2)",
+            rusqlite::params![[20u8; 16].as_slice(), [21u8; 16].as_slice(), [22u8; 16].as_slice()],
+        ).expect("legacy interaction group");
+        assert_eq!(migrate_conn(&db).expect("upgrade schema 11"), 11);
+        let legacy_scope: (Option<Vec<u8>>, Option<Vec<u8>>) = db.query_row(
+            "SELECT interaction_installation_id,interaction_device_id FROM app_groups WHERE group_id=?1",
+            [[20u8; 16].as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).expect("legacy row remains readable");
+        assert_eq!(legacy_scope, (None, None));
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[1u8; 16].as_slice(), [21u8; 16].as_slice(), [22u8; 16].as_slice(), [7u8; 16].as_slice(), [8u8; 16].as_slice()],
+        ).expect("first interaction group");
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[4u8; 16].as_slice(), [21u8; 16].as_slice(), [22u8; 16].as_slice(), [7u8; 16].as_slice(), [9u8; 16].as_slice()],
+        ).expect("second device interaction group after upgrade");
+        assert!(db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,?4,?5)",
+            rusqlite::params![[5u8; 16].as_slice(), [21u8; 16].as_slice(), [22u8; 16].as_slice(), [7u8; 16].as_slice(), [8u8; 16].as_slice()],
+        ).is_err(), "same device cannot acquire a second group after migration");
+        assert!(db.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_device_id) VALUES(?1,3,?2,?3,0,?4)",
+            rusqlite::params![[17u8; 16].as_slice(), [21u8; 16].as_slice(), [22u8; 16].as_slice(), [18u8; 16].as_slice()],
+        ).is_err(), "upgraded schema rejects a partial interaction scope");
+        assert_eq!(meta_get(&db, SCHEMA).expect("schema read"), Some(vec![12]));
     }
 
     #[test]
@@ -985,7 +1109,7 @@ mod newer_store_tests {
         assert_eq!(migrate_conn(&db).expect("migrates"), 4);
         assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         assert!(has_thread_index(&db), "app_messages_by_thread exists");
-        assert_eq!(schema_of(&db), vec![0x0b]);
+        assert_eq!(schema_of(&db), vec![0x0c]);
         // The column's check: a thread id is exactly 16 bytes or NULL.
         let insert = |thread: &[u8]| {
             db.execute(
@@ -999,10 +1123,10 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn a_fresh_store_ends_at_11_with_the_thread_column_and_bot_journals() {
+    fn a_fresh_store_ends_at_12_with_the_thread_column_and_bot_journals() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(schema_of(&db), vec![0x0b]);
+        assert_eq!(schema_of(&db), vec![0x0c]);
         assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         assert!(has_thread_index(&db));
         db.query_row(
@@ -1018,24 +1142,24 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn a_v11_store_opens_untouched() {
+    fn a_v12_store_opens_untouched() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         migrate_conn(&db).expect("fresh");
         let before = snapshot(&db);
-        assert_eq!(migrate_conn(&db).expect("current"), 11);
+        assert_eq!(migrate_conn(&db).expect("current"), 12);
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
     }
 
     #[test]
-    fn a_v12_store_is_refused_with_both_numbers_and_left_unchanged() {
-        let db = v11_store();
+    fn a_v13_store_is_refused_with_both_numbers_and_left_unchanged() {
+        let db = v13_store();
         let before = snapshot(&db);
         let changes = db.total_changes();
         match migrate_conn(&db) {
             Err(StorageError::StoreNewer { found, supported }) => {
-                assert_eq!((found, supported), (12, 11));
+                assert_eq!((found, supported), (13, 12));
             }
-            other => panic!("a v11 store must be refused as StoreNewer, got {other:?}"),
+            other => panic!("a v13 store must be refused as StoreNewer, got {other:?}"),
         }
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
         assert_eq!(db.total_changes(), changes, "no row written");
@@ -1044,17 +1168,17 @@ mod newer_store_tests {
     #[test]
     fn the_refusal_names_both_numbers() {
         let e = StorageError::StoreNewer {
-            found: 12,
-            supported: 11,
+            found: 13,
+            supported: 12,
         };
         assert_eq!(
             e.to_string(),
-            "app schema 12 is newer than this build, which supports up to 11"
+            "app schema 13 is newer than this build, which supports up to 12"
         );
     }
 
     #[test]
-    fn schemas_up_to_6_still_migrate_and_end_at_11() {
+    fn schemas_up_to_6_still_migrate_and_end_at_12() {
         for found in [3u8, 4, 5, 6] {
             let db = if found == 5 || found == 6 {
                 let db = rusqlite::Connection::open_in_memory().expect("db");
@@ -1083,7 +1207,7 @@ mod newer_store_tests {
                 db
             };
             assert_eq!(migrate_conn(&db).expect("migrates"), u64::from(found));
-            assert_eq!(schema_of(&db), vec![0x0b]);
+            assert_eq!(schema_of(&db), vec![0x0c]);
             assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
             if found == 6 {
                 db.query_row("SELECT v FROM app_meta WHERE k='legacy_marker'", [], |r| {
@@ -1112,6 +1236,6 @@ mod newer_store_tests {
         )
         .expect("meta table");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(migrate_conn(&db).expect("current"), 11);
+        assert_eq!(migrate_conn(&db).expect("current"), 12);
     }
 }

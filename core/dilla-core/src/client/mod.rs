@@ -315,7 +315,8 @@ fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow, 
             && binding.community_id.as_bytes().as_slice()
                 == row.community_id.as_deref().unwrap_or_default()
             && interaction_binding_matches_own(&binding, own)
-            && binding.bot_user_id.as_slice() == row.target_id.as_slice();
+            && binding.bot_user_id.as_slice() == row.target_id.as_slice()
+            && interaction_row_device_scope_matches(&binding, row);
     }
     let Ok(binding) = group.binding() else {
         return false;
@@ -348,6 +349,23 @@ fn matches_bot_interaction_row(
     };
     binding.community_id.as_bytes().as_slice() == row.community_id.as_deref().unwrap_or_default()
         && interaction_binding_matches_bot(group, &binding, row, own)
+}
+
+fn interaction_row_device_scope_matches(
+    binding: &crate::mls::DillaInteractionBinding,
+    row: &groups::GroupRow,
+) -> bool {
+    match (
+        row.interaction_installation_id.as_deref(),
+        row.interaction_device_id.as_deref(),
+    ) {
+        (None, None) => true,
+        (Some(installation), Some(device)) => {
+            installation == binding.installation_id.as_slice()
+                && device == binding.participant_device_id.as_bytes()
+        }
+        _ => false,
+    }
 }
 
 fn matches_bot_interaction_roster(
@@ -407,6 +425,7 @@ fn interaction_binding_matches_bot(
     own: &Own,
 ) -> bool {
     if !interaction_bot_binding_matches_identity(binding, &row.target_id, own)
+        || !interaction_row_device_scope_matches(binding, row)
         || group.members().len() != 2
     {
         return false;

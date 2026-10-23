@@ -461,7 +461,7 @@ impl ClientCore {
         // sentinel: discovery fails closed if the complete result would exceed the wire cap.
         let candidates = self.read(|c| {
             let mut stmt = c.prepare(
-                "SELECT group_id,target_id,state,epoch FROM app_groups \
+                "SELECT group_id,target_id,state,epoch,interaction_installation_id,interaction_device_id FROM app_groups \
                  WHERE kind=3 AND community_id=?1 AND state<4 ORDER BY group_id LIMIT 2049",
             )?;
             let rows = stmt.query_map([expected_community.as_slice()], |row| {
@@ -470,6 +470,8 @@ impl ClientCore {
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, Option<Vec<u8>>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -481,7 +483,7 @@ impl ClientCore {
             ));
         }
         let mut out = Vec::new();
-        for (group_id, target, state, epoch) in candidates {
+        for (group_id, target, state, epoch, installation, device) in candidates {
             let group_id: [u8; 16] = group_id.try_into().map_err(|_| {
                 ClientError::new(E_CORE_STORAGE, "interaction group identifier rejected")
             })?;
@@ -510,6 +512,13 @@ impl ClientCore {
                 || binding.community_id.as_bytes() != expected_community
                 || binding.installation_id != *expected_installation
                 || binding.bot_user_id != own.user_id
+                || (installation.is_some() != device.is_some())
+                || installation
+                    .as_deref()
+                    .is_some_and(|stored| stored != binding.installation_id.as_slice())
+                || device
+                    .as_deref()
+                    .is_some_and(|stored| stored != binding.participant_device_id.as_bytes())
             {
                 return Err(binding_mismatch());
             }

@@ -108,11 +108,38 @@ impl ClientCore {
         // device-list pins. New creates must also be fresh against the shared host clock; caller
         // supplied server_now is bound to the snapshot but is not itself a clock authority.
         let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
+        let local_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| rejected("clock_unavailable"))?
+            .as_secs();
+        // Preserve expired-proof rejection before the read-only per-device duplicate check.
+        // Creation still re-samples under its write transaction immediately before MLS mutation.
+        if !super::bot_interaction_create::snapshot_is_fresh(
+            snapshot.now,
+            snapshot.not_after,
+            local_now,
+        ) {
+            return Err(rejected("snapshot_expired"));
+        }
         if self
             .read(|c| super::groups::group_row(c, group_id))?
             .is_some()
         {
             return Err(ClientError::new(E_CORE_STATE, "group already exists"));
+        }
+        let existing = self.bot_interaction_group_descriptors(
+            expected.instance.as_bytes(),
+            expected.community.as_bytes(),
+            expected.installation.as_bytes(),
+        )?;
+        if existing.iter().any(|descriptor| {
+            descriptor.participant_user == *expected.participant_user.as_bytes()
+                && descriptor.participant_device == *expected.participant_device.as_bytes()
+        }) {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "participant device already has an interaction group",
+            ));
         }
 
         let (group, result) = self.write(|ctx, unit| {
@@ -203,8 +230,8 @@ impl ClientCore {
 
             unit.with_conn(|c| {
                 c.execute(
-                    "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,epoch) VALUES(?1,3,?2,?3,0,1)",
-                    params![group_id.as_slice(), expected.community.as_bytes().as_slice(), expected.participant_user.as_bytes().as_slice()],
+                    "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,epoch,interaction_installation_id,interaction_device_id) VALUES(?1,3,?2,?3,0,1,?4,?5)",
+                    params![group_id.as_slice(), expected.community.as_bytes().as_slice(), expected.participant_user.as_bytes().as_slice(), expected.installation.as_bytes().as_slice(), expected.participant_device.as_bytes().as_slice()],
                 )?;
                 bot_intents::persist(c, intent, group_id, &result)?;
                 Ok::<_, StorageError>(())
