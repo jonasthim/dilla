@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -120,6 +122,123 @@ func TestDJRolePolicyRequiresBothPermissionsAndRoleHierarchy(t *testing.T) {
 	}
 	if status, body := e.Do(http.MethodPut, path, ownerToken, []any{id.New(), installation.ID, []any{allowed.ID}}); status != http.StatusConflict {
 		t.Fatalf("stale installation DJ policy write = %d (%x), want 409", status, body)
+	}
+}
+
+func TestDJRolePolicySurvivesDisableButWaitsForSameInstallationToBeReady(t *testing.T) {
+	e, cid, token := channelEnv(t)
+	owner := e.sess[token].UserID
+	stepUps := api.NewStepUps(e.Clk, time.Minute)
+	deps := api.Deps{Repo: e.Repo, Clock: e.Clk, StepUps: stepUps, Log: slog.New(slog.DiscardHandler)}
+	e.Mux.HandleFunc("PUT /v1/communities/{community}/bot", deps.ConfigureBotInstallation)
+	e.Mux.HandleFunc("POST /v1/communities/{community}/bot/disable", deps.DisableBotInstallation)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	session := e.sess[token]
+	session.WireVersion = 3
+	session.TokenHash = []byte(token)
+	e.sess[token] = session
+	h := e.Srv.Config.Handler
+	ctx := context.Background()
+	{
+		encode := func(value any) []byte {
+			t.Helper()
+			body, err := cborx.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return body
+		}
+		now := e.Clk.Now().Unix()
+		botID, deviceID := id.New(), id.New()
+		if err := e.Repo.CreateUser(ctx, store.UserRow{ID: botID, Username: "dj-cycle-" + botID.String()[:8], Kind: 1, UMKPub: append(botID[:], make([]byte, 16)...), SSKPub: append(deviceID[:], make([]byte, 16)...), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+			t.Fatal(err)
+		}
+		device := store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: append(deviceID[:], make([]byte, 16)...), CredentialBlob: []byte{1}, Created: now, LastSeen: now}
+		if err := e.Repo.CreateDevice(ctx, device); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: botID, Joined: now}); err != nil {
+			t.Fatal(err)
+		}
+		verified := now
+		installation := store.BotInstallationRow{ID: id.New(), CommunityID: cid, UserID: &botID, DeviceID: &deviceID,
+			State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner, ApprovedAt: now,
+			CredentialVerifiedAt: &verified, Created: now, Updated: now}
+		if err := e.Repo.CreateBotInstallation(ctx, installation); err != nil {
+			t.Fatal(err)
+		}
+		role := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "dj-cycle-role", Position: 1, Created: now}
+		if err := e.Repo.PutRole(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+		policyPath := "/v1/communities/" + cid.String() + "/music/dj-roles"
+		if rec := putCBORAuth(h, policyPath, encode([]any{id.New(), installation.ID, []any{role.ID}}), token); rec.Code != http.StatusOK {
+			t.Fatalf("configure DJ roles = %d (%x)", rec.Code, rec.Body.Bytes())
+		}
+
+		botPath := "/v1/communities/" + cid.String() + "/bot"
+		if rec := postCBORAuth(h, botPath+"/disable", encode([]any{id.New(), installation.Revision}), token); rec.Code != http.StatusOK {
+			t.Fatalf("disable installation = %d (%x)", rec.Code, rec.Body.Bytes())
+		}
+		disabled, err := e.Repo.GetBotInstallation(ctx, installation.ID)
+		if err != nil || disabled.State != store.BotInstallationDisabled || disabled.RemovedAt != nil {
+			t.Fatalf("soft-disabled installation = %+v, %v", disabled, err)
+		}
+		if rec := getAuth(h, policyPath, token); rec.Code != http.StatusNotFound {
+			t.Fatalf("GET while disabled = %d, want 404", rec.Code)
+		}
+		if rec := putCBORAuth(h, policyPath, encode([]any{id.New(), installation.ID, []any{}}), token); rec.Code != http.StatusNotFound {
+			t.Fatalf("PUT while disabled = %d, want 404", rec.Code)
+		}
+		saved, err := e.Repo.ListDJRolePolicy(ctx, installation.ID)
+		if err != nil || len(saved) != 1 || saved[0].RoleID != role.ID {
+			t.Fatalf("policy after disabled PUT = %+v, %v; want saved approval unchanged", saved, err)
+		}
+
+		step, _ := deps.StepUps.Issue(owner, session.TokenHash)
+		expectedRevision := disabled.Revision
+		enable := []any{id.New(), expectedRevision, uint64(0), step}
+		if rec := putCBORAuth(h, botPath, encode(enable), token); rec.Code != http.StatusOK {
+			t.Fatalf("explicit re-enable = %d (%x)", rec.Code, rec.Body.Bytes())
+		}
+		joining, err := e.Repo.GetBotInstallation(ctx, installation.ID)
+		if err != nil || joining.ID != installation.ID || joining.State != store.BotInstallationJoining {
+			t.Fatalf("re-enabled installation = %+v, %v; want same ID joining", joining, err)
+		}
+		if rec := getAuth(h, policyPath, token); rec.Code != http.StatusNotFound {
+			t.Fatalf("GET before ready = %d, want 404", rec.Code)
+		}
+		if rec := putCBORAuth(h, policyPath, encode([]any{id.New(), installation.ID, []any{}}), token); rec.Code != http.StatusNotFound {
+			t.Fatalf("PUT before ready = %d, want 404", rec.Code)
+		}
+		saved, err = e.Repo.ListDJRolePolicy(ctx, installation.ID)
+		if err != nil || len(saved) != 1 || saved[0].RoleID != role.ID {
+			t.Fatalf("policy after pre-ready PUT = %+v, %v; want saved approval unchanged", saved, err)
+		}
+
+		joining.State = store.BotInstallationReady
+		joining.Revision++
+		joining.Updated = e.Clk.Now().Unix()
+		if err := e.Repo.Tx(ctx, func(tx store.Repository) error {
+			return tx.UpdateBotInstallation(ctx, joining.ID, joining.Revision-1, joining)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if rec := getAuth(h, policyPath, token); rec.Code != http.StatusOK {
+			t.Fatalf("GET after same installation is ready = %d (%x), want saved policy", rec.Code, rec.Body.Bytes())
+		} else {
+			var value struct {
+				_              struct{} `cbor:",toarray"`
+				Roles          []id.ID
+				InstallationID id.ID
+			}
+			if err := cborx.Unmarshal(rec.Body.Bytes(), &value); err != nil {
+				t.Fatal(err)
+			}
+			if len(value.Roles) != 1 || value.Roles[0] != role.ID || value.InstallationID != installation.ID {
+				t.Fatalf("saved DJ policy after re-enable = %#v", value)
+			}
+		}
 	}
 }
 

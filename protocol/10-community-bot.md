@@ -699,6 +699,11 @@ Default automation actions are log-only; automatic bans are unavailable.
 A single non-removed installation exists per community; repeat enable with the
 same request id and payload returns the original result. Removed installations
 are never reactivated; a new enable creates a new identity and installation id.
+Soft disable retains the installation ID and its DJ role approvals, but the DJ
+role policy routes stay unavailable while the installation is disabled or
+re-enrolling. Explicitly enabling that same installation and returning it to
+ready makes the saved approvals available again. Permanent removal tombstones
+the old installation; a later installation does not inherit its policy.
 
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |
