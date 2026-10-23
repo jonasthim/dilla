@@ -16,6 +16,9 @@ var ErrIneligible = errors.New("bot access: installation is not eligible")
 
 const accountKindBot uint8 = 1
 
+// MusicCapability is the installation capability bit used by managed-bot route authorization.
+const MusicCapability uint8 = 1 << 0
+
 // Binding describes the managed installation that owns a bot account/device.
 // Capabilities are the human-approved installation mask, not permission bits.
 type Binding struct {

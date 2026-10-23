@@ -503,6 +503,24 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
+							var musicInteractions *service.MusicInteractions
+							if result.Installation.Capabilities&botMusicCapability != 0 {
+								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
+								if channelsErr == nil {
+									musicOwnedNative, channelsErr = musicRegistry.Reconcile(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, unavailableMusicQueueStarter())
+								}
+								if channelsErr != nil {
+									_ = musicRegistry.Disable(installation.ID)
+									logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
+									ensureErr = errors.Join(ensureErr, channelsErr)
+								} else {
+									var musicErr error
+									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger)
+									if musicErr != nil {
+										logger.Warn("bot music interaction handlers unavailable", "installation_id", installation.ID.String(), "error", musicErr.Error())
+									}
+								}
+							}
 							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
 							var scheduler *announcements.Scheduler
 							var scheduleErr error
@@ -535,6 +553,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID},
 														service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
 														service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID},
+														musicInteractions,
 													)
 													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
 														handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
@@ -556,15 +575,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								logger.Error("bot interaction event dispatch paused", "installation_id", installation.ID.String(), "error", interactionErr.Error())
 								ensureErr = errors.Join(ensureErr, interactionErr)
 							}
-							channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
-							if channelsErr == nil {
-								musicOwnedNative, channelsErr = musicRegistry.Reconcile(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, unavailableMusicQueueStarter())
-							} else {
-								_ = musicRegistry.Disable(installation.ID)
-							}
-							if channelsErr != nil {
-								logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
-								ensureErr = errors.Join(ensureErr, channelsErr)
+							if result.Installation.Capabilities&botMusicCapability == 0 {
+								if err := musicRegistry.Disable(installation.ID); err != nil {
+									logger.Error("bot music runtime cleanup incomplete", "installation_id", installation.ID.String(), "error", err.Error())
+								}
 							} else {
 								if retained := musicRegistry.runtimes[installation.ID]; retained != nil {
 									musicQueueCount = retained.queues.Len()

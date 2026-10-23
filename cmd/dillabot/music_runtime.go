@@ -15,7 +15,9 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/session"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 const (
@@ -219,6 +221,83 @@ func (p persistedMusicQueue) Save(ctx context.Context, channel id.ID, expected u
 	return snapshot.Revision, err
 }
 
+// runtimeMusicAuthorityStore resolves installation and DJ policy from current
+// bot APIs on every authorization check. It never falls back to cached roles.
+type runtimeMusicAuthorityStore struct {
+	runtime      *client.Runtime
+	session      *client.Session
+	installation id.ID
+	community    id.ID
+}
+
+func newRuntimeMusicInteractions(installation, community id.ID, capabilities uint64, runtime *client.Runtime, session *client.Session, registry *musicQueueRegistry, logger *slog.Logger) (*service.MusicInteractions, error) {
+	if capabilities&botMusicCapability == 0 {
+		return nil, nil
+	}
+	if installation.IsZero() || community.IsZero() || runtime == nil || session == nil || registry == nil {
+		return nil, errors.New("music interaction authority or queue store unavailable")
+	}
+	stateStore, ok := registry.QueueStore(installation, community)
+	if !ok {
+		return nil, errors.New("encrypted music queue store unavailable")
+	}
+	authority := &service.CommunityMusicInteractionAuthority{
+		Session:        session,
+		Store:          runtimeMusicAuthorityStore{runtime: runtime, session: session, installation: installation, community: community},
+		InstallationID: installation, CommunityID: community,
+	}
+	return &service.MusicInteractions{
+		Store: stateStore, Authority: authority,
+		InstallationID: installation, CommunityID: community,
+		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
+	}, nil
+}
+
+func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx context.Context, community id.ID) (store.BotInstallationRow, error) {
+	if s.runtime == nil || community.IsZero() || community != s.community {
+		return store.BotInstallationRow{}, store.ErrNotFound
+	}
+	installations, err := s.runtime.ListInstallations(ctx)
+	if err != nil {
+		return store.BotInstallationRow{}, err
+	}
+	var found *client.Installation
+	for i := range installations {
+		if installations[i].CommunityID != community {
+			continue
+		}
+		if found != nil {
+			return store.BotInstallationRow{}, errors.New("multiple runtime installations found for community")
+		}
+		found = &installations[i]
+	}
+	if found == nil {
+		return store.BotInstallationRow{}, store.ErrNotFound
+	}
+	if found.ID != s.installation || found.State > 255 || found.Capabilities > 255 {
+		return store.BotInstallationRow{}, store.ErrNotFound
+	}
+	return store.BotInstallationRow{ID: found.ID, CommunityID: found.CommunityID, State: uint8(found.State), Capabilities: uint8(found.Capabilities)}, nil
+}
+
+func (s runtimeMusicAuthorityStore) ListDJRolePolicy(ctx context.Context, installation id.ID) ([]store.DJRolePolicyRow, error) {
+	if s.session == nil || installation.IsZero() || installation != s.installation {
+		return nil, errors.New("Music DJ policy session unavailable")
+	}
+	policy, err := s.session.MusicDJRolePolicy(ctx, installation)
+	if err != nil {
+		return nil, err
+	}
+	if policy.CommunityID != s.community || policy.InstallationID != s.installation || policy.Capabilities&botMusicCapability == 0 {
+		return nil, errors.New("Music DJ policy binding changed")
+	}
+	rows := make([]store.DJRolePolicyRow, len(policy.RoleIDs))
+	for i, role := range policy.RoleIDs {
+		rows[i] = store.DJRolePolicyRow{InstallationID: installation, RoleID: role}
+	}
+	return rows, nil
+}
+
 // newMusicSupervisor is the per-channel persistence integration point.
 func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.Store, starter session.QueueStarter) (*music.Supervisor, error) {
 	if store == nil || starter.OptionsFor == nil {
@@ -299,6 +378,19 @@ func (r *musicQueueRegistry) Native(installation, community id.ID) musicRuntimeN
 		return nil
 	}
 	return retained.native
+}
+
+func (r *musicQueueRegistry) QueueStore(installation, community id.ID) (*persistence.Store, bool) {
+	if r == nil {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	retained := r.runtimes[installation]
+	if retained == nil || retained.community != community || retained.queues == nil || retained.queues.store == nil {
+		return nil, false
+	}
+	return retained.queues.store, true
 }
 
 // ApplyPersistedSnapshot is the runtime bridge for queue mutations already
