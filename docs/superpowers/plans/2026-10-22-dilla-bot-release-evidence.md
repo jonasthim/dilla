@@ -207,13 +207,19 @@ The Bot doctor now warns about missing local YouTube tools, and `doctor --youtub
 checks the pinned extractor and required local tools. The setup guide provides
 hash-locked yt-dlp 2026.10.21 and EJS 0.8.0 installation instructions. This
 checks local readiness, not live provider playback.
-PR #87's CodeQL review found one real missing `uint64` to `int64` bound in
-`DeleteRolePanel`; SQLite and PostgreSQL now reject zero and values above
-`MaxInt64`, with boundary tests passing on both engines. The other flagged
-role-grant paths already checked the bound. Three cryptography alerts refer to
-a nonce buffer filled from `/dev/urandom` before use and two fixed message keys
-in test fixtures; production message keys use the native RNG. The GitHub
-security scan must be rerun on the updated branch.
+PR #87's CodeQL check on `09c0eaa4` reported 37 annotations, not just the nine
+inline review comments: ten unchecked `uint64` to `int64` conversions, two
+workflow-token permission warnings, and 25 hard-coded-cryptography findings.
+Both SQL backends now guard the ten conversions before a database call, with
+SQLite boundary tests passing; PostgreSQL tests await an enabled test database
+in CI. The CI workflow token is restricted to read-only contents, and its
+checker tests pass. Independent source review classified the 25 Rust findings:
+four production sites initialize output buffers that are fully overwritten by
+`/dev/urandom`, exact-length input, or HKDF; 21 are deterministic test fixtures.
+Their production sites now have explanatory comments. The false-positive
+alerts still need explicit GitHub dismissal; code comments do not clear a
+CodeQL check. A subsequent scan must confirm the conversion and permission
+fixes before release.
 
 1. **Encrypted interactions:** native creation, helper IPC, durable Go coordination, Welcome storage, admission-backed synchronization, Bot event dispatch, a fenced private-group read route, dedicated native descriptor/inspection and proof-bound sync/send operations, and a durable response outbox are integrated. Human response correlation reaches moderation log, welcome settings, music controls, and role-panel publication in Chromium. The role-panel reaction and source-removal lifecycle now pass in Chromium and Firefox, with durable timed retry for transient action failures. Cross-device recovery and whole-release browser acceptance remain required. Store/API suites passed against PostgreSQL earlier; this is not the whole-release matrix.
 2. **Production music path:** `cmd/dillabot` reconciles identities, registers authorized encrypted queue handlers, and constructs YouTube and synthetic-tested Spotify PCM starters. Chromium and Firefox prove audible, authenticated YouTube playback from the shipping queue/control flow, including Pause, Resume, and Stop after stale-leaf recovery. Chromium also passes two independent sessions in one community. A further Chromium test passes two communities in one instance, with distinct Bot identities, queues, call keys and decrypted audio; stopping or disabling one Bot leaves the other's audio running. This run required yt-dlp 2026.10.21; the older local 2025.09.26 failed the same sample under the production bubblewrap resolver. Playlist controls and dedicated Spotify-account qualification remain open. The operator accepts the risk that [Spotify's Developer Policy](https://developer.spotify.com/policy) prohibits the planned one-source-to-several-listeners use absent permission; this is recorded separately from the technical release gate.
