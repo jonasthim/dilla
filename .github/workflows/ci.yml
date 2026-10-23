@@ -6,7 +6,7 @@ on:
   # Final review S-I1: runs the whole workflow by hand, upgrade-e2e included.
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always

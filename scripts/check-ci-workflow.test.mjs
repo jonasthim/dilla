@@ -72,7 +72,7 @@ on:
   pull_request:
   workflow_dispatch:
 concurrency:
-  group: \${{ github.workflow }}-\${{ github.ref }}
+  group: \${{ github.workflow }}-\${{ github.event_name }}-\${{ github.ref }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
@@ -704,6 +704,11 @@ test('a job that lost a required step is reported', () => {
 test('a missing concurrency block is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/concurrency:[\s\S]*?cancel-in-progress: true\n/, '')));
   assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
+});
+
+test('a concurrency group without the event name is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('${{ github.event_name }}-', '')));
+  assert.ok(problems.some((p) => p.includes('github.event_name')), problems.join('\n'));
 });
 
 test('a workflow-level RUSTFLAGS is reported', () => {

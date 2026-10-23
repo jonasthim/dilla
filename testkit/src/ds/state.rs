@@ -139,7 +139,7 @@ const WIRE_CODES: &[&str] = &[
     "E_VERSION",
 ];
 
-/// The positions after `[code, detail, retry_after_ms]` in a remote error body: the four
+/// The positions after `[code, detail, retry_after_ms]` in a remote error body: the five
 /// extended shapes of protocol/02 § Errors. `check_status` in `ds::remote` fills in what the
 /// body carries; everything else is left empty.
 #[derive(Default)]

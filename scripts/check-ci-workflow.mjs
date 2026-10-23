@@ -8,6 +8,7 @@ import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas
  * make the Go half of the tree ungated without this gate saying a word. The `go` job additionally has
  * to declare its `needs: rust-wasi` edge (see below).
  */
+// "Must exist in ci.yml", not "required for ci-ok": NOT_REQUIRED_JOBS below lists the ones that are never required checks.
 export const REQUIRED_JOBS = [
   // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
   'changes',
@@ -803,6 +804,10 @@ export function checkWorkflow(root) {
 
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
+  }
+  // A workflow_dispatch on main's head must not cancel the push run of the same commit (the release gate reads sfu-compat from push runs).
+  if (!/^\s{2}group:.*github\.event_name/m.test(text)) {
+    problems.push('ci.yml: the concurrency group must include github.event_name, so a workflow_dispatch cannot cancel the push run of the same commit');
   }
   // gap-29 §4 ii: a workflow-level RUSTFLAGS overrides every target.*.rustflags outright.
   if (/^\s{2}RUSTFLAGS:/m.test(text)) {

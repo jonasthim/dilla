@@ -470,9 +470,10 @@ fn instance_id_of(agent: &ureq::Agent, base: &str) -> Result<[u8; 16], DsError> 
 /// A non-2xx answer is decoded as protocol/02's error array, so a scenario's `expect_reject`
 /// matches on the same `E_*` code a real client would see.
 ///
-/// `[code, detail, retry_after_ms|null]`, extended for four codes: `E_COMMIT_CONFLICT` appends
-/// `[winning_commit, proposals]`, `E_COMMIT_REQUIRED` `[proposals]`, `E_COMMIT_INVALID` `[rule]`
-/// and `E_VERSION` three version lists. `decode_strict` refuses trailing bytes, so every declared
+/// `[code, detail, retry_after_ms|null]`, extended for five codes: `E_COMMIT_CONFLICT` appends
+/// `[winning_commit, proposals]`, `E_COMMIT_REQUIRED` `[proposals]`, `E_COMMIT_INVALID` `[rule]`,
+/// `E_VERSION` three version lists and `E_UNAVAILABLE` a `reason`
+/// (a call start only). `decode_strict` refuses trailing bytes, so every declared
 /// element is consumed; the ones this client has no use for are skipped.
 fn check_status(status: u16, body: &[u8]) -> Result<(), DsError> {
     if (200..300).contains(&status) {
