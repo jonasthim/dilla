@@ -278,6 +278,9 @@ impl Request {
         if !matches!(self.operation, 0|1|2|10..=23|30|31|40|50..=52|60..=63) {
             return Err(CodecError::Operation);
         }
+        if self.operation == 31 && self.revision != Some(0) {
+            return Err(CodecError::Value);
+        }
         if !args_match(self.operation, &self.args) {
             return Err(CodecError::Value);
         }

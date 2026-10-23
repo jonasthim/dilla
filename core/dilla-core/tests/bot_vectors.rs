@@ -84,6 +84,10 @@ fn role_panel_publish_request_round_trips_and_requires_a_bounded_mapping_array()
             .is_ok()
     );
 
+    let mut nonzero_revision = request.clone();
+    nonzero_revision.revision = Some(1);
+    assert!(nonzero_revision.encode_cbor().is_err());
+
     let mut missing_expiry = request.clone();
     missing_expiry.expires = None;
     assert!(missing_expiry.encode_cbor().is_err());

@@ -560,7 +560,8 @@ mod tests {
                 .contains(&operation)
                 .then(|| crate::ids::ChannelId::from_bytes([3; 16])),
             operation,
-            revision: (operation == 13 || operation == 2 || operation == 31).then_some(7),
+            revision: (operation == 13 || operation == 2 || operation == 31)
+                .then_some(if operation == 31 { 0 } else { 7 }),
             expires: (operation == 13 || operation == 2 || operation == 31).then_some(20),
             args,
         }
