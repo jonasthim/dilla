@@ -180,7 +180,7 @@ func TestCompiledHelperWithRealRustPeerExternalJoinTrustAndJournal(t *testing.T)
 		t.Fatal(err)
 	}
 	fixtureDir := filepath.Join(t.TempDir(), "peer")
-	cmd := exec.Command("cargo", "test", "-p", "dilla-core", "--test", "native_bot_group_peer_fixture", "--", "--exact", "bridge_public_cbor_peer", "--nocapture")
+	cmd := exec.CommandContext(t.Context(), "cargo", "test", "-p", "dilla-core", "--test", "native_bot_group_peer_fixture", "--", "--exact", "bridge_public_cbor_peer", "--nocapture")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "DILLA_NATIVE_GROUP_FIXTURE_DIR="+fixtureDir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -319,7 +319,7 @@ func killProcessGroupAndWait(cmd *exec.Cmd) {
 func TestKillProcessGroupAndWaitStopsChildren(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "child-finished")
 	started := marker + ".started"
-	cmd := exec.Command("sh", "-c", `sh -c 'touch "$1"; sleep 0.3; touch "$2"' sh "$1" "$2" & wait`, "sh", started, marker)
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", `sh -c 'touch "$1"; sleep 0.3; touch "$2"' sh "$1" "$2" & wait`, "sh", started, marker)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

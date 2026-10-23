@@ -260,11 +260,11 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 	}
 }
 func validateArgs(op Operation, a []any) error {
-	u := func(i int, max uint64) bool { v, ok := a[i].(uint64); return ok && v <= max }
+	u := func(i int, maximum uint64) bool { v, ok := a[i].(uint64); return ok && v <= maximum }
 	idarg := func(i int) bool { v, ok := a[i].(id.ID); return ok && isID(v) }
-	str := func(i, min, max int, plain bool) bool {
+	str := func(i, minimum, maximum int, plain bool) bool {
 		v, ok := a[i].(string)
-		if !ok || !utf8.ValidString(v) || len([]byte(v)) < min || len([]byte(v)) > max {
+		if !ok || !utf8.ValidString(v) || len([]byte(v)) < minimum || len([]byte(v)) > maximum {
 			return false
 		}
 		if plain {
@@ -279,9 +279,9 @@ func validateArgs(op Operation, a []any) error {
 		}
 		return true
 	}
-	data := func(i, min, max int) bool {
+	data := func(i, minimum, maximum int) bool {
 		v, ok := a[i].([]byte)
-		return ok && len(v) >= min && len(v) <= max && validArray(v)
+		return ok && len(v) >= minimum && len(v) <= maximum && validArray(v)
 	}
 	switch op {
 	case OpOverviewGet, OpMusicState, OpMusicPause, OpMusicResume, OpMusicSkip, OpMusicStop, OpMusicShuffle, OpMusicClear:
@@ -315,7 +315,11 @@ func validateArgs(op Operation, a []any) error {
 	case OpMusicRemove:
 		return boolErr(idarg(0))
 	case OpAnnouncementsDelete:
-		return boolErr(idarg(0) && u(1, math.MaxInt64) && a[1].(uint64) > 0)
+		if len(a) != 2 {
+			return boolErr(false)
+		}
+		value, ok := a[1].(uint64)
+		return boolErr(idarg(0) && ok && value <= math.MaxInt64 && value > 0)
 	case OpMusicMove:
 		return boolErr(idarg(0) && nullableID(a[1]))
 	case OpWelcomePreview:
@@ -434,7 +438,7 @@ func EncodeResponseCBOR(r Response) ([]byte, error) {
 	if r.Revision != nil {
 		rev = *r.Revision
 	}
-	data := any([]byte(r.Data))
+	data := any(r.Data)
 	b, e := cborx.Marshal([]any{uint64(1), r.RequestID, r.CommunityID, r.Status, rev, data})
 	if e != nil {
 		return nil, invalid()
@@ -593,7 +597,7 @@ func ValidateEventContext(e Event, expected id.ID) error {
 	return nil
 }
 func validateEventData(k EventKind, d []any, ts uint64) error {
-	u := func(i int, max uint64) bool { v, ok := d[i].(uint64); return ok && v <= max }
+	u := func(i int, maximum uint64) bool { v, ok := d[i].(uint64); return ok && v <= maximum }
 	ii := func(i int) bool { v, ok := d[i].(id.ID); return ok && isID(v) }
 	ni := func(i int) bool { return nullableID(d[i]) }
 	count := map[EventKind]int{1: 2, 2: 2, 3: 3, 4: 3, 5: 3, 6: 9, 7: 3}[k]
@@ -621,7 +625,10 @@ func validateEventData(k EventKind, d []any, ts uint64) error {
 		if !ii(0) || !ii(1) || !ii(2) || !ii(3) || !ni(4) || !ni(5) || !nullableUint(d[6]) || !u(7, 6) || !nullableUint(d[8]) {
 			return invalid()
 		}
-		act := d[7].(uint64)
+		act, ok := d[7].(uint64)
+		if !ok {
+			return invalid()
+		}
 		if act == 4 {
 			if d[5] == nil || d[6] == nil {
 				return invalid()
@@ -630,14 +637,18 @@ func validateEventData(k EventKind, d []any, ts uint64) error {
 			return invalid()
 		}
 		if act == 1 {
-			if d[8] == nil || d[8].(uint64) <= ts {
+			expires, ok := d[8].(uint64)
+			if d[8] == nil || !ok || expires <= ts {
 				return invalid()
 			}
 		} else if act != 3 && d[8] != nil {
 			return invalid()
 		}
-		if act == 3 && d[8] != nil && d[8].(uint64) <= ts {
-			return invalid()
+		if act == 3 && d[8] != nil {
+			expires, ok := d[8].(uint64)
+			if !ok || expires <= ts {
+				return invalid()
+			}
 		}
 	case 7:
 		if !ii(0) || !isUint(d[1]) || !u(2, 1) {
@@ -744,7 +755,7 @@ func DecodeReceipt(b []byte) (SendReceipt, error) {
 		return z, invalid()
 	}
 	a := n.a
-	if a[0].major != 0 || a[0].u != 1 || !isNullableIDNode(a[3]) || a[4].major != 2 || a[5].major != 2 || a[6].major != 0 || a[7].major != 2 || len(a[7].b) != 32 || a[8].major != 0 || a[9].major != 0 || a[10].major != 0 || !(a[11].null || a[11].major == 2) {
+	if a[0].major != 0 || a[0].u != 1 || !isNullableIDNode(a[3]) || a[4].major != 2 || a[5].major != 2 || a[6].major != 0 || a[7].major != 2 || len(a[7].b) != 32 || a[8].major != 0 || a[9].major != 0 || a[10].major != 0 || (!a[11].null && a[11].major != 2) {
 		return z, invalid()
 	}
 	for _, i := range []int{1, 2, 4, 5} {
@@ -839,7 +850,7 @@ func encodeHelper(req bool, request id.ID, code uint64, payload []any) ([]byte, 
 		return nil, invalid()
 	}
 	frame := make([]byte, 4+len(b))
-	binary.BigEndian.PutUint32(frame, uint32(len(b)))
+	binary.BigEndian.PutUint32(frame, uint32FromInt(len(b)))
 	copy(frame[4:], b)
 	return frame, nil
 }
@@ -916,7 +927,7 @@ func DecodeHelperRequestCBOR(b []byte) (HelperRequest, error) {
 		return HelperRequest{}, ErrLimit
 	}
 	f := make([]byte, 4+len(b))
-	binary.BigEndian.PutUint32(f, uint32(len(b)))
+	binary.BigEndian.PutUint32(f, uint32FromInt(len(b)))
 	copy(f[4:], b)
 	return DecodeHelperRequestFrame(f)
 }
@@ -925,7 +936,7 @@ func DecodeHelperResponseCBOR(b []byte) (HelperResponse, error) {
 		return HelperResponse{}, ErrLimit
 	}
 	f := make([]byte, 4+len(b))
-	binary.BigEndian.PutUint32(f, uint32(len(b)))
+	binary.BigEndian.PutUint32(f, uint32FromInt(len(b)))
 	copy(f[4:], b)
 	return DecodeHelperResponseFrame(f)
 }
@@ -934,7 +945,7 @@ func helperBody(b []byte) ([]byte, error) {
 		return nil, invalid()
 	}
 	n := binary.BigEndian.Uint32(b[:4])
-	if n == 0 || n > MaxHelperBytes || uint64(n) != uint64(len(b)-4) {
+	if n == 0 || n > MaxHelperBytes || uint64(n) != intToUint64(len(b)-4) {
 		return nil, ErrLimit
 	}
 	return b[4:], nil
@@ -962,6 +973,27 @@ func parse(b []byte) (node, error) {
 	}
 	return n, nil
 }
+func uint32FromInt(value int) uint32 {
+	if value < 0 || uint64(value) > math.MaxUint32 {
+		return 0
+	}
+	return uint32(value)
+}
+
+func intToUint64(value int) uint64 {
+	if value < 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
+func uint64ToInt(value uint64) int {
+	if value > uint64(math.MaxInt) {
+		return 0
+	}
+	return int(value)
+}
+
 func readNode(b []byte, depth int) (node, int, error) {
 	var n node
 	if depth > cborx.MaxNesting || len(b) == 0 {
@@ -982,20 +1014,20 @@ func readNode(b []byte, depth int) (node, int, error) {
 		n.u = v
 		return n, h, nil
 	case 2, 3:
-		if v > uint64(len(b)-h) {
+		if v > intToUint64(len(b)-h) {
 			return n, 0, invalid()
 		}
-		n.b = append([]byte(nil), b[h:h+int(v)]...)
+		n.b = append([]byte(nil), b[h:h+uint64ToInt(v)]...)
 		if m == 3 {
 			n.s = string(n.b)
 		}
-		return n, h + int(v), nil
+		return n, h + uint64ToInt(v), nil
 	case 4:
 		if v > uint64(len(b)) {
 			return n, 0, invalid()
 		}
 		pos := h
-		n.a = make([]node, 0, int(v))
+		n.a = make([]node, 0, uint64ToInt(v))
 		for i := uint64(0); i < v; i++ {
 			child, k, er := readNode(b[pos:], depth+1)
 			if er != nil {

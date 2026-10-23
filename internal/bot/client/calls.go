@@ -130,8 +130,8 @@ func validLiveKitURL(raw string, allowLoopback bool) bool {
 	return ip != nil && ip.IsLoopback() || host == "localhost"
 }
 
-func validCallSecret(v string, max int) bool {
-	return len(v) > 0 && len(v) <= max && !strings.ContainsAny(v, "\r\n\x00")
+func validCallSecret(v string, maxLength int) bool {
+	return len(v) > 0 && len(v) <= maxLength && !strings.ContainsAny(v, "\r\n\x00")
 }
 
 func parseICEServers(v any) ([]ICEServer, error) {

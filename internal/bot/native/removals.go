@@ -35,7 +35,7 @@ func (c *Client) RemovalActorHistoryVersion(ctx context.Context, group id.ID, en
 	if err != nil {
 		return 0, err
 	}
-	return v.(uint64), nil
+	return resultAs[uint64](v)
 }
 
 // RefreshRemovalActorHistory validates and caches a complete signed-list chain for a previously
@@ -52,7 +52,7 @@ func (c *Client) RefreshRemovalActorHistory(ctx context.Context, group id.ID, en
 	if err != nil {
 		return 0, err
 	}
-	return v.(uint64), nil
+	return resultAs[uint64](v)
 }
 
 func decodeRemovalActorVersion(result []any) (any, error) {
@@ -110,5 +110,5 @@ func (c *Client) IngestRemovals(ctx context.Context, group id.ID, entries []Remo
 	if err != nil {
 		return 0, err
 	}
-	return v.(uint64), nil
+	return resultAs[uint64](v)
 }

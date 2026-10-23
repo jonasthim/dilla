@@ -163,6 +163,15 @@ func (c *Client) invalidateLocked() {
 	_ = c.t.Close()
 }
 
+func resultAs[T any](value any) (T, error) {
+	result, ok := value.(T)
+	if !ok {
+		var zero T
+		return zero, fmt.Errorf("native result type mismatch: expected %T", zero)
+	}
+	return result, nil
+}
+
 func (c *Client) Bootstrap(ctx context.Context, externalSenderKey [32]byte) (BootstrapResult, error) {
 	if allZeroCallKey(externalSenderKey[:]) {
 		return BootstrapResult{}, errors.New("invalid native bootstrap instance key")
@@ -172,7 +181,7 @@ func (c *Client) Bootstrap(ctx context.Context, externalSenderKey [32]byte) (Boo
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	return v.(BootstrapResult), nil
+	return resultAs[BootstrapResult](v)
 }
 func (c *Client) CompleteEnrollment(ctx context.Context, user id.ID, username string, now uint64) (EnrollmentResult, error) {
 	if user.IsZero() || !utf8.ValidString(username) || len([]byte(username)) < 1 || len([]byte(username)) > 256 || now > math.MaxInt64 {
@@ -195,14 +204,14 @@ func (c *Client) CompleteEnrollment(ctx context.Context, user id.ID, username st
 	if err != nil {
 		return EnrollmentResult{}, err
 	}
-	return v.(EnrollmentResult), nil
+	return resultAs[EnrollmentResult](v)
 }
 func (c *Client) Identity(ctx context.Context) (Identity, error) {
 	v, err := c.call(ctx, protocol.HelperSession, []any{uint64(0)}, false, wrappedBody(func(b []byte) (any, error) { return decodeIdentity(b, c.binding) }))
 	if err != nil {
 		return Identity{}, err
 	}
-	return v.(Identity), nil
+	return resultAs[Identity](v)
 }
 func (c *Client) SignSession(ctx context.Context, nonce [32]byte, purpose uint64) (SessionSignature, error) {
 	if purpose > 1 {
@@ -212,7 +221,7 @@ func (c *Client) SignSession(ctx context.Context, nonce [32]byte, purpose uint64
 	if err != nil {
 		return SessionSignature{}, err
 	}
-	return v.(SessionSignature), nil
+	return resultAs[SessionSignature](v)
 }
 func (c *Client) StoreSession(ctx context.Context, token string, expires, idleExpires uint64) error {
 	if !utf8.ValidString(token) || len([]byte(token)) < 1 || len([]byte(token)) > 256 || expires > math.MaxInt64 || idleExpires > math.MaxInt64 {
@@ -226,7 +235,7 @@ func (c *Client) Session(ctx context.Context) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	return v.(Session), nil
+	return resultAs[Session](v)
 }
 func (c *Client) ClearSession(ctx context.Context) error {
 	_, err := c.call(ctx, protocol.HelperSession, []any{uint64(4)}, true, voidResult)
@@ -237,7 +246,7 @@ func (c *Client) DeviceList(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return v.([]byte), nil
+	return resultAs[[]byte](v)
 }
 func (c *Client) DeviceListPublished(ctx context.Context) error {
 	_, err := c.call(ctx, protocol.HelperSession, []any{uint64(6)}, true, voidResult)
@@ -265,7 +274,7 @@ func (c *Client) KeyPackageIntent(ctx context.Context, v protocol.KeyPackageInte
 	if err != nil {
 		return protocol.KeyPackageIntentResult{}, err
 	}
-	return x.(protocol.KeyPackageIntentResult), nil
+	return resultAs[protocol.KeyPackageIntentResult](x)
 }
 
 // ResolveKeyPackageIntent records accepted/obsolete server evidence in native
@@ -329,7 +338,7 @@ func (c *Client) StateGet(ctx context.Context, area uint64, key []byte) (StateVa
 	if err != nil {
 		return StateValue{}, err
 	}
-	return v.(StateValue), nil
+	return resultAs[StateValue](v)
 }
 func (c *Client) StateScan(ctx context.Context, area uint64, after []byte, limit uint64) (StatePage, error) {
 	if area > 9 || (after != nil && (len(after) < 1 || len(after) > 128)) || limit < 1 || limit > 100 {
@@ -343,7 +352,7 @@ func (c *Client) StateScan(ctx context.Context, area uint64, after []byte, limit
 	if err != nil {
 		return StatePage{}, err
 	}
-	return v.(StatePage), nil
+	return resultAs[StatePage](v)
 }
 func (c *Client) StateTransaction(ctx context.Context, transactionID id.ID, changes []StateChange) ([]uint64, error) {
 	if transactionID.IsZero() || len(changes) < 1 || len(changes) > 64 {
@@ -387,7 +396,7 @@ func (c *Client) StateTransaction(ctx context.Context, transactionID id.ID, chan
 	if err != nil {
 		return nil, err
 	}
-	return v.([]uint64), nil
+	return resultAs[[]uint64](v)
 }
 
 func (c *Client) Close() error {

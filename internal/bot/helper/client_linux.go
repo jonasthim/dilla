@@ -60,6 +60,8 @@ func launch(options Options) (exchange, error) {
 		_ = childFile.Close()
 		return nil, errors.New("private helper socket is not Unix")
 	}
+	//nolint:noctx // The exchange lifecycle controls process cancellation through stop and kill.
+	// #nosec G204 -- Executable is an explicit configured absolute path validated as a regular executable above.
 	cmd := exec.Command(options.Executable, "--state-dir", state)
 	cmd.Dir = "/"
 	cmd.Env = []string{"LANG=C", "LC_ALL=C", "PATH=/usr/bin:/bin"}
@@ -102,7 +104,7 @@ func (t *linuxExchange) request(ctx context.Context, requestID id.ID, operation 
 		deadline = d
 	}
 	if err := t.conn.SetDeadline(deadline); err != nil {
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, &OutcomeUnknownError{cause: errors.New("transport deadline failed")}
 	}
 	cancelDone := make(chan struct{})
@@ -118,33 +120,33 @@ func (t *linuxExchange) request(ctx context.Context, requestID id.ID, operation 
 	defer func() { close(cancelDone); <-watchDone }()
 
 	if err := writeFull(t.conn, frame); err != nil {
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, unknown(err)
 	}
 	var prefix [4]byte
 	if _, err := io.ReadFull(t.conn, prefix[:]); err != nil {
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, unknown(err)
 	}
 	n := int(readU32(prefix[:]))
 	if n < 1 || n > maxFrameBytes {
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, unknown(errors.New("invalid response frame length"))
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(t.conn, body); err != nil {
 		clear(body)
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, unknown(err)
 	}
 	response, err := protocol.DecodeHelperResponseCBOR(body)
 	clear(body)
 	if err != nil || response.RequestID != requestID {
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, unknown(errors.New("response envelope mismatch"))
 	}
 	if err := t.conn.SetDeadline(time.Time{}); err != nil {
-		t.stop(0)
+		_ = t.stop(0)
 		return empty, unknown(errors.New("transport deadline reset failed"))
 	}
 	return response, nil

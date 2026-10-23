@@ -43,7 +43,7 @@ func (s *Session) AcceptBotModerationAction(ctx context.Context, installation, r
 		seen[rule] = true
 		values[i] = rule
 	}
-	body, err := cborx.Marshal([]any{request, group, sequence, string(action), values, timeoutMillis, expires})
+	body, err := cborx.Marshal([]any{request, group, sequence, action, values, timeoutMillis, expires})
 	if err != nil || len(body) > MaxModerationActionBody {
 		return ModerationActionReceipt{}, ErrInvalidConfig
 	}

@@ -52,9 +52,9 @@ func kpID(v any) (id.ID, bool) {
 	copy(x[:], b)
 	return x, !x.IsZero()
 }
-func kpRefs(v any, min, max int) ([][32]byte, bool) {
+func kpRefs(v any, minimum, maximum int) ([][32]byte, bool) {
 	a, ok := v.([]any)
-	if !ok || len(a) < min || len(a) > max {
+	if !ok || len(a) < minimum || len(a) > maximum {
 		return nil, false
 	}
 	out := make([][32]byte, 0, len(a))
@@ -251,8 +251,8 @@ func EncodeKeyPackageResolution(v KeyPackageResolution) ([]byte, error) {
 	}
 	return cborx.Marshal([]any{v.OperationID, refs, v.Outcome, v.Now, v.CurrentGeneration})
 }
-func validKPRefs(a [][32]byte, min, max int) bool {
-	if len(a) < min || len(a) > max {
+func validKPRefs(a [][32]byte, minimum, maximum int) bool {
+	if len(a) < minimum || len(a) > maximum {
 		return false
 	}
 	seen := map[[32]byte]bool{}

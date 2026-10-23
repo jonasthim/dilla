@@ -120,7 +120,7 @@ func TestProductionGatewayUnauthenticatedRefusalIsTypedTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bot.Run(context.Background(), func(context.Context) (string, error) { return "revoked-session", nil }); err != ErrTerminal {
+	if err := bot.Run(context.Background(), func(context.Context) (string, error) { return "revoked-session", nil }); !errors.Is(err, ErrTerminal) {
 		t.Fatalf("Run error=%v, want sanitized terminal reauthentication category", err)
 	}
 }

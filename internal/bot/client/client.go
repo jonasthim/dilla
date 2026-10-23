@@ -69,8 +69,15 @@ type Session struct {
 	token string
 }
 
-func (Session) String() string   { return "bot client.Session{token:[redacted]}" }
-func (Session) GoString() string { return "client.Session{token:[redacted]}" }
+func (*Session) String() string   { return "bot client.Session{token:[redacted]}" }
+func (*Session) GoString() string { return "client.Session{token:[redacted]}" }
+
+func nonNegativeUnix(value int64) (uint64, bool) {
+	if value < 0 {
+		return 0, false
+	}
+	return uint64(value), true
+}
 
 func New(cfg Config) (*Client, error) {
 	u, err := url.Parse(cfg.BaseURL)
@@ -83,7 +90,7 @@ func New(cfg Config) (*Client, error) {
 	if u.Scheme == "http" {
 		host := strings.ToLower(u.Hostname())
 		ip := net.ParseIP(host)
-		if !cfg.AllowLoopbackHTTP || !(ip != nil && ip.IsLoopback() || host == "localhost") {
+		if !cfg.AllowLoopbackHTTP || ((ip == nil || !ip.IsLoopback()) && host != "localhost") {
 			return nil, ErrInvalidConfig
 		}
 	}
@@ -196,17 +203,17 @@ func (c *Client) endpoint(path string, q url.Values) *url.URL {
 	return &u
 }
 
-func (c *Client) do(ctx context.Context, token, method, path string, query url.Values, body []byte, max int64, mutation bool) ([]byte, int, error) {
-	b, status, _, err := c.doObserved(ctx, token, method, path, query, body, max, mutation)
+func (c *Client) do(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, error) {
+	b, status, _, err := c.doObserved(ctx, token, method, path, query, body, maxBytes, mutation)
 	return b, status, err
 }
 
-func (c *Client) doObserved(ctx context.Context, token, method, path string, query url.Values, body []byte, max int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+func (c *Client) doObserved(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
 	var observation ResponseObservation
 	if path != "instance" && !c.discovered.Load() {
 		return nil, 0, observation, errors.New("bot client: discovery required before API use")
 	}
-	if len(body) > MaxBody || max > 0 && int64(len(body)) > max {
+	if len(body) > MaxBody || maxBytes > 0 && int64(len(body)) > maxBytes {
 		return nil, 0, observation, ErrProtocol
 	}
 	if ctx == nil {
@@ -236,13 +243,15 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 		}
 		return nil, 0, observation, errors.New("bot client: request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if n, parseErr := strconv.ParseUint(resp.Header.Get("X-Dilla-Generation"), 10, 63); parseErr == nil && n > 0 {
 		observation.Generation, observation.HasGeneration = n, true
 	}
 	if rawDate := resp.Header.Get("Date"); rawDate != "" {
 		if parsed, parseErr := http.ParseTime(rawDate); parseErr == nil && parsed.Unix() >= 0 {
-			observation.ServerTime, observation.HasServerTime = uint64(parsed.Unix()), true
+			if unixSeconds, ok := nonNegativeUnix(parsed.Unix()); ok {
+				observation.ServerTime, observation.HasServerTime = unixSeconds, true
+			}
 		}
 	}
 	wantStatus, routeOK := expectedStatus(method, path)
@@ -273,7 +282,7 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 		if mutation && resp.StatusCode >= 500 || mutation && (resp.StatusCode >= 300 && resp.StatusCode < 400) || readErr != nil || int64(len(b)) > errorLimit {
 			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
-		code := "E_HTTP_ERROR"
+		var code string
 		var a []any
 		if int64(len(b)) <= errorLimit && cborx.Unmarshal(b, &a) == nil && errorShape(a) {
 			if s, ok := a[0].(string); ok && knownErrorCode(s) {
@@ -290,11 +299,11 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 		}
 		return nil, resp.StatusCode, observation, parseAPIError(resp.StatusCode, code, a)
 	}
-	if max <= 0 || max > MaxBody {
-		max = MaxBody
+	if maxBytes <= 0 || maxBytes > MaxBody {
+		maxBytes = MaxBody
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
-	if err != nil || int64(len(b)) > max {
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil || int64(len(b)) > maxBytes {
 		if mutation {
 			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}

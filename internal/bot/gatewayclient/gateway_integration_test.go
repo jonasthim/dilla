@@ -2,6 +2,7 @@ package gatewayclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -455,7 +456,7 @@ func TestRunRejectsChangedInstanceAndWireDowngrade(t *testing.T) {
 				t.Fatal(e)
 			}
 			err := gw.Run(context.Background(), func(context.Context) (string, error) { return "session", nil })
-			if err != tc.want {
+			if !errors.Is(err, tc.want) {
 				t.Fatalf("Run error=%v, want %v", err, tc.want)
 			}
 		})
@@ -508,7 +509,7 @@ func TestRunRejectsTextFramesAtEveryGatewayReadStage(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = bot.Run(context.Background(), func(context.Context) (string, error) { return "session", nil })
-			if err != ErrProtocol {
+			if !errors.Is(err, ErrProtocol) {
 				t.Fatalf("Run error=%v, want strict binary-frame rejection", err)
 			}
 		})
@@ -558,7 +559,7 @@ func TestRunRejectsMismatchedReadyIdentityGenerationAndVersions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = bot.Run(context.Background(), func(context.Context) (string, error) { return "session", nil }); err != tc.want {
+			if err = bot.Run(context.Background(), func(context.Context) (string, error) { return "session", nil }); !errors.Is(err, tc.want) {
 				t.Fatalf("Run error=%v, want %v", err, tc.want)
 			}
 		})
@@ -638,7 +639,7 @@ func TestHandshakeRejectsUnexpectedValidOpcodeWithoutRetryLoop(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			err = bot.Run(ctx, func(context.Context) (string, error) { return "session", nil })
-			if err != ErrProtocol {
+			if !errors.Is(err, ErrProtocol) {
 				t.Fatalf("Run error=%v, want immediate protocol-state error", err)
 			}
 			wantAttempts := int32(1)
@@ -1163,8 +1164,11 @@ func sendServerFrame(ctx context.Context, ws *websocket.Conn, op Opcode, n uint6
 	}
 	return ws.Write(ctx, websocket.MessageBinary, b)
 }
+
+const testBackoffMS uint64 = 300
+
 func helloPayload(instance id.ID, generation uint64) []any {
-	return []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, uint64(1000), uint64(131584), instance, uint64(generation), uint64(300), uint64(300)}
+	return []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, uint64(1000), uint64(131584), instance, generation, testBackoffMS, testBackoffMS}
 }
 func readyPayload(device, user id.ID, generation uint64, token []byte) []any {
 	return []any{device, user, generation, token, uint64(3), uint64(1), uint64(1), uint64(0), []any{}}

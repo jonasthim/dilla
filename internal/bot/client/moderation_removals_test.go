@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -72,7 +73,7 @@ func TestModerationRemovalsRejectsMalformedFeedRows(t *testing.T) {
 				reply(w, http.StatusOK, tc.body)
 			}, 0)
 			s, _ := c.Session("device-token")
-			if _, err := s.ModerationRemovals(context.Background(), group, 0, 10); err != ErrProtocol {
+			if _, err := s.ModerationRemovals(context.Background(), group, 0, 10); !errors.Is(err, ErrProtocol) {
 				t.Fatalf("error = %v, want ErrProtocol", err)
 			}
 		})
@@ -90,7 +91,7 @@ func TestModerationRemovalsRejectsOversizedBody(t *testing.T) {
 		_, _ = w.Write(make([]byte, MaxModerationRemovalBody+1))
 	}, 0)
 	s, _ := c.Session("device-token")
-	if _, err := s.ModerationRemovals(context.Background(), group, 0, 250); err != ErrProtocol {
+	if _, err := s.ModerationRemovals(context.Background(), group, 0, 250); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", err)
 	}
 }
@@ -106,7 +107,7 @@ func TestModerationRemovalsValidatesArguments(t *testing.T) {
 		group        id.ID
 		after, limit uint64
 	}{{id.ID{}, 0, 1}, {testID(1), 1 << 63, 1}, {testID(1), 0, 0}, {testID(1), 0, 251}} {
-		if _, err := s.ModerationRemovals(context.Background(), tc.group, tc.after, tc.limit); err != ErrInvalidConfig {
+		if _, err := s.ModerationRemovals(context.Background(), tc.group, tc.after, tc.limit); !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("args %+v error=%v, want ErrInvalidConfig", tc, err)
 		}
 	}
@@ -134,10 +135,10 @@ func TestAcceptModerationRemovalSubmitsOnlyBoundSignedProof(t *testing.T) {
 		t.Fatalf("receipt = %+v, %v", receipt, err)
 	}
 	wrongBody := cbor(t, []any{removalProofBytes(t, testID(2), testID(11)), make([]byte, 64)})
-	if _, err := s.AcceptModerationRemoval(context.Background(), group, wrongBody); err != ErrInvalidConfig {
+	if _, err := s.AcceptModerationRemoval(context.Background(), group, wrongBody); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("cross-group proof error = %v, want ErrInvalidConfig", err)
 	}
-	if _, err := s.AcceptModerationRemoval(context.Background(), group, []byte{0x80}); err != ErrInvalidConfig {
+	if _, err := s.AcceptModerationRemoval(context.Background(), group, []byte{0x80}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("malformed body error = %v, want ErrInvalidConfig", err)
 	}
 	if requests != 1 {

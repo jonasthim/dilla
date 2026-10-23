@@ -1384,13 +1384,11 @@ func (s *Session) groupMutation(ctx context.Context, group id.ID, action string,
 	if e != nil {
 		return out, e
 	}
-	max := int64(MaxBody)
+	bodyLimit := int64(MaxDSBody)
 	if action == "commit" {
-		max = MaxCommitBody
-	} else {
-		max = MaxDSBody
+		bodyLimit = MaxCommitBody
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/"+action, nil, b, max, true)
+	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/"+action, nil, b, bodyLimit, true)
 	if e != nil {
 		return out, e
 	}

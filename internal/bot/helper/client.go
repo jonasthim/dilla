@@ -234,7 +234,6 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 	// response is lost; the caller must resolve that through the source intent.
 	descriptor, err := c.request(ctx, protocol.HelperGroupTransfer, []any{uint64(2), transferID})
 	clear(input)
-	input = nil
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +258,7 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 		if remain := len(result) - offset; remain < n {
 			n = remain
 		}
-		part, err := c.request(ctx, protocol.HelperGroupTransfer, []any{uint64(3), transferID, uint64(offset), uint64(n)})
+		part, err := c.request(ctx, protocol.HelperGroupTransfer, []any{uint64(3), transferID, intToUint64(offset), intToUint64(n)})
 		if err != nil {
 			return nil, unknown(err)
 		}
@@ -314,7 +313,7 @@ func marshalBounded(values []any, maximum int) ([]byte, error) {
 		values = []any{}
 	}
 	size, err := cborSize(values, 0)
-	if err != nil || size > uint64(maximum) {
+	if err != nil || maximum < 0 || size > intToUint64(maximum) {
 		return nil, errors.New("CBOR payload exceeds its limit")
 	}
 	b, err := cborx.Marshal(values)
@@ -330,7 +329,7 @@ func validateBounded(values []any, maximum int) error {
 		values = []any{}
 	}
 	size, err := cborSize(values, 0)
-	if err != nil || size > uint64(maximum) {
+	if err != nil || maximum < 0 || size > intToUint64(maximum) {
 		return errors.New("CBOR payload exceeds its limit")
 	}
 	return nil
@@ -342,38 +341,38 @@ func cborSize(value any, depth int) (uint64, error) {
 	}
 	switch v := value.(type) {
 	case uint64:
-		return uint64(uintHeadLen(v)), nil
+		return uintHeadLen(v), nil
 	case uint:
-		return uint64(uintHeadLen(uint64(v))), nil
+		return uintHeadLen(uint64(v)), nil
 	case uint32:
-		return uint64(uintHeadLen(uint64(v))), nil
+		return uintHeadLen(uint64(v)), nil
 	case uint16:
-		return uint64(uintHeadLen(uint64(v))), nil
+		return uintHeadLen(uint64(v)), nil
 	case uint8:
-		return uint64(uintHeadLen(uint64(v))), nil
+		return uintHeadLen(uint64(v)), nil
 	case int:
 		if v < 0 {
 			return 0, errors.New("negative CBOR integer")
 		}
-		return uint64(uintHeadLen(uint64(v))), nil
+		return uintHeadLen(intToUint64(v)), nil
 	case int64:
 		if v < 0 {
 			return 0, errors.New("negative CBOR integer")
 		}
-		return uint64(uintHeadLen(uint64(v))), nil
+		return uintHeadLen(uint64(v)), nil
 	case id.ID:
 		return 17, nil
 	case []byte:
-		return uint64(bytesHeadLen(len(v)) + len(v)), nil
+		return bytesHeadLen(len(v)) + intToUint64(len(v)), nil
 	case string:
 		if !utf8.ValidString(v) {
 			return 0, errors.New("invalid UTF-8 in CBOR text")
 		}
-		return uint64(bytesHeadLen(len(v)) + len(v)), nil
+		return bytesHeadLen(len(v)) + intToUint64(len(v)), nil
 	case nil:
 		return 1, nil
 	case []any:
-		size := uint64(uintHeadLen(uint64(len(v))))
+		size := uintHeadLen(intToUint64(len(v)))
 		for _, child := range v {
 			childSize, err := cborSize(child, depth+1)
 			if err != nil {
@@ -390,7 +389,7 @@ func cborSize(value any, depth int) (uint64, error) {
 	}
 }
 
-func uintHeadLen(v uint64) int {
+func uintHeadLen(v uint64) uint64 {
 	if v < 24 {
 		return 1
 	}
@@ -405,7 +404,14 @@ func uintHeadLen(v uint64) int {
 	}
 	return 9
 }
-func bytesHeadLen(n int) int { return uintHeadLen(uint64(n)) }
+func bytesHeadLen(n int) uint64 { return uintHeadLen(intToUint64(n)) }
+
+func intToUint64(value int) uint64 {
+	if value < 0 {
+		return 0
+	}
+	return uint64(value)
+}
 
 func (c *Client) acquire(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

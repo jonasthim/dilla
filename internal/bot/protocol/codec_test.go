@@ -950,7 +950,7 @@ func TestHelperPayloadExactMaximum(t *testing.T) {
 	if _, err := EncodeHelperResponse(HelperResponse{RequestID: id, Payload: []any{maxValue}}); err != nil {
 		t.Fatalf("exact cap rejected: %v", err)
 	}
-	tooLarge := append(maxValue, 0)
+	tooLarge := append(append([]byte(nil), maxValue...), 0)
 	if _, err := EncodeHelperResponse(HelperResponse{RequestID: id, Payload: []any{tooLarge}}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("one over cap error = %v, want ErrInvalid", err)
 	}

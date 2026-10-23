@@ -643,19 +643,19 @@ func uintAt(raw cbor.RawMessage) (uint64, error) {
 	}
 	return v, nil
 }
-func boundedUint(raw cbor.RawMessage, min, max uint64) (uint64, error) {
+func boundedUint(raw cbor.RawMessage, minimum, maximum uint64) (uint64, error) {
 	v, e := uintAt(raw)
-	if e != nil || v < min || v > max {
+	if e != nil || v < minimum || v > maximum {
 		return 0, ErrProtocol
 	}
 	return v, nil
 }
-func bytesAt(raw cbor.RawMessage, min, max int) ([]byte, error) {
+func bytesAt(raw cbor.RawMessage, minimum, maximum int) ([]byte, error) {
 	if cborx.ExpectMajor(raw, cborx.MajorBytes) != nil {
 		return nil, ErrProtocol
 	}
 	var b []byte
-	if cborx.Unmarshal(raw, &b) != nil || len(b) < min || len(b) > max {
+	if cborx.Unmarshal(raw, &b) != nil || len(b) < minimum || len(b) > maximum {
 		return nil, ErrProtocol
 	}
 	return b, nil
@@ -672,19 +672,19 @@ func idAt(raw cbor.RawMessage) (id.ID, error) {
 	}
 	return z, nil
 }
-func textAt(raw cbor.RawMessage, max int) (string, error) {
+func textAt(raw cbor.RawMessage, maximum int) (string, error) {
 	if cborx.ExpectMajor(raw, cborx.MajorText) != nil {
 		return "", ErrProtocol
 	}
 	var s string
-	if cborx.Unmarshal(raw, &s) != nil || len(s) > max {
+	if cborx.Unmarshal(raw, &s) != nil || len(s) > maximum {
 		return "", ErrProtocol
 	}
 	return s, nil
 }
-func uintsAt(raw cbor.RawMessage, max int) ([]uint64, error) {
+func uintsAt(raw cbor.RawMessage, maximum int) ([]uint64, error) {
 	var a []cbor.RawMessage
-	if cborx.Unmarshal(raw, &a) != nil || len(a) == 0 || len(a) > max {
+	if cborx.Unmarshal(raw, &a) != nil || len(a) == 0 || len(a) > maximum {
 		return nil, ErrProtocol
 	}
 	out := make([]uint64, 0, len(a))
@@ -723,7 +723,7 @@ func safeErrorCode(s string) bool {
 		return false
 	}
 	for i := 2; i < len(s); i++ {
-		if !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_') {
+		if (s[i] < 'A' || s[i] > 'Z') && (s[i] < '0' || s[i] > '9') && s[i] != '_' {
 			return false
 		}
 	}

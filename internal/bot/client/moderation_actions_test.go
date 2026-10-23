@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
@@ -46,13 +47,13 @@ func TestAcceptBotModerationActionRejectsInvalidAuthorityInputs(t *testing.T) {
 	}, 0)
 	s, _ := c.Session("device-token")
 	group := testID(2)
-	if _, err := s.AcceptBotModerationAction(context.Background(), id.ID{}, operationid.Automatic(group, 1), group, 1, "warn", []string{"message_rate"}, 0, 1800000020); err != ErrInvalidConfig {
+	if _, err := s.AcceptBotModerationAction(context.Background(), id.ID{}, operationid.Automatic(group, 1), group, 1, "warn", []string{"message_rate"}, 0, 1800000020); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("zero installation error=%v", err)
 	}
-	if _, err := s.AcceptBotModerationAction(context.Background(), testID(3), testID(4), group, 1, "warn", []string{"message_rate"}, 0, 1800000020); err != ErrInvalidConfig {
+	if _, err := s.AcceptBotModerationAction(context.Background(), testID(3), testID(4), group, 1, "warn", []string{"message_rate"}, 0, 1800000020); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("forged operation error=%v", err)
 	}
-	if _, err := s.AcceptBotModerationAction(context.Background(), testID(3), operationid.Automatic(group, 1), group, 1, "timeout", []string{"message_rate"}, 0, 1800000020); err != ErrInvalidConfig {
+	if _, err := s.AcceptBotModerationAction(context.Background(), testID(3), operationid.Automatic(group, 1), group, 1, "timeout", []string{"message_rate"}, 0, 1800000020); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("zero timeout error=%v", err)
 	}
 }

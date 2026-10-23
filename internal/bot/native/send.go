@@ -36,7 +36,7 @@ func (c *Client) PrepareSend(ctx context.Context, operation, attempt, group id.I
 	if err != nil {
 		return PreparedSend{}, err
 	}
-	return v.(PreparedSend), nil
+	return resultAs[PreparedSend](v)
 }
 
 // PrepareInteractionSend prepares an encrypted Bot response only after the native core verifies
@@ -58,7 +58,7 @@ func (c *Client) PrepareInteractionSend(ctx context.Context, expected Interactio
 	if err != nil {
 		return PreparedSend{}, err
 	}
-	return v.(PreparedSend), nil
+	return resultAs[PreparedSend](v)
 }
 
 func validSendRequest(body []byte) bool {

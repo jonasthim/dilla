@@ -114,7 +114,7 @@ func New(cfg Config) (*Client, error) {
 	if u.Scheme == "http" {
 		host := strings.ToLower(u.Hostname())
 		ip := net.ParseIP(host)
-		if !cfg.AllowLoopbackHTTP || !(ip != nil && ip.IsLoopback() || host == "localhost") {
+		if !cfg.AllowLoopbackHTTP || ((ip == nil || !ip.IsLoopback()) && host != "localhost") {
 			return nil, ErrProtocol
 		}
 	}
@@ -254,6 +254,20 @@ func (c *Client) Run(ctx context.Context, credential CredentialFunc) error {
 	}
 }
 
+func maxFrameReadLimit(value uint64) int64 {
+	if value > MaxGatewayFrameBytes {
+		return MaxGatewayFrameBytes
+	}
+	return int64(value)
+}
+
+func boundedMilliseconds(value uint64) time.Duration {
+	if value > 120000 {
+		value = 120000
+	}
+	return time.Duration(value) * time.Millisecond
+}
+
 func (c *Client) runConnection(parent context.Context, token string) (fresh bool, after time.Duration, runErr error) {
 	ctx, cancel := context.WithTimeout(parent, c.handshakeTimeout)
 	u := *c.origin
@@ -269,6 +283,9 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+token)
 	ws, resp, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPClient: c.http, Subprotocols: []string{"dilla.v1"}, HTTPHeader: headers, CompressionMode: websocket.CompressionDisabled})
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
 	if err != nil {
 		if resp != nil && resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			cancel()
@@ -312,7 +329,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	if !hasVersion(h.WireVersions, 3) || !hasVersion(h.E2EEVersions, 1) || !hasVersion(h.MediaVersions, 1) {
 		return false, 0, ErrVersion
 	}
-	ws.SetReadLimit(int64(h.MaxFrameBytes))
+	ws.SetReadLimit(maxFrameReadLimit(h.MaxFrameBytes))
 	c.mu.Lock()
 	rs := resumeState{token: append([]byte(nil), c.state.token...), generation: c.state.generation, ack: c.state.ack}
 	c.mu.Unlock()
@@ -345,61 +362,56 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	// before it. Buffer exactly that bounded range and expose it in n order.
 	var first Frame
 	var firstRaw []byte
-	for {
-		readCtx, rcancel := context.WithTimeout(ctx, c.handshakeTimeout)
-		messageType, raw, err = ws.Read(readCtx)
-		rcancel()
-		if err != nil {
-			fnew, classified := closeOutcome(err)
-			return fresh || fnew, 0, classified
+	readCtx, rcancel := context.WithTimeout(ctx, c.handshakeTimeout)
+	messageType, raw, err = ws.Read(readCtx)
+	rcancel()
+	if err != nil {
+		fnew, classified := closeOutcome(err)
+		return fresh || fnew, 0, classified
+	}
+	if messageType != websocket.MessageBinary {
+		return fresh, 0, ErrProtocol
+	}
+	first, err = DecodeServerFrame(raw, h.MaxFrameBytes)
+	if err != nil {
+		return fresh, 0, ErrProtocol
+	}
+	firstRaw = append(firstRaw[:0], raw...)
+	if first.Op == OpError {
+		return fresh, 0, classifyServerError(first.ErrorCode, true)
+	}
+	if first.Op == OpInvalidSession {
+		if resume {
+			return true, 0, errReplayGap
 		}
-		if messageType != websocket.MessageBinary {
-			return fresh, 0, ErrProtocol
+		return false, 0, ErrTerminal
+	}
+	if resume && first.Op == OpResumed {
+		if err = c.acceptResumed(first, rs.ack); err != nil {
+			return true, 0, errReplayGap
 		}
-		first, err = DecodeServerFrame(raw, h.MaxFrameBytes)
-		if err != nil {
-			return fresh, 0, ErrProtocol
+		first.ResumeBarrier = true
+	} else if first.Op == OpReady {
+		if resume {
+			return true, 0, ErrProtocol
 		}
-		firstRaw = append(firstRaw[:0], raw...)
-		if first.Op == OpError {
-			return fresh, 0, classifyServerError(first.ErrorCode, true)
+		if err = c.acceptReady(first, h); err != nil {
+			return false, 0, err
 		}
-		if first.Op == OpInvalidSession {
-			if resume {
-				return true, 0, errReplayGap
-			}
-			return false, 0, ErrTerminal
+		fresh = false
+	} else if first.Op == OpReconnect {
+		if first.ReconnectAfterMS != nil {
+			after = boundedMilliseconds(*first.ReconnectAfterMS)
 		}
-		if resume && first.Op == OpResumed {
-			if err = c.acceptResumed(first, rs.ack); err != nil {
-				return true, 0, errReplayGap
-			}
-			first.ResumeBarrier = true
-			break
-		}
-		if first.Op == OpReady {
-			if resume {
-				return true, 0, ErrProtocol
-			}
-			if err = c.acceptReady(first, h); err != nil {
-				return false, 0, err
-			}
-			fresh = false
-			break
-		}
-		if first.Op == OpReconnect {
-			if first.ReconnectAfterMS != nil {
-				after = time.Duration(*first.ReconnectAfterMS) * time.Millisecond
-			}
-			return fresh, after, errors.New("gateway requested reconnect")
-		}
+		return fresh, after, errors.New("gateway requested reconnect")
+	} else {
 		// During identify only ready (or a refusal/reconnect) is legal; during
 		// resume only resumed (or a refusal/reconnect) is legal. Never wait for a
 		// second frame after a well-formed frame in the wrong handshake state.
 		return fresh, 0, ErrProtocol
 	}
 	cx, cancel := context.WithCancel(parent)
-	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: time.Duration(h.HeartbeatMS) * time.Millisecond}
+	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: boundedMilliseconds(h.HeartbeatMS)}
 	conn.ackDeadline = c.heartbeatAckTimeout
 	c.mu.Lock()
 	c.current = conn
@@ -467,9 +479,6 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			return fresh || fnew, 0, classified
 		case err := <-writerDone:
 			writerDone <- err
-			if err == nil {
-				err = errors.New("gateway write stopped")
-			}
 			return fresh, 0, errTransport
 		case raw := <-rawFrames:
 			f, e := DecodeServerFrame(raw, conn.maxFrame)
@@ -488,7 +497,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 				}
 			case OpReconnect:
 				if f.ReconnectAfterMS != nil {
-					after = time.Duration(*f.ReconnectAfterMS) * time.Millisecond
+					after = boundedMilliseconds(*f.ReconnectAfterMS)
 				}
 				return fresh, after, errors.New("gateway requested reconnect")
 			case OpInvalidSession:

@@ -20,7 +20,7 @@ func (c *Client) CallMediaEpoch(ctx context.Context, call id.ID) (CallMediaEpoch
 	if err != nil {
 		return CallMediaEpoch{}, err
 	}
-	return v.(CallMediaEpoch), nil
+	return resultAs[CallMediaEpoch](v)
 }
 
 func decodeCallMediaEpoch(body []byte) (any, error) {

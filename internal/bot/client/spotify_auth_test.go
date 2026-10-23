@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,7 +82,7 @@ func TestRuntimeClaimSpotifyCodeDistinguishesNoPendingReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = r.ClaimSpotifyCode(context.Background(), testID(7)); err != ErrSpotifyClaimNotFound {
+	if _, err = r.ClaimSpotifyCode(context.Background(), testID(7)); !errors.Is(err, ErrSpotifyClaimNotFound) {
 		t.Fatalf("got %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package gatewayclient
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -64,7 +65,7 @@ func TestAckRejectsSocketReceiptBeforeTheNextDurableFrame(t *testing.T) {
 	c := &Client{streamID: 1, state: resumeState{}, ackAvailable: map[uint64][32]byte{1: {}, 2: {}}}
 	first := Delivery{Frame: Frame{N: 1}, client: c, stream: 1, ackN: 1}
 	second := Delivery{Frame: Frame{N: 2}, client: c, stream: 1, ackN: 2}
-	if err := second.Ack(); err != ErrAckOrder {
+	if err := second.Ack(); !errors.Is(err, ErrAckOrder) {
 		t.Fatalf("out-of-order ack error=%v", err)
 	}
 	if err := first.Ack(); err != nil {
@@ -78,7 +79,7 @@ func TestAckRejectsSocketReceiptBeforeTheNextDurableFrame(t *testing.T) {
 func TestStaleDeliveryCannotAckFreshStreamWithReusedN(t *testing.T) {
 	c := &Client{streamID: 2, state: resumeState{}, ackAvailable: map[uint64][32]byte{1: {}}}
 	old := Delivery{Frame: Frame{N: 1}, client: c, stream: 1, ackN: 1}
-	if err := old.Ack(); err != ErrStaleDelivery {
+	if err := old.Ack(); !errors.Is(err, ErrStaleDelivery) {
 		t.Fatalf("stale delivery ack error=%v", err)
 	}
 }
@@ -90,7 +91,7 @@ func TestUnackedDeliveryLimitIncludesItemsAlreadyReadByConsumer(t *testing.T) {
 		t.Fatalf("enqueue first delivery = %t, %v", queued, err)
 	}
 	first := <-c.events // consumer owns it, but has not durably handled it
-	if queued, err = c.enqueueEvent(Frame{Op: OpMessagePlain, N: 2}, []byte{2}); err != ErrBackpressure || queued {
+	if queued, err = c.enqueueEvent(Frame{Op: OpMessagePlain, N: 2}, []byte{2}); !errors.Is(err, ErrBackpressure) || queued {
 		t.Fatalf("second unacked delivery = %t, %v, want bounded backpressure", queued, err)
 	}
 	if err := first.Ack(); err != nil {
@@ -135,7 +136,7 @@ func TestServerErrorCodesAreClassifiedWithoutFatalHintsBeingQueued(t *testing.T)
 	}
 	for _, tc := range tests {
 		t.Run(tc.code+map[bool]string{true: "/handshake", false: "/live"}[tc.handshake], func(t *testing.T) {
-			if got := classifyServerError(tc.code, tc.handshake); got != tc.want {
+			if got := classifyServerError(tc.code, tc.handshake); !errors.Is(got, tc.want) {
 				t.Fatalf("classifyServerError(%q, %t)=%v, want %v", tc.code, tc.handshake, got, tc.want)
 			}
 		})

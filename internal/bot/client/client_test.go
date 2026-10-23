@@ -82,7 +82,7 @@ func TestNewRejectsUnsafeBaseURLsAndAllowsExplicitLoopback(t *testing.T) {
 }
 
 func TestDiscoveryPinsInstanceAndRequiresWireThreeBeforeOtherCalls(t *testing.T) {
-	var instance id.ID = testID(2)
+	var instance = testID(2)
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reply(w, 200, discovery(instance)) }))
 	defer s.Close()
 	c, e := New(Config{BaseURL: s.URL, HTTPClient: s.Client(), InstanceID: testID(1), AllowLoopbackHTTP: true})

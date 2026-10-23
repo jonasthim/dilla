@@ -153,14 +153,14 @@ type GroupEventPage struct {
 	Next, HighWater uint64
 }
 
-// Event bodies are plaintext. Keep them out of ordinary fmt diagnostics.
+// String redacts plaintext event bodies from ordinary fmt diagnostics.
 func (GroupEvent) String() string       { return "GroupEvent{body:[redacted]}" }
 func (GroupEvent) GoString() string     { return "native.GroupEvent{body:[redacted]}" }
 func (GroupEventPage) String() string   { return "GroupEventPage{events:[redacted]}" }
 func (GroupEventPage) GoString() string { return "native.GroupEventPage{events:[redacted]}" }
 
-func groupInputBody(b []byte, max int) error {
-	if len(b) == 0 || len(b) > max || cborx.CheckDeterministic(b) != nil {
+func groupInputBody(b []byte, maximum int) error {
+	if len(b) == 0 || len(b) > maximum || cborx.CheckDeterministic(b) != nil {
 		return errors.New("invalid native group body")
 	}
 	return nil
@@ -367,16 +367,16 @@ func groupUint(v any) (uint64, error) {
 	}
 	return n, nil
 }
-func groupBytes(v any, min, max int) ([]byte, error) {
+func groupBytes(v any, minimum, maximum int) ([]byte, error) {
 	b, ok := v.([]byte)
-	if !ok || len(b) < min || len(b) > max {
+	if !ok || len(b) < minimum || len(b) > maximum {
 		return nil, errors.New("byte string shape")
 	}
 	return append([]byte(nil), b...), nil
 }
-func groupText(v any, max int) (string, error) {
+func groupText(v any, maximum int) (string, error) {
 	s, ok := v.(string)
-	if !ok || !utf8.ValidString(s) || len([]byte(s)) > max {
+	if !ok || !utf8.ValidString(s) || len([]byte(s)) > maximum {
 		return "", errors.New("text shape")
 	}
 	return s, nil
@@ -539,7 +539,7 @@ func (c *Client) Groups(ctx context.Context) ([]GroupInfo, error) {
 	if e != nil {
 		return nil, e
 	}
-	return v.([]GroupInfo), nil
+	return resultAs[[]GroupInfo](v)
 }
 
 // InteractionGroups discovers only locally persisted kind-3 groups. Its descriptor binding is
@@ -551,7 +551,7 @@ func (c *Client) InteractionGroups(ctx context.Context) ([]InteractionGroupDescr
 	if err != nil {
 		return nil, err
 	}
-	return v.([]InteractionGroupDescriptor), nil
+	return resultAs[[]InteractionGroupDescriptor](v)
 }
 func (c *Client) InspectGroup(ctx context.Context, group id.ID) (GroupInfo, error) {
 	if e := checkedGroupID(group); e != nil {
@@ -561,7 +561,7 @@ func (c *Client) InspectGroup(ctx context.Context, group id.ID) (GroupInfo, erro
 	if e != nil {
 		return GroupInfo{}, e
 	}
-	return v.(GroupInfo), nil
+	return resultAs[GroupInfo](v)
 }
 
 func decodeGroupCreate(b []byte, want id.ID, binding Binding, expected *GroupExpected) (any, error) {
@@ -631,7 +631,7 @@ func (c *Client) CreateGroup(ctx context.Context, operation, group, channel id.I
 	if e != nil {
 		return GroupCreateResult{}, e
 	}
-	return v.(GroupCreateResult), nil
+	return resultAs[GroupCreateResult](v)
 }
 
 func expectedTuple(v InteractionGroupExpected) []any {
@@ -773,7 +773,7 @@ func (c *Client) CreateInteractionGroup(ctx context.Context, operation id.ID, ex
 	if err != nil {
 		return InteractionGroupCreateResult{}, err
 	}
-	return v.(InteractionGroupCreateResult), nil
+	return resultAs[InteractionGroupCreateResult](v)
 }
 
 func decodeInteractionGroupInspect(body []byte, binding Binding, expected InteractionGroupExpected) (any, error) {
@@ -864,7 +864,7 @@ func (c *Client) InspectInteractionGroup(ctx context.Context, expected Interacti
 	if err != nil {
 		return InteractionGroupInspectResult{}, err
 	}
-	return v.(InteractionGroupInspectResult), nil
+	return resultAs[InteractionGroupInspectResult](v)
 }
 
 func (c *Client) GroupRegistered(ctx context.Context, operation, group id.ID, next uint64) error {
@@ -904,7 +904,7 @@ func (c *Client) ExternalJoin(ctx context.Context, operation, group, channel id.
 	if e != nil {
 		return GroupExternalJoinResult{}, e
 	}
-	return v.(GroupExternalJoinResult), nil
+	return resultAs[GroupExternalJoinResult](v)
 }
 func (c *Client) GroupJoined(ctx context.Context, operation, group id.ID, sequence uint64) error {
 	if operation.IsZero() || group.IsZero() || sequence == 0 || sequence > math.MaxInt64 {
@@ -957,17 +957,18 @@ func decodeWelcomeOutcomes(b []byte, welcomes []GroupWelcome) (any, error) {
 	}
 	out := make([]GroupWelcomeOutcome, 0, len(a))
 	seen := map[uint64]bool{}
-	for i, v := range a {
+	for i, welcome := range welcomes {
+		v := a[i]
 		r, ok := v.([]any)
 		if !ok || len(r) != 4 {
 			return nil, errors.New("welcome outcome shape")
 		}
 		idn, e := groupUint(r[0])
-		if e != nil || idn != welcomes[i].ID {
+		if e != nil || idn != welcome.ID {
 			return nil, errors.New("welcome order")
 		}
 		group, e := groupID(r[1])
-		if e != nil || group != welcomes[i].Group || seen[idn] {
+		if e != nil || group != welcome.Group || seen[idn] {
 			return nil, errors.New("welcome group")
 		}
 		seen[idn] = true
@@ -1014,7 +1015,7 @@ func (c *Client) ApplyWelcomes(ctx context.Context, welcomes []GroupWelcome, exp
 	if e != nil {
 		return nil, e
 	}
-	return v.([]GroupWelcomeOutcome), nil
+	return resultAs[[]GroupWelcomeOutcome](v)
 }
 
 func decodeApply(b []byte) (any, error) {
@@ -1065,7 +1066,7 @@ func (c *Client) ApplyGroup(ctx context.Context, group id.ID, handshakes, messag
 	if e != nil {
 		return GroupApplyResult{}, e
 	}
-	return v.(GroupApplyResult), nil
+	return resultAs[GroupApplyResult](v)
 }
 
 func validateInteractionSyncInput(expected InteractionGroupExpected, binding Binding, snapshotWire []byte) error {
@@ -1097,7 +1098,7 @@ func (c *Client) ApplyInteractionGroup(ctx context.Context, expected Interaction
 	if err != nil {
 		return GroupApplyResult{}, err
 	}
-	return v.(GroupApplyResult), nil
+	return resultAs[GroupApplyResult](v)
 }
 
 // InteractionGroupCursor returns the local durable cursor only after current signed context and
@@ -1111,7 +1112,7 @@ func (c *Client) InteractionGroupCursor(ctx context.Context, expected Interactio
 	if err != nil {
 		return nil, err
 	}
-	return v.(*GroupCursor), nil
+	return resultAs[*GroupCursor](v)
 }
 
 // AcknowledgeInteractionGroupCursor persists the server-accepted cursor only after revalidating
@@ -1181,7 +1182,7 @@ func (c *Client) BuildCommit(ctx context.Context, operation, group id.ID, propos
 	if e != nil {
 		return GroupCommitBuildResult{}, e
 	}
-	return v.(GroupCommitBuildResult), nil
+	return resultAs[GroupCommitBuildResult](v)
 }
 func (c *Client) ConfirmCommit(ctx context.Context, operation, group id.ID) error {
 	if operation.IsZero() || group.IsZero() {
@@ -1224,7 +1225,7 @@ func (c *Client) GroupCursor(ctx context.Context, group id.ID) (*GroupCursor, er
 	if e != nil {
 		return nil, e
 	}
-	return v.(*GroupCursor), nil
+	return resultAs[*GroupCursor](v)
 }
 func (c *Client) AcknowledgeGroupCursor(ctx context.Context, group id.ID, cursor GroupCursor) error {
 	if group.IsZero() || cursor.Sequence == 0 || cursor.Sequence > math.MaxInt64 || cursor.Epoch > math.MaxInt64 {
@@ -1257,7 +1258,7 @@ func (c *Client) RevalidateGroup(ctx context.Context, group id.ID, leaf uint64, 
 	if e != nil {
 		return 0, e
 	}
-	return v.(uint32), nil
+	return resultAs[uint32](v)
 }
 func decodeTrustVerdict(b []byte) (any, error) {
 	a, e := groupBodyArray(b)
@@ -1286,7 +1287,7 @@ func (c *Client) TrustSender(ctx context.Context, group id.ID, leaf uint64, user
 	if e != nil {
 		return GroupTrustVerdict{}, e
 	}
-	return v.(GroupTrustVerdict), nil
+	return resultAs[GroupTrustVerdict](v)
 }
 func (c *Client) ProposedAdds(ctx context.Context, group id.ID, proposals []byte) ([]GroupProposedAdd, error) {
 	if group.IsZero() || validateProposalBody(proposals) != nil {
@@ -1324,7 +1325,7 @@ func (c *Client) ProposedAdds(ctx context.Context, group id.ID, proposals []byte
 	if e != nil {
 		return nil, e
 	}
-	return v.([]GroupProposedAdd), nil
+	return resultAs[[]GroupProposedAdd](v)
 }
 func (c *Client) TrustProposedAdd(ctx context.Context, group id.ID, proposals []byte, index uint64, user id.ID, history, heads []byte, now uint64) (GroupTrustVerdict, error) {
 	if group.IsZero() || validateProposalBody(proposals) != nil || index > math.MaxUint32 || user.IsZero() || groupInputBody(history, 4<<20) != nil || groupInputBody(heads, 4<<20) != nil || now > math.MaxInt64 {
@@ -1334,7 +1335,7 @@ func (c *Client) TrustProposedAdd(ctx context.Context, group id.ID, proposals []
 	if e != nil {
 		return GroupTrustVerdict{}, e
 	}
-	return v.(GroupTrustVerdict), nil
+	return resultAs[GroupTrustVerdict](v)
 }
 func (c *Client) PendingLeaves(ctx context.Context) ([]GroupPendingLeaf, error) {
 	v, e := c.groupCall(ctx, []any{uint64(17)}, false, groupWrapped(func(b []byte) (any, error) {
@@ -1375,7 +1376,7 @@ func (c *Client) PendingLeaves(ctx context.Context) ([]GroupPendingLeaf, error) 
 	if e != nil {
 		return nil, e
 	}
-	return v.([]GroupPendingLeaf), nil
+	return resultAs[[]GroupPendingLeaf](v)
 }
 func decodeGroupEvents(b []byte, binding Binding, after uint64) (any, error) {
 	if len(b) > maxEventBody {
@@ -1476,7 +1477,7 @@ func (c *Client) ReadGroupEvents(ctx context.Context, after, limit uint64) (Grou
 	if e != nil {
 		return GroupEventPage{}, e
 	}
-	return v.(GroupEventPage), nil
+	return resultAs[GroupEventPage](v)
 }
 func (c *Client) AcknowledgeGroupEvents(ctx context.Context, through uint64) error {
 	if through > math.MaxInt64 {
@@ -1551,5 +1552,5 @@ func (c *Client) GroupIntentResult(ctx context.Context, operation id.ID) (*Group
 	if e != nil {
 		return nil, e
 	}
-	return v.(*GroupIntentResult), nil
+	return resultAs[*GroupIntentResult](v)
 }

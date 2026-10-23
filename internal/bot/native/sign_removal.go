@@ -48,5 +48,5 @@ func (c *Client) SignRemoval(ctx context.Context, request, group id.ID, target, 
 	if err != nil {
 		return nil, err
 	}
-	return v.([]byte), nil
+	return resultAs[[]byte](v)
 }
