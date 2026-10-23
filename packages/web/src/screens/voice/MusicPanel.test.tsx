@@ -109,6 +109,26 @@ describe('MusicPanel', () => {
     await waitFor(() => expect(music.calls.enqueue).toHaveBeenCalledWith('channel-1', 'https://www.youtube.com/watch?v=abcdefghijk'));
   });
 
+  it('does not show or enqueue an earlier channel search after switching channels', async () => {
+    const music = adapter();
+    let resolveSearch: ((results: Awaited<ReturnType<VoiceMusicAdapter['search']>>) => void) | undefined;
+    music.calls.search.mockImplementationOnce(() => new Promise(resolve => { resolveSearch = resolve; }));
+    const view = render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search music' }), { target: { value: 'harbor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(music.calls.search).toHaveBeenCalledWith('channel-1', 'harbor');
+
+    view.rerender(<MusicPanel channelId="channel-2" adapter={music} />);
+    await act(async () => { resolveSearch?.([{
+      id: 'yt:abcdefghijk', title: 'North', artist: 'Harbor', durationMs: 120_000,
+      input: 'https://www.youtube.com/watch?v=abcdefghijk',
+    }]); });
+    expect(screen.queryByRole('button', { name: 'Add North to queue' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
+    expect(music.calls.enqueue).not.toHaveBeenCalled();
+  });
+
   it('explains that Spotify URLs are unsupported without submitting them', () => {
     const music = adapter();
     render(<MusicPanel channelId="channel-1" adapter={music} />);

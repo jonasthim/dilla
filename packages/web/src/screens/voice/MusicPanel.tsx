@@ -18,7 +18,7 @@ function isSpotifyURL(value: string): boolean {
   }
 }
 
-/** Authenticated transport is not shipped yet; tests and future clients may inject an explicit adapter. */
+/** Voice-channel music controls backed by the authenticated Bot interaction adapter. */
 export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   channelId: string;
   adapter?: VoiceMusicAdapter;
@@ -32,10 +32,14 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState<'none' | 'error' | 'empty' | 'spotify'>('none');
-  const [searchResults, setSearchResults] = useState<Awaited<ReturnType<VoiceMusicAdapter['search']>>>([]);
+  const [searchResults, setSearchResults] = useState<{
+    channelId: string; adapter: VoiceMusicAdapter; items: Awaited<ReturnType<VoiceMusicAdapter['search']>>;
+  } | null>(null);
   const [queueInput, setQueueInput] = useState('');
   const [enqueueMessage, setEnqueueMessage] = useState<'idle' | 'pending' | 'added' | 'error' | 'spotify'>('idle');
   const searchSequence = useRef(0);
+  const searchContext = useRef({ channelId, adapter });
+  searchContext.current = { channelId, adapter };
   const pendingRef = useRef(false);
   const queuedSliders = useRef(new Map<'seek' | 'volume', () => void | Promise<void>>());
   const seekEditing = useRef(false);
@@ -46,6 +50,16 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const subscribe = useCallback((onChange: () => void) => adapter.subscribe(channelId, onChange), [adapter, channelId]);
   const getSnapshot = useCallback(() => adapter.state(channelId), [adapter, channelId]);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const visibleSearchResults = searchResults?.channelId === channelId && searchResults.adapter === adapter
+    ? searchResults.items : [];
+
+  useEffect(() => {
+    searchSequence.current += 1;
+    setSearching(false);
+    setSearchResults(null);
+    setSearchMessage('none');
+    setSearchQuery('');
+  }, [channelId, adapter]);
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -115,24 +129,24 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
       return;
     }
     if (isSpotifyURL(query)) {
-      setSearchResults([]);
+      setSearchResults(null);
       setSearchMessage('spotify');
       return;
     }
     const sequence = ++searchSequence.current;
     setSearching(true);
     setSearchMessage('none');
-    setSearchResults([]);
+    setSearchResults(null);
     try {
       const results = await adapter.search(channelId, query);
-      if (sequence === searchSequence.current) {
-        setSearchResults(results);
+      if (sequence === searchSequence.current && searchContext.current.channelId === channelId && searchContext.current.adapter === adapter) {
+        setSearchResults({ channelId, adapter, items: results });
         setSearchMessage(results.length === 0 ? 'empty' : 'none');
       }
     } catch {
-      if (sequence === searchSequence.current) setSearchMessage('error');
+      if (sequence === searchSequence.current && searchContext.current.channelId === channelId && searchContext.current.adapter === adapter) setSearchMessage('error');
     } finally {
-      if (sequence === searchSequence.current) setSearching(false);
+      if (sequence === searchSequence.current && searchContext.current.channelId === channelId && searchContext.current.adapter === adapter) setSearching(false);
     }
   };
   const enqueue = (input: string) => {
@@ -234,8 +248,8 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
         {searching && <p role="status">{t('voice.music.searching')}</p>}
         {searchMessage !== 'none' && <p role="status">{t(searchMessage === 'spotify' ? 'voice.music.spotifyUnavailable'
           : searchMessage === 'empty' ? 'voice.music.searchEmpty' : 'voice.music.searchError')}</p>}
-        {searchResults.length > 0 && <ol className="dw-voice-music__results" aria-label={t('voice.music.results')}>
-          {searchResults.map(result => <li key={result.id}>
+        {visibleSearchResults.length > 0 && <ol className="dw-voice-music__results" aria-label={t('voice.music.results')}>
+          {visibleSearchResults.map(result => <li key={result.id}>
             <span>{result.title} <span className="dw-voice-music__artist">{result.artist}</span></span>
             <button type="button" aria-label={t('voice.music.addResult', { title: result.title })}
               disabled={pending || !manage || enqueueMessage === 'pending'}
