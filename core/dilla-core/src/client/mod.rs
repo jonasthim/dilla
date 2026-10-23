@@ -148,6 +148,8 @@ impl ClientCore {
     fn take_bot_interaction_group(
         &mut self,
         group_id: &[u8; 16],
+        participant_user: &[u8; 16],
+        participant_device: &[u8; 16],
     ) -> Result<Option<DillaGroup>, ClientError> {
         let Some(group) = self.take_group_unchecked(group_id)? else {
             return Ok(None);
@@ -156,7 +158,9 @@ impl ClientCore {
             .read(|c| groups::group_row(c, group_id))?
             .ok_or_else(mismatched)?;
         let own = self.own()?;
-        if !matches_bot_interaction_row(&group, group_id, &row, &own) {
+        if !matches_bot_interaction_row(&group, group_id, &row, &own)
+            || !matches_bot_interaction_roster(&group, &own, participant_user, participant_device)
+        {
             return Err(mismatched());
         }
         Ok(Some(group))
@@ -343,6 +347,46 @@ fn matches_bot_interaction_row(
     };
     binding.community_id.as_bytes().as_slice() == row.community_id.as_deref().unwrap_or_default()
         && interaction_binding_matches_bot(group, &binding, row, own)
+}
+
+fn matches_bot_interaction_roster(
+    group: &DillaGroup,
+    own: &Own,
+    participant_user: &[u8; 16],
+    participant_device: &[u8; 16],
+) -> bool {
+    if group.member_count() != 2 {
+        return false;
+    }
+    let Ok(binding) = group.interaction_binding() else {
+        return false;
+    };
+    if binding.participant_user_id.as_slice() != participant_user
+        || binding.participant_device_id.as_bytes() != participant_device
+    {
+        return false;
+    }
+    let mut own_seen = false;
+    let mut participant_seen = false;
+    for member in group.members() {
+        let Ok(basic) = openmls::prelude::BasicCredential::try_from(member.credential) else {
+            return false;
+        };
+        let Ok(credential) = CredentialIdentity::decode(basic.identity()) else {
+            return false;
+        };
+        if member.index.u32() == group.own_leaf_index().u32() {
+            own_seen = credential.kind == Kind::Bot
+                && credential.tier == Tier::Native
+                && credential.user_id.as_bytes() == &own.user_id
+                && credential.device_id.as_bytes() == &own.device_id;
+        } else {
+            participant_seen = credential.kind == Kind::User
+                && credential.user_id.as_bytes() == participant_user
+                && credential.device_id.as_bytes() == participant_device;
+        }
+    }
+    own_seen && participant_seen
 }
 
 fn interaction_binding_matches_own(

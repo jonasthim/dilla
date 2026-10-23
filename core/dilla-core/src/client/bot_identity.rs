@@ -487,7 +487,16 @@ impl ClientCore {
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
         self.bot_inspect_stored_interaction_group(group_id, snapshot_wire, expected)?;
-        self.group_apply_interaction(group_id, handshakes, messages, through)
+        let participant_user = *expected.participant_user.as_bytes();
+        let participant_device = *expected.participant_device.as_bytes();
+        self.group_apply_interaction(
+            group_id,
+            &participant_user,
+            &participant_device,
+            handshakes,
+            messages,
+            through,
+        )
     }
 
     /// Read an interaction source cursor only after current admission and roster verification.
@@ -1613,6 +1622,16 @@ mod interaction_snapshot_tests {
             .expect_err("generic apply cannot mutate a kind-3 group")
             .code,
             E_CORE_STATE
+        );
+        let wrong_participant_device = [0x6a; 16];
+        assert!(
+            core.take_bot_interaction_group(
+                renewed_expected.group.as_bytes(),
+                renewed_expected.participant_user.as_bytes(),
+                &wrong_participant_device,
+            )
+            .is_err(),
+            "cached MLS state must match the device in the fresh admission"
         );
         core.unload(); // Reconcile after helper restart: force the authenticated row reload path.
         let apply = core

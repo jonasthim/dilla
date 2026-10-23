@@ -740,7 +740,7 @@ impl ClientCore {
         messages: &[u8],
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
-        self.group_apply_scoped(id, handshakes, messages, through, false)
+        self.group_apply_scoped(id, handshakes, messages, through, None)
     }
 
     /// Kind-3 source apply is available only to the caller that just verified its signed
@@ -748,11 +748,19 @@ impl ClientCore {
     pub(super) fn group_apply_interaction(
         &mut self,
         id: &[u8; 16],
+        participant_user: &[u8; 16],
+        participant_device: &[u8; 16],
         handshakes: &[u8],
         messages: &[u8],
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
-        self.group_apply_scoped(id, handshakes, messages, through, true)
+        self.group_apply_scoped(
+            id,
+            handshakes,
+            messages,
+            through,
+            Some((participant_user, participant_device)),
+        )
     }
 
     fn group_apply_scoped(
@@ -761,7 +769,7 @@ impl ClientCore {
         handshakes: &[u8],
         messages: &[u8],
         through: u64,
-        allow_bot_interaction: bool,
+        bot_interaction_roster: Option<(&[u8; 16], &[u8; 16])>,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let handshakes = wire::decode_handshake_rows(handshakes)?;
@@ -792,7 +800,10 @@ impl ClientCore {
         }
         let r = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         let is_interaction = r.kind == super::groups::row_kind(crate::mls::GroupKind::Interaction);
-        if is_interaction != allow_bot_interaction {
+        if (is_interaction && bot_interaction_roster.is_some() && own.kind != crate::identity::Kind::Bot.as_u8())
+            || (is_interaction && bot_interaction_roster.is_none() && own.kind != crate::identity::Kind::User.as_u8())
+            || (!is_interaction && bot_interaction_roster.is_some())
+        {
             return Err(super::mismatched());
         }
         if r.state != STATE_ACTIVE {
@@ -813,8 +824,8 @@ impl ClientCore {
             }
             checked("seq", seq)?;
             let (changed, adopted, epoch_changed, stop) = self.retry_reload(id, |this| {
-                let loaded = if allow_bot_interaction {
-                    this.take_bot_interaction_group(id)?
+                let loaded = if let Some((participant_user, participant_device)) = bot_interaction_roster {
+                    this.take_bot_interaction_group(id, participant_user, participant_device)?
                 } else {
                     this.take_group(id)?
                 };
