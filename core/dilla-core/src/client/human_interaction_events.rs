@@ -40,7 +40,7 @@ fn response_matches_request(
     ) else {
         return false;
     };
-    ((request.operation == 60
+    ((matches!(request.operation, 60 | 64)
         && request.channel_id.is_none()
         && request.revision.is_none()
         && request.expires.is_none()
@@ -581,12 +581,15 @@ mod tests {
     }
     #[test]
     fn moderation_response_requires_exact_local_request_and_community() {
+        for operation in [60, 64] {
+            let request_body = request([1; 16], [2; 16], operation, RequestArgs::Cursor(None));
+            assert!(response_matches_request(
+                response([1; 16], [2; 16]).as_bytes(),
+                request_body.as_bytes(),
+                &[2; 16]
+            ));
+        }
         let request_body = request([1; 16], [2; 16], 60, RequestArgs::Cursor(None));
-        assert!(response_matches_request(
-            response([1; 16], [2; 16]).as_bytes(),
-            request_body.as_bytes(),
-            &[2; 16]
-        ));
         assert!(!response_matches_request(
             response([3; 16], [2; 16]).as_bytes(),
             request_body.as_bytes(),

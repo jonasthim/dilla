@@ -275,7 +275,7 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|10..=23|30|31|40|50..=52|60..=63) {
+        if !matches!(self.operation, 0|1|2|10..=23|30|31|40|50..=52|60..=64) {
             return Err(CodecError::Operation);
         }
         if self.operation == 31 && self.revision != Some(0) {
@@ -398,7 +398,7 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         30 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,2000,false)),
         31 => matches!(a, RequestArgs::RolePanel { .. }),
         40 | 50 => matches!(a, RequestArgs::Number(_)),
-        60 => {
+        60 | 64 => {
             matches!(a, RequestArgs::Cursor(cursor) if cursor.as_ref().is_none_or(|v| (1..=256).contains(&v.len())))
         }
         51 => matches!(a, RequestArgs::AnnouncementPut { .. }),
@@ -528,7 +528,7 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
             d.array(1)?;
             RequestArgs::Number(d.uint()?)
         }
-        60 => {
+        60 | 64 => {
             d.array(1)?;
             let cursor = if d.try_null()? {
                 None
@@ -1479,14 +1479,14 @@ mod tests {
 
     #[test]
     fn moderation_cases_request_uses_optional_bounded_opaque_cursor() {
-        fn request(cursor: Option<&[u8]>) -> Vec<u8> {
+        fn request(operation: u64, cursor: Option<&[u8]>) -> Vec<u8> {
             let mut e = Encoder::new();
             e.array(8)
                 .uint(1)
                 .bytes(&[1; 16])
                 .bytes(&[2; 16])
                 .null()
-                .uint(60)
+                .uint(operation)
                 .null()
                 .null()
                 .array(1);
@@ -1497,17 +1497,22 @@ mod tests {
             }
             e.into_vec()
         }
-        let first = Request::decode_cbor(&request(None)).unwrap();
-        assert_eq!(first.operation, 60);
-        assert!(matches!(first.args, RequestArgs::Cursor(None)));
-        assert_eq!(first.encode_cbor().unwrap(), request(None));
-        let next = Request::decode_cbor(&request(Some(&[1, 2, 3]))).unwrap();
-        assert!(
-            matches!(next.args, RequestArgs::Cursor(Some(ref cursor)) if cursor.as_slice() == [1, 2, 3])
-        );
-        assert_eq!(next.encode_cbor().unwrap(), request(Some(&[1, 2, 3])));
-        assert!(Request::decode_cbor(&request(Some(&[]))).is_err());
-        assert!(Request::decode_cbor(&request(Some(&[1; 257]))).is_err());
+        for operation in [60, 64] {
+            let first = Request::decode_cbor(&request(operation, None)).unwrap();
+            assert_eq!(first.operation, operation);
+            assert!(matches!(first.args, RequestArgs::Cursor(None)));
+            assert_eq!(first.encode_cbor().unwrap(), request(operation, None));
+            let next = Request::decode_cbor(&request(operation, Some(&[1, 2, 3]))).unwrap();
+            assert!(
+                matches!(next.args, RequestArgs::Cursor(Some(ref cursor)) if cursor.as_slice() == [1, 2, 3])
+            );
+            assert_eq!(
+                next.encode_cbor().unwrap(),
+                request(operation, Some(&[1, 2, 3]))
+            );
+            assert!(Request::decode_cbor(&request(operation, Some(&[]))).is_err());
+            assert!(Request::decode_cbor(&request(operation, Some(&[1; 257]))).is_err());
+        }
         let mut number = Encoder::new();
         number
             .array(8)
@@ -1515,7 +1520,7 @@ mod tests {
             .bytes(&[1; 16])
             .bytes(&[2; 16])
             .null()
-            .uint(60)
+            .uint(64)
             .null()
             .null()
             .array(1)
