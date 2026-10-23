@@ -626,8 +626,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
 														service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID,
 															InstallationID: installation.ID, ManualRemovalLookup: manualRemovalLookup{Session: result.Session},
-															EvidenceWriter: moderation.NewEvidenceWriter(nativeClient),
-															EvidenceReader: moderation.NewEvidenceReader(nativeClient, result.Session)},
+															EvidenceWriter:      moderation.NewEvidenceWriter(nativeClient),
+															EvidenceReader:      moderation.NewEvidenceReader(nativeClient, result.Session),
+															ManualWarningLookup: manualWarningLookup{Session: result.Session}},
 														musicInteractions,
 														nativeClient,
 														autoModerationGrantRedeemer{Session: result.Session, InstallationID: installation.ID},
@@ -652,6 +653,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												eventResult, interactionErr = eventRuntime.Drain(ctx)
 												if interactionErr == nil && eventResult.More {
 													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)
+												}
+												if interactionErr == nil && eventResult.Handled > 0 {
+													logger.Info("bot interaction event diagnostic handled", "installation_id", installation.ID.String(), "handled", eventResult.Handled, "acknowledged_through", eventResult.AcknowledgedThrough)
 												}
 											}
 										}

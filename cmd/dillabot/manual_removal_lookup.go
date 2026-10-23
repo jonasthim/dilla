@@ -30,3 +30,20 @@ func (r manualRemovalLookup) AcceptedManualRemoval(ctx context.Context, installa
 		TargetSequence: receipt.TargetSequence, Revision: receipt.Revision, AcceptedAt: int64(receipt.AcceptedAt),
 	}, nil
 }
+
+type manualWarningLookup struct{ Session *client.Session }
+
+func (r manualWarningLookup) AcceptedManualWarning(ctx context.Context, installation, request id.ID) (service.AcceptedManualWarningReceipt, error) {
+	if r.Session == nil {
+		return service.AcceptedManualWarningReceipt{}, client.ErrInvalidConfig
+	}
+	receipt, err := r.Session.AcceptedManualWarning(ctx, installation, request)
+	if err != nil {
+		return service.AcceptedManualWarningReceipt{}, err
+	}
+	return service.AcceptedManualWarningReceipt{
+		RequestID: receipt.RequestID, ActionID: receipt.ActionID, CommunityID: receipt.CommunityID,
+		ActorUserID: receipt.ActorUserID, ActorDeviceID: receipt.ActorDeviceID, TargetUserID: receipt.TargetUserID,
+		Revision: receipt.Revision, AcceptedAt: receipt.AcceptedAt,
+	}, nil
+}

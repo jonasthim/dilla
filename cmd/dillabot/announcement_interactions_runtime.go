@@ -25,11 +25,16 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 	if cases, ok := moderationInteractions.Handlers()[protocol.OpModerationCases]; ok {
 		handlers[protocol.OpModerationCases] = cases
 	}
-	if evidence, ok := moderationInteractions.Handlers()[protocol.OpModerationEvidenceList]; ok {
-		handlers[protocol.OpModerationEvidenceList] = evidence
+	if moderationInteractions.EvidenceReader != nil {
+		if evidence, ok := moderationInteractions.Handlers()[protocol.OpModerationEvidenceList]; ok {
+			handlers[protocol.OpModerationEvidenceList] = evidence
+		}
 	}
-	// OpModerationEvidence stays unavailable: its client-authored ID/reason/
-	// excerpt tuple carries no authoritative accepted-action receipt.
+	if moderationInteractions.ManualRemovalLookup != nil && moderationInteractions.ManualWarningLookup != nil && moderationInteractions.EvidenceWriter != nil {
+		if evidence, ok := moderationInteractions.Handlers()[protocol.OpModerationEvidence]; ok {
+			handlers[protocol.OpModerationEvidence] = evidence
+		}
+	}
 	if music != nil && music.Store != nil && music.Authority != nil {
 		for operation, handler := range music.Handlers() {
 			handlers[operation] = handler

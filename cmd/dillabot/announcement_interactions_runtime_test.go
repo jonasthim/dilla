@@ -65,6 +65,23 @@ func (runtimeModerationEvidenceReader) List(context.Context, id.ID, []byte, uint
 	return nil, nil, nil
 }
 
+type runtimeManualEvidenceWriter struct{}
+
+func (runtimeManualEvidenceWriter) BoundTo(id.ID, id.ID) bool                            { return true }
+func (runtimeManualEvidenceWriter) Save(context.Context, moderation.EvidenceInput) error { return nil }
+
+type runtimeManualRemovalLookup struct{}
+
+func (runtimeManualRemovalLookup) AcceptedManualRemoval(context.Context, id.ID, id.ID) (service.AcceptedManualRemovalReceipt, error) {
+	return service.AcceptedManualRemovalReceipt{}, nil
+}
+
+type runtimeManualWarningLookup struct{}
+
+func (runtimeManualWarningLookup) AcceptedManualWarning(context.Context, id.ID, id.ID) (service.AcceptedManualWarningReceipt, error) {
+	return service.AcceptedManualWarningReceipt{}, nil
+}
+
 func TestRuntimeRolePanelPublishRequiresRolesCapability(t *testing.T) {
 	handler := service.RolePanelInteractions{}
 	if got := runtimeRolePanelHandlers(0, handler); len(got) != 0 {
@@ -141,5 +158,31 @@ func TestRuntimeInteractionHandlersRegisterMusicOnlyWithCompleteAuthorityAndStor
 		if op != protocol.OpMusicState && op != protocol.OpMusicSearch && !spec.RevisionInHandler {
 			t.Fatalf("music mutation %d lacks in-handler revision check", op)
 		}
+	}
+}
+
+func TestRuntimeInteractionHandlersRegisterManualEvidenceOnlyWithBothReceiptLookups(t *testing.T) {
+	community, installation := id.New(), id.New()
+	base := service.ModerationInteractions{CommunityID: community, InstallationID: installation,
+		EvidenceReader: runtimeModerationEvidenceReader{}, EvidenceWriter: runtimeManualEvidenceWriter{}}
+	build := func(m service.ModerationInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+		return runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, m, nil, nil, nil, nil)
+	}
+	for _, partial := range []service.ModerationInteractions{
+		base,
+		{CommunityID: community, InstallationID: installation, EvidenceReader: base.EvidenceReader,
+			EvidenceWriter: base.EvidenceWriter, ManualWarningLookup: runtimeManualWarningLookup{}},
+		{CommunityID: community, InstallationID: installation, EvidenceReader: base.EvidenceReader,
+			EvidenceWriter: base.EvidenceWriter, ManualRemovalLookup: runtimeManualRemovalLookup{}},
+	} {
+		if _, ok := build(partial)[protocol.OpModerationEvidence]; ok {
+			t.Fatal("manual evidence write registered without both accepted-action receipt lookups")
+		}
+	}
+	complete := base
+	complete.ManualRemovalLookup = runtimeManualRemovalLookup{}
+	complete.ManualWarningLookup = runtimeManualWarningLookup{}
+	if spec, ok := build(complete)[protocol.OpModerationEvidence]; !ok || spec.Handle == nil {
+		t.Fatalf("manual evidence write handler=%+v; want handler with both receipt lookups", spec)
 	}
 }
