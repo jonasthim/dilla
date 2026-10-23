@@ -31,13 +31,17 @@ func (f *removalSignerFake) SignRemoval(_ context.Context, request, group id.ID,
 
 type removalSessionFake struct {
 	bodies       [][]byte
+	botExpires   []uint64
+	botNow       []uint64
 	err          error
 	errs         []error
 	receipt      client.ModerationRemovalReceipt
 	emptyReceipt bool
 }
 
-func (f *removalSessionFake) AcceptBotModerationAction(context.Context, id.ID, id.ID, id.ID, uint64, string, []string, uint64, uint64) (client.ModerationActionReceipt, error) {
+func (f *removalSessionFake) AcceptBotModerationAction(_ context.Context, _ id.ID, _ id.ID, _ id.ID, _ uint64, _ string, _ []string, _ uint64, expires uint64) (client.ModerationActionReceipt, error) {
+	f.botExpires = append(f.botExpires, expires)
+	f.botNow = append(f.botNow, uint64(time.Now().Unix()))
 	if f.err != nil {
 		return client.ModerationActionReceipt{}, f.err
 	}
@@ -114,6 +118,14 @@ func TestModerationEnforcementAcceptsRuntimeGeneratedWarnAndTimeout(t *testing.T
 		}
 		if !accepted.matches(a, binding) || accepted.action != actionKind {
 			t.Fatalf("%s acceptance mismatch: %+v", actionKind, accepted)
+		}
+	}
+	if len(s.botExpires) != 2 {
+		t.Fatalf("captured automatic action expiries = %d, want 2", len(s.botExpires))
+	}
+	for i, expires := range s.botExpires {
+		if expires <= s.botNow[i] || expires-s.botNow[i] > 25 {
+			t.Fatalf("automatic request expiry delta = %d seconds, want 1..25", expires-s.botNow[i])
 		}
 	}
 	bad := removalAction(moderation.ActionWarn)

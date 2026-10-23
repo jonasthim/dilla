@@ -14,6 +14,8 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
+const botModerationAcceptanceWindow = 25 * time.Second
+
 var (
 	ErrModerationActionUnsupported = errors.New("moderation action is unsupported by this enforcement adapter")
 	ErrModerationActionSource      = errors.New("moderation action lacks an authoritative bound source")
@@ -159,14 +161,16 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 		}
 	}
 	now := time.Now().Unix()
-	if now <= 0 || now > math.MaxInt64-30 {
+	windowSeconds := int64(botModerationAcceptanceWindow / time.Second)
+	if now <= 0 || now > math.MaxInt64-windowSeconds {
 		return AcceptedModerationAction{}, ErrModerationActionSource
 	}
 	var timeoutMillis uint64
 	if action.Decision.Action == moderation.ActionTimeout {
 		timeoutMillis = uint64(action.Decision.Timeout / time.Millisecond)
 	}
-	accepted, err := b.session.AcceptBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision, string(action.Decision.Action), rules, timeoutMillis, uint64(now+30))
+	accepted, err := b.session.AcceptBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision,
+		string(action.Decision.Action), rules, timeoutMillis, uint64(now+windowSeconds))
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && apiErr.Code == "E_FORBIDDEN" {
