@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/moderation"
@@ -37,6 +38,7 @@ type ModerationActorAuthority interface {
 // AutoModerationRuntime evaluates authenticated, decrypted native group
 // events. Callers must pass events obtained from native.ReadGroupEvents.
 type AutoModerationRuntime struct {
+	mu        sync.RWMutex
 	engine    *moderation.Engine
 	authority ModerationActorAuthority
 	sink      ModerationActionSink
@@ -51,6 +53,18 @@ func NewAutoModerationRuntime(cfg moderation.Config, authority ModerationActorAu
 	return &AutoModerationRuntime{engine: moderation.New(cfg), authority: authority, sink: sink, now: now, enabled: cfg.Enabled}
 }
 
+// UpdateActionDependencies refreshes authenticated service handles while
+// preserving the process-local rolling counters for the same configuration.
+func (r *AutoModerationRuntime) UpdateActionDependencies(authority ModerationActorAuthority, sink ModerationActionSink) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.authority = authority
+	r.sink = sink
+	r.mu.Unlock()
+}
+
 // Handle evaluates one decrypted message. replay must be derived from the
 // durable event cursor/recovery path, never from message contents.
 func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEvent, replay bool, mentionIDs []string) (moderation.Decision, error) {
@@ -59,19 +73,22 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	}
 	if event.DeliveryID == 0 || event.Community.IsZero() || event.Group.IsZero() || event.Channel.IsZero() || event.Message.IsZero() ||
 		event.SourceSequence == 0 || event.SenderUser.IsZero() || event.SenderDevice.IsZero() ||
-		event.SenderKind > 1 || event.SenderTier > 1 || event.EnvelopeType != 0 || event.Body == nil || event.ReceivedAt == 0 || event.ReceivedAt > math.MaxInt64 {
+		event.SenderKind > 1 || event.SenderTier > 1 || event.EnvelopeType > 1 || event.Body == nil || event.ReceivedAt == 0 || event.ReceivedAt > math.MaxInt64 {
 		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, nil
 	}
+	r.mu.RLock()
+	authority, sink := r.authority, r.sink
+	r.mu.RUnlock()
 	var owner, admin bool
 	if r.enabled {
-		if r.authority == nil {
+		if authority == nil {
 			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation actor authority")
 		}
-		if r.sink == nil {
+		if sink == nil {
 			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation action sink")
 		}
 		var err error
-		owner, admin, err = r.authority.ModerationActorRoles(ctx, event)
+		owner, admin, err = authority.ModerationActorRoles(ctx, event)
 		if err != nil {
 			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, err
 		}
@@ -80,7 +97,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	now := r.now()
 	input := moderation.Input{
 		CommunityID: event.Community.String(), SourceID: event.Message.String(), Revision: event.SourceSequence,
-		UserID: event.SenderUser.String(), Bot: event.SenderKind == 1, Owner: owner, Admin: admin, ReceivedAt: receivedAt,
+		UserID: event.SenderUser.String(), Bot: event.SenderKind == 1, Owner: owner, Admin: admin, Edit: event.EnvelopeType == 1, ReceivedAt: receivedAt,
 		Body: *event.Body, MentionIDs: append([]string(nil), mentionIDs...), Replay: replay,
 	}
 	evaluationTime := now
@@ -90,13 +107,13 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 		evaluationTime = receivedAt
 	}
 	decision := r.engine.Evaluate(input, evaluationTime)
-	if replay || decision.Ignored || decision.DuplicateDelivery || len(decision.Rules) == 0 || r.sink == nil {
+	if replay || decision.Ignored || decision.DuplicateDelivery || len(decision.Rules) == 0 || sink == nil {
 		return decision, nil
 	}
 	action := ModerationAction{Community: event.Community.String(), Channel: event.Channel.String(),
 		Group: event.Group.String(), Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
 		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt, runtimeGenerated: true}
-	if err := r.sink.ApplyModerationAction(ctx, action); err != nil {
+	if err := sink.ApplyModerationAction(ctx, action); err != nil {
 		return decision, err
 	}
 	return decision, nil

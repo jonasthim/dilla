@@ -1,0 +1,159 @@
+//go:build linux
+
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"math"
+	"sync"
+
+	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/moderation"
+	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+type groupEventHighWaterSource interface {
+	Binding() native.Binding
+	ReadGroupEvents(context.Context, uint64, uint64) (native.GroupEventPage, error)
+}
+
+type autoModerationEventStateEntry struct {
+	community     id.ID
+	revision      uint64
+	replayThrough uint64
+	runtime       *service.AutoModerationRuntime
+}
+
+// autoModerationEventState preserves rolling evaluator state during a process
+// lifetime and snapshots a conservative replay barrier at process start or
+// after a config revision changes. The helper's acknowledged cursor remains
+// the durable delivery cursor across restarts.
+type autoModerationEventState struct {
+	mu      sync.Mutex
+	entries map[id.ID]autoModerationEventStateEntry
+}
+
+func newAutoModerationEventState() *autoModerationEventState {
+	return &autoModerationEventState{entries: make(map[id.ID]autoModerationEventStateEntry)}
+}
+
+func logOnlyModerationConfig() moderation.Config {
+	return moderation.Config{Actions: map[moderation.Rule]moderation.Action{
+		moderation.RuleRate: moderation.ActionLog, moderation.RuleDuplicate: moderation.ActionLog, moderation.RuleMentions: moderation.ActionLog,
+	}}
+}
+
+func configureAutoModeration(ctx context.Context, state *autoModerationEventState, n *native.Client, session *client.Session,
+	installation, community id.ID, logger *slog.Logger) (*service.AutoModerationRuntime, uint64, *service.ModerationCaseSink, error) {
+	if n == nil || session == nil {
+		return nil, 0, nil, errors.New("missing automatic moderation client or session")
+	}
+	cfg, revision, err := moderation.NewStore(n).Load(ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("bot automatic moderation settings unavailable; keeping log-only defaults", "installation_id", installation.String())
+		}
+		cfg = logOnlyModerationConfig()
+		revision = 0
+	}
+	for _, rule := range []moderation.Rule{moderation.RuleRate, moderation.RuleDuplicate, moderation.RuleMentions} {
+		if cfg.Actions[rule] == moderation.ActionWarn || cfg.Actions[rule] == moderation.ActionTimeout {
+			if logger != nil {
+				logger.Warn("bot automatic moderation action is unsupported and will be log-only", "installation_id", installation.String(), "rule", string(rule))
+			}
+			cfg.Actions[rule] = moderation.ActionLog
+		}
+	}
+	var authority service.ModerationActorAuthority
+	if cfg.Enabled {
+		resolved, authorityErr := service.NewCommunityActorAuthority(session, community, nil)
+		if authorityErr != nil {
+			return nil, 0, nil, authorityErr
+		}
+		authority = resolved
+	}
+	var backend service.ModerationEnforcementBackend
+	if cfg.Enabled {
+		for _, action := range cfg.Actions {
+			if action != moderation.ActionRemove {
+				continue
+			}
+			backend, err = service.NewModerationRemovalBackend(n, session)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("bot moderation removal unavailable; keeping rules log-only", "installation_id", installation.String())
+				}
+				for _, rule := range []moderation.Rule{moderation.RuleRate, moderation.RuleDuplicate, moderation.RuleMentions} {
+					cfg.Actions[rule] = moderation.ActionLog
+				}
+				backend = nil
+			}
+			break
+		}
+	}
+	sink, err := service.NewModerationCaseSink(n, backend, nil)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	runtime, replayThrough, err := state.Configure(ctx, n, installation, community, revision, cfg, authority, sink)
+	return runtime, replayThrough, sink, err
+}
+
+func (s *autoModerationEventState) Configure(ctx context.Context, source groupEventHighWaterSource, installation, community id.ID, revision uint64,
+	cfg moderation.Config, authority service.ModerationActorAuthority, sink service.ModerationActionSink) (*service.AutoModerationRuntime, uint64, error) {
+	if s == nil || ctx == nil || source == nil || installation.IsZero() || community.IsZero() {
+		return nil, 0, errors.New("missing automatic moderation event state dependency")
+	}
+	binding := source.Binding()
+	if binding.Installation != installation || binding.Community != community || binding.Installation.IsZero() || binding.Community.IsZero() {
+		return nil, 0, errors.New("automatic moderation event source binding mismatch")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, ok := s.entries[installation]; ok && entry.community == community && entry.revision == revision {
+		entry.runtime.UpdateActionDependencies(authority, sink)
+		s.entries[installation] = entry
+		return entry.runtime, entry.replayThrough, nil
+	}
+	page, err := source.ReadGroupEvents(ctx, 0, 1)
+	if err != nil {
+		return nil, 0, err
+	}
+	if page.Next > page.HighWater || page.HighWater > math.MaxInt64 {
+		return nil, 0, errors.New("invalid automatic moderation event high-water mark")
+	}
+	runtime := service.NewAutoModerationRuntime(cfg, authority, sink, nil)
+	entry := autoModerationEventStateEntry{community: community, revision: revision, replayThrough: page.HighWater, runtime: runtime}
+	s.entries[installation] = entry
+	return runtime, entry.replayThrough, nil
+}
+
+func (s *autoModerationEventState) RetainOnly(installations []id.ID) {
+	if s == nil {
+		return
+	}
+	active := make(map[id.ID]struct{}, len(installations))
+	for _, installation := range installations {
+		active[installation] = struct{}{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for installation := range s.entries {
+		if _, ok := active[installation]; !ok {
+			delete(s.entries, installation)
+		}
+	}
+}
+
+func (s *autoModerationEventState) Disable(installation id.ID) {
+	if s == nil || installation.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	delete(s.entries, installation)
+	s.mu.Unlock()
+}

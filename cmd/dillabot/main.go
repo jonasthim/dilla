@@ -1,7 +1,7 @@
 //go:build linux
 
 // Command dillabot reconciles managed bot identity, authorized MLS groups,
-// paused music queue metadata, and read-only moderation case listing.
+// paused music queue metadata, and durable group-event moderation handling.
 package main
 
 import (
@@ -352,7 +352,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 			return errors.New("Spotify playback lease is unavailable")
 		}
 	}
-	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_and_fail_closed_interaction_dispatch", "music", "paused_restoration_with_configured_pcm_starters")
+	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_interaction_and_moderation_dispatch", "music", "paused_restoration_with_configured_pcm_starters")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
 		return errors.New("WASI identity module failed startup validation")
@@ -381,8 +381,9 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 	logger.Info("bot service healthy", "instance_id", discovery.InstanceID.String(), "generation", discovery.Generation, "discovery", "ok")
 	musicRegistry := newMusicQueueRegistry()
+	autoModerationState := newAutoModerationEventState()
 	for {
-		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, spotifyLeases, logger); err != nil && !errors.Is(err, context.Canceled) {
+		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, logger); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("bot identity reconciliation degraded", "error", err.Error())
 		} else if err == nil {
 			logger.Info("bot identity reconciliation healthy")
@@ -400,7 +401,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, spotifyLeases *music.SpotifyLeaseManager, logger *slog.Logger) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, logger *slog.Logger) error {
 	var spotifyGuard *service.SpotifyAccountGuard
 	if cfg.SpotifyClientID != "" {
 		var err error
@@ -420,6 +421,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	if err := musicRegistry.RetainOnly(activeInstallations); err != nil {
 		logger.Error("stale bot music runtime cleanup incomplete", "error", err.Error())
 	}
+	autoModerationState.RetainOnly(activeInstallations)
 	var eligible, succeeded int
 	for _, installation := range installations {
 		if err := ctx.Err(); err != nil {
@@ -427,6 +429,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		if installation.State >= 4 {
 			_ = musicRegistry.Disable(installation.ID)
+			autoModerationState.Disable(installation.ID)
 			continue
 		}
 		eligible++
@@ -598,8 +601,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
-											var caseSink *service.ModerationCaseSink
-											caseSink, interactionErr = service.NewModerationCaseSink(nativeClient, nil, time.Now)
+											moderationRuntime, replayThrough, caseSink, moderationErr := configureAutoModeration(ctx, autoModerationState, nativeClient, result.Session, installation.ID, installation.CommunityID, logger)
+											if moderationErr != nil {
+												logger.Warn("bot automatic moderation event intake paused; text events will be acknowledged without action", "installation_id", installation.ID.String(), "error", moderationErr.Error())
+											}
 											var caseReader *service.ModerationCaseReader
 											if interactionErr == nil {
 												caseReader, interactionErr = service.NewModerationCaseReader(caseSink, result.Session)
@@ -619,13 +624,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
 												}
 											}
-										}
-										if interactionErr == nil {
-											runtime := newInteractionEventRuntime(interactionPoller, newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
-											var result service.GroupEventPollResult
-											result, interactionErr = runtime.Drain(ctx)
-											if interactionErr == nil && result.More {
-												logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", result.AcknowledgedThrough)
+											if interactionErr == nil {
+												eventHandler := service.GroupEventHandler(newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
+												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough)
+												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
+												var eventResult service.GroupEventPollResult
+												eventResult, interactionErr = eventRuntime.Drain(ctx)
+												if interactionErr == nil && eventResult.More {
+													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)
+												}
 											}
 										}
 									}
@@ -664,6 +671,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		if !membershipReady {
 			_ = musicRegistry.Disable(installation.ID)
+			autoModerationState.Disable(installation.ID)
 		}
 		if membershipReady && cfg.SpotifyClientID != "" {
 			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)

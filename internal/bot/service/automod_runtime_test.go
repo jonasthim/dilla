@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -78,6 +79,37 @@ func TestAutoModerationRuntimeUsesNativeActorAndDeduplicates(t *testing.T) {
 	}
 	if lastCount != 4 {
 		t.Fatalf("sink calls before duplicate = %d, want four violating decisions", lastCount)
+	}
+}
+
+func TestAutoModerationRuntimeDoesNotCountEditsAsNewMessages(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	var got []ModerationAction
+	runtime := NewAutoModerationRuntime(moderation.Config{
+		Enabled: true,
+		Actions: map[moderation.Rule]moderation.Action{moderation.RuleRate: moderation.ActionRemove},
+	}, automodAuthorityFunc(ordinaryAutomodAuthority), automodSinkFunc(func(_ context.Context, action ModerationAction) error {
+		got = append(got, action)
+		return nil
+	}), func() time.Time { return now })
+	body := ""
+	user, community, group, channel := id.New(), id.New(), id.New(), id.New()
+	for i := 0; i < 5; i++ {
+		body = fmt.Sprintf("hello %d", i)
+		event := native.GroupEvent{DeliveryID: uint64(i + 1), Community: community, Group: group, Channel: channel,
+			SourceSequence: uint64(i + 1), ReceivedAt: uint64(now.UnixMilli()), SenderUser: user, SenderDevice: id.New(),
+			SenderKind: 0, SenderTier: 0, EnvelopeType: 0, Body: &body, Message: id.New()}
+		if _, err := runtime.Handle(context.Background(), event, false, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body = "edited body"
+	event := native.GroupEvent{DeliveryID: 6, Community: community, Group: group, Channel: channel,
+		SourceSequence: 6, ReceivedAt: uint64(now.UnixMilli()), SenderUser: user, SenderDevice: id.New(),
+		SenderKind: 0, SenderTier: 0, EnvelopeType: 1, Body: &body, Message: id.New()}
+	decision, err := runtime.Handle(context.Background(), event, false, nil)
+	if err != nil || decision.Ignored || len(decision.Rules) != 0 || len(got) != 0 {
+		t.Fatalf("edit counted toward rate rule: decision=%+v actions=%d err=%v", decision, len(got), err)
 	}
 }
 
