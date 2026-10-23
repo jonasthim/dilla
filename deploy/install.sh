@@ -1073,6 +1073,7 @@ doctor_and_report() {
 	# leg's ownership reds are not DNS (final review M3): TURN served by both
 	# processes, by neither, or by dilla-media while api.sock does not answer is a
 	# handoff that went wrong, so it counts as a problem with the install itself.
+	# shellcheck disable=SC2016 # an awk program: $0 and $2 are awk's, not the shell's
 	DOCTOR_LEGS='
 		function owner() { return $2 == "turn" && $0 ~ /^FAIL[[:space:]]+turn[[:space:]]+(TURN is served by (both|neither)|dilla-media serves TURN but)/ }
 		function pending() { return $2 == "clock" || $2 == "certificate" || ($2 == "turn" && !owner()) }'
