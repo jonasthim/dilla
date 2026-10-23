@@ -23,17 +23,19 @@ const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: 
 
 function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null;
   selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[]; roles?: RoleSummary[];
-  channels?: ChannelSummary[]; installation?: unknown; interaction?: unknown } = {}) {
+  channels?: ChannelSummary[]; installation?: unknown; interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown' } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
   fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (over.selfRoles ?? [])
     : command.m === 'getBotInstallation' ? (over.installation ?? null)
-    : command.m === 'humanInteractionRequest' ? { requestId: command.requestId, upload: 'accepted' }
+    : command.m === 'humanInteractionRequest' ? { requestId: command.requestId, upload: over.upload ?? 'accepted' }
     : command.m === 'readBotInteractionResponses' ? (() => {
       const sent = fake.callsOf('humanInteractionRequest').at(-1);
       const sentChannel = sent?.args[0];
-      return { through: '1', blocked: false, responses: over.interaction && sent !== undefined && typeof sentChannel === 'string' ? [{
+      const interaction = over.interaction;
+      const responseReady = typeof interaction === 'function' ? interaction() : interaction === true;
+      return { through: '1', blocked: false, responses: responseReady && sent !== undefined && typeof sentChannel === 'string' ? [{
         deliveryId: '1', requestId: sent.requestId, communityId: SERVER, operation: 31, channelId: null, status: 0,
         revision: '1', data: encode([fromHex(sentChannel), 9n]), sourceSeq: '1',
       }] : [] };
@@ -96,6 +98,23 @@ describe('ServerSettings tabs', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Choose a text channel');
     expect(fake.callsOf('humanInteractionRequest')).toHaveLength(0);
     expect(fake.callsOf('configureSelfRoles')).toHaveLength(0);
+  });
+  it.each(['pending', 'unknown'] as const)('keeps polling after an %s upload until its late accepted response', async upload => {
+    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16); let responseReady = false;
+    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+      interaction: () => responseReady, upload });
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await screen.findByText('The send result is uncertain. Retry with the same request to safely continue.');
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
+    responseReady = true;
+    await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
+    expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
   });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);

@@ -125,7 +125,7 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
   };
 
   useEffect(() => {
-    if (pendingPanel === null || pendingPanel.uploadUncertain) return;
+    if (pendingPanel === null) return;
     let canceled = false; let timer: number | undefined;
     const poll = async (): Promise<void> => {
       try {

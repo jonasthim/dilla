@@ -169,7 +169,7 @@ describe('Controller', () => {
     w.call(10_191, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
       operation: 31, args: [toHex(destination), options], revision: '0' });
     await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
-    const wire = decode(w.core.humanInteractionSendPrepare.mock.calls[0]![3]);
+    const wire = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]);
     expect(wire).toEqual([1n, requestId, COMMUNITY, null, 31n, 0n, NOW_S + 30n, [destination, options]]);
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
