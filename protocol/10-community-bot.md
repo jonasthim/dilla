@@ -56,6 +56,8 @@ Operation, arguments, channel requirement, mutation:
 - 62 automod.config.get: [], no channel, read
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 
+Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). The handler resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. A missing or conflicting receipt refuses the write. The revision is checked by this handler because the evidence key is the immutable action request ID, not a shared settings revision.
+
 For no-channel operations channel MUST be null. For reads revision/expires MUST
 be null. For mutations both MUST be uint; expiry must satisfy now < expires <=
 now+30 (seconds), rejecting overflow. Feature handlers compare stale revisions
