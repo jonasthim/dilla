@@ -394,10 +394,8 @@ test('two communities run isolated YouTube playback with independent Bot identit
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'admin.nav.bot').click();
   await settings.getByRole('button', { name: copy('admin.bot.disable'), exact: true }).click();
-  const disableConfirm = dialog(page, 'factorSettings.stepUp.title');
-  await disableConfirm.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
-  await disableConfirm.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.disabledNotice'), { timeout: WAIT });
+  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.disabled'), { timeout: WAIT });
+  await expect(page.getByTestId('shell-announcer')).toHaveText(copy('admin.bot.disabledNotice'), { timeout: WAIT });
   await expect.poll(() => snapshotDevices(djPage, callA!.channelId!), { timeout: 90_000 }).not.toContain(botDeviceA);
   await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
   await expect.poll(() => heardCount(djTwoPage, botDeviceB), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
