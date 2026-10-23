@@ -193,11 +193,11 @@ func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
 		if !approved {
 			return server.Errorf(server.CodeForbidden, "panel role is no longer approved for self-service")
 		}
-		actorSnap, err := LoadSnapshot(r.Context(), tx, cid, actor.UserID, nil)
+		actorSnap, err := LoadSnapshot(r.Context(), tx, cid, actor.UserID, &channelID)
 		if err != nil {
 			return notFound(err)
 		}
-		actorBits := actorSnap.Resolve(actor.UserID)
+		actorBits := actorSnap.ResolveChannel(actor.UserID)
 		if !actorBits.Has(PermViewChannel) || !actorBits.Has(PermAddReactions) {
 			return server.Errorf(server.CodeForbidden, "view_channel and add_reactions required")
 		}

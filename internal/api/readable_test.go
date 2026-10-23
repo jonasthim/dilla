@@ -169,6 +169,31 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 	if status, body := e.Do(http.MethodPut, panelPath, f.ownerTok, []any{requestID, channel, seq, []any{[]any{"🎨", role}}}); status != http.StatusOK {
 		t.Fatalf("register bot panel = %d (%x), want 200", status, body)
 	}
+	// The explicit encrypted-panel action endpoint must evaluate current channel
+	// overwrites, even though the caller remains a community member.
+	if err := e.Repo.ReplaceMembers(t.Context(), groupID, 0, []store.MemberRow{{
+		GroupID: groupID, LeafIndex: 0, UserID: member, DeviceID: e.sess[memberTok].DeviceID, SignatureKey: make([]byte, 32),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 99,
+		UploaderDevice: e.sess[memberTok].DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{ChannelID: channel, TargetKind: 1, TargetID: member,
+		Deny: uint64(api.PermAddReactions)}); err != nil {
+		t.Fatal(err)
+	}
+	reactionAction := "/v1/communities/" + f.cid.String() + "/role-panels/" + channel.String() + "/" + fmt.Sprint(seq) + "/reaction"
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(1)}); status != http.StatusForbidden {
+		t.Fatalf("encrypted panel action after channel add_reactions denial = %d (%x), want 403", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after channel overwrite denied panel action = %v, %v; want absent", held, err)
+	}
+	if err := e.Repo.DeleteOverwrite(t.Context(), channel, 1, member); err != nil {
+		t.Fatal(err)
+	}
 	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 3, seq, "🎭"))
 	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
 		t.Fatalf("role from unmapped emoji = %v, %v; want absent", held, err)
