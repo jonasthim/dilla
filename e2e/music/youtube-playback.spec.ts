@@ -1,9 +1,10 @@
 import { expect, test } from '../voice/support/peer-browser';
 import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, WAIT } from '../voice/support/voice';
-import { addServerVia, channelRow, completeSignUp, copy, makeInviteLink, newAccount, newChannelButton, signUp } from '../web/support/app';
+import { addServerVia, channelRow, completeSignUp, copy, makeInviteLink, newAccount, signUp } from '../web/support/app';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
-const SERVER = 'Music acceptance';
+const SERVER = 'Music acceptance A';
+const SERVER_TWO = 'Music acceptance B';
 const DJ_ROLE = 'Music DJ';
 const FRIEND = 'Bea';
 const FRIEND_TWO = 'Cal';
@@ -14,8 +15,8 @@ const dialog = (page: import('@playwright/test').Page, name: string, vars?: Reco
 const settingsNav = (settings: import('@playwright/test').Locator, key: string) =>
   settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
     .getByRole('button', { name: copy(key), exact: true });
-const memberRow = (page: import('@playwright/test').Page, name: string) =>
-  page.getByRole('complementary', { name: copy('members.region', { server: SERVER }), exact: true })
+const memberRow = (page: import('@playwright/test').Page, server: string, name: string) =>
+  page.getByRole('complementary', { name: copy('members.region', { server }), exact: true })
     .getByRole('listitem').filter({ hasText: name });
 
 /** Records only music command names, response status/counts and upload outcomes, never IDs or CBOR payloads. */
@@ -149,7 +150,7 @@ function installMusicTransportTrace(): void {
   Object.defineProperty(window, 'Worker', { value: TracedWorker, configurable: true, writable: true });
 }
 
-test('two DJs run independent YouTube playback sessions in separate voice channels', async ({ peerBrowser }) => {
+test('two communities run isolated YouTube playback with independent Bot identities and SFrame keys', async ({ peerBrowser }) => {
   const owner = await peerBrowser.open('owner');
   const dj = await peerBrowser.open('dj');
   const djTwo = await peerBrowser.open('dj-two');
@@ -176,15 +177,6 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   await expect(createServer).toBeHidden({ timeout: WAIT });
   await expect(page.getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true })).toBeVisible({ timeout: WAIT });
 
-  // Create the second call through the shipping client. Both channel queues and Bot publishers
-  // must coexist in one installation while the independent DJs control them from separate pages.
-  await newChannelButton(page).click();
-  const createChannel = dialog(page, 'create.channel.title', { server: SERVER });
-  await createChannel.getByRole('radio', { name: copy('create.channel.voice'), exact: true }).click();
-  await createChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('music-two');
-  await createChannel.getByRole('button', { name: copy('create.channel.submit'), exact: true }).click();
-  await expect(createChannel).toBeHidden({ timeout: WAIT });
-  await expect(page.getByRole('button', { name: copy('voice.open', { name: 'music-two' }), exact: true })).toBeVisible({ timeout: WAIT });
   await channelRow(page, 'general').click();
 
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
@@ -217,15 +209,49 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   await completeSignUp(djPage, newAccount(FRIEND, control), instanceName);
   await expect(djPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
     .getByRole('button', { name: SERVER, exact: true })).toBeVisible({ timeout: WAIT });
-  const inviteLinkTwo = await makeInviteLink(page, SERVER);
+
+  // Create and configure the second community through the shipping client. Its installation is
+  // independently managed and receives its own user/device identity and MLS group.
+  await addServerVia(page, 'create');
+  const createServerTwo = dialog(page, 'create.server.title');
+  await createServerTwo.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER_TWO);
+  await page.keyboard.press('Enter');
+  await expect(createServerTwo).toBeHidden({ timeout: WAIT });
+  await expect(page.getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true })).toBeVisible({ timeout: WAIT });
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  settings = dialog(page, 'admin.title');
+  await settingsNav(settings, 'roles.tab').click();
+  await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
+  const roleEditorTwo = dialog(page, 'roles.editor.titleNew', { server: SERVER_TWO });
+  await roleEditorTwo.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(DJ_ROLE);
+  await roleEditorTwo.getByRole('button', { name: copy('roles.editor.create'), exact: true }).click();
+  await expect(roleEditorTwo).toBeHidden({ timeout: WAIT });
+  await settingsNav(settings, 'admin.nav.bot').click();
+  await settings.getByRole('checkbox', { name: copy('admin.bot.capability.music'), exact: true }).check();
+  await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+  const stepUpTwo = dialog(page, 'factorSettings.stepUp.title');
+  await stepUpTwo.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
+  await stepUpTwo.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
+  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+  await expect(settings.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeVisible({ timeout: WAIT });
+  const djPolicyTwo = settings.getByRole('group', { name: copy('admin.bot.music.djRoles.label'), exact: true });
+  await djPolicyTwo.getByRole('checkbox', { name: DJ_ROLE, exact: true }).check();
+  await settings.getByRole('button', { name: copy('admin.bot.music.djRoles.save'), exact: true }).click();
+  await expect(page.getByTestId('shell-announcer')).toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
+  await page.keyboard.press('Escape');
+
+  const inviteLinkTwo = await makeInviteLink(page, SERVER_TWO);
   await djTwoPage.goto(new URL(inviteLinkTwo).pathname);
   await djTwoPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
   await completeSignUp(djTwoPage, newAccount(FRIEND_TWO, control), instanceName);
   await expect(djTwoPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
-    .getByRole('button', { name: SERVER, exact: true })).toBeVisible({ timeout: WAIT });
+    .getByRole('button', { name: SERVER_TWO, exact: true })).toBeVisible({ timeout: WAIT });
 
-  for (const name of [FRIEND, FRIEND_TWO]) {
-    const friend = memberRow(page, name);
+  // Give each community's DJ role to its local member only.
+  for (const [server, name] of [[SERVER, FRIEND], [SERVER_TWO, FRIEND_TWO]] as const) {
+    await page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
+      .getByRole('button', { name: server, exact: true }).click();
+    const friend = memberRow(page, server, name);
     await expect(friend).toBeVisible({ timeout: WAIT });
     await friend.locator('.d-member-list__open').click();
     await page.getByRole('dialog', { name, exact: true })
@@ -238,7 +264,7 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   }
 
   await joinVoice(djPage, SERVER, 'general');
-  await joinVoice(djTwoPage, SERVER, 'music-two');
+  await joinVoice(djTwoPage, SERVER_TWO, 'general');
   const panelA = djPage.getByRole('region', { name: copy('voice.music.title'), exact: true });
   const panelB = djTwoPage.getByRole('region', { name: copy('voice.music.title'), exact: true });
   for (const [musicPage, panel] of [[djPage, panelA], [djTwoPage, panelB]] as const) {
@@ -258,7 +284,13 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   const enqueue = async (panel: typeof panelA) => {
     await panel.getByRole('textbox', { name: copy('voice.music.urlLabel'), exact: true }).fill(YOUTUBE_SAMPLE);
     await panel.getByRole('button', { name: copy('voice.music.enqueueAction'), exact: true }).last().click();
-    await expect(panel.getByText(copy('voice.music.enqueueSuccess'), { exact: true })).toBeVisible({ timeout: 90_000 });
+    try {
+      await expect(panel.getByText(copy('voice.music.enqueueSuccess'), { exact: true })).toBeVisible({ timeout: 90_000 });
+    } catch (error) {
+      const diagnostic = await panel.evaluate((element) => ({ text: element.innerText,
+        trace: (window as unknown as { __dillaMusicTrace?: unknown }).__dillaMusicTrace ?? null }));
+      throw new Error(`${String(error)}\nSafe enqueue diagnostic (no IDs or payloads): ${JSON.stringify(diagnostic)}`);
+    }
   };
   const queueA = panelA.getByRole('list', { name: copy('voice.music.queue'), exact: true });
   const queueB = panelB.getByRole('list', { name: copy('voice.music.queue'), exact: true });
@@ -267,10 +299,12 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   await enqueue(panelA);
   await expect(queueA.getByRole('listitem')).toHaveCount(1);
   await expect(queueB.getByRole('listitem')).toHaveCount(0);
+  // Exercise B before doing the second real YouTube extraction for A so both calls stay active.
+  await enqueue(panelB);
+  await expect(queueB.getByRole('listitem')).toHaveCount(1);
+  await expect(queueA.getByRole('listitem')).toHaveCount(1);
   await enqueue(panelA);
   await expect(queueA.getByRole('listitem')).toHaveCount(2);
-  await expect(queueB.getByRole('listitem')).toHaveCount(0);
-  await enqueue(panelB);
   await expect(queueB.getByRole('listitem')).toHaveCount(1);
   await panelA.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
   await panelB.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
@@ -292,8 +326,8 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   };
   const botDeviceA = await botDeviceFor(djPage);
   const botDeviceB = await botDeviceFor(djTwoPage);
-  // One installation publishes with one stable Bot device identity across rooms.
-  expect(botDeviceA).toBe(botDeviceB);
+  // Separate communities must have separate managed Bot device identities.
+  expect(botDeviceA).not.toBe(botDeviceB);
   const callA = await callSlice(djPage);
   const callB = await callSlice(djTwoPage);
   expect(callA?.channelId).not.toBeNull();
@@ -342,11 +376,33 @@ test('two DJs run independent YouTube playback sessions in separate voice channe
   }
   await expect.poll(() => audibleLevel(djPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
   await expect.poll(() => audibleLevel(djTwoPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+  // Stopping A leaves B's independent queue and audio running.
   await panelA.getByRole('button', { name: copy('voice.music.stop'), exact: true }).click();
   await expect(panelA.getByText(copy('voice.music.nothingPlaying'), { exact: true })).toBeVisible({ timeout: WAIT });
   await expect(panelB.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled();
   await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
   await expect.poll(() => audibleLevel(djTwoPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+  await panelA.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
+  await expect(panelA.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled({ timeout: WAIT });
+  await expect.poll(() => audibleLevel(djPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+
+  // Disable only community A's Bot through its owner controls. Community B must keep its
+  // authenticated Bot stream and audible output while A's stream disappears.
+  await page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
+    .getByRole('button', { name: SERVER, exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  settings = dialog(page, 'admin.title');
+  await settingsNav(settings, 'admin.nav.bot').click();
+  await settings.getByRole('button', { name: copy('admin.bot.disable'), exact: true }).click();
+  const disableConfirm = dialog(page, 'factorSettings.stepUp.title');
+  await disableConfirm.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
+  await disableConfirm.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
+  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.disabledNotice'), { timeout: WAIT });
+  await expect.poll(() => snapshotDevices(djPage, callA!.channelId!), { timeout: 90_000 }).not.toContain(botDeviceA);
+  await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
+  await expect.poll(() => heardCount(djTwoPage, botDeviceB), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
+  await expect.poll(() => audibleLevel(djTwoPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+
   await panelB.getByRole('button', { name: copy('voice.music.stop'), exact: true }).click();
   await expect(panelB.getByText(copy('voice.music.nothingPlaying'), { exact: true })).toBeVisible({ timeout: WAIT });
 
