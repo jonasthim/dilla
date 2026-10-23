@@ -240,7 +240,7 @@ describe('catch-up on every ready (rule 2)', () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);
     ds.healNeeded.set(toHex(g), true);
-    d.engine.deps.routes.postGroupHeal = async () => ({ epoch: 99n, nextSeq: 99n });
+    d.engine.deps.routes.postGroupHeal = () => Promise.resolve({ epoch: 99n, nextSeq: 99n });
     ds.resetCalls();
     d.gateway.ready(readyInfo(ME));
     await settle();

@@ -11,6 +11,7 @@ use rusqlite::OptionalExtension;
 
 const STATE_ACTIVE: i64 = 2;
 const STATE_NEEDS_RESYNC: i64 = 3;
+type StoredGroupRow = (i64, Option<Vec<u8>>, Vec<u8>, i64, i64, i64, i64);
 
 fn refused() -> ClientError {
     ClientError::new(
@@ -32,7 +33,7 @@ impl ClientCore {
             return Err(refused());
         }
 
-        let row: Option<(i64, Option<Vec<u8>>, Vec<u8>, i64, i64, i64, i64)> = self.read(|c| {
+        let row: Option<StoredGroupRow> = self.read(|c| {
             c.query_row(
                 "SELECT kind,community_id,target_id,state,epoch,max_epoch,pending_commit \
                  FROM app_groups WHERE group_id=?1",
@@ -73,7 +74,7 @@ impl ClientCore {
             || u64::try_from(epoch).ok() != Some(group.epoch())
             || u64::try_from(max_epoch)
                 .ok()
-                .map_or(true, |max| max > group.epoch())
+                .is_none_or(|max| max > group.epoch())
         {
             return Err(refused());
         }
