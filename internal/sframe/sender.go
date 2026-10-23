@@ -21,6 +21,11 @@ type Sender struct {
 	minEpoch  uint64
 	next      map[counterKey]uint64
 	exhausted bool
+	// A reserved sender can spend only its durable Mic/0 range in one epoch.
+	reserved        bool
+	reservedEnd     uint64
+	reservedEpoch   uint64
+	reservedInvalid bool
 }
 
 // NewSender is ErrStaleEpoch when epoch is below minEpoch (N1).
@@ -35,12 +40,35 @@ func NewSender(baseKey [16]byte, leaf uint16, epoch, minEpoch uint64) (*Sender, 
 	}, nil
 }
 
+// NewSenderRange uses a durable, exclusive Mic/0 counter interval. The caller
+// must persist the reservation before publishing. A fresh sender for the same
+// key and epoch must receive a disjoint interval, including after restart.
+func NewSenderRange(baseKey [16]byte, leaf uint16, epoch, start, end uint64) (*Sender, error) {
+	if start >= end || end > MaxSeq+1 {
+		return nil, ErrCounterExhausted
+	}
+	s, err := NewSender(baseKey, leaf, epoch, epoch)
+	if err != nil {
+		return nil, err
+	}
+	s.reserved = true
+	s.reservedEnd = end
+	s.reservedEpoch = epoch
+	s.next[counterKey{epoch: epoch, slot: Mic, layer: 0}] = start
+	return s, nil
+}
+
 // Rekey switches to a new epoch's key; the counters carry on.
 func (s *Sender) Rekey(baseKey [16]byte, leaf uint16, epoch uint64) {
 	kid := KID(leaf, epoch)
 	keys := DeriveKeys(baseKey, kid)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.reserved {
+		// A new epoch requires a new durable reservation, even if this
+		// caller supplies the same key and epoch again.
+		s.reservedInvalid = true
+	}
 	s.epoch, s.kid, s.keys = epoch, kid, keys
 }
 
@@ -65,6 +93,14 @@ func (s *Sender) Encrypt(c Codec, slot Slot, layer uint8, frame []byte) ([]byte,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.reserved {
+		if s.reservedInvalid || s.epoch != s.reservedEpoch {
+			return nil, ErrStaleEpoch
+		}
+		if slot != Mic || layer != 0 {
+			return nil, ErrSlotMismatch
+		}
+	}
 	if s.epoch < s.minEpoch {
 		return nil, ErrStaleEpoch
 	}
@@ -73,6 +109,10 @@ func (s *Sender) Encrypt(c Codec, slot Slot, layer uint8, frame []byte) ([]byte,
 	}
 	k := counterKey{epoch: s.epoch, slot: slot, layer: layer}
 	seq := s.next[k]
+	if s.reserved && seq >= s.reservedEnd {
+		s.exhausted = true
+		return nil, ErrCounterExhausted
+	}
 	if seq > MaxSeq {
 		s.exhausted = true
 		return nil, ErrCounterExhausted
