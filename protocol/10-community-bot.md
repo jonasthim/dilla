@@ -73,7 +73,9 @@ Response CBOR (same body-prefix and encoded byte limit):
 For `announcements.list`, data is `[1, offset, total, rows]` and response
 revision is the scheduler document revision. A successful or conflicting
 announcement mutation returns the resulting document revision; a stale request
-returns status 4. Production currently registers only the list operation.
+returns status 4. Production registers list, Put, and Delete. The bot checks
+the authenticated actor's current `manage_community` authority before each
+mutation; that permission decision is the action's acceptance boundary.
 For `moderation.cases`, data is `[1, rows, next_cursor|null]`; each row is
 `[source_community, group_id, channel_id, actor_id, message_id, source_revision,
 reason, action, excerpt, received_at_unix]`. The cursor is opaque deterministic
