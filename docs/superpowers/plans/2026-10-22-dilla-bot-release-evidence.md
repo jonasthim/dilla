@@ -185,7 +185,7 @@ This is an implementation checkpoint for `feat/dilla-bot`, not a release sign-of
 
 On integrated commit `663379d7`, Chromium passed the paired Bot/server restore scenario in
 `e2e/web/announcement-scheduler.spec.ts -g 'paired restore'` (one test, about 5.1 minutes).
-The scenario takes a cold snapshot of the Bot and server state, restores both, and confirms the
+The scenario stops the Bot, snapshots its files and the test server state, restores both, and confirms the
 Bot interaction heals. A target scheduled Bot POST receives `403 E_LEAF_NOT_CURRENT` while
 `epoch_unknown` is still set. Ada then authenticates and heals the same group at the archived
 epoch; after that heal, the Bot POST is accepted and exactly one message is visible. This closes
