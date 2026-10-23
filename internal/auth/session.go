@@ -1395,7 +1395,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 			return false, nil
 		}
 		return communityPathForBot(ctx, s.repo, bot)
-	case "GET /v1/channels/{id}", "GET /v1/channels/{id}/members", "GET /v1/channels/{id}/messages":
+	case "GET /v1/channels/{id}", "GET /v1/channels/{id}/members", "GET /v1/channels/{id}/messages",
+		"GET /v1/channels/{id}/permissions":
 		if !joining {
 			return false, nil
 		}

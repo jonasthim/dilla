@@ -380,6 +380,12 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	if err := repo.CreateCommunity(ctx, foreignCommunity); err != nil {
 		t.Fatal(err)
 	}
+	foreignCommunityID := foreignCommunity.ID
+	foreignChannel := store.ChannelRow{ID: id.New(), CommunityID: &foreignCommunityID, Kind: 1, Mode: 0, Visibility: 0,
+		Name: "foreign voice", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateChannel(ctx, foreignChannel); err != nil {
+		t.Fatal(err)
+	}
 	group := func(communityID *id.ID) id.ID {
 		t.Helper()
 		row := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 0, CommunityID: communityID,
@@ -600,6 +606,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can resolve own community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
 		{name: "ready bot can read own channel call", pattern: "GET /v1/channels/{id}/call", method: http.MethodGet, pathName: "id", pathValue: voiceChannel.ID.String()},
+		{name: "ready bot can read own channel permissions", pattern: "GET /v1/channels/{id}/permissions", method: http.MethodGet, pathName: "id", pathValue: voiceChannel.ID.String()},
 		{name: "ready bot can read own community calls", pattern: "GET /v1/communities/{id}/calls", method: http.MethodGet, pathName: "id", pathValue: community.ID.String()},
 		{name: "ready bot can end own community call", pattern: "DELETE /v1/calls/{call_id}", method: http.MethodDelete, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
@@ -627,6 +634,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot cannot send to an interaction group registered to another device", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignInstallInteraction.GroupID.String()},
 		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot resolve foreign community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot read foreign channel permissions", pattern: "GET /v1/channels/{id}/permissions", method: http.MethodGet, pathName: "id", pathValue: foreignChannel.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
