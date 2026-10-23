@@ -25,6 +25,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/announcements"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
+	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
 	"github.com/jonasthim/dilla/internal/bot/music/spotify"
@@ -616,7 +617,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													handlers := runtimeInteractionHandlers(
 														service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID},
 														service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
-														service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID},
+														service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID,
+															InstallationID: installation.ID, ManualRemovalLookup: manualRemovalLookup{Session: result.Session},
+															EvidenceWriter: moderation.NewEvidenceWriter(nativeClient)},
 														musicInteractions,
 														nativeClient,
 														autoModerationGrantRedeemer{Session: result.Session, InstallationID: installation.ID},
