@@ -144,7 +144,9 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state === 0)) { s.requestDrain(g); return; }
   }
   let messageBody: Uint8Array;
-  try { messageBody = s.deps.core.sendEncrypt(msgId).messageBody; }
+  try {
+    messageBody = s.deps.core.sendEncrypt(msgId).messageBody;
+  }
   catch (e) {
     if (e instanceof CoreError && e.code === 'E_CORE_STATE') {
       const group = s.row(g);
@@ -173,7 +175,8 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   try {
     const answer = await s.deps.routes.postMessage(g, messageBody);
     if (s.stopped()) return;
-    try { s.deps.core.sendConfirm(msgId, answer.raw); }
+    let confirmed: { groupId: Id; seq: bigint };
+    try { confirmed = s.deps.core.sendConfirm(msgId, answer.raw); }
     catch (e) {
       if (!(e instanceof CoreError)) throw e;
       if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state !== 2)) s.reframedOnce.delete(reframeKey);
@@ -183,7 +186,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     s.queued.delete(msgHex);
     // The clear first, so the countdown onPosted starts is not cleared after it.
     if (s.slowed.delete(msgHex) && row.type === 0 && !s.slowWait.has(hex)) s.deps.onSlow(g, 0, false);
-    s.deps.onPosted(g, row.type, row);
+    s.deps.onPosted(g, row.type, row, confirmed.seq);
     s.requestDrain(g);
   } catch (e) {
     if (s.stopped()) return;

@@ -44,7 +44,7 @@ export interface SyncDeps {
    *  (queued: a post waits for it). untilMs 0 with queued false clears it: the waiting row was confirmed. */
   onSlow(groupId: Id, untilMs: number, queued: boolean): void;
   /** CB2: an upload of this device was confirmed; type is the row's envelope type. */
-  onPosted(groupId: Id, type: number, row?: OutboxRow): void;
+  onPosted(groupId: Id, type: number, row?: OutboxRow, confirmedSeq?: bigint): void;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,

@@ -129,7 +129,7 @@ func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
 			return server.Errorf(server.CodeForbidden, "reaction sender is not a current channel device")
 		}
 		event, err := tx.GetAppMessage(r.Context(), req.GroupID, req.EventSeq)
-		if err != nil || event.UploaderDevice != actor.DeviceID || event.DeletedAt != nil || (event.Class != nil && *event.Class != 0) {
+		if err != nil || event.UploaderDevice != actor.DeviceID || event.DeletedAt != nil || event.Class == nil || *event.Class != 1 {
 			return server.Errorf(server.CodeForbidden, "reaction event is not an accepted message from this device")
 		}
 		panel, err := tx.GetRolePanel(r.Context(), channelID, seq)
@@ -200,9 +200,6 @@ func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
 		actorBits := actorSnap.ResolveChannel(actor.UserID)
 		if !actorBits.Has(PermViewChannel) || !actorBits.Has(PermAddReactions) {
 			return server.Errorf(server.CodeForbidden, "view_channel and add_reactions required")
-		}
-		if err := h.selfRoleCandidate(r, tx, cid, actor.UserID, roleID, actorBits, actorSnap); err != nil {
-			return err
 		}
 		approverSnap, err := LoadSnapshot(r.Context(), tx, cid, approvedBy, nil)
 		if err != nil || !approverSnap.Resolve(approvedBy).Has(PermManageRoles) || h.selfRoleCandidate(r, tx, cid, approvedBy, roleID, approverSnap.Resolve(approvedBy), approverSnap) != nil {

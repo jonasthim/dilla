@@ -30,7 +30,7 @@ import {
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
-import { PENDING_JOIN_KEY, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
+import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
 import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
@@ -322,6 +322,8 @@ const TOTP = /^[0-9]{6}$/;
 const backupCode = normaliseBackupCode;
 /** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
 const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
+type PendingRolePanelAction = { communityId: string; channelId: string; messageSeq: string; groupId: string; eventSeq: string;
+  emoji: string; enabled: boolean; userId: string; deviceId: string };
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
 const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
@@ -925,6 +927,7 @@ export class Controller {
   private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
   /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
   private readonly trays = new Map<string, Tray>();
+  private readonly pendingRolePanelActionJobs = new Set<string>();
   /** Channels whose pins view is open: touchGroup keeps their pins slice fresh until closePins or closeChannel. */
   private readonly pinsOpen = new Set<string>();
   /** web3.7: channel hex → the root msg id hex of its one open thread; refreshTimeline reads it again. */
@@ -2186,7 +2189,7 @@ export class Controller {
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
       onSlow: (g, untilMs, queued) => { this.safely(() => { this.onSlow(g, untilMs, queued); }); },
-      onPosted: (g, type, row) => { this.safely(() => { this.onPosted(g, type, row); }); },
+      onPosted: (g, type, row, seq) => { this.safely(() => { this.onPosted(g, type, row, seq); }); },
     });
     this.sync = sync;
     sync.start();
@@ -2294,6 +2297,7 @@ export class Controller {
     // Requirement 13 (Q27: clients refetch on ready), not awaited in the ready path.
     const me = this.me;
     if (core !== null && me !== null) {
+      this.retryPendingRolePanelActions(core, me);
       void this.barrier.track(this.ensureBackups(core));
       void this.barrier.track(this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
         .then((own) => {
@@ -5132,7 +5136,7 @@ export class Controller {
   }
 
   /** CB2: a confirmed own post (type 0) starts the channel's countdown of slowmode seconds; a fold never does. */
-  private onPosted(g: Id, type: number, posted?: OutboxRow): void {
+  private onPosted(g: Id, type: number, posted?: OutboxRow, confirmedSeq?: bigint): void {
     if ((type === 3 || type === 4) && posted?.replyTo !== null && posted?.replyTo !== undefined) {
       const core = this.core;
       const group = core?.groupRow(g);
@@ -5141,15 +5145,18 @@ export class Controller {
         const channelId = toHex(group.targetId);
         const channel = this.target(channelId);
         if (channel?.communityId !== null && channel?.communityId !== undefined) {
-          const rows = core.timeline(g, 0n, 200);
-          const event = rows.find(row => row.msgId !== null && toHex(row.msgId) === toHex(posted.msgId));
           const targetTimeline = this.slices.get(`timeline:${channelId}`);
           const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
-          if (event?.status === 0 && event.type === type && event.senderDevice.every((byte, i) => byte === me.deviceId[i])
-            && target?.state === 'ok' && target.seq !== null) {
-            const apply = this.routes.applyRolePanelReaction(fromHex(channel.communityId), channel.channel.id, BigInt(target.seq),
-              g, event.seq, posted.body, type === 3);
-            void this.barrier.track(apply).catch(() => undefined);
+          if (confirmedSeq !== undefined && target?.state === 'ok' && target.seq !== null) {
+            const key = PENDING_ROLE_PANEL_ACTION_PREFIX + toHex(posted.msgId);
+            const action: PendingRolePanelAction = {
+              communityId: channel.communityId, channelId, messageSeq: target.seq, groupId: toHex(g), eventSeq: confirmedSeq.toString(),
+              emoji: posted.body, enabled: type === 3, userId: toHex(me.userId), deviceId: toHex(me.deviceId),
+            };
+            try {
+              core.settingPut(key, JSON.stringify(action));
+              void this.barrier.track(this.submitPendingRolePanelAction(core, key, action));
+            } catch { /* Durable retry is unavailable until the next confirmed event. */ }
           }
         }
       }
@@ -5158,6 +5165,45 @@ export class Controller {
     const channel = this.slowChannel(g);
     if (channel === null || channel.slowmode <= 0) return;
     this.publishSlow(channel.channelId, this.deps.now() + channel.slowmode * 1000, false);
+  }
+
+  private retryPendingRolePanelActions(core: CorePort, me: { userId: Id; deviceId: Id }): void {
+    let settings: Record<string, string>;
+    try { settings = core.settings(); } catch { return; }
+    for (const [key, value] of Object.entries(settings)) {
+      if (!key.startsWith(PENDING_ROLE_PANEL_ACTION_PREFIX)) continue;
+      let action: PendingRolePanelAction;
+      try { action = JSON.parse(value) as PendingRolePanelAction; } catch { core.settingDelete(key); continue; }
+      const valid = [action.communityId, action.channelId, action.groupId, action.userId, action.deviceId]
+        .every(value => /^[0-9a-f]{32}$/.test(value))
+        && /^\d+$/.test(action.messageSeq) && /^\d+$/.test(action.eventSeq)
+        && typeof action.emoji === 'string' && new TextEncoder().encode(action.emoji).length >= 1
+        && new TextEncoder().encode(action.emoji).length <= 32 && typeof action.enabled === 'boolean';
+      if (!valid || action.userId !== toHex(me.userId) || action.deviceId !== toHex(me.deviceId)) {
+        core.settingDelete(key);
+        continue;
+      }
+      void this.barrier.track(this.submitPendingRolePanelAction(core, key, action));
+    }
+  }
+
+  private async submitPendingRolePanelAction(core: CorePort, key: string, action: PendingRolePanelAction): Promise<void> {
+    if (this.pendingRolePanelActionJobs.has(key)) return;
+    this.pendingRolePanelActionJobs.add(key);
+    try {
+      await this.routes.applyRolePanelReaction(fromHex(action.communityId), fromHex(action.channelId), BigInt(action.messageSeq),
+        fromHex(action.groupId), BigInt(action.eventSeq), action.emoji, action.enabled);
+      core.settingDelete(key);
+      // The action endpoint is an authenticated state change; read the canonical member roles back
+      // now so this device reflects its grant even if its community_changed frame is delayed/lost.
+      await this.reloadMembers(action.communityId);
+    } catch (e) {
+      // Preserve only outcomes that may succeed on retry. A definitive refusal is terminal and must not become a later
+      // grant after policy or permissions change. Replays reuse the exact confirmed event and server source key.
+      if (e instanceof DillaHttpError && e.status !== 0 && e.status !== 408 && e.status !== 425 && e.status !== 429 && e.status < 500) core.settingDelete(key);
+    } finally {
+      this.pendingRolePanelActionJobs.delete(key);
+    }
   }
 
   private publishSlow(channelId: string, until: number, queued: boolean): void {

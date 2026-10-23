@@ -645,9 +645,11 @@ describe('slow mode in the send lane (CB2)', () => {
     const target = d.engine.send(g, 'first');
     await settle();
     expect(d.posted).toEqual([{ group: toHex(g), type: 0 }]);
+    expect(d.postedSequences).toEqual([1n]);
     d.engine.sendRequest(g, reaction(target));
     await settle();
     expect(d.posted).toEqual([{ group: toHex(g), type: 0 }, { group: toHex(g), type: 3 }]);
+    expect(d.postedSequences).toEqual([1n, 2n]);
     expect(d.slow).toEqual([]);
   });
 

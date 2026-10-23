@@ -176,8 +176,14 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	eventClass := uint8(1)
 	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 99,
-		UploaderDevice: e.sess[memberTok].DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now}); err != nil {
+		UploaderDevice: e.sess[memberTok].DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now, Class: &eventClass}); err != nil {
+		t.Fatal(err)
+	}
+	ordinaryClass := uint8(0)
+	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 98,
+		UploaderDevice: e.sess[memberTok].DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now, Class: &ordinaryClass}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{ChannelID: channel, TargetKind: 1, TargetID: member,
@@ -185,6 +191,9 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 		t.Fatal(err)
 	}
 	reactionAction := "/v1/communities/" + f.cid.String() + "/role-panels/" + channel.String() + "/" + fmt.Sprint(seq) + "/reaction"
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(98), "🎨", uint64(1)}); status != http.StatusForbidden {
+		t.Fatalf("ordinary accepted app message as panel reaction evidence = %d (%x), want 403", status, body)
+	}
 	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(1)}); status != http.StatusForbidden {
 		t.Fatalf("encrypted panel action after channel add_reactions denial = %d (%x), want 403", status, body)
 	}
@@ -193,6 +202,18 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 	}
 	if err := e.Repo.DeleteOverwrite(t.Context(), channel, 1, member); err != nil {
 		t.Fatal(err)
+	}
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(1)}); status != http.StatusNoContent {
+		t.Fatalf("authorized panel action for ordinary member = %d (%x), want 204", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || !slices.Contains(held, role) {
+		t.Fatalf("role after approved panel action = %v, %v; want panel role", held, err)
+	}
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(0)}); status != http.StatusNoContent {
+		t.Fatalf("remove panel action for ordinary member = %d (%x), want 204", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after removing panel action = %v, %v; want absent", held, err)
 	}
 	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 3, seq, "🎭"))
 	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {

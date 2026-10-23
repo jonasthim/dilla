@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './settings';
+import { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, pageSettings, PENDING_ROLE_PANEL_ACTION_PREFIX, suppressesEveryone } from './settings';
+
+it('hides durable role-panel action retries from the user settings slice', () => {
+  const rows = { [SETTINGS.density]: 'regular', [`${PENDING_ROLE_PANEL_ACTION_PREFIX}${'a'.repeat(32)}`]: '{"eventSeq":"3"}' };
+  expect(pageSettings(rows)).toEqual({ [SETTINGS.density]: 'regular' });
+});
 
 it('accepts only bounded device-local appearance and search choices', () => {
   const choices = [
