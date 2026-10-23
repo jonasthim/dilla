@@ -817,10 +817,40 @@ fn trust_sender(
         return Err(DispatchError::Invalid);
     }
     group_scope(core, bind, &g)?;
-    Ok(Zeroizing::new(body(
-        core.device_list_ingest(&g, leaf as u32, &user, &history, &heads, now)
-            .map_err(map_client)?,
-    )))
+    let verdict = core
+        .device_list_ingest(&g, leaf as u32, &user, &history, &heads, now)
+        .map_err(|error| {
+            log_private_trust_sender_refusal(error.code);
+            map_client(error)
+        })?;
+    Ok(Zeroizing::new(body(verdict)))
+}
+
+fn trust_sender_refusal_class(code: &str) -> &'static str {
+    match code {
+        "E_BINDING" => "binding",
+        "E_CREDENTIAL" => "credential",
+        "E_DEVICE_LIST_STALE" => "device_list_stale",
+        "E_DEVICE_UNLISTED" => "device_unlisted",
+        "E_TIER_MISMATCH" => "tier_mismatch",
+        "E_UMK_CHANGED" => "umk_changed",
+        "E_CORE_INPUT" => "core_input",
+        "E_CORE_STATE" => "core_state",
+        "E_CORE_STORAGE" => "core_storage",
+        _ => "other",
+    }
+}
+
+fn log_private_trust_sender_refusal(code: &'static str) {
+    if std::env::var_os("DILLA_BOT_PRIVATE_DIAGNOSTICS").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    eprintln!(
+        "dilla_bot_helper trust_sender_refusal={}",
+        trust_sender_refusal_class(code)
+    );
 }
 fn proposed_adds(
     core: &mut ClientCore,
@@ -1002,6 +1032,19 @@ mod tests {
     const INSTALLATION: [u8; 16] = [0x33; 16];
     const USER: [u8; 16] = [0x44; 16];
     const BINDING: Binding = (INSTANCE, COMMUNITY, INSTALLATION);
+
+    #[test]
+    fn private_trust_refusal_diagnostic_is_fixed_and_allowlisted() {
+        assert_eq!(
+            trust_sender_refusal_class("E_DEVICE_LIST_STALE"),
+            "device_list_stale"
+        );
+        assert_eq!(trust_sender_refusal_class("E_UMK_CHANGED"), "umk_changed");
+        assert_eq!(
+            trust_sender_refusal_class("arbitrary sensitive text"),
+            "other"
+        );
+    }
 
     fn bot() -> ClientCore {
         let connection: ConnHandle = Arc::new(Mutex::new(

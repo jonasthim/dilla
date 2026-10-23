@@ -287,7 +287,9 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
   writeFileSync(configPath, config, { mode: 0o600, flag: 'wx' });
   chmodSync(runtimeToken, 0o600);
   const log = createWriteStream(runtimeLogPath);
-  const child = spawn(DILLABOT_BIN, ['-config', configPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(DILLABOT_BIN, ['-config', configPath], {
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DILLA_BOT_PRIVATE_DIAGNOSTICS: '1' },
+  });
   child.stdout?.pipe(log);
   child.stderr?.pipe(log);
   try {
