@@ -3,13 +3,28 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
+	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
+
+type musicInteractionResolverFake struct {
+	tracks []music.Track
+	err    error
+	inputs []string
+}
+
+func (r *musicInteractionResolverFake) Resolve(_ context.Context, input string) ([]music.Track, error) {
+	r.inputs = append(r.inputs, input)
+	return append([]music.Track(nil), r.tracks...), r.err
+}
 
 type musicInteractionStoreFake struct {
 	snapshot persistence.Snapshot
@@ -37,16 +52,21 @@ func (s *musicInteractionStoreFake) Save(_ context.Context, _ id.ID, expected ui
 }
 
 type musicInteractionAuthorityFake struct {
-	call       MusicCallBinding
-	dj         bool
-	user       bool
-	emergency  bool
-	callChecks int
-	roleChecks int
+	call           MusicCallBinding
+	callAfterFirst *MusicCallBinding
+	dj             bool
+	djAfterFirst   *bool
+	user           bool
+	emergency      bool
+	callChecks     int
+	roleChecks     int
 }
 
 func (a *musicInteractionAuthorityFake) CurrentCall(_ context.Context, channel id.ID) (MusicCallBinding, error) {
 	a.callChecks++
+	if a.callChecks > 1 && a.callAfterFirst != nil {
+		a.call = *a.callAfterFirst
+	}
 	call := a.call
 	if call.ChannelID != channel {
 		call.ChannelID = channel
@@ -58,6 +78,9 @@ func (a *musicInteractionAuthorityFake) CanUse(context.Context, InteractionActor
 }
 func (a *musicInteractionAuthorityFake) CanDJ(context.Context, InteractionActor, MusicCallBinding) (bool, error) {
 	a.roleChecks++
+	if a.roleChecks > 1 && a.djAfterFirst != nil {
+		return *a.djAfterFirst, nil
+	}
 	return a.dj, nil
 }
 func (a *musicInteractionAuthorityFake) CanEmergencyStop(context.Context, InteractionActor, MusicCallBinding) (bool, error) {
@@ -258,6 +281,137 @@ func TestMusicInteractionsRejectsStaleBindingAndLeavesUnsupportedProvidersUnavai
 	if store.saves != 0 {
 		t.Fatalf("unsupported operations wrote %d times", store.saves)
 	}
+}
+
+func TestMusicSearchReturnsResolvedTracksWithoutWritingQueue(t *testing.T) {
+	channel, community := interactionID(55), interactionID(52)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: false}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{{
+		ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track", Artist: "Artist", DurationMS: 123000,
+	}}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Args: []any{"search terms"}}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicSearch)
+	if err != nil || result.Status != 0 || result.Revision != nil {
+		t.Fatalf("search result=%+v err=%v, want success without queue revision", result, err)
+	}
+	want, err := cborx.Marshal([]any{uint64(1), []any{[]any{"yt:abcdefghijk", "youtube", "abcdefghijk", "Track", "Artist", "", uint64(123000), ""}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Data) != string(want) {
+		t.Fatalf("search data=%x, want track tuples %x", result.Data, want)
+	}
+	if len(resolver.inputs) != 1 || resolver.inputs[0] != "search terms" || store.saves != 0 {
+		t.Fatalf("resolver inputs=%v saves=%d, want one lookup and no queue write", resolver.inputs, store.saves)
+	}
+}
+
+func TestMusicEnqueueImportsResolvedPlaylistAtomicallyWithStableQueueIDs(t *testing.T) {
+	channel, community := interactionID(65), interactionID(62)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{
+		{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"},
+		{ID: "yt:12345678901", Provider: music.ProviderYouTube, CanonicalID: "12345678901", Title: "Two"},
+	}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"https://www.youtube.com/playlist?list=PLabc_123"}}
+	actor := InteractionActor{User: interactionID(68)}
+	result, err := h.handle(context.Background(), actor, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 {
+		t.Fatalf("enqueue result=%+v err=%v, want committed revision 1", result, err)
+	}
+	if len(store.snapshot.State.Queue) != 2 || store.snapshot.State.Queue[0].Title != "One" || store.snapshot.State.Queue[1].Title != "Two" {
+		t.Fatalf("stored queue=%+v, want both playlist tracks", store.snapshot.State.Queue)
+	}
+	for _, queued := range store.snapshot.State.Queue {
+		if queued.ID == "yt:abcdefghijk" || queued.ID == "yt:12345678901" || queued.RequesterID != actor.User.String() {
+			t.Fatalf("queued descriptor=%+v, want a unique queue ID and requesting actor", queued)
+		}
+	}
+	if store.snapshot.State.Queue[0].ID == store.snapshot.State.Queue[1].ID || authority.callChecks != 2 || authority.roleChecks != 2 {
+		t.Fatalf("queue IDs=%q/%q call checks=%d role checks=%d, want unique IDs and final authorization recheck", store.snapshot.State.Queue[0].ID, store.snapshot.State.Queue[1].ID, authority.callChecks, authority.roleChecks)
+	}
+}
+
+func TestMusicEnqueueRejectsWholePlaylistWhenQueueCapWouldBeExceeded(t *testing.T) {
+	channel, community := interactionID(75), interactionID(72)
+	state := music.InitialState()
+	for i := 0; i < music.QueueLimit; i++ {
+		state.Queue = append(state.Queue, music.Track{ID: fmt.Sprintf("existing-%d", i), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Existing", RequesterID: "member"})
+	}
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{
+		{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"},
+		{ID: "yt:12345678901", Provider: music.ProviderYouTube, CanonicalID: "12345678901", Title: "Two"},
+	}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"https://www.youtube.com/playlist?list=PLabc_123"}}
+	result, err := h.handle(context.Background(), InteractionActor{User: interactionID(78)}, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != interactionStatusUnavailable || store.saves != 0 || len(store.snapshot.State.Queue) != music.QueueLimit {
+		t.Fatalf("overflow enqueue result=%+v err=%v saves=%d queue=%d, want unavailable and no partial import", result, err, store.saves, len(store.snapshot.State.Queue))
+	}
+}
+
+func TestMusicEnqueueRequiresFinalCallAndDJRecheckAfterResolution(t *testing.T) {
+	for _, change := range []string{"call", "dj"} {
+		t.Run(change, func(t *testing.T) {
+			channel, community := interactionID(85), interactionID(82)
+			initialCall := MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}
+			authority := &musicInteractionAuthorityFake{call: initialCall, user: true, dj: true}
+			if change == "call" {
+				changed := initialCall
+				changed.CallID = id.New()
+				authority.callAfterFirst = &changed
+			} else {
+				denied := false
+				authority.djAfterFirst = &denied
+			}
+			store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+			resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"}}}
+			h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+			request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"one song"}}
+			result, err := h.handle(context.Background(), InteractionActor{User: interactionID(88)}, request, protocol.OpMusicEnqueue)
+			if err != nil || result.Status != interactionStatusConflict && result.Status != interactionStatusForbidden || store.saves != 0 {
+				t.Fatalf("enqueue after %s change result=%+v err=%v saves=%d, want refused before persistence", change, result, err, store.saves)
+			}
+		})
+	}
+}
+
+func TestMusicSearchRefusesSpotifyAndBoundsEncodedResults(t *testing.T) {
+	t.Run("Spotify", func(t *testing.T) {
+		channel, community := interactionID(95), interactionID(92)
+		store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+		authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true}
+		resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "spotify-item", Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "Track"}}}
+		h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+		request := protocol.Request{CommunityID: community, ChannelID: &channel, Args: []any{"one song"}}
+		result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicSearch)
+		if err != nil || result.Status != interactionStatusUnavailable || len(result.Data) != 0 || store.saves != 0 {
+			t.Fatalf("Spotify search result=%+v err=%v saves=%d, want unavailable and no queue write", result, err, store.saves)
+		}
+	})
+	t.Run("response limit", func(t *testing.T) {
+		channel, community := interactionID(105), interactionID(102)
+		store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+		authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true}
+		tracks := make([]music.Track, youtube.MaxSearchResults)
+		for i := range tracks {
+			canonicalID := fmt.Sprintf("a%010d", i)
+			tracks[i] = music.Track{ID: "yt:" + canonicalID, Provider: music.ProviderYouTube, CanonicalID: canonicalID, Title: strings.Repeat("x", music.MaxMetadataBytes), Artist: strings.Repeat("y", music.MaxMetadataBytes)}
+		}
+		resolver := &musicInteractionResolverFake{tracks: tracks}
+		h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+		request := protocol.Request{CommunityID: community, ChannelID: &channel, Args: []any{"one song"}}
+		result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicSearch)
+		if err != nil || result.Status != 0 || len(result.Data) == 0 || len(result.Data) > 2400 || store.saves != 0 {
+			t.Fatalf("bounded search result status=%d bytes=%d err=%v saves=%d, want success within 2400 bytes and no queue write", result.Status, len(result.Data), err, store.saves)
+		}
+	})
 }
 
 func uint64Ptr(v uint64) *uint64 { return &v }

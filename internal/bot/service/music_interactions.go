@@ -8,6 +8,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
+	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -38,11 +39,16 @@ type musicStateStore interface {
 
 type musicRuntimeStateReader func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error)
 
+type MusicTrackResolver interface {
+	Resolve(context.Context, string) ([]music.Track, error)
+}
+
 // MusicInteractions updates only encrypted queue state. It does not control
 // audio; a playback supervisor must consume these revisions separately.
 type MusicInteractions struct {
 	Store          musicStateStore
 	Authority      MusicInteractionAuthority
+	Resolver       MusicTrackResolver
 	InstallationID id.ID
 	CommunityID    id.ID
 	// CurrentState exposes the retained supervisor's live state. The handler
@@ -94,8 +100,23 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
-	if op == protocol.OpMusicSearch || op == protocol.OpMusicEnqueue {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	if op == protocol.OpMusicSearch {
+		if h.Resolver == nil || len(req.Args) != 1 {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		query, ok := req.Args[0].(string)
+		if !ok {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		tracks, resolveErr := h.Resolver.Resolve(ctx, query)
+		if resolveErr != nil || len(tracks) > youtube.MaxSearchResults {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		data, encodeErr := encodeMusicSearchResults(tracks)
+		if encodeErr != nil {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		return InteractionResult{Status: 0, Data: data}, nil
 	}
 	snapshot, err := h.Store.Load(ctx, channel)
 	if err != nil {
@@ -144,9 +165,37 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
-	opValue, ok := musicOperation(op, req.Args)
-	if !ok {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	var opValue music.Operation
+	if op == protocol.OpMusicEnqueue {
+		if h.Resolver == nil || len(req.Args) != 1 {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		input, ok := req.Args[0].(string)
+		if !ok {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		tracks, resolveErr := h.Resolver.Resolve(ctx, input)
+		if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		for i := range tracks {
+			if tracks[i].Provider != music.ProviderYouTube {
+				return InteractionResult{Status: interactionStatusUnavailable}, nil
+			}
+			tracks[i].ID = id.New().String()
+			tracks[i].RequesterID = actor.User.String()
+		}
+		kind := music.OpEnqueue
+		if len(tracks) > 1 {
+			kind = music.OpImportPlaylist
+		}
+		opValue = music.Operation{Kind: kind, Tracks: tracks}
+	} else {
+		var ok bool
+		opValue, ok = musicOperation(op, req.Args)
+		if !ok {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
 	}
 	if op == protocol.OpMusicShuffle {
 		opValue.Enabled = !snapshot.State.Shuffle
@@ -314,17 +363,54 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 }
 
 func encodeMusicSnapshot(state music.State) ([]byte, error) {
-	track := func(t *music.Track) any {
-		if t == nil {
-			return nil
-		}
-		return []any{t.ID, string(t.Provider), t.CanonicalID, t.Title, t.Artist, t.Album, uint64(t.DurationMS), t.RequesterID}
-	}
 	queue := make([]any, 0, len(state.Queue))
 	for i := range state.Queue {
 		t := state.Queue[i]
-		queue = append(queue, track(&t))
+		queue = append(queue, encodeMusicTrack(&t))
 	}
-	current := track(state.Current)
+	current := encodeMusicTrack(state.Current)
 	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), false})
+}
+
+func encodeMusicTrack(t *music.Track) any {
+	if t == nil {
+		return nil
+	}
+	return []any{t.ID, string(t.Provider), t.CanonicalID, t.Title, t.Artist, t.Album, uint64(t.DurationMS), t.RequesterID}
+}
+
+func encodeMusicSearchResults(tracks []music.Track) ([]byte, error) {
+	rows := make([]any, 0, len(tracks))
+	for i := range tracks {
+		track := tracks[i]
+		if track.Provider != music.ProviderYouTube || track.ID == "" || track.ID != "yt:"+track.CanonicalID {
+			return nil, errors.New("music search returned an unsupported provider")
+		}
+		// Run the queue's full descriptor validation on a disposable copy while
+		// leaving search results free of a requester or queue-item identity.
+		validated := track
+		validated.RequesterID = "search"
+		if _, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{validated}}); err != nil {
+			return nil, err
+		}
+		rows = append(rows, encodeMusicTrack(&track))
+	}
+	for len(rows) > 0 {
+		data, err := cborx.Marshal([]any{uint64(1), rows})
+		if err != nil {
+			return nil, err
+		}
+		if len(data) <= 2400 {
+			return data, nil
+		}
+		rows = rows[:len(rows)-1]
+	}
+	data, err := cborx.Marshal([]any{uint64(1), []any{}})
+	if err != nil {
+		return nil, err
+	}
+	if len(tracks) > 0 {
+		return nil, errors.New("music search result exceeds response limit")
+	}
+	return data, nil
 }

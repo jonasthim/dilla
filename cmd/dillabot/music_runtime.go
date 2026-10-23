@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -255,12 +256,38 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		Store:          runtimeMusicAuthorityStore{runtime: runtime, session: session, installation: installation, community: community},
 		InstallationID: installation, CommunityID: community,
 	}
-	return &service.MusicInteractions{
+	handlers := &service.MusicInteractions{
 		Store: stateStore, Authority: authority,
 		InstallationID: installation, CommunityID: community,
 		CurrentState:        registry.CurrentState,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
-	}, nil
+	}
+	if resolver, err := newYouTubeMetadataResolver(); err == nil {
+		handlers.Resolver = resolver
+	} else if logger != nil {
+		logger.Info("YouTube music search and enqueue are unavailable", "installation_id", installation.String(), "error", err.Error())
+	}
+	return handlers, nil
+}
+
+func newYouTubeMetadataResolver() (youtube.MetadataResolver, error) {
+	ytdlp, err := exec.LookPath("yt-dlp")
+	if err != nil {
+		return youtube.MetadataResolver{}, err
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		return youtube.MetadataResolver{}, err
+	}
+	bubblewrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		return youtube.MetadataResolver{}, err
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		return youtube.MetadataResolver{}, err
+	}
+	return youtube.NewMetadataResolver(ytdlp, node, bubblewrap, python)
 }
 
 func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx context.Context, community id.ID) (store.BotInstallationRow, error) {

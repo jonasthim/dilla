@@ -91,6 +91,22 @@ Nonempty data is strict deterministic CBOR array. Empty data allowed. status:
 8 upgrade_required,9 internal. Validate expected community on response separately;
 request correlation is caller's job. Pagination is by encoded body size.
 
+For `music.search`, successful data is `[1, tracks]`, with at most five YouTube
+track tuples. Each tuple is `[queue_item_id, provider, canonical_track_id, title,
+artist, album, duration_ms, requester_id]`, matching the track tuple in
+`music.state`; search tuples use the resolver's stable `yt:<video-id>` ID and an
+empty requester ID. The entire data array is at most 2400 encoded bytes; if the
+provider results do not fit, the server returns the largest prefix that fits.
+`music.enqueue` accepts one search term, video URL, or playlist URL. It resolves
+at most 500 YouTube tracks and commits all descriptors in one revision-checked
+queue operation, or commits none. Queue item IDs are freshly generated per
+enqueue and requester IDs come from the authenticated actor. An import that
+would exceed the 500-item queue limit fails without a partial import. Spotify
+search and enqueue remain unavailable until separately qualified. The existing
+YouTube resolver accepts only its bounded search/video/playlist grammar and
+runs extraction in its public-YouTube-only network sandbox; arbitrary extractor
+syntax and other hosts are rejected.
+
 ## Signed moderation removal
 
 Unsigned proof: `[1, request_id, actor_user, actor_device, community_id, group_id,
