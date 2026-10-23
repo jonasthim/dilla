@@ -209,12 +209,14 @@ export interface AFKState {
   seq?: number;
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
+  | `communityChanges:${string}`
   | `afk:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
   | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
+  [k: `communityChanges:${string}`]: number;
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `afk:${string}`]: AFKState | null;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];

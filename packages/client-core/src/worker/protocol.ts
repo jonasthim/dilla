@@ -93,7 +93,7 @@ export type Command =
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
-  | { m: 'deleteMessage'; channelId: string; msgId: string }                              // ready → null (type 2)
+  | { m: 'deleteMessage'; channelId: string; msgId: string; seq: string }                // ready → null
   | { m: 'moderateRemoveMessage'; channelId: string; msgId: string; seq: string; reason: string; excerpt: string } // ready → null; signed removal then op61 evidence
   | { m: 'resolveManualRemoval'; proofRequestId: string } // ready → reconcile feed and retry the exact durable signed proof
   | { m: 'react'; channelId: string; msgId: string; emoji: string; on: boolean }          // ready → null (type 3, or 4 when off)

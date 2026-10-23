@@ -171,6 +171,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     return () => { window.removeEventListener('online', sync); window.removeEventListener('offline', sync); };
   }, []);
   const communities = useSlice('communities');
+  // Re-read the browser's advisory timeout after a community_changed wakeup, even when the member
+  // list itself is byte-for-byte unchanged.
+  const timeoutRefresh = useSlice(routeCommunity === null ? 'communityChanges:none' : `communityChanges:${routeCommunity}`);
   const dms = useSlice('dms');
   const badges = useSlice('badges');
   const settings = useSlice('settings');
@@ -259,7 +262,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     setSelfTimeout(null);
     void refresh();
     return () => { live = false; if (expiryTimer !== undefined) window.clearTimeout(expiryTimer); };
-  }, [client, routeCommunity, selfUserId]);
+  }, [client, routeCommunity, selfUserId, timeoutRefresh]);
   // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);

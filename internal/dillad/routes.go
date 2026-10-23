@@ -131,7 +131,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	channels.RegisterMembers(m)
 	roles.Register(m)
 	api.NewBans(repo, p.delivery, clk, log).WithCalls(calls).WithNotifier(notify).Register(m)
-	api.NewMemberTimeouts(repo, clk).Register(m)
+	api.NewMemberTimeouts(repo, clk).WithNotifier(notify).Register(m)
 	api.NewMemberWarnings(repo, clk).Register(m)
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)

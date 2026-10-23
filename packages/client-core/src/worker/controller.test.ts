@@ -802,6 +802,17 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'ready', info: READY_INFO });
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false }));
   });
+  it('publishes each community_changed wakeup even when the member list itself is unchanged', async () => {
+    const w = world();
+    await toReady(w);
+    const key = `communityChanges:${toHex(COMMUNITY)}` as const;
+    expect(w.last(key) ?? 0).toBe(0);
+    const changed: GatewayEvent = { type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } };
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(w.last(key)).toBe(1));
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(w.last(key)).toBe(2));
+  });
   it('a community re-read keeps the previous AFK snapshot until the new one lands (R-AFK3 a)', async () => {
     const w = world();
     w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false });
@@ -5406,7 +5417,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await toReady(w);
     await openGeneral(w);
     w.call(4, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: 'better words' });
-    w.call(5, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX });
+    w.call(5, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX, seq: '5' });
     w.call(6, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: true });
     w.call(7, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: false });
     w.call(8, { m: 'pin', channelId: CH_HEX, msgId: MSG_HEX, on: true });
@@ -5415,11 +5426,11 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     for (const id of [4, 5, 6, 7, 8, 9]) expect(w.ret(id)).toEqual({ t: 'ret', id, ok: true, value: null });
     expect(w.sync.sendRequest.mock.calls.map(([g, r]) => [toHex(g), r.type, toHex(r.replyTo!), r.body, r.attachments])).toEqual([
       [toHex(GROUP), 1, MSG_HEX, 'better words', []],
-      [toHex(GROUP), 2, MSG_HEX, '', []],
       [toHex(GROUP), 3, MSG_HEX, '👍', []],
       [toHex(GROUP), 4, MSG_HEX, '👍', []],
       [toHex(GROUP), 5, MSG_HEX, '', []],
       [toHex(GROUP), 6, MSG_HEX, '', []],
+      [toHex(GROUP), 2, MSG_HEX, '', []],
     ]);
     expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
   });
@@ -5436,6 +5447,18 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     w.call(5, { m: 'send', channelId: CH_HEX, text: 'answer', replyTo: MSG_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [], threadId: null });
+  });
+
+  it('uses the uploader-only tombstone route to delete own content during an active timeout', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.routes.getMemberTimeout.mockResolvedValue(1_800_000_000n);
+    w.call(51, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX, seq: '5' });
+    await vi.waitFor(() => expect(w.ret(51)).toEqual({ t: 'ret', id: 51, ok: true, value: null }));
+    expect(w.routes.getMemberTimeout).toHaveBeenCalledWith(COMMUNITY, USER);
+    expect(w.routes.deleteGroupMessage).toHaveBeenCalledWith(GROUP, 5n);
+    expect(w.sync.sendRequest).not.toHaveBeenCalled();
   });
 
   it('a recorded purge runs after the outbox changed: the message, then each reference, then done', async () => {

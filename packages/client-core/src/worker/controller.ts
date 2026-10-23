@@ -1338,7 +1338,7 @@ export class Controller {
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
-      case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
+      case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId, command.seq);
       case 'moderateRemoveMessage': return this.moderateRemoveMessage(command.channelId, command.msgId, command.seq, command.reason, command.excerpt);
       case 'resolveManualRemoval': return this.resolveManualRemoval(command.proofRequestId);
       case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
@@ -2276,7 +2276,10 @@ export class Controller {
       if (e.frame.op === Op.voiceState) this.safely(() => { this.ownVoiceState(e.frame); });
       this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'frame' && e.frame.op === Op.communityChanged) {
-      this.safely(() => { this.scheduleCommunityReload(toHex(communityChangedOf(e.frame))); });
+      const communityId = toHex(communityChangedOf(e.frame));
+      const changeSlice = `communityChanges:${communityId}` as const;
+      this.slices.set(changeSlice, (this.slices.get(changeSlice) ?? 0) + 1);
+      this.safely(() => { this.scheduleCommunityReload(communityId); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -4896,8 +4899,22 @@ export class Controller {
 
   private editMessage(channelId: string, msgId: string, text: string): Promise<null> { return this.fold(channelId, msgId, 1, text); }
 
-  /** The purge is not started here: the core records it when the type-2 row is confirmed (L-CORE-33, ruling 8). */
-  private deleteMessage(channelId: string, msgId: string): Promise<null> { return this.fold(channelId, msgId, 2, ''); }
+  /** A timed-out member's owner-only DELETE path stays available. The server checks the uploader and emits the same
+   * replayable tombstone to every reader; ordinary deletes remain MLS type-2 folds. */
+  private async deleteMessage(channelId: string, msgId: string, seq: string): Promise<null> {
+    const groupId = this.activeGroup(channelId);
+    const known = this.channels.get(channelId);
+    const me = this.me;
+    if (known !== undefined && me !== null) {
+      const expires = await this.routes.getMemberTimeout(fromHex(known.communityId), me.userId);
+      if (expires !== null) {
+        if (!SEQ.test(seq)) throw new Refusal('E_BAD_INPUT', 'invalid message sequence');
+        await this.routes.deleteGroupMessage(groupId, BigInt(seq));
+        return null;
+      }
+    }
+    return this.fold(channelId, msgId, 2, '');
+  }
 
   /** A distinct human moderation path: validate local target/group and loaded authority, then let the instance recheck. */
   private async moderateRemoveMessage(channelId: string, msgId: string, rawSeq: string, reason: string, excerpt: string): Promise<{

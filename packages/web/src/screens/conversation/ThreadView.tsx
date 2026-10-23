@@ -49,7 +49,7 @@ export function ThreadView(p: {
   useEffect(() => { draftChange.current?.(draft); }, [draft]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [emojiFor, setEmojiFor] = useState<{ msgId: string } | null>(null);
-  const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string } | null>(null);
+  const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string; seq: string } | null>(null);
   const [moderateFor, setModerateFor] = useState<ManualRemovalDialogState | null>(null);
   const [moderateDialogOpen, setModerateDialogOpen] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
@@ -157,7 +157,7 @@ export function ThreadView(p: {
     if (ev.kind === 'react') { if (msgId !== null) setEmojiFor({ msgId }); }
     else if (ev.kind === 'toggle') { if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); }
     else if (ev.kind === 'edit') { if (msgId !== null) dispatch({ type: 'edit', msgId, value: editableText(item.body, book) }); }
-    else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key }); }
+    else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key, seq: ev.seq }); }
     else if (ev.kind === 'moderateRemove') { if (msgId !== null) {
       setModerateFor({ msgId, key: item.key, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, book)),
         phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null, removal: null });
@@ -247,7 +247,7 @@ export function ThreadView(p: {
       <Dialog open={deleteFor !== null} title={t('shell.delete.title')} closeLabel={t('shell.delete.cancel')}
         onClose={() => setDeleteFor(null)} footer={<Button variant="danger" onClick={() => {
           if (deleteFor === null) return;
-          command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId });
+          command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId, seq: deleteFor.seq });
           const key = deleteFor.key;
           setDeleteFor(null);
           queueMicrotask(() => rowEls.current.get(key)?.focus());

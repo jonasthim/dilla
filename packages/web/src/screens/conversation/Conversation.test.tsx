@@ -192,7 +192,7 @@ describe('delete (Q19, ruling 24)', () => {
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'delete' }));
     await user.click(within(screen.getByRole('dialog', { name: 'Delete this message?' })).getByRole('button', { name: 'Delete' }));
-    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1 }]);
+    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1, seq: '1' }]);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(rowOf(O1)).toHaveFocus();
   });

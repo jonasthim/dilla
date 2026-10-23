@@ -164,7 +164,7 @@ describe('ThreadView (web3.7)', () => {
     await user.click(within(toolbar(O1)).getByRole('button', { name: en['shell.message.delete'] }));
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(screen.getByRole('button', { name: en['shell.delete.confirm'] }));
-    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1 }]);
+    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1, seq: '3' }]);
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
   });
   it('offers the separate moderator action on a peer reply and sends its timeline sequence', async () => {

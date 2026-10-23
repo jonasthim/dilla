@@ -14,12 +14,20 @@ import (
 // MemberTimeouts serves the human timeout routes. Bot moderation remains unavailable until
 // capability approval and live installation hierarchy can be proved for this action.
 type MemberTimeouts struct {
-	repo store.Repository
-	clk  clock.Clock
+	repo   store.Repository
+	clk    clock.Clock
+	notify *StructureNotifier
 }
 
 func NewMemberTimeouts(repo store.Repository, clk clock.Clock) *MemberTimeouts {
 	return &MemberTimeouts{repo: repo, clk: clk}
+}
+
+// WithNotifier sends the timed-out member's live sessions a community_changed wakeup after a
+// successful update or clear, so each open client refreshes its advisory timeout state.
+func (h *MemberTimeouts) WithNotifier(n *StructureNotifier) *MemberTimeouts {
+	h.notify = n
+	return h
 }
 
 func (h *MemberTimeouts) Register(mux *server.Mux) {
@@ -73,6 +81,7 @@ func (h *MemberTimeouts) put(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	h.notify.ChangedUser(r.Context(), m.community, m.target)
 	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, expires})
 }
 
@@ -112,6 +121,7 @@ func (h *MemberTimeouts) delete(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	h.notify.ChangedUser(r.Context(), m.community, m.target)
 	w.WriteHeader(http.StatusNoContent)
 }
 

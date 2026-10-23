@@ -88,7 +88,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;
   const [emojiFor, setEmojiFor] = useState<{ key: string; opener: HTMLElement } | null>(null);
-  const [deleteFor, setDeleteFor] = useState<{ key: string; msgId: string } | null>(null);
+  const [deleteFor, setDeleteFor] = useState<{ key: string; msgId: string; seq: string } | null>(null);
   const [moderateFor, setModerateFor] = useState<ManualRemovalDialogState | null>(null);
   const [moderateDialogOpen, setModerateDialogOpen] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
@@ -247,7 +247,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       } }); break;
       case 'edit': if (msgId !== null) p.dispatch({ type: 'edit', msgId, value: editableText(item.body, p.book) }); break;
       case 'pin': if (msgId !== null) command({ m: 'pin', channelId: p.channelId, msgId, on: ev.on }); break;
-      case 'delete': if (msgId !== null) setDeleteFor({ key: item.key, msgId }); break;
+      case 'delete': if (msgId !== null) setDeleteFor({ key: item.key, msgId, seq: ev.seq }); break;
       case 'moderateRemove': if (msgId !== null) {
         setModerateFor({ key: item.key, msgId, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, p.book),
           120), phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null, removal: null });
@@ -372,7 +372,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     <Dialog open={deleteFor !== null} title={t('shell.delete.title')} closeLabel={t('shell.delete.cancel')}
       onClose={() => setDeleteFor(null)} footer={<Button variant="danger" onClick={() => {
         if (deleteFor === null) return;
-        command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId });
+        command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId, seq: deleteFor.seq });
         deleted.current = { key: deleteFor.key };
         setDeleteFor(null);
       }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>

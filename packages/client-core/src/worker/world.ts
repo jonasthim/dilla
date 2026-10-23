@@ -451,6 +451,7 @@ export function world(opts: {
     deleteBan: vi.fn((_id: Uint8Array, _user: Uint8Array) => Promise.resolve()),
     listBans: vi.fn((_id: Uint8Array) => Promise.resolve([] as BanRow[])),
     listInvites: vi.fn((_id: Uint8Array) => Promise.resolve([] as InviteRow[])),
+    getMemberTimeout: vi.fn((_communityId: Uint8Array, _userId: Uint8Array): Promise<bigint | null> => Promise.resolve(null)),
     revokeInvite: vi.fn((_id: Uint8Array) => Promise.resolve()),
     // wave 2a (flow 09): roles and overwrites; like the admin routes, none of them pushes into `calls`.
     listOverwrites: vi.fn((_id: Uint8Array) => Promise.resolve([] as OverwriteRow[])),
