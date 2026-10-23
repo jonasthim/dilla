@@ -8,6 +8,7 @@ import (
 	"time"
 
 	music "github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
@@ -65,10 +66,11 @@ func (n *supervisorNative) StateTransaction(_ context.Context, _ id.ID, changes 
 type supervisorPlayback struct {
 	done   chan struct{}
 	closed int
+	err    error
 }
 
 func (p *supervisorPlayback) Done() <-chan struct{} { return p.done }
-func (p *supervisorPlayback) Wait() error           { return nil }
+func (p *supervisorPlayback) Wait() error           { return p.err }
 func (p *supervisorPlayback) Close() error {
 	p.closed++
 	select {
@@ -172,6 +174,153 @@ func TestSupervisorRestoresPersistedCurrentPausedWithoutStartingAudio(t *testing
 	if !got.Paused || got.Current == nil || got.Current.ID != track.ID || len(starter.starts) != 0 {
 		t.Fatalf("restore state=%+v starts=%d", got, len(starter.starts))
 	}
+}
+
+func TestSupervisorAppliesCommittedRevisionWithoutSecondMutationWrite(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := tid(4)
+	starter := &supervisorStarter{}
+	s, err := music.NewSupervisor(context.Background(), channel, supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(starter.starts) != 0 || s.State().Revision != saved.Revision {
+		t.Fatalf("non-resume apply state=%+v starts=%d", s.State(), len(starter.starts))
+	}
+	playing, err := music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(context.Background(), channel, saved.Revision, playing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(starter.starts) != 1 || starter.starts[0].ID != track.ID {
+		t.Fatalf("committed resume starts=%v, want one start of %s", starter.starts, track.ID)
+	}
+	loaded, err := store.Load(context.Background(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != saved.Revision {
+		t.Fatalf("successful handoff wrote revision %d, want only committed revision %d", loaded.Revision, saved.Revision)
+	}
+}
+
+func TestSupervisorCommittedResumeFailurePersistsPausedQueue(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := tid(4)
+	starter := &supervisorStarter{fail: true}
+	s, err := music.NewSupervisor(context.Background(), channel, supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playing, err := music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(context.Background(), channel, saved.Revision, playing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err == nil {
+		t.Fatal("provider failure was ignored")
+	}
+	loaded, err := store.Load(context.Background(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.State.Paused || loaded.Revision != saved.Revision+1 {
+		t.Fatalf("provider failure state=%+v revision=%d, want a persisted pause after the committed resume", loaded.State, loaded.Revision)
+	}
+}
+
+func TestSupervisorPausesPersistedQueueWhenPublisherLosesEpoch(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := tid(4)
+	starter := &supervisorStarter{}
+	s, err := music.NewSupervisor(context.Background(), channel, supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playing, err := music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(context.Background(), channel, saved.Revision, playing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	playback := starter.current
+	playback.err = livekit.ErrEpochChanged
+	close(playback.done)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		state := s.State()
+		if state.Paused && state.Revision == saved.Revision+1 {
+			persisted, loadErr := store.Load(context.Background(), channel)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if !persisted.State.Paused || persisted.Revision != state.Revision {
+				t.Fatalf("persisted epoch-loss state=%+v revision=%d", persisted.State, persisted.Revision)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("publisher epoch loss did not pause queue: %+v", s.State())
 }
 
 func TestSupervisorFailedStartLeavesStatePausedWhenPauseSaveFails(t *testing.T) {

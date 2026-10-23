@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,11 +30,27 @@ type runtimeCalls struct {
 	call    client.Call
 	err     error
 	channel id.ID
+	starts  int
 }
 
 func (c *runtimeCalls) StartCall(_ context.Context, channel id.ID) (client.Call, error) {
 	c.channel = channel
+	c.starts++
 	return c.call, c.err
+}
+
+func TestYouTubeQueueStarterDoesNotSubstituteForSpotify(t *testing.T) {
+	community, channel := id.New(), id.New()
+	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "token"}}
+	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
+		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg"}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:123"})
+	if err == nil || calls.starts != 0 {
+		t.Fatalf("Spotify fell through to YouTube runtime: error=%v calls=%d", err, calls.starts)
+	}
 }
 
 type runtimeEpochs struct{}
@@ -65,6 +82,49 @@ type runtimePublisher struct{}
 
 func (runtimePublisher) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
 	return nil, errors.New("unused")
+}
+
+type liveRuntimePCM struct{}
+
+func (liveRuntimePCM) Start(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("bounded test PCM")), nil
+}
+
+type liveRuntimeEncoder struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (e *liveRuntimeEncoder) Done() <-chan struct{} { return e.done }
+func (*liveRuntimeEncoder) Wait() error             { return nil }
+func (e *liveRuntimeEncoder) Close() error          { e.once.Do(func() { close(e.done) }); return nil }
+
+type liveRuntimeEncoderStarter struct{}
+
+func (liveRuntimeEncoderStarter) Start(context.Context, io.ReadCloser) (session.Encoder, error) {
+	return &liveRuntimeEncoder{done: make(chan struct{})}, nil
+}
+
+type liveRuntimePublisher struct {
+	done  chan struct{}
+	mu    *sync.Mutex
+	count *int
+}
+
+func (p *liveRuntimePublisher) Done() <-chan struct{} { return p.done }
+func (*liveRuntimePublisher) Wait() error             { return nil }
+func (p *liveRuntimePublisher) Close() error          { return nil }
+
+type liveRuntimePublisherStarter struct {
+	mu     sync.Mutex
+	starts map[id.ID]int
+}
+
+func (p *liveRuntimePublisherStarter) Start(_ context.Context, call client.Call, _ id.ID, _ livekit.EpochSource, _ session.Encoder) (session.Publisher, error) {
+	p.mu.Lock()
+	p.starts[call.CallID]++
+	p.mu.Unlock()
+	return &liveRuntimePublisher{done: make(chan struct{})}, nil
 }
 
 type runtimeStateNative struct {
@@ -127,10 +187,10 @@ func TestMusicSnapshotBridgeRejectsStaleAndMissingSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.ApplyPersistedSnapshot(context.Background(), channel, saved.Revision-1, starter); !errors.Is(err, music.ErrRevisionConflict) {
+	if _, err := runtime.ApplyPersistedSnapshot(context.Background(), channel, saved.State, saved.Revision-1, false); !errors.Is(err, music.ErrRevisionConflict) {
 		t.Fatalf("stale bridge error = %v, want revision conflict", err)
 	}
-	if err := runtime.ApplyPersistedSnapshot(context.Background(), id.New(), saved.Revision, starter); err == nil {
+	if _, err := runtime.ApplyPersistedSnapshot(context.Background(), id.New(), saved.State, saved.Revision, false); err == nil {
 		t.Fatal("missing session was accepted")
 	}
 	if got := runtime.supervisors[channel]; got != supervisor {
@@ -160,13 +220,15 @@ func TestMusicSnapshotCommitCallbackRefreshesPausedMetadataAndToleratesMissingRu
 		t.Fatal(err)
 	}
 	callback := musicSnapshotCommitCallback(registry, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	callback(context.Background(), installation, community, channel, saved.Revision)
+	if _, err := callback(context.Background(), installation, community, channel, saved.State, saved.Revision, false); err != nil {
+		t.Fatal(err)
+	}
 	if state := queues.supervisors[channel].State(); state.Revision != saved.Revision || !state.Paused {
 		t.Fatalf("retained state=%+v, want paused revision %d", state, saved.Revision)
 	}
 	// Reconcile may tear down a runtime between the commit and this callback.
 	// That condition is logged and leaves the committed snapshot for later restore.
-	musicSnapshotCommitCallback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(context.Background(), installation, community, channel, saved.Revision)
+	_, _ = musicSnapshotCommitCallback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(context.Background(), installation, community, channel, saved.State, saved.Revision, false)
 }
 
 func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *testing.T) {
@@ -178,6 +240,7 @@ func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *
 	}
 	starter := unavailableMusicQueueStarter()
 	channels := []id.ID{id.New(), id.New()}
+	committed := make(map[id.ID]music.State, len(channels))
 	runtime := &musicQueueRuntime{community: community, store: store, supervisors: map[id.ID]*music.Supervisor{}}
 	for _, channel := range channels {
 		s, err := newMusicSupervisor(context.Background(), channel, store, starter)
@@ -196,9 +259,11 @@ func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Save(context.Background(), channel, 1, state); err != nil {
+		saved, err := store.Save(context.Background(), channel, 1, state)
+		if err != nil {
 			t.Fatal(err)
 		}
+		committed[channel] = saved.State
 	}
 	installation := id.New()
 	registry := &musicQueueRegistry{runtimes: map[id.ID]*retainedMusicRuntime{installation: {community: community, queues: runtime, native: n}}}
@@ -209,7 +274,8 @@ func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- registry.ApplyPersistedSnapshot(context.Background(), installation, community, channel, 2, starter)
+			_, err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, channel, committed[channel], 2, false)
+			errCh <- err
 		}()
 	}
 	wg.Wait()
@@ -220,15 +286,105 @@ func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *
 		}
 	}
 	for _, channel := range channels {
-		if state := runtime.supervisors[channel].State(); state.Revision != 2 || !state.Paused || state.Current == nil {
-			t.Fatalf("channel %s refreshed to %#v; want active revision 2 restored paused", channel, state)
+		if state := runtime.supervisors[channel].State(); state.Revision != 2 || state.Paused || state.Current == nil {
+			t.Fatalf("channel %s refreshed to %#v; want persisted revision 2 adopted without starting", channel, state)
 		}
 	}
 	if err := registry.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, channels[0], 2, starter); err == nil {
+	if _, err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, channels[0], music.InitialState(), 2, false); err == nil {
 		t.Fatal("bridge after teardown was accepted")
+	}
+}
+
+func TestMusicLiveResumeStartsOnlyItsRoomAfterPausedRestart(t *testing.T) {
+	community := id.New()
+	installation := id.New()
+	channels := []id.ID{id.New(), id.New()}
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := make(map[id.ID]music.State, len(channels))
+	for _, channel := range channels {
+		track := music.Track{ID: channel.String(), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track", RequesterID: "member"}
+		queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved, err := store.Save(context.Background(), channel, 0, queued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = saved // The process will restart at this persisted queue revision.
+	}
+	publishers := &liveRuntimePublisherStarter{starts: map[id.ID]int{}}
+	starterFor := func(channel id.ID) (session.QueueStarter, error) {
+		return session.QueueStarter{OptionsFor: func(_ context.Context, track music.Track) (session.Options, error) {
+			if track.ID != channel.String() {
+				return session.Options{}, errors.New("track crossed voice channel")
+			}
+			group := id.New()
+			return session.Options{Community: community, Channel: channel, Provider: music.ProviderYouTube, Track: track.CanonicalID,
+				Call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://example.invalid", Token: "test"}, Group: group,
+				PCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: publishers, Epochs: runtimeEpochs{}}, nil
+		}}, nil
+	}
+	queues, err := restoreMusicSupervisorsWithStarterFactory(context.Background(), community,
+		[]client.Channel{{ID: channels[0], CommunityID: community, Kind: musicVoiceChannelKind}, {ID: channels[1], CommunityID: community, Kind: musicVoiceChannelKind}}, store, starterFor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queues.Close()
+	for _, channel := range channels {
+		if state := queues.supervisors[channel].State(); !state.Paused {
+			t.Fatalf("restart did not restore channel %s paused: %+v", channel, state)
+		}
+	}
+	if len(publishers.starts) != 0 {
+		t.Fatalf("restart started publishers: %v", publishers.starts)
+	}
+	for _, channel := range channels {
+		loaded, err := store.Load(context.Background(), channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		playing, err := music.Apply(loaded.State, loaded.Revision, music.Operation{Kind: music.OpResume})
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved, err := store.Save(context.Background(), channel, loaded.Revision, playing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		committed[channel] = saved.State
+		if _, err := queues.ApplyPersistedSnapshot(context.Background(), channel, saved.State, saved.Revision, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishers.mu.Lock()
+	if publishers.starts[channels[0]] != 1 || publishers.starts[channels[1]] != 1 {
+		t.Fatalf("per-room publisher starts=%v", publishers.starts)
+	}
+	publishers.mu.Unlock()
+	paused, err := music.Apply(committed[channels[0]], committed[channels[0]].Revision, music.Operation{Kind: music.OpPause})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channels[0], committed[channels[0]].Revision, paused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queues.ApplyPersistedSnapshot(context.Background(), channels[0], saved.State, saved.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	if state := queues.supervisors[channels[0]].State(); !state.Paused {
+		t.Fatalf("paused room state=%+v", state)
+	}
+	if state := queues.supervisors[channels[1]].State(); state.Paused {
+		t.Fatalf("pause crossed into other room: %+v", state)
 	}
 }
 
@@ -552,7 +708,7 @@ func TestMusicQueueRegistryRetainsSupervisorsUntilCapabilityIsDisabled(t *testin
 	if currentNative.closed {
 		t.Fatal("caller-owned native client was closed by disabled reconcile")
 	}
-	if err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, voice, 0, unavailableMusicQueueStarter()); err == nil {
+	if _, err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, voice, music.InitialState(), 0, false); err == nil {
 		t.Fatal("snapshot bridge remained available after capability loss")
 	}
 	if _, err := first.Apply(context.Background(), first.State().Revision, music.Operation{Kind: music.OpPause}); !errors.Is(err, music.ErrSupervisorClosed) {

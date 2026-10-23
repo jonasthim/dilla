@@ -122,6 +122,48 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 	return cloneState(s.state), nil
 }
 
+// ApplyPersistedSnapshot adopts a revision committed by another authorized
+// component. It never writes that mutation again. startPlayback must be true
+// only for a live, explicit Resume interaction; restored or metadata-only
+// snapshots cannot start audio. A failed start is durably paused at a new CAS
+// revision so the persisted queue cannot claim playback is active.
+func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State, expected uint64, startPlayback bool) (uint64, error) {
+	if ctx == nil {
+		return 0, errors.New("nil persisted music snapshot context")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return s.revision, ErrSupervisorClosed
+	}
+	if expected <= s.revision || committed.Revision != expected {
+		return s.revision, ErrRevisionConflict
+	}
+	_, revision, err := s.store.Load(ctx, s.channel)
+	if err != nil {
+		return s.revision, err
+	}
+	if revision != expected {
+		return s.revision, ErrRevisionConflict
+	}
+	state := cloneState(committed)
+	if s.playback != nil && (state.Paused || state.Current == nil || s.state.Current == nil || state.Current.ID != s.state.Current.ID) {
+		s.closePlaybackLocked()
+	}
+	s.state, s.revision = cloneState(state), revision
+	if startPlayback && !state.Paused && state.Current != nil && s.playback == nil {
+		if err := s.startLocked(ctx); err != nil {
+			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = s.pauseLocked(pauseCtx)
+			cancel()
+			s.signalLocked()
+			return s.revision, err
+		}
+	}
+	s.signalLocked()
+	return s.revision, nil
+}
+
 func (s *Supervisor) startLocked(ctx context.Context) error {
 	if s.state.Paused || s.state.Current == nil {
 		return nil

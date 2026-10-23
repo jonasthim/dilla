@@ -507,7 +507,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							if result.Installation.Capabilities&botMusicCapability != 0 {
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
-									musicOwnedNative, channelsErr = musicRegistry.Reconcile(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, unavailableMusicQueueStarter())
+									starterFor := newInstallationYouTubeQueueStarterFactory(cfg.InstanceID, installation.ID, installation.CommunityID, result.Session, nativeClient)
+									musicOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
 								if channelsErr != nil {
 									_ = musicRegistry.Disable(installation.ID)

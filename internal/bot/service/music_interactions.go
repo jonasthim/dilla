@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
@@ -42,9 +43,9 @@ type MusicInteractions struct {
 	Authority      MusicInteractionAuthority
 	InstallationID id.ID
 	CommunityID    id.ID
-	// OnPersistedSnapshot refreshes a retained paused runtime after a successful
-	// queue-state commit. It receives only server-bound identity and the saved revision.
-	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, uint64)
+	// OnPersistedSnapshot applies the exact state returned by a successful CAS
+	// commit. The liveResume flag is true only for an explicit Resume operation.
+	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error)
 }
 
 func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -180,10 +181,44 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{}, err
 	}
 	if h.OnPersistedSnapshot != nil {
-		h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.Revision)
+		appliedRevision, handoffErr := h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, op == protocol.OpMusicResume)
+		if handoffErr != nil {
+			if op == protocol.OpMusicResume {
+				appliedRevision = h.pauseUnappliedResume(ctx, channel, saved.Revision, appliedRevision)
+			}
+			if appliedRevision == 0 {
+				appliedRevision = saved.Revision
+			}
+			return InteractionResult{Status: interactionStatusUnavailable, Revision: &appliedRevision}, nil
+		}
 	}
 	revision := saved.Revision
 	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
+}
+
+func (h MusicInteractions) pauseUnappliedResume(ctx context.Context, channel id.ID, committedRevision, observedRevision uint64) uint64 {
+	pausedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	current, err := h.Store.Load(pausedCtx, channel)
+	if err != nil {
+		return observedRevision
+	}
+	if current.Revision != committedRevision {
+		return current.Revision
+	}
+	next, err := music.Apply(current.State, current.Revision, music.Operation{Kind: music.OpPause})
+	if err != nil {
+		return current.Revision
+	}
+	saved, err := h.Store.Save(pausedCtx, channel, current.Revision, next)
+	if err != nil {
+		latest, loadErr := h.Store.Load(pausedCtx, channel)
+		if loadErr == nil {
+			return latest.Revision
+		}
+		return current.Revision
+	}
+	return saved.Revision
 }
 
 func validMusicCall(call MusicCallBinding, channel id.ID) bool {

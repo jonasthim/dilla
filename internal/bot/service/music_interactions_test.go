@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/music"
@@ -82,7 +83,7 @@ func TestMusicInteractionsNotifiesSnapshotBridgeOnlyAfterSuccessfulCommit(t *tes
 	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
 	var commits []uint64
 	h := MusicInteractions{Store: store, Authority: authority, InstallationID: installation, CommunityID: community,
-		OnPersistedSnapshot: func(_ context.Context, gotInstallation, gotCommunity, gotChannel id.ID, revision uint64) {
+		OnPersistedSnapshot: func(_ context.Context, gotInstallation, gotCommunity, gotChannel id.ID, _ music.State, revision uint64, _ bool) (uint64, error) {
 			if gotInstallation != installation || gotCommunity != community || gotChannel != channel {
 				t.Errorf("bridge context=(%s,%s,%s), want (%s,%s,%s)", gotInstallation, gotCommunity, gotChannel, installation, community, channel)
 			}
@@ -90,6 +91,7 @@ func TestMusicInteractionsNotifiesSnapshotBridgeOnlyAfterSuccessfulCommit(t *tes
 				t.Errorf("bridge revision=%d before store revision=%d", revision, store.snapshot.Revision)
 			}
 			commits = append(commits, revision)
+			return revision, nil
 		}}
 	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0)}
 	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
@@ -103,11 +105,67 @@ func TestMusicInteractionsNotifiesSnapshotBridgeOnlyAfterSuccessfulCommit(t *tes
 	}
 }
 
+func TestMusicInteractionsMarksOnlyCommittedResumeForLiveHandoff(t *testing.T) {
+	channel, community := interactionID(15), interactionID(12)
+	state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{
+		ID: "track-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track", RequesterID: "member",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	var liveResume bool
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community,
+		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, _ music.State, revision uint64, resume bool) (uint64, error) {
+			liveResume = resume
+			return revision, nil
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(state.Revision)}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
+	if err != nil || result.Status != 0 || liveResume {
+		t.Fatalf("pause result=%+v err=%v liveResume=%v", result, err, liveResume)
+	}
+	request.Revision = result.Revision
+	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicResume)
+	if err != nil || result.Status != 0 || !liveResume || result.Revision == nil || *result.Revision != 3 {
+		t.Fatalf("resume result=%+v err=%v liveResume=%v, want committed explicit resume", result, err, liveResume)
+	}
+}
+
+func TestMusicInteractionsReportsUnavailableAndPersistsPauseWhenResumeHandoffFails(t *testing.T) {
+	channel, community := interactionID(25), interactionID(22)
+	state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{
+		ID: "track-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track", RequesterID: "member",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community,
+		OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+			return 0, errors.New("provider start failed")
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(state.Revision)}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicResume)
+	if err != nil || result.Status != interactionStatusUnavailable || result.Revision == nil || *result.Revision != 3 {
+		t.Fatalf("failed resume result=%+v err=%v, want unavailable at paused revision 3", result, err)
+	}
+	if !store.snapshot.State.Paused || store.snapshot.Revision != 3 {
+		t.Fatalf("failed resume persisted state=%+v revision=%d, want compensating pause", store.snapshot.State, store.snapshot.Revision)
+	}
+}
+
 func TestMusicInteractionsNonDJCannotMutateAndEmergencyStopIsNarrow(t *testing.T) {
 	channel := id.New()
 	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
 	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, emergency: true}
-	h := MusicInteractions{Store: store, Authority: authority, CommunityID: id.New()}
+	bridgeCalls := 0
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: id.New(), OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+		bridgeCalls++
+		return 0, nil
+	}}
 	request := protocol.Request{CommunityID: h.CommunityID, ChannelID: &channel, Revision: uint64Ptr(0)}
 	if got, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause); err != nil || got.Status != interactionStatusForbidden {
 		t.Fatalf("pause result=%+v err=%v, want forbidden", got, err)
@@ -117,6 +175,9 @@ func TestMusicInteractionsNonDJCannotMutateAndEmergencyStopIsNarrow(t *testing.T
 	}
 	if store.saves != 1 {
 		t.Fatalf("saves=%d, want only emergency stop persisted", store.saves)
+	}
+	if bridgeCalls != 1 {
+		t.Fatalf("runtime handoffs=%d, want only the authorized stop handoff", bridgeCalls)
 	}
 }
 

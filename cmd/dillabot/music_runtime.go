@@ -28,17 +28,18 @@ const (
 
 var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
 
-// musicSnapshotCommitCallback adapts an authorized persistence commit to the
-// retained metadata runtime. The starter is deliberately unavailable so this
-// bridge can refresh paused snapshots without opening a voice call or PCM path.
-func musicSnapshotCommitCallback(registry *musicQueueRegistry, logger *slog.Logger) func(context.Context, id.ID, id.ID, id.ID, uint64) {
+// musicSnapshotCommitCallback hands a committed revision to the retained
+// supervisor. Only a successful, explicit Resume is allowed to start audio.
+func musicSnapshotCommitCallback(registry *musicQueueRegistry, logger *slog.Logger) func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return func(ctx context.Context, installation, community, channel id.ID, revision uint64) {
-		if err := registry.ApplyPersistedSnapshot(ctx, installation, community, channel, revision, unavailableMusicQueueStarter()); err != nil {
+	return func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, liveResume bool) (uint64, error) {
+		appliedRevision, err := registry.ApplyPersistedSnapshot(ctx, installation, community, channel, state, revision, liveResume)
+		if err != nil {
 			logger.Warn("persisted music queue snapshot could not refresh retained runtime", "installation_id", installation.String(), "community_id", community.String(), "channel_id", channel.String(), "revision", revision, "error", err.Error())
 		}
+		return appliedRevision, err
 	}
 }
 
@@ -70,40 +71,22 @@ func (r *musicQueueRuntime) Len() int {
 	return len(r.supervisors)
 }
 
-// ApplyPersistedSnapshot refreshes one retained supervisor after another
-// authorized component has committed queue state. It never applies an
-// operation or starts playback: construction restores the persisted state
-// paused. expectedRevision must identify the exact committed row.
-func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel id.ID, expectedRevision uint64, starter session.QueueStarter) error {
-	if ctx == nil || channel.IsZero() || starter.OptionsFor == nil {
-		return errors.New("music runtime dependencies unavailable")
+// ApplyPersistedSnapshot hands an exact committed revision to its retained
+// supervisor. Only a live explicit Resume may start playback.
+func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel id.ID, committed music.State, expectedRevision uint64, liveResume bool) (uint64, error) {
+	if ctx == nil || channel.IsZero() {
+		return 0, errors.New("music runtime dependencies unavailable")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed || r.store == nil {
-		return music.ErrSupervisorClosed
+		return 0, music.ErrSupervisorClosed
 	}
 	current := r.supervisors[channel]
 	if current == nil {
-		return errors.New("music voice session is unavailable")
+		return 0, errors.New("music voice session is unavailable")
 	}
-	snapshot, err := r.store.Load(ctx, channel)
-	if err != nil {
-		return err
-	}
-	if snapshot.Revision != expectedRevision || current.State().Revision >= snapshot.Revision {
-		return music.ErrRevisionConflict
-	}
-	refreshed, err := newMusicSupervisor(ctx, channel, r.store, starter)
-	if err != nil {
-		return err
-	}
-	if refreshed.State().Revision != expectedRevision {
-		_ = refreshed.Close()
-		return music.ErrRevisionConflict
-	}
-	r.supervisors[channel] = refreshed
-	return current.Close()
+	return current.ApplyPersistedSnapshot(ctx, committed, expectedRevision, liveResume)
 }
 
 type musicCallStarter interface {
@@ -187,9 +170,9 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 // newInstallationYouTubeQueueStarter constructs the production YouTube track
 // path for one already-enrolled installation. It obtains fresh, channel-bound
 // call credentials only when a track is explicitly started. Queue restoration
-// continues to use unavailableMusicQueueStarter until an authorized interaction
-// dispatcher is connected; constructing this value does not start audio. The
-// client Session exposes its pinned instance without exposing its credential;
+// never starts audio by itself; constructing this value does not start audio.
+// Spotify remains unavailable until its account and PCM provider are qualified.
+// The client Session exposes its pinned instance without exposing its credential;
 // both the session and native epoch source must match this installation.
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
 	if instance.IsZero() || installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil || calls.InstanceID() != instance {
@@ -207,6 +190,12 @@ func newInstallationYouTubeQueueStarter(instance, installation, community, chann
 		}},
 		Epochs: source, Lifetime: 30 * time.Minute,
 	})
+}
+
+func newInstallationYouTubeQueueStarterFactory(instance, installation, community id.ID, calls *client.Session, source installationMusicNative) musicStarterFactory {
+	return func(channel id.ID) (session.QueueStarter, error) {
+		return newInstallationYouTubeQueueStarter(instance, installation, community, channel, calls, source)
+	}
 }
 
 type persistedMusicQueue struct{ store *persistence.Store }
@@ -309,7 +298,13 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 // restoreMusicSupervisors binds one paused queue supervisor to each voice
 // channel in an installation. Its caller owns and closes the returned set.
 func restoreMusicSupervisors(ctx context.Context, community id.ID, channels []client.Channel, store *persistence.Store, starter session.QueueStarter) (*musicQueueRuntime, error) {
-	if ctx == nil || community.IsZero() || store == nil || starter.OptionsFor == nil || len(channels) > maxMusicSupervisors*2 {
+	return restoreMusicSupervisorsWithStarterFactory(ctx, community, channels, store, func(id.ID) (session.QueueStarter, error) { return starter, nil })
+}
+
+type musicStarterFactory func(id.ID) (session.QueueStarter, error)
+
+func restoreMusicSupervisorsWithStarterFactory(ctx context.Context, community id.ID, channels []client.Channel, store *persistence.Store, starterFor musicStarterFactory) (*musicQueueRuntime, error) {
+	if ctx == nil || community.IsZero() || store == nil || starterFor == nil || len(channels) > maxMusicSupervisors*2 {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
 	runtime := &musicQueueRuntime{supervisors: make(map[id.ID]*music.Supervisor), community: community, store: store}
@@ -330,6 +325,14 @@ func restoreMusicSupervisors(ctx context.Context, community id.ID, channels []cl
 		if len(runtime.supervisors) == maxMusicSupervisors {
 			_ = runtime.Close()
 			return nil, errors.New("music voice channel limit exceeded")
+		}
+		starter, err := starterFor(channel.ID)
+		if err != nil || starter.OptionsFor == nil {
+			_ = runtime.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("music runtime dependencies unavailable")
 		}
 		supervisor, err := newMusicSupervisor(ctx, channel.ID, store, starter)
 		if err != nil {
@@ -396,24 +399,28 @@ func (r *musicQueueRegistry) QueueStore(installation, community id.ID) (*persist
 // ApplyPersistedSnapshot is the runtime bridge for queue mutations already
 // authorized and committed by the interaction service. A missing registry
 // entry means the capability or retained native session has been torn down.
-func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, installation, community, channel id.ID, revision uint64, starter session.QueueStarter) error {
+func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, liveResume bool) (uint64, error) {
 	if r == nil {
-		return errors.New("music voice session is unavailable")
+		return 0, errors.New("music voice session is unavailable")
 	}
 	r.mu.Lock()
 	retained := r.runtimes[installation]
 	if retained == nil || retained.community != community || retained.queues == nil {
 		r.mu.Unlock()
-		return errors.New("music voice session is unavailable")
+		return 0, errors.New("music voice session is unavailable")
 	}
 	r.mu.Unlock()
-	return retained.queues.ApplyPersistedSnapshot(ctx, channel, revision, starter)
+	return retained.queues.ApplyPersistedSnapshot(ctx, channel, state, revision, liveResume)
 }
 
 // Reconcile returns true only when ownership of nativeClient transfers to the
 // registry. A capability loss closes both the retained supervisors and helper.
 func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, community id.ID, capabilities uint64, channels []client.Channel, nativeClient musicRuntimeNative, starter session.QueueStarter) (bool, error) {
-	if r == nil || installation.IsZero() || community.IsZero() || nativeClient == nil {
+	return r.ReconcileWithStarterFactory(ctx, installation, community, capabilities, channels, nativeClient, func(id.ID) (session.QueueStarter, error) { return starter, nil })
+}
+
+func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, installation, community id.ID, capabilities uint64, channels []client.Channel, nativeClient musicRuntimeNative, starterFor musicStarterFactory) (bool, error) {
+	if r == nil || installation.IsZero() || community.IsZero() || nativeClient == nil || starterFor == nil {
 		return false, errors.New("music runtime dependencies unavailable")
 	}
 	r.mu.Lock()
@@ -430,21 +437,21 @@ func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, commun
 			_ = r.disableLocked(installation)
 		} else {
 			if existing.queues == nil {
-				queues, err := restoreMusicQueuesIfEnabled(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, nativeClient, starter)
+				queues, err := restoreMusicQueuesIfEnabledWithStarterFactory(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, nativeClient, starterFor)
 				if err != nil {
 					return false, err
 				}
 				existing.queues = queues
 				return false, nil
 			}
-			if err := syncMusicSupervisors(ctx, existing.queues, channels, starter); err != nil {
+			if err := syncMusicSupervisorsWithStarterFactory(ctx, existing.queues, channels, starterFor); err != nil {
 				_ = r.pauseMusicLocked(installation)
 				return false, err
 			}
 			return false, nil
 		}
 	}
-	queues, err := restoreMusicQueuesIfEnabled(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, nativeClient, starter)
+	queues, err := restoreMusicQueuesIfEnabledWithStarterFactory(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, nativeClient, starterFor)
 	if err != nil {
 		return false, err
 	}
@@ -456,7 +463,11 @@ func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, commun
 }
 
 func syncMusicSupervisors(ctx context.Context, runtime *musicQueueRuntime, channels []client.Channel, starter session.QueueStarter) error {
-	if ctx == nil || runtime == nil || runtime.store == nil || starter.OptionsFor == nil || len(channels) > maxMusicSupervisors*2 {
+	return syncMusicSupervisorsWithStarterFactory(ctx, runtime, channels, func(id.ID) (session.QueueStarter, error) { return starter, nil })
+}
+
+func syncMusicSupervisorsWithStarterFactory(ctx context.Context, runtime *musicQueueRuntime, channels []client.Channel, starterFor musicStarterFactory) error {
+	if ctx == nil || runtime == nil || runtime.store == nil || starterFor == nil || len(channels) > maxMusicSupervisors*2 {
 		return errors.New("music runtime dependencies unavailable")
 	}
 	runtime.mu.Lock()
@@ -494,6 +505,13 @@ func syncMusicSupervisors(ctx context.Context, runtime *musicQueueRuntime, chann
 		if runtime.supervisors[channel.ID] != nil {
 			delete(desired, channel.ID)
 			continue
+		}
+		starter, err := starterFor(channel.ID)
+		if err != nil || starter.OptionsFor == nil {
+			if err != nil {
+				return err
+			}
+			return errors.New("music runtime dependencies unavailable")
 		}
 		supervisor, err := newMusicSupervisor(ctx, channel.ID, runtime.store, starter)
 		if err != nil {
@@ -576,6 +594,10 @@ func (r *musicQueueRegistry) Close() error {
 }
 
 func restoreMusicQueuesIfEnabled(ctx context.Context, community id.ID, capabilities uint64, loadChannels func(context.Context, id.ID) ([]client.Channel, error), stateNative persistence.Native, starter session.QueueStarter) (*musicQueueRuntime, error) {
+	return restoreMusicQueuesIfEnabledWithStarterFactory(ctx, community, capabilities, loadChannels, stateNative, func(id.ID) (session.QueueStarter, error) { return starter, nil })
+}
+
+func restoreMusicQueuesIfEnabledWithStarterFactory(ctx context.Context, community id.ID, capabilities uint64, loadChannels func(context.Context, id.ID) ([]client.Channel, error), stateNative persistence.Native, starterFor musicStarterFactory) (*musicQueueRuntime, error) {
 	if capabilities&botMusicCapability == 0 {
 		return nil, nil
 	}
@@ -590,7 +612,7 @@ func restoreMusicQueuesIfEnabled(ctx context.Context, community id.ID, capabilit
 	if err != nil {
 		return nil, err
 	}
-	return restoreMusicSupervisors(ctx, community, channels, store, starter)
+	return restoreMusicSupervisorsWithStarterFactory(ctx, community, channels, store, starterFor)
 }
 
 func closeMusicSupervisors(queues map[id.ID]*music.Supervisor) {
