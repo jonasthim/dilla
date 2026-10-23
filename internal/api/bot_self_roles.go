@@ -237,6 +237,9 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 		if err != nil || installation.State != store.BotInstallationReady || installation.UserID == nil || installation.DeviceID == nil {
 			return server.Errorf(server.CodeForbidden, "ready community bot required")
 		}
+		if installation.Capabilities&uint8(botCapRoles) == 0 {
+			return server.Errorf(server.CodeForbidden, "roles capability required")
+		}
 		botUser, err := tx.GetUser(r.Context(), *installation.UserID)
 		if err != nil || botUser.Kind != 1 {
 			return server.Errorf(server.CodeForbidden, "ready community bot required")

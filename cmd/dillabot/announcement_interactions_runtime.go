@@ -27,3 +27,10 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 	}
 	return handlers
 }
+
+func runtimeRolePanelHandlers(capabilities uint64, handler service.RolePanelInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+	if capabilities&botRolesCapability == 0 {
+		return nil
+	}
+	return handler.Handlers()
+}

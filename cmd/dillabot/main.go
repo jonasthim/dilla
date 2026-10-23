@@ -620,6 +620,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														musicInteractions,
 														nativeClient,
 													)
+													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
+														Authority:   result.Session,
+														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
+														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
+													}) {
+														handlers[operation] = handler
+													}
 													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
 														handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
 												}

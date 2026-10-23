@@ -22,6 +22,15 @@ func fixtureID(n byte) id.ID {
 	return v
 }
 
+func mustCBOR(t *testing.T, value any) []byte {
+	t.Helper()
+	body, err := cborx.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 type vectorCorpus struct {
 	Version int          `json:"version"`
 	Cases   []vectorCase `json:"cases"`
@@ -724,6 +733,7 @@ func TestEveryRequestOperationShape(t *testing.T) {
 		{"music_move", OpMusicMove, []any{fixtureID(7), nil}, true, true},
 		{"music_clear", OpMusicClear, nil, true, true},
 		{"welcome_preview", OpWelcomePreview, []any{"hello"}, false, false},
+		{"role_panel_publish", OpRolePanelPublish, []any{fixtureID(10), mustCBOR(t, []any{[]any{"🎮", fixtureID(11), "Gamers"}})}, true, false},
 		{"roles_list", OpRolesList, []any{uint64(0)}, false, false},
 		{"announcements_list", OpAnnouncementsList, []any{uint64(0)}, false, false},
 		{"announcements_put", OpAnnouncementsPut, []any{nil, []byte{0x80}}, true, false},
@@ -741,6 +751,9 @@ func TestEveryRequestOperationShape(t *testing.T) {
 			if tt.mut {
 				r.Revision, r.Expires = u64(4), u64(30)
 			}
+			if tt.op == OpRolePanelPublish {
+				r.Revision = u64(0)
+			}
 			body, err := EncodeRequest(r)
 			if err != nil {
 				t.Fatal(err)
@@ -753,6 +766,32 @@ func TestEveryRequestOperationShape(t *testing.T) {
 				t.Fatalf("operation = %d", got.Operation)
 			}
 		})
+	}
+}
+
+func TestRolePanelPublishRejectsInvalidMappings(t *testing.T) {
+	validRole := fixtureID(11)
+	for name, options := range map[string]any{
+		"empty":              []any{},
+		"zero role":          []any{[]any{"🎮", id.ID{}, "Gamers"}},
+		"duplicate emoji":    []any{[]any{"✅", fixtureID(11), "One"}, []any{"✅", fixtureID(12), "Two"}},
+		"duplicate role":     []any{[]any{"✅", validRole, "One"}, []any{"🎮", validRole, "Two"}},
+		"control emoji":      []any{[]any{"\n", fixtureID(12), "Two"}},
+		"invalid name":       []any{[]any{"✅", fixtureID(12), "\n"}},
+		"wrong option shape": []any{[]any{"✅", fixtureID(12)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := mustCBOR(t, options)
+			r := Request{RequestID: fixtureID(1), CommunityID: fixtureID(2), Operation: OpRolePanelPublish,
+				Revision: u64(1), Expires: u64(30), Args: []any{fixtureID(10), raw}}
+			if _, err := EncodeRequest(r); err == nil {
+				t.Fatal("invalid role-panel mapping was accepted")
+			}
+		})
+	}
+	if _, err := EncodeRequest(Request{RequestID: fixtureID(1), CommunityID: fixtureID(2), Operation: OpRolePanelPublish,
+		Revision: u64(1), Expires: u64(30), Args: []any{fixtureID(10), mustCBOR(t, []any{[]any{"✅", fixtureID(11), "Readers"}})}}); err == nil {
+		t.Fatal("nonzero reserved panel revision was accepted")
 	}
 }
 

@@ -160,6 +160,20 @@ describe('Controller', () => {
     expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
   });
 
+  it('encodes the destination as an ID and expiry for an encrypted role-panel publish', async () => {
+    const w = world(); await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52); const requestId = new Uint8Array(16).fill(0x54);
+    const destination = new Uint8Array(16).fill(0x55); const options = encode([['✅', new Uint8Array(16).fill(0x56), 'Readers']]);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'encrypted role panel request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_191, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
+      operation: 31, args: [toHex(destination), options], revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    const wire = decode(w.core.humanInteractionSendPrepare.mock.calls[0]![3]);
+    expect(wire).toEqual([1n, requestId, COMMUNITY, null, 31n, 0n, NOW_S + 30n, [destination, options]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
   it('reads generic Bot responses and offers acknowledgement only for the requested contiguous prefix', async () => {
     const w = world();
     await toReady(w);
@@ -379,7 +393,8 @@ describe('Controller', () => {
     const listSelfRoles = vi.fn(() => Promise.resolve([{ id: STRANGER, name: 'Readers', position: 2, selfSelected: false }]));
     const configureSelfRoles = vi.fn(() => Promise.resolve());
     const selectSelfRole = vi.fn(() => Promise.resolve());
-    Object.assign(w.routes, { listSelfRoles, configureSelfRoles, selectSelfRole });
+    const registerRolePanel = vi.fn(() => Promise.resolve());
+    Object.assign(w.routes, { listSelfRoles, configureSelfRoles, selectSelfRole, registerRolePanel });
     await toReady(w);
     const communityId = toHex(COMMUNITY);
     const roleId = toHex(STRANGER);
@@ -393,6 +408,15 @@ describe('Controller', () => {
     w.call(992, { m: 'selectSelfRole', communityId, roleId, requestId, enabled: true });
     await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true, value: null }));
     expect(selectSelfRole).toHaveBeenCalledWith(COMMUNITY, STRANGER, new Uint8Array(16).fill(0x55), true);
+    w.call(994, { m: 'registerRolePanel', communityId, requestId, channelId: toHex(CHANNEL), messageSeq: '9',
+      options: [{ emoji: '✅', roleId }] });
+    await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true, value: null }));
+    expect(registerRolePanel).toHaveBeenCalledWith(COMMUNITY, new Uint8Array(16).fill(0x55), CHANNEL, 9n,
+      [{ emoji: '✅', roleId: STRANGER }]);
+    w.call(995, { m: 'registerRolePanel', communityId, requestId, channelId: toHex(CHANNEL), messageSeq: '9',
+      options: [{ emoji: '✅', roleId }, { emoji: '✅', roleId: toHex(USER) }] });
+    await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(registerRolePanel).toHaveBeenCalledTimes(1);
     w.call(993, { m: 'configureSelfRoles', communityId, requestId, roleIds: [roleId, roleId] });
     await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
   });

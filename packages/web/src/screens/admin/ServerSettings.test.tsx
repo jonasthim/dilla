@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { PERM, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
+import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
+import { encode, fromHex } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
@@ -21,14 +22,26 @@ const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: 
   banMembers: false, createInvite: false, manageRoles: false };
 
 function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null;
-  selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[]; roles?: RoleSummary[] } = {}) {
+  selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[]; roles?: RoleSummary[];
+  channels?: ChannelSummary[]; installation?: unknown; interaction?: unknown } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
   fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (over.selfRoles ?? [])
+    : command.m === 'getBotInstallation' ? (over.installation ?? null)
+    : command.m === 'humanInteractionRequest' ? { requestId: command.requestId, upload: 'accepted' }
+    : command.m === 'readBotInteractionResponses' ? (() => {
+      const sent = fake.callsOf('humanInteractionRequest').at(-1);
+      const sentChannel = sent?.args[0];
+      return { through: '1', blocked: false, responses: over.interaction && sent !== undefined && typeof sentChannel === 'string' ? [{
+        deliveryId: '1', requestId: sent.requestId, communityId: SERVER, operation: 31, channelId: null, status: 0,
+        revision: '1', data: encode([fromHex(sentChannel), 9n]), sourceSeq: '1',
+      }] : [] };
+    })()
     : command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
   if (access !== undefined) fake.set(`permissions:${SERVER}`, access);
   if (over.roles !== undefined) fake.set(`roles:${SERVER}`, over.roles);
+  if (over.channels !== undefined) fake.set(`channels:${SERVER}`, over.channels);
   if (over.members !== null) {
     fake.set(`members:${SERVER}`, over.members ?? [
       { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
@@ -50,6 +63,40 @@ const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame
 const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button').map(b => b.textContent);
 
 describe('ServerSettings tabs', () => {
+  it('publishes a bot-authored role panel and registers only its accepted exact message', async () => {
+    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
+    const { fake, user, announce } = setup(FULL, { tab: 'selfRoles',
+      selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      roles: [{ id: roleId, name: 'Readers', position: 2, allow: PERM.viewChannel, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }],
+      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+      interaction: true });
+    const emoji = await screen.findByRole('textbox', { name: 'Emoji for Readers' });
+    await user.clear(emoji); await user.type(emoji, '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
+    const sent = fake.callsOf('humanInteractionRequest')[0];
+    expect(sent).toMatchObject({ operation: 31, channelId: null });
+    expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ communityId: SERVER, channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
+    expect(announce).toHaveBeenCalledWith('The bot published and registered the role panel.');
+  });
+  it('rejects duplicate reaction mappings before sending or changing role policy', async () => {
+    const one = 'c3'.repeat(16); const two = 'c4'.repeat(16); const channelId = 'd4'.repeat(16);
+    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [
+      { id: one, name: 'Readers', position: 2, selfSelected: false }, { id: two, name: 'Writers', position: 3, selfSelected: false },
+    ], channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+      position: 0, slowmode: 0, announcement: false, group: 'active' }],
+    installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' } });
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '✅');
+    await user.type(screen.getByRole('textbox', { name: 'Emoji for Writers' }), '✅');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a text channel');
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(0);
+    expect(fake.callsOf('configureSelfRoles')).toHaveLength(0);
+  });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
     expect(navNames()).toEqual(['overview', 'bot', 'channels', 'roles', 'invites', 'bans', 'self-service roles', 'delete server']);

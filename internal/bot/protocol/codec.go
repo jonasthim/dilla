@@ -53,6 +53,7 @@ const (
 	OpMusicMove           Operation = 22
 	OpMusicClear          Operation = 23
 	OpWelcomePreview      Operation = 30
+	OpRolePanelPublish    Operation = 31
 	OpRolesList           Operation = 40
 	OpAnnouncementsList   Operation = 50
 	OpAnnouncementsPut    Operation = 51
@@ -209,6 +210,9 @@ func validateRequest(r Request) error {
 	if !mut && (r.Revision != nil || r.Expires != nil) {
 		return invalid()
 	}
+	if r.Operation == OpRolePanelPublish && *r.Revision != 0 {
+		return invalid()
+	}
 	if err := validateArgs(r.Operation, r.Args); err != nil {
 		return invalid()
 	}
@@ -228,6 +232,8 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return true, false, 2
 	case OpMusicSearch, OpWelcomePreview:
 		return false, op == OpMusicSearch, 1
+	case OpRolePanelPublish:
+		return true, false, 2
 	case OpMusicEnqueue:
 		return true, true, 1
 	case OpMusicSeek, OpMusicVolume, OpMusicRepeat:
@@ -301,6 +307,10 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(idarg(0) && nullableID(a[1]))
 	case OpWelcomePreview:
 		return boolErr(str(0, 1, 2000, false))
+	case OpRolePanelPublish:
+		channel, ok := a[0].(id.ID)
+		payload, payloadOK := a[1].([]byte)
+		return boolErr(ok && isID(channel) && payloadOK && validateRolePanelMappings(payload) == nil)
 	case OpAnnouncementsPut:
 		return boolErr(nullableID(a[0]) && data(1, 1, 2200))
 	case OpModerationEvidence:
@@ -308,6 +318,47 @@ func validateArgs(op Operation, a []any) error {
 	default:
 		return invalid()
 	}
+}
+
+func validateRolePanelMappings(raw []byte) error {
+	if len(raw) == 0 || len(raw) > 2200 || !validArray(raw) {
+		return invalid()
+	}
+	var rows []any
+	if cborx.Unmarshal(raw, &rows) != nil || len(rows) == 0 || len(rows) > 100 {
+		return invalid()
+	}
+	emojis := make(map[string]bool, len(rows))
+	roles := make(map[id.ID]bool, len(rows))
+	for _, value := range rows {
+		row, ok := value.([]any)
+		if !ok || len(row) != 3 {
+			return invalid()
+		}
+		emoji, emojiOK := row[0].(string)
+		roleBytes, roleOK := row[1].([]byte)
+		name, nameOK := row[2].(string)
+		var role id.ID
+		if roleOK && len(roleBytes) == len(role) {
+			copy(role[:], roleBytes)
+		}
+		if !emojiOK || !roleOK || !nameOK || !isID(role) || !utf8.ValidString(emoji) || len([]byte(emoji)) == 0 || len([]byte(emoji)) > 32 || strings.ContainsAny(emoji, "\x00\r\n\x7f") || emojis[emoji] || roles[role] || !utf8.ValidString(name) || len([]byte(name)) == 0 || len([]byte(name)) > 100 || strings.TrimSpace(name) == "" {
+			return invalid()
+		}
+		for _, r := range emoji {
+			if r < 32 {
+				return invalid()
+			}
+		}
+		for _, r := range name {
+			if r < 32 || r == 127 {
+				return invalid()
+			}
+		}
+		emojis[emoji] = true
+		roles[role] = true
+	}
+	return nil
 }
 func boolErr(ok bool) error {
 	if !ok {
@@ -334,6 +385,8 @@ func requestIDs(op Operation, a []any) {
 	case OpAnnouncementsPut:
 		initIDs(a, 0)
 	case OpModerationEvidence:
+		initIDs(a, 0)
+	case OpRolePanelPublish:
 		initIDs(a, 0)
 	}
 }

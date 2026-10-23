@@ -46,6 +46,7 @@ Operation, arguments, channel requirement, mutation:
 - 22 music.move: [queue_item_id, before_item_id|null], channel required, mutation
 - 23 music.clear: [], channel required, mutation
 - 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read; requires current `manage_community` and returns data `[1, rendered_text]` using the sample references `member`, `server`, and `channel` without posting
+- 31 roles.panel.publish: [destination_channel_id, mappings_bstr], no interaction channel, mutation; requires current `manage_roles`, ready Roles-capable Bot, and a readable destination; sends a normal Bot-authored encrypted text message through the send coordinator and returns `[destination_channel_id, accepted_message_seq]` only after its accepted send receipt
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
 - 50 announcements.list: [cursor uint], no channel, read; response revision is the scheduler document revision from the same encrypted-state read as the page
 - 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation; request revision is the expected scheduler document revision, while the document carries its own per-schedule revision
@@ -67,6 +68,17 @@ Document bstr payloads must themselves be deterministic CBOR arrays (not arbitra
 bytes); sections' actual fields are validated by feature dispatcher. They never
 contain generic SQL or executable code. Reject empty/whitespace-only query/input;
 control characters U+0000..001F and U+007F disallowed in those two inputs only.
+
+Role-panel operation 31 requires revision zero (reserved; no client policy state is
+being changed). Its `mappings_bstr` is deterministic CBOR `[[emoji, role_id, role_name]...]`;
+it contains 1..100 rows, each with a UTF-8 emoji (1..32 bytes), nonzero 16-byte
+role ID, and plain role name (1..100 UTF-8 bytes, no controls). Emoji and role IDs
+must be unique. The Bot renders these values into an ordinary encrypted channel
+message and sends it via MLS; it does not forge or upload a message. A human client
+may register the returned exact channel/sequence through the HTTP role-panel route.
+That route rechecks the current manager session, ready Bot and Roles capability,
+Bot user/device authorship of the live message, and current approved-role policy.
+The registration call occurs only after the Bot's accepted send receipt is read.
 
 `settings.get` and `settings.put` section 5 address welcome configuration. The
 get response data is the encrypted configuration document

@@ -97,6 +97,7 @@ export interface BotJoinRoleRow { roleId: Uint8Array | null; installationId: Uin
 export interface BotDjRolesRow { roleIds: Uint8Array[]; installationId: Uint8Array }
 export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
 export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
+export interface RolePanelOptionInput { emoji: string; roleId: Uint8Array }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
   hoist: boolean; mentionable: boolean }
 export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array; created: bigint; expires: bigint | null;
@@ -571,6 +572,28 @@ export class Routes {
     await this.http.request({ method: 'PUT', path: `/v1/communities/${id('communityId', communityId)}/self-roles/${id('roleId', roleId)}`,
       bucket: 'write', idempotent: true, body: encode([inputId('requestId', requestId), enabled ? 1 : 0]), retry429: false,
       ok: [204], maxBodyBytes: 0 });
+  }
+  /** Registers mappings only after the Bot-authored message has an accepted sequence. */
+  async registerRolePanel(communityId: Uint8Array, requestId: Uint8Array, channelId: Uint8Array, messageSeq: bigint,
+    options: RolePanelOptionInput[]): Promise<void> {
+    if (messageSeq < 1n || messageSeq > (1n << 63n) - 1n || options.length < 1 || options.length > 100) {
+      throw new RangeError('E_ROUTE_INPUT: invalid role panel identity or option count');
+    }
+    const emojis = new Set<string>(); const roles = new Set<string>();
+    const rows = options.map(option => {
+      const emoji = str(option.emoji);
+      const emojiBytes = new TextEncoder().encode(emoji).length;
+      if (emojiBytes < 1 || emojiBytes > 32) throw new RangeError('E_ROUTE_INPUT: invalid role panel emoji');
+      const role = id('roleId', option.roleId);
+      if (emojis.has(emoji) || roles.has(role)) throw new RangeError('E_ROUTE_INPUT: duplicate role panel mapping');
+      emojis.add(emoji); roles.add(role);
+      return [emoji, inputId('roleId', option.roleId)];
+    });
+    const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/role-panels`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('channelId', channelId), messageSeq, rows]), retry429: false })));
+    if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i]) || u53(ack[1]) !== options.length) {
+      throw new CborError('E_CBOR_SHAPE', 'invalid role panel acknowledgement');
+    }
   }
   /** Request ID is retained across HTTP retries; the server binds it to actor, payload and result. */
   async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,

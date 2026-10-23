@@ -49,6 +49,17 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 	}
 }
 
+func TestRuntimeRolePanelPublishRequiresRolesCapability(t *testing.T) {
+	handler := service.RolePanelInteractions{}
+	if got := runtimeRolePanelHandlers(0, handler); len(got) != 0 {
+		t.Fatalf("role panel handlers without Roles capability = %v", got)
+	}
+	got := runtimeRolePanelHandlers(botRolesCapability, handler)
+	if registered, ok := got[protocol.OpRolePanelPublish]; !ok || registered.Handle == nil || !registered.RevisionInHandler {
+		t.Fatalf("role panel publish handler=%+v; want authorized interaction handler", registered)
+	}
+}
+
 type runtimeWelcomeAuthority struct{}
 
 func (runtimeWelcomeAuthority) CanManageCommunity(context.Context, id.ID, id.ID) (bool, error) {

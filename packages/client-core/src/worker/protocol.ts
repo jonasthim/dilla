@@ -35,6 +35,8 @@ export type Command =
   | { m: 'listSelfRoles'; communityId: string }
   | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
   | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }
+  | { m: 'registerRolePanel'; communityId: string; requestId: string; channelId: string; messageSeq: string;
+      options: readonly { emoji: string; roleId: string }[] }
   | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
   | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
   | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string }

@@ -83,6 +83,18 @@ it('reads and writes the manager-approved self-role policy and member selection'
   expect(http.requests[2]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/${hex(ROLE)}`, body: encode([USER, 1]) });
 });
 
+it('registers only bounded unique mappings against an accepted Bot message identity', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [USER, 1]));
+  await routes.registerRolePanel(COMMUNITY, USER, CHANNEL, 9n, [{ emoji: '✅', roleId: ROLE }]);
+  expect(http.requests[0]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/role-panels`,
+    body: encode([USER, CHANNEL, 9n, [['✅', ROLE]]]), retry429: false });
+  await expect(routes.registerRolePanel(COMMUNITY, USER, CHANNEL, 0n, [{ emoji: '✅', roleId: ROLE }])).rejects.toThrow(/invalid role panel identity/u);
+  await expect(routes.registerRolePanel(COMMUNITY, USER, CHANNEL, 9n, [
+    { emoji: '✅', roleId: ROLE }, { emoji: '✅', roleId: fill(16, 0x15) },
+  ])).rejects.toThrow(/duplicate role panel mapping/u);
+});
+
 it('returns the current interaction admission proof without interpreting its signed payload', async () => {
   const { routes, t, http } = setup();
   t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, ADMISSION_SIGNATURE]));

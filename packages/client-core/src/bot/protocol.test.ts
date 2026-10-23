@@ -33,6 +33,16 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest(request(60, [0n]))).toThrow(bot.BotError);
   });
 
+  it('accepts a bounded role-panel publish request and rejects invalid mappings', () => {
+    const mappings = encode([['🎮', id(3), 'Gamers']]);
+    const publish = { ...request(31, [id(4), mappings]), revision: 0n, expires: 110n };
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(publish)).args).toEqual([id(4), mappings]);
+    expect(() => bot.encodeBotRequest({ ...publish, revision: 1n })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotRequest({ ...publish, args: [id(4), encode([])] })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotRequest({ ...publish, args: [id(4), encode([['✅', id(3), 'One'], ['✅', id(4), 'Two']])] })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotRequest({ ...publish, args: [id(4), encode([['\n', id(3), 'Gamers']])] })).toThrow(bot.BotError);
+  });
+
   it('binds a response to the exact local request and community', () => {
     const response: bot.BotResponse = {
       requestId: id(1), communityId: id(2), status: 0, revision: null, data: new Uint8Array(),

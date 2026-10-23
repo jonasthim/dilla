@@ -175,7 +175,17 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/role-panels"
-	status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.ID{}, channel, uint64(7), []any{[]any{"✅", role}}})
+	foreignCID := createCommunity(t, e, ownerTok)
+	foreignChannel := id.New()
+	if err := e.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: foreignChannel, CommunityID: &foreignCID, Kind: api.ChannelText,
+		Mode: api.ModeE2EE, Name: "other-community", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), foreignChannel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusNotFound {
+		t.Fatalf("register cross-community channel = %d (%x), want 404", status, body)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.ID{}, channel, uint64(7), []any{[]any{"✅", role}}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("register with zero operation id = %d (%x), want 400", status, body)
 	}
@@ -191,6 +201,22 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 		t.Fatalf("register message attributed to a lookalike uploader = %d (%x), want 403", status, body)
 	}
 	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: 9, Sender: botID, UploaderDevice: deviceID, Envelope: []byte{1}, Body: "Real bot panel", FrankingTag: make([]byte, 32), Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register panel without Roles capability = %d (%x), want 403", status, body)
+	}
+	installation, err := e.Repo.GetBotInstallation(t.Context(), installationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.Capabilities = 1 << 2
+	installation.Revision++
+	installation.Updated = e.Clk.Now().Unix()
+	if err := e.Repo.Tx(t.Context(), func(tx store.Repository) error {
+		return tx.UpdateBotInstallation(t.Context(), installationID, installation.Revision-1, installation)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})

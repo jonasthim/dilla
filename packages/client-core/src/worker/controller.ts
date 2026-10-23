@@ -209,6 +209,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'listSelfRoles',
   'configureSelfRoles',
   'selectSelfRole',
+  'registerRolePanel',
   'configureBotInstallation',
   'disableBotInstallation',
   'beginBotSpotifyAttempt',
@@ -344,6 +345,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   listSelfRoles: ['communityId'],
   configureSelfRoles: ['communityId', 'requestId'],
   selectSelfRole: ['communityId', 'roleId', 'requestId'],
+  registerRolePanel: ['communityId', 'requestId', 'channelId'],
   configureBotInstallation: ['communityId', 'requestId'],
   disableBotInstallation: ['communityId', 'requestId'],
   beginBotSpotifyAttempt: ['communityId'],
@@ -446,6 +448,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'listSelfRoles',
     'configureSelfRoles',
     'selectSelfRole',
+    'registerRolePanel',
     'configureBotInstallation',
     'disableBotInstallation',
     'beginBotSpotifyAttempt',
@@ -557,6 +560,7 @@ const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSa
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
   && r.every((v: unknown, i) => statsField(v) || (i === 1 && v === null));
 const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** Per-feature synchronous checks (wave 1+): each returns an E_BAD_INPUT reason or null. */
 const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
@@ -613,33 +617,47 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'configureBotDjRoles' && (!Array.isArray(command.roleIds) || command.roleIds.length > 250
     || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
     || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
+  if (m === 'registerRolePanel') {
+    const seq = command.messageSeq;
+    if (typeof seq !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(seq) || BigInt(seq) > 0x7fff_ffff_ffff_ffffn) return 'messageSeq is invalid';
+    if (!Array.isArray(command.options) || command.options.length < 1 || command.options.length > 100) return 'role panel options are invalid';
+    const emojis = new Set<string>(); const roles = new Set<string>();
+    for (const option of command.options) {
+      if (!isRecord(option) || typeof option.emoji !== 'string' || new TextEncoder().encode(option.emoji).length < 1
+        || new TextEncoder().encode(option.emoji).length > 32 || typeof option.roleId !== 'string' || !ID.test(option.roleId)
+        || option.roleId === '0'.repeat(32) || emojis.has(option.emoji) || roles.has(option.roleId)) return 'role panel options are invalid';
+      emojis.add(option.emoji); roles.add(option.roleId);
+    }
+  }
   if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
   if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23)) return 'interaction operation is invalid';
+      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23 || operation === 31)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
-    const music = operation >= 10;
+    const music = operation >= 10 && operation <= 23;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
     if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1 : operation === 2 || operation === 22 ? 2 : 0;
+    const count = operation === 1 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1 : operation === 2 || operation === 22 || operation === 31 ? 2 : 0;
     if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
     if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
     if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';
+    if (operation === 31 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
+      || !(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2200)) return 'role panel request is invalid';
     if ((operation === 11 || operation === 12) && (typeof command.args[0] !== 'string' || command.args[0].trim().length === 0)) return 'music query is invalid';
     if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
       || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
     if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
     if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31;
     const revision = command.revision;
     if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
       : revision !== null) return 'interaction revision is invalid';
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
     || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-      || !(op === 1 || op === 2 || op >= 10 && op <= 23)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+      || !(op === 1 || op === 2 || op >= 10 && op <= 23 || op === 31)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
     || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
   if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
@@ -1232,6 +1250,7 @@ export class Controller {
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
       case 'configureSelfRoles': return this.configureSelfRoles(command);
       case 'selectSelfRole': return this.selectSelfRole(command);
+      case 'registerRolePanel': return this.registerRolePanel(command);
       case 'configureBotInstallation': return this.configureBotInstallation(command);
       case 'disableBotInstallation': return this.disableBotInstallation(command);
       case 'beginBotSpotifyAttempt': return this.beginBotSpotifyAttempt(command);
@@ -1364,9 +1383,9 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31;
     const args: CborInput[] = command.args.map((value, index) =>
-      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1)) && typeof value === 'string'
+      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0) && typeof value === 'string'
         ? fromHex(value) : value);
     const sync = this.requireSync();
     return sync.runOnGroup(groupId, async () => {
@@ -1637,6 +1656,12 @@ export class Controller {
   private async selectSelfRole(command: Extract<Command, { m: 'selectSelfRole' }>): Promise<null> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     await this.routes.selectSelfRole(fromHex(command.communityId), fromHex(command.roleId), fromHex(command.requestId), command.enabled);
+    return null;
+  }
+
+  private async registerRolePanel(command: Extract<Command, { m: 'registerRolePanel' }>): Promise<null> {
+    await this.routes.registerRolePanel(fromHex(command.communityId), fromHex(command.requestId), fromHex(command.channelId),
+      BigInt(command.messageSeq), command.options.map(option => ({ emoji: option.emoji, roleId: fromHex(option.roleId) })));
     return null;
   }
 

@@ -70,7 +70,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   13:{channel:true,mutation:true,count:0},14:{channel:true,mutation:true,count:0},15:{channel:true,mutation:true,count:0},16:{channel:true,mutation:true,count:0},
   17:{channel:true,mutation:true,count:1},18:{channel:true,mutation:true,count:1},19:{channel:true,mutation:true,count:0},20:{channel:true,mutation:true,count:1},
   21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},
-  30:{channel:false,mutation:false,count:1},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
+  30:{channel:false,mutation:false,count:1},31:{channel:false,mutation:true,count:2},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
   51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
 };
 function validateArgs(op: number, a: unknown[]): void {
@@ -83,7 +83,20 @@ function validateArgs(op: number, a: unknown[]): void {
     case 11: t(0,1,200,true); break; case 12: t(0,1,2048,true); break;
     case 17: u(0); break; case 18: u(0,0n,100n); break; case 20: u(0,0n,2n); break;
     case 21: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
-    case 30: t(0,1,2000); break; case 40: case 50: u(0); break;
+    case 30: t(0,1,2000); break;
+    case 31: {
+      ident(0); const payload = cborBytes(a[1], 1, 2200); const rows = arr(decode(payload));
+      if (rows.length < 1 || rows.length > 100) fail('E_BOT_SHAPE');
+      const emojis = new Set<string>(); const roles = new Set<string>();
+      for (const value of rows) {
+        const row = arr(value, 3); const emoji = text(row[0], 1, 32, true); const role = id(row[1]); text(row[2], 1, 100, true);
+        const roleHex = [...role].map(x => x.toString(16).padStart(2, '0')).join('');
+        if (emojis.has(emoji) || roles.has(roleHex)) fail('E_BOT_SHAPE');
+        emojis.add(emoji); roles.add(roleHex);
+      }
+      a[1] = payload; break;
+    }
+    case 40: case 50: u(0); break;
     case 60: if (a[0] !== null) { const cursor = bytes(a[0]); if (cursor.length < 1 || cursor.length > 256) fail('E_BOT_RANGE'); } break;
     case 51: a[0]=nullable(a[0],id); a[1]=cborBytes(a[1],1,2200); break;
     case 52: ident(0); u(1,1n,(1n<<63n)-1n); break;
@@ -97,6 +110,7 @@ function requestValue(x: BotRequest): CborInput[] {
   if (spec.channel !== (x.channelId !== null)) fail('E_BOT_CHANNEL');
   if (spec.mutation ? x.revision === null || x.expires === null : x.revision !== null || x.expires !== null) fail('E_BOT_CONTEXT');
   if(x.revision!==null)uint(x.revision); if(x.expires!==null)uint(x.expires);
+  if (x.operation === 31 && x.revision !== 0n) fail('E_BOT_CONTEXT');
   if (!Array.isArray(x.args)) fail('E_BOT_SHAPE');
   const args=[...x.args]; validateArgs(x.operation,args);
   return [1n,x.requestId,x.communityId,x.channelId,BigInt(x.operation),x.revision,x.expires,args];
