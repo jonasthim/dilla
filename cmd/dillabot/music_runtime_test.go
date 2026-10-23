@@ -540,8 +540,12 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if !ok {
 		t.Fatalf("YouTube PCM = %T", options.PCM)
 	}
-	if _, ok := pcm.Source.(youtube.PCMStarter); !ok {
+	source, ok := pcm.Source.(youtube.PCMStarter)
+	if !ok {
 		t.Fatalf("YouTube source = %T, want sandboxed PCMStarter", pcm.Source)
+	}
+	if source.Node == "" {
+		t.Fatal("production YouTube PCM starter must enable its qualified Node JS runtime")
 	}
 	encoder, ok := options.Encoder.(session.RuntimeEncoder)
 	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {

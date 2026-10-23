@@ -205,7 +205,7 @@ func newInstallationYouTubeQueueStarter(instance, installation, community, chann
 	}
 	return newMusicQueueStarter(musicRuntimeDeps{
 		Community: community, Channel: channel, Calls: calls,
-		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg"},
+		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node"},
 		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
 			Capacity: 50, Options: encode.Options{FFmpegPath: "ffmpeg"},
 		}},
