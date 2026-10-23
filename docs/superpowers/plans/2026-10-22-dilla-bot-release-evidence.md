@@ -181,6 +181,26 @@ This is an implementation checkpoint for `feat/dilla-bot`, not a release sign-of
 - A proof-bound native private-send operation now validates the signed snapshot and actual Bot/participant MLS roster at preparation and encryption, while reusing the durable send attempt and receipt journal. The Go sender fetches a fresh installation-scoped context and uses this operation for kind 3; text sends keep their existing path. A real encrypted response regression and focused Go service tests pass. Independent review found no concrete security or correctness issue. This does not yet prove response delivery in the browser.
 - The Bot service now synchronizes kind-3 source pages through dedicated server/native operations. Event routing and dispatch classify private groups through scoped descriptors and signed native inspection. A Chromium run exposed a snapshot check that incorrectly required the interaction's media version 0 to appear in discovery's supported media list; the regression failed before the fix and passed afterward. The next live event-handler failure is being isolated with temporary sanitized stage diagnostics, which are excluded from commits.
 
+## 23 October paired restore browser acceptance
+
+On integrated commit `663379d7`, Chromium passed the paired Bot/server restore scenario in
+`e2e/web/announcement-scheduler.spec.ts -g 'paired restore'` (one test, about 5.1 minutes).
+The scenario takes a cold snapshot of the Bot and server state, restores both, and confirms the
+Bot interaction heals. A target scheduled Bot POST receives `403 E_LEAF_NOT_CURRENT` while
+`epoch_unknown` is still set. Ada then authenticates and heals the same group at the archived
+epoch; after that heal, the Bot POST is accepted and exactly one message is visible. This closes
+the coordinated same-installation Bot/server restore acceptance gap for this scenario; it is not
+whole-release sign-off.
+
+The supporting signed commits are `a1b4eb72` (readiness conflict classification), `7a174c86`
+(paired restore E2E), and `7593abc1` / `663379d7` (durable retry chain and backoff).
+
+Remaining release gates include a dedicated real Spotify account with live audio qualification,
+a fresh CI run on the current integrated head, and CodeQL follow-up. The 25 hard-coded
+cryptography findings have been reviewed as false positives, but still await explicit dismissal.
+This evidence does not claim Spotify qualification, a passing new CI run, or that the whole
+release matrix has passed.
+
 ## Open release blockers
 
 The latest integrated checks passed the focused Go race test for Bot event routing,
@@ -224,6 +244,6 @@ fixes before release.
 1. **Encrypted interactions:** native creation, helper IPC, durable Go coordination, Welcome storage, admission-backed synchronization, Bot event dispatch, a fenced private-group read route, dedicated native descriptor/inspection and proof-bound sync/send operations, and a durable response outbox are integrated. Human response correlation reaches moderation log, welcome settings, music controls, and role-panel publication in Chromium. The role-panel reaction and source-removal lifecycle now pass in Chromium and Firefox, with durable timed retry for transient action failures. Cross-device recovery and whole-release browser acceptance remain required. Store/API suites passed against PostgreSQL earlier; this is not the whole-release matrix.
 2. **Production music path:** `cmd/dillabot` reconciles identities, registers authorized encrypted queue handlers, and constructs YouTube and synthetic-tested Spotify PCM starters. Chromium and Firefox prove audible, authenticated YouTube playback from the shipping queue/control flow, including Pause, Resume, and Stop after stale-leaf recovery. Chromium also passes two independent sessions in one community. A further Chromium test passes two communities in one instance, with distinct Bot identities, queues, call keys and decrypted audio; stopping or disabling one Bot leaves the other's audio running. This run required yt-dlp 2026.10.21; the older local 2025.09.26 failed the same sample under the production bubblewrap resolver. Playlist controls and dedicated Spotify-account qualification remain open. The operator accepts the risk that [Spotify's Developer Policy](https://developer.spotify.com/policy) prohibits the planned one-source-to-several-listeners use absent permission; this is recorded separately from the technical release gate.
 3. **Spotify qualification:** the local pinned librespot probe builds as version 0.8.0 and synthetic PCM through FFmpeg passes. The dependency doctor sees yt-dlp 2026.8.19, FFmpeg/ffprobe 9.0.2, and Node 24.15.0, but reports provider qualification unverified. No dedicated Premium account was connected (`DILLA_PROBE_STATE` is unset); actual librespot audio, playlist expansion, playback controls, and encrypted browser playback on the intended host remain unverified. The qualification gate cannot be inferred from passing unit tests.
-4. **Community and moderation integration:** zero-capability installation readiness, Roles-enabled join/leave/rejoin, and the bot-authored role-panel grant/removal lifecycle pass in Chromium and Firefox. One-off announcement delivery and restart deduplication, manual warning with encrypted evidence retrieval, timeout/recovery, signed removal with offline tombstone recovery, and automatic duplicate-warning case persistence pass in Chromium. Whole-release scenarios remain open. Cold Bot backup and server restore/heal passed separately; coordinated same-installation restore remains open.
+4. **Community and moderation integration:** zero-capability installation readiness, Roles-enabled join/leave/rejoin, and the bot-authored role-panel grant/removal lifecycle pass in Chromium and Firefox. One-off announcement delivery and restart deduplication, manual warning with encrypted evidence retrieval, timeout/recovery, signed removal with offline tombstone recovery, and automatic duplicate-warning case persistence pass in Chromium. Whole-release scenarios remain open. Cold Bot backup and server restore/heal passed separately; the paired same-installation Bot/server restore scenario now passes in Chromium as recorded above.
 
 No live deployment or release has been performed.
