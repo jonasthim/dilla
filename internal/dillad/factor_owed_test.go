@@ -24,7 +24,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -158,7 +157,7 @@ func classify(t *testing.T, r docRoute) sweepClass {
 	case auth == "R":
 		return sweepSkip // runtime bearer auth is independent of a human session
 	case auth == "B":
-		return sweepRefused // bot-scoped routes still require an enrolled human session here
+		return sweepSkip // a human bearer cannot exercise a route requiring a Bot-bound session
 	case auth == "E, F", auth == "E or P":
 		return sweepAllowed
 	case auth == "E", auth == "E or V", auth == "E or B", auth == "A":
@@ -273,6 +272,28 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 	}
 }
 
+func TestHumanSessionIsNotABotSession(t *testing.T) {
+	if got := classify(t, docRoute{
+		doc: "09-http-api.md", method: http.MethodPut,
+		path: "/v1/bot-runtime/installations/{installation}/credential", auth: "B",
+	}); got != sweepSkip {
+		t.Fatalf("a Bot-only route classified for a human bearer = %d, want skipped", got)
+	}
+
+	srv, h, code := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	dev := newTestDevice(t)
+	user, token := accountWithKeys(t, h, code, "human-bot-route", "correct horse battery staple", dev,
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7e}, 32)))
+	satisfyFactor(t, srv, user)
+
+	rec := call(t, h, http.MethodPut,
+		"/v1/bot-runtime/installations/0102030405060708090a0b0c0d0e0f10/credential", token, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("human session on Bot-only credential route = %d %q, want 401", rec.Code, errorCode(rec))
+	}
+}
+
 // sweep sends every documented route with the bearer and an empty body, in a fixed order with
 // DELETE /v1/accounts/me last (an empty body is a valid one for it, and it ends the account), and
 // returns the routes that answered E_FACTOR_REQUIRED. alive asks that every route before that last
@@ -311,13 +332,7 @@ func sweep(t *testing.T, h http.Handler, token string, alive bool) map[docRoute]
 }
 
 func TestAnAccountThatOwesASecondFactorReachesOnlyTheAllowList(t *testing.T) {
-	// This route sweep intentionally exercises every documented endpoint, then reuses the
-	// same bearer for a control sweep. Keep its session lifetime independent of defaults so
-	// unrelated test-config changes or slow CI workers cannot turn the control into an expiry
-	// test. The assertions below still fail on any 401 before the final account deletion.
-	srv, h, code := newInstanceWith(t, func(cfg *config.Config) {
-		cfg.Auth.Session.NativeLifetime = "720h"
-	})
+	srv, h, code := newInstance(t)
 	defer srv.Shutdown(context.Background())
 	ctx := context.Background()
 	ssk := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7c}, 32))
