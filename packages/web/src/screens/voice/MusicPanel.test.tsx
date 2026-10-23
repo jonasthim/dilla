@@ -123,7 +123,7 @@ describe('MusicPanel', () => {
     await act(async () => { resolveSearch?.([{
       id: 'yt:abcdefghijk', title: 'North', artist: 'Harbor', durationMs: 120_000,
       input: 'https://www.youtube.com/watch?v=abcdefghijk',
-    }]); });
+    }]); await Promise.resolve(); });
     expect(screen.queryByRole('button', { name: 'Add North to queue' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
     expect(music.calls.enqueue).not.toHaveBeenCalled();

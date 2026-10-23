@@ -12,23 +12,27 @@ const CONFIG = { channelId: CHANNEL, template: 'Welcome {member}!', serverName: 
 function setup() {
   let lastRequest: Parameters<WelcomeSettingsGateway['request']>[0] | undefined;
   let response: { requestId: string; operation: number; status: number; revision: string | null; data: Uint8Array } | null = null;
+  const requestSpy = vi.fn((input: Parameters<WelcomeSettingsGateway['request']>[0]) => {
+    lastRequest = input;
+    return Promise.resolve({ requestId: input.requestId, upload: 'accepted' as const });
+  });
+  const readSpy = vi.fn(() => Promise.resolve({ responses: response === null ? [] : [{ deliveryId: '1', communityId: COMMUNITY,
+    channelId: null, sourceSeq: '1', ...response }], through: response === null ? null : '1', blocked: false }));
+  const ackSpy = vi.fn(() => Promise.resolve(null));
   const gateway: WelcomeSettingsGateway = {
-    request: vi.fn(async input => {
-      lastRequest = input;
-      return { requestId: input.requestId, upload: 'accepted' as const };
-    }),
-    read: vi.fn(async () => ({ responses: response === null ? [] : [{ deliveryId: '1', communityId: COMMUNITY,
-      channelId: null, sourceSeq: '1', ...response }], through: response === null ? null : '1', blocked: false })),
-    ack: vi.fn(async () => null),
+    request: requestSpy,
+    read: readSpy,
+    ack: ackSpy,
   };
   render(<WelcomeSettingsPanel communityId={COMMUNITY} serverName="Midgard" channels={[{ id: CHANNEL, name: 'general' }]}
     enabled canManage gateway={gateway} />);
-  return { gateway, getRequest: () => lastRequest, setResponse: (next: typeof response) => { response = next; } };
+  return { gateway, requestSpy, readSpy, ackSpy, getRequest: () => lastRequest,
+    setResponse: (next: typeof response) => { response = next; } };
 }
 
 describe('welcome settings panel', () => {
   it('waits for a correlated Bot get response before loading settings and acknowledging it', async () => {
-    const { gateway, getRequest, setResponse } = setup();
+    const { ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
     await waitFor(() => expect(getRequest()).toMatchObject({ communityId: COMMUNITY, channelId: null, operation: 1,
       args: [5], revision: null }));
@@ -36,17 +40,17 @@ describe('welcome settings panel', () => {
     setResponse({ requestId: request.requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
     expect(await screen.findByDisplayValue('Welcome {member}!')).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: en['admin.bot.welcomeSettings.channel'] })).toHaveValue(CHANNEL);
-    await waitFor(() => expect(gateway.ack).toHaveBeenCalledWith(COMMUNITY, '1'));
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(COMMUNITY, '1'));
   });
 
   it('does not report a save as complete until the exact request receives a successful revised response', async () => {
-    const { gateway, getRequest, setResponse } = setup();
+    const { requestSpy, ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
     await waitFor(() => expect(getRequest()).toBeDefined());
     const read = getRequest()!;
     setResponse({ requestId: read.requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
     await screen.findByDisplayValue('Welcome {member}!');
-    await waitFor(() => expect(gateway.ack).toHaveBeenCalled());
+    await waitFor(() => expect(ackSpy).toHaveBeenCalled());
 
     fireEvent.change(screen.getByRole('textbox', { name: en['admin.bot.welcomeSettings.template'] }),
       { target: { value: 'Hello {member}!' } });
@@ -60,30 +64,30 @@ describe('welcome settings panel', () => {
 
     setResponse({ requestId: put.requestId, operation: 2, status: 0, revision: '8', data: new Uint8Array([0x80]) });
     expect(await screen.findByText(en['admin.bot.welcomeSettings.saved'])).toBeInTheDocument();
-    await waitFor(() => expect(gateway.ack).toHaveBeenLastCalledWith(COMMUNITY, '1'));
-    expect(gateway.request).toHaveBeenLastCalledWith(expect.objectContaining({ operation: 2, revision: '7' }));
+    await waitFor(() => expect(ackSpy).toHaveBeenLastCalledWith(COMMUNITY, '1'));
+    expect(requestSpy).toHaveBeenLastCalledWith(expect.objectContaining({ operation: 2, revision: '7' }));
   });
 
   it('ignores a response for a different request ID', async () => {
-    const { gateway, getRequest, setResponse } = setup();
+    const { ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
     await waitFor(() => expect(getRequest()).toBeDefined());
     const request = getRequest()!;
     setResponse({ requestId: 'ff'.repeat(16), operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
     expect(await screen.findByText(en['admin.bot.welcomeSettings.waiting'])).toBeInTheDocument();
     expect(screen.queryByDisplayValue('Welcome {member}!')).not.toBeInTheDocument();
-    expect(gateway.ack).not.toHaveBeenCalled();
+    expect(ackSpy).not.toHaveBeenCalled();
     expect(request.operation).toBe(1);
   });
 
   it('requires a fresh get after a revision conflict before another save', async () => {
-    const { gateway, getRequest, setResponse } = setup();
+    const { ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
     await waitFor(() => expect(getRequest()).toBeDefined());
     let request = getRequest()!;
     setResponse({ requestId: request.requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
     await screen.findByDisplayValue(CONFIG.template);
-    await waitFor(() => expect(gateway.ack).toHaveBeenCalled());
+    await waitFor(() => expect(ackSpy).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.save'] }));
     await waitFor(() => expect(getRequest()?.operation).toBe(2));
@@ -122,6 +126,9 @@ describe('welcome settings panel', () => {
     let resolveA: ((value: { requestId: string; upload: 'accepted' }) => void) | undefined;
     const requests: Parameters<WelcomeSettingsGateway['request']>[0][] = [];
     let response: { requestId: string; operation: number; status: number; revision: string | null; data: Uint8Array } | null = null;
+    const readSpy = vi.fn((communityId: string) => Promise.resolve({ responses: response === null || communityId !== communityB ? [] : [{ deliveryId: '1',
+      communityId: communityB, channelId: null, sourceSeq: '1', ...response }], through: response === null ? null : '1', blocked: false }));
+    const ackSpy = vi.fn(() => Promise.resolve(null));
     const gateway: WelcomeSettingsGateway = {
       request: input => {
         requests.push(input);
@@ -129,9 +136,8 @@ describe('welcome settings panel', () => {
           ? new Promise(resolve => { resolveA = resolve; })
           : Promise.resolve({ requestId: input.requestId, upload: 'accepted' as const });
       },
-      read: vi.fn(async communityId => ({ responses: response === null || communityId !== communityB ? [] : [{ deliveryId: '1',
-        communityId: communityB, channelId: null, sourceSeq: '1', ...response }], through: response === null ? null : '1', blocked: false })),
-      ack: vi.fn(async () => null),
+      read: readSpy,
+      ack: ackSpy,
     };
     const view = render(<WelcomeSettingsPanel communityId={communityA} serverName="Server A" channels={[{ id: CHANNEL, name: 'general' }]}
       enabled canManage gateway={gateway} />);
@@ -142,13 +148,13 @@ describe('welcome settings panel', () => {
       enabled canManage gateway={gateway} />);
     fireEvent.click(await screen.findByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
     await waitFor(() => expect(requests).toHaveLength(2));
-    const requestB = requests[1]!;
-    await act(async () => { resolveA?.({ requestId: requests[0]!.requestId, upload: 'accepted' }); });
+    const requestB = requests[1];
+    await act(async () => { resolveA?.({ requestId: requests[0].requestId, upload: 'accepted' }); await Promise.resolve(); });
     response = { requestId: requestB.requestId, operation: 1, status: 0, revision: '9', data: encodeWelcomeSettings(configB) };
 
     expect(await screen.findByDisplayValue(configB.template)).toBeInTheDocument();
-    expect(gateway.ack).toHaveBeenCalledWith(communityB, '1');
-    expect(gateway.read).toHaveBeenCalledWith(communityB, [1, 2]);
+    expect(ackSpy).toHaveBeenCalledWith(communityB, '1');
+    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2]);
   });
 
   it('never acknowledges a pending response cursor against a newly selected community', async () => {
@@ -156,16 +162,18 @@ describe('welcome settings panel', () => {
     const communityB = 'd4'.repeat(16);
     let requestA: Parameters<WelcomeSettingsGateway['request']>[0] | undefined;
     const ackCalls: [string, string][] = [];
+    const requestSpy = vi.fn((input: Parameters<WelcomeSettingsGateway['request']>[0]) => {
+      requestA = input;
+      return Promise.resolve({ requestId: input.requestId, upload: 'accepted' as const });
+    });
+    const readSpy = vi.fn((communityId: string) => Promise.resolve({ responses: requestA !== undefined && communityId === communityA ? [{
+      deliveryId: '12', requestId: requestA.requestId, communityId: communityA, operation: 1,
+      channelId: null, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG), sourceSeq: '12',
+    }] : [], through: communityId === communityA ? '12' : null, blocked: false }));
     const gateway: WelcomeSettingsGateway = {
-      request: vi.fn(async input => {
-        requestA = input;
-        return { requestId: input.requestId, upload: 'accepted' as const };
-      }),
-      read: vi.fn(async communityId => ({ responses: requestA !== undefined && communityId === communityA ? [{
-        deliveryId: '12', requestId: requestA.requestId, communityId: communityA, operation: 1,
-        channelId: null, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG), sourceSeq: '12',
-      }] : [], through: communityId === communityA ? '12' : null, blocked: false })),
-      ack: vi.fn((communityId, through) => {
+      request: requestSpy,
+      read: readSpy,
+      ack: vi.fn((communityId: string, through: string) => {
         ackCalls.push([communityId, through]);
         return new Promise<null>(() => {});
       }),

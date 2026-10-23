@@ -66,6 +66,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
   const [notice, setNotice] = useState<string | null>(null);
   const unavailable = !enabled || !canManage || channels.length === 0;
   const channelIdsKey = channels.map(channel => channel.id).join(',');
+  const fallbackChannel = channels[0]?.id ?? '';
   const configuredDraft = config !== null && config.channelId === selectedChannel
     && config.template === template && config.serverName === serverName;
 
@@ -127,7 +128,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
             if (pending.operation === 1) {
               const saved = decodeWelcomeSettings(response.data);
               setConfig(saved);
-              setSelectedChannel(saved?.channelId ?? channels[0]?.id ?? '');
+              setSelectedChannel(saved?.channelId ?? fallbackChannel);
               setTemplate(saved?.template ?? 'Welcome {member} to {server}!');
               setRevision(response.revision);
               setLoaded(true);
@@ -168,7 +169,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
     };
     void poll();
     return () => { canceled = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [communityId, channelIdsKey, gateway, pending]);
+  }, [communityId, channelIdsKey, fallbackChannel, gateway, pending]);
 
   useEffect(() => {
     if (ackThrough === null) return;
