@@ -7,7 +7,7 @@ import { parseInvite } from './driver.ts';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 
 /** web3.8 E2 (pre-flight C-13): `wire` is the one wire version the host's hello offers (`-wire`; 1 or more); the version-reload suite
- *  starts a host that offers 3 so the wire-2 client is refused. `keepData` leaves /tmp/dw/host-<port> in place at start and at stop,
+ *  starts a host that offers 3 so the wire-2 client is refused. `keepData` leaves the host data directory in place at start and at stop,
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
@@ -18,6 +18,8 @@ export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
 export const BOT_HELPER_BIN = join(REPO_ROOT, 'target', 'release', 'dilla-bot-core');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
+const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';
+const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${String(port)}`);
 
 export function hostArgs(c: HostConfig, dataDir: string): string[] {
   return ['-listen', `127.0.0.1:${c.port}`, '-control', `127.0.0.1:${c.control}`,
@@ -31,7 +33,7 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
   ];
 }
 
-export function removeHostData(port: number): void { rmSync(`/tmp/dw/host-${String(port)}`, { recursive: true, force: true }); }
+export function removeHostData(port: number): void { rmSync(hostDataDir(port), { recursive: true, force: true }); }
 
 function waitForLine(child: ChildProcess, pattern: RegExp, what: string, timeoutMs: number): Promise<string> {
   return new Promise((resolveLine, reject) => {
@@ -69,7 +71,8 @@ function stop(child: ChildProcess): Promise<void> {
 export interface StartedHost { url: string; control: string; invite: string; runtimeCredentialFile?: string; stop(): Promise<void> }
 
 /**
- * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under /tmp/dw, logging to
+ * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under `DILLA_E2E_HOST_DATA_ROOT`
+ * (default `/tmp/dw`), logging to
  * e2e/test-results/testhost-<port>.log with the invite redacted. The host starts empty: one instance, its bootstrap
  * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
  */
@@ -79,9 +82,9 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   if (c.botRuntime === true && c.webRoot !== null) {
     execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
   }
-  const dataDir = `/tmp/dw/host-${c.port}`;
+  const dataDir = hostDataDir(c.port);
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
-  mkdirSync('/tmp/dw', { recursive: true });
+  mkdirSync(HOST_DATA_ROOT, { recursive: true });
   mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
   const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`));
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
