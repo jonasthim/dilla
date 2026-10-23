@@ -18,6 +18,8 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 	if cases, ok := moderation.Handlers()[protocol.OpModerationCases]; ok {
 		handlers[protocol.OpModerationCases] = cases
 	}
+	// OpModerationEvidence stays unavailable: its client-authored ID/reason/
+	// excerpt tuple carries no authoritative accepted-action receipt.
 	if music != nil && music.Store != nil && music.Authority != nil {
 		for operation, handler := range music.Handlers() {
 			handlers[operation] = handler

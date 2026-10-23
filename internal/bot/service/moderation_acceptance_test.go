@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/moderation"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -58,6 +60,15 @@ func TestModerationCaseRequiresMatchingServerAcceptance(t *testing.T) {
 			wantErr: ErrModerationAcceptanceMismatch,
 		},
 		{
+			name: "wrong community",
+			accept: func(n *moderationCaseNativeFake, action ModerationAction) AcceptedModerationAction {
+				return AcceptedModerationAction{actionID: id.New(), serverRevision: 19, community: id.New(),
+					group: mustID(t, action.Group), targetSequence: action.SourceRevision, operationID: moderationRemovalOperationID(mustID(t, action.Group), mustID(t, action.Message), action.SourceRevision),
+					action: moderation.ActionRemove}
+			},
+			wantErr: ErrModerationAcceptanceMismatch,
+		},
+		{
 			name:       "failed acceptance",
 			backendErr: errors.New("server refused action"),
 			wantErr:    ErrModerationEnforcementUnavailable,
@@ -67,11 +78,13 @@ func TestModerationCaseRequiresMatchingServerAcceptance(t *testing.T) {
 			n := newModerationCaseNative()
 			action := sampleModerationAction(n, 7)
 			action.Decision.Action = moderation.ActionRemove
+			action.ReceivedAt = time.Now().UTC().Truncate(time.Second)
+			now := action.ReceivedAt
 			backend := &moderationAcceptanceBackend{err: tc.backendErr}
 			if tc.accept != nil {
 				backend.accepted = tc.accept(n, action)
 			}
-			sink, err := NewModerationCaseSink(n, backend, func() time.Time { return time.Unix(1_800_000_100, 0) })
+			sink, err := NewModerationCaseSink(n, backend, func() time.Time { return now })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,6 +95,9 @@ func TestModerationCaseRequiresMatchingServerAcceptance(t *testing.T) {
 				}
 				if len(n.rows) != 0 {
 					t.Fatalf("failed/mismatched action stored %d cases", len(n.rows))
+				}
+				if len(n.evidence) != 0 {
+					t.Fatalf("failed/mismatched action stored %d evidence records", len(n.evidence))
 				}
 				return
 			}
@@ -95,6 +111,27 @@ func TestModerationCaseRequiresMatchingServerAcceptance(t *testing.T) {
 			if cases[0].ServerActionID != backend.accepted.actionID || cases[0].ServerRevision != backend.accepted.serverRevision ||
 				cases[0].ServerOperationID != backend.accepted.operationID || cases[0].Group != action.Group {
 				t.Fatalf("case missing matching server acceptance: %+v", cases[0])
+			}
+			if len(n.evidence) != 1 {
+				t.Fatalf("accepted action evidence records = %d, want 1", len(n.evidence))
+			}
+			var evidence []any
+			for _, value := range n.evidence {
+				if err := cborx.Unmarshal(value.Value, &evidence); err != nil {
+					t.Fatal(err)
+				}
+			}
+			messageID := mustID(t, action.Message)
+			if len(evidence) != 13 || !bytes.Equal(evidence[4].([]byte), backend.accepted.operationID[:]) ||
+				!bytes.Equal(evidence[6].([]byte), messageID[:]) ||
+				evidence[9] != "automatic moderation: mention_count" || evidence[10] != action.Excerpt {
+				t.Fatalf("evidence is not attached to the accepted request: %#v", evidence)
+			}
+			if err := sink.ApplyModerationAction(context.Background(), action); err != nil {
+				t.Fatalf("accepted request replay failed: %v", err)
+			}
+			if len(n.evidence) != 1 {
+				t.Fatalf("accepted request replay created %d evidence records", len(n.evidence))
 			}
 		})
 	}
@@ -130,6 +167,9 @@ func TestModerationCaseRejectsForgedActionWithoutRuntimeProvenance(t *testing.T)
 	}
 	if len(n.rows) != 0 {
 		t.Fatalf("forged action stored %d cases", len(n.rows))
+	}
+	if len(n.evidence) != 0 {
+		t.Fatalf("forged action stored %d evidence records", len(n.evidence))
 	}
 }
 

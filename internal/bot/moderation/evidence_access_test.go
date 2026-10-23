@@ -167,6 +167,18 @@ func TestEvidenceWriterRoundTripsOnlyInstallationBoundEncryptedState(t *testing.
 	}
 }
 
+func TestEvidenceReaderRejectsAnotherCommunityBinding(t *testing.T) {
+	storedBinding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: storedBinding, value: encodedEvidence(t, storedBinding, testEvidenceID)}
+	otherCommunity := native.Binding{Instance: storedBinding.Instance, Community: id.ID{8}, Installation: storedBinding.Installation}
+	reader := NewEvidenceReader(&evidenceState{binding: otherCommunity, value: state.value}, &evidenceAuthority{
+		result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true,
+	})
+	if _, err := reader.Read(context.Background(), id.ID{6}, testEvidenceID); !errors.Is(err, ErrEvidenceAccess) {
+		t.Fatalf("evidence from another community = %v", err)
+	}
+}
+
 func TestEvidenceWriterBoundsSensitiveFieldsAndHidesStateErrors(t *testing.T) {
 	state := &evidenceState{binding: native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}}
 	for _, tc := range []struct {

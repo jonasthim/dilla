@@ -111,10 +111,11 @@ func (c ModerationCase) Reason() string {
 // actions require a real enforcement backend and are stored only after it
 // reports success.
 type ModerationCaseSink struct {
-	native  moderationCaseNative
-	backend ModerationEnforcementBackend
-	binding native.Binding
-	now     func() time.Time
+	native         moderationCaseNative
+	backend        ModerationEnforcementBackend
+	evidenceWriter *moderation.EvidenceWriter
+	binding        native.Binding
+	now            func() time.Time
 }
 
 func NewModerationCaseSink(n moderationCaseNative, backend ModerationEnforcementBackend, now func() time.Time) (*ModerationCaseSink, error) {
@@ -128,7 +129,7 @@ func NewModerationCaseSink(n moderationCaseNative, backend ModerationEnforcement
 	if b.Instance.IsZero() || b.Community.IsZero() || b.Installation.IsZero() {
 		return nil, ErrModerationCaseBinding
 	}
-	return &ModerationCaseSink{native: n, backend: backend, binding: b, now: now}, nil
+	return &ModerationCaseSink{native: n, backend: backend, evidenceWriter: moderation.NewEvidenceWriter(n), binding: b, now: now}, nil
 }
 
 func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action ModerationAction) error {
@@ -166,6 +167,9 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		if !accepted.matches(action, s.binding) {
 			return ErrModerationAcceptanceMismatch
 		}
+		if err := s.attachAcceptedEvidence(ctx, row, accepted); err != nil {
+			return err
+		}
 		row.ServerActionID = accepted.actionID
 		row.ServerOperationID = accepted.operationID
 		row.ServerRevision = accepted.serverRevision
@@ -189,6 +193,30 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		}
 	}
 	return err
+}
+
+// attachAcceptedEvidence persists sensitive details only after the server's
+// immutable receipt has been matched against this runtime-generated request.
+func (s *ModerationCaseSink) attachAcceptedEvidence(ctx context.Context, row ModerationCase, accepted AcceptedModerationAction) error {
+	if s == nil || s.evidenceWriter == nil || row.Action != moderation.ActionRemove || accepted.operationID.IsZero() ||
+		accepted.actionID.IsZero() || accepted.community != s.binding.Community {
+		return ErrModerationAcceptanceMismatch
+	}
+	message, err := id.Parse(row.Message)
+	if err != nil || len(row.Rules) == 0 {
+		return ErrModerationCaseState
+	}
+	rules := append([]moderation.Rule(nil), row.Rules...)
+	sort.Slice(rules, func(i, j int) bool { return rules[i] < rules[j] })
+	return s.evidenceWriter.Save(ctx, moderation.EvidenceInput{
+		OperationID: accepted.operationID,
+		MessageID:   message,
+		Action:      moderation.ActionRemove,
+		Rule:        rules[0],
+		Reason:      row.Reason(),
+		Excerpt:     row.Excerpt,
+		CreatedAt:   row.ReceivedAt,
+	})
 }
 
 func (s *ModerationCaseSink) makeCase(a ModerationAction) (ModerationCase, error) {

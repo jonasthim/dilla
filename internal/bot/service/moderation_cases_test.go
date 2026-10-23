@@ -15,6 +15,7 @@ import (
 type moderationCaseNativeFake struct {
 	binding        native.Binding
 	rows           map[string]native.StateValue
+	evidence       map[string]native.StateValue
 	cursor         native.StateValue
 	failAfterWrite bool
 }
@@ -26,6 +27,11 @@ func (n *moderationCaseNativeFake) Binding() native.Binding { return n.binding }
 func (n *moderationCaseNativeFake) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	if area == moderationPurgeCursorArea && string(key) == string(moderationPurgeCursorKey) {
 		return n.cursor, nil
+	}
+	if area == 9 {
+		v := n.evidence[string(key)]
+		v.Value = append([]byte(nil), v.Value...)
+		return v, nil
 	}
 	if area != moderationCaseStateArea {
 		return native.StateValue{}, errors.New("wrong area")
@@ -48,6 +54,18 @@ func (n *moderationCaseNativeFake) StateTransaction(_ context.Context, _ id.ID, 
 		}
 		n.cursor = native.StateValue{Revision: n.cursor.Revision + 1, Tombstone: c.Value == nil, Value: append([]byte(nil), c.Value...)}
 		return []uint64{n.cursor.Revision}, nil
+	}
+	if c.Area == 9 {
+		if n.evidence == nil {
+			n.evidence = make(map[string]native.StateValue)
+		}
+		old := n.evidence[string(c.Key)]
+		if old.Revision != c.ExpectedRevision {
+			return nil, errors.New("revision conflict")
+		}
+		v := native.StateValue{Revision: old.Revision + 1, Value: append([]byte(nil), c.Value...)}
+		n.evidence[string(c.Key)] = v
+		return []uint64{v.Revision}, nil
 	}
 	if c.Area != moderationCaseStateArea {
 		return nil, errors.New("wrong area")
