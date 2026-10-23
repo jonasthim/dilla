@@ -229,7 +229,8 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 		UserID: ownerSession.UserID, DeviceID: ownerSession.DeviceID, SignatureKey: make([]byte, 32)}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 1, UploaderDevice: ownerSession.DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now}); err != nil {
+	reactionClass := uint8(1)
+	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 1, UploaderDevice: ownerSession.DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now, Class: &reactionClass}); err != nil {
 		t.Fatal(err)
 	}
 	reactionPath := path + "/" + channel.String() + "/9/reaction"
