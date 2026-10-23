@@ -322,6 +322,9 @@ const TOTP = /^[0-9]{6}$/;
 const backupCode = normaliseBackupCode;
 /** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
 const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
+const ROLE_PANEL_ACTION_RETRY_BASE_MS = 500;
+const ROLE_PANEL_ACTION_RETRY_MAX_MS = 8_000;
+const ROLE_PANEL_ACTION_RETRY_LIMIT = 5;
 type PendingRolePanelAction = { communityId: string; channelId: string; messageSeq: string; groupId: string; eventSeq: string;
   emoji: string; enabled: boolean; userId: string; deviceId: string };
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
@@ -928,6 +931,7 @@ export class Controller {
   /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
   private readonly trays = new Map<string, Tray>();
   private readonly pendingRolePanelActionJobs = new Set<string>();
+  private readonly pendingRolePanelActionRetries = new Map<string, number>();
   /** Channels whose pins view is open: touchGroup keeps their pins slice fresh until closePins or closeChannel. */
   private readonly pinsOpen = new Set<string>();
   /** web3.7: channel hex → the root msg id hex of its one open thread; refreshTimeline reads it again. */
@@ -2226,6 +2230,7 @@ export class Controller {
     if (this.revoked()) return;
     this.clearReauthTimer();
     this.clearHeldReads();
+    this.clearPendingRolePanelActionRetries();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -3870,6 +3875,7 @@ export class Controller {
     if (this.wiping) return;
     this.wiping = true;
     this.clearReauthTimer();
+    this.clearPendingRolePanelActionRetries();
     this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
@@ -4703,6 +4709,7 @@ export class Controller {
     // WB client m5: the new tab waits 5 s for this release (handover.ts). A join in flight (its rejoin wait lasts up to
     // 30 s) is cancelled first, so the barrier does not wait for it: its teardown sends the self-Remove.
     this.calls.cancelJoin();
+    this.clearPendingRolePanelActionRetries();
     await this.barrier.close();
     this.clearReauthTimer();
     // L-TS-56 step 9: the call is left and the rings cleared before the store is released; the leave's round trips are
@@ -5168,6 +5175,7 @@ export class Controller {
   }
 
   private retryPendingRolePanelActions(core: CorePort, me: { userId: Id; deviceId: Id }): void {
+    this.clearPendingRolePanelActionRetries();
     let settings: Record<string, string>;
     try { settings = core.settings(); } catch { return; }
     for (const [key, value] of Object.entries(settings)) {
@@ -5187,7 +5195,24 @@ export class Controller {
     }
   }
 
-  private async submitPendingRolePanelAction(core: CorePort, key: string, action: PendingRolePanelAction): Promise<void> {
+  private schedulePendingRolePanelActionRetry(core: CorePort, key: string, action: PendingRolePanelAction, attempt: number): void {
+    if (attempt > ROLE_PANEL_ACTION_RETRY_LIMIT || this.phase !== 'ready' || this.connectionState.status !== 'online'
+      || this.pendingRolePanelActionRetries.has(key)) return;
+    const delay = Math.min(ROLE_PANEL_ACTION_RETRY_BASE_MS * 2 ** (attempt - 1), ROLE_PANEL_ACTION_RETRY_MAX_MS);
+    const timer = this.deps.setTimeout(() => {
+      this.pendingRolePanelActionRetries.delete(key);
+      if (this.phase !== 'ready' || this.connectionState.status !== 'online' || this.core !== core) return;
+      void this.barrier.track(this.submitPendingRolePanelAction(core, key, action, attempt));
+    }, delay);
+    this.pendingRolePanelActionRetries.set(key, timer);
+  }
+
+  private clearPendingRolePanelActionRetries(): void {
+    for (const timer of this.pendingRolePanelActionRetries.values()) this.deps.clearTimeout(timer);
+    this.pendingRolePanelActionRetries.clear();
+  }
+
+  private async submitPendingRolePanelAction(core: CorePort, key: string, action: PendingRolePanelAction, attempt = 0): Promise<void> {
     if (this.pendingRolePanelActionJobs.has(key)) return;
     this.pendingRolePanelActionJobs.add(key);
     try {
@@ -5196,11 +5221,13 @@ export class Controller {
       core.settingDelete(key);
       // The action endpoint is an authenticated state change; read the canonical member roles back
       // now so this device reflects its grant even if its community_changed frame is delayed/lost.
-      await this.reloadMembers(action.communityId);
+      try { await this.reloadMembers(action.communityId); } catch { /* the next community_changed or gateway ready refreshes it */ }
     } catch (e) {
       // Preserve only outcomes that may succeed on retry. A definitive refusal is terminal and must not become a later
       // grant after policy or permissions change. Replays reuse the exact confirmed event and server source key.
-      if (e instanceof DillaHttpError && e.status !== 0 && e.status !== 408 && e.status !== 425 && e.status !== 429 && e.status < 500) core.settingDelete(key);
+      const retryable = e instanceof DillaHttpError && (e.status === 0 || e.status === 408 || e.status === 425 || e.status === 429 || e.status >= 500);
+      if (retryable) this.schedulePendingRolePanelActionRetry(core, key, action, attempt + 1);
+      else if (e instanceof DillaHttpError) core.settingDelete(key);
     } finally {
       this.pendingRolePanelActionJobs.delete(key);
     }

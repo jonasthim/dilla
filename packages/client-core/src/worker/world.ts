@@ -419,6 +419,8 @@ export function world(opts: {
       calls.push('listMembers');
       return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: state.roleIds }]);
     }),
+    applyRolePanelReaction: vi.fn((_community: Uint8Array, _channel: Uint8Array, _messageSeq: bigint, _group: Uint8Array,
+      _eventSeq: bigint, _emoji: string, _enabled: boolean) => Promise.resolve()),
     getPresenceSnapshot: vi.fn((_id: Uint8Array) => Promise.resolve([{ userId: USER, status: 1 }])),
     setPresenceChoice: vi.fn((_choice: number) => Promise.resolve()),
     sendPresenceActivity: vi.fn(() => Promise.resolve()),

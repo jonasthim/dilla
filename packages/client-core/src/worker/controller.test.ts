@@ -6192,6 +6192,88 @@ describe('slow mode slices (CB2)', () => {
 
 });
 
+describe('pending role-panel actions', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('retries a transient accepted-action failure online with backoff, then clears the journal', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = `rolePanel.pending.${'42'.repeat(16)}`;
+    const action = {
+      communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), messageSeq: '7', groupId: toHex(GROUP), eventSeq: '9',
+      emoji: '👍', enabled: true, userId: toHex(USER), deviceId: toHex(DEVICE),
+    };
+    w.core.settingPut(key, JSON.stringify(action));
+    w.routes.applyRolePanelReaction
+      .mockRejectedValueOnce(new DillaHttpError({ status: 503, code: 'E_INTERNAL', detail: '', retryAfterMs: null, extra: [] }))
+      .mockResolvedValueOnce();
+    const retry = w.controller as unknown as { retryPendingRolePanelActions(core: CorePort, me: { userId: Uint8Array; deviceId: Uint8Array }): void };
+
+    retry.retryPendingRolePanelActions(w.core as unknown as CorePort, { userId: USER, deviceId: DEVICE });
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(499);
+    expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(2));
+    expect(w.state.settings[key]).toBeUndefined();
+  });
+
+  it('cancels a scheduled retry when the worker quiesces', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = `rolePanel.pending.${'43'.repeat(16)}`;
+    const action = {
+      communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), messageSeq: '7', groupId: toHex(GROUP), eventSeq: '9',
+      emoji: '👍', enabled: true, userId: toHex(USER), deviceId: toHex(DEVICE),
+    };
+    w.core.settingPut(key, JSON.stringify(action));
+    w.routes.applyRolePanelReaction.mockRejectedValue(new DillaHttpError({
+      status: 503, code: 'E_INTERNAL', detail: '', retryAfterMs: null, extra: [],
+    }));
+    const internal = w.controller as unknown as {
+      retryPendingRolePanelActions(core: CorePort, me: { userId: Uint8Array; deviceId: Uint8Array }): void;
+      quiesce(): void;
+    };
+
+    internal.retryPendingRolePanelActions(w.core as unknown as CorePort, { userId: USER, deviceId: DEVICE });
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+    internal.quiesce();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1);
+    expect(w.state.settings[key]).toBeDefined();
+  });
+
+  it('caps online retry attempts and preserves the journal after exhaustion', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = `rolePanel.pending.${'44'.repeat(16)}`;
+    const action = {
+      communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), messageSeq: '7', groupId: toHex(GROUP), eventSeq: '9',
+      emoji: '👍', enabled: true, userId: toHex(USER), deviceId: toHex(DEVICE),
+    };
+    w.core.settingPut(key, JSON.stringify(action));
+    w.routes.applyRolePanelReaction.mockRejectedValue(new DillaHttpError({
+      status: 503, code: 'E_INTERNAL', detail: '', retryAfterMs: null, extra: [],
+    }));
+    const retry = w.controller as unknown as { retryPendingRolePanelActions(core: CorePort, me: { userId: Uint8Array; deviceId: Uint8Array }): void };
+    retry.retryPendingRolePanelActions(w.core as unknown as CorePort, { userId: USER, deviceId: DEVICE });
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+    for (const [index, delay] of [500, 1_000, 2_000, 4_000, 8_000].entries()) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(index + 2));
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(6);
+    expect(w.state.settings[key]).toBeDefined();
+  });
+});
+
 describe('threads (web3.7 TB2)', () => {
   const CH = toHex(CHANNEL);
   const ROOT_ID = new Uint8Array(16).fill(0x31);
