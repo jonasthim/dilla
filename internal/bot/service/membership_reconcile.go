@@ -24,6 +24,58 @@ const (
 
 var ErrMembershipUnproven = errors.New("welcome membership target is not currently authorized")
 
+// MembershipPhase identifies a fixed, non-sensitive step of membership reconciliation.
+type MembershipPhase uint8
+
+const (
+	MembershipPhaseUnknown MembershipPhase = iota
+	MembershipPhaseWelcomeFetch
+	MembershipPhaseWelcomeApply
+	MembershipPhaseWelcomeRevalidation
+	MembershipPhaseWelcomeAcknowledge
+	MembershipPhaseTextSourceSync
+	MembershipPhaseCallSourceSync
+	MembershipPhaseInteractionSourceSync
+)
+
+func (p MembershipPhase) String() string {
+	switch p {
+	case MembershipPhaseWelcomeFetch:
+		return "welcome_fetch"
+	case MembershipPhaseWelcomeApply:
+		return "welcome_apply"
+	case MembershipPhaseWelcomeRevalidation:
+		return "welcome_revalidation"
+	case MembershipPhaseWelcomeAcknowledge:
+		return "welcome_acknowledge"
+	case MembershipPhaseTextSourceSync:
+		return "text_source_sync"
+	case MembershipPhaseCallSourceSync:
+		return "call_source_sync"
+	case MembershipPhaseInteractionSourceSync:
+		return "interaction_source_sync"
+	default:
+		return "unknown"
+	}
+}
+
+// MembershipPhaseError carries a fixed diagnostic phase while preserving the original cause
+// for programmatic inspection. Its Error text intentionally excludes request, group, and body data.
+type MembershipPhaseError struct {
+	Phase MembershipPhase
+	err   error
+}
+
+func (e *MembershipPhaseError) Error() string { return "membership reconciliation phase failed" }
+func (e *MembershipPhaseError) Unwrap() error { return e.err }
+
+func membershipPhaseError(phase MembershipPhase, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &MembershipPhaseError{Phase: phase, err: err}
+}
+
 type membershipNative interface {
 	sourceSyncNative
 	Binding() native.Binding
@@ -149,7 +201,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 	}
 	welcomes, err := session.Welcomes(ctx, cursor, r.pageLimit)
 	if err != nil {
-		return out, err
+		return out, membershipPhaseError(MembershipPhaseWelcomeFetch, err)
 	}
 	if uint64(len(welcomes)) > r.pageLimit {
 		return out, client.ErrProtocol
@@ -191,7 +243,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		outcomes, applyErr := r.native.ApplyWelcomes(ctx, apply, expected)
 		if applyErr != nil {
-			return out, applyErr
+			return out, membershipPhaseError(MembershipPhaseWelcomeApply, applyErr)
 		}
 		if len(outcomes) != len(welcomes) {
 			return out, errors.New("native welcome outcome count mismatch")
@@ -201,10 +253,10 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 				return out, fmt.Errorf("native welcome %d was not durably applied: outcome %d", o.ID, o.Outcome)
 			}
 			if err = r.revalidateChannelAccess(ctx, session, o.Group, channelByGroup[o.Group], kindByGroup[o.Group]); err != nil {
-				return out, err
+				return out, membershipPhaseError(MembershipPhaseWelcomeRevalidation, err)
 			}
 			if err = session.AcknowledgeWelcome(ctx, o.ID); err != nil {
-				return out, err
+				return out, membershipPhaseError(MembershipPhaseWelcomeAcknowledge, err)
 			}
 			out.Applied++
 			out.Acknowledged++
@@ -243,7 +295,11 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			if g.Kind == 1 && errors.As(e, &apiErr) && apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
 				continue
 			}
-			return out, e
+			phase := MembershipPhaseTextSourceSync
+			if g.Kind == 1 {
+				phase = MembershipPhaseCallSourceSync
+			}
+			return out, membershipPhaseError(phase, e)
 		}
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
@@ -275,7 +331,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			}
 			res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
 			if syncErr != nil {
-				return out, syncErr
+				return out, membershipPhaseError(MembershipPhaseInteractionSourceSync, syncErr)
 			}
 			out.GroupsSynced++
 			out.SourcePages += res.Pages

@@ -123,6 +123,7 @@ type membershipFakeSession struct {
 	interactionGroup      id.ID
 	interactionInfo       client.GroupInfo
 	interactionPages      map[sourcePageKey]client.Page
+	interactionPageErr    error
 	interactionPageCalls  []sourcePageKey
 	interactionAdmissions int
 	interactionSnapshots  int
@@ -184,6 +185,9 @@ func (s *membershipFakeSession) GroupPage(context.Context, id.ID, string, uint64
 func (s *membershipFakeSession) BotInteractionGroupPage(_ context.Context, _, _ id.ID, kind string, from, _ uint64) (client.Page, error) {
 	key := sourcePageKey{kind: kind, from: from}
 	s.interactionPageCalls = append(s.interactionPageCalls, key)
+	if s.interactionPageErr != nil {
+		return client.Page{}, s.interactionPageErr
+	}
 	return s.interactionPages[key], nil
 }
 func (s *membershipFakeSession) AdvanceCursor(context.Context, id.ID, uint64, uint64) error {
@@ -204,6 +208,91 @@ func (s *membershipFakeSession) BotInteractionContextSnapshot(_ context.Context,
 }
 
 func membershipID(n byte) id.ID { var v id.ID; v[15] = n; return v }
+
+func requireMembershipPhase(t *testing.T, err error, phase MembershipPhase, cause error) {
+	t.Helper()
+	var phaseErr *MembershipPhaseError
+	if !errors.As(err, &phaseErr) || phaseErr.Phase != phase {
+		t.Fatalf("membership phase error=%#v, want phase %q", err, phase.String())
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("wrapped error %v does not preserve cause %v", err, cause)
+	}
+	if err.Error() != "membership reconciliation phase failed" {
+		t.Fatalf("diagnostic error leaked non-fixed text: %q", err.Error())
+	}
+}
+
+func TestMembershipPhaseErrorsClassifyWelcomeFailuresWithoutLeakingCauses(t *testing.T) {
+	t.Run("apply", func(t *testing.T) {
+		r, n, s, _, _, group := membershipFixture(t)
+		cause := errors.New("private apply detail")
+		n.applyErr = cause
+		s.welcomes = []client.Welcome{{ID: 1, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
+		_, err := r.reconcileOnce(context.Background(), s)
+		requireMembershipPhase(t, err, MembershipPhaseWelcomeApply, cause)
+	})
+	t.Run("revalidation", func(t *testing.T) {
+		r, n, s, _, _, group := membershipFixture(t)
+		s.welcomes = []client.Welcome{{ID: 2, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
+		n.outcomes = []native.GroupWelcomeOutcome{{ID: 2, Group: group, Outcome: 0}}
+		s.removeOnSecond = true
+		_, err := r.reconcileOnce(context.Background(), s)
+		requireMembershipPhase(t, err, MembershipPhaseWelcomeRevalidation, ErrMembershipUnproven)
+	})
+	t.Run("acknowledgement", func(t *testing.T) {
+		r, n, s, _, _, group := membershipFixture(t)
+		cause := errors.New("private acknowledgement detail")
+		s.welcomes = []client.Welcome{{ID: 3, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
+		n.outcomes = []native.GroupWelcomeOutcome{{ID: 3, Group: group, Outcome: 0}}
+		s.ackErr = cause
+		_, err := r.reconcileOnce(context.Background(), s)
+		requireMembershipPhase(t, err, MembershipPhaseWelcomeAcknowledge, cause)
+	})
+}
+
+func TestMembershipPhaseErrorsClassifyEachSourceSyncKind(t *testing.T) {
+	tests := []struct {
+		name  string
+		kind  uint64
+		phase MembershipPhase
+	}{
+		{name: "text", kind: 0, phase: MembershipPhaseTextSourceSync},
+		{name: "call", kind: 1, phase: MembershipPhaseCallSourceSync},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r, n, s, community, channel, group := membershipFixture(t)
+			if tc.kind == 1 {
+				s.channels[0].Kind = 1
+				s.channels[0].TextGroupID = nil
+			}
+			info := native.GroupInfo{ID: group, Kind: tc.kind, Community: &community, Target: channel, State: 2, NextSequence: 1}
+			n.groups, n.inspected = []native.GroupInfo{info}, info
+			s.groupInfo = client.GroupInfo{NextSequence: 2}
+			cause := &client.APIError{Status: 503, Code: "E_UNAVAILABLE"}
+			s.groupPageErr = cause
+			_, err := r.reconcileOnce(context.Background(), s)
+			requireMembershipPhase(t, err, tc.phase, cause)
+		})
+	}
+	t.Run("interaction", func(t *testing.T) {
+		r, n, s, community, _, _ := membershipFixture(t)
+		group, participant := membershipID(41), membershipID(42)
+		binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community,
+			BotUser: membershipID(43), ParticipantUser: participant, ParticipantDevice: membershipID(44), PolicyVersion: 3, E2EEVersion: 1}
+		botDevice := membershipID(45)
+		n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+		n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+		s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+		s.interactionInfo = client.GroupInfo{Epoch: 1, NextSequence: 2}
+		cause := &client.APIError{Status: 503, Code: "E_UNAVAILABLE"}
+		s.interactionPageErr = cause
+		_, err := r.reconcileOnce(context.Background(), s)
+		requireMembershipPhase(t, err, MembershipPhaseInteractionSourceSync, cause)
+	})
+}
+
 func membershipFixture(t *testing.T) (*MembershipReconciler, *membershipFakeNative, *membershipFakeSession, id.ID, id.ID, id.ID) {
 	t.Helper()
 	community, install, channel, group := membershipID(1), membershipID(2), membershipID(3), membershipID(4)

@@ -750,7 +750,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			closeErr = nativeClient.Close()
 		}
 		if ensureErr != nil || closeErr != nil {
-			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", reconcileStage)
+			attrs := []any{"installation_id", installation.ID.String(), "stage", reconcileStage}
+			var membershipErr *service.MembershipPhaseError
+			if errors.As(ensureErr, &membershipErr) {
+				attrs = append(attrs, "membership_phase", membershipErr.Phase.String())
+			}
+			logger.Error("bot installation reconciliation failed", attrs...)
 			continue
 		}
 		succeeded++
