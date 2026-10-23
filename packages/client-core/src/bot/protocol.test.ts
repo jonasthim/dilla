@@ -33,6 +33,13 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest(request(60, [0n]))).toThrow(bot.BotError);
   });
 
+  it('accepts bounded manual evidence listing cursors', () => {
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(request(64, [null]))).args).toEqual([null]);
+    const cursor = new Uint8Array([1, 2, 3]);
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(request(64, [cursor]))).args).toEqual([cursor]);
+    expect(() => bot.encodeBotRequest(request(64, [new Uint8Array(257)]))).toThrow(bot.BotError);
+  });
+
   it('accepts the action-discriminated manual warning evidence payload while preserving removal shape', () => {
     const remove = { ...request(61, [id(3), 'manual removal', 'excerpt']), revision: 0n, expires: 110n };
     expect(bot.decodeBotRequest(bot.encodeBotRequest(remove)).args).toEqual([id(3), 'manual removal', 'excerpt']);

@@ -771,6 +771,8 @@ func TestEveryRequestOperationShape(t *testing.T) {
 		{"announcements_delete", OpAnnouncementsDelete, []any{fixtureID(8), uint64(2)}, true, false},
 		{"moderation_cases_first_page", OpModerationCases, []any{nil}, false, false},
 		{"moderation_cases_next_page", OpModerationCases, []any{[]byte{0x01, 0x02}}, false, false},
+		{"moderation_evidence_list_first_page", OpModerationEvidenceList, []any{nil}, false, false},
+		{"moderation_evidence_list_next_page", OpModerationEvidenceList, []any{[]byte{0x01, 0x02}}, false, false},
 		{"moderation_evidence", OpModerationEvidence, []any{fixtureID(9), "", "excerpt"}, true, false},
 	}
 	for _, tt := range tests {

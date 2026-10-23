@@ -36,6 +36,7 @@ var (
 	ErrEvidenceAccess   = errors.New("moderation evidence unavailable")
 	ErrEvidenceWrite    = errors.New("moderation evidence could not be stored")
 	ErrEvidenceConflict = errors.New("moderation evidence operation conflict")
+	errEvidenceExpired  = errors.New("moderation evidence expired")
 )
 
 type evidenceAuthorityClient interface {
@@ -267,13 +268,82 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 	}
 	createdAt := time.Unix(int64(created), 0).UTC()
 	expiresAt := createdAt.Add(EvidenceRetention)
-	if expires != uint64(expiresAt.Unix()) || !time.Now().UTC().Before(expiresAt) {
+	if expires != uint64(expiresAt.Unix()) {
 		return Evidence{}, ErrEvidenceAccess
+	}
+	if !time.Now().UTC().Before(expiresAt) {
+		return Evidence{}, fmt.Errorf("%w: %w", ErrEvidenceAccess, errEvidenceExpired)
 	}
 	return Evidence{ID: storedID, OperationID: operationID, MessageID: messageID, AcceptedActionID: acceptedActionID, AcceptedRevision: acceptedRevision,
 		ActorUserID: actorUserID, ActorDeviceID: actorDeviceID, GroupID: groupID, TargetSequence: targetSequence, TargetUserID: targetUserID,
 		Action: Action(actionText), Rule: Rule(ruleText), Reason: reason, Excerpt: excerpt,
 		CreatedAt: createdAt, ExpiresAt: expiresAt}, nil
+}
+
+// List returns a deterministic, bounded page of encrypted evidence. The scan
+// cursor is the last consumed native state key; callers must bind it to the
+// installation/community before returning it to a client. Authorization is
+// resolved before scanning and again by Read for each returned record.
+func (r *EvidenceReader) List(ctx context.Context, actor id.ID, after []byte, limit uint64) ([]Evidence, []byte, error) {
+	if r == nil || r.state == nil || r.authority == nil || !validConfigBinding(r.binding) || actor.IsZero() ||
+		limit == 0 || limit > 8 || after != nil && (len(after) == 0 || len(after) > evidenceCursorMax) {
+		return nil, nil, ErrEvidenceAccess
+	}
+	resolved, present, err := r.authority.BotActorAuthority(ctx, r.binding.Community, actor)
+	if err != nil || !present || resolved.EffectiveBits&permViewAuditLog == 0 {
+		return nil, nil, ErrEvidenceAccess
+	}
+	scanner, ok := any(r.state).(evidenceRetentionState)
+	if !ok {
+		return nil, nil, ErrEvidenceAccess
+	}
+	page, err := scanner.StateScan(ctx, evidenceStateArea, after, evidenceScanLimit)
+	if err != nil || len(page.Entries) > int(evidenceScanLimit) || len(page.Next) > evidenceCursorMax ||
+		len(page.Next) > 0 && bytes.Equal(page.Next, after) {
+		return nil, nil, ErrEvidenceAccess
+	}
+	rows := make([]Evidence, 0, limit)
+	var consumed []byte
+	for i, entry := range page.Entries {
+		if len(entry.Key) == 0 || len(entry.Key) > evidenceCursorMax {
+			return nil, nil, ErrEvidenceAccess
+		}
+		consumed = append(consumed[:0], entry.Key...)
+		if entry.Tombstone || entry.Revision == 0 {
+			continue
+		}
+		var stored []any
+		if len(entry.Value) == 0 || len(entry.Value) > maxEvidenceBytes || cborx.Unmarshal(entry.Value, &stored) != nil || (len(stored) != 13 && len(stored) != 19 && len(stored) != 20) {
+			return nil, nil, ErrEvidenceAccess
+		}
+		evidenceID, valid := configID(stored[5])
+		if !valid || evidenceID.IsZero() {
+			return nil, nil, ErrEvidenceAccess
+		}
+		row, readErr := r.Read(ctx, actor, evidenceID)
+		if errors.Is(readErr, errEvidenceExpired) {
+			continue
+		}
+		if readErr != nil {
+			return nil, nil, ErrEvidenceAccess
+		}
+		if row.Rule == RuleManual {
+			rows = append(rows, row)
+		}
+		if uint64(len(rows)) == limit {
+			if i < len(page.Entries)-1 {
+				return rows, append([]byte(nil), consumed...), nil
+			}
+			if len(page.Next) > 0 {
+				return rows, append([]byte(nil), page.Next...), nil
+			}
+			return rows, nil, nil
+		}
+	}
+	if len(page.Next) > 0 {
+		return rows, append([]byte(nil), page.Next...), nil
+	}
+	return rows, nil, nil
 }
 
 func encodeEvidence(binding native.Binding, input EvidenceInput) ([]byte, error) {

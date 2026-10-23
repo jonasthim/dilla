@@ -35,33 +35,34 @@ var (
 type Operation uint64
 
 const (
-	OpOverviewGet         Operation = 0
-	OpSettingsGet         Operation = 1
-	OpSettingsPut         Operation = 2
-	OpMusicState          Operation = 10
-	OpMusicSearch         Operation = 11
-	OpMusicEnqueue        Operation = 12
-	OpMusicPause          Operation = 13
-	OpMusicResume         Operation = 14
-	OpMusicSkip           Operation = 15
-	OpMusicStop           Operation = 16
-	OpMusicSeek           Operation = 17
-	OpMusicVolume         Operation = 18
-	OpMusicShuffle        Operation = 19
-	OpMusicRepeat         Operation = 20
-	OpMusicRemove         Operation = 21
-	OpMusicMove           Operation = 22
-	OpMusicClear          Operation = 23
-	OpWelcomePreview      Operation = 30
-	OpRolePanelPublish    Operation = 31
-	OpRolesList           Operation = 40
-	OpAnnouncementsList   Operation = 50
-	OpAnnouncementsPut    Operation = 51
-	OpAnnouncementsDelete Operation = 52
-	OpModerationCases     Operation = 60
-	OpModerationEvidence  Operation = 61
-	OpAutoModerationGet   Operation = 62
-	OpAutoModerationPut   Operation = 63
+	OpOverviewGet            Operation = 0
+	OpSettingsGet            Operation = 1
+	OpSettingsPut            Operation = 2
+	OpMusicState             Operation = 10
+	OpMusicSearch            Operation = 11
+	OpMusicEnqueue           Operation = 12
+	OpMusicPause             Operation = 13
+	OpMusicResume            Operation = 14
+	OpMusicSkip              Operation = 15
+	OpMusicStop              Operation = 16
+	OpMusicSeek              Operation = 17
+	OpMusicVolume            Operation = 18
+	OpMusicShuffle           Operation = 19
+	OpMusicRepeat            Operation = 20
+	OpMusicRemove            Operation = 21
+	OpMusicMove              Operation = 22
+	OpMusicClear             Operation = 23
+	OpWelcomePreview         Operation = 30
+	OpRolePanelPublish       Operation = 31
+	OpRolesList              Operation = 40
+	OpAnnouncementsList      Operation = 50
+	OpAnnouncementsPut       Operation = 51
+	OpAnnouncementsDelete    Operation = 52
+	OpModerationCases        Operation = 60
+	OpModerationEvidence     Operation = 61
+	OpAutoModerationGet      Operation = 62
+	OpAutoModerationPut      Operation = 63
+	OpModerationEvidenceList Operation = 64
 )
 
 type Request struct {
@@ -246,7 +247,7 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return true, false, 2
 	case OpMusicMove, OpAnnouncementsPut:
 		return true, op == OpMusicMove, 2
-	case OpRolesList, OpAnnouncementsList, OpModerationCases:
+	case OpRolesList, OpAnnouncementsList, OpModerationCases, OpModerationEvidenceList:
 		return false, false, 1
 	case OpModerationEvidence:
 		return true, false, 3
@@ -295,6 +296,12 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(str(0, 1, 2048, true))
 	case OpMusicSeek, OpRolesList, OpAnnouncementsList:
 		return boolErr(isUint(a[0]))
+	case OpModerationEvidenceList:
+		if a[0] == nil {
+			return nil
+		}
+		cursor, ok := a[0].([]byte)
+		return boolErr(ok && len(cursor) > 0 && len(cursor) <= MaxModerationCursorBytes)
 	case OpModerationCases:
 		if a[0] == nil {
 			return nil

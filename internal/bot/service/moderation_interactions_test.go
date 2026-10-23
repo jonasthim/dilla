@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -49,6 +50,51 @@ func TestModerationInteractionsListsBoundedCasesForAuthenticatedActor(t *testing
 	}
 	if len(got) != 3 || got[0] != uint64(1) || len(got[1].([]any)) != 1 {
 		t.Fatalf("encoded page = %#v", got)
+	}
+}
+
+type evidenceListFake struct {
+	actor id.ID
+	after []byte
+	limit uint64
+	rows  []moderation.Evidence
+	next  []byte
+}
+
+func (f *evidenceListFake) List(_ context.Context, actor id.ID, after []byte, limit uint64) ([]moderation.Evidence, []byte, error) {
+	f.actor, f.after, f.limit = actor, append([]byte(nil), after...), limit
+	return f.rows, append([]byte(nil), f.next...), nil
+}
+
+func TestModerationInteractionsListsEncryptedManualEvidenceUnderBoundedCursor(t *testing.T) {
+	reader := &evidenceListFake{rows: []moderation.Evidence{{ID: interactionID(50), Action: moderation.ActionWarn, Rule: moderation.RuleManual, Reason: "moderator reason", CreatedAt: time.Unix(1_800_000_000, 0)}}, next: []byte("state-key")}
+	handler := (ModerationInteractions{EvidenceReader: reader, CommunityID: interactionID(2), InstallationID: interactionID(3)}).Handlers()[protocol.OpModerationEvidenceList]
+	result, err := handler.Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{CommunityID: interactionID(2), Args: []any{nil}})
+	var data []any
+	if err != nil || result.Status != 0 || len(result.Data) > moderationInteractionDataLimit || cborx.Unmarshal(result.Data, &data) != nil || len(data) != 3 || reader.actor != interactionID(6) || reader.limit != 1 || data[2] == nil {
+		t.Fatalf("result=%+v data=%#v reader=%+v err=%v", result, data, reader, err)
+	}
+	row := data[1].([]any)[0].([]any)
+	wantID := interactionID(50)
+	if len(row) != 5 || !bytes.Equal(row[0].([]byte), wantID[:]) || row[1] != "warn" || row[2] != "moderator reason" {
+		t.Fatalf("manual evidence response row = %#v", row)
+	}
+}
+
+func TestManualEvidenceCursorIsInstallationAndCommunityBound(t *testing.T) {
+	community, installation := interactionID(2), interactionID(3)
+	cursor, ok := encodeEvidenceInteractionCursor(community, installation, []byte("state-key"))
+	if !ok {
+		t.Fatal("cursor encoding failed")
+	}
+	if after, valid := decodeEvidenceInteractionCursor(cursor, community, installation); !valid || string(after) != "state-key" {
+		t.Fatalf("decoded cursor=%q valid=%v", after, valid)
+	}
+	if _, valid := decodeEvidenceInteractionCursor(cursor, interactionID(4), installation); valid {
+		t.Fatal("cross-community cursor accepted")
+	}
+	if _, valid := decodeEvidenceInteractionCursor(cursor, community, interactionID(5)); valid {
+		t.Fatal("cross-installation cursor accepted")
 	}
 }
 

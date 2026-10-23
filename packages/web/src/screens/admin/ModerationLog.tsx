@@ -8,11 +8,13 @@ interface ModerationCase {
   reason: string; action: string; excerpt: string; receivedAt: string;
 }
 interface ModerationResponse {
-  deliveryId: string; requestId: string; status: number; cases: ModerationCase[]; hasMore: boolean;
+  deliveryId: string; requestId: string; status: number; cases: ModerationCase[]; hasMore: boolean; nextCursor: string | null;
 }
 type ReadResult = { authorized: boolean; responses: ModerationResponse[]; through: string | null; blocked: boolean };
 type Phase = 'idle' | 'sending' | 'waiting' | 'ready' | 'denied' | 'error';
+type Source = 'automatic' | 'manual';
 const POLL_MS = 2_000;
+const MAX_DISPLAY_CASES = 100;
 
 const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))]
   .map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -26,6 +28,10 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
   const [responses, setResponses] = useState<ModerationResponse[]>([]);
   const [ackThrough, setAckThrough] = useState<string | null>(null);
   const [blocked, setBlocked] = useState(false);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [source, setSource] = useState<Source>('manual');
+  const [listedCases, setListedCases] = useState<ModerationCase[]>([]);
+  const [automaticHasMore, setAutomaticHasMore] = useState(false);
   const generation = useRef(0);
 
   useEffect(() => {
@@ -36,19 +42,27 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
     setResponses([]);
     setAckThrough(null);
     setBlocked(false);
+    setCursor(null);
+    setListedCases([]);
+    setAutomaticHasMore(false);
     return () => { generation.current += 1; };
   }, [communityId]);
 
-  const load = (): void => {
+  const load = (kind: Source, after: string | null = null): void => {
     if (phase === 'sending' || forCommunity !== communityId) return;
     const request = requestId();
     const id = ++generation.current;
     setRequest(request);
+    setSource(kind);
+    if (after === null) setListedCases([]);
     setResponses([]);
     setAckThrough(null);
     setBlocked(false);
     setPhase('sending');
-    void Promise.resolve(client.call({ m: 'listModerationCases', communityId, requestId: request, offset: 0 })).then(value => {
+    const command = kind === 'manual'
+      ? { m: 'listManualModerationEvidence' as const, communityId, requestId: request, cursor: after }
+      : { m: 'listModerationCases' as const, communityId, requestId: request, offset: 0 as const };
+    void Promise.resolve(client.call(command)).then(value => {
       if (id !== generation.current) return;
       const result = value as { status?: unknown };
       if (result.status === 'accepted' || result.status === 'pending') setPhase('waiting');
@@ -76,7 +90,16 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
         if (page.responses.length > 0) {
           setResponses(page.responses);
           if (page.through !== null) setAckThrough(page.through);
-          if (page.responses.some(response => response.requestId === request)) setPhase('ready');
+          const result = page.responses.find(response => response.requestId === request);
+          if (result !== undefined) {
+            setListedCases(previous => {
+              const seen = new Set(previous.map(row => row.key));
+              return [...previous, ...result.cases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
+            });
+            setCursor(source === 'manual' ? result.nextCursor : null);
+            setAutomaticHasMore(source === 'automatic' && result.hasMore);
+            setPhase('ready');
+          }
         } else if (page.through !== null) {
           // The core suppressed a no-longer-live source event; committing the empty page is safe.
           setAckThrough(page.through);
@@ -93,7 +116,7 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
     };
     poll();
     return () => { canceled = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [client, communityId, phase, request]);
+  }, [client, communityId, phase, request, source]);
 
   // This effect runs after React commits the response rows to the DOM. Until then the durable
   // journal remains readable across a reload or a permission-fetch failure.
@@ -107,7 +130,7 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
 
   const current = forCommunity === communityId;
   const currentResponses = current ? responses : [];
-  const cases = currentResponses.flatMap(response => response.cases);
+  const cases = current ? listedCases : [];
   const date = (seconds: string): string => {
     const timestamp = Number(seconds);
     if (!/^-?\d+$/u.test(seconds) || !Number.isSafeInteger(timestamp) || Math.abs(timestamp) > 8_640_000_000_000) {
@@ -123,7 +146,10 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
 
   return <section aria-labelledby={`${base}-title`}>
     <h3 id={`${base}-title`}>{t('admin.bot.moderationLog.title')}</h3>
-    <Button aria-disabled={!current || phase === 'sending' || undefined} onClick={load}>
+    <Button aria-disabled={!current || phase === 'sending' || undefined} onClick={() => load('automatic', null)}>
+      {phase === 'sending' && source === 'automatic' ? t('admin.bot.moderationLog.loading') : t('admin.bot.moderationLog.loadAutomatic')}
+    </Button>
+    <Button aria-disabled={!current || phase === 'sending' || undefined} onClick={() => load('manual', null)}>
       {phase === 'sending' ? t('admin.bot.moderationLog.loading') : t('admin.bot.moderationLog.load')}
     </Button>
     {phase === 'waiting' ? <p role="status">{t('admin.bot.moderationLog.waiting')}</p> : null}
@@ -132,12 +158,15 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
     {phase === 'error' ? <p role="alert">{t('admin.bot.moderationLog.error')}</p> : null}
     {current && phase === 'ready' && currentResponses.some(response => response.requestId === request && response.status !== 0)
       ? <p role="status">{t('admin.bot.moderationLog.responseUnavailable')}</p> : null}
-    {current && phase === 'ready' && cases.length === 0 && currentResponses.every(response => response.status === 0)
+    {current && phase === 'ready' && cases.length === 0 && (source === 'manual' ? cursor === null : !automaticHasMore)
+      && currentResponses.every(response => response.status === 0)
       ? <p role="note">{t('admin.bot.moderationLog.empty')}</p> : null}
     {cases.map(row => <article key={row.key}>
       <p>{t('admin.bot.moderationLog.caseMeta', { action: row.action, reason: row.reason, date: date(row.receivedAt) })}</p>
       <p>{row.excerpt}</p>
     </article>)}
-    {currentResponses.some(response => response.hasMore) ? <p role="note">{t('admin.bot.moderationLog.more')}</p> : null}
+    {current && phase === 'ready' && source === 'manual' && cursor !== null && listedCases.length < MAX_DISPLAY_CASES
+      ? <Button onClick={() => load('manual', cursor)}>{t('admin.bot.moderationLog.more')}</Button> : null}
+    {current && phase === 'ready' && source === 'automatic' && automaticHasMore ? <p role="note">{t('admin.bot.moderationLog.automaticMore')}</p> : null}
   </section>;
 }

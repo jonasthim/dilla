@@ -55,8 +55,18 @@ Operation, arguments, channel requirement, mutation:
 - 61 moderation.evidence: legacy removal `[action_request_id, reason tstr(1..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)]`, or manual warning `[action_request_id, "warn", reason tstr(1..1024 UTF8 bytes), ""]`; no channel, mutation. The warning form is accepted only after authoritative lookup of the matching human warning receipt.
 - 62 automod.config.get: [], no channel, read
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
+- 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 
 Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
+
+Operation 64 returns `[version=1, rows, cursor|null]`, where each row is
+`[evidence_id, action, reason, excerpt, accepted_at_unix]`. The server checks
+the requesting actor's current `view_audit_log` permission before every page,
+scans no more than 100 encrypted state entries per page, and returns at most
+one manual case so the deterministic CBOR response remains below 2400 bytes.
+The opaque cursor is bound to the installation and community. Expired and
+tombstoned entries are skipped while advancing the cursor; a page with no
+visible rows can still carry a continuation cursor.
 
 For no-channel operations channel MUST be null. For reads revision/expires MUST
 be null. For mutations both MUST be uint; expiry must satisfy now < expires <=

@@ -268,21 +268,37 @@ describe('the server bot settings', () => {
     expect(await screen.findByRole('heading', { name: en['admin.bot.moderationLog.title'] })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
     expect(fake.calls.map(call => call.m)).not.toContain('listModerationCases');
+    expect(fake.calls.map(call => call.m)).not.toContain('listManualModerationEvidence');
     expect(fake.calls.map(call => call.m)).not.toContain('readHumanInteractionResponses');
     expect(fake.calls.map(call => call.m)).not.toContain('getModerationCases');
     expect(screen.queryByText(/reason|excerpt|case #/i)).not.toBeInTheDocument();
   });
 
-  it('shows a typed response page, then acknowledges it after rendering', async () => {
+  it('keeps automatic case retrieval available alongside the manual evidence view', async () => {
     const { fake, user } = setup({ ...ROW, state: 3 });
-    const requestId = '54'.repeat(16);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
       if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
-      if (command.m === 'listModerationCases') return Promise.resolve({ requestId, status: 'accepted' });
+      if (command.m === 'listModerationCases') return Promise.resolve({ requestId: command.requestId, status: 'accepted' });
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [] });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.loadAutomatic'] }));
+    await waitFor(() => expect(fake.callsOf('listModerationCases')).toHaveLength(1));
+    expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
+  });
+
+  it('shows a typed response page, then acknowledges it after rendering', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3 });
+    let requestId = '';
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
+      if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
-        { deliveryId: '3', requestId, status: 0, hasMore: false, cases: [{ key: 'a'.repeat(32) + ':1',
+        { deliveryId: '3', requestId, status: 0, hasMore: true, nextCursor: '0102', cases: [{ key: 'a'.repeat(32) + ':1',
           channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
           reason: 'duplicate', action: 'remove', excerpt: 'bounded response excerpt', receivedAt: '1800000000' }] },
       ] });
@@ -293,19 +309,22 @@ describe('the server bot settings', () => {
     await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toEqual([
       { m: 'ackHumanInteractionResponses', communityId: SERVER, through: '3' },
     ]));
-    expect(fake.callsOf('listModerationCases')).toHaveLength(1);
+    expect(fake.callsOf('listManualModerationEvidence')).toEqual([{ m: 'listManualModerationEvidence', communityId: SERVER, requestId, cursor: null }]);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.moderationLog.more'] }));
+    await waitFor(() => expect(fake.callsOf('listManualModerationEvidence')).toHaveLength(2));
+    expect(fake.callsOf('listManualModerationEvidence')[1]).toMatchObject({ cursor: '0102' });
   });
 
   it('renders a safe date fallback for an out-of-range received timestamp', async () => {
     const { fake, user } = setup({ ...ROW, state: 3 });
-    const requestId = '54'.repeat(16);
+    let requestId = '';
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
       if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
-      if (command.m === 'listModerationCases') return Promise.resolve({ requestId, status: 'accepted' });
+      if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [
-        { deliveryId: '3', requestId, status: 0, hasMore: false, cases: [{ key: 'a'.repeat(32) + ':1',
+        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
           channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
           reason: 'duplicate', action: 'remove', excerpt: 'safe date fallback case', receivedAt: '8640000000000001' }] },
       ] });

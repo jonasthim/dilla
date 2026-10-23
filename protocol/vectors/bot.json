@@ -242,6 +242,16 @@
       }
     },
     {
+      "name": "moderation.evidence.list",
+      "kind": "request",
+      "hex": "880150414141414141414141414141414141415022222222222222222222222222222222f61840f6f681f6",
+      "body": "dilla.bot/1:iAFQQUFBQUFBQUFBQUFBQUFBQVAiIiIiIiIiIiIiIiIiIiIi9hhA9vaB9g",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
       "name": "moderation.evidence",
       "kind": "request",
       "hex": "8801503e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e5022222222222222222222222222222222f6183d1878187883507777777777777777777777777777777766726561736f6e6765786365727074",

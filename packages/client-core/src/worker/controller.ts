@@ -198,6 +198,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'listModerationCases',
+  'listManualModerationEvidence',
   'humanInteractionRequest',
   'readBotInteractionResponses',
   'ackBotInteractionResponses',
@@ -336,6 +337,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
+  listManualModerationEvidence: ['communityId', 'requestId'],
   humanInteractionRequest: ['communityId', 'requestId'],
   readBotInteractionResponses: ['communityId'],
   ackBotInteractionResponses: ['communityId'],
@@ -441,6 +443,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'listModerationCases',
+    'listManualModerationEvidence',
     'humanInteractionRequest',
     'readBotInteractionResponses',
     'ackBotInteractionResponses',
@@ -648,6 +651,8 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
   if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+  if (m === 'listManualModerationEvidence' && (command.requestId === '0'.repeat(32)
+    || command.cursor !== null && (typeof command.cursor !== 'string' || !/^(?:[0-9a-f]{2}){1,256}$/u.test(command.cursor)))) return 'manual evidence cursor is invalid';
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
@@ -1263,6 +1268,7 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'listModerationCases': return this.listModerationCases(command);
+      case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
       case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations));
       case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
@@ -1528,34 +1534,49 @@ export class Controller {
   /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
    *  ciphertext stay inside the worker/core boundary; the page receives only the stable request id
    *  and whether the upload was accepted, remains uncertain, was refused, or cannot be resolved. */
-  private async listModerationCases(command: Extract<Command, { m: 'listModerationCases' }>): Promise<{ requestId: string; status: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const acceptedKey = `${command.communityId}:${command.requestId}`;
-    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: command.requestId, status: 'accepted' };
+  private listModerationCases(command: Extract<Command, { m: 'listModerationCases' }>) {
+    return this.sendModerationPage(command.communityId, command.requestId, 60, [null]);
+  }
+
+  private listManualModerationEvidence(command: Extract<Command, { m: 'listManualModerationEvidence' }>) {
+    const cursor = command.cursor === null ? null : fromHex(command.cursor);
+    return this.sendModerationPage(command.communityId, command.requestId, 64, [cursor]);
+  }
+
+  private async sendModerationPage(communityHex: string, requestHex: string, operation: 60 | 64,
+    args: (Uint8Array | null)[]): Promise<{ requestId: string; status: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const acceptedKey = `${communityHex}:${requestHex}`;
+    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, status: 'accepted' };
     const core = this.requireCore();
     const sync = this.requireSync();
-    const communityId = fromHex(command.communityId);
-    const groupRows = core.groups().filter((row) => row.kind === 3 && row.state === 2
-      && row.communityId !== null && toHex(row.communityId) === command.communityId);
+    const communityId = fromHex(communityHex);
+    const activeGroups = (): ReturnType<CorePort['groups']> => core.groups().filter((row) => row.kind === 3 && row.state === 2
+      && row.communityId !== null && toHex(row.communityId) === communityHex);
+    let groupRows = activeGroups();
+    if (groupRows.length === 0) {
+      await sync.pollWelcomes();
+      groupRows = activeGroups();
+    }
     if (groupRows.length === 0) throw new Refusal('E_CORE_STATE', 'no active interaction group for this community');
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const requestId = fromHex(command.requestId);
+    const requestId = fromHex(requestHex);
     return sync.runOnGroup(groupId, async () => {
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: command.requestId, status: 'accepted' };
+      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, status: 'accepted' };
       const now = BigInt(Math.floor(this.deps.now() / 1000));
-      const request = { requestId, communityId, channelId: null, operation: 60, revision: null, expires: null, args: [null] };
+      const request = { requestId, communityId, channelId: null, operation, revision: null, expires: null, args };
       // Structural encoding enforces operation 60, its sole null cursor, and read-only null
       // revision/expiry. Context validation binds it to this community and the trusted clock.
       validateBotContext(request, { community: communityId, now });
       const requestBody = encodeBotRequestBytes(request);
       const prepared = core.humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
-      if (toHex(prepared) !== command.requestId) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
+      if (toHex(prepared) !== requestHex) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
 
-      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === command.requestId);
-      if (outbox === undefined) return { requestId: command.requestId, status: 'unknown' };
-      if (outbox.state === 1) return { requestId: command.requestId, status: 'pending' };
+      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === requestHex);
+      if (outbox === undefined) return { requestId: requestHex, status: 'unknown' };
+      if (outbox.state === 1) return { requestId: requestHex, status: 'pending' };
       if (outbox.state === 2) core.sendRetry(prepared);
 
       const ciphertext = core.sendEncrypt(prepared);
@@ -1566,34 +1587,30 @@ export class Controller {
       } catch (error) {
         if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
           core.sendFail(prepared, error.code);
-          return { requestId: command.requestId, status: 'rejected' };
+          return { requestId: requestHex, status: 'rejected' };
         }
         // A timeout or server failure does not establish whether the upload committed. The durable
         // in-flight outbox is retained and the sync lane can resolve it after this POST has settled.
-        return { requestId: command.requestId, status: 'pending' };
+        return { requestId: requestHex, status: 'pending' };
       }
       try {
         core.sendConfirm(prepared, receipt.raw);
       } catch {
         // The server accepted the ciphertext, but the local receipt commit did not complete.
-        return { requestId: command.requestId, status: 'pending' };
+        return { requestId: requestHex, status: 'pending' };
       }
       this.acceptedHumanInteractionSends.add(acceptedKey);
       if (this.acceptedHumanInteractionSends.size > 128) {
         const oldest = this.acceptedHumanInteractionSends.values().next().value;
         if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
       }
-      return { requestId: command.requestId, status: 'accepted' };
+      return { requestId: requestHex, status: 'accepted' };
     });
   }
-
-  /** A response body is only returned after a fresh permission read and strict decoding. The
-   *  event journal remains unacknowledged here; the page acknowledges only after it has committed
-   *  the returned rows to its rendered state. */
   private async readHumanInteractionResponses(communityHex: string): Promise<{
     authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
       cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
-        reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean }[];
+        reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean; nextCursor: string | null }[];
     through: string | null; blocked: boolean;
   }> {
     if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
@@ -1605,19 +1622,21 @@ export class Controller {
       return { authorized: false, responses: [], through: null, blocked: false };
     }
     const page = this.requireCore().humanInteractionEventsRead(0n, 100);
-    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || event.operation !== 60);
+    const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
+    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !isModerationRead(event.operation));
     // The journal ack is global, so this screen may consume only the contiguous prefix for its
     // community. Events for another server stay pending and are handled in that server's Bot tab.
     // The journal is global and read pages are bounded. Show only this community's decoded
     // responses even when another community occurs earlier in the page; only the contiguous
     // current-community prefix is eligible for acknowledgement below.
-    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && event.operation === 60);
+    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation));
     const responses = visibleEvents.map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, communityId, event.requestId);
       const cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
         reason: string; action: string; excerpt: string; receivedAt: string }[] = [];
       let hasMore = false;
+      let nextCursor: string | null = null;
       if (response.status === 0) {
         const data = arr(decodeCbor(response.data));
         if (data.length !== 3 || data[0] !== 1n || !Array.isArray(data[1])
@@ -1625,8 +1644,20 @@ export class Controller {
           throw new Refusal('E_CORE_STATE', 'moderation response shape is invalid');
         }
         hasMore = data[2] !== null;
+        if (event.operation === 64 && data[2] instanceof Uint8Array) nextCursor = toHex(data[2]);
         for (const value of data[1]) {
           const row = arr(value);
+          if (event.operation === 64) {
+            if (row.length !== 5 || !(row[0] instanceof Uint8Array) || row[0].length !== 16 || typeof row[1] !== 'string'
+              || !['remove', 'warn'].includes(row[1]) || typeof row[2] !== 'string' || row[2].length < 1 || row[2].length > 1024
+              || typeof row[3] !== 'string' || row[3].length > 512 || typeof row[4] !== 'bigint') {
+              throw new Refusal('E_CORE_STATE', 'manual evidence response shape is invalid');
+            }
+            const evidenceId = toHex(row[0]);
+            cases.push({ key: `manual:${evidenceId}`, channelId: '0'.repeat(32), actorId: '0'.repeat(32), messageId: evidenceId,
+              revision: '1', reason: String(row[2]), action: String(row[1]), excerpt: String(row[3]), receivedAt: String(row[4]) });
+            continue;
+          }
           if (row.length !== 10 || row.slice(0, 5).some(v => typeof v !== 'string' || !/^[0-9a-f]{32}$/u.test(v))
             || typeof row[5] !== 'bigint' || typeof row[6] !== 'string'
             || !['log', 'remove', 'warn', 'timeout'].includes(String(row[7])) || typeof row[8] !== 'string'
@@ -1643,7 +1674,7 @@ export class Controller {
             excerpt: String(row[8]), receivedAt: String(row[9]) });
         }
       }
-      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore };
+      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
     });
     const ackableEvents = firstOtherCommunity < 0 ? page.events : page.events.slice(0, firstOtherCommunity);
     const throughValue = firstOtherCommunity < 0 ? page.next : ackableEvents.at(-1)?.deliveryId ?? 0n;

@@ -420,3 +420,66 @@ func validEvidenceInput() EvidenceInput {
 	return EvidenceInput{OperationID: id.ID{1}, MessageID: id.ID{2}, Action: ActionRemove, Rule: RuleDuplicate,
 		Reason: "Repeated message", Excerpt: "bounded excerpt", CreatedAt: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 }
+
+func TestEvidenceListReturnsBoundedManualRowsAndRechecksAuthority(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding}
+	writer := NewEvidenceWriter(state)
+	for i := byte(20); i < 23; i++ {
+		input := validEvidenceInput()
+		input.OperationID = id.ID{i}
+		input.Rule = RuleManual
+		input.CreatedAt = time.Now().UTC().Truncate(time.Second)
+		input.AcceptedActionID, input.AcceptedRevision = id.ID{i + 10}, 1
+		input.ActorUserID, input.ActorDeviceID = id.ID{6}, id.ID{7}
+		input.GroupID, input.TargetSequence = id.ID{8}, uint64(i)
+		if err := writer.Save(context.Background(), input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authority := &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}
+	reader := NewEvidenceReader(state, authority)
+	rows, next, err := reader.List(context.Background(), id.ID{9}, nil, 2)
+	if err != nil || len(rows) != 2 || len(next) == 0 || authority.calls < 3 {
+		t.Fatalf("rows=%d next=%x authority calls=%d err=%v", len(rows), next, authority.calls, err)
+	}
+	authority.result.EffectiveBits = 0
+	before := state.reads
+	if _, _, err := reader.List(context.Background(), id.ID{9}, next, 2); !errors.Is(err, ErrEvidenceAccess) || state.reads != before {
+		t.Fatalf("revoked page err=%v state reads=%d before=%d", err, state.reads, before)
+	}
+}
+
+func TestEvidenceListAdvancesPastExpiredAndTombstonedRowsAndStops(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	input := EvidenceInput{OperationID: id.ID{20}, Action: ActionRemove, Rule: RuleManual, Reason: "expired reason",
+		CreatedAt: time.Now().UTC().Add(-EvidenceRetention - time.Hour), AcceptedActionID: id.ID{30}, AcceptedRevision: 1,
+		ActorUserID: id.ID{6}, ActorDeviceID: id.ID{7}, GroupID: id.ID{8}, TargetSequence: 5}
+	body, err := encodeEvidence(binding, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &evidenceState{binding: binding, rows: map[string]native.StateValue{
+		"000-tombstone": {Revision: 2, Tombstone: true},
+		string(evidenceKey(binding, input.OperationID)): {Revision: 1, Value: body},
+	}}
+	authority := &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}
+	reader := NewEvidenceReader(state, authority)
+	rows, next, err := reader.List(context.Background(), id.ID{9}, nil, 1)
+	if err != nil || len(rows) != 0 || len(next) == 0 {
+		t.Fatalf("first page rows=%v next=%x err=%v", rows, next, err)
+	}
+	rows, next, err = reader.List(context.Background(), id.ID{9}, next, 1)
+	if err != nil || len(rows) != 0 || next != nil {
+		t.Fatalf("terminal page rows=%v next=%x err=%v", rows, next, err)
+	}
+}
+
+func TestEvidenceListFailsClosedOnMalformedStoredRow(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding, rows: map[string]native.StateValue{"ev2-corrupt": {Revision: 1, Value: []byte{0xff}}}}
+	authority := &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}
+	if _, _, err := NewEvidenceReader(state, authority).List(context.Background(), id.ID{9}, nil, 1); !errors.Is(err, ErrEvidenceAccess) {
+		t.Fatalf("malformed evidence list error = %v", err)
+	}
+}

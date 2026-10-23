@@ -24,6 +24,10 @@ type moderationCaseListReader interface {
 	List(context.Context, id.ID, []byte, uint64) ([]ModerationCase, []byte, error)
 }
 
+type moderationEvidenceListReader interface {
+	List(context.Context, id.ID, []byte, uint64) ([]moderation.Evidence, []byte, error)
+}
+
 // AcceptedManualRemovalReceipt is returned only by the authenticated server
 // lookup for an immutable, previously accepted moderator removal.
 type AcceptedManualRemovalReceipt struct {
@@ -64,13 +68,81 @@ type ModerationInteractions struct {
 	ManualRemovalLookup manualRemovalReceiptLookup
 	ManualWarningLookup manualWarningReceiptLookup
 	EvidenceWriter      manualEvidenceWriter
+	EvidenceReader      moderationEvidenceListReader
 }
 
 func (h ModerationInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpModerationCases:    {RecomputeOnReplay: true, Handle: h.listCases},
-		protocol.OpModerationEvidence: {RevisionInHandler: true, Handle: h.saveManualEvidence},
+		protocol.OpModerationCases:        {RecomputeOnReplay: true, Handle: h.listCases},
+		protocol.OpModerationEvidence:     {RevisionInHandler: true, Handle: h.saveManualEvidence},
+		protocol.OpModerationEvidenceList: {RecomputeOnReplay: true, Handle: h.listManualEvidence},
 	}
+}
+
+func (h ModerationInteractions) listManualEvidence(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
+	if ctx == nil || h.EvidenceReader == nil || h.CommunityID.IsZero() || h.InstallationID.IsZero() || request.CommunityID != h.CommunityID || actor.User.IsZero() || len(request.Args) != 1 {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	after, ok := decodeEvidenceInteractionCursor(request.Args[0], h.CommunityID, h.InstallationID)
+	if !ok {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	rows, next, err := h.EvidenceReader.List(ctx, actor.User, after, 1)
+	if err != nil || len(rows) > 1 || len(next) > moderationCaseMaxCursor {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	page := make([]any, 0, len(rows))
+	for _, row := range rows {
+		if row.Rule != moderation.RuleManual || row.ID.IsZero() || !moderationActionAllowed(row.Action) || row.CreatedAt.Unix() <= 0 ||
+			len(row.Reason) == 0 || len(row.Reason) > moderation.MaxEvidenceReasonBytes || len(row.Excerpt) > moderation.ExcerptMaxBytes {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		page = append(page, []any{row.ID, string(row.Action), row.Reason, row.Excerpt, uint64(row.CreatedAt.Unix())})
+	}
+	var cursor []byte
+	if len(next) > 0 {
+		cursor, ok = encodeEvidenceInteractionCursor(h.CommunityID, h.InstallationID, next)
+		if !ok {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+	}
+	data, err := cborx.Marshal([]any{uint64(1), page, cursor})
+	if err != nil || len(data) > moderationInteractionDataLimit {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	return InteractionResult{Status: 0, Data: data}, nil
+}
+
+func encodeEvidenceInteractionCursor(community, installation id.ID, after []byte) ([]byte, bool) {
+	if community.IsZero() || installation.IsZero() || len(after) == 0 || len(after) > moderationCaseMaxCursor {
+		return nil, false
+	}
+	cursor, err := cborx.Marshal([]any{uint64(1), community[:], installation[:], after})
+	return cursor, err == nil && len(cursor) <= moderationInteractionCursorMax
+}
+
+func decodeEvidenceInteractionCursor(value any, community, installation id.ID) ([]byte, bool) {
+	if value == nil {
+		return nil, true
+	}
+	cursor, ok := value.([]byte)
+	if !ok || len(cursor) == 0 || len(cursor) > moderationInteractionCursorMax || cborx.CheckDeterministic(cursor) != nil {
+		return nil, false
+	}
+	var fields []any
+	if cborx.Unmarshal(cursor, &fields) != nil || len(fields) != 4 || fields[0] != uint64(1) {
+		return nil, false
+	}
+	c, cok := fields[1].([]byte)
+	i, iok := fields[2].([]byte)
+	after, aok := fields[3].([]byte)
+	if !cok || !iok || !aok || len(c) != len(community) || len(i) != len(installation) || len(after) == 0 || len(after) > moderationCaseMaxCursor {
+		return nil, false
+	}
+	if string(c) != string(community[:]) || string(i) != string(installation[:]) {
+		return nil, false
+	}
+	return append([]byte(nil), after...), true
 }
 
 func (h ModerationInteractions) saveManualEvidence(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {

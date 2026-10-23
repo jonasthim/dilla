@@ -444,6 +444,60 @@ describe('Controller', () => {
     expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
   });
 
+  it('decodes op64 manual evidence rows and returns the continuation cursor', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x56);
+    const evidenceId = new Uint8Array(16).fill(0x57);
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null,
+      data: encode([1, [[evidenceId, 'warn', 'reviewed reason', '', 1_800_000_000n]], new Uint8Array([1, 2])]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 3n, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: 5n, epoch: 1n, receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE,
+      messageId: new Uint8Array(16).fill(0x61), body, operation: 64, channelId: null }], next: 3n, highWater: 3n });
+    w.call(96, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true, responses: [{
+      requestId: toHex(requestId), hasMore: true, nextCursor: '0102',
+      cases: [{ key: `manual:${toHex(evidenceId)}`, reason: 'reviewed reason', action: 'warn', excerpt: '' }],
+    }] } }));
+  });
+
+  it('sends a community-bound op64 request with the opaque continuation cursor', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x58);
+    const cursor = new Uint8Array([1, 2]);
+    const groupId = new Uint8Array(16).fill(0x52);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(97, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: '0102' });
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request).toEqual([1n, requestId, COMMUNITY, null, 64n, null, null, [cursor]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
+  it('fetches a late private Welcome before refusing an op64 manual evidence request', async () => {
+    const w = world();
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x59);
+    w.sync.pollWelcomes.mockImplementation(() => {
+      w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+      return Promise.resolve();
+    });
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(98, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
   it('only acknowledges the authorized contiguous prefix before a different community event', async () => {
     const w = world();
     await toReady(w);
