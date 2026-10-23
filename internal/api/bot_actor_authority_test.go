@@ -79,12 +79,20 @@ func TestBotActorAuthorityIsBoundToReadyCommunityAndCurrentMember(t *testing.T) 
 	if err := cborx.Unmarshal(resp.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[0] != uint64(api.PermViewChannel|api.PermReadHistory|api.PermManageCommunity|api.PermManageMessages) || got[1] != uint64(0) || got[2] != uint64(0) {
+	roleValues, rolesOK := got[3].([]any)
+	roleBytes, roleOK := func() ([]byte, bool) {
+		if !rolesOK || len(roleValues) != 1 {
+			return nil, false
+		}
+		value, ok := roleValues[0].([]byte)
+		return value, ok
+	}()
+	if len(got) != 4 || got[0] != uint64(api.PermViewChannel|api.PermReadHistory|api.PermManageCommunity|api.PermManageMessages) || got[1] != uint64(0) || got[2] != uint64(0) || !roleOK || !bytes.Equal(roleBytes, manager.ID[:]) {
 		t.Fatalf("authority tuple = %#v", got)
 	}
 	ownerAuthority := getAuth(h, "/v1/communities/"+cid.String()+"/bot/actors/"+owner.ID.String()+"/authority", token)
 	var ownerTuple []any
-	if ownerAuthority.Code != http.StatusOK || cborx.Unmarshal(ownerAuthority.Body.Bytes(), &ownerTuple) != nil || len(ownerTuple) != 3 ||
+	if ownerAuthority.Code != http.StatusOK || cborx.Unmarshal(ownerAuthority.Body.Bytes(), &ownerTuple) != nil || len(ownerTuple) != 4 ||
 		ownerTuple[0] != uint64(api.PermAll) || ownerTuple[1] != uint64(1) || ownerTuple[2] != uint64(1) {
 		t.Fatalf("owner authority tuple = %d %#v", ownerAuthority.Code, ownerTuple)
 	}
@@ -104,7 +112,7 @@ func TestBotActorAuthorityIsBoundToReadyCommunityAndCurrentMember(t *testing.T) 
 	}
 	adminAuthority := getAuth(h, "/v1/communities/"+cid.String()+"/bot/actors/"+adminUser.String()+"/authority", token)
 	var adminTuple []any
-	if adminAuthority.Code != http.StatusOK || cborx.Unmarshal(adminAuthority.Body.Bytes(), &adminTuple) != nil || len(adminTuple) != 3 ||
+	if adminAuthority.Code != http.StatusOK || cborx.Unmarshal(adminAuthority.Body.Bytes(), &adminTuple) != nil || len(adminTuple) != 4 ||
 		adminTuple[0] != uint64(api.PermAll) || adminTuple[1] != uint64(0) || adminTuple[2] != uint64(1) {
 		t.Fatalf("admin authority tuple = %d %#v", adminAuthority.Code, adminTuple)
 	}

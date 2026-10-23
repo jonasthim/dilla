@@ -81,5 +81,14 @@ func (d Deps) GetBotActorAuthority(w http.ResponseWriter, r *http.Request) {
 	if admin {
 		adminFlag = 1
 	}
-	d.write(w, r, http.StatusOK, []any{uint64(bits), ownerFlag, adminFlag})
+	roles, err := d.Repo.ListMemberRoles(r.Context(), cid, actor)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	roleValues := make([]any, len(roles))
+	for i := range roles {
+		roleValues[i] = roles[i]
+	}
+	d.write(w, r, http.StatusOK, []any{uint64(bits), ownerFlag, adminFlag, roleValues})
 }

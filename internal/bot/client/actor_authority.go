@@ -14,6 +14,7 @@ type ActorAuthority struct {
 	EffectiveBits uint64
 	Owner         bool
 	Administrator bool
+	RoleIDs       []id.ID
 }
 
 const knownCommunityPermissionBits = uint64(1<<25) - 1
@@ -42,7 +43,7 @@ func (s *Session) BotActorAuthority(ctx context.Context, community, actor id.ID)
 		}
 		return out, false, err
 	}
-	a, err := decode(raw, 3)
+	a, err := decode(raw, 4)
 	if err != nil {
 		return out, false, err
 	}
@@ -59,5 +60,22 @@ func (s *Session) BotActorAuthority(ctx context.Context, community, actor id.ID)
 		return ActorAuthority{}, false, ErrProtocol
 	}
 	out.Owner, out.Administrator = ownerFlag == 1, adminFlag == 1
+	roles, ok := a[3].([]any)
+	if !ok || len(roles) > 4096 {
+		return ActorAuthority{}, false, ErrProtocol
+	}
+	seen := make(map[id.ID]struct{}, len(roles))
+	out.RoleIDs = make([]id.ID, len(roles))
+	for i, value := range roles {
+		role, valid := asID(value)
+		if !valid || role.IsZero() {
+			return ActorAuthority{}, false, ErrProtocol
+		}
+		if _, exists := seen[role]; exists {
+			return ActorAuthority{}, false, ErrProtocol
+		}
+		seen[role] = struct{}{}
+		out.RoleIDs[i] = role
+	}
 	return out, true, nil
 }

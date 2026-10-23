@@ -18,7 +18,7 @@ func TestSessionBotActorAuthorityParsesExactAuthenticatedTuple(t *testing.T) {
 		}
 		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/cbor")
-		body, marshalErr := cborx.Marshal([]any{uint64(1<<16 | 1<<2), uint64(1), uint64(1)})
+		body, marshalErr := cborx.Marshal([]any{uint64(1<<16 | 1<<2), uint64(1), uint64(1), []any{testID(40)}})
 		if marshalErr != nil {
 			t.Error(marshalErr)
 		}
@@ -30,7 +30,7 @@ func TestSessionBotActorAuthorityParsesExactAuthenticatedTuple(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, present, err := s.BotActorAuthority(context.Background(), community, actor)
-	if err != nil || !present || got.EffectiveBits != (1<<16|1<<2) || !got.Owner || !got.Administrator {
+	if err != nil || !present || got.EffectiveBits != (1<<16|1<<2) || !got.Owner || !got.Administrator || len(got.RoleIDs) != 1 || got.RoleIDs[0] != testID(40) {
 		t.Fatalf("authority = (%#v, %v, %v)", got, present, err)
 	}
 	if gotPath != "/v1/communities/"+community.String()+"/bot/actors/"+actor.String()+"/authority" || gotAuth != "Bearer authority-token" {
@@ -50,9 +50,10 @@ func TestSessionBotActorAuthorityRejectsMalformedTuplesAndHides404(t *testing.T)
 		status  int
 		present bool
 	}{
-		{name: "extra field", body: []any{uint64(4), uint64(0), uint64(0), uint64(1)}, status: http.StatusOK, present: false},
-		{name: "unknown bit", body: []any{uint64(1 << 30), uint64(0), uint64(0)}, status: http.StatusOK, present: false},
-		{name: "invalid flag", body: []any{uint64(4), uint64(2), uint64(0)}, status: http.StatusOK, present: false},
+		{name: "extra field", body: []any{uint64(4), uint64(0), uint64(0), []any{}, uint64(1)}, status: http.StatusOK, present: false},
+		{name: "unknown bit", body: []any{uint64(1 << 30), uint64(0), uint64(0), []any{}}, status: http.StatusOK, present: false},
+		{name: "invalid flag", body: []any{uint64(4), uint64(2), uint64(0), []any{}}, status: http.StatusOK, present: false},
+		{name: "invalid role", body: []any{uint64(4), uint64(0), uint64(0), []any{"bad"}}, status: http.StatusOK, present: false},
 		{name: "absent", status: http.StatusNotFound, present: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,7 +82,7 @@ func TestSessionBotActorAuthorityRejectsMalformedTuplesAndHides404(t *testing.T)
 			if tc.status == http.StatusOK && err == nil {
 				t.Fatalf("malformed tuple accepted: %#v", got)
 			}
-			if tc.status == http.StatusNotFound && (err != nil || present || got != (ActorAuthority{})) {
+			if tc.status == http.StatusNotFound && (err != nil || present || got.EffectiveBits != 0 || got.Owner || got.Administrator || len(got.RoleIDs) != 0) {
 				t.Fatalf("404 = (%#v, %v, %v)", got, present, err)
 			}
 		})
