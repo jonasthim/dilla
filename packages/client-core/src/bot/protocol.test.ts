@@ -40,12 +40,12 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest(request(64, [new Uint8Array(257)]))).toThrow(bot.BotError);
   });
 
-  it('accepts the action-discriminated manual warning evidence payload while preserving removal shape', () => {
+  it('uses the same three-field manual evidence wire tuple for receipt-validated warnings and removals', () => {
     const remove = { ...request(61, [id(3), 'manual removal', 'excerpt']), revision: 0n, expires: 110n };
     expect(bot.decodeBotRequest(bot.encodeBotRequest(remove)).args).toEqual([id(3), 'manual removal', 'excerpt']);
-    const warn = { ...request(61, [id(3), 'warn', 'manual warning', '']), revision: 0n, expires: 110n };
-    expect(bot.decodeBotRequest(bot.encodeBotRequest(warn)).args).toEqual([id(3), 'warn', 'manual warning', '']);
-    expect(() => bot.encodeBotRequest({ ...warn, args: [id(3), 'warn', 'manual warning', 'excerpt'] })).toThrow(bot.BotError);
+    const warn = { ...request(61, [id(3), 'manual warning', '']), revision: 0n, expires: 110n };
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(warn)).args).toEqual([id(3), 'manual warning', '']);
+    expect(() => bot.encodeBotRequest({ ...warn, args: [id(3), 'warn', 'manual warning', ''] })).toThrow(bot.BotError);
   });
 
   it('accepts a bounded role-panel publish request and rejects invalid mappings', () => {

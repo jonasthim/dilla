@@ -1549,4 +1549,31 @@ mod tests {
             .uint(0);
         assert!(Request::decode_cbor(&number.into_vec()).is_err());
     }
+
+    #[test]
+    fn manual_evidence_request_uses_the_three_field_receipt_bound_tuple() {
+        fn request(tail: &[&str]) -> Vec<u8> {
+            let mut e = Encoder::new();
+            e.array(8)
+                .uint(1)
+                .bytes(&[1; 16])
+                .bytes(&[2; 16])
+                .null()
+                .uint(61)
+                .uint(0)
+                .uint(110)
+                .array(1 + tail.len())
+                .bytes(&[3; 16]);
+            for value in tail {
+                e.text(value);
+            }
+            e.into_vec()
+        }
+
+        let valid = request(&["warning reason", ""]);
+        let decoded = Request::decode_cbor(&valid).unwrap();
+        assert!(matches!(decoded.args, RequestArgs::Evidence { .. }));
+        assert_eq!(decoded.encode_cbor().unwrap(), valid);
+        assert!(Request::decode_cbor(&request(&["warn", "warning reason", ""])).is_err());
+    }
 }

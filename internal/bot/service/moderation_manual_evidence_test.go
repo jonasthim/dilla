@@ -83,7 +83,7 @@ func TestManualWarningEvidenceRequiresMatchingAcceptedWarningReceipt(t *testing.
 	h := ModerationInteractions{CommunityID: community, InstallationID: installation, ManualWarningLookup: lookup, EvidenceWriter: writer}
 	handler := h.Handlers()[protocol.OpModerationEvidence]
 	result, err := handler.Handle(context.Background(), InteractionActor{User: actor, Device: device},
-		protocol.Request{CommunityID: community, Args: []any{request, "warn", "reason encrypted in Bot state", ""}})
+		protocol.Request{CommunityID: community, Args: []any{request, "reason encrypted in Bot state", ""}})
 	if err != nil || result.Status != 0 || lookup.calls != 1 || lookup.installation != installation || lookup.request != request {
 		t.Fatalf("result=%+v lookup=%+v err=%v", result, lookup, err)
 	}
@@ -92,6 +92,49 @@ func TestManualWarningEvidenceRequiresMatchingAcceptedWarningReceipt(t *testing.
 		writer.input.AcceptedRevision != lookup.receipt.Revision || writer.input.TargetUserID != target || writer.input.ActorUserID != actor ||
 		writer.input.ActorDeviceID != device || !writer.input.MessageID.IsZero() || !writer.input.GroupID.IsZero() || writer.input.TargetSequence != 0 {
 		t.Fatalf("saved warning evidence=%+v calls=%d", writer.input, writer.calls)
+	}
+}
+
+func TestManualWarningEvidenceFailsClosedOnMissingOrMismatchedReceipt(t *testing.T) {
+	community, installation, request, actor, device, target := interactionID(2), interactionID(3), interactionID(4), interactionID(5), interactionID(6), interactionID(7)
+	cases := []struct {
+		name    string
+		receipt AcceptedManualWarningReceipt
+		err     error
+	}{
+		{name: "lookup unavailable", err: errors.New("offline")},
+		{name: "wrong request", receipt: AcceptedManualWarningReceipt{RequestID: interactionID(8), ActionID: interactionID(9), CommunityID: community, ActorUserID: actor, ActorDeviceID: device, TargetUserID: target, Revision: 1, AcceptedAt: time.Now().Unix()}},
+		{name: "wrong community", receipt: AcceptedManualWarningReceipt{RequestID: request, ActionID: interactionID(9), CommunityID: interactionID(10), ActorUserID: actor, ActorDeviceID: device, TargetUserID: target, Revision: 1, AcceptedAt: time.Now().Unix()}},
+		{name: "wrong actor", receipt: AcceptedManualWarningReceipt{RequestID: request, ActionID: interactionID(9), CommunityID: community, ActorUserID: interactionID(11), ActorDeviceID: device, TargetUserID: target, Revision: 1, AcceptedAt: time.Now().Unix()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := &manualWarningLookupFake{receipt: tc.receipt, err: tc.err}
+			writer := &manualEvidenceWriterFake{bound: true}
+			handler := (ModerationInteractions{CommunityID: community, InstallationID: installation, ManualWarningLookup: lookup, EvidenceWriter: writer}).Handlers()[protocol.OpModerationEvidence]
+			result, err := handler.Handle(context.Background(), InteractionActor{User: actor, Device: device},
+				protocol.Request{CommunityID: community, Args: []any{request, "accepted warning reason", ""}})
+			if err != nil || result.Status == 0 || lookup.calls != 1 || writer.calls != 0 {
+				t.Fatalf("result=%+v lookup=%+v err=%v writer calls=%d; rejected evidence must not be stored", result, lookup, err, writer.calls)
+			}
+		})
+	}
+}
+
+func TestManualEvidenceRejectsAmbiguousAcceptedRemovalAndWarningReceipts(t *testing.T) {
+	community, installation, request, actor, device := interactionID(2), interactionID(3), interactionID(4), interactionID(5), interactionID(6)
+	now := time.Now().Unix()
+	removal := &manualRemovalLookupFake{receipt: AcceptedManualRemovalReceipt{ActionID: interactionID(7), CommunityID: community,
+		GroupID: interactionID(8), ActorUserID: actor, ActorDeviceID: device, TargetSequence: 9, Revision: 10, AcceptedAt: now}}
+	warning := &manualWarningLookupFake{receipt: AcceptedManualWarningReceipt{RequestID: request, ActionID: interactionID(11),
+		CommunityID: community, ActorUserID: actor, ActorDeviceID: device, TargetUserID: interactionID(12), Revision: 13, AcceptedAt: now}}
+	writer := &manualEvidenceWriterFake{bound: true}
+	handler := (ModerationInteractions{CommunityID: community, InstallationID: installation, ManualRemovalLookup: removal,
+		ManualWarningLookup: warning, EvidenceWriter: writer}).Handlers()[protocol.OpModerationEvidence]
+	result, err := handler.Handle(context.Background(), InteractionActor{User: actor, Device: device},
+		protocol.Request{CommunityID: community, Args: []any{request, "reason", ""}})
+	if err != nil || result.Status == 0 || removal.calls != 1 || warning.calls != 1 || writer.calls != 0 {
+		t.Fatalf("ambiguous evidence result=%+v removal=%+v warning=%+v writer calls=%d err=%v", result, removal, warning, writer.calls, err)
 	}
 }
 

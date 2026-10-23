@@ -1797,7 +1797,7 @@ export class Controller {
       if (row === undefined) throw new CoreError('E_CORE_STATE', 'manual warning evidence was not staged');
       const reserved = core.ensureManualWarningEvidenceRequest(requestId, crypto.getRandomValues(new Uint8Array(16)), BigInt(Math.floor(this.deps.now() / 1000)));
       const sent = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: command.communityId, channelId: null,
-        requestId: toHex(reserved.requestId), operation: 61, args: [command.requestId, 'warn', row.reason, ''], revision: '0' }, reserved.expires);
+        requestId: toHex(reserved.requestId), operation: 61, args: [command.requestId, row.reason, ''], revision: '0' }, reserved.expires);
       evidence = sent.upload;
       if (evidence === 'accepted') core.completeManualWarningEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
     } catch { evidence = 'unknown'; }

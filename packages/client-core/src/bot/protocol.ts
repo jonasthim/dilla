@@ -75,7 +75,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},64:{channel:false,mutation:false,count:1},
 };
 function validateArgs(op: number, a: unknown[]): void {
-  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count && !(op === 61 && a.length === 4)) fail('E_BOT_SHAPE');
+  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count) fail('E_BOT_SHAPE');
   const u = (i:number,min=0n,max=MAX) => { a[i]=uint(a[i],min,max); };
   const t = (i:number,min:number,max:number,ctrl=false) => { a[i]=text(a[i],min,max,ctrl); };
   const ident=(i:number)=>{a[i]=id(a[i]);};

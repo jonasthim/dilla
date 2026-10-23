@@ -776,7 +776,7 @@ describe('Controller', () => {
     expect(requestBody).toBeInstanceOf(Uint8Array);
     if (requestBody === undefined) throw new Error('manual warning did not prepare an interaction request');
     const wire = decode(requestBody) as unknown[];
-    expect(wire[7]).toEqual([requestId, 'warn', 'follow the rules', '']);
+    expect(wire[7]).toEqual([requestId, 'follow the rules', '']);
   });
 
   it('returns full AFK settings through the authenticated settings route', async () => {
