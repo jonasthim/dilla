@@ -959,7 +959,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
 | 429 | `E_RATE_LIMITED` | a token bucket is empty | wait `retry_after_ms`; a `Retry-After` header in whole seconds carries the same value |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
-| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
+| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck); or, detail `call_ended` (a call start only), the call ended as the start opened it (`09` § Voice, Ending) | wait `retry_after_ms`, then retry; on `call_ended`, forget the call group and read the call again first |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid

@@ -55,6 +55,10 @@ func TestAPendingCutIsTransientAndStillARefusal(t *testing.T) {
 			t.Fatalf("a start under a pending repair = %d %s, want 503 E_UNAVAILABLE with retry_after_ms 2000",
 				status, b.e.ErrCode(body))
 		}
+		// final-I1: a transient start 503 lacks the ended-as-opened marker, so the client keeps its leaf.
+		if endedAsOpened(t, body) {
+			t.Fatal("a pending-repair 503 carries the call_ended marker")
+		}
 		if len(b.stub.minted()) != minted {
 			t.Fatal("a token was minted for a device whose repair is pending")
 		}
@@ -119,6 +123,9 @@ func TestAnSFUDownAtStartAnswers503(t *testing.T) {
 			status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
 			if status != http.StatusServiceUnavailable || e.ErrCode(body) != "E_UNAVAILABLE" || retryAfterOf(t, body) != 2000 {
 				t.Fatalf("a start with the SFU down = %d %s, want 503 E_UNAVAILABLE with retry_after_ms 2000", status, e.ErrCode(body))
+			}
+			if endedAsOpened(t, body) {
+				t.Fatal("an SFU-down 503 carries the call_ended marker")
 			}
 			if len(stub.minted()) != 0 {
 				t.Fatal("a token was minted while the SFU was down")

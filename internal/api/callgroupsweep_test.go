@@ -103,6 +103,10 @@ func TestAStartRacingTheIdleCloseRetries(t *testing.T) {
 	if status != http.StatusServiceUnavailable || e.ErrCode(body) != "E_UNAVAILABLE" || retryAfterOf(t, body) == 0 {
 		t.Fatalf("a start racing the idle close = %d %x, want 503 E_UNAVAILABLE with retry_after_ms", status, body)
 	}
+	// final-I1: the one start 503 after which the client forgets the group carries the marker.
+	if !endedAsOpened(t, body) {
+		t.Fatalf("the ended-as-opened 503 has detail %q, want call_ended", detailOf(t, body))
+	}
 	if !groupClosed(t, e, group) || !callEnded(t, e, ch) {
 		t.Fatalf("group closed %v, call ended %v; want both", groupClosed(t, e, group), callEnded(t, e, ch))
 	}

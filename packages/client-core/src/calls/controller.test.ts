@@ -142,10 +142,10 @@ export async function harness(opts: HarnessOptions = {}) {
   }
   const server = {
     requests,
-    /** The next request of `label` is refused with this status and code. */
+    /** The next request of `label` is refused with this status, code and detail. */
     answer(label: string, status: number, code = status === 404 ? 'E_NOT_FOUND' : status === 409 ? 'E_COMMIT_CONFLICT' : 'E_UNAVAILABLE',
-      retryAfterMs: number | null = null): void {
-      answers.push({ label, error: new DillaHttpError({ status, code, detail: '', retryAfterMs, extra: [] }) });
+      retryAfterMs: number | null = null, detail = ''): void {
+      answers.push({ label, error: new DillaHttpError({ status, code, detail, retryAfterMs, extra: [] }) });
     },
     /** The next request of `label` waits until release(); `reached` resolves once it is waiting. */
     hold(label: string): { release: () => void; reached: Promise<void> } {
@@ -579,10 +579,10 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(w.slice('call').phase).toBe('in');
   });
 
-  it('a POST calls answered 503 (the start raced the idle close) re-reads once, then registers afresh; no third attempt', async () => {
+  it('a POST calls answered 503 call_ended (the start raced the idle close) re-reads once, then registers afresh; no third attempt', async () => {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
     w.server.reset();
-    w.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5);
+    w.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5, 'call_ended');
     // The close the 503 reports: L-HTTP-100 no longer names the group.
     const held = w.server.hold('POST calls');
     const id = w.send(JOIN(w));
@@ -597,13 +597,64 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(w.pushes('callKeys')).toHaveLength(1);
     // Twice: the second 503 fails the join.
     const v = await harness({ voiceChannel: true, callGroupBy: 'peer' });
-    v.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5);
-    v.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5);
+    v.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5, 'call_ended');
+    v.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5, 'call_ended');
     v.server.reset();
     expect(await codeOf(v.call(JOIN(v)))).toBe('E_UNAVAILABLE');
     expect(v.server.routes().filter((r) => r === 'POST calls')).toHaveLength(2);
     expect(v.slice('call').phase).toBe('failed');
     expect(v.pushes('callKeys')).toHaveLength(0);
+  });
+
+  // Final review I1 (ruling final-I1): only the ended-as-opened 503 carries `call_ended`. Every other start 503 (the
+  // media server not answering, a pending repair or relay cut, an undecided withdrawal, a busy call) is transient: the
+  // group this device just joined is kept, never forgotten and never resynced (no second external commit), and no
+  // self-Remove is sent. The next join resumes it: a start and an own-leaf commit, still no external commit.
+  for (const detail of ['the media server is not answering', "your device's access to this call is being settled",
+    "your device's place in this call is being settled", 'the call is busy; retry shortly']) {
+    it(`a POST calls answered a transient 503 (${detail}) keeps the joined group: no forget, no resync, no leave`, async () => {
+      const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+      w.server.reset();
+      w.server.answer('POST calls', 503, 'E_UNAVAILABLE', 2000, detail);
+      expect(await codeOf(w.call(JOIN(w)))).toBe('E_UNAVAILABLE');
+      expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+      expect(w.model.calls.filter((c) => c.m === 'callGroupForget')).toHaveLength(0);
+      expect(w.model.group(w.callGroup)?.state).toBe(2);
+      expect(w.slice('call')).toMatchObject({ phase: 'failed', error: { code: 'E_UNAVAILABLE' } });
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      w.server.reset();
+      const r = await w.call(JOIN(w)) as CallJoinResult;
+      expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+      expect(w.server.routes().filter((x) => x !== 'GET device list' && x !== 'GET members'))
+        .toEqual(['GET channel call', 'POST calls', 'POST commit']);
+      expect(w.model.calls.filter((c) => c.m === 'callGroupJoinExternal')).toHaveLength(1);
+      expect(w.slice('call').phase).toBe('in');
+    });
+  }
+
+  it('an instance before web3.13 marks the ended-as-opened 503 by its prose detail: still forgotten and re-read', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.server.answer('POST calls', 503, 'E_UNAVAILABLE', 250, 'the call ended as it was opened; retry');
+    const held = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await held.reached;
+    w.ds.closeCallGroup(w.callGroup);
+    held.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
+    expect(w.ret(id)).toMatchObject({ ok: true });
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'POST calls',
+      'GET channel call', 'POST group', 'POST calls']);
+  });
+
+  it('a group kept after a transient start 503 is left with one self-Remove when the person leaves instead', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.answer('POST calls', 503, 'E_UNAVAILABLE', 2000, 'the media server is not answering');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_UNAVAILABLE');
+    w.server.reset();
+    await w.call({ m: 'callLeave', reason: 'user' });
+    expect(w.server.routes().filter((r) => r === 'POST proposal')).toHaveLength(1);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
   });
 
   // Attacker: the instance (or a member) adds a forged device to the call group before this device joins. Nothing is

@@ -280,6 +280,27 @@ func retryAfterOf(t *testing.T, body []byte) uint64 {
 	return ms
 }
 
+// detailOf is an error body's detail (its second element).
+func detailOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var arr []cbor.RawMessage
+	mustUnmarshalBody(t, body, &arr)
+	if len(arr) < 2 {
+		t.Fatalf("error body %x has no detail", body)
+	}
+	var detail string
+	mustUnmarshal(t, arr[1], &detail)
+	return detail
+}
+
+// endedAsOpened reports whether a start's 503 carries final-I1's marker: detail `call_ended`, the
+// one start 503 after which the client forgets the call group and reads the call again. Every other
+// start 503 is transient and lacks it.
+func endedAsOpened(t *testing.T, body []byte) bool {
+	t.Helper()
+	return detailOf(t, body) == "call_ended"
+}
+
 // Re-review N1, through the call route: a start whose device was cut in the same millisecond is a
 // transient 429 E_RATE_LIMITED with a retry_after_ms of a few milliseconds, and moves nothing — a
 // member whose every start lands in its own cut's millisecond, twice a second for two simulated

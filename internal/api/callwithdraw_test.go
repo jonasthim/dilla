@@ -132,6 +132,9 @@ func TestStartRefusedWithdrawsNothing(t *testing.T) {
 		if status != http.StatusServiceUnavailable || w.e.ErrCode(body) != "E_UNAVAILABLE" || retryAfterOf(t, body) <= 0 {
 			t.Fatalf("a start whose withdrawal failed = %d %s, want 503 E_UNAVAILABLE with retry_after_ms", status, w.e.ErrCode(body))
 		}
+		if endedAsOpened(t, body) {
+			t.Fatal("an undecided-withdrawal 503 carries the call_ended marker")
+		}
 		if len(w.stub.minted()) != 0 {
 			t.Fatal("a token was minted although the withdrawal failed")
 		}

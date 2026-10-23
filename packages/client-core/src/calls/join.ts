@@ -67,6 +67,9 @@ export class JoinRefused extends Error {
   users: string[] = [];
   /** WB client I4: `leave` is a group whose tree holds only this device (it registered it, or the join epoch's roster
    *  is its own leaf alone). Nobody can commit a self-Remove there, so the controller ends it conditionally instead. */
+  /** Final review I1: `keep` is a group this device has just joined (its external commit landed) whose start was refused
+   *  by a transient 503; it is neither left nor forgotten, and the controller holds it, so the next join resumes it. */
+  keep: Id | null = null;
   constructor(readonly code: string, readonly phase: 'blocked' | 'failed', readonly cause: unknown, readonly leave: Id | null,
     readonly alone = false) {
     super(code);
@@ -82,6 +85,14 @@ function stopped(leave: Id | null, alone = false): JoinRefused {
 
 const codeOf = (e: unknown): string => (e instanceof CoreError || e instanceof DillaHttpError ? e.code : 'E_INTERNAL');
 const isHttp = (e: unknown, status: number, code: string): boolean => e instanceof DillaHttpError && e.status === status && e.code === code;
+/** Final review I1 (protocol/09 § Voice): the one start 503 whose call ended as it was opened carries detail
+ *  `call_ended`; its call group is closed. An instance before web3.13 sent its prose detail instead. Every other start
+ *  503 (the media server not answering, a pending repair or relay cut, an undecided withdrawal, a busy call) is
+ *  transient: the group stays open and this device's leaf in it current. */
+export const CALL_ENDED_DETAIL = 'call_ended';
+const LEGACY_CALL_ENDED_DETAIL = 'the call ended as it was opened; retry';
+const callEnded = (e: unknown): boolean => isHttp(e, 503, 'E_UNAVAILABLE')
+  && ((e as DillaHttpError).detail === CALL_ENDED_DETAIL || (e as DillaHttpError).detail === LEGACY_CALL_ENDED_DETAIL);
 /** A gate refusal: a trust block (E_BINDING included) is `blocked`; anything else, a pending list included, `failed`. */
 function refused(e: unknown, leave: Id | null, alone = false): JoinRefused {
   const code = codeOf(e);
@@ -156,15 +167,23 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
     } catch (e) {
       // Any failure zero-fills the held key and posts nothing.
       new Uint8Array(media.baseKey).fill(0);
-      // L-HTTP-105: the start raced the idle close of the group; it is gone at the instance, so it is forgotten here and
-      // the call is read once more (a fresh registration, or a newer group).
-      if (isHttp(e, 503, 'E_UNAVAILABLE') && reread.closed) {
+      // L-HTTP-105: the start raced the idle close of the group (503 `call_ended`); it is gone at the instance, so it is
+      // forgotten here and the call is read once more (a fresh registration, or a newer group).
+      if (callEnded(e) && reread.closed) {
         reread = { ...reread, closed: false };
         d.core.callGroupForget(groupId);
         read = await d.routes.getChannelCall(t.channelId);
         continue;
       }
       const alone = created || (media.roster.length === 1 && media.roster[0]?.leaf === media.ownLeaf);
+      // Final review I1: any other start 503 is transient (the HTTP client has already retried it per retry_after_ms).
+      // The group is open and this device's leaf current, so it is kept: no forget, no resync, no self-Remove. The
+      // controller holds it, and the next join resumes it as an update reload's hold is resumed (no external commit).
+      if (isHttp(e, 503, 'E_UNAVAILABLE') && !callEnded(e)) {
+        const kept = new JoinRefused(codeOf(e), 'failed', e, null, alone);
+        kept.keep = groupId;
+        throw kept;
+      }
       throw new JoinRefused(codeOf(e), 'failed', e, groupId, alone);
     }
   }
