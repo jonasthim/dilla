@@ -165,8 +165,8 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
           return;
         }
         if (!canceled) timer = window.setTimeout(() => { void poll(); }, 750);
-      } catch {
-        if (!canceled) { setError(t('admin.bot.rolePanel.error')); timer = window.setTimeout(() => { void poll(); }, 1500); }
+      } catch (e: unknown) {
+        if (!canceled) { setError(t('admin.bot.rolePanel.error', { code: errorOf(e).code })); timer = window.setTimeout(() => { void poll(); }, 1500); }
       }
     };
     void poll();
