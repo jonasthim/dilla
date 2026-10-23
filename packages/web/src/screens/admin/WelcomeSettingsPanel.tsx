@@ -52,7 +52,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
   const [loaded, setLoaded] = useState(false);
   const [mustReload, setMustReload] = useState(false);
   const [pending, setPending] = useState<PendingRequest | null>(null);
-  const [ackThrough, setAckThrough] = useState<string | null>(null);
+  const [ackThrough, setAckThrough] = useState<{ communityId: string; through: string } | null>(null);
   const [ackRetry, setAckRetry] = useState(0);
   const generation = useRef(0);
   const currentCommunity = useRef(communityId);
@@ -153,9 +153,9 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
           const ackableRows = through === null ? [] : page.responses.filter(row => BigInt(row.deliveryId) <= through);
           const ownResponse = (row: WelcomeResponse): boolean => row.requestId === pending.requestId
             && row.communityId === pending.communityId && row.operation === pending.operation && row.channelId === null;
-          if (through !== null && BigInt(response.deliveryId) <= through && ackableRows.every(ownResponse)) {
+          if (through !== null && page.through !== null && BigInt(response.deliveryId) <= through && ackableRows.every(ownResponse)) {
             setAckRetry(0);
-            setAckThrough(page.through);
+            setAckThrough({ communityId: pending.communityId, through: page.through });
           }
         }
         if (!canceled && pending !== null) timer = window.setTimeout(() => { void poll(); }, 750);
@@ -174,15 +174,16 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
     if (ackThrough === null) return;
     let canceled = false;
     let retryTimer: number | undefined;
-    void gateway.ack(communityId, ackThrough).then(() => {
-      if (!canceled) setAckThrough(current => current === ackThrough ? null : current);
+    void gateway.ack(ackThrough.communityId, ackThrough.through).then(() => {
+      if (!canceled) setAckThrough(current => current?.communityId === ackThrough.communityId
+        && current.through === ackThrough.through ? null : current);
     }).catch(() => {
       if (!canceled) retryTimer = window.setTimeout(() => {
         setAckRetry(attempt => attempt + 1);
       }, 1500);
     });
     return () => { canceled = true; if (retryTimer !== undefined) window.clearTimeout(retryTimer); };
-  }, [ackThrough, ackRetry, communityId, gateway]);
+  }, [ackThrough, ackRetry, gateway]);
 
   const load = (): void => { void request(1); };
   const save = (): void => {

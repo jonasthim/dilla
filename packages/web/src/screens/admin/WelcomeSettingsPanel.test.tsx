@@ -150,4 +150,37 @@ describe('welcome settings panel', () => {
     expect(gateway.ack).toHaveBeenCalledWith(communityB, '1');
     expect(gateway.read).toHaveBeenCalledWith(communityB, [1, 2]);
   });
+
+  it('never acknowledges a pending response cursor against a newly selected community', async () => {
+    const communityA = 'c3'.repeat(16);
+    const communityB = 'd4'.repeat(16);
+    let requestA: Parameters<WelcomeSettingsGateway['request']>[0] | undefined;
+    const ackCalls: [string, string][] = [];
+    const gateway: WelcomeSettingsGateway = {
+      request: vi.fn(async input => {
+        requestA = input;
+        return { requestId: input.requestId, upload: 'accepted' as const };
+      }),
+      read: vi.fn(async communityId => ({ responses: requestA !== undefined && communityId === communityA ? [{
+        deliveryId: '12', requestId: requestA.requestId, communityId: communityA, operation: 1,
+        channelId: null, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG), sourceSeq: '12',
+      }] : [], through: communityId === communityA ? '12' : null, blocked: false })),
+      ack: vi.fn((communityId, through) => {
+        ackCalls.push([communityId, through]);
+        return new Promise<null>(() => {});
+      }),
+    };
+    const view = render(<WelcomeSettingsPanel communityId={communityA} serverName="Server A" channels={[{ id: CHANNEL, name: 'general' }]}
+      enabled canManage gateway={gateway} />);
+
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await screen.findByDisplayValue(CONFIG.template);
+    await waitFor(() => expect(ackCalls).toContainEqual([communityA, '12']));
+
+    view.rerender(<WelcomeSettingsPanel communityId={communityB} serverName="Server B" channels={[{ id: 'e5'.repeat(16), name: 'general-b' }]}
+      enabled canManage gateway={gateway} />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(ackCalls).not.toContainEqual([communityB, '12']);
+  });
 });
