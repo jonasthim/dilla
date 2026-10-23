@@ -5,6 +5,7 @@ package api_test
 // --idle`.
 
 import (
+	"log/slog"
 	"net/http"
 	"sync"
 	"testing"
@@ -82,8 +83,8 @@ func TestAnUnacknowledgedRelayCutIs503AtTheStartTheGateAndShare(t *testing.T) {
 func TestRecentMintsCountsTheLastMinutesCallTokens(t *testing.T) {
 	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
 	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
-	if n := calls.RecentMints(); n != 0 {
-		t.Fatalf("recent mints before any start = %d", n)
+	if n := calls.RecentMints(); n != 1 {
+		t.Fatalf("recent mints during the API startup grace period = %d, want 1 (busy)", n)
 	}
 	for range 2 {
 		if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status >= 300 {
@@ -97,6 +98,36 @@ func TestRecentMintsCountsTheLastMinutesCallTokens(t *testing.T) {
 	e.Clk.Advance(30 * time.Second)
 	if n := calls.RecentMints(); n != 0 {
 		t.Fatalf("recent mints 60 s after the last start = %d, want 0", n)
+	}
+}
+
+func TestRecentMintsIsBusyAfterRestartWithAnOldEmptyRoom(t *testing.T) {
+	e, ch, tok, group, stub, previous := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	e.Clk.Advance(61 * time.Second)
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status >= http.StatusMultipleChoices {
+		t.Fatalf("start in the old empty room = %d %s", status, e.ErrCode(body))
+	}
+	if len(stub.minted()) != 1 {
+		t.Fatalf("previous API process minted %d tokens, want 1", len(stub.minted()))
+	}
+
+	e.Clk.Advance(time.Second)
+	restarted := api.NewCalls(e.Repo, api.NewResolver(e.Repo), stub,
+		api.CallsConfig{LiveKitURL: testLiveKitURL}, e.Clk, slog.New(slog.DiscardHandler))
+	if n := previous.RecentMints(); n != 1 {
+		t.Fatalf("previous API process recent mints = %d, want 1", n)
+	}
+	if n := restarted.RecentMints(); n != 1 {
+		t.Fatalf("recent mints after API restart = %d, want busy until the startup grace period ends", n)
+	}
+	e.Clk.Advance(59 * time.Second)
+	if n := restarted.RecentMints(); n != 1 {
+		t.Fatalf("recent mints 59 s after API restart = %d, want busy", n)
+	}
+	e.Clk.Advance(time.Second)
+	if n := restarted.RecentMints(); n != 0 {
+		t.Fatalf("recent mints 60 s after API restart = %d, want 0", n)
 	}
 }
 

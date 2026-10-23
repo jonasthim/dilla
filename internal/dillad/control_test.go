@@ -39,7 +39,7 @@ func TestTheAPISocketAnswersTheBarredLookupAndRecentMints(t *testing.T) {
 		Count    *int `json:"count"`
 		WindowMS int  `json:"window_ms"`
 	}
-	if code := get("/media/recent-mints", &mints); code != http.StatusOK || mints.Count == nil || *mints.Count != 0 || mints.WindowMS != 60_000 {
-		t.Fatalf("recent mints: %d %+v, want 200 count 0 over 60 s", code, mints)
+	if code := get("/media/recent-mints", &mints); code != http.StatusOK || mints.Count == nil || *mints.Count != 1 || mints.WindowMS != 60_000 {
+		t.Fatalf("recent mints: %d %+v, want 200 count 1 over 60 s during API startup", code, mints)
 	}
 }

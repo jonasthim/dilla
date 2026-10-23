@@ -33,8 +33,9 @@ const maxMintLog = 4096
 
 // mintLog is when call tokens were minted, oldest first, within recentMintWindow.
 type mintLog struct {
-	mu    sync.Mutex
-	times []time.Time
+	mu        sync.Mutex
+	startedAt time.Time
+	times     []time.Time
 }
 
 func (l *mintLog) note(now time.Time) {
@@ -56,10 +57,15 @@ func (l *mintLog) pruneLocked(now time.Time) {
 }
 
 // RecentMints is the number of call tokens the start route minted within the last 60 s, on the
-// instance clock.
+// instance clock. It reports at least one during the first 60 s after API startup because an
+// earlier process's in-flight mint history is not available after a restart.
 func (h *Calls) RecentMints() int {
 	h.mints.mu.Lock()
 	defer h.mints.mu.Unlock()
-	h.mints.pruneLocked(h.clk.Now())
+	now := h.clk.Now()
+	h.mints.pruneLocked(now)
+	if len(h.mints.times) == 0 && now.Sub(h.mints.startedAt) < recentMintWindow {
+		return 1
+	}
 	return len(h.mints.times)
 }

@@ -71,6 +71,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
   group: \${{ github.workflow }}-\${{ github.event_name }}-\${{ github.ref }}
   cancel-in-progress: true

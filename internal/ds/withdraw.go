@@ -250,12 +250,19 @@ func (d *DS) withdrawnInEpoch(ctx context.Context, groupID id.ID, epoch uint64) 
 // applies a withdrawn proposal is refused with 409 `withdrawn` before the clause checks and the
 // merge.
 func (d *DS) appliesWithdrawn(ctx context.Context, groupID id.ID, epoch uint64, applied []mlswasi.AppliedProposal) error {
+	if len(applied) == 0 {
+		return nil
+	}
+	rows, err := d.opts.Store.ListWithdrawnProposals(ctx, groupID, epoch)
+	if err != nil {
+		return err
+	}
+	withdrawn := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		withdrawn[string(row.Ref)] = struct{}{}
+	}
 	for _, a := range applied {
-		withdrawn, err := d.opts.Store.IsWithdrawn(ctx, groupID, epoch, a.ProposalRef)
-		if err != nil {
-			return err
-		}
-		if !withdrawn {
+		if _, ok := withdrawn[string(a.ProposalRef)]; !ok {
 			continue
 		}
 		refs, err := d.refsOf(ctx, groupID, epoch)

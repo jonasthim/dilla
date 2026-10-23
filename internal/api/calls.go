@@ -387,7 +387,7 @@ func (b BarredDevices) DeviceBarred(ctx context.Context, device id.ID) (bool, er
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
 	afkCtx, afkCancel := context.WithCancel(context.Background())
 	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases(),
-		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1),
+		mints: mintLog{startedAt: clk.Now()}, sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1),
 		awayWake: make(chan struct{}, 1), afkCtx: afkCtx, afkCancel: afkCancel}
 }
 
