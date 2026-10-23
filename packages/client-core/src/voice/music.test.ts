@@ -44,6 +44,23 @@ function fixture() {
 }
 
 describe('authenticated voice music adapter', () => {
+  it('retries an unavailable subscribed channel so a late Bot Welcome can recover', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.client.call = vi.fn((command: Record<string, unknown>) => {
+        f.commands.push(command);
+        if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('private group not ready'));
+        return Promise.resolve({ responses: [], through: null, blocked: false });
+      }) as typeof f.client.call;
+      const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+      await vi.advanceTimersByTimeAsync(5_500);
+      expect(f.commands.filter(command => command.m === 'humanInteractionRequest' && command.operation === 10).length).toBeGreaterThanOrEqual(2);
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('keeps the unavailable fallback until it receives an authenticated state snapshot', async () => {
     expect(voiceMusicAdapter.state(CHANNEL)).toEqual({ status: 'unavailable', reason: 'authenticated-transport-missing' });
     await expect(voiceMusicAdapter.pause(CHANNEL, true)).rejects.toThrow(/transport is unavailable/);

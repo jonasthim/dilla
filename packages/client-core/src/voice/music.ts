@@ -55,6 +55,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   const revisions = new Map<string, string>();
   const staleChannels = new Set<string>();
   const listeners = new Map<string, Set<() => void>>();
+  const refreshStarted = new Map<string, number>();
+  const refreshing = new Set<string>();
   const waiters = new Map<string, { resolve: (response: InteractionResponse) => void; reject: (error: Error) => void }>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let polling: Promise<void> | null = null;
@@ -87,7 +89,14 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   };
   const ensurePolling = () => {
     if (timer === null) {
-      timer = setInterval(() => { void poll().catch(() => undefined); }, 500);
+      timer = setInterval(() => {
+        void poll().catch(() => undefined);
+        for (const channelId of listeners.keys()) {
+          if (states.get(channelId)?.status !== 'available' && Date.now() - (refreshStarted.get(channelId) ?? 0) >= 5_000) {
+            refreshSubscribed(channelId);
+          }
+        }
+      }, 500);
     }
   };
   const waitFor = async (response: Promise<InteractionResponse>): Promise<InteractionResponse> => {
@@ -126,6 +135,13 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     if (state?.status !== 'available') throw new Error('The Bot did not return a music snapshot.');
     staleChannels.delete(channelId);
   };
+  const refreshSubscribed = (channelId: string): void => {
+    if (refreshing.has(channelId)) return;
+    refreshing.add(channelId);
+    refreshStarted.set(channelId, Date.now());
+    void refresh(channelId).catch(() => publish(channelId, { status: 'unavailable', reason: 'bot-unavailable' }))
+      .finally(() => { refreshing.delete(channelId); });
+  };
   const mutate = async (channelId: string, operation: number, args: readonly (string | number | Uint8Array | null)[]) => {
     const current = states.get(channelId);
     if (current?.status !== 'available' || staleChannels.has(channelId)) await refresh(channelId);
@@ -156,10 +172,10 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       channelListeners.add(onChange);
       listeners.set(channelId, channelListeners);
       ensurePolling();
-      void refresh(channelId).catch(() => publish(channelId, { status: 'unavailable', reason: 'bot-unavailable' }));
+      refreshSubscribed(channelId);
       return () => {
         channelListeners.delete(onChange);
-        if (channelListeners.size === 0) listeners.delete(channelId);
+        if (channelListeners.size === 0) { listeners.delete(channelId); refreshStarted.delete(channelId); }
         if (listeners.size === 0 && timer !== null) { clearInterval(timer); timer = null; }
       };
     },
