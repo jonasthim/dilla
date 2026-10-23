@@ -165,8 +165,11 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: seq, Sender: botID, Envelope: []byte{1}, Body: "Pick a role", FrankingTag: make([]byte, 32), Created: now, UploaderDevice: deviceID}); err != nil {
 		t.Fatal(err)
 	}
+	groupID := seedTextGroup(t, e, channel, f.cid)
+	requestID, attemptID := id.New(), id.New()
+	seedAcceptedRolePanelBotSend(t, e, installationID, botID, deviceID, f.cid, groupID, requestID, attemptID, seq)
 	panelPath := "/v1/communities/" + f.cid.String() + "/role-panels"
-	if status, body := e.Do(http.MethodPut, panelPath, f.ownerTok, []any{id.New(), channel, seq, []any{[]any{"🎨", role}}}); status != http.StatusOK {
+	if status, body := e.Do(http.MethodPut, panelPath, f.ownerTok, []any{requestID, channel, seq, []any{[]any{"🎨", role}}}); status != http.StatusOK {
 		t.Fatalf("register bot panel = %d (%x), want 200", status, body)
 	}
 	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 3, seq, "🎭"))

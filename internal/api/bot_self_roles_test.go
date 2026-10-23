@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -150,7 +151,7 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	if status, body := e.Do(http.MethodPut, "/v1/communities/"+cid.String()+"/self-roles/policy", ownerTok, []any{id.New(), []any{role}}); status != http.StatusOK {
 		t.Fatalf("configure self-role policy = %d (%x)", status, body)
 	}
-	channel, _, status := newChannel(t, e, cid, ownerTok, 0, 1, 0, "role-panel")
+	channel, _, status := newChannel(t, e, cid, ownerTok, 0, 0, 0, "role-panel")
 	if status != http.StatusCreated {
 		t.Fatalf("create channel = %d", status)
 	}
@@ -200,10 +201,10 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	if status != http.StatusForbidden {
 		t.Fatalf("register message attributed to a lookalike uploader = %d (%x), want 403", status, body)
 	}
-	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: 9, Sender: botID, UploaderDevice: deviceID, Envelope: []byte{1}, Body: "Real bot panel", FrankingTag: make([]byte, 32), Created: e.Clk.Now().Unix()}); err != nil {
-		t.Fatal(err)
-	}
-	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
+	groupID := seedTextGroup(t, e, channel, cid)
+	requestID, attemptID := id.New(), id.New()
+	seedAcceptedRolePanelBotSend(t, e, installationID, botID, deviceID, cid, groupID, requestID, attemptID, 9)
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{requestID, channel, uint64(9), []any{[]any{"✅", role}}})
 	if status != http.StatusForbidden {
 		t.Fatalf("register panel without Roles capability = %d (%x), want 403", status, body)
 	}
@@ -219,9 +220,44 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{requestID, channel, uint64(9), []any{[]any{"✅", role}}})
 	if status != http.StatusOK {
 		t.Fatalf("register installation-authored panel = %d (%x), want 200", status, body)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register with forged operation id = %d (%x), want 403", status, body)
+	}
+	otherChannel := id.New()
+	if err := e.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: otherChannel, CommunityID: &cid, Kind: api.ChannelText, Mode: api.ModeE2EE,
+		Visibility: api.VisPrivate, SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Name: "role-panel-other", Created: now}); err != nil {
+		t.Fatalf("create cross-channel target: %v", err)
+	}
+	seedTextGroup(t, e, otherChannel, cid)
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{requestID, otherChannel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register receipt on another channel = %d (%x), want 403", status, body)
+	}
+	closedOperationID, closedAttemptID := id.New(), id.New()
+	closedReceipt, err := protocol.EncodeReceipt(protocol.SendReceipt{
+		OperationID: closedOperationID, AttemptID: closedAttemptID, CommunityID: cid, GroupID: groupID,
+		ExpectedGeneration: 1, CiphertextHash: make([]byte, 32), Class: 0, Outcome: protocol.ReceiptClosedNotAccepted, Epoch: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.Tx(t.Context(), func(tx store.Repository) error {
+		operation := store.BotSendOperationRow{InstallationID: installationID, OperationID: closedOperationID, UserID: botID, DeviceID: deviceID, CommunityID: cid, GroupID: groupID, CurrentAttempt: closedAttemptID, State: uint8(store.BotSendOperationActive)}
+		if _, _, err := tx.CreateBotSendOperationIfAbsent(t.Context(), operation); err != nil {
+			return err
+		}
+		return tx.InsertBotSendAttempt(t.Context(), store.BotSendAttemptRow{InstallationID: installationID, OperationID: closedOperationID, AttemptID: closedAttemptID, Generation: 1, Epoch: 0, Class: 0, CiphertextSHA256: make([]byte, 32), FingerprintSHA256: make([]byte, 32), Outcome: uint8(store.BotSendAttemptClosed), Receipt: closedReceipt})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{closedOperationID, channel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register nonaccepted send receipt = %d (%x), want 403", status, body)
 	}
 	registered, err := e.Repo.GetRolePanel(t.Context(), channel, 9)
 	if err != nil || registered.AuthorID != botID || registered.InstallationID != installationID {
@@ -245,5 +281,35 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
 	if status != http.StatusNotFound {
 		t.Fatalf("register panel in deleted channel = %d (%x), want 404", status, body)
+	}
+}
+
+func seedAcceptedRolePanelBotSend(t *testing.T, e *env, installationID, botID, deviceID, cid, groupID, operationID, attemptID id.ID, seq uint64) {
+	t.Helper()
+	now := e.Clk.Now().Unix()
+	responseBody, err := cborx.Marshal([]any{seq, make([]byte, 32), uint64(now)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := protocol.EncodeReceipt(protocol.SendReceipt{
+		OperationID: operationID, AttemptID: attemptID, CommunityID: cid, GroupID: groupID,
+		ExpectedGeneration: 1, CiphertextHash: make([]byte, 32), Class: 0,
+		Outcome: protocol.ReceiptAccepted, Epoch: 0,
+		SendResponse: &protocol.OriginalSendResponse{Sequence: seq, FrankingTag: make([]byte, 32), ReceiveTimestamp: uint64(now), Body: responseBody},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.Tx(t.Context(), func(tx store.Repository) error {
+		operation := store.BotSendOperationRow{InstallationID: installationID, OperationID: operationID, UserID: botID, DeviceID: deviceID, CommunityID: cid, GroupID: groupID, CurrentAttempt: attemptID, State: uint8(store.BotSendOperationActive)}
+		if _, _, err := tx.CreateBotSendOperationIfAbsent(t.Context(), operation); err != nil {
+			return err
+		}
+		if err := tx.InsertBotSendAttempt(t.Context(), store.BotSendAttemptRow{InstallationID: installationID, OperationID: operationID, AttemptID: attemptID, Generation: 1, Epoch: 0, Class: 0, CiphertextSHA256: make([]byte, 32), FingerprintSHA256: make([]byte, 32), Outcome: uint8(store.BotSendAttemptAccepted), Receipt: receipt}); err != nil {
+			return err
+		}
+		return tx.SealBotSendOperation(t.Context(), installationID, operationID, attemptID, store.BotSendOperationAccepted)
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

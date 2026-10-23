@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -230,7 +232,7 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 			return server.Errorf(server.CodeForbidden, "manage_roles required")
 		}
 		channel, err := tx.GetChannel(r.Context(), req.ChannelID)
-		if err != nil || channel.CommunityID == nil || *channel.CommunityID != cid || channel.Kind != ChannelText || channel.Mode != ModeReadable || channel.DeletedAt != nil {
+		if err != nil || channel.CommunityID == nil || *channel.CommunityID != cid || channel.Kind != ChannelText || channel.DeletedAt != nil {
 			return server.Errorf(server.CodeNotFound, "channel not found")
 		}
 		installation, err := tx.GetActiveBotInstallationByCommunity(r.Context(), cid)
@@ -247,12 +249,17 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.GetMember(r.Context(), cid, botUser.ID); err != nil {
 			return server.Errorf(server.CodeForbidden, "bot must be a community member")
 		}
-		messages, err := tx.ListReadableMessages(r.Context(), req.ChannelID, req.MessageSeq, 1)
-		if err != nil {
+		if err := verifyRolePanelBotSend(r.Context(), tx, installation, botUser.ID, channel, req); err != nil {
 			return err
 		}
-		if len(messages) != 1 || messages[0].Seq != req.MessageSeq || messages[0].Sender != botUser.ID || messages[0].UploaderDevice != *installation.DeviceID || messages[0].Deleted != nil {
-			return server.Errorf(server.CodeForbidden, "panel must reference a live message authored by the installed bot")
+		if channel.Mode == ModeReadable {
+			messages, err := tx.ListReadableMessages(r.Context(), req.ChannelID, req.MessageSeq, 1)
+			if err != nil {
+				return err
+			}
+			if len(messages) != 1 || messages[0].Seq != req.MessageSeq || messages[0].Sender != botUser.ID || messages[0].UploaderDevice != *installation.DeviceID || messages[0].Deleted != nil {
+				return server.Errorf(server.CodeForbidden, "panel must reference a live message authored by the installed bot")
+			}
 		}
 		policy, err := tx.ListSelfRolePolicy(r.Context(), cid)
 		if err != nil {
@@ -294,6 +301,67 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 		h.reactionRoleChanged(r.Context(), cid, user)
 	}
 	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, uint64(len(options))})
+}
+
+// verifyRolePanelBotSend ties panel ownership to the durable accepted send
+// receipt. MLS application messages can be pruned before the UI registers the
+// panel, so the receipt is the durable authority for Bot authorship and seq.
+func verifyRolePanelBotSend(ctx context.Context, tx store.Repository, installation store.BotInstallationRow, botUser id.ID, channel store.ChannelRow, req rolePanelRegistrationRequest) error {
+	deny := func() error {
+		return server.Errorf(server.CodeForbidden, "panel must reference an accepted send by the installed bot")
+	}
+	if installation.DeviceID == nil || channel.CommunityID == nil {
+		return deny()
+	}
+	groups, err := tx.GroupsForTarget(ctx, channel.ID, 0)
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return deny()
+	}
+	sends, ok := tx.(store.BotSendOperations)
+	if !ok {
+		return deny()
+	}
+	operation, err := sends.LockBotSendOperation(ctx, installation.ID, req.RequestID)
+	if err != nil || operation.OperationID != req.RequestID || operation.InstallationID != installation.ID || operation.UserID != botUser || operation.DeviceID != *installation.DeviceID || operation.CommunityID != *channel.CommunityID || operation.State != uint8(store.BotSendOperationAccepted) || operation.AcceptedAttempt == nil || *operation.AcceptedAttempt != operation.CurrentAttempt {
+		return deny()
+	}
+	var sendGroup *store.GroupRow
+	for i := range groups {
+		group := &groups[i]
+		if group.GroupID == operation.GroupID && group.Kind == 0 && group.CommunityID != nil && *group.CommunityID == *channel.CommunityID && group.TargetID == channel.ID && group.ClosedAt == nil {
+			sendGroup = group
+			break
+		}
+	}
+	if sendGroup == nil {
+		return deny()
+	}
+	attempt, err := sends.GetBotSendAttempt(ctx, installation.ID, req.RequestID, *operation.AcceptedAttempt)
+	if err != nil || attempt.InstallationID != installation.ID || attempt.OperationID != req.RequestID || attempt.AttemptID != *operation.AcceptedAttempt || attempt.Outcome != uint8(store.BotSendAttemptAccepted) || attempt.Class != 0 {
+		return deny()
+	}
+	receipt, err := botprotocol.DecodeReceipt(attempt.Receipt)
+	if err != nil || receipt.OperationID != req.RequestID || receipt.AttemptID != attempt.AttemptID || receipt.CommunityID != *channel.CommunityID || receipt.GroupID != sendGroup.GroupID || receipt.ExpectedGeneration != attempt.Generation || receipt.Epoch != attempt.Epoch || receipt.Class != uint64(attempt.Class) || receipt.Class != 0 || receipt.Outcome != botprotocol.ReceiptAccepted || receipt.SendResponse == nil || receipt.SendResponse.Sequence != req.MessageSeq || !bytes.Equal(receipt.CiphertextHash, attempt.CiphertextSHA256) || !sameOptionalID(receipt.PredecessorAttemptID, attempt.PredecessorID) {
+		return deny()
+	}
+	if message, err := tx.GetAppMessage(ctx, sendGroup.GroupID, req.MessageSeq); err == nil {
+		if message.UploaderDevice != *installation.DeviceID || message.DeletedAt != nil || (message.Class != nil && *message.Class != 0) {
+			return deny()
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+func sameOptionalID(a, b *id.ID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func (h *Roles) selfRoleCommunity(r *http.Request, repo store.Repository) (id.ID, auth.Session, error) {
