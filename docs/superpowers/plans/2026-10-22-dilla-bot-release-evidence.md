@@ -179,8 +179,30 @@ found no confirmed exploitable issue in native state binding, kind-3 sender
 authentication, role-panel approval, or Spotify availability checks. These checks
 do not qualify Spotify playback or constitute the complete release matrix.
 
+After merging the current `main`, the unreleased Bot migrations moved to 24–47,
+leaving main's released 21–23 intact. A full Go run exposed gaps in the separate
+sqlc schema-file numbering; those Bot files were renumbered, generated bindings
+were refreshed, `sqlc diff` passed, and the store suite passed. The complete
+`go test -p 1 ./...` rerun passed after rebuilding the ignored local WASI test
+artifact from the merged source. Rust core/vector tests, client and web
+typechecks, lint, and protocol checks passed on the merged tree. The first
+complete merged web/client test runs exposed only three stale test assertions;
+after correction, the full web suite passed 127 files/2,585 tests and the full
+client-core suite passed 64 files/2,307 tests.
+The Bot doctor now warns about missing local YouTube tools, and `doctor --youtube`
+checks the pinned extractor and required local tools. The setup guide provides
+hash-locked yt-dlp 2026.10.21 and EJS 0.8.0 installation instructions. This
+checks local readiness, not live provider playback.
+PR #87's CodeQL review found one real missing `uint64` to `int64` bound in
+`DeleteRolePanel`; SQLite and PostgreSQL now reject zero and values above
+`MaxInt64`, with boundary tests passing on both engines. The other flagged
+role-grant paths already checked the bound. Three cryptography alerts refer to
+a nonce buffer filled from `/dev/urandom` before use and two fixed message keys
+in test fixtures; production message keys use the native RNG. The GitHub
+security scan must be rerun on the updated branch.
+
 1. **Encrypted interactions:** native creation, helper IPC, durable Go coordination, Welcome storage, admission-backed synchronization, Bot event dispatch, a fenced private-group read route, dedicated native descriptor/inspection and proof-bound sync/send operations, and a durable response outbox are integrated. Human response correlation reaches moderation log, welcome settings, music controls, and role-panel publication in Chromium. The role-panel reaction and source-removal lifecycle now pass in Chromium and Firefox, with durable timed retry for transient action failures. Cross-device recovery and whole-release browser acceptance remain required. Store/API suites passed against PostgreSQL earlier; this is not the whole-release matrix.
-2. **Production music path:** `cmd/dillabot` reconciles identities, registers authorized encrypted queue handlers, and constructs YouTube and synthetic-tested Spotify PCM starters. Chromium and Firefox prove audible, authenticated YouTube playback from the shipping queue/control flow, including Pause, Resume, and Stop after stale-leaf recovery. Chromium also passes two independent sessions in one server. Playlist controls, cross-server isolation, and dedicated Spotify-account qualification remain open. [Spotify's Developer Policy](https://developer.spotify.com/policy) separately prohibits the planned one-source-to-several-listeners use absent permission.
+2. **Production music path:** `cmd/dillabot` reconciles identities, registers authorized encrypted queue handlers, and constructs YouTube and synthetic-tested Spotify PCM starters. Chromium and Firefox prove audible, authenticated YouTube playback from the shipping queue/control flow, including Pause, Resume, and Stop after stale-leaf recovery. Chromium also passes two independent sessions in one community. A further Chromium test passes two communities in one instance, with distinct Bot identities, queues, call keys and decrypted audio; stopping or disabling one Bot leaves the other's audio running. This run required yt-dlp 2026.10.21; the older local 2025.09.26 failed the same sample under the production bubblewrap resolver. Playlist controls and dedicated Spotify-account qualification remain open. The operator accepts the risk that [Spotify's Developer Policy](https://developer.spotify.com/policy) prohibits the planned one-source-to-several-listeners use absent permission; this is recorded separately from the technical release gate.
 3. **Spotify qualification:** the local pinned librespot probe builds as version 0.8.0 and synthetic PCM through FFmpeg passes. The dependency doctor sees yt-dlp 2026.8.19, FFmpeg/ffprobe 9.0.2, and Node 24.15.0, but reports provider qualification unverified. No dedicated Premium account was connected (`DILLA_PROBE_STATE` is unset); actual librespot audio, playlist expansion, playback controls, and encrypted browser playback on the intended host remain unverified. The qualification gate cannot be inferred from passing unit tests.
 4. **Community and moderation integration:** zero-capability installation readiness, Roles-enabled join/leave/rejoin, and the bot-authored role-panel grant/removal lifecycle pass in Chromium and Firefox. One-off announcement delivery and restart deduplication, manual warning with encrypted evidence retrieval, timeout/recovery, signed removal with offline tombstone recovery, and automatic duplicate-warning case persistence pass in Chromium. Whole-release scenarios remain open. Cold Bot backup and server restore/heal passed separately; coordinated same-installation restore remains open.
 
