@@ -130,11 +130,17 @@ func senderForReservedEpoch(ctx context.Context, state counter.State, group id.I
 	if err := validateSenderEpoch(epoch); err != nil {
 		return nil, err
 	}
-	reserved, err := counter.Reserve(ctx, state, group, epoch.Epoch, uint16(epoch.OwnLeaf))
+	// Keep the narrowing bound beside the conversion for the publisher's
+	// authorization boundary, even though validateSenderEpoch checks it too.
+	if epoch.OwnLeaf > uint64(^uint16(0)) {
+		return nil, ErrBinding
+	}
+	leaf := uint16(epoch.OwnLeaf)
+	reserved, err := counter.Reserve(ctx, state, group, epoch.Epoch, leaf)
 	if err != nil {
 		return nil, errors.New("music livekit: sender counter reservation failed")
 	}
-	sender, err := sframe.NewSenderRange(epoch.BaseKey, uint16(epoch.OwnLeaf), epoch.Epoch, reserved.Start, reserved.End)
+	sender, err := sframe.NewSenderRange(epoch.BaseKey, leaf, epoch.Epoch, reserved.Start, reserved.End)
 	if err != nil {
 		return nil, fmt.Errorf("music livekit: sender range initialization failed: %w", err)
 	}

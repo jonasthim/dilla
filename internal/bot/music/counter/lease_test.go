@@ -80,7 +80,7 @@ func TestReserveFailsClosedOnMalformedOrExhaustedState(t *testing.T) {
 	if _, err := Reserve(ctx, store, group, 5, 3); err == nil {
 		t.Fatal("accepted malformed counter cursor")
 	}
-	value, err := cborx.Marshal([]any{uint64(1), uint64(sframe.MaxSeq + 1 - BlockSize + 1)})
+	value, err := cborx.Marshal([]any{uint64(1), sframe.MaxSeq + 1 - BlockSize + 1})
 	if err != nil {
 		t.Fatal(err)
 	}
