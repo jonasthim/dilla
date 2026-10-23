@@ -52,22 +52,18 @@ func TestStartRejectsCallOutsideBoundGroupBeforeReadingKeys(t *testing.T) {
 
 func TestSenderForEpochUsesOwnLeafAndRequiresRosterBinding(t *testing.T) {
 	e := native.CallMediaEpoch{Epoch: 7, OwnLeaf: 4, BaseKey: [16]byte{1}, Roster: []native.CallMediaMember{{Leaf: 4}}}
-	sender, err := senderForEpoch(e)
-	if err != nil {
+	if err := validateSenderEpoch(e); err != nil {
 		t.Fatal(err)
 	}
-	if sender == nil {
-		t.Fatal("senderForEpoch returned nil sender")
-	}
 	e.OwnLeaf = 3
-	if _, err := senderForEpoch(e); !errors.Is(err, ErrBinding) {
+	if err := validateSenderEpoch(e); !errors.Is(err, ErrBinding) {
 		t.Fatalf("senderForEpoch missing own leaf error = %v, want ErrBinding", err)
 	}
 }
 
 func TestSenderForEpochAcceptsInitialEpochZero(t *testing.T) {
 	e := native.CallMediaEpoch{OwnLeaf: 0, BaseKey: [16]byte{1}, Roster: []native.CallMediaMember{{Leaf: 0}}}
-	if _, err := senderForEpoch(e); err != nil {
+	if err := validateSenderEpoch(e); err != nil {
 		t.Fatalf("initial MLS epoch zero rejected: %v", err)
 	}
 }

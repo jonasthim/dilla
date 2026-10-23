@@ -123,17 +123,6 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 	return s, nil
 }
 
-func senderForEpoch(epoch native.CallMediaEpoch) (*sframe.Sender, error) {
-	if err := validateSenderEpoch(epoch); err != nil {
-		return nil, err
-	}
-	sender, err := sframe.NewSender(epoch.BaseKey, uint16(epoch.OwnLeaf), epoch.Epoch, epoch.Epoch)
-	if err != nil {
-		return nil, fmt.Errorf("music livekit: sender initialization failed: %w", err)
-	}
-	return sender, nil
-}
-
 func senderForReservedEpoch(ctx context.Context, state counter.State, group id.ID, epoch native.CallMediaEpoch) (*sframe.Sender, error) {
 	if ctx == nil || state == nil || group.IsZero() {
 		return nil, ErrBinding

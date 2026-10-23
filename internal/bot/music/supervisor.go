@@ -127,7 +127,9 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 // only for a live, explicit Resume or a Skip from an already-playing queue;
 // restored or metadata-only snapshots cannot start audio. A failed start is
 // durably paused at a new CAS revision so the persisted queue cannot claim
-// playback is active.
+// playback is active. Because the external mutation is already committed, the
+// request context does not own runtime adoption; bounded reads and playback
+// use the supervisor's lifetime context instead.
 func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State, expected uint64, startPlayback bool) (uint64, error) {
 	if ctx == nil {
 		return 0, errors.New("nil persisted music snapshot context")
@@ -140,7 +142,12 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	if expected <= s.revision || committed.Revision != expected {
 		return s.revision, ErrRevisionConflict
 	}
-	_, revision, err := s.store.Load(ctx, s.channel)
+	// Persisted interactions can be dispatched under a short-lived event
+	// context. Once their mutation has committed, runtime adoption belongs to
+	// this supervisor's lifetime, not the request that carried it.
+	loadCtx, cancelLoad := context.WithTimeout(s.ctx, 5*time.Second)
+	_, revision, err := s.store.Load(loadCtx, s.channel)
+	cancelLoad()
 	if err != nil {
 		return s.revision, err
 	}
@@ -153,8 +160,8 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	}
 	s.state, s.revision = cloneState(state), revision
 	if startPlayback && !state.Paused && state.Current != nil && s.playback == nil {
-		if err := s.startLocked(ctx); err != nil {
-			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := s.startLocked(s.ctx); err != nil {
+			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), 5*time.Second)
 			_ = s.pauseLocked(pauseCtx)
 			cancel()
 			s.signalLocked()

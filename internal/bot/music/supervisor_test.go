@@ -46,12 +46,18 @@ func (s supervisorStore) Save(ctx context.Context, channel id.ID, expected uint6
 }
 
 func (n *supervisorNative) Binding() native.Binding { return n.binding }
-func (n *supervisorNative) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+func (n *supervisorNative) StateGet(ctx context.Context, area uint64, key []byte) (native.StateValue, error) {
+	if err := ctx.Err(); err != nil {
+		return native.StateValue{}, err
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.rows[string(key)], nil
 }
-func (n *supervisorNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+func (n *supervisorNative) StateTransaction(ctx context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	c := changes[0]
@@ -99,7 +105,10 @@ func (t *fakeTimer) Fire() {
 	}
 }
 
-func (s *supervisorStarter) Start(_ context.Context, t music.Track) (music.Playback, error) {
+func (s *supervisorStarter) Start(ctx context.Context, t music.Track) (music.Playback, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s.fail {
 		return nil, errors.New("start failed")
 	}
@@ -239,6 +248,66 @@ func TestSupervisorAppliesCommittedRevisionWithoutSecondMutationWrite(t *testing
 	}
 	if loaded.Revision != saved.Revision {
 		t.Fatalf("successful handoff wrote revision %d, want only committed revision %d", loaded.Revision, saved.Revision)
+	}
+}
+
+func TestSupervisorAppliesCommittedSkipAfterRequestContextCancellation(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := tid(4)
+	starter := &supervisorStarter{}
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
+	defer cancelLifetime()
+	s, err := music.NewSupervisor(lifetime, channel, supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	first := music.Track{ID: "first", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "First", RequesterID: "member"}
+	second := music.Track{ID: "second", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "Second", RequesterID: "member"}
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{first, second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	playing, err := music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(context.Background(), channel, saved.Revision, playing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	skipped, err := music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpSkip})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(context.Background(), channel, saved.Revision, skipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+	if _, err := s.ApplyPersistedSnapshot(requestCtx, saved.State, saved.Revision, true); err != nil {
+		t.Fatalf("committed Skip handoff with canceled request context: %v", err)
+	}
+	if got := s.State(); got.Current == nil || got.Current.ID != second.ID || got.Paused {
+		t.Fatalf("supervisor state after canceled request context = %+v, want active Second", got)
+	}
+	if len(starter.starts) != 2 || starter.starts[1].ID != second.ID || starter.current == nil {
+		t.Fatalf("playback starts after canceled request context = %v, want Second", starter.starts)
 	}
 }
 
