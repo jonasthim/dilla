@@ -40,6 +40,7 @@ interface ExpectedCoreHandle {
   group_joined(group_id: Uint8Array, seq: bigint): void;
   welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
   human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array): Uint8Array;
+  human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
   group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
   commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
   commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -148,6 +149,7 @@ expectTrue<Equals<H['group_join_external'], E['group_join_external']>>();
 expectTrue<Equals<H['group_joined'], E['group_joined']>>();
 expectTrue<Equals<H['welcomes_apply'], E['welcomes_apply']>>();
 expectTrue<Equals<H['human_interaction_welcome_apply'], E['human_interaction_welcome_apply']>>();
+expectTrue<Equals<H['human_interaction_send_prepare'], E['human_interaction_send_prepare']>>();
 expectTrue<Equals<H['group_apply'], E['group_apply']>>();
 expectTrue<Equals<H['commit_build'], E['commit_build']>>();
 expectTrue<Equals<H['commit_confirm'], E['commit_confirm']>>();

@@ -75,6 +75,36 @@ pub fn role_ids_arg(bytes: &[u8]) -> Result<(), ClientError> {
     }
 }
 
+/// The strict protocol/10 CBOR request is kept opaque at the WASM boundary and is validated by
+/// `ClientCore`. Its encoded request is bounded before it crosses into the core (protocol/10 §
+/// Application requests: 4000-byte encoded body, less the prefix and base64url expansion).
+#[doc(hidden)]
+pub fn human_interaction_request_arg(bytes: &[u8]) -> Result<(), ClientError> {
+    if bytes.len() <= 2991 {
+        Ok(())
+    } else {
+        Err(ClientError {
+            code: "E_CORE_INPUT",
+            detail: format!(
+                "request_body: expected at most 2991 bytes, got {}",
+                bytes.len()
+            ),
+        })
+    }
+}
+
+#[doc(hidden)]
+pub fn nonzero_id_arg(name: &'static str, bytes: &[u8]) -> Result<[u8; 16], ClientError> {
+    let id = fixed_arg::<16>(name, bytes)?;
+    if id == [0; 16] {
+        return Err(ClientError {
+            code: "E_CORE_INPUT",
+            detail: format!("{name}: id must be nonzero"),
+        });
+    }
+    Ok(id)
+}
+
 #[doc(hidden)]
 pub fn authority_ids_arg(name: &'static str, bytes: &[u8]) -> Result<(), ClientError> {
     if bytes.len().is_multiple_of(16) && bytes.len() <= 4096 * 16 {
@@ -684,6 +714,33 @@ impl CoreHandle {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.send_prepare(&group_id, request, now))
             .map(Vec::into_boxed_slice)
+    }
+    /// Prepare a read-only Bot interaction request for the authenticated human device.
+    /// `request_body` is strict protocol/10 deterministic CBOR, limited to 2991 bytes. The
+    /// plaintext is consumed by the core and is never returned; the result is CBOR `[request_id]`
+    /// while the encrypted send intent remains in the encrypted outbox.
+    pub fn human_interaction_send_prepare(
+        &self,
+        request_id: &[u8],
+        community_id: &[u8],
+        group_id: &[u8],
+        request_body: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = nonzero_id_arg("request_id", request_id).map_err(owned_js_error)?;
+        let community_id = nonzero_id_arg("community_id", community_id).map_err(owned_js_error)?;
+        let group_id = nonzero_id_arg("group_id", group_id).map_err(owned_js_error)?;
+        human_interaction_request_arg(request_body).map_err(owned_js_error)?;
+        self.with_core(|c| {
+            c.human_interaction_send_prepare(
+                &request_id,
+                &community_id,
+                &group_id,
+                request_body,
+                now,
+            )
+        })
+        .map(Vec::into_boxed_slice)
     }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {
