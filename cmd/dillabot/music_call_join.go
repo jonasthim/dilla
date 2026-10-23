@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -30,7 +31,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	}
 	call, err := calls.ChannelCall(ctx, channel)
 	if err != nil {
-		return err
+		return musicCallJoinStageError("channel_call", err)
 	}
 	if call.CallID == nil || call.GroupID == nil || *call.CallID != channel || call.GroupID.IsZero() {
 		return errors.New("music channel has no active call group")
@@ -38,7 +39,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	group := *call.GroupID
 	groups, err := core.Groups(ctx)
 	if err != nil {
-		return err
+		return musicCallJoinStageError("native_groups", err)
 	}
 	var localJoinEpoch uint64
 	for _, existing := range groups {
@@ -47,13 +48,13 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 		}
 		if existing.State == 4 {
 			if err = core.CallGroupForget(ctx, group); err != nil {
-				return err
+				return musicCallJoinStageError("forget_gone_group", err)
 			}
 			continue
 		}
 		if existing.State == 2 {
 			_, err = core.CallMediaEpoch(ctx, channel)
-			return err
+			return musicCallJoinStageError("active_media_gate", err)
 		}
 		if existing.State != 1 {
 			return errors.New("music call-group state is not joinable")
@@ -62,7 +63,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	}
 	info, err := calls.GroupInfo(ctx, group)
 	if err != nil {
-		return err
+		return musicCallJoinStageError("group_info", err)
 	}
 	baseEpoch := info.Epoch
 	if localJoinEpoch > 0 {
@@ -72,7 +73,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 
 	intent, err := core.GroupIntentResult(ctx, operation)
 	if err != nil {
-		return err
+		return musicCallJoinStageError("intent_read", err)
 	}
 	var joined native.GroupExternalJoinResult
 	if intent != nil {
@@ -81,12 +82,12 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 		}
 		joined, err = decodeMusicExternalJoinResult(intent.Result)
 		if err != nil {
-			return err
+			return musicCallJoinStageError("intent_decode", err)
 		}
 	} else {
 		tree, treeErr := calls.GroupTree(ctx, group)
 		if treeErr != nil {
-			return treeErr
+			return musicCallJoinStageError("group_tree", treeErr)
 		}
 		if info.Epoch != tree.Epoch || !bytes.Equal(info.TreeHash, tree.TreeHash) {
 			return errors.New("music call-group snapshot changed during join")
@@ -101,28 +102,28 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 		}
 		joined, err = core.ExternalJoin(ctx, operation, group, channel, 1, policy, infoBody, treeBody)
 		if err != nil {
-			return err
+			return musicCallJoinStageError("external_join", err)
 		}
 	}
 	if err = refreshMusicCallJoinLeaves(ctx, calls, core, group); err != nil {
-		return err
+		return musicCallJoinStageError("trust_refresh", err)
 	}
 	if err = core.CallJoinCheck(ctx, channel); err != nil {
-		return err
+		return musicCallJoinStageError("staged_media_gate", err)
 	}
 	accepted, err := calls.Resync(ctx, group, joined.Commit, joined.GroupInfo)
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
 			if discardErr := core.DiscardGroup(ctx, operation, group); discardErr != nil {
-				return errors.Join(err, discardErr)
+				return errors.Join(musicCallJoinStageError("resync", err), musicCallJoinStageError("discard", discardErr))
 			}
-			return err
+			return musicCallJoinStageError("resync", err)
 		}
 		// A lost response is resolved only when the exact staged GroupInfo is now current.
 		current, readErr := calls.GroupInfo(ctx, group)
 		if readErr != nil || current.NextSequence == 0 || !bytes.Equal(current.Info, joined.GroupInfo) {
-			return err
+			return musicCallJoinStageError("resync", err)
 		}
 		accepted.Sequence = current.NextSequence - 1
 	}
@@ -130,12 +131,19 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 		return errors.New("music call-group resync returned an invalid sequence")
 	}
 	if err = core.GroupJoined(ctx, operation, group, accepted.Sequence); err != nil {
-		return err
+		return musicCallJoinStageError("resolve_join_intent", err)
 	}
 	if _, err = core.CallMediaEpoch(ctx, channel); err != nil {
-		return err
+		return musicCallJoinStageError("joined_media_gate", err)
 	}
 	return nil
+}
+
+func musicCallJoinStageError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("music call-group %s: %w", stage, err)
 }
 
 func musicCallJoinOperation(installation, group id.ID, epoch uint64) id.ID {
