@@ -148,7 +148,7 @@ func TestGroupEventRouterNeverPunishesStartupBacklog(t *testing.T) {
 	body := "same"
 	for i := 1; i <= 6; i++ {
 		event := native.GroupEvent{DeliveryID: uint64(i), Community: community, Group: group, Channel: channel,
-			SourceSequence: uint64(i), ReceivedAt: uint64(time.Unix(1_800_000_000, 0).Add(time.Duration(i) * time.Second).UnixMilli()),
+			SourceSequence: uint64(i), ReceivedAt: uint64(time.Unix(1_800_000_000, 0).Add(time.Duration(i) * time.Second).Unix()),
 			SenderUser: user, SenderDevice: id.New(), SenderKind: 0, SenderTier: 0, EnvelopeType: 0, Body: &body, Message: id.New()}
 		if err := handler.HandleGroupEvent(context.Background(), event); err != nil {
 			t.Fatal(err)
@@ -168,13 +168,32 @@ func TestGroupEventRouterTreatsDelayedPreActivationAndFutureEventsAsReplay(t *te
 	activation := uint64(time.Now().Add(-time.Minute).UnixMilli())
 	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 10, activation)
 	body := "late synced message"
-	for _, received := range []uint64{activation - 1, uint64(time.Now().Add(time.Minute).UnixMilli())} {
+	for _, received := range []uint64{activation/1000 - 1, uint64(time.Now().Add(time.Minute).Unix())} {
 		if err := handler.HandleGroupEvent(context.Background(), native.GroupEvent{DeliveryID: 100, Group: group, EnvelopeType: 0, ReceivedAt: received, Body: &body}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if len(automod.replays) != 2 || !automod.replays[0] || !automod.replays[1] {
 		t.Fatalf("replay flags = %v, want delayed and future events treated as replay", automod.replays)
+	}
+}
+
+func TestGroupEventRouterNormalizesNativeReceiptSecondsBeforeReplayFencing(t *testing.T) {
+	group := id.New()
+	inspector := groupEventInspectorFunc(func(context.Context, id.ID) (native.GroupInfo, error) {
+		return native.GroupInfo{ID: group, Kind: 0}, nil
+	})
+	automod := &routedModerationRuntime{}
+	now := time.Now()
+	activation := uint64(now.Add(-time.Second).UnixMilli())
+	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 10, activation)
+	body := "new live message"
+	if err := handler.HandleGroupEvent(context.Background(), native.GroupEvent{DeliveryID: 11, Group: group,
+		EnvelopeType: 0, ReceivedAt: uint64(now.Unix()), Body: &body}); err != nil {
+		t.Fatal(err)
+	}
+	if len(automod.replays) != 1 || automod.replays[0] {
+		t.Fatalf("native seconds timestamp replay flags = %v, want one live event", automod.replays)
 	}
 }
 

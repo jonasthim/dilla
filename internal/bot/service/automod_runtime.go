@@ -121,7 +121,9 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, err
 		}
 	}
-	receivedAt := time.UnixMilli(int64(event.ReceivedAt))
+	// Native group events carry Unix seconds, while this runtime uses Go time
+	// values and the replay fence is stored in milliseconds.
+	receivedAt := time.Unix(int64(event.ReceivedAt), 0)
 	now := r.now()
 	input := moderation.Input{
 		CommunityID: event.Community.String(), SourceID: event.Message.String(), Revision: event.SourceSequence,

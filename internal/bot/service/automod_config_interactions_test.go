@@ -309,7 +309,7 @@ func TestAutoModerationConfigPutActivatesNewRevisionBeforeReturning(t *testing.T
 	}
 	body := "test"
 	event := native.GroupEvent{DeliveryID: 1, Community: h.CommunityID, Group: actor.Group, Channel: id.New(), SourceSequence: 1,
-		ReceivedAt: uint64(now.UnixMilli()), SenderUser: id.New(), SenderDevice: id.New(), EnvelopeType: 0, Body: &body, Message: id.New()}
+		ReceivedAt: uint64(now.Unix()), SenderUser: id.New(), SenderDevice: id.New(), EnvelopeType: 0, Body: &body, Message: id.New()}
 	decision, err := runtime.Handle(context.Background(), event, false, []string{"1", "2", "3", "4", "5", "6"})
 	if err != nil || decision.Action != moderation.ActionWarn || punitive != 1 {
 		t.Fatalf("new revision not active on return: decision=%+v punitive=%d err=%v", decision, punitive, err)

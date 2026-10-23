@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"regexp"
 	"time"
 
@@ -59,8 +60,13 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 		// Server receipt time catches source pages synced into the journal after
 		// the process-start delivery high-water. Future timestamps are uncertain
 		// (for example host/server clock skew), so they are replay-only too.
-		replay := event.DeliveryID <= h.replayThrough || event.ReceivedAt > 0 && event.ReceivedAt <= h.replayReceivedThrough ||
-			event.ReceivedAt > 0 && event.ReceivedAt > uint64(now)
+		receivedAtTooLarge := event.ReceivedAt > uint64(math.MaxInt64/1000)
+		receivedAtMS := uint64(0)
+		if !receivedAtTooLarge {
+			receivedAtMS = event.ReceivedAt * 1000
+		}
+		replay := event.DeliveryID <= h.replayThrough || event.ReceivedAt > 0 && (receivedAtTooLarge || receivedAtMS <= h.replayReceivedThrough) ||
+			event.ReceivedAt > 0 && receivedAtMS > uint64(now)
 		_, err := h.automoderation.Handle(ctx, event, replay, mentions)
 		return err
 	case 3: // Managed kind-3 interaction behavior retains its existing durable sender path.
