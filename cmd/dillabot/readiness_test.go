@@ -27,7 +27,7 @@ func (f *readyFake) MarkReady(_ context.Context, installation, request id.ID, re
 
 func TestReadinessUsesStableRequestAndDefersUnjoinedGroups(t *testing.T) {
 	inst := client.Installation{ID: id.New(), CommunityID: id.New(), State: 2, Revision: 7}
-	f := &readyFake{wantID: inst.ID, result: inst, err: &client.APIError{Status: http.StatusConflict, Code: "E_INVALID_REQUEST"}}
+	f := &readyFake{wantID: inst.ID, result: inst, err: &client.APIError{Status: http.StatusConflict, Code: "E_INVALID_REQUEST", ReadinessConflict: "installation prerequisites are still pending"}}
 	for i := 0; i < 2; i++ {
 		ready, err := markReadyAfterMembership(context.Background(), f, inst)
 		if err != nil || ready {
@@ -45,6 +45,23 @@ func TestReadinessUsesStableRequestAndDefersUnjoinedGroups(t *testing.T) {
 	}
 	if f.requests[2] != f.requests[0] {
 		t.Fatal("accepted retry changed request ID")
+	}
+}
+
+func TestReadinessSurfacesNonPendingConflicts(t *testing.T) {
+	inst := client.Installation{ID: id.New(), CommunityID: id.New(), State: 2, Revision: 7}
+	for _, detail := range []string{
+		"installation revision or state changed",
+		"managed role is missing",
+		"request id was used for a different readiness operation",
+	} {
+		t.Run(detail, func(t *testing.T) {
+			f := &readyFake{wantID: inst.ID, err: &client.APIError{Status: http.StatusConflict, Code: "E_INVALID_REQUEST", ReadinessConflict: detail}}
+			ready, err := markReadyAfterMembership(context.Background(), f, inst)
+			if ready || err == nil {
+				t.Fatalf("non-pending conflict = %v, %v; want surfaced error", ready, err)
+			}
+		})
 	}
 }
 

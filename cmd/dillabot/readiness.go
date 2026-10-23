@@ -43,7 +43,7 @@ func markReadyAfterMembership(ctx context.Context, session readinessSession, ins
 	row, err := session.MarkReady(ctx, installation.ID, request, installation.Revision)
 	if err != nil {
 		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict && apiErr.Code == "E_INVALID_REQUEST" && apiErr.ReadinessConflict == "installation prerequisites are still pending" {
 			return false, nil
 		}
 		return false, err

@@ -438,6 +438,29 @@ func TestRecoveryErrorsRetainTypedDataAndSanitizeUnknownCode(t *testing.T) {
 	}
 }
 
+func TestReadinessConflictKeepsOnlyKnownDiscriminator(t *testing.T) {
+	for _, tc := range []struct {
+		detail string
+		want   string
+	}{
+		{"installation prerequisites are still pending", "installation prerequisites are still pending"},
+		{"installation revision or state changed", "installation revision or state changed"},
+		{"managed role is missing", "managed role is missing"},
+		{"request id was used for a different readiness operation", "request id was used for a different readiness operation"},
+		{"arbitrary private server detail", ""},
+	} {
+		t.Run(tc.detail, func(t *testing.T) {
+			e := parseAPIError(http.StatusConflict, "E_INVALID_REQUEST", []any{"E_INVALID_REQUEST", tc.detail, nil})
+			if e.ReadinessConflict != tc.want {
+				t.Fatalf("readiness conflict = %q, want %q", e.ReadinessConflict, tc.want)
+			}
+			if strings.Contains(e.Error(), tc.detail) {
+				t.Fatalf("error leaked server detail: %s", e)
+			}
+		})
+	}
+}
+
 func TestVersionRefusalPreservesSupportedVersions(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/instance" {

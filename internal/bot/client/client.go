@@ -182,8 +182,11 @@ type ResponseObservation struct {
 // details and opaque response bytes are omitted from Error() to avoid leaking
 // potentially private values into logs.
 type APIError struct {
-	Status                                    int
-	Code                                      string
+	Status int
+	Code   string
+	// ReadinessConflict retains only an allowlisted fixed Bot readiness conflict
+	// detail. Arbitrary server details are intentionally discarded.
+	ReadinessConflict                         string
 	Outcome                                   Outcome
 	RetryAfterMS                              *uint64
 	EventFloor, EventHighWater                uint64
@@ -456,6 +459,14 @@ func parseAPIError(status int, code string, a []any) *APIError {
 	e := &APIError{Status: status, Code: code, Outcome: OutcomeDefinitive}
 	if !knownErrorCode(code) {
 		return e
+	}
+	if status == http.StatusConflict && code == "E_INVALID_REQUEST" && len(a) > 1 {
+		if detail, ok := a[1].(string); ok {
+			switch detail {
+			case "installation revision or state changed", "installation prerequisites are still pending", "managed role is missing", "request id was used for a different readiness operation":
+				e.ReadinessConflict = detail
+			}
+		}
 	}
 	if len(a) > 2 && a[2] != nil {
 		n, _ := asUint(a[2])
