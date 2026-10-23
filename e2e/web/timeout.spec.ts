@@ -24,7 +24,6 @@ let instance = '';
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
 test.use({
   baseURL: `http://127.0.0.1:${String(EMPTY.port)}`,
-  permissions: ['microphone'],
   launchOptions: { args: chromiumMediaArgs(writeFixtures(join(tmpdir(), 'dilla-timeout-media'))) },
 });
 
@@ -81,6 +80,7 @@ test('manual text timeout blocks community writes and recovers while read, voice
   page, guard, playwright, browserName, launchOptions, headless, channel, viewport,
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'the in-process voice acceptance uses Chromium fake media');
+  await page.context().grantPermissions(['microphone']);
   const h = started();
 
   // Ada creates the community and voice channel in the browser. Bea joins through an invite made by the owner UI.
