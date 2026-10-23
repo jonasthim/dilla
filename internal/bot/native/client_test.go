@@ -168,10 +168,13 @@ func TestStateTombstoneAndTransactionConflictDoNotRetry(t *testing.T) {
 }
 
 func TestStateAreaNineSupportsMemberRegistrationCatchup(t *testing.T) {
-	f := &fakeTransport{responses: [][]any{{uint64(0), nil}}}
+	f := &fakeTransport{responses: [][]any{{uint64(0), nil}, {[]any{}, nil}}}
 	c := newFakeClient(t, f)
 	if _, err := c.StateGet(context.Background(), 9, []byte("dilla.bot.member-registration-catchup.v1")); err != nil {
 		t.Fatalf("state area 9 refused: %v", err)
+	}
+	if _, err := c.StateScan(context.Background(), 9, nil, 10); err != nil {
+		t.Fatalf("state area 9 scan refused: %v", err)
 	}
 }
 

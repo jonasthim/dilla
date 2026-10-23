@@ -332,7 +332,7 @@ func (c *Client) StateGet(ctx context.Context, area uint64, key []byte) (StateVa
 	return v.(StateValue), nil
 }
 func (c *Client) StateScan(ctx context.Context, area uint64, after []byte, limit uint64) (StatePage, error) {
-	if area > 8 || (after != nil && (len(after) < 1 || len(after) > 128)) || limit < 1 || limit > 100 {
+	if area > 9 || (after != nil && (len(after) < 1 || len(after) > 128)) || limit < 1 || limit > 100 {
 		return StatePage{}, errors.New("invalid state scan input")
 	}
 	var cur any
