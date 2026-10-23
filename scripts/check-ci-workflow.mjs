@@ -842,7 +842,7 @@ export function checkWorkflow(root) {
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
 export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'spotify-helper', 'bot-release', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -888,12 +888,15 @@ const RELEASE_STEPS = {
   ],
   release: [
     'cp deploy/install.sh release/install.sh',
+    'cp deploy/install-bot.sh release/install-bot.sh',
     'pattern: dilla-spotify-helper-*',
     'pattern: dilla-bot-*',
     'merge-multiple: true',
     // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
     `sed -i "s/^DILLA_RELEASE_TAG=\\"\\"$/DILLA_RELEASE_TAG=\\"$TAG\\"/" release/install.sh`,
     'test "$(grep -c "^DILLA_RELEASE_TAG=\\"$TAG\\"$" release/install.sh)" -eq 1',
+    `sed -i "s/^DILLA_BOT_RELEASE_TAG=\\"\\"$/DILLA_BOT_RELEASE_TAG=\\"$TAG\\"/" release/install-bot.sh`,
+    'test "$(grep -c "^DILLA_BOT_RELEASE_TAG=\\"$TAG\\"$" release/install-bot.sh)" -eq 1',
     'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',

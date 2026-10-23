@@ -1648,7 +1648,11 @@ test('a release checksum that omits Bot binaries is reported', () => {
 });
 
 test('a release that no longer attaches install.sh is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install.sh');
+  assertReported(releaseProblems((t) => t.replace('release/install.sh release/install-bot.sh release/SHA256SUMS', 'release/install-bot.sh release/SHA256SUMS')), 'release/install.sh');
+});
+
+test('a release that no longer attaches install-bot.sh is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('release/install-bot.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install-bot.sh');
 });
 
 test('SHA256SUMS that leaves an asset out is reported', () => {
@@ -1810,7 +1814,7 @@ test('a ci.yml build that stamps a quoted version is reported', () => {
 });
 
 test('the CLI checks release.yml too', () => {
-  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
+  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/install-bot.sh release/SHA256SUMS', 'release/install-bot.sh release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
