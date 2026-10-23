@@ -111,3 +111,87 @@ func TestYouTubePlaylistOverflowLeavesPersistedQueueUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// This crosses the resolver, registered interaction handler, encrypted state
+// store, and queue reducer. It also checks that a normal listener cannot use
+// DJ controls, while an authorized DJ can resume and skip the imported tracks.
+func TestYouTubePlaylistImportPersistsAndDJControlsUseCommittedQueue(t *testing.T) {
+	ctx := context.Background()
+	community, channel, dj, listener := id.New(), id.New(), id.New(), id.New()
+	nativeStore := &playlistAcceptanceNative{
+		binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()},
+		rows:    make(map[string]native.StateValue),
+	}
+	queueStore, err := persistence.New(nativeStore, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &musicInteractionAuthorityFake{
+		call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true,
+	}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{
+		{Provider: music.ProviderYouTube, CanonicalID: "12345678901", Title: "First"},
+		{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Second"},
+	}}
+	h := MusicInteractions{Store: queueStore, Authority: authority, CommunityID: community, Resolver: resolver}
+	handlers := h.Handlers()
+
+	initial, err := queueStore.Load(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReq := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(initial.Revision),
+		Args: []any{"https://www.youtube.com/playlist?list=PLabc_123"}}
+	imported, err := handlers[protocol.OpMusicEnqueue].Handle(ctx, InteractionActor{User: dj}, importReq)
+	if err != nil || imported.Status != 0 || imported.Revision == nil || *imported.Revision != 1 {
+		t.Fatalf("playlist import result=%+v err=%v, want committed revision 1", imported, err)
+	}
+
+	// A new Store instance models a process restart and confirms both items
+	// reached durable state as one revision.
+	restartedStore, err := persistence.New(nativeStore, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := restartedStore.Load(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Revision != 1 || len(snapshot.State.Queue) != 2 || snapshot.State.Queue[0].Title != "First" || snapshot.State.Queue[1].Title != "Second" {
+		t.Fatalf("reloaded playlist snapshot=%+v, want both ordered tracks at revision 1", snapshot)
+	}
+
+	// Pause is a DJ control. Refusal must not consume a durable revision.
+	authority.dj = false
+	pauseReq := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(snapshot.Revision)}
+	refused, err := handlers[protocol.OpMusicPause].Handle(ctx, InteractionActor{User: listener}, pauseReq)
+	if err != nil || refused.Status != interactionStatusForbidden {
+		t.Fatalf("listener pause result=%+v err=%v, want forbidden", refused, err)
+	}
+	authority.dj = true
+
+	resumeReq := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(snapshot.Revision)}
+	resumed, err := handlers[protocol.OpMusicResume].Handle(ctx, InteractionActor{User: dj}, resumeReq)
+	if err != nil || resumed.Status != 0 || resumed.Revision == nil || *resumed.Revision != 2 {
+		t.Fatalf("DJ resume result=%+v err=%v, want committed revision 2", resumed, err)
+	}
+	snapshot, err = restartedStore.Load(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.State.Current == nil || snapshot.State.Current.Title != "First" || len(snapshot.State.Queue) != 1 || snapshot.State.Queue[0].Title != "Second" {
+		t.Fatalf("resumed persisted snapshot=%+v, want first current and second queued", snapshot)
+	}
+	skipReq := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(snapshot.Revision)}
+	skipped, err := handlers[protocol.OpMusicSkip].Handle(ctx, InteractionActor{User: dj}, skipReq)
+	if err != nil || skipped.Status != 0 || skipped.Revision == nil || *skipped.Revision != 3 {
+		t.Fatalf("DJ skip result=%+v err=%v, want committed revision 3", skipped, err)
+	}
+	snapshot, err = restartedStore.Load(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.State.Current == nil || snapshot.State.Current.Title != "Second" || len(snapshot.State.Queue) != 0 {
+		t.Fatalf("skipped persisted snapshot=%+v, want second current", snapshot)
+	}
+}
