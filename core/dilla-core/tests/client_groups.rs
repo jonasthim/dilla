@@ -664,7 +664,7 @@ fn a_human_interaction_welcome_refuses_a_forged_context_without_storing_a_group(
     let error = code(
         human
             .core
-            .human_interaction_welcome_apply(&welcome.into_vec(), &[0x80]),
+            .human_interaction_welcome_apply(&welcome.into_vec(), &[0x80], 1_800_000_000),
     );
     assert_eq!(error, "E_BINDING");
     assert!(groups(&human.core).is_empty());

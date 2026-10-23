@@ -478,14 +478,14 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
     .expect("locally verify the valid server proof");
     let rejected = human
         .core
-        .human_interaction_welcome_apply(&welcomes, &wrong_group_proof)
+        .human_interaction_welcome_apply(&welcomes, &wrong_group_proof, now)
         .expect_err("a proof for another group is rejected");
     assert_eq!(rejected.code, "E_BINDING");
     assert!(client_support::groups(&human.core).is_empty());
 
     let accepted = human
         .core
-        .human_interaction_welcome_apply(&welcomes, &good_proof)
+        .human_interaction_welcome_apply(&welcomes, &good_proof, now)
         .expect("human accepts current Bot interaction Welcome");
     let accepted = decode_strict(&accepted, |d| {
         d.array(1)?;
@@ -521,7 +521,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
 
     let same_proof_replay = human
         .core
-        .human_interaction_welcome_apply(&welcomes, &good_proof)
+        .human_interaction_welcome_apply(&welcomes, &good_proof, now)
         .expect("same Welcome with same proof");
     let same_proof_replay = decode_strict(&same_proof_replay, |d| {
         d.array(1)?;
@@ -559,7 +559,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
     let before_replay = client_support::groups(&human.core);
     let replay = human
         .core
-        .human_interaction_welcome_apply(&welcomes, &fresh_proof)
+        .human_interaction_welcome_apply(&welcomes, &fresh_proof, now)
         .expect("same Welcome with refreshed proof");
     let replay = decode_strict(&replay, |d| {
         d.array(1)?;
@@ -577,7 +577,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
     let altered = mutate_welcome_body(&welcomes);
     let changed = human
         .core
-        .human_interaction_welcome_apply(&altered, &fresh_proof)
+        .human_interaction_welcome_apply(&altered, &fresh_proof, now)
         .expect("changed Welcome is returned as a refusal");
     let changed = decode_strict(&changed, |d| {
         d.array(1)?;
