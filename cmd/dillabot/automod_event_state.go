@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/moderation"
@@ -22,10 +23,11 @@ type groupEventHighWaterSource interface {
 }
 
 type autoModerationEventStateEntry struct {
-	community     id.ID
-	revision      uint64
-	replayThrough uint64
-	runtime       *service.AutoModerationRuntime
+	community             id.ID
+	revision              uint64
+	replayThrough         uint64
+	replayReceivedThrough uint64
+	runtime               *service.AutoModerationRuntime
 }
 
 // autoModerationEventState preserves rolling evaluator state during a process
@@ -48,9 +50,9 @@ func logOnlyModerationConfig() moderation.Config {
 }
 
 func configureAutoModeration(ctx context.Context, state *autoModerationEventState, n *native.Client, session *client.Session,
-	installation, community id.ID, logger *slog.Logger) (*service.AutoModerationRuntime, uint64, *service.ModerationCaseSink, error) {
+	installation, community id.ID, logger *slog.Logger) (*service.AutoModerationRuntime, uint64, uint64, *service.ModerationCaseSink, error) {
 	if n == nil || session == nil {
-		return nil, 0, nil, errors.New("missing automatic moderation client or session")
+		return nil, 0, 0, nil, errors.New("missing automatic moderation client or session")
 	}
 	cfg, revision, err := moderation.NewStore(n).Load(ctx)
 	if err != nil {
@@ -72,7 +74,7 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 	if cfg.Enabled {
 		resolved, authorityErr := service.NewCommunityActorAuthority(session, community, nil)
 		if authorityErr != nil {
-			return nil, 0, nil, authorityErr
+			return nil, 0, 0, nil, authorityErr
 		}
 		authority = resolved
 	}
@@ -97,39 +99,43 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 	}
 	sink, err := service.NewModerationCaseSink(n, backend, nil)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, 0, nil, err
 	}
-	runtime, replayThrough, err := state.Configure(ctx, n, installation, community, revision, cfg, authority, sink)
-	return runtime, replayThrough, sink, err
+	runtime, replayThrough, replayReceivedThrough, err := state.Configure(ctx, n, installation, community, revision, cfg, authority, sink)
+	return runtime, replayThrough, replayReceivedThrough, sink, err
 }
 
 func (s *autoModerationEventState) Configure(ctx context.Context, source groupEventHighWaterSource, installation, community id.ID, revision uint64,
-	cfg moderation.Config, authority service.ModerationActorAuthority, sink service.ModerationActionSink) (*service.AutoModerationRuntime, uint64, error) {
+	cfg moderation.Config, authority service.ModerationActorAuthority, sink service.ModerationActionSink) (*service.AutoModerationRuntime, uint64, uint64, error) {
 	if s == nil || ctx == nil || source == nil || installation.IsZero() || community.IsZero() {
-		return nil, 0, errors.New("missing automatic moderation event state dependency")
+		return nil, 0, 0, errors.New("missing automatic moderation event state dependency")
 	}
 	binding := source.Binding()
 	if binding.Installation != installation || binding.Community != community || binding.Installation.IsZero() || binding.Community.IsZero() {
-		return nil, 0, errors.New("automatic moderation event source binding mismatch")
+		return nil, 0, 0, errors.New("automatic moderation event source binding mismatch")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry, ok := s.entries[installation]; ok && entry.community == community && entry.revision == revision {
 		entry.runtime.UpdateActionDependencies(authority, sink)
 		s.entries[installation] = entry
-		return entry.runtime, entry.replayThrough, nil
+		return entry.runtime, entry.replayThrough, entry.replayReceivedThrough, nil
 	}
+	// Capture before sampling the journal. Source-sync pages may arrive later,
+	// so their authoritative server receipt times are the second replay fence.
+	replayReceivedThrough := uint64(time.Now().UnixMilli())
 	page, err := source.ReadGroupEvents(ctx, 0, 1)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	if page.Next > page.HighWater || page.HighWater > math.MaxInt64 {
-		return nil, 0, errors.New("invalid automatic moderation event high-water mark")
+		return nil, 0, 0, errors.New("invalid automatic moderation event high-water mark")
 	}
 	runtime := service.NewAutoModerationRuntime(cfg, authority, sink, nil)
-	entry := autoModerationEventStateEntry{community: community, revision: revision, replayThrough: page.HighWater, runtime: runtime}
+	entry := autoModerationEventStateEntry{community: community, revision: revision, replayThrough: page.HighWater,
+		replayReceivedThrough: replayReceivedThrough, runtime: runtime}
 	s.entries[installation] = entry
-	return runtime, entry.replayThrough, nil
+	return runtime, entry.replayThrough, entry.replayReceivedThrough, nil
 }
 
 func (s *autoModerationEventState) RetainOnly(installations []id.ID) {

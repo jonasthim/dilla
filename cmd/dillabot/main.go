@@ -601,7 +601,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
-											moderationRuntime, replayThrough, caseSink, moderationErr := configureAutoModeration(ctx, autoModerationState, nativeClient, result.Session, installation.ID, installation.CommunityID, logger)
+											moderationRuntime, replayThrough, replayReceivedThrough, caseSink, moderationErr := configureAutoModeration(ctx, autoModerationState, nativeClient, result.Session, installation.ID, installation.CommunityID, logger)
 											if moderationErr != nil {
 												logger.Warn("bot automatic moderation event intake paused; text events will be acknowledged without action", "installation_id", installation.ID.String(), "error", moderationErr.Error())
 											}
@@ -626,7 +626,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 											if interactionErr == nil {
 												eventHandler := service.GroupEventHandler(newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
-												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough)
+												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough, replayReceivedThrough)
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												var eventResult service.GroupEventPollResult
 												eventResult, interactionErr = eventRuntime.Drain(ctx)

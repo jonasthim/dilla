@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -18,16 +19,17 @@ type automaticModerationEventHandler interface {
 }
 
 type groupEventRouter struct {
-	inspector      interactionEventInspection
-	interactions   service.GroupEventHandler
-	automoderation automaticModerationEventHandler
-	replayThrough  uint64
+	inspector             interactionEventInspection
+	interactions          service.GroupEventHandler
+	automoderation        automaticModerationEventHandler
+	replayThrough         uint64
+	replayReceivedThrough uint64
 }
 
 var moderationMentionPattern = regexp.MustCompile(`<@([0-9a-f]{32})>`)
 
-func newGroupEventRouter(inspector interactionEventInspection, interactions service.GroupEventHandler, automoderation automaticModerationEventHandler, replayThrough uint64) service.GroupEventHandler {
-	return groupEventRouter{inspector: inspector, interactions: interactions, automoderation: automoderation, replayThrough: replayThrough}
+func newGroupEventRouter(inspector interactionEventInspection, interactions service.GroupEventHandler, automoderation automaticModerationEventHandler, replayThrough, replayReceivedThrough uint64) service.GroupEventHandler {
+	return groupEventRouter{inspector: inspector, interactions: interactions, automoderation: automoderation, replayThrough: replayThrough, replayReceivedThrough: replayReceivedThrough}
 }
 
 func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
@@ -53,7 +55,13 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 			return nil
 		}
 		mentions := moderationMentionIDs(event.Body)
-		_, err := h.automoderation.Handle(ctx, event, event.DeliveryID <= h.replayThrough, mentions)
+		now := time.Now().UnixMilli()
+		// Server receipt time catches source pages synced into the journal after
+		// the process-start delivery high-water. Future timestamps are uncertain
+		// (for example host/server clock skew), so they are replay-only too.
+		replay := event.DeliveryID <= h.replayThrough || event.ReceivedAt > 0 && event.ReceivedAt <= h.replayReceivedThrough ||
+			event.ReceivedAt > 0 && event.ReceivedAt > uint64(now)
+		_, err := h.automoderation.Handle(ctx, event, replay, mentions)
 		return err
 	case 3: // Managed kind-3 interaction behavior retains its existing durable sender path.
 		if h.interactions == nil {

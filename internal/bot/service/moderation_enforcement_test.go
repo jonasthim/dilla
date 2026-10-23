@@ -208,6 +208,30 @@ func TestModerationRemovalBackendDoesNotResignAfterUncertainOutcome(t *testing.T
 	}
 }
 
+func TestModerationRemovalBackendClassifiesOnlyDefinitiveForbiddenAsRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "revoked capability", err: &client.APIError{Status: 403, Code: "E_FORBIDDEN", Outcome: client.OutcomeDefinitive}, want: true},
+		{name: "unknown outcome", err: &client.APIError{Status: 503, Code: "E_OUTCOME_UNKNOWN", Outcome: client.OutcomeUnknown}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &removalSignerFake{binding: native.Binding{Instance: testID(8), Community: testID(1), Installation: testID(9)}}
+			s := &removalSessionFake{err: tc.err}
+			b, err := newModerationRemovalBackend(n, s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = b.AcceptModerationAction(context.Background(), removalAction(moderation.ActionRemove))
+			if errors.Is(err, ErrModerationActionRefused) != tc.want {
+				t.Fatalf("refusal classification = %v, want %v (err=%v)", errors.Is(err, ErrModerationActionRefused), tc.want, err)
+			}
+		})
+	}
+}
+
 func TestModerationRemovalOperationIDChangesWithSourceRevision(t *testing.T) {
 	group, message := testID(2), testID(5)
 	first := moderationRemovalOperationID(group, message, 17)

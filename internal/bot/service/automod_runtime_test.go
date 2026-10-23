@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -211,6 +212,30 @@ func TestAutoModerationRuntimeRequiresAuthorityAndSinkWhenEnabled(t *testing.T) 
 	}
 	if calls != 0 {
 		t.Fatalf("sink called after authority lookup failed: %d", calls)
+	}
+}
+
+func TestAutoModerationRuntimeConsumesDefinitiveRevocationButRetriesUnknownOutcome(t *testing.T) {
+	now := time.Now()
+	body := "same"
+	cfg := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{moderation.RuleRate: moderation.ActionRemove}}
+	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(), SourceSequence: 1,
+		ReceivedAt: uint64(now.UnixMilli()), SenderUser: id.New(), SenderDevice: id.New(), Message: id.New(), EnvelopeType: 0, Body: &body}
+	sink := automodSinkFunc(func(context.Context, ModerationAction) error { return ErrModerationActionRefused })
+	runtime := NewAutoModerationRuntime(cfg, automodAuthorityFunc(ordinaryAutomodAuthority), sink, func() time.Time { return now })
+	for i := 0; i < 6; i++ {
+		event.SourceSequence++
+		event.Message = id.New()
+		if _, err := runtime.Handle(context.Background(), event, false, nil); err != nil {
+			t.Fatalf("definitive refusal should be terminal log-only handling: %v", err)
+		}
+	}
+	event.SourceSequence++
+	event.Message = id.New()
+	sink = automodSinkFunc(func(context.Context, ModerationAction) error { return errors.New("unknown transport outcome") })
+	runtime.UpdateActionDependencies(automodAuthorityFunc(ordinaryAutomodAuthority), sink)
+	if _, err := runtime.Handle(context.Background(), event, false, nil); err == nil {
+		t.Fatal("unknown action outcome must be retried")
 	}
 }
 

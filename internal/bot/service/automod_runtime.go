@@ -114,6 +114,13 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 		Group: event.Group.String(), Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
 		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt, runtimeGenerated: true}
 	if err := sink.ApplyModerationAction(ctx, action); err != nil {
+		if errors.Is(err, ErrModerationActionRefused) {
+			// A definitive authorization refusal proves no action was accepted.
+			// Consume the event as log-only so this shared journal cursor can move;
+			// unknown and transient errors remain retryable below.
+			decision.Action = moderation.ActionLog
+			return decision, nil
+		}
 		return decision, err
 	}
 	return decision, nil

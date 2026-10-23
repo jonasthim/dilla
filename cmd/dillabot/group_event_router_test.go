@@ -78,7 +78,7 @@ func TestGroupEventRouterRoutesTextAndEditEventsAndMarksStartupBacklogReplay(t *
 	})
 	interactions := &routedGroupEventHandler{}
 	automod := &routedModerationRuntime{}
-	handler := newGroupEventRouter(inspector, interactions, automod, 5)
+	handler := newGroupEventRouter(inspector, interactions, automod, 5, 0)
 	body := "hello <@00000000000000000000000000000001>"
 	for _, event := range []native.GroupEvent{
 		{DeliveryID: 5, Group: group, EnvelopeType: 0, Body: &body},
@@ -106,7 +106,7 @@ func TestGroupEventRouterLeavesKindThreeInteractionDispatchUnchanged(t *testing.
 	})
 	interactions := &routedGroupEventHandler{}
 	automod := &routedModerationRuntime{}
-	handler := newGroupEventRouter(inspector, interactions, automod, 100)
+	handler := newGroupEventRouter(inspector, interactions, automod, 100, 0)
 	if err := handler.HandleGroupEvent(context.Background(), native.GroupEvent{DeliveryID: 1, Group: group, EnvelopeType: 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestGroupEventRouterHonorsCancellationBeforeGroupInspection(t *testing.T) {
 		return native.GroupInfo{ID: group, Kind: 0}, nil
 	})
 	automod := &routedModerationRuntime{}
-	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 0)
+	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 0, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := handler.HandleGroupEvent(ctx, native.GroupEvent{DeliveryID: 1, Group: group, EnvelopeType: 0})
@@ -144,7 +144,7 @@ func TestGroupEventRouterNeverPunishesStartupBacklog(t *testing.T) {
 			actions++
 			return nil
 		}), func() time.Time { return time.Unix(1_800_000_100, 0) })
-	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 6)
+	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 6, uint64(time.UnixMilli(1_800_000_000_000).UnixMilli()))
 	body := "same"
 	for i := 1; i <= 6; i++ {
 		event := native.GroupEvent{DeliveryID: uint64(i), Community: community, Group: group, Channel: channel,
@@ -159,29 +159,48 @@ func TestGroupEventRouterNeverPunishesStartupBacklog(t *testing.T) {
 	}
 }
 
+func TestGroupEventRouterTreatsDelayedPreActivationAndFutureEventsAsReplay(t *testing.T) {
+	group := id.New()
+	inspector := groupEventInspectorFunc(func(context.Context, id.ID) (native.GroupInfo, error) {
+		return native.GroupInfo{ID: group, Kind: 0}, nil
+	})
+	automod := &routedModerationRuntime{}
+	activation := uint64(time.Now().Add(-time.Minute).UnixMilli())
+	handler := newGroupEventRouter(inspector, &routedGroupEventHandler{}, automod, 10, activation)
+	body := "late synced message"
+	for _, received := range []uint64{activation - 1, uint64(time.Now().Add(time.Minute).UnixMilli())} {
+		if err := handler.HandleGroupEvent(context.Background(), native.GroupEvent{DeliveryID: 100, Group: group, EnvelopeType: 0, ReceivedAt: received, Body: &body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(automod.replays) != 2 || !automod.replays[0] || !automod.replays[1] {
+		t.Fatalf("replay flags = %v, want delayed and future events treated as replay", automod.replays)
+	}
+}
+
 func TestAutoModerationEventStateKeepsStartupBoundaryAndResetsOnConfigRevision(t *testing.T) {
 	installation, community := id.New(), id.New()
 	source := &routedEventSource{binding: native.Binding{Instance: id.New(), Installation: installation, Community: community},
 		page: native.GroupEventPage{Next: 4, HighWater: 9}}
 	state := newAutoModerationEventState()
 	cfg := moderation.Config{}
-	first, firstBoundary, err := state.Configure(context.Background(), source, installation, community, 1, cfg, nil, nil)
+	first, firstBoundary, firstReceivedBoundary, err := state.Configure(context.Background(), source, installation, community, 1, cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.page = native.GroupEventPage{Next: 12, HighWater: 14}
-	second, secondBoundary, err := state.Configure(context.Background(), source, installation, community, 1, cfg, nil, nil)
+	second, secondBoundary, secondReceivedBoundary, err := state.Configure(context.Background(), source, installation, community, 1, cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != second || firstBoundary != 9 || secondBoundary != 9 || source.calls != 1 {
-		t.Fatalf("same revision reset runtime or boundary: same=%v boundaries=%d,%d reads=%d", first == second, firstBoundary, secondBoundary, source.calls)
+	if first != second || firstBoundary != 9 || secondBoundary != 9 || firstReceivedBoundary == 0 || secondReceivedBoundary != firstReceivedBoundary || source.calls != 1 {
+		t.Fatalf("same revision reset runtime or boundary: same=%v delivery=%d,%d receipt=%d,%d reads=%d", first == second, firstBoundary, secondBoundary, firstReceivedBoundary, secondReceivedBoundary, source.calls)
 	}
-	third, thirdBoundary, err := state.Configure(context.Background(), source, installation, community, 2, cfg, nil, nil)
+	third, thirdBoundary, thirdReceivedBoundary, err := state.Configure(context.Background(), source, installation, community, 2, cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third == first || thirdBoundary != 14 || source.calls != 2 {
-		t.Fatalf("new revision did not start a fresh replay boundary: same=%v boundary=%d reads=%d", third == first, thirdBoundary, source.calls)
+	if third == first || thirdBoundary != 14 || thirdReceivedBoundary < firstReceivedBoundary || source.calls != 2 {
+		t.Fatalf("new revision did not start a fresh replay boundary: same=%v delivery=%d receipt=%d reads=%d", third == first, thirdBoundary, thirdReceivedBoundary, source.calls)
 	}
 }

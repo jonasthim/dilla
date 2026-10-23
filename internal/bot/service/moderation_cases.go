@@ -169,6 +169,9 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		}
 		accepted, acceptErr := backend.AcceptModerationAction(ctx, action)
 		if acceptErr != nil {
+			if errors.Is(acceptErr, ErrModerationActionRefused) {
+				return ErrModerationActionRefused
+			}
 			return ErrModerationEnforcementUnavailable
 		}
 		if !accepted.matches(action, s.binding) {

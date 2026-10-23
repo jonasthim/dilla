@@ -17,6 +17,9 @@ import (
 var (
 	ErrModerationActionUnsupported = errors.New("moderation action is unsupported by this enforcement adapter")
 	ErrModerationActionSource      = errors.New("moderation action lacks an authoritative bound source")
+	// ErrModerationActionRefused is a definitive server-side refusal (for
+	// example a revoked capability). The source event may be consumed safely.
+	ErrModerationActionRefused = errors.New("moderation action definitively refused")
 )
 
 type moderationRemovalSigner interface {
@@ -162,6 +165,10 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 	}
 	accepted, err := b.session.AcceptBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision, string(action.Decision.Action), rules, timeoutMillis, uint64(now+30))
 	if err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && apiErr.Code == "E_FORBIDDEN" {
+			return AcceptedModerationAction{}, ErrModerationActionRefused
+		}
 		return AcceptedModerationAction{}, err
 	}
 	if accepted.ActionID.IsZero() || accepted.Revision == 0 || accepted.Revision > math.MaxInt64 {
