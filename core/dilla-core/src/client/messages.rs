@@ -2800,7 +2800,7 @@ mod mention_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod bot_send_intent_tests {
     use super::*;
     use crate::{cbor::Encoder, mls::ConnHandle};

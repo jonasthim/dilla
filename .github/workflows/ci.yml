@@ -209,6 +209,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - name: wasm-bindgen-cli must equal the Cargo.lock crate version
         run: |
           want=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
@@ -355,6 +356,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
       # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
@@ -431,6 +433,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -532,6 +535,7 @@ jobs:
           cache-dependency-path: go.sum
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci

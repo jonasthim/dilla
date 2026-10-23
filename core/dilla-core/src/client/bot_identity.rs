@@ -1128,7 +1128,10 @@ pub(crate) fn verify_interaction_group_snapshot(
     ClientCore::bot_verify_interaction_group(group, snapshot, expected, bot_user_id, bot_device_id)
 }
 
-#[cfg(test)]
+// These storage tests use the native Arc<Mutex<Connection>> handle. The wasm
+// backend uses Rc<RefCell<Connection>>, and wasm test binaries are compile-only
+// in CI, so keep these native integration-style unit tests off the wasm target.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod interaction_snapshot_tests {
     use super::*;
     use crate::{
