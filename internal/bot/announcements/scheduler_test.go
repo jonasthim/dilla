@@ -669,12 +669,53 @@ func TestSchedulerStartsNewAttemptAfterClosedNotAcceptedReceipt(t *testing.T) {
 	if err := restarted.RunDue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if len(retrySender.requests) != 0 {
+		t.Fatalf("retry bypassed durable not-before time: requests=%+v", retrySender.requests)
+	}
+	now = now.Add(5 * time.Second)
+	if err := restarted.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if len(retrySender.requests) != 1 {
 		t.Fatalf("closed attempt did not trigger a new send after restart: requests=%+v", retrySender.requests)
 	}
 	second := retrySender.requests[0]
 	if second.OperationID != first.OperationID || second.AttemptID == first.AttemptID || second.PredecessorAttemptID == nil || *second.PredecessorAttemptID != first.AttemptID {
 		t.Fatalf("retry did not preserve operation and chain to closed attempt: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestSchedulerResetsRetryAttemptForNextRecurringOccurrence(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, _, sender, _, destination := schedulerFixture(t, &now)
+	if err := s.Put(context.Background(), dailyAnnouncement(destination, "next occurrence", 1)); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	if err := s.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	states, revision, err := s.snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	states[0].Attempt = 1
+	if err := s.replaceOne(context.Background(), states[0], revision); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)
+	if err := s.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.requests) != 2 {
+		t.Fatalf("expected next recurring occurrence to send, got %d requests", len(sender.requests))
+	}
+	second := sender.requests[1]
+	if second.AttemptID == sender.requests[0].AttemptID || second.PredecessorAttemptID != nil {
+		t.Fatalf("next occurrence inherited prior retry chain: previous=%+v next=%+v", sender.requests[0], second)
+	}
+	if persisted, _, err := s.snapshot(context.Background()); err != nil || persisted[0].Attempt != 0 || persisted[0].RetryAt != 0 {
+		t.Fatalf("next occurrence attempt counter was not reset: state=%+v err=%v", persisted, err)
 	}
 }
 

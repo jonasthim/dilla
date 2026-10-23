@@ -107,6 +107,7 @@ type scheduledState struct {
 	Status       occurrenceStatus
 	GroupID      id.ID
 	Attempt      uint64
+	RetryAt      uint64
 }
 
 // MutationOutcome is the stable application result of a schedule mutation.
@@ -455,7 +456,7 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			if nextErr != nil {
 				return nextErr
 			}
-			state.Occurrence, state.Status, state.GroupID = next, occurrenceReady, id.ID{}
+			state.Occurrence, state.Status, state.GroupID, state.Attempt, state.RetryAt = next, occurrenceReady, id.ID{}, 0, 0
 			if err := s.replaceOne(ctx, state, revision); err != nil {
 				return err
 			}
@@ -472,7 +473,7 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 				}
 				return nextErr
 			}
-			state.Occurrence, state.Status = next, occurrenceReady
+			state.Occurrence, state.Status, state.Attempt, state.RetryAt = next, occurrenceReady, 0, 0
 			if err := s.replaceOne(ctx, state, revision); err != nil {
 				return err
 			}
@@ -515,15 +516,11 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 				}
 				if found {
 					if validClosedReceipt(receipt, req) {
-						state.Attempt++
+						state.Status = occurrenceSkipped
 						if err := s.replaceOne(ctx, state, revision); err != nil {
 							return err
 						}
-						states, revision, err = s.snapshot(ctx)
-						if err != nil {
-							return err
-						}
-						continue
+						return nil
 					}
 					if !validAcceptedReceipt(receipt, req) {
 						return errors.New("announcement receipt lookup returned an invalid receipt")
@@ -541,6 +538,9 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			continue
+		}
+		if state.Status == occurrenceSending && state.RetryAt > uint64(s.now().UTC().Unix()) {
 			continue
 		}
 		if state.Status == occurrenceReady {
@@ -592,14 +592,11 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		if found {
 			if validClosedReceipt(receipt, req) {
 				state.Attempt++
+				state.RetryAt = uint64(s.now().UTC().Add(5 * time.Second).Unix())
 				if err := s.replaceOne(ctx, state, revision); err != nil {
 					return err
 				}
-				states, revision, err = s.snapshot(ctx)
-				if err != nil {
-					return err
-				}
-				continue
+				return nil
 			}
 			if !validAcceptedReceipt(receipt, req) {
 				return errors.New("announcement receipt lookup returned an invalid receipt")
@@ -723,14 +720,11 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		}
 		if validClosedReceipt(receipt, req) {
 			state.Attempt++
+			state.RetryAt = uint64(s.now().UTC().Add(5 * time.Second).Unix())
 			if err = s.replaceOne(ctx, state, start.revision); err != nil {
 				return err
 			}
-			states, revision, err = s.snapshot(ctx)
-			if err != nil {
-				return err
-			}
-			continue
+			return nil
 		}
 		if !validAcceptedReceipt(receipt, req) {
 			return errors.New("announcement send has no authoritative accepted receipt")
@@ -958,7 +952,7 @@ func encodeStateDocument(states []scheduledState, receipts []mutationReceipt) ([
 		if s.Announcement.Enabled {
 			enabled = 1
 		}
-		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(max(sched.Hour, 0)), uint64(max(sched.Minute, 0)), uint64(max(int(sched.Weekday), 0)), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID, s.Attempt}
+		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(max(sched.Hour, 0)), uint64(max(sched.Minute, 0)), uint64(max(int(sched.Weekday), 0)), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID, s.Attempt, s.RetryAt}
 		a = append(a, row)
 	}
 	encodedReceipts := make([]any, 0, len(receipts))
@@ -1064,7 +1058,7 @@ func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, erro
 	seen := map[id.ID]bool{}
 	for _, raw := range rows {
 		a, ok := raw.([]any)
-		if !ok || (len(a) != 14 && len(a) != 15 && len(a) != 16) || a[0] != uint64(1) {
+		if !ok || (len(a) != 14 && len(a) != 15 && len(a) != 16 && len(a) != 17) || a[0] != uint64(1) {
 			return nil, nil, ErrSchedulerMalformed
 		}
 		idb, iok := a[1].([]byte)
@@ -1089,10 +1083,18 @@ func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, erro
 			}
 			copy(groupID[:], groupBytes)
 		}
-		if len(a) == 16 {
+		if len(a) >= 16 {
 			var attemptOK bool
 			attempt, attemptOK = a[15].(uint64)
 			if !attemptOK || attempt > math.MaxInt64 {
+				return nil, nil, ErrSchedulerMalformed
+			}
+		}
+		var retryAt uint64
+		if len(a) == 17 {
+			var retryOK bool
+			retryAt, retryOK = a[16].(uint64)
+			if !retryOK || retryAt > math.MaxInt64 {
 				return nil, nil, ErrSchedulerMalformed
 			}
 		}
@@ -1110,7 +1112,7 @@ func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, erro
 		if err := validateAnnouncement(value); err != nil {
 			return nil, nil, ErrSchedulerMalformed
 		}
-		state := scheduledState{Announcement: value, Status: occurrenceStatus(status), GroupID: groupID, Attempt: attempt}
+		state := scheduledState{Announcement: value, Status: occurrenceStatus(status), GroupID: groupID, Attempt: attempt, RetryAt: retryAt}
 		if len(rawOcc) == 1 && rawOcc[0] == uint64(0) {
 			if state.Status != occurrenceNone {
 				return nil, nil, ErrSchedulerMalformed
