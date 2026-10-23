@@ -2,6 +2,12 @@
 
 ## 23 October continuation checkpoint
 
+### 15:15 CEST integration checkpoint
+
+The shared branch now reaches successful encrypted bot-role-panel publication in Chromium, but reaction role assignment still requires a durable link from the panel to the accepted Bot send. That migration and browser regression are in review. The shipping music UI and Bot accept a YouTube queue item in Chromium; the first Play request currently returns a music-update error before provider playback. A separate Chromium manual-moderation evidence retrieval run is still in progress. These browser scenarios are release gates and have not passed yet.
+
+The full `@dilla/client-core` and `@dilla/web` suites and the Rust core/vector suite passed on the preceding integrated commits. After the latest music-panel change, focused panel tests (19 tests), web typecheck, and lint passed. A full Go run was invalidated by `/tmp` filling during linking; the rerun with `TMPDIR` and `GOTMPDIR` on the disk-backed cache passed (`go test -p 2 ./...`). No Spotify Premium account was connected, and real Spotify audio remains unqualified. This is not a release sign-off.
+
 This remains an integrated development branch, not a release. The complete `@dilla/client-core` suite passes (58 files, 2,114 tests), the complete `@dilla/web` suite passes (115 files, 2,287 tests), and the full Rust core/vector and Bot helper suites pass. The complete `go test ./...` suite passes after the newest kind-3 read route; an earlier run also passed with live PostgreSQL. Typechecks, lint, protocol docs, vectors, UI copy checks, and the production web build pass.
 
 The role-panel browser run exposed installation and admission defects, now addressed in the branch. Chromium has applied a private Welcome and uploaded an encrypted role-panel request. A dedicated installation-scoped kind-3 read path, native descriptor discovery, proof-bound source synchronization, and proof-bound private response encryption are committed. Focused API, Go service, Rust core/helper, and native tests pass. The cached Bot reload and human interaction apply regressions were fixed; an independent private-send review found no concrete issue. A real Chromium run now reaches event dispatch, but the panel response remains pending behind a masked handler error under diagnosis. Browser role-panel acceptance remains open.
