@@ -119,12 +119,14 @@ export interface StartedHost { url: string; control: string; invite: string; run
  * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
  */
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
-  // The bot acceptance host serves the web bundle from disk; always rebuild that
-  // bundle from current source so the acceptance flow cannot pass on stale UI.
+  // Browser CI uses the web-build and rust-wasi artifacts from this commit.
+  // Local runs rebuild both so acceptance cannot pass on stale UI or core code.
   if (c.botRuntime === true && c.webRoot !== null) {
     ensureShippingCoreWasm();
-    rebuildShippingWasiCore();
-    execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
+    if (process.env.CI !== 'true') {
+      rebuildShippingWasiCore();
+      execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
+    }
   }
   const dataDir = hostDataDir(c.port);
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
