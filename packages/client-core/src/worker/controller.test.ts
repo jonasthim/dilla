@@ -106,6 +106,33 @@ describe('Controller', () => {
     expect(request[7]).toEqual([proofRequestId, 'recovered reason', 'recovered excerpt']);
   });
 
+  it('returns unknown after a transport failure and retries the exact proof for the same target', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_200, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.rows.push(strangerRow(3));
+    w.routes.postModerationRemoval.mockRejectedValue(new Error('connection closed after request'));
+    const command = { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!),
+      seq: '3', reason: 'keep exact reason', excerpt: 'keep exact excerpt' } as const;
+    w.call(10_201, command);
+    await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: { removal: 'unknown' } }));
+    const first = w.ret(10_201) as { ok: true; value: { proofRequestId: string } };
+    expect(first.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(w.state.manualEvidence).toHaveLength(1);
+    const exactBody = w.state.manualEvidence[0].signedBody;
+    w.call(10_202, command);
+    await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: true, value: { removal: 'unknown' } }));
+    expect((w.ret(10_202) as { ok: true; value: { proofRequestId: string } }).value.proofRequestId).toBe(first.value.proofRequestId);
+    expect(w.core.prepareManualRemovalEvidence).toHaveBeenCalledTimes(1);
+    expect(w.routes.postModerationRemoval).toHaveBeenCalledTimes(2);
+    expect(w.routes.postModerationRemoval.mock.calls[0][1]).toBe(exactBody);
+    expect(w.routes.postModerationRemoval.mock.calls[1][1]).toBe(exactBody);
+  });
+
   it('checks the persisted instance signer pin on restart before entering ready', async () => {
     const w = world();
     await toReady(w);
@@ -496,7 +523,9 @@ describe('Controller', () => {
 
     w.routes.postModerationRemoval.mockRejectedValue(refusal(403, 'E_FORBIDDEN'));
     w.call(10_202, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
-    await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
+    await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: true, value: { removal: 'rejected' } }));
+    expect(w.state.manualEvidence).toHaveLength(0);
+    expect(w.core.rejectManualRemoval).toHaveBeenCalledTimes(1);
     expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
   });
 

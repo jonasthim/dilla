@@ -90,6 +90,13 @@ it('bridges the durable manual-removal evidence record and preserves its exact e
     reason: 'why', excerpt: 'excerpt', signedBody: body, state: 1, createdAt: 100n, expires: 130n, evidenceExpires: 160n }]);
 });
 
+it('bridges authoritative rejection of a submitted manual-removal proof', () => {
+  const proof = new Uint8Array(16).fill(0x41);
+  const s = stub({ reject_manual_removal: (...args) => { expect(args).toEqual([proof, 123n]); } });
+  s.port.rejectManualRemoval?.(proof, 123n);
+  expect(s.calls).toEqual([{ method: 'reject_manual_removal', args: [proof, 123n] }]);
+});
+
 it('passes an opaque human interaction context proof to the dedicated Welcome export', () => {
   const welcomes = encode([[1, G, 2, 9, new Uint8Array([1]), new Uint8Array([2]), new Uint8Array(32)]]);
   const proof = new Uint8Array([0x81, 0x00]);

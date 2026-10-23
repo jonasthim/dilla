@@ -94,6 +94,7 @@ export type Command =
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
   | { m: 'deleteMessage'; channelId: string; msgId: string }                              // ready → null (type 2)
   | { m: 'moderateRemoveMessage'; channelId: string; msgId: string; seq: string; reason: string; excerpt: string } // ready → null; signed removal then op61 evidence
+  | { m: 'resolveManualRemoval'; proofRequestId: string } // ready → reconcile feed and retry the exact durable signed proof
   | { m: 'react'; channelId: string; msgId: string; emoji: string; on: boolean }          // ready → null (type 3, or 4 when off)
   | { m: 'pin'; channelId: string; msgId: string; on: boolean }                           // ready → null (type 5, or 6 when off)
   | { m: 'loadPins'; channelId: string }                                                  // ready → null; slice pins:<channel>

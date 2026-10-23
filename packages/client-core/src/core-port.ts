@@ -128,6 +128,7 @@ export interface CorePort {
   markManualRemovalAccepted?(requestId: Id): void;
   completeManualRemovalEvidence?(requestId: Id, now: bigint): void;
   rejectUnsubmittedManualRemoval?(requestId: Id, now: bigint): void;
+  rejectManualRemoval?(requestId: Id, now: bigint): void;
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
   groups(): GroupInfo[];
@@ -280,6 +281,7 @@ export interface CoreHandle {
       mark_manual_removal_accepted?(request_id: Uint8Array): void;
       complete_manual_removal_evidence?(request_id: Uint8Array, now: bigint): void;
       reject_unsubmitted_manual_removal?(request_id: Uint8Array, now: bigint): void;
+      reject_manual_removal?(request_id: Uint8Array, now: bigint): void;
       session_store(token: string, expires: bigint, idle_expires: bigint): void;
       session(): Uint8Array; session_clear(): void;
       key_packages(count: number, last_resort: boolean): Uint8Array;
@@ -562,6 +564,10 @@ export function wrapCore(handle: CoreHandle): CorePort {
     rejectUnsubmittedManualRemoval: (requestId, now) => call(() => {
       if (handle.reject_unsubmitted_manual_removal === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
       handle.reject_unsubmitted_manual_removal(requestId, now);
+    }),
+    rejectManualRemoval: (requestId, now) => call(() => {
+      if (handle.reject_manual_removal === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.reject_manual_removal(requestId, now);
     }),
     sessionStore: (s) => call(() => handle.session_store(s.token, s.expires, s.idleExpires)),
     session: () => call(() => decoded('session', handle.session(), readSession)),

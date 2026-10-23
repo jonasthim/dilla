@@ -2,6 +2,7 @@ import type { CoreClient } from '@dilla/client-core';
 
 export type EvidenceUpload = 'accepted' | 'pending' | 'rejected' | 'unknown';
 export type ManualRemovalPhase = 'confirm' | 'sending' | 'result';
+export type RemovalOutcome = 'accepted' | 'unknown' | null;
 export interface ManualRemovalDialogState {
   key: string;
   msgId: string;
@@ -12,6 +13,18 @@ export interface ManualRemovalDialogState {
   proofRequestId: string | null;
   evidenceRequestId: string | null;
   evidenceUpload: EvidenceUpload | null;
+  removal: RemovalOutcome;
+}
+
+export async function resolveManualRemoval(client: CoreClient, proofRequestId: string): Promise<{
+  removal: 'accepted' | 'unknown' | 'rejected'; evidenceUpload: EvidenceUpload;
+}> {
+  try {
+    const result = await client.call({ m: 'resolveManualRemoval', proofRequestId }) as { removal?: unknown; evidenceUpload?: unknown };
+    return { removal: result?.removal === 'accepted' || result?.removal === 'rejected' ? result.removal : 'unknown',
+      evidenceUpload: result?.evidenceUpload === 'accepted' || result?.evidenceUpload === 'pending' || result?.evidenceUpload === 'rejected'
+        ? result.evidenceUpload : 'unknown' };
+  } catch { return { removal: 'unknown', evidenceUpload: 'unknown' }; }
 }
 
 export function newEvidenceRequestId(): string {

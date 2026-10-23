@@ -502,6 +502,12 @@ impl CoreHandle {
         let request_id = js_fixed_arg::<16>("request_id", request_id)?;
         self.with_core(|c| c.reject_unsubmitted_manual_removal(&request_id, now))
     }
+
+    pub fn reject_manual_removal(&mut self, request_id: &[u8], now: u64) -> Result<(), JsError> {
+        let request_id = fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.reject_manual_removal(&request_id, now))
+            .map_err(Into::into)
+    }
     /// Bounded hint for refreshing a previously trusted moderator before ingesting a removal entry.
     pub fn removal_actor_history_version(
         &self,

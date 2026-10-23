@@ -13,7 +13,7 @@ import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachmen
 import { dayLabel, groupedWithAbove, startsDay } from './log-model.ts';
 import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
 import { PinsPanel } from './Pins.tsx';
-import { sendManualRemovalEvidence, type ManualRemovalDialogState } from './manual-removal.ts';
+import { resolveManualRemoval, sendManualRemovalEvidence, type ManualRemovalDialogState } from './manual-removal.ts';
 
 export const FLASH_MS = 1400;
 /** How far from the end, in CSS px, the log may be and still count as at the newest message (the log's own pin slack). */
@@ -136,13 +136,22 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         reason: current.reason, excerpt: current.excerpt }) as {
         removal?: unknown; proofRequestId?: unknown; evidenceRequestId?: unknown; evidenceUpload?: unknown;
       };
+      if (result?.removal === 'unknown' && typeof result.proofRequestId === 'string') {
+        setModerateFor({ ...current, phase: 'result', removal: 'unknown', proofRequestId: result.proofRequestId,
+          evidenceRequestId: typeof result.evidenceRequestId === 'string' ? result.evidenceRequestId : null, evidenceUpload: 'unknown' });
+        return;
+      }
+      if (result?.removal === 'rejected') {
+        setModerateFor({ ...current, phase: 'confirm', removal: null, proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+        return;
+      }
       if (result?.removal !== 'accepted' || typeof result.proofRequestId !== 'string' || typeof result.evidenceRequestId !== 'string') {
         throw new Error('E_REMOVAL_RESULT');
       }
       const evidenceUpload = result.evidenceUpload === 'accepted' || result.evidenceUpload === 'pending' || result.evidenceUpload === 'rejected'
         ? result.evidenceUpload : 'unknown';
       setModerateFor({ ...current, phase: 'result', proofRequestId: result.proofRequestId,
-        evidenceRequestId: result.evidenceRequestId, evidenceUpload });
+        evidenceRequestId: result.evidenceRequestId, evidenceUpload, removal: 'accepted' });
     } catch (error) {
       p.onError(error);
       setModerateFor({ ...current, phase: 'confirm' });
@@ -153,8 +162,15 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     if (current === null || communityId === null || current.proofRequestId === null) return;
     setModerateDialogOpen(true);
     setModerateFor({ ...current, phase: 'sending' });
+    if (current.removal === 'unknown') {
+      const result = await resolveManualRemoval(client, current.proofRequestId);
+      if (result.removal === 'rejected') {
+        setModerateFor({ ...current, phase: 'confirm', removal: null, proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+      } else setModerateFor({ ...current, phase: 'result', removal: result.removal, evidenceUpload: result.evidenceUpload });
+      return;
+    }
     const result = await sendManualRemovalEvidence(client, communityId, current);
-    setModerateFor({ ...current, phase: 'result', evidenceRequestId: result.requestId, evidenceUpload: result.upload });
+    setModerateFor({ ...current, phase: 'result', removal: 'accepted', evidenceRequestId: result.requestId, evidenceUpload: result.upload });
   };
   const closeEmoji = (returnFocus: boolean) => {
     const opener = emojiFor?.opener;
@@ -234,7 +250,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       case 'delete': if (msgId !== null) setDeleteFor({ key: item.key, msgId }); break;
       case 'moderateRemove': if (msgId !== null) {
         setModerateFor({ key: item.key, msgId, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, p.book),
-          120), phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+          120), phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null, removal: null });
         setModerateDialogOpen(true);
       } break;
       case 'toggle': if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); break;
@@ -368,7 +384,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         {t('shell.moderation.removeConfirm')}</Button>
         : moderateFor?.phase === 'sending' ? <Button aria-disabled="true">{t('shell.moderation.submitting')}</Button>
           : moderateFor?.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
-            : <Button variant="danger" onClick={() => void retryModerationEvidence()}>{t('shell.moderation.retryEvidence')}</Button>}>
+            : <Button variant="danger" onClick={() => void retryModerationEvidence()}>{moderateFor?.removal === 'unknown' ? t('shell.moderation.retryRemoval') : t('shell.moderation.retryEvidence')}</Button>}>
       {moderateFor?.phase === 'confirm' ? <>
         <p>{t('shell.moderation.removeBody')}</p>
         <label>{t('shell.moderation.reason')}<textarea maxLength={1024} value={moderateFor.reason}
@@ -378,14 +394,15 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         : moderateFor?.evidenceUpload === 'accepted' ? <p role="status">{t('shell.moderation.evidenceSent')}</p>
           : moderateFor?.evidenceUpload === 'pending' ? <p role="status">{t('shell.moderation.evidencePending')}</p>
             : moderateFor?.evidenceUpload === 'rejected' ? <p role="alert">{t('shell.moderation.evidenceRejected')}</p>
-              : <p role="alert">{t('shell.moderation.evidenceUnknown')}</p>}
+              : <p role="alert">{moderateFor?.removal === 'unknown' ? t('shell.moderation.removalUnknown') : t('shell.moderation.evidenceUnknown')}</p>}
     </Dialog>
     {moderateFor !== null && !moderateDialogOpen && moderateFor.phase === 'result' ? <div role="status" className="d-moderation-evidence-status">
       <p>{moderateFor.evidenceUpload === 'accepted' ? t('shell.moderation.evidenceSent')
         : moderateFor.evidenceUpload === 'pending' ? t('shell.moderation.evidencePending')
-          : moderateFor.evidenceUpload === 'rejected' ? t('shell.moderation.evidenceRejected') : t('shell.moderation.evidenceUnknown')}</p>
+          : moderateFor.evidenceUpload === 'rejected' ? t('shell.moderation.evidenceRejected')
+            : moderateFor.removal === 'unknown' ? t('shell.moderation.removalUnknown') : t('shell.moderation.evidenceUnknown')}</p>
       {moderateFor.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
-        : <Button onClick={() => void retryModerationEvidence()}>{t('shell.moderation.retryEvidence')}</Button>}
+        : <Button onClick={() => void retryModerationEvidence()}>{moderateFor.removal === 'unknown' ? t('shell.moderation.retryRemoval') : t('shell.moderation.retryEvidence')}</Button>}
     </div> : null}
     <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} note={bits !== null ? t('perm.pinsNote') : undefined} canUnpin={bits === null || (bits & PERM.pinMessages) !== 0} book={p.book} items={items} now={now}
       onClose={() => p.dispatch({ type: 'pins', open: false })} onJump={jump} onError={e => p.onError(e)} />

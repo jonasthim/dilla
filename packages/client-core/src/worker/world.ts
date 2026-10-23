@@ -284,6 +284,9 @@ export function world(opts: {
     rejectUnsubmittedManualRemoval: vi.fn((requestId: Uint8Array) => {
       const index = state.manualEvidence.findIndex((item) => toHex(item.proofRequestId) === toHex(requestId) && item.state === 0); if (index >= 0) state.manualEvidence.splice(index, 1);
     }),
+    rejectManualRemoval: vi.fn((requestId: Uint8Array) => {
+      const index = state.manualEvidence.findIndex((item) => toHex(item.proofRequestId) === toHex(requestId) && item.state < 2); if (index >= 0) state.manualEvidence.splice(index, 1);
+    }),
     humanInteractionSendPrepare: vi.fn((requestId: Uint8Array, _communityId: Uint8Array, _groupId: Uint8Array,
       _requestBody: Uint8Array, _now: bigint) => requestId),
     humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number): HumanInteractionEventPage => ({ events: [], next: 0n, highWater: 0n })),

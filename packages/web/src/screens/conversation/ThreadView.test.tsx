@@ -169,8 +169,9 @@ describe('ThreadView (web3.7)', () => {
   });
   it('offers the separate moderator action on a peer reply and sends its timeline sequence', async () => {
     const { fake, user } = setup();
-    fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'accepted',
-      proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'pending' })
+    fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'unknown',
+      proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'unknown' })
+      : command.m === 'resolveManualRemoval' ? Promise.resolve({ removal: 'accepted', evidenceUpload: 'pending' })
       : command.m === 'humanInteractionRequest' ? Promise.resolve({ upload: 'accepted' }) : Promise.resolve(null);
     const everyone = 'e0'.repeat(16);
     const moderators = 'a0'.repeat(16);
@@ -195,7 +196,10 @@ describe('ThreadView (web3.7)', () => {
     await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] }));
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P2, seq: '2',
       reason: 'reviewed by moderator', excerpt: 'first reply' }]);
+    expect(await screen.findByText(en['shell.moderation.removalUnknown'])).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.retryRemoval'] }));
     expect(await screen.findByText(en['shell.moderation.evidencePending'])).toBeInTheDocument();
+    expect(fake.callsOf('resolveManualRemoval')).toEqual([{ m: 'resolveManualRemoval', proofRequestId: '11'.repeat(16) }]);
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: en['shell.delete.cancel'] }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText(en['shell.moderation.evidencePending'])).toBeInTheDocument();

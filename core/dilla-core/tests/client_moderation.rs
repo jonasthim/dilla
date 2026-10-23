@@ -158,6 +158,27 @@ fn manual_removal_evidence_is_durable_and_follows_the_acceptance_state() {
         .complete_manual_removal_evidence(&REQUEST, NOW + 1)
         .expect("evidence accepted");
     assert!(core.core.manual_removal_evidence().unwrap().is_empty());
+
+    let refused = [0x81; 16];
+    core.core
+        .prepare_manual_removal_evidence(
+            &refused,
+            &[0x82; 16],
+            &COMMUNITY,
+            &GROUP,
+            &CHANNEL,
+            &[0x83; 16],
+            TARGET_SEQUENCE + 1,
+            "refused request",
+            "excerpt",
+            NOW + 2,
+            NOW + 32,
+            NOW + 2,
+        )
+        .expect("persist the next proof before POST");
+    core.core.mark_manual_removal_submitted(&refused).unwrap();
+    core.core.reject_manual_removal(&refused, NOW + 3).unwrap();
+    assert!(core.core.manual_removal_evidence().unwrap().is_empty());
 }
 
 #[test]

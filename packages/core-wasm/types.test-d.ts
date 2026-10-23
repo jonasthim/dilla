@@ -36,6 +36,7 @@ interface ExpectedCoreHandle {
   mark_manual_removal_accepted(request_id: Uint8Array): void;
   complete_manual_removal_evidence(request_id: Uint8Array, now: bigint): void;
   reject_unsubmitted_manual_removal(request_id: Uint8Array, now: bigint): void;
+  reject_manual_removal(request_id: Uint8Array, now: bigint): void;
   session_store(token: string, expires: bigint, idle_expires: bigint): void;
   session(): Uint8Array;
   session_clear(): void;
@@ -154,6 +155,7 @@ expectTrue<Equals<H['mark_manual_removal_submitted'], E['mark_manual_removal_sub
 expectTrue<Equals<H['mark_manual_removal_accepted'], E['mark_manual_removal_accepted']>>();
 expectTrue<Equals<H['complete_manual_removal_evidence'], E['complete_manual_removal_evidence']>>();
 expectTrue<Equals<H['reject_unsubmitted_manual_removal'], E['reject_unsubmitted_manual_removal']>>();
+expectTrue<Equals<H['reject_manual_removal'], E['reject_manual_removal']>>();
 expectTrue<Equals<H['session_store'], E['session_store']>>();
 expectTrue<Equals<H['session'], E['session']>>();
 expectTrue<Equals<H['session_clear'], E['session_clear']>>();

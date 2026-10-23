@@ -259,6 +259,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'editMessage',
   'deleteMessage',
   'moderateRemoveMessage',
+  'resolveManualRemoval',
   'react',
   'pin',
   'loadPins',
@@ -330,7 +331,7 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
@@ -377,6 +378,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   editMessage: ['channelId', 'msgId'],
   deleteMessage: ['channelId', 'msgId'],
   moderateRemoveMessage: ['channelId', 'msgId'],
+  resolveManualRemoval: ['proofRequestId'],
   react: ['channelId', 'msgId'],
   pin: ['channelId', 'msgId'],
   loadPins: ['channelId'],
@@ -486,6 +488,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'editMessage',
     'deleteMessage',
     'moderateRemoveMessage',
+    'resolveManualRemoval',
     'react',
     'pin',
     'loadPins',
@@ -1316,6 +1319,7 @@ export class Controller {
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
       case 'moderateRemoveMessage': return this.moderateRemoveMessage(command.channelId, command.msgId, command.seq, command.reason, command.excerpt);
+      case 'resolveManualRemoval': return this.resolveManualRemoval(command.proofRequestId);
       case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
       case 'pin': return this.pin(command.channelId, command.msgId, command.on);
       case 'openThread': return this.openThread(command.channelId, command.rootMsgId);
@@ -4808,7 +4812,7 @@ export class Controller {
 
   /** A distinct human moderation path: validate local target/group and loaded authority, then let the instance recheck. */
   private async moderateRemoveMessage(channelId: string, msgId: string, rawSeq: string, reason: string, excerpt: string): Promise<{
-    removal: 'accepted'; proofRequestId: string; evidenceRequestId: string;
+    removal: 'accepted' | 'unknown' | 'rejected'; proofRequestId: string; evidenceRequestId: string | null;
     evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown';
   }> {
     const core = this.requireCore();
@@ -4845,11 +4849,15 @@ export class Controller {
     }
     const bits = channelBitsOf({ owner, everyoneId: access.everyoneId, roles, members, overwrites: overwrites[channelId] ?? [] }, me);
     if (bits === null || (bits & PERM.manageMessages) === 0) throw new Refusal('E_FORBIDDEN', 'manage messages permission required');
+    const pendingTarget = core.manualRemovalEvidence?.().find((entry) => toHex(entry.groupId) === toHex(group.groupId)
+      && toHex(entry.messageId) === msgId && entry.targetSequence === seq);
+    if (pendingTarget !== undefined) return this.resolveManualRemoval(toHex(pendingTarget.proofRequestId));
     const requestId = crypto.getRandomValues(new Uint8Array(16));
     const evidenceRequestId = crypto.getRandomValues(new Uint8Array(16));
     const now = BigInt(Math.floor(this.deps.now() / 1000));
     if (core.prepareManualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
-      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined) {
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined
+      || core.rejectManualRemoval === undefined || core.manualRemovalEvidence === undefined) {
       throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
     }
     const signed = core.prepareManualRemovalEvidence(requestId, evidenceRequestId, fromHex(communityId), group.groupId,
@@ -4857,7 +4865,15 @@ export class Controller {
     // This durable transition precedes the request. A restart can now distinguish "never submitted"
     // from "POST may have succeeded" and only ever retries the same proof ID and signed bytes.
     core.markManualRemovalSubmitted(requestId);
-    await this.routes.postModerationRemoval(group.groupId, signed);
+    try {
+      await this.routes.postModerationRemoval(group.groupId, signed);
+    } catch (error) {
+      if (this.definiteManualRemovalRefusal(error)) {
+        core.rejectManualRemoval(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+        return { removal: 'rejected', proofRequestId: toHex(requestId), evidenceRequestId: null, evidenceUpload: 'rejected' };
+      }
+      return { removal: 'unknown', proofRequestId: toHex(requestId), evidenceRequestId: toHex(evidenceRequestId), evidenceUpload: 'unknown' };
+    }
     core.markManualRemovalAccepted(requestId);
     this.refreshTimeline(channelId, group.groupId);
     const proofRequestId = toHex(requestId);
@@ -4874,6 +4890,62 @@ export class Controller {
       evidenceUpload = 'unknown';
     }
     return { removal: 'accepted', proofRequestId, evidenceRequestId: evidenceRequestIdHex, evidenceUpload };
+  }
+
+  private definiteManualRemovalRefusal(error: unknown): boolean {
+    // A server 4xx other than Request Timeout is an authoritative refusal; 408 and every
+    // transport/5xx error can race with persistence and therefore remain unknown.
+    return error instanceof DillaHttpError && error.status >= 400 && error.status < 500 && error.status !== 408;
+  }
+
+  private async resolveManualRemoval(proofRequestHex: string): Promise<{
+    removal: 'accepted' | 'unknown' | 'rejected'; proofRequestId: string; evidenceRequestId: string | null;
+    evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown';
+  }> {
+    const core = this.requireCore();
+    if (core.manualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined) {
+      throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    }
+    const proofRequestId = fromHex(proofRequestHex);
+    let row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
+    if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
+    if (row.state === 1) {
+      try { await recoverModerationRemovals(core, this.routes, row.groupId); } catch { /* absence or outage is not proof of rejection */ }
+      row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
+      if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
+    }
+    if (row.state < 2) {
+      const now = BigInt(Math.floor(this.deps.now() / 1000));
+      if (row.expires <= now) {
+        if (row.state === 0) core.rejectUnsubmittedManualRemoval?.(proofRequestId, now);
+        return { removal: row.state === 0 ? 'rejected' : 'unknown', proofRequestId: proofRequestHex,
+          evidenceRequestId: toHex(row.evidenceRequestId), evidenceUpload: 'unknown' };
+      }
+      try {
+        core.markManualRemovalSubmitted(proofRequestId);
+        await this.routes.postModerationRemoval(row.groupId, row.signedBody);
+        core.markManualRemovalAccepted(proofRequestId);
+      } catch (error) {
+        if (this.definiteManualRemovalRefusal(error)) {
+          core.rejectManualRemoval?.(proofRequestId, now);
+          return { removal: 'rejected', proofRequestId: proofRequestHex, evidenceRequestId: null, evidenceUpload: 'rejected' };
+        }
+        return { removal: 'unknown', proofRequestId: proofRequestHex, evidenceRequestId: toHex(row.evidenceRequestId), evidenceUpload: 'unknown' };
+      }
+      row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
+      if (row === undefined || row.state !== 2) return { removal: 'unknown', proofRequestId: proofRequestHex,
+        evidenceRequestId: toHex(row?.evidenceRequestId ?? new Uint8Array(16)), evidenceUpload: 'unknown' };
+    }
+    let evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
+    try {
+      const sent = await this.uploadManualRemovalEvidence({ proofRequestId: proofRequestHex,
+        evidenceRequestId: toHex(row.evidenceRequestId), communityId: toHex(row.communityId), reason: row.reason,
+        excerpt: row.excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
+      evidenceUpload = sent.upload;
+      if (evidenceUpload === 'accepted') core.completeManualRemovalEvidence(proofRequestId, BigInt(Math.floor(this.deps.now() / 1000)));
+    } catch { evidenceUpload = 'unknown'; }
+    return { removal: 'accepted', proofRequestId: proofRequestHex, evidenceRequestId: toHex(row.evidenceRequestId), evidenceUpload };
   }
 
   /** Reconcile crash-interrupted removals against the verified feed, then resume their same-ID op61 evidence. */

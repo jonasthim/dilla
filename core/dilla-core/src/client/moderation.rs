@@ -309,6 +309,32 @@ impl ClientCore {
         })
     }
 
+    /// Retire a submitted proof only after an authoritative HTTP refusal establishes it was not accepted.
+    pub fn reject_manual_removal(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+    ) -> Result<(), ClientError> {
+        let now = i64::try_from(now)
+            .map_err(|_| ClientError::new(E_CORE_INPUT, "now is out of range"))?;
+        self.write(|_, unit| {
+            let result = unit.with_conn(|c| {
+                let result = (|| -> Result<(), ClientError> {
+                    let changed = c.execute("UPDATE app_manual_removal_evidence SET state=3 WHERE proof_request_id=?1 AND state<2",
+                        [request_id.as_slice()]).map_err(StorageError::from)?;
+                    if changed == 0 {
+                        let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM app_manual_removal_evidence WHERE proof_request_id=?1)", [request_id.as_slice()], |r| r.get(0)).map_err(StorageError::from)?;
+                        if !exists { return Err(ClientError::new(super::error::E_CORE_NOT_FOUND, "manual removal evidence not found")); }
+                    }
+                    c.execute("DELETE FROM app_manual_removal_evidence WHERE state=3 AND created_at<=?1", [now.saturating_sub(MANUAL_EVIDENCE_RETENTION_SECS as i64)]).map_err(StorageError::from)?;
+                    Ok(())
+                })();
+                Ok(result)
+            })?;
+            result
+        })
+    }
+
     fn update_manual_evidence(
         &mut self,
         request_id: &[u8; 16],

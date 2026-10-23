@@ -14,7 +14,7 @@ import { editableText, editRoles, excerpt, mentionCandidates, mentionMembers, me
 import { AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { conversationReducer, INITIAL_UI } from './Conversation.tsx';
-import { sendManualRemovalEvidence, type ManualRemovalDialogState } from './manual-removal.ts';
+import { resolveManualRemoval, sendManualRemovalEvidence, type ManualRemovalDialogState } from './manual-removal.ts';
 import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
 
 const NO_ITEMS: readonly TimelineItem[] = [];
@@ -114,13 +114,23 @@ export function ThreadView(p: {
         reason: state.reason, excerpt: state.excerpt }) as {
         removal?: unknown; proofRequestId?: unknown; evidenceRequestId?: unknown; evidenceUpload?: unknown;
       };
+      if (result?.removal === 'unknown' && typeof result.proofRequestId === 'string') {
+        setModerateFor({ ...state, phase: 'result', removal: 'unknown', proofRequestId: result.proofRequestId,
+          evidenceRequestId: typeof result.evidenceRequestId === 'string' ? result.evidenceRequestId : null, evidenceUpload: 'unknown' });
+        rowEls.current.get(state.key)?.focus();
+        return;
+      }
+      if (result?.removal === 'rejected') {
+        setModerateFor({ ...state, phase: 'confirm', removal: null, proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+        return;
+      }
       if (result?.removal !== 'accepted' || typeof result.proofRequestId !== 'string' || typeof result.evidenceRequestId !== 'string') {
         throw new Error('E_REMOVAL_RESULT');
       }
       const evidenceUpload = result.evidenceUpload === 'accepted' || result.evidenceUpload === 'pending' || result.evidenceUpload === 'rejected'
         ? result.evidenceUpload : 'unknown';
       setModerateFor({ ...state, phase: 'result', proofRequestId: result.proofRequestId,
-        evidenceRequestId: result.evidenceRequestId, evidenceUpload });
+        evidenceRequestId: result.evidenceRequestId, evidenceUpload, removal: 'accepted' });
       rowEls.current.get(state.key)?.focus();
     } catch (error) {
       report(error);
@@ -132,8 +142,15 @@ export function ThreadView(p: {
     if (state === null || communityId === null || state.proofRequestId === null) return;
     setModerateDialogOpen(true);
     setModerateFor({ ...state, phase: 'sending' });
+    if (state.removal === 'unknown') {
+      const result = await resolveManualRemoval(client, state.proofRequestId);
+      if (result.removal === 'rejected') {
+        setModerateFor({ ...state, phase: 'confirm', removal: null, proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+      } else setModerateFor({ ...state, phase: 'result', removal: result.removal, evidenceUpload: result.evidenceUpload });
+      return;
+    }
     const result = await sendManualRemovalEvidence(client, communityId, state);
-    setModerateFor({ ...state, phase: 'result', evidenceRequestId: result.requestId, evidenceUpload: result.upload });
+    setModerateFor({ ...state, phase: 'result', removal: 'accepted', evidenceRequestId: result.requestId, evidenceUpload: result.upload });
   };
   const onRow = (item: TimelineItem, ev: RowEvent) => {
     const msgId = item.msgId;
@@ -143,7 +160,7 @@ export function ThreadView(p: {
     else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key }); }
     else if (ev.kind === 'moderateRemove') { if (msgId !== null) {
       setModerateFor({ msgId, key: item.key, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, book)),
-        phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+        phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null, removal: null });
       setModerateDialogOpen(true);
     } }
     else if (ev.kind === 'retry') command({ m: 'retrySend', msgId: ev.msgId });
@@ -243,7 +260,7 @@ export function ThreadView(p: {
           {t('shell.moderation.removeConfirm')}</Button>
           : moderateFor?.phase === 'sending' ? <Button aria-disabled="true">{t('shell.moderation.submitting')}</Button>
             : moderateFor?.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
-              : <Button variant="danger" onClick={() => void retryModerationEvidence()}>{t('shell.moderation.retryEvidence')}</Button>}>
+              : <Button variant="danger" onClick={() => void retryModerationEvidence()}>{moderateFor?.removal === 'unknown' ? t('shell.moderation.retryRemoval') : t('shell.moderation.retryEvidence')}</Button>}>
         {moderateFor?.phase === 'confirm' ? <>
           <p>{t('shell.moderation.removeBody')}</p>
           <label>{t('shell.moderation.reason')}<textarea maxLength={1024} value={moderateFor.reason}
@@ -253,14 +270,15 @@ export function ThreadView(p: {
           : moderateFor?.evidenceUpload === 'accepted' ? <p role="status">{t('shell.moderation.evidenceSent')}</p>
             : moderateFor?.evidenceUpload === 'pending' ? <p role="status">{t('shell.moderation.evidencePending')}</p>
               : moderateFor?.evidenceUpload === 'rejected' ? <p role="alert">{t('shell.moderation.evidenceRejected')}</p>
-                : <p role="alert">{t('shell.moderation.evidenceUnknown')}</p>}
+                : <p role="alert">{moderateFor?.removal === 'unknown' ? t('shell.moderation.removalUnknown') : t('shell.moderation.evidenceUnknown')}</p>}
       </Dialog>
       {moderateFor !== null && !moderateDialogOpen && moderateFor.phase === 'result' ? <div role="status" className="d-moderation-evidence-status">
         <p>{moderateFor.evidenceUpload === 'accepted' ? t('shell.moderation.evidenceSent')
           : moderateFor.evidenceUpload === 'pending' ? t('shell.moderation.evidencePending')
-            : moderateFor.evidenceUpload === 'rejected' ? t('shell.moderation.evidenceRejected') : t('shell.moderation.evidenceUnknown')}</p>
+            : moderateFor.evidenceUpload === 'rejected' ? t('shell.moderation.evidenceRejected')
+              : moderateFor.removal === 'unknown' ? t('shell.moderation.removalUnknown') : t('shell.moderation.evidenceUnknown')}</p>
         {moderateFor.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
-          : <Button onClick={() => void retryModerationEvidence()}>{t('shell.moderation.retryEvidence')}</Button>}
+          : <Button onClick={() => void retryModerationEvidence()}>{moderateFor.removal === 'unknown' ? t('shell.moderation.retryRemoval') : t('shell.moderation.retryEvidence')}</Button>}
       </div> : null}
       {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}
         onIndex={index => setLightbox(s => s ? { ...s, index } : null)} onClose={() => { lightbox.opener?.focus(); setLightbox(null); }} onError={report} /> : null}
