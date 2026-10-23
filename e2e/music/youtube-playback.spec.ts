@@ -1,11 +1,12 @@
 import { expect, test } from '../voice/support/peer-browser';
-import { audible, audibleLevel, AUDIBLE_RMS, heardCount, keyPath, joinVoice, WAIT } from '../voice/support/voice';
-import { addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp } from '../web/support/app';
+import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, WAIT } from '../voice/support/voice';
+import { addServerVia, channelRow, completeSignUp, copy, makeInviteLink, newAccount, newChannelButton, signUp } from '../web/support/app';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const SERVER = 'Music acceptance';
 const DJ_ROLE = 'Music DJ';
 const FRIEND = 'Bea';
+const FRIEND_TWO = 'Cal';
 const YOUTUBE_SAMPLE = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ';
 
 const dialog = (page: import('@playwright/test').Page, name: string, vars?: Record<string, string | number>) =>
@@ -148,12 +149,15 @@ function installMusicTransportTrace(): void {
   Object.defineProperty(window, 'Worker', { value: TracedWorker, configurable: true, writable: true });
 }
 
-test('late-joining DJ gets authenticated YouTube playback controls and encrypted audible media', async ({ peerBrowser }) => {
+test('two DJs run independent YouTube playback sessions in separate voice channels', async ({ peerBrowser }) => {
   const owner = await peerBrowser.open('owner');
   const dj = await peerBrowser.open('dj');
+  const djTwo = await peerBrowser.open('dj-two');
   await dj.context.addInitScript(installMusicTransportTrace);
+  await djTwo.context.addInitScript(installMusicTransportTrace);
   const page = owner.page;
   const djPage = dj.page;
+  const djTwoPage = djTwo.page;
   const invite = process.env.DILLA_TESTKIT_INVITE?.split(',')[0];
   if (!invite) throw new Error('global setup did not export the test instance invite');
   const control = process.env.DILLA_TESTKIT_CONTROL;
@@ -171,6 +175,17 @@ test('late-joining DJ gets authenticated YouTube playback controls and encrypted
   await page.keyboard.press('Enter');
   await expect(createServer).toBeHidden({ timeout: WAIT });
   await expect(page.getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true })).toBeVisible({ timeout: WAIT });
+
+  // Create the second call through the shipping client. Both channel queues and Bot publishers
+  // must coexist in one installation while the independent DJs control them from separate pages.
+  await newChannelButton(page).click();
+  const createChannel = dialog(page, 'create.channel.title', { server: SERVER });
+  await createChannel.getByRole('radio', { name: copy('create.channel.voice'), exact: true }).click();
+  await createChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('music-two');
+  await createChannel.getByRole('button', { name: copy('create.channel.submit'), exact: true }).click();
+  await expect(createChannel).toBeHidden({ timeout: WAIT });
+  await expect(page.getByRole('button', { name: copy('voice.open', { name: 'music-two' }), exact: true })).toBeVisible({ timeout: WAIT });
+  await channelRow(page, 'general').click();
 
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   let settings = dialog(page, 'admin.title');
@@ -202,82 +217,140 @@ test('late-joining DJ gets authenticated YouTube playback controls and encrypted
   await completeSignUp(djPage, newAccount(FRIEND, control), instanceName);
   await expect(djPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
     .getByRole('button', { name: SERVER, exact: true })).toBeVisible({ timeout: WAIT });
+  const inviteLinkTwo = await makeInviteLink(page, SERVER);
+  await djTwoPage.goto(new URL(inviteLinkTwo).pathname);
+  await djTwoPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+  await completeSignUp(djTwoPage, newAccount(FRIEND_TWO, control), instanceName);
+  await expect(djTwoPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
+    .getByRole('button', { name: SERVER, exact: true })).toBeVisible({ timeout: WAIT });
 
-  const friend = memberRow(page, FRIEND);
-  await expect(friend).toBeVisible({ timeout: WAIT });
-  await friend.locator('.d-member-list__open').click();
-  await page.getByRole('dialog', { name: FRIEND, exact: true })
-    .getByRole('button', { name: copy('layout.profile.manageRoles'), exact: true }).click();
-  const assign = dialog(page, 'roles.assign.title', { name: FRIEND });
-  await assign.getByRole('checkbox', { name: DJ_ROLE, exact: true }).click();
-  await expect(assign.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeChecked({ timeout: WAIT });
-  await expect(page.getByTestId('shell-announcer')).toHaveText(copy('roles.assign.given', { role: DJ_ROLE, name: FRIEND }), { timeout: WAIT });
-  await assign.getByRole('button', { name: copy('roles.assign.close'), exact: true }).click();
+  for (const name of [FRIEND, FRIEND_TWO]) {
+    const friend = memberRow(page, name);
+    await expect(friend).toBeVisible({ timeout: WAIT });
+    await friend.locator('.d-member-list__open').click();
+    await page.getByRole('dialog', { name, exact: true })
+      .getByRole('button', { name: copy('layout.profile.manageRoles'), exact: true }).click();
+    const assign = dialog(page, 'roles.assign.title', { name });
+    await assign.getByRole('checkbox', { name: DJ_ROLE, exact: true }).click();
+    await expect(assign.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeChecked({ timeout: WAIT });
+    await expect(page.getByTestId('shell-announcer')).toHaveText(copy('roles.assign.given', { role: DJ_ROLE, name }), { timeout: WAIT });
+    await assign.getByRole('button', { name: copy('roles.assign.close'), exact: true }).click();
+  }
 
   await joinVoice(djPage, SERVER, 'general');
-  const panel = djPage.getByRole('region', { name: copy('voice.music.title'), exact: true });
-  await expect(panel).toBeVisible({ timeout: WAIT });
-  try {
-    await expect(panel).toHaveAttribute('data-availability', 'available', { timeout: 90_000 });
-  } catch (error) {
-    const trace = await djPage.evaluate(() => {
-      const w = window as unknown as { __dillaMusicTrace?: unknown };
-      return { transport: w.__dillaMusicTrace ?? null,
-        callTiles: document.querySelectorAll('.dw-voice-stage .d-call-stage__tile').length,
-        ownTiles: document.querySelectorAll('.dw-voice-stage .d-call-tile[data-own="true"]').length };
-    });
-    throw new Error(`${String(error)}\nSafe music trace (no IDs or payloads): ${JSON.stringify(trace)}`);
+  await joinVoice(djTwoPage, SERVER, 'music-two');
+  const panelA = djPage.getByRole('region', { name: copy('voice.music.title'), exact: true });
+  const panelB = djTwoPage.getByRole('region', { name: copy('voice.music.title'), exact: true });
+  for (const [musicPage, panel] of [[djPage, panelA], [djTwoPage, panelB]] as const) {
+    await expect(panel).toBeVisible({ timeout: WAIT });
+    try {
+      await expect(panel).toHaveAttribute('data-availability', 'available', { timeout: 90_000 });
+    } catch (error) {
+      const trace = await musicPage.evaluate(() => {
+        const w = window as unknown as { __dillaMusicTrace?: unknown };
+        return { transport: w.__dillaMusicTrace ?? null,
+          callTiles: document.querySelectorAll('.dw-voice-stage .d-call-stage__tile').length,
+          ownTiles: document.querySelectorAll('.dw-voice-stage .d-call-tile[data-own="true"]').length };
+      });
+      throw new Error(`${String(error)}\nSafe music trace (no IDs or payloads): ${JSON.stringify(trace)}`);
+    }
   }
-  const url = panel.getByRole('textbox', { name: copy('voice.music.urlLabel'), exact: true });
-  await url.fill(YOUTUBE_SAMPLE);
-  await panel.getByRole('button', { name: copy('voice.music.enqueueAction'), exact: true }).last().click();
-  await expect(panel.getByText(copy('voice.music.enqueueSuccess'), { exact: true })).toBeVisible({ timeout: 90_000 });
-  await panel.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
+  const enqueue = async (panel: typeof panelA) => {
+    await panel.getByRole('textbox', { name: copy('voice.music.urlLabel'), exact: true }).fill(YOUTUBE_SAMPLE);
+    await panel.getByRole('button', { name: copy('voice.music.enqueueAction'), exact: true }).last().click();
+    await expect(panel.getByText(copy('voice.music.enqueueSuccess'), { exact: true })).toBeVisible({ timeout: 90_000 });
+  };
+  const queueA = panelA.getByRole('list', { name: copy('voice.music.queue'), exact: true });
+  const queueB = panelB.getByRole('list', { name: copy('voice.music.queue'), exact: true });
+  await panelA.getByRole('button', { name: copy('voice.music.showQueue'), exact: true }).click();
+  await panelB.getByRole('button', { name: copy('voice.music.showQueue'), exact: true }).click();
+  await enqueue(panelA);
+  await expect(queueA.getByRole('listitem')).toHaveCount(1);
+  await expect(queueB.getByRole('listitem')).toHaveCount(0);
+  await enqueue(panelA);
+  await expect(queueA.getByRole('listitem')).toHaveCount(2);
+  await expect(queueB.getByRole('listitem')).toHaveCount(0);
+  await enqueue(panelB);
+  await expect(queueB.getByRole('listitem')).toHaveCount(1);
+  await panelA.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
+  await panelB.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
+  await expect(panelA.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled({ timeout: WAIT });
   try {
-    await expect(panel.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled({ timeout: WAIT });
+    await expect(panelB.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled({ timeout: WAIT });
   } catch (error) {
     const trace = await djPage.evaluate(() => (window as unknown as { __dillaMusicTrace?: unknown }).__dillaMusicTrace ?? null);
     throw new Error(`${String(error)}\nSafe music trace (no IDs or payloads): ${JSON.stringify(trace)}`);
   }
 
-  const botTile = djPage.locator('.dw-voice-stage .d-call-stage__tile').filter({ has: djPage.locator('.d-call-tile__tag', { hasText: 'bot' }) });
-  await expect(botTile).toHaveCount(1, { timeout: 90_000 });
-  const tileID = await botTile.getAttribute('data-tile-id');
-  const botDevice = tileID?.split(':')[0] ?? '';
-  expect(botDevice).toMatch(/^[0-9a-f]{32}$/);
+  const botDeviceFor = async (musicPage: typeof page) => {
+    const botTile = musicPage.locator('.dw-voice-stage .d-call-stage__tile').filter({ has: musicPage.locator('.d-call-tile__tag', { hasText: 'bot' }) });
+    await expect(botTile).toHaveCount(1, { timeout: 90_000 });
+    const tileID = await botTile.getAttribute('data-tile-id');
+    const botDevice = tileID?.split(':')[0] ?? '';
+    expect(botDevice).toMatch(/^[0-9a-f]{32}$/);
+    return botDevice;
+  };
+  const botDeviceA = await botDeviceFor(djPage);
+  const botDeviceB = await botDeviceFor(djTwoPage);
+  // One installation publishes with one stable Bot device identity across rooms.
+  expect(botDeviceA).toBe(botDeviceB);
+  const callA = await callSlice(djPage);
+  const callB = await callSlice(djTwoPage);
+  expect(callA?.channelId).not.toBeNull();
+  expect(callB?.channelId).not.toBeNull();
+  expect(callA?.channelId).not.toBe(callB?.channelId);
+  expect(callA?.callId).not.toBe(callB?.callId);
+  expect(callA?.epoch).not.toBeNull();
+  expect(callB?.epoch).not.toBeNull();
+  const djSelf = await self(djPage);
+  const djTwoSelf = await self(djTwoPage);
+  await expect.poll(() => snapshotDevices(djPage, callA!.channelId!), { timeout: WAIT }).toEqual([botDeviceA, djSelf.device].sort());
+  await expect.poll(() => snapshotDevices(djTwoPage, callB!.channelId!), { timeout: WAIT }).toEqual([botDeviceB, djTwoSelf.device].sort());
   // The browser's media worker authenticates this provider's SFrame with the call key; the separate analyser proves the
   // decrypted remote audio reached playback. A UI queue row or an SFU track alone cannot satisfy either assertion.
   let verifiedFrames = 0;
   await expect.poll(async () => {
-    verifiedFrames = await heardCount(djPage, botDevice);
+    verifiedFrames = await heardCount(djPage, botDeviceA);
     return verifiedFrames;
   }, { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
+  await expect.poll(() => heardCount(djTwoPage, botDeviceB), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
   await audible(djPage);
-  const keyPathResult = await keyPath(djPage);
-  expect(keyPathResult.callKeys).toBeGreaterThan(0);
-  expect(keyPathResult.messages).toBeGreaterThan(0);
-  expect(keyPathResult.findings).toEqual([]);
+  await audible(djTwoPage);
+  for (const musicPage of [djPage, djTwoPage]) {
+    const result = await keyPath(musicPage);
+    expect(result.callKeys).toBeGreaterThan(0);
+    expect(result.messages).toBeGreaterThan(0);
+    expect(result.findings).toEqual([]);
+  }
 
-  const pause = panel.getByRole('button', { name: copy('voice.music.pause'), exact: true });
+  const pause = panelA.getByRole('button', { name: copy('voice.music.pause'), exact: true });
   await expect(pause).toBeEnabled();
   await pause.click();
   try {
-    await expect(panel.getByRole('button', { name: copy('voice.music.play'), exact: true })).toBeEnabled({ timeout: WAIT });
+    await expect(panelA.getByRole('button', { name: copy('voice.music.play'), exact: true })).toBeEnabled({ timeout: WAIT });
   } catch (error) {
     const trace = await djPage.evaluate(() => (window as unknown as { __dillaMusicTrace?: unknown }).__dillaMusicTrace ?? null);
     throw new Error(`${String(error)}\nSafe music trace after pause (no IDs or payloads): ${JSON.stringify(trace)}`);
   }
-  await panel.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
+  await expect(panelB.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled();
+  await panelA.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
   try {
-    await expect(panel.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled({ timeout: WAIT });
+    await expect(panelA.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled({ timeout: WAIT });
   } catch (error) {
     const trace = await djPage.evaluate(() => (window as unknown as { __dillaMusicTrace?: unknown }).__dillaMusicTrace ?? null);
     throw new Error(`${String(error)}\nSafe music trace after resume (no IDs or payloads): ${JSON.stringify(trace)}`);
   }
   await expect.poll(() => audibleLevel(djPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
-  await panel.getByRole('button', { name: copy('voice.music.stop'), exact: true }).click();
-  await expect(panel.getByText(copy('voice.music.nothingPlaying'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect.poll(() => audibleLevel(djTwoPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+  await panelA.getByRole('button', { name: copy('voice.music.stop'), exact: true }).click();
+  await expect(panelA.getByText(copy('voice.music.nothingPlaying'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(panelB.getByRole('button', { name: copy('voice.music.pause'), exact: true })).toBeEnabled();
+  await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
+  await expect.poll(() => audibleLevel(djTwoPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+  await panelB.getByRole('button', { name: copy('voice.music.stop'), exact: true }).click();
+  await expect(panelB.getByText(copy('voice.music.nothingPlaying'), { exact: true })).toBeVisible({ timeout: WAIT });
 
   // Confirm the human's E2EE worker observed authenticated Bot media and that its IPC boundary never exposed a call key.
   expect(await djPage.locator('.dw-voice-stage .d-call-tile[data-own="true"]').count()).toBe(1);
+  expect(await djTwoPage.locator('.dw-voice-stage .d-call-tile[data-own="true"]').count()).toBe(1);
 });

@@ -9,11 +9,12 @@ import type { HostConfig } from './web/support/host.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = writeFixtures(join(tmpdir(), 'dilla-music-fixtures'));
+const port = Number(process.env.DILLA_MUSIC_PORT ?? 8721);
 const xdgRuntimeDir = process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
 const pulseServer = process.env.PULSE_SERVER ?? `unix:${xdgRuntimeDir}/pulse/native`;
 const dillaHost: HostConfig = {
-  port: 8621, control: 8622, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
-  sfu: { port: 8624, udpPort: 8626, departureTimeout: 90 },
+  port, control: port + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
+  sfu: { port: port + 3, udpPort: port + 5, departureTimeout: 90 },
 };
 
 export default defineConfig({
@@ -28,7 +29,7 @@ export default defineConfig({
   expect: { timeout: process.env.CI === 'true' ? 90_000 : 30_000 },
   reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:8621', trace: 'retain-on-failure', actionTimeout: process.env.CI === 'true' ? 90_000 : 30_000,
+    baseURL: `http://127.0.0.1:${port}`, trace: 'retain-on-failure', actionTimeout: process.env.CI === 'true' ? 90_000 : 30_000,
   },
   projects: [{
     name: 'chromium-music',
