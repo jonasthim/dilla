@@ -313,13 +313,13 @@ const REQUIRED_STEPS = {
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
-    'timeout-minutes: 30',
+    'timeout-minutes: 45',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'name: dilla-core-wasi',
     'name: dilla-testkit',
     'artifacts/dilla-testkit',
-    'go test -race -shuffle=on -timeout 25m ./internal/testkit/...',
+    'go test -race -shuffle=on -timeout 38m ./internal/testkit/...',
     'DILLA_TESTKIT',
     // `DILLA_TESTKIT` above is a prefix of this one, so both are named: without the second, a
     // missing binary would skip every scenario test and the job would stay green.

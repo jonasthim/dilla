@@ -400,7 +400,7 @@ jobs:
 
   go-harness:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [rust-wasi, rust-native]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -411,7 +411,7 @@ jobs:
         with:
           name: dilla-testkit
           path: artifacts
-      - run: go test -race -shuffle=on -timeout 25m ./internal/testkit/...
+      - run: go test -race -shuffle=on -timeout 38m ./internal/testkit/...
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
           DILLA_TESTKIT_REQUIRED: '1'
@@ -697,8 +697,8 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 30\n/, '$1')));
-  assert.ok(problems.some((p) => p.includes('timeout-minutes: 30')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
+  assert.ok(problems.some((p) => p.includes('timeout-minutes: 45')), problems.join('\n'));
 });
 
 test('a node job that stopped running the checker\'s own tests is reported', () => {
@@ -865,7 +865,7 @@ for (const [job, needle] of [
   ['rust-wasm-node', 'npm run typecheck -w @dilla/media'],
   ['rust-wasm-node', 'npm run test:wasm -w @dilla/media'],
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
-  ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
+  ['go-harness', 'go test -race -shuffle=on -timeout 38m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
   ['go-lint', 'golangci-lint run ./...'],
   ['go-vuln', '-scan package -tags dillapins ./internal/deps'],

@@ -916,11 +916,13 @@ jobs:
     needs: [changes, rust-wasi, rust-native]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     # The scenario harness drives a real instance with the Rust testkit clients:
     # it needs the wasi core from rust-wasi and the testkit binary from
     # rust-native, and it is the slowest Go suite, so it has a job and a
-    # timeout of its own.
+    # timeout of its own. A loaded runner exceeded the 25-minute package budget
+    # during a 58-second join-storm test; the harness scenario has a 10-minute
+    # per-scenario ceiling, so leave room for that scenario to finish.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -939,7 +941,7 @@ jobs:
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
       - name: The scenario harness against the real instance
-        run: go test -race -shuffle=on -timeout 25m ./internal/testkit/...
+        run: go test -race -shuffle=on -timeout 38m ./internal/testkit/...
         env:
           GORACE: halt_on_error=1
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
