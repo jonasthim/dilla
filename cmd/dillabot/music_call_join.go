@@ -22,6 +22,14 @@ const (
 	maxMusicCallJoinBytes  = 4 << 20
 )
 
+type musicCallMembershipReader interface {
+	GroupPage(context.Context, id.ID, string, uint64, uint64) (client.Page, error)
+}
+
+type musicCallMembershipForgetter interface {
+	CallGroupForget(context.Context, id.ID) error
+}
+
 // ensureMusicCallGroupJoined performs the same security sequence as the browser call join:
 // stage an external join, refresh signed device-list pins, gate the staged call epoch, post the
 // exact commit, and resolve the helper intent from the accepted resync sequence.
@@ -53,8 +61,15 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 			continue
 		}
 		if existing.State == 2 {
-			_, err = core.CallMediaEpoch(ctx, group)
-			return musicCallJoinStageError("active_media_gate", err)
+			current, membershipErr := prepareMusicCallGroupMembership(ctx, calls, core, group)
+			if membershipErr != nil {
+				return musicCallJoinStageError("active_membership_check", membershipErr)
+			}
+			if current {
+				_, err = core.CallMediaEpoch(ctx, group)
+				return musicCallJoinStageError("active_media_gate", err)
+			}
+			break
 		}
 		if existing.State != 1 {
 			return errors.New("music call-group state is not joinable")
@@ -137,6 +152,41 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 		return musicCallJoinStageError("joined_media_gate", err)
 	}
 	return nil
+}
+
+func musicCallGroupMembershipCurrent(ctx context.Context, reader musicCallMembershipReader, group id.ID) (bool, error) {
+	_, err := reader.GroupPage(ctx, group, "handshakes", 1, 1)
+	if err == nil {
+		return true, nil
+	}
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
+			return false, nil
+		}
+		// E_PRUNED is returned only after the member check succeeds.
+		if apiErr.Code == "E_PRUNED" {
+			return true, nil
+		}
+	}
+	return false, err
+}
+
+func prepareMusicCallGroupMembership(ctx context.Context, reader musicCallMembershipReader, forgetter musicCallMembershipForgetter, group id.ID) (bool, error) {
+	current, err := musicCallGroupMembershipCurrent(ctx, reader, group)
+	if err != nil || current {
+		return current, err
+	}
+	// A reader can still fetch GroupInfo after its leaf was removed, but the
+	// member-only handshake route returns E_NOT_FOUND. Drop the stale local key
+	// state before staging a fresh external join at the current server epoch.
+	if forgetter == nil {
+		return false, errors.New("call-group local state cannot be forgotten")
+	}
+	if err := forgetter.CallGroupForget(ctx, group); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func musicCallJoinStageError(stage string, err error) error {
