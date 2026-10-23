@@ -196,6 +196,10 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 // The client Session exposes its pinned instance without exposing its credential;
 // both the session and native epoch source must match this installation.
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
+	return newInstallationMusicQueueStarter(instance, installation, community, channel, calls, source, nil, nil, nil)
+}
+
+func newInstallationMusicQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative, spotifyPCM session.PCMStarter, youtubeSource youtube.PCMSourceStarter, leases *music.SpotifyLeaseManager) (session.QueueStarter, error) {
 	if instance.IsZero() || installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil || calls.InstanceID() != instance {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
@@ -205,7 +209,14 @@ func newInstallationYouTubeQueueStarter(instance, installation, community, chann
 	}
 	return newMusicQueueStarter(musicRuntimeDeps{
 		Community: community, Channel: channel, Calls: calls,
-		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node"},
+		SpotifyPCM: spotifyPCM,
+		YouTubePCM: func() youtube.PCMSourceStarter {
+			if youtubeSource != nil {
+				return youtubeSource
+			}
+			return youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node"}
+		}(),
+		LeaseManager: leases,
 		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
 			Capacity: 50, Options: encode.Options{FFmpegPath: "ffmpeg"},
 		}},

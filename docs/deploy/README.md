@@ -640,8 +640,8 @@ installs the Bot binary, native helper or WASI module, provisions `/etc/dilla/bo
 runtime credential, or enables the unit. Do not treat copying the unit as a supported installation.
 
 `dillabot doctor --config=/etc/dilla/bot.toml` checks the owner-only runtime credential, native
-identity helper, compiled WASI identity module and private state directory. Run it as the service
-account after installing or replacing any of those files:
+identity helper, compiled WASI identity module, optional Spotify PCM helper and private state
+directory. Run it as the service account after installing or replacing any of those files:
 
 ```sh
 sudo -u dillabot dillabot doctor --config=/etc/dilla/bot.toml
@@ -649,10 +649,13 @@ sudo -u dillabot dillabot doctor --config=/etc/dilla/bot.toml
 
 This is a local dependency check. It does not contact the Dilla server, prove that an installation
 is reconciled, or establish that Bot interactions or music are usable. `systemctl status dillabot`
-and `journalctl -u dillabot` show process and reconciliation status. In this checkpoint, queue
-metadata restores paused and the PCM providers are unavailable in the service runtime; successful
-startup is not playback acceptance. Spotify authorization belongs in Dilla server settings when
-the complete flow is released. Do not put provider credentials in command arguments or logs.
+and `journalctl -u dillabot` show process and reconciliation status. Queue metadata restores
+paused. To enable the Spotify PCM starter, configure `spotify_client_id`,
+`spotify_redirect_url` and the absolute `spotify_helper_executable` path in `bot.toml`; Spotify
+authorization remains in Dilla server settings. The child receives its short-lived access token
+through inherited file descriptor 3, while its arguments contain only the canonical track URI.
+This wiring and its synthetic subprocess tests do not qualify real Spotify playback. Do not put
+provider credentials in command arguments or logs.
 
 The service uses `/etc/dilla/bot.toml`, the owner-only runtime-credential file named by that config,
 and private state under `/var/lib/dillabot`. Per-installation state includes `database.key` and an

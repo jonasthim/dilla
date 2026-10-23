@@ -25,6 +25,9 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/announcements"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
+	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/jonasthim/dilla/internal/bot/music/session"
+	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
@@ -36,18 +39,19 @@ const maxConfigBytes = 64 << 10
 const maxCredentialBytes = 4096
 
 type config struct {
-	BaseURL               string        `toml:"base_url"`
-	InstanceIDText        string        `toml:"instance_id"`
-	RuntimeCredentialFile string        `toml:"runtime_credential_file"`
-	HelperExecutable      string        `toml:"helper_executable"`
-	WASIModule            string        `toml:"wasi_module"`
-	StateDir              string        `toml:"state_dir"`
-	ReconcileIntervalText string        `toml:"reconcile_interval"`
-	AllowLoopbackHTTP     bool          `toml:"allow_loopback_http"`
-	SpotifyClientID       string        `toml:"spotify_client_id"`
-	SpotifyRedirectURL    string        `toml:"spotify_redirect_url"`
-	InstanceID            id.ID         `toml:"-"`
-	ReconcileInterval     time.Duration `toml:"-"`
+	BaseURL                 string        `toml:"base_url"`
+	InstanceIDText          string        `toml:"instance_id"`
+	RuntimeCredentialFile   string        `toml:"runtime_credential_file"`
+	HelperExecutable        string        `toml:"helper_executable"`
+	WASIModule              string        `toml:"wasi_module"`
+	StateDir                string        `toml:"state_dir"`
+	ReconcileIntervalText   string        `toml:"reconcile_interval"`
+	AllowLoopbackHTTP       bool          `toml:"allow_loopback_http"`
+	SpotifyClientID         string        `toml:"spotify_client_id"`
+	SpotifyRedirectURL      string        `toml:"spotify_redirect_url"`
+	SpotifyHelperExecutable string        `toml:"spotify_helper_executable"`
+	InstanceID              id.ID         `toml:"-"`
+	ReconcileInterval       time.Duration `toml:"-"`
 }
 
 func loadConfig(path string) (config, error) {
@@ -79,6 +83,11 @@ func loadConfig(path string) (config, error) {
 			parseErr != nil || redirect.Scheme != "https" || redirect.Host == "" || redirect.User != nil || redirect.Fragment != "" || len(c.SpotifyRedirectURL) > 2048 {
 			errs = append(errs, errors.New("spotify_client_id and spotify_redirect_url must form a valid HTTPS OAuth pair"))
 		}
+		if c.SpotifyHelperExecutable == "" || !filepath.IsAbs(c.SpotifyHelperExecutable) {
+			errs = append(errs, errors.New("spotify_helper_executable must be an absolute path when Spotify is configured"))
+		}
+	} else if c.SpotifyHelperExecutable != "" {
+		errs = append(errs, errors.New("spotify_helper_executable requires Spotify OAuth configuration"))
 	}
 	c.InstanceID, err = id.Parse(c.InstanceIDText)
 	if err != nil || c.InstanceID.IsZero() {
@@ -331,7 +340,19 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		return err
 	}
-	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_and_fail_closed_interaction_dispatch", "music", "paused_metadata_only")
+	if cfg.SpotifyHelperExecutable != "" {
+		if err := validateHelperExecutable(cfg.SpotifyHelperExecutable); err != nil {
+			return errors.New("Spotify PCM helper is unavailable")
+		}
+	}
+	var spotifyLeases *music.SpotifyLeaseManager
+	if cfg.SpotifyHelperExecutable != "" {
+		spotifyLeases, err = music.NewSpotifyLeaseManager(cfg.StateDir)
+		if err != nil {
+			return errors.New("Spotify playback lease is unavailable")
+		}
+	}
+	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_and_fail_closed_interaction_dispatch", "music", "paused_restoration_with_configured_pcm_starters")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
 		return errors.New("WASI identity module failed startup validation")
@@ -361,7 +382,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	logger.Info("bot service healthy", "instance_id", discovery.InstanceID.String(), "generation", discovery.Generation, "discovery", "ok")
 	musicRegistry := newMusicQueueRegistry()
 	for {
-		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, logger); err != nil && !errors.Is(err, context.Canceled) {
+		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, spotifyLeases, logger); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("bot identity reconciliation degraded", "error", err.Error())
 		} else if err == nil {
 			logger.Info("bot identity reconciliation healthy")
@@ -379,7 +400,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, logger *slog.Logger) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, spotifyLeases *music.SpotifyLeaseManager, logger *slog.Logger) error {
 	var spotifyGuard *service.SpotifyAccountGuard
 	if cfg.SpotifyClientID != "" {
 		var err error
@@ -504,10 +525,25 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 							}
 							var musicInteractions *service.MusicInteractions
+							var spotifyPCM session.PCMStarter
 							if result.Installation.Capabilities&botMusicCapability != 0 {
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
-									starterFor := newInstallationYouTubeQueueStarterFactory(cfg.InstanceID, installation.ID, installation.CommunityID, result.Session, nativeClient)
+									if cfg.SpotifyHelperExecutable != "" && spotifyGuard != nil {
+										credentials, credentialErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+										if credentialErr == nil {
+											spotifyPCM, credentialErr = spotify.NewPCMStarter(cfg.SpotifyHelperExecutable, cfg.StateDir, func(loadCtx context.Context) (string, error) {
+												token, loadErr := credentials.Load(loadCtx)
+												return token.AccessToken, loadErr
+											})
+										}
+										if credentialErr != nil {
+											logger.Warn("bot Spotify PCM provider unavailable", "installation_id", installation.ID.String())
+										}
+									}
+									starterFor := func(channel id.ID) (session.QueueStarter, error) {
+										return newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases)
+									}
 									musicOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
 								if channelsErr != nil {
@@ -585,7 +621,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								if retained := musicRegistry.runtimes[installation.ID]; retained != nil && retained.queues != nil {
 									musicQueueCount = retained.queues.Len()
 								}
-								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "providers", "unavailable_pcm")
+								providers := "youtube"
+								if spotifyPCM != nil {
+									providers += ",spotify"
+								}
+								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "configured_pcm_providers", providers)
 							}
 							if scheduleErr == nil {
 								scheduleErr = scheduler.RunDue(ctx)

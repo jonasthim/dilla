@@ -192,6 +192,7 @@ async fn run() -> Result<(), (Phase, ErrorCode)> {
         return Err((Phase::Startup, ErrorCode::InvalidRequest));
     }
     let uri = parse_track(&target).map_err(|e| (Phase::Startup, e))?;
+    report(Status::success(Phase::Startup));
     let secret = read_inherited_credential()
         .map_err(|_| (Phase::Authorization, ErrorCode::CredentialUnavailable))?;
     let access_token = parse_access_token(secret.expose())
@@ -210,6 +211,7 @@ async fn run() -> Result<(), (Phase, ErrorCode)> {
             return Err((Phase::Authorization, ErrorCode::ProviderUnavailable));
         }
     }
+    report(Status::success(Phase::Authorization));
     let player_failed = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
     let failed = player_failed.clone();

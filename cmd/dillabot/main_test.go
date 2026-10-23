@@ -103,11 +103,16 @@ reconcile_interval = "30s"
 		{``, true},
 		{`spotify_client_id = "public-client"
 spotify_redirect_url = "https://dilla.example/settings/bot/music/spotify/callback"
+spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"
 `, true},
 		{`spotify_client_id = "public-client"
 `, false},
 		{`spotify_client_id = "public-client"
 spotify_redirect_url = "http://dilla.example/callback"
+`, false},
+		{`spotify_client_id = "public-client"
+spotify_redirect_url = "https://dilla.example/settings/bot/music/spotify/callback"
+spotify_helper_executable = "dilla-spotify-helper"
 `, false},
 	} {
 		path := filepath.Join(dir, "bot.toml")

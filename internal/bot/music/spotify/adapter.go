@@ -146,7 +146,7 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 		return nil, ErrPlaybackFailed
 	}
 	_ = credentialRead.Close()
-	p := &Playback{cmd: cmd, stdin: stdin, stdout: stdout, stderr: stderr, frames: make(chan []byte, 4), statuses: make(chan Status, 4), readErr: make(chan error, 1), done: make(chan struct{}), discard: make(chan struct{})}
+	p := &Playback{ctx: ctx, cmd: cmd, stdin: stdin, stdout: stdout, stderr: stderr, frames: make(chan []byte, 4), statuses: make(chan Status, 4), readErr: make(chan error, 1), done: make(chan struct{}), discard: make(chan struct{})}
 	p.pipeReaders.Add(3)
 	go p.wait()
 	go p.readPCM(stdout)
@@ -155,6 +155,7 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	go func() {
 		select {
 		case <-ctx.Done():
+			p.explicitStop.Store(true)
 			p.killAndWait()
 		case <-p.done:
 		}
@@ -214,6 +215,7 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 }
 
 type Playback struct {
+	ctx          context.Context
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	stdout       io.ReadCloser
@@ -468,11 +470,11 @@ func (p *Playback) readEndError() error {
 	}
 }
 func (p *Playback) processErrorOrStopped() error {
-	if p.processError() != nil {
-		return ErrPlaybackFailed
-	}
 	if p.explicitStop.Load() {
 		return ErrStopped
+	}
+	if p.processError() != nil {
+		return ErrPlaybackFailed
 	}
 	return io.EOF
 }
@@ -551,6 +553,11 @@ func (p *Playback) Stop(ctx context.Context) error {
 		return ErrInvalidConfig
 	}
 	p.stopOnce.Do(func() {
+		if p.ctx != nil && p.ctx.Err() != nil {
+			p.explicitStop.Store(true)
+			p.killAndWait()
+			return
+		}
 		select {
 		case <-p.done:
 			p.stopErr = nil
