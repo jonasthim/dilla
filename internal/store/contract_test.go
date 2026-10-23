@@ -357,6 +357,7 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		// Kind-3 admission issuance: immutable idempotent signed response receipts.
 		reflect.TypeOf((*store.BotInteractionAdmissionReceipts)(nil)).Elem(),
 		reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(),
+		reflect.TypeOf((*store.BotAutoModerationGrants)(nil)).Elem(),
 		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
 		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
 	} {

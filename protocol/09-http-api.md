@@ -193,6 +193,8 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/moderation/actions` | B (ready, warnings/timeouts capability, owning installation) | `[request_id,group_id,source_seq,action,rules,timeout_ms,expires]` | `[action_id,community_revision,expires|null]` |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B (joining/ready) | `[request_id,group_id,participant_user_id,participant_device_id]` | `[snapshot_payload,signature]`; read-only signed context v1, max 160 KiB |
 | `GET /v1/groups/{id}/interaction-admission-context` | E (enrolled human session bound to the accepted participant device) | — | `[current_context_payload,signature]`; read-only current kind-3 context v1, max 160 KiB; requires current membership and exact authenticated two-leaf group state |
+| `POST /v1/groups/{group}/automod-grants/arm` | E (human, current interaction participant, `manage_community`, fresh step-up) | `[request_id,community_id,expected_revision,request_expires,config_hash32,step_up]` | `[opaque_grant,expires_unix]`; one minute maximum; grant binds the current interaction group, participant user/device, operation 63, revision, expiry and config digest |
+| `POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` | B (ready installation) | `[opaque_grant,community_id,group_id,request_id,expected_revision,request_expires,actor_user_id,actor_device_id,config_hash32]` | `[1,receipt_id]`; exact retries return the same receipt; changed tuple or config digest is refused |
 
 Managed Bots use this scoped publication route, with the durable retry and
 generation rules in `10`; their generic `POST /v1/keypackages` is refused. Human

@@ -73,7 +73,26 @@ type Repository interface {
 	BotInteractionEligibility
 	BotInteractionAdmissionReceipts
 	BotGroupRegistrationAdmissionReceipts
+	BotAutoModerationGrants
 	ModerationRemovals
+}
+
+// BotAutoModerationGrants stores only a digest of the opaque bearer grant and a
+// digest of the encrypted op63 document. Plaintext moderation config never enters storage.
+type BotAutoModerationGrantRow struct {
+	TokenHash, RequestHash, ConfigHash                    []byte
+	CommunityID, InstallationID, GroupID, RequestID       id.ID
+	ActorUser, ActorDevice                                id.ID
+	ExpectedRevision, RequestExpires, Expires, ConsumedAt int64
+	Receipt                                               []byte
+}
+
+type BotAutoModerationGrants interface {
+	CreateBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) error
+	GetBotAutoModerationGrant(context.Context, []byte) (BotAutoModerationGrantRow, error)
+	// Accept is atomic: one grant accepts one exact installation/request/ciphertext tuple.
+	// Exact retries return the original receipt; any changed tuple conflicts.
+	AcceptBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) (BotAutoModerationGrantRow, bool, error)
 }
 
 // BotInteractionEligibility exposes the monotonic eligibility fence for one

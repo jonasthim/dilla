@@ -19,6 +19,23 @@ type AuditLog struct {
 	At     int64
 }
 
+type AutomodStepupGrants struct {
+	TokenHash           []byte
+	CommunityID         id.ID
+	InstallationID      id.ID
+	GroupID             id.ID
+	RequestID           id.ID
+	ActorUser           []byte
+	ActorDevice         []byte
+	ExpectedRevision    int64
+	RequestExpires      int64
+	ConfigHash          []byte
+	Expires             int64
+	ConsumedAt          sql.NullInt64
+	AcceptedRequestHash []byte
+	Receipt             []byte
+}
+
 type Backups struct {
 	UserID      id.ID
 	Kind        int64
@@ -70,6 +87,32 @@ type BotClaims struct {
 	Expires        int64
 }
 
+type BotEventAcks struct {
+	InstallationID  id.ID
+	CommunityID     id.ID
+	ThroughSequence int64
+}
+
+type BotEventStreams struct {
+	CommunityID id.ID
+	HighWater   int64
+	Floor       int64
+}
+
+type BotGroupRegistrationReceipts struct {
+	InstallationID id.ID
+	OperationID    id.ID
+	UserID         id.ID
+	DeviceID       id.ID
+	CommunityID    id.ID
+	GroupID        id.ID
+	BodySha256     []byte
+	Generation     int64
+	Epoch          int64
+	NextSeq        int64
+	AcceptedAt     int64
+}
+
 type BotInstallations struct {
 	ID                   id.ID
 	CommunityID          id.ID
@@ -86,6 +129,48 @@ type BotInstallations struct {
 	Created              int64
 	Updated              int64
 	RemovedAt            sql.NullInt64
+}
+
+type BotInteractionEligibilityRevisions struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Revision    int64
+}
+
+type BotJoinRoleGrantReceipts struct {
+	InstallationID id.ID
+	RequestID      id.ID
+	CommunityID    id.ID
+	UserID         id.ID
+	EpisodeID      id.ID
+	RoleID         id.ID
+}
+
+type BotJoinRoleGrantSources struct {
+	InstallationID id.ID
+	UserID         id.ID
+	EpisodeID      id.ID
+	CommunityID    id.ID
+	RoleID         id.ID
+}
+
+type BotJoinRolePolicy struct {
+	InstallationID id.ID
+	CommunityID    id.ID
+	RoleID         id.ID
+	ApprovedBy     []byte
+	ApprovedAt     int64
+}
+
+type BotKeypackagePublicationReceipts struct {
+	InstallationID id.ID
+	UserID         id.ID
+	DeviceID       id.ID
+	OperationID    id.ID
+	Generation     int64
+	UploadSha256   []byte
+	PackageCount   int64
+	AcceptedAt     int64
 }
 
 type BotOperations struct {
@@ -109,12 +194,46 @@ type BotRuntimes struct {
 	RevokedAt sql.NullInt64
 }
 
+type BotSendAttempts struct {
+	InstallationID       id.ID
+	OperationID          id.ID
+	AttemptID            id.ID
+	PredecessorAttemptID id.ID
+	ExpectedGeneration   int64
+	Epoch                int64
+	Class                int64
+	CiphertextSha256     []byte
+	FingerprintSha256    []byte
+	Outcome              int64
+	Receipt              []byte
+}
+
+type BotSendOperations struct {
+	InstallationID    id.ID
+	OperationID       id.ID
+	UserID            id.ID
+	DeviceID          id.ID
+	CommunityID       id.ID
+	GroupID           id.ID
+	CurrentAttemptID  id.ID
+	AcceptedAttemptID id.ID
+	State             int64
+}
+
 type BotSessionBindings struct {
 	TokenHash      []byte
 	InstallationID id.ID
 	UserID         id.ID
 	DeviceID       id.ID
 	Created        int64
+}
+
+type BotStructuralEvents struct {
+	EventID     id.ID
+	CommunityID id.ID
+	Sequence    int64
+	OccurredAt  int64
+	Body        []byte
 }
 
 type ChannelMembers struct {
@@ -168,6 +287,20 @@ type CommunityAfk struct {
 	TimeoutSeconds int64
 }
 
+type CommunityMemberEpisodes struct {
+	CommunityID id.ID
+	UserID      id.ID
+	EpisodeID   id.ID
+}
+
+type CommunityMemberTimeouts struct {
+	CommunityID id.ID
+	UserID      id.ID
+	ByUser      id.ID
+	Created     int64
+	Expires     int64
+}
+
 type DeviceCursors struct {
 	DeviceID  id.ID
 	GroupID   id.ID
@@ -198,6 +331,13 @@ type Devices struct {
 	QuarantineReason string
 	LastSeen         int64
 	Created          int64
+}
+
+type DjRolePolicy struct {
+	InstallationID id.ID
+	RoleID         id.ID
+	ApprovedBy     []byte
+	ApprovedAt     int64
 }
 
 type ForkReports struct {
@@ -388,6 +528,23 @@ type MlsWelcomes struct {
 	DeliveredAt sql.NullInt64
 }
 
+type ModerationRemovalHeads struct {
+	GroupID  id.ID
+	Revision int64
+}
+
+type ModerationRemovals struct {
+	RequestID   id.ID
+	ActionID    id.ID
+	CommunityID id.ID
+	GroupID     id.ID
+	TargetSeq   int64
+	Revision    int64
+	Proof       []byte
+	Signature   []byte
+	AcceptedAt  int64
+}
+
 type OidcIdentities struct {
 	Issuer  string
 	Subject string
@@ -405,6 +562,15 @@ type PendingJoins struct {
 	GroupID  id.ID
 	DeviceID id.ID
 	Queued   int64
+}
+
+type ReactionRoleGrantSources struct {
+	CommunityID id.ID
+	UserID      id.ID
+	RoleID      id.ID
+	ChannelID   id.ID
+	MessageSeq  int64
+	Reaction    string
 }
 
 type ReadState struct {
@@ -456,6 +622,21 @@ type Reports struct {
 	Created            int64
 }
 
+type RolePanelOptions struct {
+	ChannelID  id.ID
+	MessageSeq int64
+	Emoji      string
+	RoleID     id.ID
+}
+
+type RolePanels struct {
+	CommunityID    id.ID
+	ChannelID      id.ID
+	MessageSeq     int64
+	AuthorID       id.ID
+	InstallationID id.ID
+}
+
 type Roles struct {
 	ID          id.ID
 	CommunityID id.ID
@@ -467,6 +648,13 @@ type Roles struct {
 	Hoist       int64
 	Mentionable int64
 	Created     int64
+}
+
+type SelfRolePolicy struct {
+	CommunityID id.ID
+	RoleID      id.ID
+	ApprovedBy  []byte
+	ApprovedAt  int64
 }
 
 type Sessions struct {

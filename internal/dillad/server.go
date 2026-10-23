@@ -184,6 +184,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		LandingFont:  api.LandingFont(tree),
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
+		StepUps:    api.NewStepUps(o.Clock, api.StepUpTTL),
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
 		// One upload meter for the attachment routes and PUT /v1/backups (security review F3).
 		UploadMeter: api.NewUploadMeter(o.Clock, o.Config.Blobs),
@@ -368,9 +369,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		},
 	})
 	if err != nil {
-		closeWasmOnError()
 		return nil, err
 	}
+	deps.CurrentBotInteractionGroupContext = delivery.CurrentBotInteractionGroupContext
 	deps.MessageDeleted = delivery.NotifyMessageDeleted
 	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
 	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms

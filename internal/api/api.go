@@ -19,6 +19,7 @@ import (
 	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/server"
@@ -106,6 +107,8 @@ type Deps struct {
 	// StepUps holds the step-up tokens the factor-changing routes spend (protocol/09 § Second
 	// factors). Register builds one when it is nil; it is memory only, like Assertions.
 	StepUps *StepUps
+	// CurrentBotInteractionGroupContext reloads and verifies the persisted MLS roster for an op63 grant.
+	CurrentBotInteractionGroupContext func(context.Context, id.ID) (ds.CurrentBotInteractionGroupContext, error)
 
 	// enrolments remembers whether each enrolment in flight began with a valid step-up, for the
 	// confirm and finish legs' re-check under the user lock. Register builds it.
@@ -222,6 +225,7 @@ func Register(m *server.Mux, d Deps) {
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 	registerBotInstallations(m, d)
+	registerAutoModerationGrants(m, d)
 	registerBotStructuralEvents(m, d)
 	registerModerationRemovals(m, d)
 

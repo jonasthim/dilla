@@ -11,6 +11,7 @@ import (
 )
 
 type Querier interface {
+	AcceptBotAutoModerationGrant(ctx context.Context, arg AcceptBotAutoModerationGrantParams) (int64, error)
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
@@ -41,6 +42,7 @@ type Querier interface {
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
+	CreateBotAutoModerationGrant(ctx context.Context, arg CreateBotAutoModerationGrantParams) error
 	CreateBotInstallation(ctx context.Context, arg CreateBotInstallationParams) error
 	CreateBotOperation(ctx context.Context, arg CreateBotOperationParams) error
 	CreateBotRuntime(ctx context.Context, arg CreateBotRuntimeParams) error
@@ -121,6 +123,7 @@ type Querier interface {
 	// COUNT, not EXISTS: EXISTS is int64 on SQLite and bool on Postgres, and the two Querier
 	// interfaces must stay identical.
 	GetBlobTombstone(ctx context.Context, arg GetBlobTombstoneParams) (int64, error)
+	GetBotAutoModerationGrant(ctx context.Context, arg GetBotAutoModerationGrantParams) (AutomodStepupGrants, error)
 	GetBotClaim(ctx context.Context, arg GetBotClaimParams) (BotClaims, error)
 	GetBotInstallation(ctx context.Context, arg GetBotInstallationParams) (BotInstallations, error)
 	GetBotOperation(ctx context.Context, arg GetBotOperationParams) (BotOperations, error)
