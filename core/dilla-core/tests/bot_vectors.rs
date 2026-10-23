@@ -476,7 +476,7 @@ fn shared_bot_corpus_round_trips_and_rejects() {
         .into_iter()
         .collect()
     );
-    assert_eq!(event_kinds, [1, 2, 3, 4, 5, 6, 7].into_iter().collect());
+    assert_eq!(event_kinds, [1, 2, 3, 4, 5, 6, 7, 8].into_iter().collect());
 
     for case in rejects {
         let kind = case["kind"].as_str().unwrap();

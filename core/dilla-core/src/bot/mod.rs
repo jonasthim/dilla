@@ -824,6 +824,10 @@ pub enum EventData {
         revision: u64,
         active: u64,
     },
+    DeviceList {
+        user: UserId,
+        version: u64,
+    },
 }
 #[derive(Clone, PartialEq, Eq)]
 pub struct Event {
@@ -889,7 +893,7 @@ impl Event {
     fn validate(&self) -> Result<(), CodecError> {
         check_id16(self.event_id.as_bytes())?;
         check_id16(self.community_id.as_bytes())?;
-        if self.sequence == 0 || !(1..=7).contains(&self.kind) {
+        if self.sequence == 0 || !(1..=8).contains(&self.kind) {
             return Err(CodecError::Value);
         };
         if !event_matches(self.kind, &self.data, self.timestamp) {
@@ -974,6 +978,9 @@ fn event_matches(k: u64, d: &EventData, t: u64) -> bool {
         (7, EventData::RolePanel { id, active, .. }) => {
             nonzero(*id.as_bytes()).is_ok() && *active <= 1
         }
+        (8, EventData::DeviceList { user, version }) => {
+            nonzero(*user.as_bytes()).is_ok() && (1..=i64::MAX as u64).contains(version)
+        }
         _ => false,
     }
 }
@@ -1041,6 +1048,9 @@ fn encode_event_data(e: &mut Encoder, d: &EventData) {
                 .uint(*revision)
                 .uint(*active);
         }
+        EventData::DeviceList { user, version } => {
+            e.array(2).bytes(user.as_bytes()).uint(*version);
+        }
     }
 }
 fn decode_event_data(d: &mut Decoder<'_>, k: u64) -> Result<EventData, CborError> {
@@ -1096,6 +1106,13 @@ fn decode_event_data(d: &mut Decoder<'_>, k: u64) -> Result<EventData, CborError
                 id: read_msg(d)?,
                 revision: d.uint()?,
                 active: d.uint()?,
+            }
+        }
+        8 => {
+            d.array(2)?;
+            EventData::DeviceList {
+                user: read_user(d)?,
+                version: d.uint()?,
             }
         }
         _ => {
