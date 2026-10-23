@@ -351,6 +351,29 @@ describe('Controller', () => {
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
+  it('sends an authenticated announcement schedule mutation through the core worker', async () => {
+    const w = world(); await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const announcementId = new Uint8Array(16).fill(0x55);
+    const channelId = new Uint8Array(16).fill(0x56);
+    const schedule = encode([1n, announcementId, channelId, 'scheduled notice', 'one_off', 'UTC', '2026-10-23', 12n, 0n, 0n, 1n, 1n]);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'announcement request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_184, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
+      operation: 51, args: [null, new Uint8Array()], revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_184)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    w.call(10_186, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
+      operation: 51, args: [null, schedule], revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_186)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual(
+      [1n, requestId, COMMUNITY, null, 51n, 0n, NOW_S + 30n, [null, schedule]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+    w.call(10_185, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [50, 51, 52] });
+    await vi.waitFor(() => expect(w.ret(10_185)).toMatchObject({ ok: true }));
+  });
+
   it('reads generic Bot responses and offers acknowledgement only for the requested contiguous prefix', async () => {
     const w = world();
     await toReady(w);
