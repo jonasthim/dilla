@@ -280,6 +280,10 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     expect(before, 'the shipping text channel has one active MLS group').toHaveLength(1);
     const original = before[0];
     if (original === undefined) throw new Error('text channel has no active group');
+    // Firefox may keep an established gateway WebSocket alive through setOffline(true).
+    // Leave the app to close it before the second member advances the group.
+    const channelURL = page.url();
+    await page.goto('about:blank');
     intentionalOfflineConsoleStart = guard.consoleErrors.length;
     await page.context().setOffline(true);
     await host.snapshotPair('paired-restore');
@@ -336,7 +340,7 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     await secondContext.close();
     secondContext = null;
     await page.context().setOffline(false);
-    await page.reload();
+    await page.goto(channelURL);
     await expect.poll(async () => {
       const group = (await targetGroups(host!, channelId)).find(row => row.id === original.id);
       return group === undefined ? false : !group.epoch_unknown;
