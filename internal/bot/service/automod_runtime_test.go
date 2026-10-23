@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,6 +184,36 @@ func TestAutoModerationRuntimeDefaultsToDisabledAndLogOnly(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("disabled runtime called sink %d times", calls)
 	}
+}
+
+func TestAutoModerationRuntimeClassifiesAuthorityAndSinkFailures(t *testing.T) {
+	now := time.Now()
+	body := "repeat"
+	base := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(), SourceSequence: 1,
+		ReceivedAt: uint64(now.Unix()), SenderUser: id.New(), SenderDevice: id.New(), Message: id.New(), Body: &body}
+	config := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{moderation.RuleMentions: moderation.ActionWarn}}
+	t.Run("authority", func(t *testing.T) {
+		runtime := NewAutoModerationRuntime(config,
+			automodAuthorityFunc(func(context.Context, native.GroupEvent) (bool, bool, error) {
+				return false, false, errors.New("private authority details")
+			}), automodSinkFunc(func(context.Context, ModerationAction) error { t.Fatal("sink ran after authority failure"); return nil }),
+			func() time.Time { return now })
+		_, err := runtime.Handle(context.Background(), base, false, []string{"1", "2", "3", "4", "5", "6"})
+		stage, ok := err.(AutoModerationStageError)
+		if !ok || stage.Stage != "actor_authorization" || strings.Contains(err.Error(), "private") {
+			t.Fatalf("authority error = %v, want redacted actor_authorization stage", err)
+		}
+	})
+	t.Run("case sink", func(t *testing.T) {
+		runtime := NewAutoModerationRuntime(config, automodAuthorityFunc(ordinaryAutomodAuthority),
+			automodSinkFunc(func(context.Context, ModerationAction) error { return errors.New("private sink details") }),
+			func() time.Time { return now })
+		_, err := runtime.Handle(context.Background(), base, false, []string{"1", "2", "3", "4", "5", "6"})
+		stage, ok := err.(AutoModerationStageError)
+		if !ok || stage.Stage != "case_sink" || strings.Contains(err.Error(), "private") {
+			t.Fatalf("sink error = %v, want redacted case_sink stage", err)
+		}
+	})
 }
 
 func TestAutoModerationRuntimeConfigRevisionFencesInFlightActions(t *testing.T) {

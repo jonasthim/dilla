@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/moderation/operationid"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -168,17 +169,17 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 	}
 	row, err := s.makeCase(action)
 	if err != nil {
-		return err
+		return AutoModerationStageError{Stage: "case_validation", cause: err}
 	}
 	key := moderationCaseKey(row.Message, row.SourceRevision)
 	current, err := s.native.StateGet(ctx, moderationCaseStateArea, key)
 	if err != nil {
-		return err
+		return AutoModerationStageError{Stage: "case_state_read", cause: err}
 	}
 	if current.Revision > 0 && !current.Tombstone {
 		existing, decodeErr := decodeModerationCase(current.Value, s.binding)
 		if decodeErr != nil {
-			return decodeErr
+			return AutoModerationStageError{Stage: "case_state_decode", cause: decodeErr}
 		}
 		if !sameModerationCaseRequest(existing, row) {
 			return ErrModerationCaseConflict
@@ -188,20 +189,30 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 	if action.Decision.Action != moderation.ActionLog {
 		backend, ok := s.backend.(acceptedModerationEnforcementBackend)
 		if !ok {
-			return ErrModerationEnforcementUnavailable
+			return AutoModerationStageError{Stage: "action_backend_unavailable", cause: ErrModerationEnforcementUnavailable}
 		}
 		accepted, acceptErr := backend.AcceptModerationAction(ctx, action)
 		if acceptErr != nil {
 			if errors.Is(acceptErr, ErrModerationActionRefused) {
 				return ErrModerationActionRefused
 			}
-			return ErrModerationEnforcementUnavailable
+			stageErr := AutoModerationStageError{Stage: "action_acceptance", cause: ErrModerationEnforcementUnavailable}
+			var apiErr *client.APIError
+			if errors.As(acceptErr, &apiErr) && len(apiErr.Code) <= 64 && strings.HasPrefix(apiErr.Code, "E_") {
+				stageErr.Code = apiErr.Code
+				if apiErr.Status >= 100 && apiErr.Status <= 599 {
+					stageErr.Status = apiErr.Status
+				}
+			}
+			return stageErr
 		}
 		if !accepted.matches(action, s.binding) {
-			return ErrModerationAcceptanceMismatch
+			return AutoModerationStageError{Stage: "action_receipt_validation", cause: ErrModerationAcceptanceMismatch}
 		}
-		if err := s.attachAcceptedEvidence(ctx, row, accepted); err != nil {
-			return err
+		if row.Action == moderation.ActionRemove {
+			if err := s.attachAcceptedEvidence(ctx, row, accepted); err != nil {
+				return AutoModerationStageError{Stage: "evidence_persistence", cause: err}
+			}
 		}
 		row.ServerActionID = accepted.actionID
 		row.ServerOperationID = accepted.operationID
@@ -209,7 +220,7 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 	}
 	encoded, err := encodeModerationCase(row, s.binding)
 	if err != nil {
-		return err
+		return AutoModerationStageError{Stage: "case_encoding", cause: err}
 	}
 	if _, err = s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationCaseStateArea, Key: key,
 		ExpectedRevision: current.Revision, Value: encoded}}); err == nil {
@@ -225,7 +236,7 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 			return matchErr
 		}
 	}
-	return err
+	return AutoModerationStageError{Stage: "case_state_write", cause: err}
 }
 
 // attachAcceptedEvidence persists sensitive details only after the server's

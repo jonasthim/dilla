@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/moderation"
+	"github.com/jonasthim/dilla/internal/bot/moderation/operationid"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -134,6 +135,32 @@ func TestModerationCaseRequiresMatchingServerAcceptance(t *testing.T) {
 				t.Fatalf("accepted request replay created %d evidence records", len(n.evidence))
 			}
 		})
+	}
+}
+
+func TestModerationCaseWarningPersistsWithoutManualRemovalEvidence(t *testing.T) {
+	n := newModerationCaseNative()
+	action := sampleModerationAction(n, 7)
+	action.Decision.Action = moderation.ActionWarn
+	action.ReceivedAt = time.Now().UTC().Truncate(time.Second)
+	group, message := mustID(t, action.Group), mustID(t, action.Message)
+	backend := &moderationAcceptanceBackend{accepted: AcceptedModerationAction{
+		actionID: id.New(), serverRevision: 19, community: n.binding.Community, group: group,
+		targetSequence: action.SourceRevision, operationID: operationid.Automatic(group, action.SourceRevision), action: moderation.ActionWarn,
+	}}
+	sink, err := NewModerationCaseSink(n, backend, func() time.Time { return action.ReceivedAt })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.ApplyModerationAction(context.Background(), action); err != nil {
+		t.Fatalf("accepted warning case failed: %v", err)
+	}
+	cases, _, err := sink.list(context.Background(), nil, 10)
+	if err != nil || len(cases) != 1 || cases[0].Message != message.String() || cases[0].Action != moderation.ActionWarn {
+		t.Fatalf("warning cases = %+v, err=%v", cases, err)
+	}
+	if len(n.evidence) != 0 {
+		t.Fatalf("warning created %d removal evidence records", len(n.evidence))
 	}
 }
 

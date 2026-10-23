@@ -47,6 +47,21 @@ type AutoModerationRuntime struct {
 	enabled   bool
 }
 
+// AutoModerationStageError exposes only a stable processing stage in its
+// message while retaining a cause for errors.Is/errors.As callers.
+type AutoModerationStageError struct {
+	Stage  string
+	Code   string
+	Status int
+	cause  error
+}
+
+func (e AutoModerationStageError) Error() string {
+	return "automatic moderation " + e.Stage + " failed"
+}
+
+func (e AutoModerationStageError) Unwrap() error { return e.cause }
+
 func NewAutoModerationRuntime(cfg moderation.Config, authority ModerationActorAuthority, sink ModerationActionSink, now func() time.Time) *AutoModerationRuntime {
 	if now == nil {
 		now = time.Now
@@ -110,15 +125,15 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	var owner, admin bool
 	if enabled {
 		if authority == nil {
-			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation actor authority")
+			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, AutoModerationStageError{Stage: "actor_authorization"}
 		}
 		if sink == nil {
-			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation action sink")
+			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, AutoModerationStageError{Stage: "case_sink"}
 		}
 		var err error
 		owner, admin, err = authority.ModerationActorRoles(ctx, event)
 		if err != nil {
-			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, err
+			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, AutoModerationStageError{Stage: "actor_authorization"}
 		}
 	}
 	// Native group events carry Unix seconds, while this runtime uses Go time
@@ -151,7 +166,11 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 			decision.Action = moderation.ActionLog
 			return decision, nil
 		}
-		return decision, err
+		var stageErr AutoModerationStageError
+		if errors.As(err, &stageErr) {
+			return decision, stageErr
+		}
+		return decision, AutoModerationStageError{Stage: "case_sink"}
 	}
 	return decision, nil
 }
