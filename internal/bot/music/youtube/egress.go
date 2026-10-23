@@ -379,6 +379,9 @@ func pythonVenvRoot(executable string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	if name := filepath.Base(root); name != ".youtube-venv" && name != "yt-dlp-venv" {
+		return "", false
+	}
 	if filepath.Dir(bin) != root {
 		return "", false
 	}

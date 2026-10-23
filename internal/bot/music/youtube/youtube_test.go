@@ -139,7 +139,7 @@ func TestIsolatedMetadataRunnerUsesArgvWithoutShellExpansion(t *testing.T) {
 }
 
 func TestIsolatedMetadataRunnerMountsPythonVenvByConfig(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "extractor-env")
+	root := filepath.Join(t.TempDir(), "yt-dlp-venv")
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0700); err != nil {
 		t.Fatal(err)
@@ -172,6 +172,58 @@ func TestIsolatedMetadataRunnerMountsPythonVenvByConfig(t *testing.T) {
 	}
 	if string(output) != "venv interpreter mounted\n" {
 		t.Fatalf("Run output = %q, want venv interpreter output", output)
+	}
+}
+
+func TestAddPathMountDoesNotMountArbitraryPythonEnvironmentRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pyvenv.cfg"), []byte("home = /usr\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(bin, "yt-dlp")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	args := addPathMount(nil, executable)
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == root && args[i+2] == root {
+			t.Fatalf("arbitrary Python environment root %q was mounted wholesale: %v", root, args)
+		}
+	}
+	mountedExecutable := false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == executable && args[i+2] == executable {
+			mountedExecutable = true
+			break
+		}
+	}
+	if !mountedExecutable {
+		t.Fatalf("executable %q was not mounted individually: %v", executable, args)
+	}
+}
+
+func TestPythonVenvRootAcceptsLegacyDedicatedDirectoryName(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".youtube-venv")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pyvenv.cfg"), []byte("home = /usr\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(bin, "yt-dlp")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := pythonVenvRoot(executable)
+	if !ok || got != root {
+		t.Fatalf("pythonVenvRoot(%q) = (%q, %v), want (%q, true)", executable, got, ok, root)
 	}
 }
 
