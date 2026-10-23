@@ -1843,6 +1843,49 @@ fn sec_a_failed_proposed_add_is_left_out_of_this_devices_commit() {
     assert_eq!(sec_send(&mut alice), "OK");
 }
 
+/// UP13: ruling 3 leaves a failed Add out of this device's commit, for that build only. Once the
+/// build is aborted (refused), the queue still holds the Add, so another member's winning commit
+/// of it is processed (the group stays active at the next epoch), not the group state lost (3).
+#[test]
+fn sec_an_aborted_build_keeps_the_failed_add_a_peer_commits() {
+    let (instance, mut relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let mut xavier = RawPeer::new(0xd1, 0xd2);
+    xavier.join_external(&mut relay);
+    alice.sync(&relay);
+    ingest_list_body(
+        &mut alice,
+        &relay,
+        xavier.user,
+        xavier.device,
+        &xavier.device_list_body(),
+    );
+    let forged = RawPeer::new_with_keys(0xd1, 0xd3, 0xd5, 0xd6);
+    let seq = instance.propose_add(&mut relay, &sec_key_package(&forged));
+    alice.sync(&relay);
+    let epoch = alice.group(&GROUP).expect("row").epoch;
+    alice
+        .core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("the failed Add does not refuse the commit");
+    alice.core.commit_abort(&GROUP).expect("abort");
+
+    xavier.queue_proposal(&relay, seq);
+    xavier.self_update(&mut relay);
+    let after = alice.sync(&relay);
+    assert_eq!(
+        after.state, 2,
+        "Alice processes Xavier's commit of the Add: her state is not lost"
+    );
+    assert_eq!(after.epoch, epoch + 1);
+    // UP13 Minor 2: the failed leaf, now in the tree through Xavier's commit, still blocks sends.
+    assert_ne!(
+        sec_send(&mut alice),
+        "OK",
+        "a send to a group holding the failed leaf is refused"
+    );
+}
+
 /// Ruling 3, the usual order: the instance's Add reaches this device as a handshake row first
 /// (`group_apply` queues it), and only then does this device build a commit. A failed Add that
 /// is already queued must be left out as well: `self_update` consumes the whole queue, so it

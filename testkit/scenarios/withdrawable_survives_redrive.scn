@@ -1,0 +1,24 @@
+# UP6b, correction C1: the withdrawable flag survives every rewrite of the row. Bob's absence Remove
+# is voided at its TTL and re-driven twice in its epoch, then carried across the epoch by the
+# re-issue a resync's external commit triggers; bob's resume still withdraws it.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=eaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent bob call
+advance_clock 35s
+advance_clock 35s
+resync carol call
+sync alice
+resume bob call withdrawn=1
+sync alice
+commit alice call
+sync bob
+send alice call bob is still in
+expect_decrypts bob call bob is still in

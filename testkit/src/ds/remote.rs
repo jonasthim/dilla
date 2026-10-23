@@ -46,6 +46,10 @@ const WELCOME_PAGE: usize = 64;
 pub struct HttpDs {
     base: String,
     token: String,
+    /// UP6b: whether this client applies handshake rows of kind 3 (`withdrawn`): it sets
+    /// identify's caps bit 0 and asks `GET …/handshakes` with `kinds=3`. A `legacy` scenario client
+    /// (a tab from before the withdrawal) sets neither and sees the stream with those seqs left out.
+    withdrawn_rows: bool,
     device: DeviceId,
     agent: ureq::Agent,
     ws: Option<WebSocket<TcpStream>>,
@@ -466,9 +470,10 @@ fn instance_id_of(agent: &ureq::Agent, base: &str) -> Result<[u8; 16], DsError> 
 /// A non-2xx answer is decoded as protocol/02's error array, so a scenario's `expect_reject`
 /// matches on the same `E_*` code a real client would see.
 ///
-/// `[code, detail, retry_after_ms|null]`, extended for four codes: `E_COMMIT_CONFLICT` appends
-/// `[winning_commit, proposals]`, `E_COMMIT_REQUIRED` `[proposals]`, `E_COMMIT_INVALID` `[rule]`
-/// and `E_VERSION` three version lists. `decode_strict` refuses trailing bytes, so every declared
+/// `[code, detail, retry_after_ms|null]`, extended for five codes: `E_COMMIT_CONFLICT` appends
+/// `[winning_commit, proposals]`, `E_COMMIT_REQUIRED` `[proposals]`, `E_COMMIT_INVALID` `[rule]`,
+/// `E_VERSION` three version lists and `E_UNAVAILABLE` a `reason`
+/// (a call start only). `decode_strict` refuses trailing bytes, so every declared
 /// element is consumed; the ones this client has no use for are skipped.
 fn check_status(status: u16, body: &[u8]) -> Result<(), DsError> {
     if (200..300).contains(&status) {
@@ -1143,6 +1148,7 @@ impl HttpDs {
         Self {
             base: base.to_owned(),
             token: "test-token".into(),
+            withdrawn_rows: true,
             device: DeviceId::from_bytes([0; 16]),
             agent: new_agent(),
             ws: None,
@@ -1200,10 +1206,22 @@ impl HttpDs {
     /// beside the account (protocol/02 § Device sessions item 7), so a freshly registered device
     /// does not spend a challenge it has no need of. Opens the gateway connection.
     pub fn with_session(base: &str, device: DeviceId, token: String) -> Result<Self, DsError> {
+        Self::with_session_caps(base, device, token, true)
+    }
+
+    /// `with_session` with UP6b's capability: `withdrawn_rows` false is a client from before the
+    /// withdrawal, which never asks for kind-3 rows.
+    pub fn with_session_caps(
+        base: &str,
+        device: DeviceId,
+        token: String,
+        withdrawn_rows: bool,
+    ) -> Result<Self, DsError> {
         host_of(base)?;
         let mut ds = Self {
             base: base.trim_end_matches('/').to_owned(),
             token,
+            withdrawn_rows,
             device,
             agent: new_agent(),
             ws: None,
@@ -2079,12 +2097,13 @@ impl HttpDs {
         }
         let identify = encode(|e| {
             e.array(4).uint(1).uint(1).null();
+            // caps bit 0 (`withdrawn_rows`, UP6b) unless this is a legacy client.
             e.array(5)
                 .text(&self.token)
                 .uint(WIRE_VERSION)
                 .uint(1)
                 .uint(1)
-                .uint(0);
+                .uint(u64::from(self.withdrawn_rows));
         });
         socket
             .send(Message::Binary(identify.into()))
@@ -2580,9 +2599,10 @@ impl DeliveryService for HttpDs {
         let mut out: Vec<HandshakeItem> = Vec::new();
         let mut next = from;
         loop {
+            let kinds = if self.withdrawn_rows { "&kinds=3" } else { "" };
             let path = Self::group_path(
                 g,
-                &format!("/handshakes?from={next}&limit={HANDSHAKE_PAGE}"),
+                &format!("/handshakes?from={next}&limit={HANDSHAKE_PAGE}{kinds}"),
             );
             let page = self.get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
@@ -3380,6 +3400,7 @@ mod tests {
         HttpDs {
             base: base.to_owned(),
             token: "token".into(),
+            withdrawn_rows: true,
             device: DeviceId::from_bytes([0xdd; 16]),
             agent: new_agent(),
             ws,
@@ -3754,7 +3775,7 @@ mod tests {
         for (group, from) in [(REGISTERED, 1), (WELCOMED, 3), (RESYNCED, 7)] {
             let g = hex::encode(group);
             for want in [
-                format!("GET /v1/groups/{g}/handshakes?from={from}&limit={HANDSHAKE_PAGE}"),
+                format!("GET /v1/groups/{g}/handshakes?from={from}&limit={HANDSHAKE_PAGE}&kinds=3"),
                 format!("GET /v1/groups/{g}/messages?from={from}&limit={MESSAGE_PAGE}"),
             ] {
                 assert!(served.contains(&want), "{want} not in {served:#?}");
@@ -3762,7 +3783,7 @@ mod tests {
         }
         // A group the device can no longer read is dropped, not a failed reconnect.
         let left = format!(
-            "GET /v1/groups/{}/handshakes?from=9&limit={HANDSHAKE_PAGE}",
+            "GET /v1/groups/{}/handshakes?from=9&limit={HANDSHAKE_PAGE}&kinds=3",
             hex::encode(LEFT)
         );
         assert!(served.contains(&left), "{left} not in {served:#?}");
@@ -3984,7 +4005,7 @@ mod tests {
         let g = hex::encode(STALLED);
         assert!(
             served.contains(&format!(
-                "GET /v1/groups/{g}/handshakes?from=5&limit={HANDSHAKE_PAGE}"
+                "GET /v1/groups/{g}/handshakes?from=5&limit={HANDSHAKE_PAGE}&kinds=3"
             )),
             "{served:#?}"
         );

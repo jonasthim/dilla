@@ -7,7 +7,7 @@ import { DillaHttpError } from '../http/errors';
 import type { ChannelCall } from '../http/routes';
 import { ManualClock, settle } from '../sync/testing/model';
 import { CallController, SWEEP_JOIN_WAIT_MS, type CallDeps } from './controller';
-import { sweepStaleCalls, type SweepDeps } from './sweep';
+import { HOLD_MS, sweepStaleCalls, type SweepDeps } from './sweep';
 
 const id = (b: number, n = 1): Id => { const x = new Uint8Array(16); x[0] = b; x[15] = n; return x; };
 const ME = { userId: id(0x11), deviceId: id(0x12) };
@@ -170,6 +170,71 @@ describe('sweepStaleCalls (web3.7 3a-client, R32)', () => {
     expect(routesOf(f.core.log)).toEqual([]);
   });
 
+  // UP6 (R-UP6): the callKeep marker of an update reload, or a lost room's hold.
+  const withOthers = (f: Fakes): void => {
+    f.calls.read = (channel) => Promise.resolve({ groupId: toHex(channel) === toHex(CHANNEL) ? G : G2, callId: channel, participants: [
+      { userId: ME.userId, deviceId: ME.deviceId, flags: 1 }, { userId: id(0x21), deviceId: OTHER, flags: 1 }] });
+  };
+
+  it('UP6: the boot sweep spares the kept group while its hold runs, and sweeps an unnamed one', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    f.core.hold(G2, CHANNEL2);
+    withOthers(f);
+    f.deps.keep = () => ({ groupId: G, until: 2_000 });
+    f.deps.now = () => 1_999;
+    await sweepStaleCalls(f.deps);
+    const g2 = toHex(G2);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${toHex(CHANNEL2)}`, `POST proposal ${g2} [170,2] on its lane`, `forget ${g2} on its lane`]);
+    expect(f.core.groupRow(G)?.state).toBe(2);
+  });
+
+  it('UP6: an expired kept group is swept like any leftover once the instance answers: one self-Remove', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    withOthers(f);
+    f.deps.keep = () => ({ groupId: G, until: 2_000 });
+    f.deps.now = () => 2_000;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, LEAVE, FORGET]);
+  });
+
+  it('UP6: an expired kept group while offline: nothing posted, nothing forgotten', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    f.calls.read = () => Promise.reject(httpError(0, 'E_NETWORK'));
+    f.deps.keep = () => ({ groupId: G, until: 2_000 });
+    f.deps.now = () => 9_000;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`]);
+    expect(f.core.groupRow(G)?.state).toBe(2);
+  });
+
+  it('UP6: a kept group whose until lies beyond now + HOLD_MS (the clock stepped back) is not spared', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    withOthers(f);
+    f.deps.keep = () => ({ groupId: G, until: 1_000 + HOLD_MS + 1 });
+    f.deps.now = () => 1_000;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, LEAVE, FORGET]);
+    f.core.hold(G2, CHANNEL2);
+    f.deps.keep = () => ({ groupId: G2, until: 1_000 + HOLD_MS });
+    f.core.log.length = 0;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([]);
+  });
+
+  it('UP6: a sweep of only one group leaves every other leftover as it is', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    f.core.hold(G2, CHANNEL2);
+    withOthers(f);
+    f.deps.only = G2;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${toHex(CHANNEL2)}`, `POST proposal ${toHex(G2)} [170,2] on its lane`, `forget ${toHex(G2)} on its lane`]);
+  });
+
   it('a group the controller takes up while its read is in flight is not swept', async () => {
     const f = fakes();
     f.core.hold(G, CHANNEL);
@@ -316,7 +381,7 @@ function controller(f: Fakes, clock: ManualClock): { calls: CallController; trac
     callTarget: () => ({ communityId: toHex(id(0xcc)), members: [] }), communityListed: () => true,
     refreshLeaves: () => Promise.resolve(),
     serial: (groupId: Id, job: () => Promise<void>) => f.deps.serial(groupId, job),
-    onCommitted: () => {}, afterJoin: () => {}, callEnded: () => {},
+    onCommitted: () => {}, afterJoin: () => {}, catchUp: () => Promise.resolve(), callEnded: () => {},
     track: (job: Promise<unknown>) => { tracked.push(job); },
   } as unknown as CallDeps;
   return { calls: new CallController(deps), tracked };

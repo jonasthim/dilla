@@ -153,7 +153,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS`, `E_FORBIDDEN`, `E_INVALID_REQUEST` |
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
-| `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
+| `GET /v1/groups/{id}/handshakes?from=&limit=&kinds=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
 | `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
 | `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr), class(uint)]` (§ Upload class) | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID`, `E_FORBIDDEN`, `E_RATE_LIMITED`, `E_INVALID_REQUEST`, `E_NOT_FOUND` |
@@ -257,7 +257,7 @@ does.
 | op | label | dir | payload |
 |---|---|---|---|
 | 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[2]`: an instance offers wire version 2 alone, the one in which every upload names its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
-| 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`) |
+| 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`). `caps` is a bit set: bit 0 (`withdrawn_rows`) asks for handshake rows of kind 3 (§ Handshake records); every other bit is reserved, sent as 0 and ignored |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
 | 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` — `epoch` and `last_seq` are the device's own acknowledged cursor for the group (`POST …/cursor`; `0, 0` before the first), not the group head |
 | 4 | `resumed` | S→C | `[replayed_from(uint), replayed_to(uint), resume_token(bstr 32)]` — the token rotates on every `resumed`, so the frame that announces a resume also issues the credential for the next one; a client that keeps the token from `ready` after resuming is refused |
@@ -467,8 +467,28 @@ capped at 123 bytes.
 
 ### Handshake records
 
-`kind` is a uint with exactly three values: **0 proposal, 1 commit, 2 external_commit**. A Welcome
-is not a handshake — it has its own wire format, its own frame and its own endpoints.
+`kind` is a uint with exactly four values: **0 proposal, 1 commit, 2 external_commit, 3 withdrawn**.
+A Welcome is not a handshake — it has its own wire format, its own frame and its own endpoints.
+
+A `withdrawn` row (kind 3) says that the instance has withdrawn one of its own absence `Remove`s
+(invariant 6, "Withdrawal"). Its `sender` is null (the instance), its `epoch` is the withdrawn
+proposal's epoch, and its `blob` is the deterministic CBOR `[proposal_ref(bstr)]`: a one-element
+array holding the MLS `ProposalRef` of that instance-originated `Remove`. A kind-3 row with a
+non-null `sender`, or whose `blob` is anything but a one-element array of one non-empty byte
+string, is a shape error. A client that applies one takes the named proposal out of its pending queue, but only
+when the proposal it holds under that reference is a `Remove` whose sender is the instance's
+external sender; for any other proposal (a member's proposal, an `Add`, an `Update`), an unknown
+reference or one already committed, the row is a no-op. Its cursor moves past the row either way.
+
+Kind 3 is **capability-gated**, and the wire version stays 2: a core before it refuses a whole page
+that carries a kind above 2. The instance serves kind-3 rows only to a client that asked for them:
+on the gateway, a connection whose `identify` set `caps` bit 0 (`withdrawn_rows`); over HTTP, a
+`GET /v1/groups/{id}/handshakes` whose query carries `kinds=3`. `kinds` is a comma-separated list of
+the additional kinds the client applies (the parameter may also repeat); it never filters kinds 0
+to 2, which every client gets. Only `3` is defined; other values are ignored. Every other client gets the stream
+with that `seq` left out, on HTTP, in the `mls.handshake` fan-out and in its replay alike. The `seq`
+space stays one space: such a client sees a gap, which its catch-up carries over as it carries over
+a row it never asked for (`limit` counts only the rows served).
 
 `sender` is the **leaf index** (uint) of the sending member, or **null** when the sender is the
 instance's external sender. An instance additionally records the sending `device_id` beside the
@@ -666,6 +686,51 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    reference that names an instance proposal or another sender's proposal — which no conforming
    client can produce, since the reference covers the sender — is refused, with
    `409 E_REMOVE_PENDING`, and the DS's copy is left as it is.
+
+   **Withdrawal.** The instance may withdraw an *absence* `Remove` of its own: one it issued because
+   a device stayed out of its call's room (the room sweep, `01` § Group kinds) or left it (`09` §
+   Voice, Leaving). Such a `Remove` is marked `withdrawable` when it is issued, and keeps the mark
+   through every re-issue, re-arm and re-drive; no other `Remove` ever carries it (a revocation, a
+   kick or ban, an eviction, a barred device's cut, the election's removal of a candidate, a member's
+   own proposal). A deliberate `Remove` of the same leaf — one of those, issued while the absence
+   `Remove` stands, or re-arming it after a void or a withdrawal — loses the mark for good: the
+   deliberate intent is folded into the standing proposal, and no resume may withdraw it. Only the
+   departed device's own resume withdraws, and only the `Remove` of its own
+   membership: under the group lock, in the call start's last step before the token is minted
+   (`09` § Voice), the instance checks that the device still holds the same membership (the leaf,
+   taken in the same epoch), then marks every withdrawable, unwithdrawn instance `Remove` of that
+   membership at the current epoch withdrawn (an outstanding one, or one voided by its TTL and not
+   yet re-driven), and appends one kind-3 `withdrawn` handshake row per proposal, all in one
+   transaction. Another member's `Remove` is never touched. A withdrawn proposal is neither
+   outstanding nor void, and appears in no non-void listing (`GET /proposals`, the
+   `E_COMMIT_CONFLICT` and `E_COMMIT_REQUIRED` lists, `ready`'s `proposals_outstanding`, the freeze,
+   clause 1 of invariant 4, the TTL sweep and the re-drive). A commit MAY omit it. A commit that
+   applies it is refused with `409 E_COMMIT_CONFLICT`, detail `withdrawn`, with an empty-bstr
+   `winning_commit` and the current listing; the committer catches up, applies the `withdrawn` row,
+   drops the reference and builds again. The instance keeps the proposal queued in its own
+   `PublicGroup`, so a commit that omits it is processed as before. A client that missed the row
+   also drops, before it builds a commit from a listing, every queued instance `Remove` the
+   listing does not name, from that commit only: it keeps them queued, so a commit refused and
+   discarded leaves its queue as it was. The listing can be of a later epoch than the client's (a
+   member's commit of that `Remove` won first), and the client must then process that commit,
+   which references the `Remove`. The same holds for every proposal a client leaves out of its own
+   commit while another member may commit it: a proposed `Add` whose leaf fails this client's
+   validation (`03` § Leaf validation) and, in a call rotation, its own self-`Remove` (`01`).
+   Leaving a proposal out of a commit never takes it out of the queue; a merged commit, a
+   `withdrawn` row, or the client's withdrawal of its own refused proposal (the `E_REMOVE_PENDING`
+   case above) does. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
+   queued: its commits in that group are refused until its next epoch, which is a safe refusal
+   because other members commit, and the instance never elects it (invariant 7). The same `Remove`
+   proposed again within 30 seconds of the withdrawal (the `admissionJoinWindow` of `09` § Voice)
+   counts as standing and is a no-op; proposed later, it re-arms the row (no longer withdrawn, still
+   withdrawable, issued now) and is fanned out again as a kind-0 row, which the members queue again.
+   A device whose membership is gone by the withdrawal (a commit removed it first) gets
+   `403 E_LEAF_NOT_CURRENT` and joins afresh by external commit. A start that fails after the
+   withdrawal (the token mint, or the entitlement re-read after a relay credential) leaves the
+   `Remove` withdrawn and the device unadmitted; that is bounded, because the device stays absent:
+   the room sweep proposes the same `Remove` again and re-arms it once the 30 seconds have passed,
+   and a device barred meanwhile is re-proposed by the barred-device reconcile, whose `Remove` loses
+   the mark.
    The underlying action is
    retried with a fresh KeyPackage, or dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
    4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
@@ -687,7 +752,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    answers. Three acknowledged-and-lost rounds remove the device; unacknowledged rounds only
    advance the election. A device that an outstanding non-void DS `Remove` is removing is never
    elected — it cannot commit its own removal — and when it is the only candidate online nobody is
-   elected.
+   elected. Nor, in a group whose current epoch holds a withdrawn proposal (invariant 6,
+   "Withdrawal"), is a device any of whose online connections did not set `caps` bit 0: it still
+   holds the withdrawn reference, and its commit would be refused.
 
    The member list an election walks is also the list every group-scoped frame (`message.ct`,
    `message.deleted`, `mls.handshake`) fans out to. The instance holds it, with each device's leaf
@@ -846,20 +913,25 @@ array
 error = [
   code,            ; tstr, one of the codes below
   detail,          ; tstr, human text; may be empty; a client MUST NOT parse it
-  retry_after_ms   ; uint or null; present only for E_RATE_LIMITED and E_COMMIT_REQUIRED
+  retry_after_ms   ; uint or null; present only for E_RATE_LIMITED, E_COMMIT_REQUIRED and E_UNAVAILABLE
 ]
 ```
 
 served as `Content-Type: application/cbor`. Codes are stable strings and are the only thing a
-client switches on. Four refusals carry additional fixed-position elements appended after
-`retry_after_ms`, and only those four:
+client switches on. Five refusals carry additional fixed-position elements appended after
+`retry_after_ms`, and only those five:
 
 ```
 E_COMMIT_CONFLICT : [code, detail, null, winning_commit(bstr), proposals([bstr])]
 E_COMMIT_REQUIRED : [code, detail, retry_after_ms, proposals([bstr])]
 E_COMMIT_INVALID  : [code, detail, null, rule(tstr)]
 E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint])]
+E_UNAVAILABLE     : [code, detail, retry_after_ms, reason(tstr)]   ; a call start only, reason "call_ended"
 ```
+
+`E_UNAVAILABLE` has its fourth element only at a call start whose call ended as it was opened
+(`09` § Voice); every other `E_UNAVAILABLE` has three. A client that does not know the element reads
+a plain `503`.
 
 | HTTP | code | meaning | client action |
 |---|---|---|---|
@@ -882,7 +954,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 403 | `E_TARGET_NO_FACTOR` | the user the request names holds no second factor and the community requires one | none; tell the actor |
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
-| 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
+| 409 | `E_COMMIT_CONFLICT` | another commit won this epoch; or, detail `withdrawn` with an empty `winning_commit`, the commit applies a proposal the instance withdrew (invariant 6) | discard the pending commit, process the winner (or catch up, which applies the `withdrawn` row), retry |
 | 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused. Also, defensively, an uploaded proposal whose reference names an instance proposal or another sender's (no conforming client sends one; a member's re-upload of its own proposal is answered as the first). Also a resync or a heal by the target of an outstanding non-void instance `Remove` (invariant 5's first guard) | you are being removed: withdraw the proposal, do not retry; a refused resync may be tried again once a member has committed the `Remove` (the device then holds no leaf and joins afresh) or the group has closed |
 | 409 | `E_CALL_FULL` | the call already has `livekit.max_voice_participants` devices | show "This call is full"; the user may retry later |
 | 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
@@ -895,7 +967,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
 | 429 | `E_RATE_LIMITED` | a token bucket is empty | wait `retry_after_ms`; a `Retry-After` header in whole seconds carries the same value |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
-| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
+| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck); or, with reason `call_ended` (a call start only), the call ended as the start opened it (`09` § Voice, Ending) | wait `retry_after_ms`, then retry; on `call_ended`, forget the call group and read the call again first |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid

@@ -848,61 +848,157 @@ impl DillaGroup {
     /// already removing the leaf (protocol/02 invariant 6):
     /// the device is being removed, and the refused proposal, which no other member holds, must not
     /// stay queued — OpenMLS refuses to send an application message while a proposal is pending.
-    pub fn withdraw_leave(&mut self, provider: &DillaProvider) -> Result<(), MlsError> {
+    ///
+    /// Answers the proposals it took. UP13: `call_rotate` takes them out for one build only and
+    /// queues them again (`requeue`) once its commit is staged, so a rotation that is refused and
+    /// aborted leaves the queue as it was, and a member's commit of the self-Remove is processed.
+    pub fn withdraw_leave(
+        &mut self,
+        provider: &DillaProvider,
+    ) -> Result<Vec<QueuedProposal>, MlsError> {
         let own = self.group.own_leaf_index();
-        let refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = self
+        let taken: Vec<QueuedProposal> = self
             .group
             .pending_proposals()
             .filter(|p| {
                 matches!(p.sender(), Sender::Member(l) if *l == own)
                     && matches!(p.proposal(), Proposal::Remove(r) if r.removed() == own)
             })
-            .map(|p| p.proposal_reference_ref().clone())
+            .cloned()
             .collect();
         let group = &mut self.group;
         provider.storage().transaction(|| {
-            for r in &refs {
+            for p in &taken {
                 group
-                    .remove_pending_proposal(provider.storage(), r)
+                    .remove_pending_proposal(provider.storage(), p.proposal_reference_ref())
                     .map_err(openmls)?;
             }
             Ok::<(), MlsError>(())
         })?;
+        Ok(taken)
+    }
+
+    /// UP6b (protocol/02 invariant 6, "Withdrawal"): takes the queued proposal named by `reference`
+    /// out of the queue, but only when it is a `Remove` whose sender is the group's external sender
+    /// (the instance). A `withdrawn` row names nothing else: a member's proposal, an `Add`, an
+    /// `Update` or an unknown reference is left as it is, and the answer is `false`.
+    pub fn withdraw_instance_remove(
+        &mut self,
+        provider: &DillaProvider,
+        reference: &[u8],
+    ) -> Result<bool, MlsError> {
+        let found = self
+            .group
+            .pending_proposals()
+            .find(|p| {
+                p.proposal_reference_ref().as_slice() == reference
+                    && matches!(p.sender(), Sender::External(_))
+                    && matches!(p.proposal(), Proposal::Remove(_))
+            })
+            .map(|p| p.proposal_reference_ref().clone());
+        let Some(found) = found else {
+            return Ok(false);
+        };
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            group
+                .remove_pending_proposal(provider.storage(), &found)
+                .map_err(openmls)?;
+            Ok::<(), MlsError>(())
+        })?;
+        Ok(true)
+    }
+
+    /// UP6b's fallback for a client that missed a `withdrawn` row (correction I4): takes every
+    /// queued instance `Remove` (external sender) whose reference `listed` does not name out of the
+    /// queue, and answers the proposals it took. `commit_build` passes the delivery service's
+    /// listing, which never names a withdrawn proposal; member proposals and Adds stay queued.
+    ///
+    /// UP13: the listing may be of a newer epoch than this group's (another member's commit landed
+    /// first, and it committed the Remove rather than the instance withdrawing it), so the drop is
+    /// for the one build only: `commit_build` queues the proposals again (`requeue`) once the
+    /// commit is staged. The commit leaves them out; if it is refused and aborted, the queue still
+    /// holds them, so the winning commit that references them can be processed.
+    pub fn drop_unlisted_instance_removes(
+        &mut self,
+        provider: &DillaProvider,
+        listed: impl Fn(&[u8]) -> bool,
+    ) -> Result<Vec<QueuedProposal>, MlsError> {
+        let taken: Vec<QueuedProposal> = self
+            .group
+            .pending_proposals()
+            .filter(|p| {
+                matches!(p.sender(), Sender::External(_))
+                    && matches!(p.proposal(), Proposal::Remove(_))
+                    && !listed(p.proposal_reference_ref().as_slice())
+            })
+            .cloned()
+            .collect();
+        if taken.is_empty() {
+            return Ok(Vec::new());
+        }
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            for p in &taken {
+                group
+                    .remove_pending_proposal(provider.storage(), p.proposal_reference_ref())
+                    .map_err(openmls)?;
+            }
+            Ok::<(), MlsError>(())
+        })?;
+        Ok(taken)
+    }
+
+    /// UP13: queues again the proposals `drop_unlisted_instance_removes`, `withdraw_leave` or
+    /// `drop_queued_adds` took out for one build, after the commit is staged (the staged commit leaves them out). A merge of that commit
+    /// empties the queue as always; an abort leaves them queued as they were before the build.
+    pub fn requeue(
+        &mut self,
+        provider: &DillaProvider,
+        taken: Vec<QueuedProposal>,
+    ) -> Result<(), MlsError> {
+        for p in taken {
+            self.store_pending_proposal(provider, p)?;
+        }
         Ok(())
     }
 
     /// Takes every queued `Add` that `keep` refuses back out of the queue, so the next
     /// `self_update` (which consumes the whole queue) does not commit it. `keep` answers
     /// `Ok(false)` to drop an Add and an error to refuse; on an error nothing is removed.
+    ///
+    /// Answers the proposals it took. UP13: `commit_build` takes them out for one build only and
+    /// queues them again (`requeue`) once its commit is staged, so a build that is refused and
+    /// aborted leaves the queue as it was, and another member's commit of the Add is processed.
     pub fn drop_queued_adds<E: From<MlsError>>(
         &mut self,
         provider: &DillaProvider,
         mut keep: impl FnMut(&KeyPackage) -> Result<bool, E>,
-    ) -> Result<(), E> {
-        let mut refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = Vec::new();
+    ) -> Result<Vec<QueuedProposal>, E> {
+        let mut taken: Vec<QueuedProposal> = Vec::new();
         for p in self.group.pending_proposals() {
             if let Proposal::Add(add) = p.proposal()
                 && !keep(add.key_package())?
             {
-                refs.push(p.proposal_reference_ref().clone());
+                taken.push(p.clone());
             }
         }
-        if refs.is_empty() {
-            return Ok(());
+        if taken.is_empty() {
+            return Ok(taken);
         }
         let group = &mut self.group;
         provider
             .storage()
             .transaction(|| {
-                for r in &refs {
+                for p in &taken {
                     group
-                        .remove_pending_proposal(provider.storage(), r)
+                        .remove_pending_proposal(provider.storage(), p.proposal_reference_ref())
                         .map_err(openmls)?;
                 }
                 Ok::<(), MlsError>(())
             })
             .map_err(MlsError::from)?;
-        Ok(())
+        Ok(taken)
     }
 
     /// How many members the group has, as this client's tree holds it.

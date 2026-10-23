@@ -5,10 +5,15 @@
  *  step is to join, so a reload keeps it. Not a setting: isSettingKey refuses it, and pageSettings leaves it out. */
 export const PENDING_JOIN_KEY = 'signup.pendingJoin';
 
+/** UP6 (R-UP6): the worker's other own row: the call group an update reload holds, `{groupId, channelId, until}` (hex
+ *  ids, `until` wall-clock ms). The boot sweep spares that group until `until`. Not a setting either. */
+export const CALL_KEEP_KEY = 'call.keep';
+const WORKER_ROWS: readonly string[] = [PENDING_JOIN_KEY, CALL_KEEP_KEY];
+
 /** The settings slice: every row but the worker's own. */
 export function pageSettings(rows: Record<string, string>): Record<string, string> {
-  if (!(PENDING_JOIN_KEY in rows)) return rows;
-  return Object.fromEntries(Object.entries(rows).filter(([k]) => k !== PENDING_JOIN_KEY));
+  if (!WORKER_ROWS.some((k) => k in rows)) return rows;
+  return Object.fromEntries(Object.entries(rows).filter(([k]) => !WORKER_ROWS.includes(k)));
 }
 
 export const SETTINGS = {

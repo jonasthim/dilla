@@ -84,6 +84,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 SELECT * FROM mls_handshakes WHERE group_id = ? AND seq >= ?
 ORDER BY seq LIMIT sqlc.arg(max_rows);
 
+-- name: ListHandshakesWithoutWithdrawn :many
+SELECT * FROM mls_handshakes WHERE group_id = ? AND seq >= ? AND kind <> 3
+ORDER BY seq LIMIT sqlc.arg(max_rows);
+
 -- name: OldestHandshakeSeq :one
 SELECT seq FROM mls_handshakes WHERE group_id = ? ORDER BY seq LIMIT 1;
 
@@ -108,19 +112,36 @@ DELETE FROM mls_handshakes WHERE created < ?;
 
 -- name: PutProposal :exec
 INSERT INTO mls_pending_proposals (group_id, ref, epoch, kind, target_leaf, target_device,
-                                   key_package, origin, action_id, issued_at, ttl, void_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                   key_package, origin, action_id, issued_at, ttl, void_at,
+                                   withdrawable, withdrawn_at, withdrawn_seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetProposal :one
 SELECT * FROM mls_pending_proposals WHERE group_id = ? AND ref = ?;
 
 -- name: ListLiveProposals :many
-SELECT * FROM mls_pending_proposals WHERE group_id = ? AND epoch = ? AND void_at IS NULL
+SELECT * FROM mls_pending_proposals
+WHERE group_id = ? AND epoch = ? AND void_at IS NULL AND withdrawn_at IS NULL
 ORDER BY issued_at, ref;
 
 -- name: ListAllProposals :many
-SELECT * FROM mls_pending_proposals WHERE group_id = ? AND epoch = ?
+SELECT * FROM mls_pending_proposals WHERE group_id = ? AND epoch = ? AND withdrawn_at IS NULL
 ORDER BY issued_at, ref;
+
+-- name: ListWithdrawnProposals :many
+SELECT * FROM mls_pending_proposals WHERE group_id = ? AND epoch = ? AND withdrawn_at IS NOT NULL
+ORDER BY issued_at, ref;
+
+-- name: ClearWithdrawable :exec
+UPDATE mls_pending_proposals SET withdrawable = 0 WHERE group_id = ? AND ref = ?;
+
+-- name: IsWithdrawn :one
+SELECT COUNT(*) FROM mls_pending_proposals
+WHERE group_id = ? AND epoch = ? AND ref = ? AND withdrawn_at IS NOT NULL;
+
+-- name: WithdrawProposal :execrows
+UPDATE mls_pending_proposals SET withdrawn_at = ?, withdrawn_seq = ?
+WHERE group_id = ? AND ref = ? AND withdrawn_at IS NULL;
 
 -- name: VoidProposal :exec
 UPDATE mls_pending_proposals SET void_at = ? WHERE group_id = ? AND ref = ?;

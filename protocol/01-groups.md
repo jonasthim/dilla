@@ -22,6 +22,59 @@ same leaf, taken in the same epoch, with its device out of the room, and the dev
 to the room in the last 30 seconds, the instance proposes a DS `Remove` of that leaf bound to that
 membership, so a device that has rejoined the group since is never removed (`09` § Voice, Leaving).
 
+A client MAY hold its `call` group leaf without a live room for a bounded time (a held leaf): when
+its room is lost with `E_DISCONNECTED`, when the page reloads into a new build, or when the call
+start after its own external join is refused with a `503` that does not carry reason `call_ended` (`09` §
+Voice; the group is open and the leaf current, so it is resumed, not joined again). It then sends no
+self-`Remove` and keeps the group state. The leaf stays a member until the room sweep's `Remove` is
+committed, so a commit another member makes before then (a rotation, an Add) carries path secrets to
+it, and the client's catch-up derives those epochs, exactly as for a crashed tab's leaf. Media in any
+epoch still needs an SFU token, which the instance mints only for a current leaf. The held leaf is
+bounded by the room sweep above
+alone: the client's hold never extends the instance's tolerance, so the leaf is removed about 30 to
+60 seconds after the SFU stops seeing the device, as for a crashed tab (while the SFU or the instance
+is down the sweep cannot run, so the bound is that downtime plus the same 60 seconds). The client's
+own hold time is wall-clock and is never trusted alone: an expired hold is acted on (a self-`Remove`
+and the forget) only once the instance answers, and a resume after it is still tried. A resume
+catches the group up, passes the join gate and starts the call. It then commits a fresh epoch of its
+own (`call_rotate`: an UpdatePath of its own leaf that also commits every proposal the device holds, so
+in a group where everyone dropped it can remove the other absent members) and takes that epoch's key
+(`05` § Sender uniqueness, N1): no media key reaches the page before that commit is confirmed. The
+commit follows the start because the start withdraws the device's own absence `Remove` (`02`
+invariant 6), which a commit could not leave out. A refusal that says the device is behind
+(`409 E_COMMIT_CONFLICT`, `422 E_COMMIT_INVALID` for a proposal that landed while the commit was on its
+way, `425 E_COMMIT_REQUIRED`) catches the group up and commits again, at most three tries in all; so
+does a refusal of the core to build the commit at all, other than a trust block (the start's answer
+can arrive before the `withdrawn` record of the device's own absence `Remove`, and the commit cannot
+remove its own leaf). `403 E_LEAF_NOT_CURRENT` is a leaf that is no longer current (forgotten, as
+below); a trust block leaves. Every other refusal, and one that says "behind" after the last try,
+keeps the hold with no `Remove` and no key, and the client tries again, backing off up to 8 seconds
+between tries. Each try's start is a fresh admission, which the room sweep spares for 30 seconds, so
+a client that keeps trying is bounded by its own recovery window (two minutes of instance time,
+three minutes by its clock) plus those 30 seconds and a sweep pass; one that stops is bounded by the
+instance: the absence `Remove` its start withdrew re-arms once `WithdrawnStandWindow` (30 seconds)
+has passed and the room sweep proposes it again. The start's current-leaf check decides first: `403 E_LEAF_NOT_CURRENT` there covers both a leaf that is no
+longer in the current tree (removed) and a group whose epoch the instance does not know
+(`EpochUnknown`, after a restore). On it, on an applied `Remove` of the own leaf, or when the instance
+names another group (or none) for the channel, the client forgets the group without a `Remove` and
+joins afresh by external commit. Forgetting without a `Remove` is safe because the room sweep is
+authoritative: the instance proposes the `Remove` of an absent leaf itself, and the next commit
+rotates the epoch. Every other way a client abandons a held leaf (the person's leave or switch while
+the room is lost, giving up on the restore, the hold's end, a sign-out or hand-over, a boot that finds
+no hold naming the group, or one whose `until` has passed or lies beyond the longest hold from now)
+sends exactly one self-`Remove`. A page's own unload (`pagehide`) does not: an update reload holds
+through it.
+
+The room sweep's `Remove` of a held leaf is an *absence* `Remove`, which the instance may withdraw
+(`02` invariant 6, "Withdrawal"): when the device itself resumes, and its call start passes every
+check up to the token mint, the instance withdraws the absence `Remove` of that device's own
+membership, and of no other, and publishes a `withdrawn` handshake row (kind 3). Members take that
+proposal out of their queues, so a device that resumes keeps its leaf even when every member dropped
+at once and each queue held the `Remove` of its own leaf, which OpenMLS refuses to commit. The
+`Remove`s of the members that have not resumed stand: the first device back commits them, and those
+devices then join afresh by external commit. A device that really left is therefore removed within
+the same sweep window as before; nobody else's resume can keep its leaf.
+
 Groups use MLS ciphersuite `0x0001`. Handshake messages (Proposal, Commit) are sent as
 `PublicMessage`; application data as `PrivateMessage`. Application data MUST be padded so that the
 `PrivateMessage` ciphertext length is a multiple of 256 bytes (RFC 9420 §6.3.1 padding field).

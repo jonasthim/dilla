@@ -287,6 +287,28 @@ func TestValidationRules(t *testing.T) {
 			t.Fatal("turn.enabled without turn.listen accepted in behind_proxy")
 		}
 	})
+	// R-UP11: turn.listen in a direct-TLS mode is the opt-in that moves `turns:` to dilla-media,
+	// which only a sidecar SFU has; turn.proxy_protocol stays behind_proxy's.
+	t.Run("the public-mode turn.listen opt-in needs a sidecar SFU", func(t *testing.T) {
+		says := func(c *config.Config, what string) bool {
+			err := c.Validate()
+			return err != nil && strings.Contains(err.Error(), what)
+		}
+		c := base()
+		c.TURN.Listen = "0.0.0.0:5349"
+		c.LiveKit.Enabled, c.LiveKit.Mode = true, "in_process"
+		if !says(c, "turn.listen") {
+			t.Fatal("turn.listen in public mode with an in-process SFU was accepted")
+		}
+		c.LiveKit.Mode = "sidecar"
+		if says(c, "turn.listen") {
+			t.Fatalf("the public-mode opt-in with a sidecar SFU was refused: %v", c.Validate())
+		}
+		c.TURN.ProxyProtocol = true
+		if !says(c, "turn.proxy_protocol is only read in behind_proxy") {
+			t.Fatal("turn.proxy_protocol in public mode was accepted")
+		}
+	})
 	t.Run("acme without agreement fails", func(t *testing.T) {
 		c := base()
 		c.TLS.Agreed = false

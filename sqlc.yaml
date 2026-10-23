@@ -125,6 +125,8 @@ sql:
           - { column: "mls_handshakes.kind",               go_type: { type: "int64" } }
           - { column: "mls_pending_proposals.kind",        go_type: { type: "int64" } }
           - { column: "mls_pending_proposals.origin",      go_type: { type: "int64" } }
+          # 022_withdrawn.sql (UP6b): the withdrawable flag, SMALLINT like the other enum columns.
+          - { column: "mls_pending_proposals.withdrawable", go_type: { type: "int64" } }
           - { column: "key_packages.last_resort",          go_type: { type: "int64" } }
           # 006_structure.sql (Plan 2 task 1).
           - { column: "communities.require_mod_2fa",       go_type: { type: "int64" } }

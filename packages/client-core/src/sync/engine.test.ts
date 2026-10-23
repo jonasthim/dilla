@@ -67,6 +67,8 @@ describe('constants and the through bound', () => {
     ['messages short, handshakes full', { count: 40, lastSeq: 40n }, { count: 512, lastSeq: 600n }, null, 40n],
     ['both full', { count: 256, lastSeq: 300n }, { count: 512, lastSeq: 600n }, null, 300n],
     ['nothing', { count: 0, lastSeq: null }, { count: 0, lastSeq: null }, null, 0n],
+    // UP6b negative control: a route without kinds=3 leaves a withdrawn row (seq 6) out; the carry passes the gap.
+    ['a withdrawn row left out', { count: 1, lastSeq: 7n }, { count: 1, lastSeq: 5n }, null, 7n],
   ];
   it.each(cases)('%s', (_name, ms, hs, carry, want) => {
     expect(throughOf(ms, hs, carry)).toBe(want);

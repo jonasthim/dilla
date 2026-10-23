@@ -1,0 +1,11 @@
+[Unit]
+Description=dilla: restart dilla-media onto the installed dillad once its calls have ended
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+
+[Service]
+# Root: it restarts dilla-media (and, at the one-time TURN handoff, dilla) and asks
+# `dillad media --idle` as the dillad user. The logic is a script, so this unit quotes nothing.
+Type=oneshot
+ExecStart=/usr/local/libexec/dilla-media-refresh
+# A restart waits for dilla-media's READY (60 s); the TURN handoff also waits for dilla (300 s).
+TimeoutStartSec=10min

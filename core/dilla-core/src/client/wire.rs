@@ -399,6 +399,15 @@ fn reserve<T>(claimed: usize, remaining: usize) -> Vec<T> {
     Vec::with_capacity(claimed.min(remaining / core::mem::size_of::<T>().max(1)))
 }
 
+/// Handshake kind 3, `withdrawn` (protocol/02 § Handshake records).
+pub(crate) const HANDSHAKE_WITHDRAWN: u8 = crate::mls::HANDSHAKE_WITHDRAWN;
+
+/// The ref of a `withdrawn` row's blob (`crate::mls::decode_withdrawn_blob`); anything else is
+/// `E_CORE_INPUT`.
+pub(crate) fn decode_withdrawn_blob(blob: &[u8]) -> Result<Vec<u8>, ClientError> {
+    crate::mls::decode_withdrawn_blob(blob).map_err(|e| shape("withdrawn", e))
+}
+
 pub(crate) fn decode_handshake_rows(bytes: &[u8]) -> Result<Vec<HandshakeRow>, ClientError> {
     let rows = decode_strict(bytes, |d| {
         let n = d.array_len()?;
@@ -418,8 +427,21 @@ pub(crate) fn decode_handshake_rows(bytes: &[u8]) -> Result<Vec<HandshakeRow>, C
     .map_err(|e| shape("handshakes", e))?;
     rows.into_iter()
         .map(|(seq, epoch, kind, sender, blob)| {
-            if kind > 2 {
+            // 0 proposal, 1 commit, 2 external_commit, 3 withdrawn (protocol/02 § Handshake
+            // records). A withdrawn row is the instance's own: a null sender and a blob that is
+            // exactly `[proposal_ref(bstr)]`, else the page is a shape error.
+            if kind > HANDSHAKE_WITHDRAWN as u64 {
                 return Err(shape("handshakes", format!("kind {kind} at seq {seq}")));
+            }
+            if kind == HANDSHAKE_WITHDRAWN as u64 {
+                if sender.is_some() {
+                    return Err(shape(
+                        "handshakes",
+                        format!("a withdrawn row with a sender at seq {seq}"),
+                    ));
+                }
+                decode_withdrawn_blob(&blob)
+                    .map_err(|e| shape("handshakes", format!("{} at seq {seq}", e.detail)))?;
             }
             let sender = sender
                 .map(|s| {

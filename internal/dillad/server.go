@@ -513,6 +513,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if _, err := callRoutes.EndAFKCalls(ctx); err != nil {
 		o.Log.ErrorContext(ctx, "ending the calls in AFK channels", "err", err)
 	}
+	// UP2 (calls survive an upgrade): the SFU is a sidecar that outlives an API restart, so before
+	// anything is served one whole-room reconcile of every live call's room rebuilds what this
+	// process's memory lost — the camera and screen publishers' sharing slots, and the cuts of
+	// participants that are barred or hold no current leaf — within the sweep's 20-second budget. It
+	// ends no call and reaps nothing; an SFU that does not answer leaves each room as a pending room
+	// resync for the retry loop, and the instance serves anyway. Without an SFU it does nothing.
+	callRoutes.BootReconcile(ctx)
 	// From here an error return must also stop what Start started: the watchdog and the sweeper
 	// would otherwise keep running against a runtime closeWasmOnError has just closed.
 	stopOnError := func() {
@@ -627,6 +634,11 @@ func (s *Server) DS() *ds.DS { return s.ds }
 // CallEvents is the dispatcher of the SFU's webhooks (dilla-media task 12); `dillad serve` serves its
 // Handle on livekit.webhook_listen.
 func (s *Server) CallEvents() *api.CallEvents { return s.events }
+
+// Calls is the call routes New built (nil when it mounted none). The test host runs their room sweep
+// on demand through it (UP9: POST /debug/sfu/sweep), the sweep the retry loop runs every
+// api.RoomSweepInterval.
+func (s *Server) Calls() *api.Calls { return s.calls }
 
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }

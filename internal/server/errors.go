@@ -102,7 +102,7 @@ type Error struct {
 	Code         Code
 	Detail       string
 	RetryAfterMS *uint64
-	Extra        []any // appended after retry_after_ms; only four codes have any
+	Extra        []any // appended after retry_after_ms; only five refusals have any (protocol/02 § Errors)
 	status       int   // set only where the status is not the code's default
 }
 
@@ -170,6 +170,13 @@ func CommitConflict(winning []byte, proposals [][]byte) *Error {
 		Extra: []any{winning, proposals}}
 }
 
+// CommitWithdrawn is invariant 6's refusal of a commit that applies a proposal the instance
+// withdrew (UP6b): E_COMMIT_CONFLICT with detail `withdrawn`, an empty winning_commit and the
+// current listing.
+func CommitWithdrawn(proposals [][]byte) *Error {
+	return &Error{Code: CodeCommitConflict, Detail: "withdrawn", Extra: []any{[]byte{}, proposals}}
+}
+
 func CommitRequired(proposals [][]byte, retryAfterMS uint64) *Error {
 	ms := retryAfterMS
 	return &Error{Code: CodeCommitRequired, Detail: "outstanding proposals must be committed first",
@@ -193,6 +200,19 @@ func RateLimited(retryAfterMS uint64) *Error {
 func Unavailable(retryAfterMS uint64, detail string) *Error {
 	ms := retryAfterMS
 	return &Error{Code: CodeUnavailable, Detail: detail, RetryAfterMS: &ms}
+}
+
+// ReasonCallEnded is the reason element of CallEnded.
+const ReasonCallEnded = "call_ended"
+
+// CallEnded is a call start's 503 E_UNAVAILABLE for a call that ended as it was opened (protocol/09
+// § Voice, final-I1): its fourth element, reason `call_ended`, is the one marker after which a
+// client forgets the call group and reads the call again. Every other 503 has no fourth element,
+// so a client keeps its leaf; a client that does not know the element reads a plain 503.
+func CallEnded(retryAfterMS uint64) *Error {
+	ms := retryAfterMS
+	return &Error{Code: CodeUnavailable, Detail: "the call ended as it was opened; retry", RetryAfterMS: &ms,
+		Extra: []any{ReasonCallEnded}}
 }
 
 // RateLimitedAfter is RateLimited for a wait the caller holds as a duration. A non-positive wait

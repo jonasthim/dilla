@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
@@ -62,7 +65,7 @@ func (p *peerList) Set(v string) error { *p = append(*p, v); return nil }
 // runDoctor is the full check inventory, in this order: config (parse plus
 // Validate), database (db.PingContext plus the goose schema version), pragmas,
 // data_dir (mode and ownership), wasi (artifact load plus dilla_abi), clock
-// (skew against doctor.clock_peers), certificate, turn, udp and blobs. It
+// (skew against doctor.clock_peers), certificate, turn, media_binary, media_refresh, udp and blobs. It
 // prints ops.Report's stable text, one line per leg, and exits exit.Unavailable
 // if any leg is red; a yellow leg alone exits 0.
 //
@@ -191,6 +194,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 
 	add(doctorCertificateLeg(ctx, cfg))
 	add(doctorTURNLeg(ctx, cfg))
+	add(doctorMediaBinaryLeg(ctx, cfg))
+	add(doctorMediaRefreshLeg(ctx, cfg, time.Now()))
 	add(ops.UDPLeg(*cfg))
 	add(ops.WebAuthnLeg(*cfg))
 	add(doctorBlobsLeg(ctx, cfg, repo))
@@ -219,14 +224,93 @@ func doctorCertificateLeg(ctx context.Context, cfg *config.Config) ops.Leg {
 // turn.listen in behind_proxy mode, where it is its own plain TCP listener, and
 // otherwise the instance's own 443, where TURN shares the port behind the TLS
 // demux and is reached over TLS.
+//
+// It first names the process that serves the relay (R-UP11): dilla-media or the API, from what
+// each answers on its control socket (GET /relay/state on media.sock and api.sock), or, when a
+// socket does not answer (doctor run as another user, a process down), from media.json and the
+// configuration. Both serving, or neither, is red.
 func doctorTURNLeg(ctx context.Context, cfg *config.Config) ops.Leg {
 	const name = "turn"
-	switch {
-	case !cfg.TURN.Enabled:
+	if !cfg.TURN.Enabled {
 		// Yellow, not red: turn.enabled = false is a legitimate topology (a LAN
 		// plus one forwarded UDP port), not a fault.
 		return ops.Leg{Name: name, Status: ops.Yellow,
 			Detail: "turn.enabled is false: no relay is offered, so voice needs direct UDP reachability"}
+	}
+	owner, unacked, bad := doctorTURNOwner(ctx, cfg)
+	if bad != nil {
+		return *bad
+	}
+	leg := doctorTURNProbe(ctx, cfg)
+	leg.Detail = "served by " + owner + "; " + leg.Detail
+	if unacked > 0 {
+		leg.Detail += fmt.Sprintf("; %d cuts not yet acknowledged by dilla-media", unacked)
+		if leg.Status == ops.Green {
+			leg.Status = ops.Yellow
+			leg.Fix = "check `journalctl -u dilla` for media.sock; the cut devices are refused (503) until dilla-media acknowledges"
+		}
+	}
+	return leg
+}
+
+// doctorTURNOwner names the process serving the relay and how many cuts dilla-media has not
+// acknowledged (api.sock's GET /relay/state), or answers the red leg when both or neither serve,
+// or when dilla-media serves TURN and api.sock does not answer: its barred lookups then fail and
+// `dillad media --idle` reads busy.
+func doctorTURNOwner(ctx context.Context, cfg *config.Config) (string, int, *ops.Leg) {
+	const name = "turn"
+	if !cfg.LiveKit.Enabled || cfg.LiveKit.Mode != "sidecar" {
+		return "the API (dilla), which also runs the SFU", 0, nil
+	}
+	ask := func(sock string) (server.RelayState, error) {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		return server.FetchRelayState(ctx, server.ControlClient(server.ControlSocketPath(cfg.Instance.DataDir, sock)))
+	}
+	var media, api, apiDown bool
+	unacked := 0
+	var how []string
+	if st, err := ask(server.MediaSocketName); err == nil {
+		media = st.Serving
+		how = append(how, fmt.Sprintf("media.sock: serving=%v, %d allocations", st.Serving, st.Allocations))
+	} else {
+		ms, merr := readMediaState(ctx, cfg.Instance.DataDir)
+		media = merr == nil && slices.Contains(ms.Capabilities, turnCapability)
+		how = append(how, fmt.Sprintf("media.sock did not answer; media.json says turn=%v", media))
+	}
+	if st, err := ask(server.APISocketName); err == nil {
+		api, unacked = st.Serving, st.Unacked
+		how = append(how, fmt.Sprintf("api.sock: serving=%v, %d allocations", st.Serving, st.Allocations))
+	} else {
+		apiDown = true
+		// As serve decides it (planTURN): the demux relay without turn.listen, else turn.listen
+		// whenever dilla-media does not hold it.
+		api = cfg.TURN.Listen == "" || !media
+		how = append(how, fmt.Sprintf("api.sock did not answer; inferred serving=%v", api))
+	}
+	detail := strings.Join(how, "; ")
+	switch {
+	case media && apiDown:
+		return "", 0, &ops.Leg{Name: name, Status: ops.Red,
+			Detail: "dilla-media serves TURN but the API does not answer on api.sock: its barred lookups fail and `dillad media --idle` reads busy (" + detail + ")",
+			Fix:    "run `dillad doctor` as the dillad user (api.sock serves only that uid); if it still fails, read `journalctl -u dilla` and systemctl restart dilla"}
+	case media && api:
+		return "", 0, &ops.Leg{Name: name, Status: ops.Red, Detail: "TURN is served by both dilla-media and the API (" + detail + ")",
+			Fix: "restart dilla so it sees dilla-media's relay (systemctl restart dilla)"}
+	case !media && !api:
+		return "", 0, &ops.Leg{Name: name, Status: ops.Red, Detail: "TURN is served by neither process (" + detail + ")",
+			Fix: "check `journalctl -u dilla-media` for the turn.listen bind, then systemctl restart dilla-media"}
+	case media:
+		return "dilla-media (" + detail + ")", unacked, nil
+	}
+	return "the API (dilla) (" + detail + ")", unacked, nil
+}
+
+// doctorTURNProbe allocates against the listener the relay serves on: turn.listen in behind_proxy
+// mode and for the public-mode opt-in (over TLS), the instance's own 443 otherwise.
+func doctorTURNProbe(ctx context.Context, cfg *config.Config) ops.Leg {
+	const name = "turn"
+	switch {
 	case !cfg.Doctor.TURNProbe:
 		return ops.Leg{Name: name, Status: ops.Green, Detail: "skipped: doctor.turn_probe is false"}
 	case cfg.TURN.ProxyProtocol:
@@ -245,13 +329,50 @@ func doctorTURNLeg(ctx context.Context, cfg *config.Config) ops.Leg {
 		if cfg.TLS.Mode == config.TLSModeACMEIP {
 			host = cfg.Instance.PublicIP.String()
 		}
-		_, port, err := net.SplitHostPort(cfg.Server.Listen)
+		addr := cfg.Server.Listen
+		if cfg.TURN.Listen != "" {
+			addr = cfg.TURN.Listen // the public-mode opt-in
+		}
+		_, port, err := net.SplitHostPort(addr)
 		if err != nil || port == "" {
 			port = "443"
 		}
 		listen = "tls://" + net.JoinHostPort(host, port)
 	}
 	return ops.TURNLeg(ctx, listen, cfg.TURN.Realm, secret)
+}
+
+// doctorMediaBinaryLeg compares the running SFU's build with this binary, from media.json. The SFU
+// is a separate process that outlives an API upgrade until its calls end (R-UP3, R-UP4), so it may
+// legitimately be older: yellow. Red is an SFU below the oldest level this API works with.
+func doctorMediaBinaryLeg(ctx context.Context, cfg *config.Config) ops.Leg {
+	const name = "media_binary"
+	if !cfg.LiveKit.Enabled || cfg.LiveKit.Mode != "sidecar" {
+		return ops.Leg{Name: name, Status: ops.Green, Detail: "skipped: the SFU is not a sidecar"}
+	}
+	st, err := readMediaState(ctx, cfg.Instance.DataDir)
+	switch {
+	case err != nil:
+		return ops.Leg{Name: name, Status: ops.Yellow,
+			Detail: "dilla-media's build is unknown (" + err.Error() + "); it restarts onto this binary when its calls end (dilla-media-refresh.timer)"}
+	case st.MediaLevel < sfu.MinSFUMediaLevel:
+		return ops.Leg{Name: name, Status: ops.Red,
+			Detail: fmt.Sprintf("dilla-media runs v%s at media level %d; this API needs at least %d", st.Version, st.MediaLevel, sfu.MinSFUMediaLevel),
+			Fix:    "systemctl restart dilla-media (this ends live calls)"}
+	case st.Version != Version:
+		// The versions alone do not say which is newer: after a rollback the SFU runs the later
+		// build. The levels say how they relate.
+		rel := "differs from this binary's v" + Version
+		switch {
+		case st.MediaLevel > sfu.MediaLevel:
+			rel = fmt.Sprintf("a newer media level (%d) than this binary's (%d)", st.MediaLevel, sfu.MediaLevel)
+		case st.MediaLevel < sfu.MediaLevel:
+			rel = fmt.Sprintf("an older media level (%d) than this binary's (%d)", st.MediaLevel, sfu.MediaLevel)
+		}
+		return ops.Leg{Name: name, Status: ops.Yellow,
+			Detail: fmt.Sprintf("dilla-media runs v%s, %s; it restarts onto this binary when its calls end (dilla-media-refresh.timer)", st.Version, rel)}
+	}
+	return ops.Leg{Name: name, Status: ops.Green, Detail: fmt.Sprintf("dilla-media runs v%s, this version (media level %d)", st.Version, st.MediaLevel)}
 }
 
 // doctorBlobsLeg cross-checks the blob rows against the blob tree. It never

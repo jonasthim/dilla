@@ -401,12 +401,13 @@ func TestALeafWithoutConnectCannotEndTheCall(t *testing.T) {
 	}
 }
 
-func TestASFUFailureIsAnInternalError(t *testing.T) {
+// R-UP7: an SFU that fails the token mint is transient, 503 E_UNAVAILABLE (TestAnSFUDownAtStartAnswers503).
+func TestASFUFailureIsUnavailable(t *testing.T) {
 	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
 	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
 	sfu.fail = errors.New("sfu down")
-	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusInternalServerError {
-		t.Fatalf("an SFU failure = %d, want 500", status)
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusServiceUnavailable {
+		t.Fatalf("an SFU failure = %d, want 503", status)
 	}
 }
 
@@ -542,8 +543,8 @@ func TestEveryStartCreatesTheRoomBeforeMinting(t *testing.T) {
 	stub.mu.Lock()
 	stub.createFail = errors.New("sfu down")
 	stub.mu.Unlock()
-	if status, _ := e.Do(http.MethodPost, path, tok, []any{}); status != http.StatusInternalServerError {
-		t.Fatalf("a room that will not open = %d, want 500", status)
+	if status, _ := e.Do(http.MethodPost, path, tok, []any{}); status != http.StatusServiceUnavailable {
+		t.Fatalf("a room that will not open = %d, want 503 (R-UP7)", status)
 	}
 	if len(stub.minted()) != 2 {
 		t.Fatal("a token was minted for a room the SFU did not open")

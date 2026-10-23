@@ -3,8 +3,12 @@
 dillad is one static binary (`dillad`) plus one file beside it, `dilla_core_wasi.wasm`, the MLS
 core it runs inside wazero. Set `livekit.mode = 'sidecar'` and run `dillad media` as a second
 process: the API can restart while the SFU keeps existing rooms. The API owns the `/rtc` join
-gate, webhook receiver, TLS and TURN relay. Replacing the media process ends its rooms;
-the updated client reopens community voice during the upgrade window. This page covers the install
+gate, webhook receiver and TLS. Since web3.13 the media process also serves the TURN relay on
+`turn.listen` (behind a proxy, or the opt-in in public mode), so the SFU and its relay are no longer
+restarted with the API: **an upgrade keeps calls** when the running media server can stay, and
+`dilla-media-refresh.timer` moves it onto the new binary once its calls end. Public mode without
+`turn.listen` still serves TURN on 443 from the API process (see [the TURN relay](#what-the-turn-relay-can-reach)).
+This page covers the install
 script (`deploy/install.sh`, the one supported install: a native systemd install), the systemd units it
 writes, and the Proxmox LXC helper. There is no container image.
 
@@ -22,25 +26,24 @@ sequenceDiagram
     participant Store as Browser IndexedDB
 
     Operator->>Rollout: Upgrade to a new release
-    Rollout->>API: Replace binary and web assets, then restart
-    Note over Media: Existing rooms survive the API restart
-    Rollout->>Media: Restart after API checks
-    Note over Media: A media restart closes its rooms
+    Rollout->>API: Replace binary and web assets, then restart the API only
+    Note over Media: Existing rooms and the TURN relay in dilla-media keep running
+    Note over Media: dilla-media-refresh.timer restarts it onto the new binary once it is idle
     loop On load, on visibility or network return, and while active
         Tab->>API: GET /app-version.json (no-store)
         API-->>Tab: Current JavaScript entry path
     end
     alt Entry differs from the tab's loaded entry
         Note over Tab: Wait for an open modal form to close
-        Tab->>Store: Save encrypted view, drafts, files, and call choice
+        Tab->>Store: Save encrypted view, drafts, files, and call choice, and hold the call
         Tab->>API: Reload the page
         API-->>Tab: Serve the new web build
         Tab->>Store: Read checkpoint
         Store-->>Tab: Return encrypted checkpoint
         Tab->>Tab: Decrypt and restore view, drafts, files, and call choice
         Tab->>Store: Delete checkpoint
-        opt Previously in community voice
-            Tab->>API: Reconnect and request call admission
+        opt Previously in a call
+            Tab->>API: Resume the held call (start, then commit a fresh epoch)
             API-->>Tab: Allow the call join
             Tab->>Media: Establish a new media connection
         end
@@ -58,19 +61,31 @@ offers a manual reload instead. Screen sharing needs another click after rejoini
 browser requires a user gesture. A tab loaded before this watcher exists cannot update itself;
 tell those members to reload once after the first deployment.
 
-The media sidecar keeps the SFU room alive during an API restart, but the API's signalling and TURN
-connections reset. The browser attempts to rejoin voice after a lost connection. Restarting the
-media process closes its rooms. During the two minutes after an app update is detected or restored,
-the browser also reopens a community voice room that closes with `E_CALL_ENDED`. A DM call that
-ends stays ended. Outside that window, and on tabs from before this feature, a person must choose
-Join again. A network or browser permission refusal can also require a manual join.
+The media sidecar keeps the SFU room alive during an API restart, and since web3.13 `install.sh
+--upgrade` restarts only the API when the running media server can stay (see [Install script](#install-script)),
+so people in a call keep talking. A tab that reloads into the new build mid-call holds the call
+group instead of leaving it, then resumes it and commits a fresh epoch before it publishes, typically
+within a few seconds of audio. The hold counts time the instance answers, not wall-clock time, so a
+long API outage does not use it up. The API's signalling reconnects; a relayed client asks
+`POST /v1/calls/{call_id}/relay` for fresh relay credentials on every reconnect. Restarting the
+media process closes its rooms (a release that raises `min_sfu_media_level`, `--restart-sfu`, or a
+media server the installer cannot identify). During the two minutes after an app update is detected
+or restored, the browser also reopens a community voice room that closes with `E_CALL_ENDED`. A DM
+call that ends stays ended. Outside that window, and on tabs from before this feature, a person must
+choose Join again. A network or browser permission refusal (Firefox can ask for the microphone again
+after a reload) can also require a manual join.
 
-`dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
+`sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
 directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, the
 blob tree and the passkey settings (`webauthn`), and prints one line per check. By default its `udp` leg reads WARN "not probed": dillad
 runs no reflector, so the leg never proves the UDP forward, which can only be checked from outside.
 With `doctor.udp_probe = false` the leg reads OK "skipped", and with `livekit.enabled = false` OK
-with no media port to reach. Run it after every change.
+with no media port to reach. Run it after every change, **as the `dillad` user**: the `turn` leg asks both
+control sockets in the state directory (`media.sock`, `api.sock`), which serve only that uid, and names who serves
+the relay (red when both or neither do). The `media_binary` leg is yellow while `dilla-media` runs an older binary
+(for a web3.11 or web3.12.x media server, which writes no `media.json`, it reads "build is unknown") than the API, which is normal until the refresh timer has moved it, and red when its media level is below the oldest
+the API works with. The `media_refresh` leg is yellow while `dilla-media` waits to become idle on an older binary and
+red after 24 hours; the restart is then your call: `dillad media --rooms`, then `systemctl restart dilla-media`.
 
 ## 1. The TLS modes
 
@@ -87,7 +102,49 @@ with no media port to reach. Run it after every change.
 
 In every mode except `behind_proxy`, TURN shares 443 with the web server: a demultiplexer in front
 of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 443/tcp and
-7882/udp (LiveKit's media port) need to be open.
+7882/udp (LiveKit's media port) need to be open. That relay lives in the API process, because
+the API owns 443, so it restarts with the API; see [the public-mode opt-in](#public-mode-turn-in-dilla-media-optional)
+for a relay that does not.
+
+### Who serves TURN (web3.13)
+
+The media process, `dillad media`, serves TURN on `turn.listen` whenever that is set, so a relayed call survives an
+API restart:
+
+| `tls.mode` | `turn.listen` | Who serves TURN | Survives an API restart |
+|---|---|---|---|
+| `behind_proxy` | required (while `turn.enabled`) | `dilla-media`, on `turn.listen`, as plain TURN over TCP (`turn:`) | yes |
+| any other | unset (default) | the API, on 443 behind the demultiplexer (`turns:`) | the relay restarts with the API; the page fetches fresh credentials through `POST /v1/calls/{call_id}/relay` and the call is back after a gap of about 19 to 21 s (measured in the compat job, where the API holds the relay) |
+| any other | set (opt-in) | `dilla-media`, on `turn.listen`, over TLS (`turns:`) | yes |
+
+Both processes read the same `dilla.toml` and `turn.shared_secret_file`, so there is no new secret. The media relay refuses
+every credential issued before its own start. Revocations and the barred-device lookup go over two local sockets in the
+state directory (`instance.data_dir`, `/var/lib/dillad` with the shipped units): `media.sock`, served by `dillad media`, and
+`api.sock`, served by `dillad serve`, both mode 0600 and checked against the `dillad` uid. A revocation the media relay has
+not acknowledged keeps that device's call start at `503 E_UNAVAILABLE` until it has. `dillad serve` exits 69 when `api.sock`
+cannot bind while `dilla-media` serves TURN. `media.json` in the same directory is the media server's own description
+(`version`, `media_level`, `capabilities`, `pid`, `started`); it lists `turn` only once `turn.listen` is bound, and `dillad
+media --self` prints the same from the running process. Exactly one process binds `turn.listen` at a time: while the
+running media server is a web3.11 or web3.12.x one (no `turn` in its capabilities), `dillad serve` keeps binding it; the
+refresh timer hands it over once, at the first idle restart ([Install script](#install-script)).
+
+#### Public-mode TURN in `dilla-media` (optional)
+
+In a public `tls.mode` (`acme_tls_alpn`, `acme_dns`, `acme_ip`), set `turn.listen` with `livekit.mode = "sidecar"` to move
+the relay out of the API process:
+
+```toml
+[turn]
+enabled = true
+listen = "0.0.0.0:5349"
+```
+
+`dilla-media` then serves `turns:` on that port with the ACME certificate it reads from the shared storage (it never issues
+or renews one), and clients are handed `turns:<domain>:<port>?transport=tcp`; set `turn.public_url` if the world reaches a
+different port. The API binds no relay on 443 then, and the demultiplexer sends STUN nowhere. The price is one more open
+TCP port. A port below 1024 makes the installer add `AmbientCapabilities=CAP_NET_BIND_SERVICE` to `dilla-media.service`.
+`turn.proxy_protocol` is read only in `behind_proxy`; `dillad` refuses it elsewhere. Web3.11 and every web3.12.x refuse
+`turn.listen` outside `behind_proxy`, so remove it before a rollback to them.
 
 ### What the TURN relay can reach
 
@@ -123,7 +180,9 @@ on those addresses.
 ### The `behind_proxy` TURN consequence
 
 A TLS-terminating proxy cannot forward the TURN traffic that shares 443, so in `behind_proxy` mode
-the relay has its own listener, `turn.listen`, and it is required while `turn.enabled` is true.
+the relay has its own listener, `turn.listen`, and it is required while `turn.enabled` is true. Since
+web3.13 `dillad media` binds it when `livekit.mode = "sidecar"` (the same address; nothing to edit), after the one-time handoff
+below (until then `dillad serve` keeps it), so it survives an API restart.
 Either the operator publishes a second TCP port straight to dillad for TURN, or the UI shows the
 explicit relay-unavailable dialog and the call is UDP-or-nothing. Decide this when you pick the
 mode: a proxy in front of dillad is a convenient way to share 443 with other sites, and the price
@@ -164,8 +223,9 @@ room), otherwise like a revocation written by `dillad admin`, which reaches a de
 allocation within about a minute (62 seconds at worst) while the database answers; the relay's own
 lookup of a device on its next authenticated request can be up to 30 seconds late, as a "not barred"
 answer is trusted for 30 seconds. The relay holds
-its revocations in memory, so it refuses every credential issued before it started: after a restart
-every client fetches a new one with its next call start. If the host's wall clock steps backwards, a
+its revocations in memory, so it refuses every credential issued before it started (the API's relay
+or `dilla-media`'s, whichever restarted): after a restart every client fetches a new one with its next
+call start, or on its reconnect through `POST /v1/calls/{call_id}/relay`. If the host's wall clock steps backwards, a
 cut device's call start answers 429 until the clock passes the cut, and a step back past the moment
 `dillad serve` started refuses every start until the clock passes it; keep the clock disciplined
 (NTP slewing, not stepping). `dillad doctor` run from another host mints its relay probe on that
@@ -304,10 +364,26 @@ The `DILLA_WEB_DIST` test checks those exact bytes before either release binary 
 certificate issuance and a migration. It runs as the `dillad` user with only
 `CAP_NET_BIND_SERVICE`, keeps its state in `/var/lib/dillad` (mode 0700) and reads
 `/etc/dilla/dilla.toml`.
-`deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service. It has `PartOf=dilla.service`, so
-stopping or restarting `dilla` stops or restarts the media sidecar with it; run `systemctl daemon-reload` after copying
-the unit by hand (`install.sh --upgrade` does). `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
-rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
+`deploy/dilla-media.service` runs the SFU, and the TURN relay on `turn.listen`, as a separate `Type=notify` service
+(`dillad media` sends `READY=1` once the SFU accepts requests and `media.json` is written, so `systemctl start` returns when
+the media server is ready; `TimeoutStartSec=60s`). It has **no `PartOf=dilla.service`** (web3.12 and older had one): restarting
+or stopping `dilla` does not touch it, so live calls survive an API restart, and **stopping the instance means stopping both
+units**. It runs nothing but `/usr/local/bin/dillad` (`NoExecPaths=/`, `ExecPaths=/usr/local/bin`), so `dillad` must be the
+statically linked release build (`CGO_ENABLED=0`); a dynamically linked self-build cannot start under it. A `turn.listen`
+below port 1024 adds `AmbientCapabilities=CAP_NET_BIND_SERVICE` to it (the installer does this). Run `systemctl daemon-reload`
+after copying a unit by hand (`install.sh --upgrade` does).
+
+`deploy/dilla-media-refresh.timer` runs `dilla-media-refresh.service` (a root oneshot, `/usr/local/libexec/dilla-media-refresh`)
+every minute. It restarts `dilla-media` onto the installed `dillad` once both hold: the running media process's executable is
+not the installed file (compared by inode and SHA-256, never by what the process says about itself), and `dillad media --idle`,
+run as `dillad`, exits 0. It does this and nothing else; a minute with nothing to do logs nothing, and each restart is logged
+(`journalctl -u dilla-media-refresh`). It also performs the one-time TURN handoff described under
+[Who serves TURN](#who-serves-turn-web313). `dillad media --idle` exits 0 when no room has participants, none is younger than
+60 s and the API reports no call token minted in the last 60 s; 1 when busy (the busy rooms go to stderr); 69 when it cannot
+tell (an API that does not answer counts as busy). `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
+rooms and their participants (`no live rooms` when the SFU is empty), `dillad media --probe` prints the room count, and
+`dillad media --self` prints the running media server's self-report as one JSON line. `dillad version --json` prints this
+build's `version`, `revision`, `wire`, `schema`, `media_level`, `min_sfu_media_level` and `media_capabilities`.
 
 ```sh
 sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad
@@ -315,6 +391,9 @@ sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad
 sudo install -m 0644 dilla_core_wasi.wasm /usr/local/bin/dilla_core_wasi.wasm
 sudo install -m 0644 deploy/dilla.service /etc/systemd/system/dilla.service
 sudo install -m 0644 deploy/dilla-media.service /etc/systemd/system/dilla-media.service
+sudo install -d -m 0755 /usr/local/libexec
+sudo install -m 0755 deploy/dilla-media-refresh.sh /usr/local/libexec/dilla-media-refresh
+sudo install -m 0644 deploy/dilla-media-refresh.service deploy/dilla-media-refresh.timer /etc/systemd/system/
 sudo useradd --system --user-group --no-create-home --home-dir /var/lib/dillad --shell /usr/sbin/nologin dillad
 
 sudo install -d -m 0755 /etc/dilla
@@ -329,6 +408,7 @@ sudo chown -R dillad:dillad /var/lib/dillad
 sudo systemctl daemon-reload
 sudo systemctl enable --now dilla-media
 sudo systemctl enable --now dilla
+sudo systemctl enable --now dilla-media-refresh.timer
 sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml
 journalctl -o cat -u dilla | jq .
 ```
@@ -354,8 +434,8 @@ Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 
 `deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as
 root, with no Docker: it runs the static `dillad` binary as the two systemd services above. Every
-release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, `dilla_core_wasi.wasm` and
-`SHA256SUMS`, with the release's own tag stamped into it. So the `install.sh` of a release installs
+release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, `dilla_core_wasi.wasm`,
+`release.json` and `SHA256SUMS` (which lists the other five), with the release's own tag stamped into it. So the `install.sh` of a release installs
 that release, and there is no "latest". Download it from the release you want, read it, then run it
 in one of two modes. The examples use the tag `v0.1.0-web3`; take yours from the
 [releases page](https://github.com/jonasthim/dilla/releases).
@@ -438,15 +518,38 @@ sh install.sh --upgrade
 
 Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 when they are valid, printing `arguments are valid; the release was not checked` on stderr: it does not look up the release, so a mistyped `--version` still passes here and is refused later, at the download, before anything on disk changes.
 
-It checks the new binary and core against `SHA256SUMS`, restarts the API while the sidecar SFU
-stays up, runs doctor, then restarts the media service. The previous pair stays as `dillad.prev`
-and `dilla_core_wasi.wasm.prev`. For a first upgrade from `in_process`, it saves `dilla.toml.prev`,
-stops the old combined process, changes `livekit.mode` to `sidecar`, and starts the two services.
-That one-time migration briefly interrupts calls. Later API restarts leave the SFU running;
-media restarts end their rooms; updated community voice clients try to rejoin during the upgrade
-window. The installer writes
-`dilla-media.service`; it leaves an existing `dilla.service` untouched, so compare that unit with
-the release copy after an upgrade.
+It checks the new binary and core against `SHA256SUMS`, and `release.json` too when `SHA256SUMS` lists it
+(it must match the sums and the binary's own `dillad version --json`; a release from web3.13 on that lacks it is refused;
+`--release-json FILE` supplies it with `--binary`). Then it decides, from the running media server's media level and the
+release's `min_sfu_media_level`, whether the media server can stay, and logs the decision and why:
+
+- **Keep** ("decision: keep dilla-media running"): only `dilla` restarts, live calls continue, and there is no live-call
+  refusal. The installer reports "dilla-media keeps vX until its calls end"; `dilla-media-refresh.timer` then restarts it
+  onto the new binary when it is idle. `dillad doctor` shows `media_binary` in yellow until then. A running web3.11 or
+  web3.12.x media server counts as media level 1, which web3.13 keeps.
+- **Restart** ("decision: restart dilla-media, which ends any live call"): when the release needs a newer media level,
+  the media server's level is unknown (an executable the installer cannot identify: two or more releases back, or a
+  self-built binary), `dilla-media` is not running, the release has no `release.json`, or you pass `--restart-sfu`. It
+  refuses while a room has participants, unless you pass `--restart-sfu` (or `--yes`, accepted as an alias for one more
+  release). It then restarts `dilla-media` first (waiting up to 60 s for `READY` and a valid `media.json`), then `dilla`.
+  Each restarts once.
+
+Either way the installer runs doctor after the restart. The previous pair stays as `dillad.prev` and `dilla_core_wasi.wasm.prev`. For a first upgrade from `in_process`, it saves
+`dilla.toml.prev`, stops the old combined process, changes `livekit.mode` to `sidecar`, and starts the two services;
+that one-time migration briefly interrupts calls and still needs `--yes`. The installer writes `dilla-media.service`,
+`dilla-media-refresh.service`, `dilla-media-refresh.timer` and `/usr/local/libexec/dilla-media-refresh` and enables the
+timer; it leaves an existing `dilla.service` untouched (it needs no change). On a **non-systemd install** there is no
+timer: restart both processes yourself, `dillad media` first and then `dillad serve`.
+
+**The one-time TURN handoff.** The first idle restart that moves `dilla-media` from a web3.11 or web3.12.x binary onto a
+web3.13 one, with `turn.listen` configured, restarts `dilla-media`, waits for `READY`, restarts `dilla` so it lets go of
+`turn.listen`, and waits until `media.json` lists `turn`. The rooms are idle, so no relay is in use. If `dilla-media` has
+not bound the port 60 s after `dilla` restarted, the timer logs a warning and `dillad doctor`'s `turn` leg names who
+serves TURN.
+
+If `dilla-media` is never idle, it keeps the older binary. The `media_refresh` leg of `dillad doctor` is yellow while it
+waits and red after 24 hours, and the restart is then yours: `dillad media --rooms --config=/etc/dilla/dilla.toml`, then
+`systemctl restart dilla-media`.
 
 Before it replaces anything, it reads the database's schema version with the installed binary
 (`dillad migrate status`) and refuses the upgrade if it cannot. If the restart fails, it rolls
@@ -473,7 +576,18 @@ stopped, and prints the ways out, which are the manual rollback below.
 with "database schema N is newer than this binary's highest migration M: refusing to start". To
 go back one release:
 
-1. Stop the service: `systemctl stop dilla`.
+1. Stop **both** units: `systemctl stop dilla dilla-media`. Since web3.13 `dilla-media` has no `PartOf=dilla.service`, so
+   stopping `dilla` leaves it running. On a non-systemd install, stop both processes. Stopping `dilla-media` ends every live call.
+   For a rollback **below web3.13** (every web3.12.x and web3.11 included):
+   - stop `dilla-media` first, because a media server from web3.13 holds `turn.listen` and the older `dillad serve` would bind it too;
+   - remove `turn.listen` from `dilla.toml` first in every `tls.mode` but `behind_proxy` (an omitted `tls.mode` counts as
+     public), because web3.11 and web3.12.x refuse it; public-mode TURN goes back to 443. Remove `turn.public_url` too if you
+     set it for the opt-in: web3.12.x hands clients that URL verbatim, so it would keep advertising the dead port while
+     `dillad doctor`, which probes 443, stays green;
+   - disable the refresh timer: `systemctl disable --now dilla-media-refresh.timer`;
+   - a web3.12.x or older release runs `dilla-media` as `Type=simple` and sends no `READY=1`, so set `Type=simple` in
+     `/etc/systemd/system/dilla-media.service` (and delete `NotifyAccess=main`), then `systemctl daemon-reload`, before you
+     start it. The installer's own rollback (`install.sh --upgrade --version v0.1.0-web3.12.x`) stops `dilla-media` first, writes the `Type=simple` unit and disables the timer, and it refuses before changing anything while a public-mode `turn.listen` is set.
 2. Find the schema the previous binary reads. `runuser -u dillad -- /usr/local/bin/dillad.prev migrate status --config=/etc/dilla/dilla.toml`
    prints `current N, target M`. `M` is that version.
 3. Take the database down to `M` with the **new** binary, which is the only one that knows the
@@ -483,7 +597,8 @@ go back one release:
 4. Put the previous pair back:
    `cp -p /usr/local/bin/dillad.prev /usr/local/bin/dillad` and
    `cp -p /usr/local/bin/dilla_core_wasi.wasm.prev /usr/local/bin/dilla_core_wasi.wasm`.
-5. Start it again: `systemctl start dilla`.
+5. Start it again, the media service first: `systemctl start dilla-media`, then `systemctl start dilla`. (On a non-systemd
+   install, restart both.)
 
 Always do step 3 before step 4. An older `dillad doctor` does not catch a database left too new: the web-3.5 doctor
 reports `OK database schema version 17` on a web-3.6 database. Only `serve` refuses it.
@@ -777,6 +892,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
 | web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 | web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
+| web3.13 (`v0.1.0-web3.13`) | 5 | **24** | Migration `00024_withdrawn` (`mls_pending_proposals.withdrawable`, `withdrawn_at`, `withdrawn_seq`; kind 3 in `mls_handshakes`). Rolling back to web3.12.x needs `migrate down --to=23` with the web3.13 binary first, stopping both units, and drops every withdrawn handshake row and proposal; see the [web3.13 release notes](releases/v0.1.0-web3.13.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is

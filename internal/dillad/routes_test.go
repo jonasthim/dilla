@@ -75,6 +75,16 @@ func TestTheCallsConfigNamesTheRelayTheModeRuns(t *testing.T) {
 			c.TURN.PublicURL = "turns:chat.example.test:8443?transport=tcp"
 		}, "wss://chat.example.test", "turns:chat.example.test:8443?transport=tcp", true},
 		{"turn off", func(c *config.Config) { c.TURN.Enabled = false }, "wss://chat.example.test", "", false},
+		// R-UP11: the public-mode opt-in names only dilla-media's relay, `turns:` on turn.listen.
+		{"acme with the turn.listen opt-in", func(c *config.Config) {
+			c.LiveKit.Enabled, c.LiveKit.Mode = true, "sidecar"
+			c.TURN.Listen = "0.0.0.0:5349"
+		}, "wss://chat.example.test", "turns:chat.example.test:5349?transport=tcp", true},
+		{"the opt-in with public_url", func(c *config.Config) {
+			c.LiveKit.Enabled, c.LiveKit.Mode = true, "sidecar"
+			c.TURN.Listen = "0.0.0.0:5349"
+			c.TURN.PublicURL = "turns:turn.example.test:443?transport=tcp"
+		}, "wss://chat.example.test", "turns:turn.example.test:443?transport=tcp", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := base()

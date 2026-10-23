@@ -118,6 +118,14 @@ func (d *recordingDS) ProposeRemoveOfMember(ctx context.Context, g id.ID, leaf u
 	return d.ProposeRemoveOf(ctx, g, leaf, dev, a)
 }
 
+func (d *recordingDS) ProposeAbsenceRemove(ctx context.Context, g id.ID, leaf uint32, dev id.ID, added uint64, a id.ID) error {
+	return d.ProposeRemoveOfMember(ctx, g, leaf, dev, added, a)
+}
+
+func (d *recordingDS) WithdrawAbsenceRemoves(context.Context, id.ID, id.ID, uint32, uint64) (int, error) {
+	return 0, nil
+}
+
 func (d *recordingDS) leafDevices() []id.ID {
 	d.mu.Lock()
 	defer d.mu.Unlock()

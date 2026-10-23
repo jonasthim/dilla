@@ -240,6 +240,13 @@ SELECT call_id, channel_id, group_id, livekit_room, started, ended
 FROM voice_sessions WHERE channel_id = ? AND ended IS NULL
 ORDER BY started, call_id;
 
+-- name: ListAllLiveVoiceSessions :many
+-- Every live call of the instance, oldest first: the call routes reconcile each one's room at boot
+-- (UP2, calls survive an upgrade).
+SELECT call_id, channel_id, group_id, livekit_room, started, ended
+FROM voice_sessions WHERE ended IS NULL
+ORDER BY started, call_id;
+
 -- name: EndAllVoiceSessionRows :exec
 -- Invariant 11's "Live calls end", the voice_sessions half of store.MLS.EndAllVoiceSessions
 -- (P2-D19): the call-group half is mls.sql's EndAllVoiceSessions.

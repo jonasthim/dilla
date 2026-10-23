@@ -1,0 +1,11 @@
+[Unit]
+Description=dilla: every minute, check whether dilla-media can move to the installed dillad
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

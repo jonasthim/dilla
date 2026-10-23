@@ -21,6 +21,10 @@ pub enum Stmt {
         kind: Kind,
         device_list: DeviceListMode,
         key_packages: bool,
+        /// `legacy` (UP6b): a client from before the withdrawal — identify without caps bit 0,
+        /// `GET …/handshakes` without `kinds=3`, no dropping of a queued instance Remove the
+        /// listing lacks.
+        legacy: bool,
     },
     /// `publish_key_packages <client> <n>`: the client publishes `n` KeyPackages and a last-resort
     /// one.
@@ -129,6 +133,30 @@ pub enum Stmt {
     /// `leave <client> <group>`: the client proposes its own Remove (protocol/01 "Leaving"); another
     /// member's commit applies it.
     Leave {
+        client: String,
+        group: String,
+    },
+    /// `absent <client> <group>` (UP6b): the instance's room sweep finds the client's device out of
+    /// its call and proposes the absence Remove of the membership it holds (withdrawable).
+    Absent {
+        client: String,
+        group: String,
+    },
+    /// `resume <client> <group> [withdrawn=<n>]` (UP6b): the client's own call start reaches its
+    /// last step before the mint and withdraws its own absence Remove; `withdrawn=` asserts how many
+    /// it withdrew. A membership already gone is `E_LEAF_NOT_CURRENT`.
+    Resume {
+        client: String,
+        group: String,
+        expect: Option<u64>,
+    },
+    /// `stash_commit <client> <group>` (UP6b): builds a commit over the client's queue and keeps
+    /// it unposted; `post_stash <client> <group>` uploads it later, to be refused (a replay).
+    StashCommit {
+        client: String,
+        group: String,
+    },
+    PostStash {
         client: String,
         group: String,
     },
@@ -420,6 +448,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 kind,
                 device_list,
                 key_packages,
+                legacy: args[1..].contains(&"legacy"),
             }
         }
         "publish_key_packages" => {
@@ -670,6 +699,32 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             Stmt::Leave {
                 client: args[0].to_owned(),
                 group: args[1].to_owned(),
+            }
+        }
+        "absent" | "stash_commit" | "post_stash" => {
+            need(2)?;
+            let (client, group) = (args[0].to_owned(), args[1].to_owned());
+            match verb {
+                "absent" => Stmt::Absent { client, group },
+                "stash_commit" => Stmt::StashCommit { client, group },
+                _ => Stmt::PostStash { client, group },
+            }
+        }
+        "resume" => {
+            need(2)?;
+            let expect = match named(args, "withdrawn=") {
+                None => None,
+                Some(n) => Some(n.parse::<u64>().map_err(|_| {
+                    err(
+                        line_no,
+                        format!("resume's withdrawn= needs a count, got {n:?}"),
+                    )
+                })?),
+            };
+            Stmt::Resume {
+                client: args[0].to_owned(),
+                group: args[1].to_owned(),
+                expect,
             }
         }
         "join_many" => {
@@ -1348,6 +1403,7 @@ expect_reject E_BINDING join bob chat
                 kind: Kind::User,
                 device_list: DeviceListMode::None,
                 key_packages: true,
+                legacy: false,
             }
         );
         assert!(matches!(
@@ -1647,6 +1703,7 @@ expect_reject E_BINDING join bob chat
                 kind: Kind::User,
                 device_list: DeviceListMode::Unlisted,
                 key_packages: true,
+                legacy: false,
             }
         );
         refused(

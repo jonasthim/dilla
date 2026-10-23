@@ -83,9 +83,17 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 		d.clearElection(groupID)
 		return nil
 	}
+	// UP6b: in an epoch that holds a withdrawal, a device any of whose connections did not set caps
+	// bit 0 still holds the withdrawn ref, and its commit would be refused (409 `withdrawn`): it is
+	// never elected (protocol/02 invariant 7).
+	withdrawn, err := d.withdrawnInEpoch(ctx, groupID, row.Epoch)
+	if err != nil {
+		return err
+	}
 	// OnlineIn is already bots-first, then by leaf index, and a fresh slice of the caller's own.
 	candidates := slices.DeleteFunc(d.opts.Gateway.OnlineIn(groupID), func(c gateway.OnlineDevice) bool {
-		return leavingDevice[c.DeviceID] || leavingLeaf[c.LeafIndex]
+		return leavingDevice[c.DeviceID] || leavingLeaf[c.LeafIndex] ||
+			(withdrawn && c.Caps&gateway.CapWithdrawnRows == 0)
 	})
 	if len(candidates) == 0 {
 		// No candidate: arm nothing. The next ready re-elects, which is what the online predicate

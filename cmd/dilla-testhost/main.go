@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,10 +37,16 @@ func main() {
 type options struct {
 	public, control, dataDir, core, logLevel, webRoot string
 	webauthnOrigin                                    string
-	productionACL                                     bool
-	sfu                                               sfuOptions
+	// stateDir is the host's process state directory (-state-dir); "" means the data directory.
+	stateDir      string
+	productionACL bool
+	sfu           sfuOptions
 	// wire is the one wire version the hello offers (-wire, web3.8 S1).
 	wire uint64
+	// turnListen and turnSecretFile are the sidecar's relay (-turn-listen, -turn-secret-file, UP9).
+	turnListen, turnSecretFile string
+	// holdPublic leaves the public listener unbound until POST /debug/public/open (UP9).
+	holdPublic bool
 }
 
 func parseFlags(args []string) (options, error) {
@@ -56,11 +63,28 @@ func parseFlags(args []string) (options, error) {
 		"SP-27 only: render advertise_internal_ip: false (Firefox then cannot pair with the loopback node_ip)")
 	sfuAV1 := fs.Bool("sfu-av1", false, "browser test only: enable AV1 in the real SFU")
 	sfuDeparture := fs.Uint("sfu-departure-timeout", 0, "the in-process LiveKit's room departure_timeout in seconds (0: the instance default, 20)")
+	sidecar := fs.Bool("sfu-sidecar", false,
+		"use an SFU another process owns (dillad media, started by the test): -sfu-port and -sfu-udp-port name it, the host starts none")
+	sidecarSecret := fs.String("sfu-secret-file", "", "with -sfu-sidecar: the livekit.api_secret_file the sidecar SFU reads")
+	sidecarWebhook := fs.String("sfu-webhook-listen", "",
+		"with -sfu-sidecar: the loopback host:port this host serves the SFU's webhooks on (the address the sidecar was told)")
+	stateDir := fs.String("state-dir", "", "the host's process state directory (default: -data-dir); never a fixed path")
 	webRoot := fs.String("web-root", "", "a built web client directory (with its dilla-manifest.json) served at the public listener's origin instead of the embedded placeholder")
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
+	turnListen := fs.String("turn-listen", "",
+		"with -sfu-sidecar: the sidecar's turn.listen; the instance hands out that relay and wires it as dillad serve does (cuts over media.sock, api.sock in -state-dir)")
+	turnSecret := fs.String("turn-secret-file", "", "with -turn-listen: the turn.shared_secret_file the sidecar's relay reads")
+	holdPublic := fs.Bool("hold-public", false,
+		"start everything but leave -listen unbound until POST /debug/public/open on the control listener: to its clients the instance is down while it runs (UP9)")
 	wire := fs.Uint64("wire", dillad.WireVersion, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only)")
 	if err := fs.Parse(args); err != nil {
+		return options{}, err
+	}
+	if err := checkSidecarFlags(*withSFU, *sidecar, *sidecarSecret, *sidecarWebhook); err != nil {
+		return options{}, err
+	}
+	if err := checkTURNFlags(*sidecar, *turnListen, *turnSecret); err != nil {
 		return options{}, err
 	}
 	// Wire versions start at 1: a hello offering 0 names no version any client speaks.
@@ -84,31 +108,62 @@ func parseFlags(args []string) (options, error) {
 	}
 	return options{public: *public, control: *control, dataDir: *dataDir, core: *core,
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL, webauthnOrigin: *webauthnOrigin,
-		wire: *wire,
-		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
+		wire: *wire, stateDir: *stateDir, turnListen: *turnListen, turnSecretFile: *turnSecret, holdPublic: *holdPublic,
+		sfu: sfuOptions{enabled: *withSFU, sidecar: *sidecar, secretFile: *sidecarSecret, webhookListen: *sidecarWebhook, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
 
 // sfuOptions are the -sfu flags: whether the host starts an in-process LiveKit, and on which ports.
 type sfuOptions struct {
 	enabled       bool
+	sidecar       bool
+	secretFile    string
+	webhookListen string
 	port, udpPort int
 	noInternalIP  bool
 	av1           bool
 	departure     uint32
 }
 
+// checkSidecarFlags refuses the sidecar flags that cannot work: the sidecar mode is not -sfu, it
+// needs the secret its SFU reads and the webhook address its SFU posts to, and those two are
+// meaningless without it.
+func checkSidecarFlags(inProcess, sidecar bool, secretFile, webhookListen string) error {
+	switch {
+	case sidecar && inProcess:
+		return errors.New("-sfu-sidecar and -sfu are exclusive: the host either owns its SFU or uses another process's")
+	case sidecar && (secretFile == "" || webhookListen == ""):
+		return errors.New("-sfu-sidecar needs -sfu-secret-file and -sfu-webhook-listen")
+	case !sidecar && (secretFile != "" || webhookListen != ""):
+		return errors.New("-sfu-secret-file and -sfu-webhook-listen are only for -sfu-sidecar")
+	}
+	return nil
+}
+
+// checkTURNFlags refuses a relay without the sidecar it belongs to, or half of one.
+func checkTURNFlags(sidecar bool, listen, secretFile string) error {
+	switch {
+	case (listen != "" || secretFile != "") && !sidecar:
+		return errors.New("-turn-listen and -turn-secret-file are only for -sfu-sidecar: the relay runs in the media process")
+	case (listen == "") != (secretFile == ""):
+		return errors.New("-turn-listen and -turn-secret-file go together")
+	}
+	return nil
+}
+
 func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostOptions {
 	ho := dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: o.logLevel,
-		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
+		SFU: o.sfu.enabled, SFUSidecar: o.sfu.sidecar, SFUSecretFile: o.sfu.secretFile,
+		SFUWebhookListen: o.sfu.webhookListen, StateDir: o.stateDir, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
 		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1, SFUDepartureTimeout: o.sfu.departure,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
 		WebAuthnOrigin: o.webauthnOrigin, WireVersions: []uint64{o.wire},
+		TURNListen: o.turnListen, TURNSecretFile: o.turnSecretFile,
 	}
 	// A browser test (a web root) that calls (an SFU) reaches LiveKit through this host's own /rtc
 	// proxy over plain ws://: the instance domain's wss:// URL resolves to nothing on loopback.
-	if o.sfu.enabled && o.webRoot != "" {
+	if (o.sfu.enabled || o.sfu.sidecar) && o.webRoot != "" {
 		ho.LiveKitURL = "ws://" + o.public
 	}
 	return ho
@@ -145,25 +200,52 @@ func run(o options) error {
 	}
 	defer func() { _ = host.Close(context.Background()) }()
 
-	publicLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.public)
-	if err != nil {
-		return err
-	}
 	controlLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.control)
 	if err != nil {
 		return err
 	}
 
 	publicSrv := &http.Server{Handler: host.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	controlSrv := &http.Server{
-		Handler:           dilladtest.ControlHandler(host),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
 	errs := make(chan error, 2)
-	go func() { errs <- publicSrv.Serve(publicLn) }()
+	var openOnce sync.Once
+	var openErr error
+	// publicAddr is -listen as bound once it is open (its real port when -listen asks for 0).
+	publicAddr := o.public
+	// openPublic binds -listen and serves it: at once, or with -hold-public on the first POST
+	// /debug/public/open. Until then a client's connection is refused, as by an instance that is down.
+	openPublic := func() error {
+		openOnce.Do(func() {
+			ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.public)
+			if err != nil {
+				openErr = err
+				return
+			}
+			publicAddr = ln.Addr().String()
+			go func() { errs <- publicSrv.Serve(ln) }()
+		})
+		return openErr
+	}
+	control := http.NewServeMux()
+	control.Handle("/", dilladtest.ControlHandler(host))
+	control.HandleFunc("POST /debug/public/open", func(w http.ResponseWriter, _ *http.Request) {
+		if err := openPublic(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	controlSrv := &http.Server{Handler: control, ReadHeaderTimeout: 10 * time.Second}
+	if !o.holdPublic {
+		if err := openPublic(); err != nil {
+			return err
+		}
+	}
 	go func() { errs <- controlSrv.Serve(controlLn) }()
 
-	fmt.Printf("public  http://%s\n", publicLn.Addr())
+	fmt.Printf("public  http://%s\n", publicAddr)
+	if o.holdPublic {
+		fmt.Println("public  held: POST /debug/public/open on the control listener opens it")
+	}
 	fmt.Printf("control http://%s\n", controlLn.Addr())
 	if o.webRoot != "" {
 		fmt.Printf("web     %s\n", o.webRoot)
@@ -171,9 +253,12 @@ func run(o options) error {
 	if s := host.SFU(); s != nil {
 		fmt.Printf("sfu     %s\n", s.URL())
 	}
+	if o.sfu.sidecar {
+		fmt.Printf("sfu     ws://127.0.0.1:%d (sidecar, webhooks on %s)\n", o.sfu.port, o.sfu.webhookListen)
+	}
 	fmt.Printf("run a scenario with:\n  DILLA_TESTKIT_CONTROL=http://%s DILLA_TESTKIT_INVITE=%s \\\n"+
 		"    dilla-testkit run testkit/scenarios/<name>.scn --ds http://%s\n",
-		controlLn.Addr(), host.Invite(), publicLn.Addr())
+		controlLn.Addr(), host.Invite(), publicAddr)
 
 	select {
 	case <-ctx.Done():

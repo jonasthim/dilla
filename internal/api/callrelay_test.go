@@ -23,6 +23,9 @@ type fakeRelay struct {
 	mu      sync.Mutex
 	revoked []id.ID
 	minted  []id.ID
+	// onMint, when set, runs inside Mint after the mint is recorded and outside the lock: a test changes
+	// the device's entitlement between a route's gates and its post-mint re-check.
+	onMint func(device id.ID)
 }
 
 func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
@@ -33,8 +36,12 @@ func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
 
 func (f *fakeRelay) Mint(device id.ID, _ time.Time) (time.Time, time.Duration) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.minted = append(f.minted, device)
+	hook := f.onMint
+	f.mu.Unlock()
+	if hook != nil {
+		hook(device)
+	}
 	return time.Now(), 0
 }
 
@@ -195,10 +202,31 @@ func TestAStartTellsTheRelayItMintedACredential(t *testing.T) {
 func startParked(t *testing.T, stage string) (e *env, dev id.ID, rev *server.RelayRevocations,
 	parked <-chan struct{}, release func(), done <-chan [2]any) {
 	t.Helper()
+	e, dev, rev, _, parked, release, done = startParkedOn(t, stage, false)
+	return e, dev, rev, parked, release, done
+}
+
+// startParkedVia is startParked through the revoker that also forwards each cut to a media relay
+// (server.RelayRevoker, R-UP11) over the local revocation state rev; rv is that revoker.
+func startParkedVia(t *testing.T, stage string, forwarded bool) (e *env, dev id.ID, rev *server.RelayRevocations,
+	rv api.RelayRevoker, release func(), done <-chan [2]any) {
+	t.Helper()
+	e, dev, rev, rv, _, release, done = startParkedOn(t, stage, forwarded)
+	return e, dev, rev, rv, release, done
+}
+
+func startParkedOn(t *testing.T, stage string, forwarded bool) (e *env, dev id.ID, rev *server.RelayRevocations,
+	rv api.RelayRevoker, parked <-chan struct{}, release func(), done <-chan [2]any) {
+	t.Helper()
 	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL,
 		TURNSecret: "0123456789abcdef", TURNURLs: []string{"turns:chat.example.test:443?transport=tcp"}, CredentialTTL: time.Hour})
 	rev = server.NewRelayRevocations(2*time.Hour, e.Clk)
-	calls.WithRelay(rev)
+	rv = rev
+	if forwarded {
+		// No media relay answers: the forwarding never lands, and the ordering must not care.
+		rv = server.NewRelayRevoker(rev, server.ControlClient(t.TempDir()+"/media.sock"), 2*time.Hour, e.Clk, nil)
+	}
+	calls.WithRelay(rv)
 	dev = deviceOf(t, e, tok)
 	seedLeaf(t, e, group, dev, 3, nil)
 	p, rel := make(chan struct{}), make(chan struct{})
@@ -219,7 +247,7 @@ func startParked(t *testing.T, stage string) (e *env, dev id.ID, rev *server.Rel
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the start never reached %q", stage)
 	}
-	return e, dev, rev, p, func() { close(rel) }, out
+	return e, dev, rev, rv, p, func() { close(rel) }, out
 }
 
 // issuedOfCall is the issue time of the relay credential a start answered.
@@ -250,6 +278,27 @@ func retryAfterOf(t *testing.T, body []byte) uint64 {
 	}
 	mustUnmarshal(t, arr[2], &ms)
 	return ms
+}
+
+// reasonOf is an error body's fourth element as text, "" when the body has three elements.
+func reasonOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var arr []cbor.RawMessage
+	mustUnmarshalBody(t, body, &arr)
+	if len(arr) < 4 {
+		return ""
+	}
+	var reason string
+	mustUnmarshal(t, arr[3], &reason)
+	return reason
+}
+
+// endedAsOpened reports whether a start's 503 carries final-I1's marker: a fourth element, reason
+// `call_ended`, the one start 503 after which the client forgets the call group and reads the call
+// again. Every other start 503 is transient and lacks it.
+func endedAsOpened(t *testing.T, body []byte) bool {
+	t.Helper()
+	return reasonOf(t, body) == "call_ended"
 }
 
 // Re-review N1, through the call route: a start whose device was cut in the same millisecond is a

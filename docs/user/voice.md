@@ -327,6 +327,25 @@ play it with another program.
 
 ![The player at 360 pixels wide](screenshots/media-player-phone.png)
 
+## During a server upgrade
+
+When whoever runs your instance upgrades it (web3.13 and later), your call usually keeps going: the people in it stay
+connected while the server restarts. If the upgrade brings a new version of the page, dilla reloads the tab for you
+and puts you back in the call by itself, with no click; audio is back within a few seconds. The call panel may say
+"reconnecting" for a moment. You do not need to press **join voice**.
+
+If everyone in the call drops at once because the server restarted, the call takes longer to come back: everyone is put
+back in the same call on their own, up to about half a minute after the server answers.
+
+If the upgrade restarts the media server itself, the call ends: a restart closes its rooms. A call in a direct message
+stays ended and has to be started again. A community voice channel usually reopens by itself during the update (for
+about two minutes after dilla detects the update); otherwise press **join voice**. If your connection stays down for longer than the server's inactive timeout, you see "You left the call while away." and
+press **join voice**, as before.
+
+One exception: if your device was away (asleep or offline) and the page reloads for an update in the few seconds after
+it wakes, before it has rejoined, the reloaded page can put you back in the call instead of saying "You left the call
+while away.". Leave the call if you did not mean to be in it.
+
 ## When voice stops or pauses
 
 ### A contact's identity changed
@@ -379,6 +398,7 @@ checks every device again.
 | "You left the call while away." | Your device was gone (asleep, offline) for longer than the server's inactive timeout, so it did not rejoin by itself; press **join voice** to go back in |
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the call panel | The connection dropped; the call comes back by itself |
+| The browser asks for the microphone again after dilla updated during a call | A browser set to ask for the microphone every time (Firefox can be) asks again when the page reloads for an update, and the page cannot answer for you. Allow it; if the call has not come back, press **join voice** |
 
 ### You see people speaking but hear nothing
 

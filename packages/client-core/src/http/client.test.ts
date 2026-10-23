@@ -177,6 +177,17 @@ describe('401', () => {
     expect(t.seen).toHaveLength(2);
   });
 
+  // UP7c: a reverse proxy's 401 (a login page, an error while dillad is down) carries no X-Dilla-Generation. It says nothing
+  // about the session, so no re-authentication is attempted and the 401 reaches the caller as an unstamped refusal.
+  it("does not re-authenticate on a proxy's 401 (no X-Dilla-Generation)", async () => {
+    const t = fakeTransport({ reauth: () => ({ ok: true, token: 'tok-2' }) });
+    t.replies.push(new Response('login', { status: 401, headers: { 'Content-Type': 'text/html' } }));
+    const err = await failure(new HttpClient(t.deps).request(GET_READ));
+    expect(err).toMatchObject({ status: 401, fromInstance: false });
+    expect(t.reauthCalls).toBe(0);
+    expect(t.seen).toHaveLength(1);
+  });
+
   it('never re-authenticates a request sent without auth', async () => {
     const t = fakeTransport({ reauth: () => ({ ok: true, token: 'tok-2' }) });
     t.replies.push(refusal(401, 'E_UNAUTHENTICATED'), cborReply(201, ['token']));
@@ -484,5 +495,54 @@ describe('onRefusal', () => {
     const client = new HttpClient({ ...t.deps, onRefusal: () => { throw new Error('hook failed'); } });
     t.replies.push(refusal(403, 'E_FACTOR_REQUIRED'));
     expect(await failure(client.request(GET_READ))).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+  });
+});
+
+// UP7b fix round 1 (I1): a refusal says whether the instance itself answered (X-Dilla-Generation, which dillad stamps on
+// every response) or something in front of it did (a reverse proxy's 502 page), so the gateway can tell an outage behind
+// a proxy from the instance's own refusal.
+describe('UP7b: who answered a refusal', () => {
+  it("a refusal with X-Dilla-Generation is the instance's; a proxy page without it is not; no answer is unknown", async () => {
+    const t = fakeTransport();
+    t.replies.push(refusal(409, 'E_CONFLICT', '', null, [], { 'X-Dilla-Generation': '3' }), new Response('<html>Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } }));
+    const own = await failure(new HttpClient(t.deps).request(POST_WRITE));
+    expect(own).toMatchObject({ status: 409, code: 'E_CONFLICT', fromInstance: true });
+    const front = await failure(new HttpClient(t.deps).request(POST_WRITE));
+    expect(front).toMatchObject({ status: 502, code: 'E_HTTP', fromInstance: false });
+    expect(new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: '', retryAfterMs: null, extra: [] }).fromInstance).toBeNull();
+  });
+});
+
+describe('UP7b fix round 2: a proxy\'s refusal', () => {
+  // N2: a proxy error page over the 64 KiB error cap still says who answered.
+  it('an error body over the cap carries fromInstance like any refusal', async () => {
+    const t = fakeTransport();
+    const big = '<html>' + 'x'.repeat(70 * 1024) + '</html>';
+    t.replies.push(new Response(big, { status: 502, headers: { 'Content-Type': 'text/html' } }),
+      new Response(big, { status: 502, headers: { 'Content-Type': 'text/html', 'X-Dilla-Generation': '3' } }));
+    expect(await failure(new HttpClient(t.deps).request(POST_WRITE))).toMatchObject({ status: 502, code: 'E_BODY_TOO_LARGE', fromInstance: false });
+    expect(await failure(new HttpClient(t.deps).request(POST_WRITE))).toMatchObject({ status: 502, code: 'E_BODY_TOO_LARGE', fromInstance: true });
+  });
+
+  // Ruling: only the instance's own Retry-After is honoured; a proxy's 503 or 429 waits the default second.
+  it('a 503 or 429 without X-Dilla-Generation ignores its Retry-After', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response('busy', { status: 503, headers: { 'Retry-After': '30' } }),
+      new Response('slow', { status: 429, headers: { 'Retry-After': '12' } }), cborReply(200, []));
+    await new HttpClient(t.deps).request(GET_READ);
+    expect(t.sleeps).toEqual([1000, 1000]);
+  });
+
+  it('a proxy refusal reports no retry_after_ms to its caller', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response('nope', { status: 502, headers: { 'Retry-After': '30' } }));
+    expect(await failure(new HttpClient(t.deps).request(POST_WRITE))).toMatchObject({ status: 502, retryAfterMs: null, fromInstance: false });
+  });
+
+  it("the instance's own Retry-After on a 503 is honoured (control)", async () => {
+    const t = fakeTransport();
+    t.replies.push(textReply(503, 'busy', { 'Retry-After': '4' }), cborReply(200, []));
+    await new HttpClient(t.deps).request(GET_READ);
+    expect(t.sleeps).toEqual([4000]);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './settings';
+import { CALL_KEEP_KEY, PENDING_JOIN_KEY, SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, pageSettings,
+  suppressesEveryone } from './settings';
 
 it('accepts only bounded device-local appearance and search choices', () => {
   const choices = [
@@ -190,4 +191,9 @@ describe('channels.collapsed.<categoryHex> (R36)', () => {
     expect(isSettingKey('channels.collapsed.x')).toBe(false);
     expect(isSettingKey(`channels.collapsed.${HEX}0`)).toBe(false);
   });
+});
+
+it('UP6: the worker\'s own rows (the pending join, the callKeep marker) are not settings and stay out of the slice', () => {
+  for (const key of [PENDING_JOIN_KEY, CALL_KEEP_KEY]) expect(isSettingKey(key)).toBe(false);
+  expect(pageSettings({ [CALL_KEEP_KEY]: '{}', [PENDING_JOIN_KEY]: '{}', density: 'compact' })).toEqual({ density: 'compact' });
 });

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobIf, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NOT_REQUIRED_JOBS, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
@@ -70,8 +70,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
-  group: \${{ github.workflow }}-\${{ github.ref }}
+  group: \${{ github.workflow }}-\${{ github.event_name }}-\${{ github.ref }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
@@ -367,6 +370,78 @@ jobs:
           path: e2e/test-results
           if-no-files-found: error
 
+  sfu-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - run: |
+          go build -o target/dillad ./cmd/dillad
+          target/dillad version --json > "$RUNNER_TEMP/new-version.json"
+      - run: bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary
+      - id: plan
+        run: node scripts/release-meta.mjs compat --version-json "$RUNNER_TEMP/new-version.json" --previous-dir "$RUNNER_TEMP/previous"
+      - if: steps.plan.outputs.run == 'false'
+        run: node scripts/release-meta.mjs notes-required docs/deploy/releases
+      - if: steps.plan.outputs.run == 'true'
+        run: npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+          DILLA_SFU_BIN: \${{ runner.temp }}/previous/dillad-linux-amd64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: sfu-compat-results
+          path: e2e/test-results
+          if-no-files-found: error
+
+  upgrade-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [rust-native, rust-wasi, web-build]
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - run: npx playwright install --with-deps \${{ matrix.engine }}
+      - if: matrix.engine == 'firefox'
+        run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:voice:\${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+          DILLA_E2E_UPGRADE: '1'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: upgrade-e2e-results-\${{ matrix.engine }}
+          path: e2e/test-results
+          if-no-files-found: error
+
   go-ds:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -547,10 +622,10 @@ function withChanges(text) {
       const m = /^ {4}needs: \[(.*)\]$/.exec(lines[j]);
       if (m) { needs = m[1].split(',').map((s) => s.trim()); lines.splice(j, 1); break; }
     }
-    out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
+    out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${jobIf(key[1])}`);
   }
   const jobs = out.filter((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)).map((line) => line.trim().slice(0, -1)).filter((name, i, all) => all.indexOf(name) === i && out.indexOf(`  ${name}:`) > out.indexOf('jobs:'));
-  return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs)}`;
+  return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs.filter((job) => !(job in NOT_REQUIRED_JOBS)))}`;
 }
 
 const GOOD = withChanges(withWasmClang(GOOD_BASE));
@@ -631,6 +706,11 @@ test('a job that lost a required step is reported', () => {
 test('a missing concurrency block is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/concurrency:[\s\S]*?cancel-in-progress: true\n/, '')));
   assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
+});
+
+test('a concurrency group without the event name is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('${{ github.event_name }}-', '')));
+  assert.ok(problems.some((p) => p.includes('github.event_name')), problems.join('\n'));
 });
 
 test('a workflow-level RUSTFLAGS is reported', () => {
@@ -1607,12 +1687,12 @@ test('a release workflow without the release job is reported', () => {
 });
 
 test('a release that no longer attaches install.sh is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install.sh');
+  assertReported(releaseProblems((t) => t.replace('release/install.sh release/release.json release/SHA256SUMS', 'release/release.json release/SHA256SUMS')), 'release/install.sh');
 });
 
 test('SHA256SUMS that leaves an asset out is reported', () => {
   assertReported(
-    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
+    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh release.json > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
     '> SHA256SUMS',
   );
 });
@@ -1769,7 +1849,7 @@ test('a ci.yml build that stamps a quoted version is reported', () => {
 });
 
 test('the CLI checks release.yml too', () => {
-  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
+  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/release.json release/SHA256SUMS', 'release/release.json release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -1802,10 +1882,12 @@ test('a gate that can run while a needed job is skipped is reported', () => {
   assert.ok(problems.some((p) => p.includes('"web-build" must carry')), problems.join('\n'));
 });
 
-test('the real ci-ok job needs every other job', () => {
+test('the real ci-ok job needs every other job but the never-required ones (final-S-I1)', () => {
   const body = REAL_CI.slice(REAL_CI.indexOf('\n  ci-ok:'));
   const needs = /needs: \[([^\]]*)\]/.exec(body)[1].split(',').map((s) => s.trim());
-  const jobs = [...REAL_CI.slice(REAL_CI.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => job !== 'ci-ok');
+  const jobs = [...REAL_CI.slice(REAL_CI.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1])
+    .filter((job) => job !== 'ci-ok' && !(job in NOT_REQUIRED_JOBS));
+  assert.ok(!needs.includes('upgrade-e2e'));
   assert.deepEqual(needs.sort(), jobs.sort());
 });
 
@@ -1838,4 +1920,96 @@ test('the docs job must run the real checks, not only their unit tests', () => {
     const problems = checkWorkflow(fixture(GOOD.replace(`      - run: npm run ${step}\n`, '')));
     assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
   }
+});
+
+// UP4: the compat job's steps, and the release's UP4 steps.
+const PLAN_FALSE = "      - if: steps.plan.outputs.run == 'false'\n";
+const COMPAT_ENV_LINE = '          DILLA_SFU_BIN: ${{ runner.temp }}/previous/dillad-linux-amd64\n';
+const FETCH_STEP = '      - run: bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary\n';
+
+test('the fixture sfu-compat job passes', () => {
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+});
+
+test('sfu-compat without DILLA_SFU_BIN on the spec step is reported: it would test the tree against itself', () => {
+  assert.ok(GOOD.includes(COMPAT_ENV_LINE));
+  const problems = checkWorkflow(fixture(GOOD.replace(COMPAT_ENV_LINE, '')));
+  assert.ok(problems.some((p) => p.includes('DILLA_SFU_BIN')), problems.join('\n'));
+});
+
+test('sfu-compat that runs the spec whatever the plan said, or skips the notes check, is reported', () => {
+  let problems = checkWorkflow(fixture(GOOD.replace("      - if: steps.plan.outputs.run == 'true'\n", '      - name: spec\n')));
+  assert.ok(problems.some((p) => p.includes('only when the plan says run == true')), problems.join('\n'));
+  problems = checkWorkflow(fixture(GOOD.replace(`${PLAN_FALSE}        run: node scripts/release-meta.mjs notes-required docs/deploy/releases\n`, '')));
+  assert.ok(problems.some((p) => p.includes('notes check for an incompatible release')), problems.join('\n'));
+});
+
+test('sfu-compat that plans before it fetches the previous release is reported', () => {
+  assert.ok(GOOD.includes(FETCH_STEP));
+  const reordered = GOOD.replace(FETCH_STEP, '').replace(PLAN_FALSE, `${FETCH_STEP}${PLAN_FALSE}`);
+  assert.notEqual(reordered, GOOD);
+  const problems = checkWorkflow(fixture(reordered));
+  assert.ok(problems.some((p) => p.includes('fetch the previous release before it plans')), problems.join('\n'));
+});
+
+test('a ci.yml without the sfu-compat job is reported, and ci-ok must need it', () => {
+  const without = GOOD.replace(/  sfu-compat:\n[\s\S]*?\n  go-ds:/, '  go-ds:');
+  assert.notEqual(without, GOOD);
+  assert.ok(checkWorkflow(fixture(without)).some((p) => p.includes('missing job "sfu-compat"')));
+  assert.ok(checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), sfu-compat/, '$1'))).some((p) => p.includes('"ci-ok"') && p.includes('"sfu-compat"')));
+});
+
+test('the real release workflow ships release.json as the fifth asset, generated, and gated on sfu-compat', () => {
+  assert.match(REAL_RELEASE, /test "\$\(ls \| wc -l\)" -eq 5/);
+  assert.match(REAL_RELEASE, /sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi\.wasm install\.sh release\.json > SHA256SUMS/);
+  assert.ok(REAL_RELEASE.indexOf('bash scripts/check-sfu-compat-gate.sh') < REAL_RELEASE.indexOf('gh release create'));
+});
+
+test('a release without the release.json generation step is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('node scripts/release-meta.mjs write --tag "$TAG"', 'echo skip')), 'release-meta.mjs write');
+});
+
+test('a release without the sfu-compat gate is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('bash scripts/check-sfu-compat-gate.sh', 'echo skip')), 'check-sfu-compat-gate.sh');
+});
+
+test('a release that counts four assets is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('-eq 5', '-eq 4')), '-eq 5');
+});
+
+test('a release job without actions: read is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('      actions: read\n', '')), 'actions: read');
+});
+
+// Final review S-I1 (ruling final-S-I1): the full upgrade acceptance run is its own job, never required.
+const UPGRADE_ENV_LINE = "          DILLA_E2E_UPGRADE: '1'\n";
+
+test('the fixture upgrade-e2e job passes, and ci-ok must not need it', () => {
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+  const required = GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*)\]/, '$1, upgrade-e2e]');
+  assert.notEqual(required, GOOD);
+  assert.ok(checkWorkflow(fixture(required)).some((p) => p.includes('"ci-ok"') && p.includes('must not list "upgrade-e2e"')));
+});
+
+test('an upgrade-e2e job that runs on pull requests, or a ci.yml it cannot be dispatched from, is reported', () => {
+  const onPRs = GOOD.replace(`    if: ${jobIf('upgrade-e2e')}`, `    if: ${gateExpression('upgrade-e2e')}`);
+  assert.notEqual(onPRs, GOOD);
+  assert.ok(checkWorkflow(fixture(onPRs)).some((p) => p.includes('"upgrade-e2e"') && p.includes("github.event_name != 'pull_request'")));
+  const noDispatch = GOOD.replace('  workflow_dispatch:\n', '');
+  assert.ok(checkWorkflow(fixture(noDispatch)).some((p) => p.includes('workflow_dispatch')));
+});
+
+test('an upgrade-e2e job without the opt-in, or without Firefox, is reported', () => {
+  assert.ok(GOOD.includes(UPGRADE_ENV_LINE));
+  assert.ok(checkWorkflow(fixture(GOOD.replace(UPGRADE_ENV_LINE, ''))).some((p) => p.includes('"upgrade-e2e"') && p.includes('DILLA_E2E_UPGRADE')));
+  assert.ok(checkWorkflow(fixture(GOOD.replace('engine: [chromium, firefox]', 'engine: [chromium]'))).some((p) => p.includes('"upgrade-e2e"') && p.includes('firefox')));
+});
+
+test('a voice suite or the compat leg that opts into the full upgrade run is reported', () => {
+  const voice = 'run: npm run test:e2e:voice:firefox -w @dilla/e2e\n        env:\n';
+  assert.ok(GOOD.includes(voice));
+  const optedIn = GOOD.replace(voice, `${voice}${UPGRADE_ENV_LINE}`);
+  assert.ok(checkWorkflow(fixture(optedIn)).some((p) => p.includes('"firefox-web"') && p.includes('DILLA_E2E_UPGRADE')));
+  const compat = GOOD.replace(COMPAT_ENV_LINE, `${COMPAT_ENV_LINE}${UPGRADE_ENV_LINE}`);
+  assert.ok(checkWorkflow(fixture(compat)).some((p) => p.includes('"sfu-compat"') && p.includes('DILLA_E2E_UPGRADE')));
 });

@@ -1,0 +1,27 @@
+# UP6b, correction C2: a withdrawn Remove is in no listing. Bob resumes and withdraws his own
+# absence Remove; carol's stands. Past the call TTL the withdrawn row is neither voided nor re-driven
+# (carol's is voided and re-driven), the freeze still holds for carol's alone, and a member commit
+# that omits the withdrawn ref lands — GET /proposals never named it to the committer.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent bob call
+absent carol call
+resume bob call withdrawn=1
+advance_clock 35s
+expect_425 send alice call carol's Remove still stands
+sync alice
+sync bob
+sync carol
+commit alice call
+sync bob
+send alice call carol is out and bob is in
+expect_decrypts bob call carol is out and bob is in
+expect_reject E_LEAF_NOT_CURRENT resume carol call

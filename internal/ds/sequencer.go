@@ -29,6 +29,14 @@ func clampCursor(from uint64) uint64 { return min(from, math.MaxInt64) }
 // Handshakes serves the catch-up stream. A `from` at or below a handshake retention has deleted
 // is E_PRUNED, which tells the client to resync rather than to retry.
 func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, from uint64, limit int32) ([]store.HandshakeRow, error) {
+	return d.HandshakesFor(ctx, groupID, session, from, limit, false)
+}
+
+// HandshakesFor is Handshakes with the kind-3 (withdrawn) rows served only when withdrawn is set:
+// `GET /v1/groups/{id}/handshakes?kinds=3` (UP6b, protocol/02 § Handshake records). Every other
+// client gets the stream with those seqs left out, limit counting only the rows served; its
+// catch-up carries over the gap.
+func (d *DS) HandshakesFor(ctx context.Context, groupID id.ID, session Session, from uint64, limit int32, withdrawn bool) ([]store.HandshakeRow, error) {
 	// Member-only: the handshake log names every leaf that ever committed and every epoch
 	// transition of the group. A non-member is E_NOT_FOUND, never E_FORBIDDEN.
 	if err := d.requireMember(ctx, groupID, session); err != nil {
@@ -51,7 +59,10 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 	if through := row.HandshakesPruned; through > 0 && from <= through {
 		return nil, errPruned(from, through+1)
 	}
-	return d.opts.Store.ListHandshakes(ctx, groupID, from, limit)
+	if withdrawn {
+		return d.opts.Store.ListHandshakes(ctx, groupID, from, limit)
+	}
+	return d.opts.Store.ListHandshakesWithoutWithdrawn(ctx, groupID, from, limit)
 }
 
 // Outstanding is every non-void proposal of the group's current epoch. It is the list both

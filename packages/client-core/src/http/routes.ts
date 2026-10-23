@@ -638,7 +638,8 @@ export class Routes {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/tree`, 'read', true);
   }
   async getHandshakes(groupId: Uint8Array, from: bigint, limitValue: number): Promise<RowsPage> {
-    const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}`;
+    // kinds=3 (UP6b): this core applies `withdrawn` rows; without it the instance leaves them out.
+    const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}&kinds=3`;
     const p = page(await this.body('GET', path, 'read', true));
     return { raw: p.raw, count: p.count, lastSeq: p.last };
   }
@@ -897,6 +898,15 @@ export class Routes {
       }),
       caps: [u53(caps[0]), u53(caps[1]), u53(caps[2])],
       rung: a.length > 6 ? arr(a[6]).map((u) => bin(u, 16)) : null };
+  }
+  /** UP11-b: `POST /v1/calls/{call_id}/relay []` → `[ice_servers]`, fresh relay credentials for this device in a call it is
+   *  a current leaf of. The instance opens no room and asks the SFU nothing (a start would re-open a room the SFU lost). */
+  async relayCall(callId: Uint8Array): Promise<IceServer[]> {
+    const a = atLeast(decode(await this.body('POST', callPath(callId, '/relay'), 'write', false, { body: encode([]), ok: [200] })), 1);
+    return arr(a[0]).map((server): IceServer => {
+      const s = atLeast(server, 3);
+      return [arr(s[0]).map(str), str(s[1]), str(s[2])];
+    });
   }
   async shareCall(callId: Uint8Array): Promise<void> {
     await this.body('POST', callPath(callId, '/share'), 'write', false, { body: encode([]), ok: [204] });

@@ -265,8 +265,11 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'resign',
   'callJoin',
   'callLeave',
+  'callHold',
+  'callRelease',
   'callShare',
   'callRefresh',
+  'callRelay',
   'callStats',
   'callNote',
   'loadVoice',
@@ -387,6 +390,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   typing: ['channelId'],
   voiceSelf: ['callId'],
   callJoin: ['channelId'],
+  callHold: ['channelId'],
   callDecline: ['callId'],
   renameCommunity: ['communityId'],
   getAFKSettings: ['communityId'],
@@ -493,8 +497,11 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'resign',
     'callJoin',
     'callLeave',
+    'callHold',
+    'callRelease',
     'callShare',
     'callRefresh',
+    'callRelay',
     'callStats',
     'callNote',
     'loadVoice',
@@ -961,6 +968,11 @@ export class Controller {
         const sync = this.sync;
         deps.setTimeout(() => { if (this.sync === sync && sync !== null) void this.barrier.track(sync.activate(g)).catch(() => undefined); }, 0);
       },
+      catchUp: async (g) => {
+        const sync = this.sync;
+        if (sync === null) return;
+        await sync.runOnGroup(g, () => sync.catchUpNow(g, 'catch-up')).catch(() => undefined);
+      },
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
       participant: (user, device, flags, channel) => {
         const own = this.me !== null && toHex(this.me.deviceId) === device;
@@ -1199,9 +1211,12 @@ export class Controller {
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
       case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
       case 'callJoin': return this.calls.join(command.channelId, command.vdec);
-      case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
+      case 'callLeave': return this.calls.leave(false, command.reason === 'lost', command.reason === 'user' || command.reason === 'switch');
+      case 'callHold': return this.calls.callHold(command.channelId);
+      case 'callRelease': return this.calls.release();
       case 'callShare': return this.calls.share(command.on);
       case 'callRefresh': return this.calls.refresh();
+      case 'callRelay': return this.calls.relay();
       case 'callStats': return this.calls.stats(command.report);
       case 'callNote': this.recordError(command.code); return Promise.resolve(null);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
@@ -1494,6 +1509,20 @@ export class Controller {
           return minted.ticket;
         },
         WebSocket: this.deps.WebSocket, now, random, setTimeout, clearTimeout,
+        // UP7b (R-UP8): while the instance cannot be reached, the gateway probes it with one plain GET /v1/instance (no
+        // retry, bounded by the probe interval). Fix round 1 (I1, I2): only an answer of the instance counts, one that
+        // carries X-Dilla-Generation (dillad stamps it on every response, errors included); a reverse proxy's own
+        // 502/503/504 or page carries none, and a network failure is no answer.
+        probe: async () => {
+          try {
+            const response = await this.deps.fetch(`${this.deps.origin}/v1/instance`, { method: 'GET', cache: 'no-store',
+              credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(GATEWAY.probeMs) });
+            try { await response.body?.cancel(); } catch { /* nothing to read */ }
+            return response.headers.has('X-Dilla-Generation');
+          } catch {
+            return false;
+          }
+        },
       });
       this.gateway = gateway;
       gateway.subscribe((e) => { this.onGateway(e); });

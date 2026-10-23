@@ -35,9 +35,12 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // `voice_self` cases, web-3 task 1's three `call_ring` cases (op 53, states 1, 0 and 2), and
     // web-3.1's `community_changed` (op 54) and web3.7's `message.ct with a null class` (op 19's
     // 7th element) and AW3's two `afk_away` cases (op 55, set and cleared), checked as one
-    // `frame` field each. Pinned exactly, for the same reason the
-    // reject suite is.
-    assert_eq!(run_frames().cases.len(), 34);
+    // `frame` field each. UP6b adds the kind-3 `mls.handshake withdrawn` frame (35), and the
+    // `withdrawn` blob vectors: 2 cases x (`ref`, `blob`) and 7 rejects, each refused (`blob`) with
+    // its named code (`code`, the final review's Minor 4; native only, the wasip1 core has no client
+    // engine and keeps 46): 35 + 4 + 7 x 2 = 53. Pinned exactly, for the same reason the reject
+    // suite is.
+    assert_eq!(run_frames().cases.len(), 53);
     // protocol/04 § Attachments (web-2b task 1): four cases, `stored`, `blob_id` and `open` each,
     // plus `thumb` and `thumb_open` for the one with a thumbnail: 3 + 3 + 5 + 3
     assert_eq!(run_attachment().cases.len(), 14);

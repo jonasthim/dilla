@@ -338,8 +338,9 @@ impl ClientCore {
     /// confirmed with `commit_confirm` or dropped with `commit_abort`.
     ///
     /// **It cancels a pending leave.** This device's own `Remove` of its own leaf
-    /// (`call_leave_proposal`) is taken out of its queue first, because OpenMLS refuses to commit a
-    /// self-removal. Once the rotation is committed the posted proposal is stale and this device
+    /// (`call_leave_proposal`) is left out of the commit, because OpenMLS refuses to commit a
+    /// self-removal; it stays queued until the commit is confirmed, so a rotation that is refused
+    /// and aborted can still process another member's commit of it (UP13). Once the rotation is committed the posted proposal is stale and this device
     /// stays a member, so a worker that has posted a leave must not rotate (it forgets instead).
     pub fn call_rotate(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         self.call_row(id)?;

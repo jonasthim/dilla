@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -56,10 +57,11 @@ type Options struct {
 	// not mounted and a call that would open answers 501.
 	Blobs *blob.Store
 	SFU   SFU
-	// Relay is the TURN relay's revocation state, shared with the relay `dillad serve` starts
+	// Relay is the TURN relay's revoker: the revocation state shared with the relay `dillad serve` starts
 	// (server.StartTURN): the call routes' cuts revoke a device's relay credentials and close its
-	// relay sockets (dilla-media task 13 review I1). nil means no cut reaches a relay.
-	Relay *server.RelayRevocations
+	// relay sockets (dilla-media task 13 review I1), or, when the relay runs in `dillad media`, a
+	// server.RelayRevoker that also forwards each cut there (R-UP11). nil means no cut reaches a relay.
+	Relay api.RelayRevoker
 
 	// Part 1b (deviation B17). Wasm is the wasi runtime the delivery service
 	// validates every handshake in; nil means New compiles one from CorePath

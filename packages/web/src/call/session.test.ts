@@ -198,6 +198,9 @@ function fakes(o: Options = {}) {
     caps: [64_000, 2_500_000, 0], epoch: joinEpoch.toString(),
   };
   let refreshAnswer = { token: 'tok2', iceServers: [[['turn:sfu.example:3478'], '1700007200:dev:1700003300', 'cred2']] };
+  /** UP11: the next callRelay calls fail with these, in order; `refreshHeld`, while set, keeps each one waiting on it. */
+  const refreshFails: Error[] = [];
+  let refreshHeld: Promise<void> | null = null;
   const bridge = {
     onCallKeys: vi.fn((l: (id: string, k: CallKeys) => void) => {
       order.push('onCallKeys');
@@ -216,6 +219,13 @@ function fakes(o: Options = {}) {
           return null;
         case 'callRefresh':
           return refreshAnswer;
+        // UP11-b: the relay credentials alone (POST /v1/calls/{call_id}/relay), which a reconnect asks for.
+        case 'callRelay': {
+          if (refreshHeld !== null) await refreshHeld;
+          const failure = refreshFails.shift();
+          if (failure !== undefined) throw failure;
+          return { iceServers: refreshAnswer.iceServers };
+        }
         case 'callStats':
           if (o.statsError) throw o.statsError;
           return null;
@@ -286,6 +296,8 @@ function fakes(o: Options = {}) {
     audioHost, subscribeTrack, unsubscribeTrack, contexts, audio, media,
     get joinOptions() { return joinOptions; },
     setRefresh: (a: typeof refreshAnswer) => { refreshAnswer = a; },
+    refreshFails,
+    holdRefresh: (p: Promise<void> | null) => { refreshHeld = p; },
     setNow: (t: number) => { now = t; },
   };
 }
@@ -687,6 +699,179 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.calls.filter((c) => c.m === 'callRefresh')).toHaveLength(2);
   });
 
+  /** UP11: a callRelay refusal as the worker reports it (pageCallError reads `code` and `retryAfterMs`). */
+  const refusal = (code: string, retryAfterMs: number | null = null) => Object.assign(new Error(code), { code, retryAfterMs });
+  /** UP11-b: the reconnect asks callRelay (the credentials alone), never callRefresh (a start, which opens the room). */
+  const refreshes = (f: ReturnType<typeof fakes>) => f.calls.filter((c) => c.m === 'callRelay').length;
+  const starts = (f: ReturnType<typeof fakes>) => f.calls.filter((c) => c.m === 'callRefresh').length;
+  const FRESH = [{ urls: ['turn:sfu.example:3478'], username: '1700007200:dev:1700003300', credential: 'cred2' }];
+
+  it('UP11: a reconnecting room asks for fresh relay credentials at once and hands them to its reconnect; one per episode', async () => {
+    const f = fakes({ iceUsername: '1700003600:dev:1700000000', now: 1_700_000_000_000 });
+    const call = await start(f);
+    expect(refreshes(f)).toBe(0);
+    f.room.emit('reconnecting');
+    await flush();
+    expect(call.state.phase).toBe('reconnecting');
+    expect(refreshes(f)).toBe(1);
+    expect(starts(f)).toBe(0);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+    // The same episode says reconnecting again (a resume, then a full reconnect): no second refresh.
+    f.room.emit('reconnecting');
+    await f.advance(20_000);
+    expect(refreshes(f)).toBe(1);
+    f.room.emit('reconnected');
+    // A new episode is a new refresh.
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(2);
+  });
+
+  it('UP11: a refresh in flight is not asked for twice when the episode says reconnecting again', async () => {
+    const f = fakes();
+    await start(f);
+    let open!: () => void;
+    f.holdRefresh(new Promise<void>((r) => { open = r; }));
+    f.room.emit('reconnecting');
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    f.holdRefresh(null);
+    open();
+    await flush();
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(1);
+  });
+
+  it('UP11: a failed refresh while reconnecting retries after 1, 2, 4, 5, 5 s, then stops once one lands', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(...['E_UNAVAILABLE', 'E_NETWORK', 'E_NETWORK', 'E_NETWORK', 'E_NETWORK'].map((c) => refusal(c)));
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    for (const [gap, total] of [[1_000, 2], [2_000, 3], [4_000, 4], [5_000, 5], [5_000, 6]] as const) {
+      await f.advance(gap - 1);
+      expect(refreshes(f)).toBe(total - 1);
+      await f.advance(1);
+      expect(refreshes(f)).toBe(total);
+    }
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+    await f.advance(60_000);
+    expect(refreshes(f)).toBe(6);
+  });
+
+  it('UP11: a transient refusal’s retry_after_ms is waited for before the next refresh', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(refusal('E_UNAVAILABLE', 7_000), refusal('E_RATE_LIMITED', 500));
+    f.room.emit('reconnecting');
+    await flush();
+    await f.advance(7_000 - 1);
+    expect(refreshes(f)).toBe(1);
+    await f.advance(1);
+    expect(refreshes(f)).toBe(2);
+    // A retry_after shorter than the backoff keeps the backoff (2 s, the second step).
+    await f.advance(2_000 - 1);
+    expect(refreshes(f)).toBe(2);
+    await f.advance(1);
+    expect(refreshes(f)).toBe(3);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+  });
+
+  // Review M6: a refusal that cannot succeed later in the same reconnect (403 or 404: no longer a leaf, barred, without
+  // connect, the call gone; or the worker's own E_NO_CALL) ends that episode's retries. The room's own end then runs the
+  // lost-connection path as before. A transient refusal (503, 429, no answer) keeps the backoff (the tests above).
+  it.each([
+    ['403 E_LEAF_NOT_CURRENT', { code: 'E_LEAF_NOT_CURRENT', status: 403 }],
+    ['403 E_FORBIDDEN', { code: 'E_FORBIDDEN', status: 403 }],
+    ['404 E_NOT_FOUND', { code: 'E_NOT_FOUND', status: 404 }],
+    ['the worker’s E_NO_CALL', { code: 'E_NO_CALL', status: 0 }],
+  ] as const)('UP11: a final refusal (%s) is not retried in its episode, and the room’s end still holds the call', async (_name, e) => {
+    const f = fakes();
+    const call = await start(f);
+    f.refreshFails.push(Object.assign(new Error(e.code), { ...e, retryAfterMs: null }), refusal('E_UNAVAILABLE'));
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    await f.advance(60_000);
+    expect(refreshes(f)).toBe(1);
+    // The reconnect never comes through: the room ends, and the call is held for the recovery as any lost room is.
+    f.room.emit('disconnected');
+    await flush();
+    expect(call.state.phase).toBe('ended');
+    expect(call.state.error).toBe('E_DISCONNECTED');
+    expect(f.calls).toContainEqual({ m: 'callHold', channelId: CH });
+  });
+
+  it('UP11: a final refusal ends only its own episode; the next reconnect asks again', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(Object.assign(new Error('E_LEAF_NOT_CURRENT'), { code: 'E_LEAF_NOT_CURRENT', status: 403, retryAfterMs: null }));
+    f.room.emit('reconnecting');
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(1);
+    f.room.emit('reconnected');
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(2);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+  });
+
+  it('UP11: a transient refusal with a status (503, 429) keeps the backoff', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE', status: 503, retryAfterMs: null }),
+      Object.assign(new Error('E_RATE_LIMITED'), { code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 3 }));
+    f.room.emit('reconnecting');
+    await flush();
+    await f.advance(1_000);
+    expect(refreshes(f)).toBe(2);
+    await f.advance(2_000);
+    expect(refreshes(f)).toBe(3);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+  });
+
+  it('UP11: a reconnect that comes through, or a leave, cancels the pending retry; no timer outlives its episode', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.refreshFails.push(refusal('E_NETWORK'), refusal('E_NETWORK'));
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    f.room.emit('reconnected');
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(1);
+    // The next episode starts its own backoff from 1 s, then the leave stops it.
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(2);
+    await call.leave('user');
+    expect(f.timers.size).toBe(0);
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(2);
+  });
+
+  it('UP11: the refresh while reconnecting restarts the TTL refresh from its answer; the old schedule is gone', async () => {
+    const f = fakes({ iceUsername: '1700003600:dev:1700000000', now: 1_700_000_000_000 });
+    await start(f);
+    f.room.emit('reconnecting');
+    await flush();
+    f.room.emit('reconnected');
+    expect(refreshes(f)).toBe(1);
+    expect(starts(f)).toBe(0);
+    // The first credential's refresh (at 1700003300) does not run: the fresh one expires at 1700007200. The TTL refresh
+    // stays callRefresh.
+    await f.advance(3_300_000);
+    expect(starts(f)).toBe(0);
+    await f.advance(6_900_000 - 3_300_000 - 1);
+    expect(starts(f)).toBe(0);
+    await f.advance(1);
+    expect(starts(f)).toBe(1);
+    expect(refreshes(f)).toBe(1);
+  });
+
   it('sends one callStats report per 10 s while connected', async () => {
     const f = fakes({ statsError: Object.assign(new Error('E_RATE_LIMITED'), { code: 'E_RATE_LIMITED', status: 429 }) });
     const call = await start(f);
@@ -1049,14 +1234,15 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.camera).toBe(false);
   });
 
-  it('an unexpected room disconnect ends the call and posts callLeave("lost") (WB client I3)', async () => {
+  it('an unexpected room disconnect ends the call and holds it: the worker gets callHold, not callLeave (WB client I3, UP7)', async () => {
     const f = fakes();
     const call = await start(f);
     f.room.emit('disconnected');
     await flush();
     expect(call.state.phase).toBe('ended');
     expect(call.state.error).toBe('E_DISCONNECTED');
-    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'lost' });
+    expect(f.calls).toContainEqual({ m: 'callHold', channelId: CH });
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
     f.pushKeys(callId, keysFor(2n));
     expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n]);
   });
@@ -1193,7 +1379,10 @@ describe('the whole-branch fix wave', () => {
       f.room.emit('disconnected', reason);
       await flush();
       expect(call.state).toMatchObject({ phase: 'ended', error: code });
-      expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'lost' }]);
+      // UP7 (R-UP6): a lost connection is held (callHold); a closed room or a removal leaves as before.
+      const held = code === 'E_DISCONNECTED';
+      expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual(held ? [] : [{ m: 'callLeave', reason: 'lost' }]);
+      expect(f.calls.filter((c) => c.m === 'callHold')).toEqual(held ? [{ m: 'callHold', channelId: CH }] : []);
     });
 
   // m2: the room's own end is heard from the moment joinCall resolves, not only after the microphone is published.
@@ -3748,4 +3937,94 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------------------------
+// UP7 (Q1 = B, R-UP6): the update reload holds the call, and the next page's resume is a fast path.
+// ---------------------------------------------------------------------------------------------
+describe('UP7: the held call and the resume', () => {
+  const later2 = <T,>() => {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+
+  it("leave('hold') posts callHold, waits for its answer, then disconnects the room with no callLeave", async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    const answer = later2<null>();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => (cmd.m === 'callHold' ? (f.order.push('callHold'), f.calls.push(cmd), answer.promise) : original(cmd)));
+    const done = call.leave('hold');
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callHold')).toEqual([{ m: 'callHold', channelId: CH }]);
+    // Nothing of the room goes before the worker holds the group (its marker persisted).
+    expect(f.order.slice(f.order.indexOf('callHold'))).toEqual(['callHold']);
+    answer.resolve(null);
+    await done;
+    expect(f.order.slice(f.order.indexOf('callHold'))).toEqual(['callHold', 'manager.dispose', 'room.disconnect', 'manager.dispose', 'room.disconnect', 'worker.terminate', 'lock.release']);
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
+    expect(call.state.phase).toBe('ended');
+    // A pagehide after it (the reload itself) posts nothing more.
+    window.dispatchEvent(new Event('pagehide'));
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
+  });
+
+  it('a resume asks for the microphone in parallel with callJoin, gates before the connect and marks its budget', async () => {
+    const f = fakes();
+    const join = later2<unknown>();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => {
+      if (cmd.m !== 'callJoin') return original(cmd);
+      f.calls.push(cmd);
+      return join.promise;
+    });
+    const seen: unknown[] = [];
+    const marks: string[] = [];
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, resume: {
+      gate: async (a) => { seen.push(a); marks.push('gate'); },
+      mark: (m) => { marks.push(m); },
+    } });
+    await flush();
+    // callJoin is out and the microphone is asked for while it runs.
+    expect(f.calls.map((c) => c.m)).toEqual(['callJoin']);
+    expect(f.gum).toHaveBeenCalledTimes(1);
+    expect(f.deps.joinCall).not.toHaveBeenCalled();
+    f.pushKeys(callId, keysFor(1n));
+    join.resolve({ callId, groupId: GROUP, livekitUrl: 'wss://sfu.example/rtc', token: 'tok', iceServers: [], caps: [64_000, 2_500_000, 0],
+      epoch: '1', resumed: true, expired: false });
+    const call = await started;
+    expect(seen).toEqual([{ resumed: true, expired: false }]);
+    expect(marks).toEqual(['token', 'gate', 'connected', 'published']);
+    expect(call.state.phase).toBe('connected');
+    await call.leave('user');
+  });
+
+  it('a gate that refuses ends the resume before the connect: no LiveKit join, the microphone stopped, one callLeave', async () => {
+    let stopped = 0;
+    const track = { kind: 'audio', stop: () => { stopped += 1; } };
+    const f = fakes({ getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] }) as unknown as MediaStream });
+    const outcome = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, resume: {
+      gate: async () => { throw new Error('E_ABORTED'); },
+    } }).catch((e: unknown) => e);
+    const r = await outcome;
+    expect(r).toMatchObject({ code: 'E_ABORTED' });
+    expect(f.deps.joinCall).not.toHaveBeenCalled();
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'user' }]);
+    await flush();
+    expect(stopped).toBe(1);
+    expect(f.contexts.every((c) => c.state === 'closed')).toBe(true);
+  });
+
+  it('a refused callJoin carries the instance\'s retry_after_ms to the page', async () => {
+    const f = fakes();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => (cmd.m === 'callJoin'
+      ? Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE', status: 503, retryAfterMs: 2_500 }))
+      : original(cmd)));
+    const r = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, resume: { gate: async () => undefined } }).catch((e: unknown) => e);
+    expect(r).toMatchObject({ code: 'E_UNAVAILABLE', retryAfterMs: 2_500 });
+  });
 });

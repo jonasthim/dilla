@@ -492,7 +492,7 @@ func (c *CallEvents) proposeLeave(ctx context.Context, row store.VoiceSessionRow
 			"group_id", group.String(), "device_id", dev.String())
 		return
 	}
-	err := c.dsvc.ProposeRemoveOfMember(ctx, group, a.leaf, dev, a.added, id.New())
+	err := c.dsvc.ProposeAbsenceRemove(ctx, group, a.leaf, dev, a.added, id.New())
 	if errors.Is(err, ds.ErrRemoveTargetGone) {
 		cur, out := c.calls.currentMembershipOut(ctx, row, dev, a)
 		if !out {
@@ -500,7 +500,7 @@ func (c *CallEvents) proposeLeave(ctx context.Context, row store.VoiceSessionRow
 				"group_id", group.String(), "device_id", dev.String())
 			return
 		}
-		err = c.dsvc.ProposeRemoveOfMember(ctx, group, cur.leaf, dev, cur.added, id.New())
+		err = c.dsvc.ProposeAbsenceRemove(ctx, group, cur.leaf, dev, cur.added, id.New())
 		if errors.Is(err, ds.ErrRemoveTargetGone) {
 			return // it moved again in between: the sweep decides
 		}

@@ -19,7 +19,8 @@ export class Session {
     const body = this.deps.core.sessionSign(nonce, 0);
     try { return await this.deps.routes.postSession(deviceId, body); }
     catch (err) {
-      if (err instanceof DillaHttpError && err.status === 401) return null;
+      // UP7c: a proxy's 401 is an outage, not a refusal: it propagates and nothing is signed out.
+      if (err instanceof DillaHttpError && err.status === 401 && err.fromInstance !== false) return null;
       throw err;
     }
   }

@@ -416,9 +416,10 @@ impl ClientCore {
     }
 
     /// `commit_build`'s body. With `rotate` (`call_rotate`), this device's own pending `Remove` of
-    /// its own leaf is taken out of its queue first: a rotation is an UpdatePath commit, and a
-    /// device never commits its own removal (OpenMLS refuses it); another member commits the
-    /// posted proposal.
+    /// its own leaf is left out of the commit: a rotation is an UpdatePath commit, and a device
+    /// never commits its own removal (OpenMLS refuses it); another member commits the posted
+    /// proposal. It stays queued (UP13), so a refused rotation, once aborted, can still process
+    /// that member's commit.
     pub(super) fn commit_build_inner(
         &mut self,
         id: &[u8; 16],
@@ -444,7 +445,7 @@ impl ClientCore {
             let result = this.write(|ctx, u| {
                 for item in &proposals {
                     if item.void { continue; }
-                    let _ = (&item.reference, item.kind, item.target_leaf);
+                    let _ = (item.kind, item.target_leaf);
                     let Ok(message) = wire::protocol_message(&item.blob) else { continue; };
                     if message.epoch().as_u64() != group.epoch() { continue; }
                     match group.process_message(ctx.provider, message) {
@@ -475,14 +476,33 @@ impl ClientCore {
                         }
                     }
                 }
+                // UP6b, correction I4: a client that missed a `withdrawn` row still holds the
+                // withdrawn instance `Remove`, and a commit that applies it is refused (409
+                // `withdrawn`). The listing never names a withdrawn proposal, so every queued
+                // instance `Remove` it does not name is taken out (a member's proposal and an Add
+                // stay). `call_rotate` takes no listing and relies on the row.
+                //
+                // UP13: every drop below (an unlisted instance Remove, the own self-Remove of a
+                // rotation, a failed Add) is for this build only. A member's commit that won the
+                // epoch may reference what was dropped (the listing was of a newer epoch, a peer
+                // committed the self-Remove or an Add its own validation passed): the proposals
+                // are queued again once the commit is staged (below), so an aborted build leaves
+                // the queue, and its app_proposals rows, as they were.
+                let mut taken = Vec::new();
+                if !rotate {
+                    let listed: std::collections::HashSet<&[u8]> =
+                        proposals.iter().map(|item| item.reference.as_slice()).collect();
+                    taken = group
+                        .drop_unlisted_instance_removes(ctx.provider, |r| listed.contains(r))?;
+                }
                 if rotate {
-                    group.withdraw_leave(ctx.provider)?;
+                    taken.extend(group.withdraw_leave(ctx.provider)?);
                 }
                 // Ruling 3 for the whole queue: `self_update` commits every queued proposal,
                 // including an Add that `group_apply` queued from a handshake row (it is never
                 // validated there) or that validated when an earlier commit was built. A queued
                 // Add whose leaf fails is taken out; one whose signed history is unknown refuses.
-                group.drop_queued_adds(ctx.provider, |kp| {
+                let failed = group.drop_queued_adds(ctx.provider, |kp| {
                     match u.with_conn(|c| Ok(super::trust::validate_proposed_add(c, kp)))? {
                         Ok(()) => Ok(true),
                         Err(e) if e.code == super::error::E_DEVICE_LIST_STALE => Err(e),
@@ -491,6 +511,9 @@ impl ClientCore {
                 })?;
                 let epoch = group.epoch();
                 let bundle = group.self_update(ctx.provider, ctx.signer.ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?)?;
+                // UP13: everything taken out above was for this commit only (see the drop).
+                group.requeue(ctx.provider, taken)?;
+                group.requeue(ctx.provider, failed)?;
                 u.with_conn(|c| set_pending(c, id, true))?;
                 let info = bundle.group_info.ok_or_else(|| ClientError::new(E_CORE_MLS, "the staged commit carries no GroupInfo"))?;
                 let mut out = Encoder::new();
@@ -711,6 +734,24 @@ impl ClientCore {
                     let mut epoch_changed = false;
                     let mut stop = false;
                     match &row {
+                        // UP6b: a `withdrawn` row (kind 3) takes the named instance `Remove` out of
+                        // the queue, and only that (protocol/02 invariant 6, "Withdrawal"). Any
+                        // other proposal under the ref, an unknown or an already-committed ref is
+                        // a no-op; the cursor moves past the row either way. It is not an MLS
+                        // message, so it never joins the heal tail.
+                        Row::Handshake(h) if h.kind == wire::HANDSHAKE_WITHDRAWN => {
+                            checked("handshakes: epoch", h.epoch)?;
+                            let reference = wire::decode_withdrawn_blob(&h.blob)?;
+                            if group.withdraw_instance_remove(ctx.provider, &reference)? {
+                                u.with_conn(|c| {
+                                    c.execute(
+                                        "DELETE FROM app_proposals WHERE group_id=?1 AND ref=?2",
+                                        params![id.as_slice(), &reference],
+                                    )?;
+                                    Ok(())
+                                })?;
+                            }
+                        }
                         Row::Handshake(h) => {
                             let hs_epoch = checked("handshakes: epoch", h.epoch)?;
                             u.with_conn(|c| {

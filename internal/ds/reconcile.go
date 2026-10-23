@@ -125,15 +125,27 @@ func (d *DS) reconcileGroupLocked(ctx context.Context, groupID id.ID, acl bool) 
 	// otherwise never be removed; the instance's Remove is issued on top of it, OpenMLS keeps the
 	// later of two Removes of one leaf, and the commit applies the instance's.
 	pendingRemove := map[uint32]bool{}
+	pendingRef := map[uint32][][]byte{}
 	for _, p := range outstanding {
 		if p.TargetLeaf != nil && isInstanceRemoveOf(p, *p.TargetLeaf) {
 			pendingRemove[*p.TargetLeaf] = true
+			if p.Withdrawable {
+				pendingRef[*p.TargetLeaf] = append(pendingRef[*p.TargetLeaf], p.Ref)
+			}
 		}
 	}
 	release := d.suppressElections(groupID)
 	proposed := 0
 	for _, m := range targets {
 		if pendingRemove[m.LeafIndex] {
+			// A barred or ineligible device's absence Remove now carries this Remove's intent too:
+			// no resume of that device may withdraw it (UP6b, security fix).
+			for _, ref := range pendingRef[m.LeafIndex] {
+				if err := d.opts.Store.ClearWithdrawable(ctx, groupID, ref); err != nil {
+					release()
+					return proposed, err
+				}
+			}
 			continue
 		}
 		// Bound to the device the read named; the read was under this lock, so it still holds the

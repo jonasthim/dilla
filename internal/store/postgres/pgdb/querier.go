@@ -32,6 +32,7 @@ type Querier interface {
 	// leaves a row this clears.
 	ClearFactorOwedWithFactor(ctx context.Context, arg ClearFactorOwedWithFactorParams) (int64, error)
 	ClearLoginFailures(ctx context.Context, arg ClearLoginFailuresParams) error
+	ClearWithdrawable(ctx context.Context, arg ClearWithdrawableParams) error
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConfirmBlobRef(ctx context.Context, arg ConfirmBlobRefParams) (int64, error)
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)
@@ -159,6 +160,7 @@ type Querier interface {
 	// unreferenced blob's file is on disk until the sweeper collects it. The cast keeps SUM's
 	// NUMERIC an int64, as UserBlobBytes does.
 	InstanceBlobBytes(ctx context.Context) (int64, error)
+	IsWithdrawn(ctx context.Context, arg IsWithdrawnParams) (int64, error)
 	// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
 	// channel, the time of their last accepted class-0 upload into any of its text groups from any
 	// device. Neither a tombstone nor a retention prune moves it.
@@ -168,6 +170,9 @@ type Querier interface {
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
 	ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]ListAFKAwayRow, error)
 	ListAFKAwayFirst(ctx context.Context, arg ListAFKAwayFirstParams) ([]ListAFKAwayFirstRow, error)
+	// Every live call of the instance, oldest first: the call routes reconcile each one's room at boot
+	// (UP2, calls survive an upgrade).
+	ListAllLiveVoiceSessions(ctx context.Context) ([]VoiceSessions, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
@@ -210,6 +215,7 @@ type Querier interface {
 	// moment the group stops being useful.
 	ListGroupsForRetention(ctx context.Context, arg ListGroupsForRetentionParams) ([]MlsGroups, error)
 	ListHandshakes(ctx context.Context, arg ListHandshakesParams) ([]MlsHandshakes, error)
+	ListHandshakesWithoutWithdrawn(ctx context.Context, arg ListHandshakesWithoutWithdrawnParams) ([]MlsHandshakes, error)
 	// web-3 (L-HTTP-105, RV-2): the idle call-group close. The open call groups (kind 1) that no live
 	// voice session names and that were created at or before the cutoff, oldest first; the caller
 	// closes at most max_rows of them per pass.
@@ -239,6 +245,7 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	ListWithdrawnProposals(ctx context.Context, arg ListWithdrawnProposalsParams) ([]MlsPendingProposals, error)
 	// The per-blob lock the recording transactions take before their cross-table checks: the blobs
 	// row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
 	LockBlob(ctx context.Context, arg LockBlobParams) error
@@ -436,6 +443,7 @@ type Querier interface {
 	// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	UserReferencesBlob(ctx context.Context, arg UserReferencesBlobParams) (int64, error)
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
+	WithdrawProposal(ctx context.Context, arg WithdrawProposalParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

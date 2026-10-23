@@ -62,7 +62,7 @@ usage() {
 	cat >&2 <<'USAGE'
 usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... (--public-ip IP | --node-ip IP | --no-media-ip) [options]
        install.sh --public --domain NAME --public-ip IP --agree-tos [options]
-       install.sh --upgrade [--yes] [--version TAG] [--release-url URL] [--binary FILE --core FILE --sums FILE]
+       install.sh --upgrade [--restart-sfu] [--version TAG] [--release-url URL] [--binary FILE --core FILE --sums FILE --release-json FILE]
 
 Installs dillad as the systemd service `dilla`: the user dillad, /usr/local/bin/dillad
 with dilla_core_wasi.wasm beside it, /var/lib/dillad (0700) and /etc/dilla/dilla.toml
@@ -84,13 +84,19 @@ modes (exactly one):
     --domain NAME        the public DNS name of the instance (instance.domain)
     --public-ip IP       the address clients reach the instance on (instance.public_ip)
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
-  --upgrade              replace the binary and core, restart the API and media services,
-                         and run doctor; migrates livekit.mode from in_process to sidecar
-                         once, saving dilla.toml.prev; rolls back a failed API restart.
-                         Restarting the SFU ends every live call, so it first runs
-                         `dillad media --rooms` and refuses, changing nothing, if a room
-                         has participants or the check cannot be made
-    --yes                upgrade anyway, ending any live calls (with --upgrade only)
+  --upgrade              replace the binary and core, restart the API and run doctor; rolls
+                         back a failed API restart. When the release's release.json says it
+                         works with the running media server (dilla-media), only the API
+                         restarts and live calls continue; dilla-media-refresh.timer moves
+                         dilla-media onto the new binary once its calls have ended.
+                         Otherwise dilla-media restarts too, first, which ends every live
+                         call: the upgrade then runs `dillad media --rooms` and refuses,
+                         changing nothing, if a room has participants or the check cannot
+                         be made. Migrates livekit.mode from in_process to sidecar once,
+                         saving dilla.toml.prev (that ends calls, and needs --yes)
+    --restart-sfu        restart dilla-media now as well, ending any live calls
+    --yes                end live calls where the upgrade must: the in_process migration, and
+                         (for this release, as an alias of --restart-sfu) the live-call check
 
 options:
   --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
@@ -100,6 +106,8 @@ options:
   --binary FILE          use this dillad binary instead of downloading one
   --core FILE            use this dilla_core_wasi.wasm instead of downloading one
   --sums FILE            the SHA256SUMS to check --binary and --core (and any download) against
+  --release-json FILE    with --binary: the release's release.json, checked against --sums and
+                         against the binary (a download fetches it when SHA256SUMS lists it)
   --insecure-skip-verify install local --binary/--core without a --sums check
   --udp-port N           LiveKit's media port (livekit.udp_port, default 7882)
   --node-ip IP           the address LiveKit advertises for media (livekit.node_ip)
@@ -112,6 +120,8 @@ USAGE
 MODE=""
 UPGRADE=0
 ASSUME_YES=0
+RESTART_SFU=0
+RELEASE_JSON=""
 CHECK_ARGS=0
 DOMAIN=""
 PUBLIC_IP=""
@@ -120,6 +130,7 @@ LISTEN=""
 TRUSTED=""
 VERSION=""
 RELEASE_URL=""
+URL_TAG=""
 BINARY=""
 CORE=""
 SUMS=""
@@ -148,10 +159,10 @@ while [ "$#" -gt 0 ]; do
 		flag="${flag%%=*}"
 		shift
 		;;
-	--behind-proxy | --public | --agree-tos | --upgrade | --yes | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
+	--behind-proxy | --public | --agree-tos | --upgrade | --yes | --restart-sfu | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
-	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums)
+	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums | --release-json)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"
 		shift 2
@@ -176,6 +187,7 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--upgrade) UPGRADE=1 ;;
 	--yes) ASSUME_YES=1 ;;
+	--restart-sfu) RESTART_SFU=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--insecure-skip-verify) INSECURE=1 ;;
 	--no-media-ip)
@@ -215,6 +227,7 @@ while [ "$#" -gt 0 ]; do
 	--binary) BINARY="$value" ;;
 	--core) CORE="$value" ;;
 	--sums) SUMS="$value" ;;
+	--release-json) RELEASE_JSON="$value" ;;
 	-h | --help)
 		usage
 		exit 0
@@ -301,6 +314,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 	[ -z "$SET_MODE_FLAGS" ] || die "--upgrade keeps the installed network settings; drop$SET_MODE_FLAGS"
 else
 	[ "$ASSUME_YES" -eq 0 ] || die "--yes is for --upgrade"
+	[ "$RESTART_SFU" -eq 0 ] || die "--restart-sfu is for --upgrade"
 	[ -n "$MODE" ] || {
 		usage
 		die "choose a mode: --behind-proxy or --public (or --upgrade for an installed instance)"
@@ -338,6 +352,7 @@ DOWNLOAD=0
 if [ -n "$BINARY$CORE" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
 	die "--binary and --core are checked against a SHA256SUMS: pass --sums FILE, or --insecure-skip-verify to install them unchecked"
 fi
+[ -z "$RELEASE_JSON" ] || [ -n "$BINARY" ] || die "--release-json is for --binary: a downloaded release fetches its own release.json"
 
 [ -n "$VERSION" ] || VERSION="$DILLA_RELEASE_TAG"
 if [ -n "$VERSION" ]; then
@@ -352,6 +367,7 @@ fi
 if [ -z "$RELEASE_URL" ] && [ "$DOWNLOAD" -eq 1 ]; then
 	[ -n "$VERSION" ] || die "this install.sh is not from a release, so it has no default version: pass --version <tag> (see https://github.com/jonasthim/dilla/releases) or --release-url <url>"
 	RELEASE_URL="https://github.com/jonasthim/dilla/releases/download/$VERSION"
+	URL_TAG="$VERSION"
 fi
 
 if [ "$CHECK_ARGS" -eq 1 ]; then
@@ -375,6 +391,15 @@ ROOT="${ROOT%/}"
 BIN_DIR="$ROOT/usr/local/bin"
 UNIT_PATH="$ROOT/etc/systemd/system/dilla.service"
 MEDIA_UNIT_PATH="$ROOT/etc/systemd/system/dilla-media.service"
+REFRESH_UNIT_PATH="$ROOT/etc/systemd/system/dilla-media-refresh.service"
+REFRESH_TIMER_PATH="$ROOT/etc/systemd/system/dilla-media-refresh.timer"
+REFRESH_DIR="$ROOT/usr/local/libexec"
+REFRESH_SCRIPT="$REFRESH_DIR/dilla-media-refresh"
+PROC="$ROOT/proc"
+# The owner of the binaries install.sh puts in place: root. Under DILLA_INSTALL_ROOT (the tests,
+# which are not root) the owner of that root directory stands in for it.
+TRUSTED_UID=0
+[ -z "$ROOT" ] || TRUSTED_UID="$(stat -c %u "$ROOT" 2>/dev/null || echo 0)"
 CONF_DIR="$ROOT/etc/dilla"
 CONF="$CONF_DIR/dilla.toml"
 DATA_DIR="$ROOT/var/lib/dillad"
@@ -394,7 +419,13 @@ elif [ "$INSTALLED" -eq 1 ]; then
 	die "an instance is already installed here ($CONF or $DATA_DIR exists); run with --upgrade to replace the binary and the core, which never touches the config or the data"
 fi
 
-WORK="$(mktemp -d)"
+# The downloads land in a root-only directory on /var, not /tmp: the verified new binary is run
+# from here (version --json), and /tmp may be mounted noexec.
+WORK_PARENT="$ROOT/var/lib/dilla-install"
+[ ! -L "$WORK_PARENT" ] || die "$WORK_PARENT is a symbolic link; refusing to work in it"
+mkdir -p "$WORK_PARENT"
+chmod 0700 "$WORK_PARENT"
+WORK="$(mktemp -d "$WORK_PARENT/work.XXXXXX")"
 
 # ------------------------------------------------------------- artefacts ----
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -449,6 +480,16 @@ else
 	fetch "$RELEASE_URL/$CORE_NAME" "$WORK/$CORE_NAME"
 	CHECK="$CHECK $CORE_NAME"
 fi
+# release.json (R-UP2): the release's machine-readable metadata, generated from the binary's own
+# `dillad version --json`. HAVE_RELEASE_JSON is 1 once there is one to read.
+REL_JSON_NAME="release.json"
+HAVE_RELEASE_JSON=0
+if [ -n "$RELEASE_JSON" ]; then
+	[ -s "$RELEASE_JSON" ] || die "--release-json $RELEASE_JSON is missing or empty"
+	cp "$RELEASE_JSON" "$WORK/$REL_JSON_NAME"
+	HAVE_RELEASE_JSON=1
+	if [ -n "$SUMS" ]; then CHECK="$CHECK $REL_JSON_NAME"; else UNCHECKED="$UNCHECKED $REL_JSON_NAME"; fi
+fi
 
 if [ -n "$CHECK" ]; then
 	if [ -n "$SUMS" ]; then
@@ -461,6 +502,15 @@ if [ -n "$CHECK" ]; then
 	# An empty or short SHA256SUMS refuses: verification is decided by where the
 	# files came from, never by what the SHA256SUMS file happens to hold.
 	[ -s "$WORK/SHA256SUMS" ] || die "SHA256SUMS is empty; refusing to install unverified files"
+	# SHA256SUMS decides whether the release has a release.json: listed means it is fetched and
+	# verified like the binary (exactly one line, below); not listed means there is none.
+	if [ "$HAVE_RELEASE_JSON" -eq 0 ] && awk -v n="$REL_JSON_NAME" '$2 == n || $2 == "*" n { found = 1 } END { exit !found }' "$WORK/SHA256SUMS"; then
+		[ -z "$BINARY" ] || die "SHA256SUMS lists $REL_JSON_NAME: pass the release's copy with --release-json FILE; nothing was installed"
+		log "downloading $REL_JSON_NAME from $RELEASE_URL"
+		fetch "$RELEASE_URL/$REL_JSON_NAME" "$WORK/$REL_JSON_NAME"
+		HAVE_RELEASE_JSON=1
+		CHECK="$CHECK $REL_JSON_NAME"
+	fi
 	# Exactly one line per asset, by exact name, so a SHA256SUMS that leaves one
 	# out cannot pass for both.
 	: >"$WORK/check.sums"
@@ -478,6 +528,107 @@ if [ -n "$UNCHECKED" ]; then
 	log "warning: --insecure-skip-verify: installing$UNCHECKED unverified"
 fi
 
+# json_get JSON KEY: the raw value of KEY in a flat JSON object (a string with its quotes, a
+# number, true or false, or an array), empty when absent. Every JSON read here is written by
+# dillad (version --json, media.json) or generated from it (release.json), one flat object.
+json_get() {
+	printf '%s' "$1" | tr -d ' \t\r\n' |
+		sed -n "s/.*\"$2\":\(\"[^\"]*\"\|\[[^]]*\]\|-\{0,1\}[0-9][0-9]*\|true\|false\).*/\1/p"
+}
+unquote() {
+	uq="${1#\"}"
+	printf '%s' "${uq%\"}"
+}
+has_turn() { case "$1" in *'"turn"'*) return 0 ;; esac; return 1; }
+
+# web3_at_least VERSION N: true when VERSION (with or without its leading v) is v0.1.0-web3.N or a
+# later release; a patch tag (web3.12.3) counts as its web3.N. 0.1.0 itself and anything above it
+# count as later; another 0.1.0 prerelease (noise-beta, a dev build) as earlier.
+web3_at_least() {
+	wv="${1#v}"
+	wbase="${wv%%-*}"
+	wpre=""
+	[ "$wbase" = "$wv" ] || wpre="${wv#*-}"
+	wmaj="${wbase%%.*}"
+	wrest="${wbase#*.}"
+	wmin="${wrest%%.*}"
+	wpat="${wrest#*.}"
+	for n in "$wmaj" "$wmin" "$wpat"; do
+		case "$n" in '' | *[!0-9]*) return 1 ;; esac
+	done
+	[ "$wmaj" -eq 0 ] || return 0
+	[ "$wmin" -le 1 ] || return 0
+	[ "$wmin" -eq 1 ] || return 1
+	[ "$wpat" -eq 0 ] || return 0
+	[ -n "$wpre" ] || return 0
+	case "$wpre" in
+	web3.*) ;;
+	*) return 1 ;;
+	esac
+	wn="${wpre#web3.}"
+	wn="${wn%%.*}"
+	case "$wn" in '' | *[!0-9]*) return 1 ;; esac
+	[ "$wn" -ge "$2" ]
+}
+
+# NEW_SCHEME_FIRST: the web3 number of the first release that carries calls-survive-upgrade: it ships
+# release.json, a dillad with `version --json`, and the notify/turn.listen rules below. The branch
+# names no tag of its own; web3.13 is the next minor after the last web3.12.x (the tests and the
+# release-notes checks already call it that). web3.12 to web3.12.4 shipped without any of it.
+NEW_SCHEME_FIRST=13
+# BASELINE_SFU_FIRST: web3.11 is the oldest SFU with a known media level (1), the same baseline
+# scripts/release-meta.mjs uses: web3.11 and later without `version --json` are level 1.
+BASELINE_SFU_FIRST=11
+new_scheme_release() { web3_at_least "$1" "$NEW_SCHEME_FIRST"; }
+
+# What the new binary says it is. It was verified above, so running it is running the release.
+chmod 0755 "$WORK/$BIN_NAME"
+NEW_VERSION="$("$WORK/$BIN_NAME" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || NEW_VERSION=""
+[ -n "$NEW_VERSION" ] || die "the new dillad does not run on this host ($WORK/$BIN_NAME version printed no version); nothing was installed"
+# web3.11 and older know no --json: their media level is 1, and they serve no TURN in dilla-media.
+NEW_JSON="$("$WORK/$BIN_NAME" version --json 2>/dev/null | head -n 1)" || NEW_JSON=""
+NEW_LEVEL="$(json_get "$NEW_JSON" media_level)"
+case "$NEW_LEVEL" in '' | *[!0-9]*) NEW_LEVEL=1 ;; esac
+# A dillad of media level 2 (web3.13, the first of the new scheme) or later sends READY=1 and answers on media.sock.
+NEW_NOTIFY=0
+[ "$NEW_LEVEL" -lt 2 ] || NEW_NOTIFY=1
+NEW_MIN=""
+if [ "$HAVE_RELEASE_JSON" -eq 1 ]; then
+	# release.json cannot be swapped: it matched SHA256SUMS above, and it must describe this binary.
+	RJ="$(cat "$WORK/$REL_JSON_NAME")"
+	[ -n "$NEW_JSON" ] || die "release.json describes a release, but the new dillad ($NEW_VERSION) has no version --json to check it against; nothing was installed"
+	[ "$(json_get "$RJ" format)" = 1 ] || die "release.json has format $(json_get "$RJ" format), and this install.sh reads format 1; nothing was installed"
+	for key in version wire schema media_level min_sfu_media_level media_capabilities; do
+		rj_value="$(json_get "$RJ" "$key")"
+		bin_value="$(json_get "$NEW_JSON" "$key")"
+		if [ -z "$rj_value" ] || [ "$rj_value" != "$bin_value" ]; then
+			die "release.json says $key is ${rj_value:-missing}, but the new dillad says ${bin_value:-missing}; refusing a release whose metadata does not describe its binary. Nothing was installed"
+		fi
+	done
+	RJ_TAG="$(unquote "$(json_get "$RJ" tag)")"
+	[ "$RJ_TAG" = "v$NEW_VERSION" ] || die "release.json names tag ${RJ_TAG:-none}, but the new dillad is $NEW_VERSION; nothing was installed"
+	[ -z "$URL_TAG" ] || [ "$RJ_TAG" = "$URL_TAG" ] || die "release.json names tag $RJ_TAG, but the release asked for is $URL_TAG; nothing was installed"
+	case "$(unquote "$(json_get "$RJ" sfu_restart)")" in
+	when-idle | required) ;;
+	*) die "release.json's sfu_restart is $(json_get "$RJ" sfu_restart), want \"when-idle\" or \"required\"; nothing was installed" ;;
+	esac
+	NEW_MIN="$(json_get "$RJ" min_sfu_media_level)"
+	case "$NEW_MIN" in '' | *[!0-9]*) die "release.json's min_sfu_media_level is not a number; nothing was installed" ;; esac
+	log "release.json: v$NEW_VERSION, media level $NEW_LEVEL, works with a media server of level $NEW_MIN or later"
+elif new_scheme_release "$NEW_VERSION" || { [ -n "$URL_TAG" ] && new_scheme_release "$URL_TAG"; }; then
+	# Every release from v0.1.0-web3.$NEW_SCHEME_FIRST on ships one. Without it the installer cannot tell whether
+	# the running media server can stay, so it never guesses.
+	case "$UNCHECKED" in
+	*"$BIN_NAME"*) log "warning: --insecure-skip-verify without --release-json: v$NEW_VERSION is treated as needing a media server restart" ;;
+	*)
+		if [ -n "$BINARY" ]; then
+			die "v$NEW_VERSION ships release.json, listed in its SHA256SUMS: pass it with --release-json FILE (and a --sums that lists it). Nothing was installed"
+		fi
+		die "the release at $RELEASE_URL has no release.json in its SHA256SUMS, which every release from v0.1.0-web3.$NEW_SCHEME_FIRST on ships; refusing an incomplete release. Nothing was installed"
+		;;
+	esac
+fi
+
 # Installs a file next to its destination and renames it over, so a running
 # dillad keeps its open inode and an interrupted copy never leaves half a file.
 put() { # SRC DEST MODE
@@ -485,6 +636,41 @@ put() { # SRC DEST MODE
 	mv -f "$2.new" "$2"
 }
 
+# conf_value TABLE KEY: KEY's value in [TABLE] of dilla.toml, without quotes or a trailing comment.
+conf_value() {
+	[ -f "$CONF" ] || return 0
+	awk -v t="[$1]" -v k="$2" '
+		{ line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+		line ~ /^\[/ { inside = (line == t); next }
+		inside && index(line, k) == 1 {
+			rest = substr(line, length(k) + 1)
+			if (rest !~ /^[ \t]*=/) next
+			sub(/^[ \t]*=[ \t]*/, "", rest)
+			sub(/[ \t]*#.*$/, "", rest)
+			gsub(/["\047]/, "", rest)
+			print rest
+			exit
+		}
+	' "$CONF"
+}
+
+# turn_listen_served: TURN is on and turn.listen is set, so a web3.13+ dilla-media binds it (R-UP11).
+turn_listen_served() {
+	[ "$(conf_value turn enabled)" = true ] && [ -n "$(conf_value turn listen)" ]
+}
+
+# media_bind_cap: dilla-media binds turn.listen on a port below 1024, which a non-root process may
+# do only with CAP_NET_BIND_SERVICE.
+media_bind_cap() {
+	turn_listen_served || return 1
+	mbc_port="$(conf_value turn listen)"
+	mbc_port="${mbc_port##*:}"
+	case "$mbc_port" in '' | *[!0-9]*) return 1 ;; esac
+	[ "$mbc_port" -lt 1024 ]
+}
+
+# write_media_unit notify|simple: deploy/dilla-media.service, verbatim, for a dillad that sends
+# READY=1 (web3.13 on); "simple" is the same unit for an older dillad, which never does.
 write_media_unit() {
 	cat >"$WORK/dilla-media.service" <<'UNIT'
 [Unit]
@@ -492,15 +678,20 @@ Description=dilla media SFU
 Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
 After=network-online.target
 Wants=network-online.target
-PartOf=dilla.service
+# No PartOf=dilla.service: restarting the API never touches the SFU, so live calls survive an
+# API-only upgrade. dilla-media-refresh.timer moves it onto a new dillad once its calls end.
 
 [Service]
-Type=simple
+# READY: dillad media sends READY=1 once the SFU accepts RoomService requests and media.json is
+# READY: written, so systemctl start and restart return when the media server is ready.
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/dillad media --config=%E/dilla/dilla.toml
+# Exit 69 (the SFU did not come up) is retried; exit.Config (78) means dilla.toml must be fixed.
 Restart=on-failure
 RestartSec=5s
 RestartPreventExitStatus=78
-TimeoutStartSec=30s
+TimeoutStartSec=60s
 TimeoutStopSec=25s
 User=dillad
 Group=dillad
@@ -510,6 +701,9 @@ ConfigurationDirectory=dilla
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
+# The media server executes nothing but the (statically linked) dillad itself.
+NoExecPaths=/
+ExecPaths=/usr/local/bin
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -524,7 +718,305 @@ LockPersonality=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
+	if [ "$1" = simple ]; then
+		sed -e '/^# READY: /d' -e '/^NotifyAccess=main$/d' -e 's/^Type=notify$/Type=simple/' \
+			-e 's/^TimeoutStartSec=60s$/TimeoutStartSec=30s/' "$WORK/dilla-media.service" >"$WORK/dilla-media.service.x"
+		mv -f "$WORK/dilla-media.service.x" "$WORK/dilla-media.service"
+	elif media_bind_cap; then
+		log "turn.listen is below port 1024: dilla-media.service gets CAP_NET_BIND_SERVICE to bind it"
+		awk '{ print } $0 == "UMask=0077" {
+			print "# turn.listen is below 1024: how a non-root dillad media binds it."
+			print "AmbientCapabilities=CAP_NET_BIND_SERVICE"
+			print "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+		}' "$WORK/dilla-media.service" >"$WORK/dilla-media.service.x"
+		mv -f "$WORK/dilla-media.service.x" "$WORK/dilla-media.service"
+	fi
 	put "$WORK/dilla-media.service" "$MEDIA_UNIT_PATH" 0644
+}
+
+# media_unit_type: notify for a new binary that sends READY=1 (media level 2, web3.13, on).
+media_unit_type() {
+	if [ "$NEW_LEVEL" -ge 2 ]; then echo notify; else echo simple; fi
+}
+
+# write_refresh_units: deploy/dilla-media-refresh.{service,timer} and deploy/dilla-media-refresh.sh,
+# verbatim (deploy/install_test.sh compares them). R-UP4.
+write_refresh_units() {
+	mkdir -p "$REFRESH_DIR"
+	cat >"$WORK/dilla-media-refresh.service" <<'UNIT'
+[Unit]
+Description=dilla: restart dilla-media onto the installed dillad once its calls have ended
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+
+[Service]
+# Root: it restarts dilla-media (and, at the one-time TURN handoff, dilla) and asks
+# `dillad media --idle` as the dillad user. The logic is a script, so this unit quotes nothing.
+Type=oneshot
+ExecStart=/usr/local/libexec/dilla-media-refresh
+# A restart waits for dilla-media's READY (60 s); the TURN handoff also waits for dilla (300 s).
+TimeoutStartSec=10min
+UNIT
+	put "$WORK/dilla-media-refresh.service" "$REFRESH_UNIT_PATH" 0644
+	cat >"$WORK/dilla-media-refresh.timer" <<'UNIT'
+[Unit]
+Description=dilla: every minute, check whether dilla-media can move to the installed dillad
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+UNIT
+	put "$WORK/dilla-media-refresh.timer" "$REFRESH_TIMER_PATH" 0644
+	cat >"$WORK/dilla-media-refresh" <<'SCRIPT'
+#!/bin/sh
+# dilla-media-refresh: dilla-media-refresh.service runs this as root every minute, from
+# dilla-media-refresh.timer. deploy/install.sh installs it as /usr/local/libexec/dilla-media-refresh.
+#
+# An upgrade whose release can work with the running media server restarts only the API, so live
+# calls continue and dilla-media keeps running the previous dillad. This restarts dilla-media onto
+# /usr/local/bin/dillad once both hold:
+#   - the running SFU's executable is not the installed file (its inode differs);
+#   - `dillad media --idle`, run as dillad, exits 0: no room has participants, none is younger than
+#     60 s, and the API says no call token was minted in the last 60 s. Any other exit (busy, the
+#     API does not answer, a dillad too old to know --idle) means not now.
+# It works for a web3.11 media server too, which knows nothing of this. Whether the SFU runs the
+# installed binary is decided by executable identity only (inode and SHA-256), never by what it
+# says about itself. This runs as root and never executes anything reached through /proc: a dillad
+# process can execve a binary of its own and keep its pid, so /proc/<pid>/exe is only stat'ed and
+# hashed, as data.
+#
+# The TURN handoff (one time): when the SFU being replaced does not serve TURN (its media.json does
+# not list "turn", or it has none) and the installed dillad does, the API still holds turn.listen.
+# The new SFU becomes ready without it ("TURN bind pending"), dilla is then restarted so it lets go,
+# and this waits until media.json lists "turn". The rooms are idle, so no relay is in use.
+#
+# Every restart is logged to the journal; a minute with nothing to do logs nothing.
+# DILLA_INSTALL_ROOT prefixes every path, for deploy/install_test.sh only.
+set -u
+
+ROOT="${DILLA_INSTALL_ROOT:-}"
+ROOT="${ROOT%/}"
+BIN="$ROOT/usr/local/bin/dillad"
+CONF="$ROOT/etc/dilla/dilla.toml"
+LOCK="$ROOT/run/dilla-install.lock"
+MARK="$ROOT/run/dilla-media-refresh.handoff"
+WAIT=60
+
+log() { printf 'dilla-media-refresh: %s\n' "$*"; }
+
+# conf_value TABLE KEY: KEY's value in [TABLE] of dilla.toml, without quotes or a trailing comment.
+conf_value() {
+	awk -v t="[$1]" -v k="$2" '
+		{ line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+		line ~ /^\[/ { inside = (line == t); next }
+		inside && index(line, k) == 1 {
+			rest = substr(line, length(k) + 1)
+			if (rest !~ /^[ \t]*=/) next
+			sub(/^[ \t]*=[ \t]*/, "", rest)
+			sub(/[ \t]*#.*$/, "", rest)
+			gsub(/["\047]/, "", rest)
+			print rest
+			exit
+		}
+	' "$CONF" 2>/dev/null
+}
+
+# json_get JSON KEY: the raw value of KEY in a flat JSON object (a string with its quotes, a number,
+# or an array), empty when it is absent. The JSON comes from dillad itself (media.json, version --json).
+json_get() {
+	printf '%s' "$1" | tr -d ' \t\r\n' |
+		sed -n "s/.*\"$2\":\(\"[^\"]*\"\|\[[^]]*\]\|-\{0,1\}[0-9][0-9]*\|true\|false\).*/\1/p"
+}
+unquote() { v="${1#\"}"; printf '%s' "${v%\"}"; }
+has_turn() { case "$1" in *'"turn"'*) return 0 ;; esac; return 1; }
+# sha256_of FILE: FILE's SHA-256, read as data.
+sha256_of() { sha256sum <"$1" 2>/dev/null | awk '{ print $1 }'; }
+
+main_pid() {
+	p="$(systemctl show -P MainPID dilla-media 2>/dev/null)"
+	case "$p" in '' | *[!0-9]*) echo 0 ;; *) echo "$p" ;; esac
+}
+
+DATA="$(conf_value instance data_dir)"
+[ -n "$DATA" ] || DATA="$ROOT/var/lib/dillad"
+
+# parse_report JSON: P_VERSION, P_LEVEL, P_PID and P_CAPS from a media server's self-description.
+# It comes from a process dillad controls: the values are only compared and printed, never
+# evaluated, and anything but plain tokens is refused.
+parse_report() {
+	P_VERSION="$(unquote "$(json_get "$1" version)")"
+	P_LEVEL="$(json_get "$1" media_level)"
+	P_PID="$(json_get "$1" pid)"
+	P_CAPS="$(json_get "$1" capabilities)"
+	case "$P_VERSION" in '' | *[!A-Za-z0-9.+_-]*) return 1 ;; esac
+	[ "${#P_VERSION}" -le 64 ] || return 1
+	case "$P_LEVEL" in '' | *[!0-9]*) return 1 ;; esac
+	[ "${#P_LEVEL}" -le 3 ] || return 1
+	case "$P_PID" in '' | 0 | *[!0-9]*) return 1 ;; esac
+	[ "${#P_PID}" -le 10 ] || return 1
+	printf '%s' "$P_CAPS" | awk '/^\[("[A-Za-z0-9._-]+"(,"[A-Za-z0-9._-]+")*)?\]$/ { ok = 1 } END { exit !ok }'
+}
+
+# media_state PID: sets MS_VERSION, MS_LEVEL and MS_CAPS from what the running media process (PID,
+# the unit's MainPID) says about itself: first on media.sock (GET /media/self, asked as dillad
+# through the installed dillad as a client), then from its media.json. An answer for another pid,
+# a file left by an earlier process, or anything malformed counts as no answer. A media server
+# older than web3.13 (every web3.12.x too) has neither. Nothing reached through /proc is ever run.
+media_state() {
+	MS_VERSION=""
+	MS_LEVEL=0
+	MS_CAPS=""
+	[ "$1" -gt 0 ] || return 1
+	ms="$(timeout 10 runuser -u dillad -- "$BIN" media --self --config="$CONF" 2>/dev/null | head -n 1)" || ms=""
+	if ! parse_report "$ms" || [ "$P_PID" != "$1" ]; then
+		# Only a regular file (dillad could leave a FIFO or a link there), bounded in size and time.
+		[ -f "$DATA/media.json" ] && [ ! -L "$DATA/media.json" ] || return 1
+		ms="$(timeout 5 head -c 4096 "$DATA/media.json" 2>/dev/null)" || return 1
+		parse_report "$ms" || return 1
+		[ "$P_PID" = "$1" ] || return 1
+	fi
+	MS_VERSION="$P_VERSION"
+	MS_LEVEL="$P_LEVEL"
+	MS_CAPS="$P_CAPS"
+}
+
+# restart_api_for_handoff: restarts dilla, so it lets go of turn.listen, and waits WAIT seconds for
+# dilla-media to report "turn". It ends the run.
+restart_api_for_handoff() {
+	if ! systemctl restart dilla; then
+		log "error: dilla did not restart for the TURN handoff; read journalctl -o cat -u dilla"
+		exit 1
+	fi
+	i=0
+	while [ "$i" -lt "$WAIT" ]; do
+		if media_state "$(main_pid)" && has_turn "$MS_CAPS"; then
+			log "TURN handoff done: dilla-media serves turn.listen"
+			exit 0
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	log "warning: dilla-media has not bound turn.listen $WAIT s after dilla restarted; dillad doctor's turn leg names who serves TURN"
+	exit 1
+}
+
+# Every client call is bounded, so a stalled SFU cannot hold the lock install.sh waits for.
+idle() { timeout 60 runuser -u dillad -- "$BIN" media --idle --config="$CONF" >/dev/null 2>&1; }
+
+# The deferred-restart record (root's, 0644 in a 0755 directory): since when the running SFU, by
+# its MainPID, has run another executable than the installed one without being idle. `dillad
+# doctor` reads it (its media_refresh leg: yellow, red after 24 h); nothing here forces a restart.
+PENDING_DIR="$ROOT/var/lib/dilla-media-refresh"
+PENDING="$PENDING_DIR/pending"
+record_pending() {
+	if [ -f "$PENDING" ] && [ ! -L "$PENDING" ] && [ "$(sed -n 's/^pid=\([0-9]*\) since=[0-9]*$/\1/p' "$PENDING")" = "$1" ]; then
+		return 0
+	fi
+	mkdir -p "$PENDING_DIR"
+	chmod 0755 "$PENDING_DIR"
+	printf 'pid=%s since=%s\n' "$1" "$(date +%s)" >"$PENDING.new" && chmod 0644 "$PENDING.new" && mv -f "$PENDING.new" "$PENDING"
+	log "dilla-media (pid $1) runs another executable than the installed $BIN and is not idle: its restart waits until it is (dillad doctor's media_refresh leg says for how long)"
+}
+clear_pending() { rm -f "$PENDING"; }
+
+# One at a time with install.sh --upgrade, which holds this lock while it decides and restarts.
+if command -v flock >/dev/null 2>&1; then
+	mkdir -p "$ROOT/run"
+	exec 9>"$LOCK"
+	flock -n 9 || exit 0
+fi
+
+[ -x "$BIN" ] || exit 0
+[ "$(conf_value livekit mode)" = sidecar ] || exit 0
+pid="$(main_pid)"
+# Not running: systemd starts it on the installed binary, so there is nothing to refresh.
+[ "$pid" -gt 0 ] || exit 0
+
+turn_configured=0
+if [ "$(conf_value turn enabled)" = true ] && [ -n "$(conf_value turn listen)" ]; then
+	turn_configured=1
+fi
+new_json="$(timeout 10 runuser -u dillad -- "$BIN" version --json 2>/dev/null)" || new_json=""
+installed_version="$(unquote "$(json_get "$new_json" version)")"
+before_valid=0
+before_turn=0
+if media_state "$pid"; then
+	before_valid=1
+	has_turn "$MS_CAPS" && before_turn=1
+fi
+handoff=0
+if [ "$turn_configured" -eq 1 ] && [ "$before_turn" -eq 0 ] && has_turn "$(json_get "$new_json" media_capabilities)"; then
+	handoff=1
+fi
+
+# Whether the SFU runs the installed binary is decided by executable identity alone (R-UP4): the
+# inode of /proc/<pid>/exe and its SHA-256, both read as data, against $BIN. A binary replaced in
+# place has a new inode, so an SFU on the deleted old one never matches. What the SFU says about
+# itself is never asked here: a stale or compromised process could claim the installed release and
+# so never be moved onto a patched binary.
+running="$(stat -L -c '%d:%i' "$ROOT/proc/$pid/exe" 2>/dev/null)" || exit 0
+installed="$(stat -L -c '%d:%i' "$BIN" 2>/dev/null)" || exit 0
+same=0
+if [ "$running" = "$installed" ]; then
+	running_sum="$(sha256_of "$ROOT/proc/$pid/exe")"
+	installed_sum="$(sha256_of "$BIN")"
+	[ -z "$running_sum" ] || [ "$running_sum" != "$installed_sum" ] || same=1
+fi
+
+if [ "$same" -eq 1 ]; then
+	clear_pending
+	# The SFU runs the installed binary, so its report can be used for its level and capabilities.
+	# Only a handoff that never happened is left: the SFU came up on this binary on its own
+	# (systemd restarted it after a crash) while the API still held turn.listen. Once per media
+	# process, so a port that cannot be bound for another reason never restarts the API in a loop.
+	if [ "$handoff" -ne 1 ] || [ "$before_valid" -ne 1 ] || [ "$MS_LEVEL" -lt 2 ]; then
+		exit 0
+	fi
+	[ "$(cat "$MARK" 2>/dev/null)" != "$pid" ] || exit 0
+	idle || exit 0
+	echo "$pid" >"$MARK"
+	log "dilla-media (pid $pid) runs the installed ${installed_version:-dillad} but has not bound turn.listen, which dilla still holds; its rooms are idle: restarting dilla to hand TURN over"
+	restart_api_for_handoff
+fi
+
+# Another executable: an older SFU, whatever it says about itself. Restart it once it is idle.
+if ! idle; then
+	record_pending "$pid"
+	exit 0
+fi
+log "dilla-media (pid $pid) runs another executable than the installed $BIN${MS_VERSION:+ (it reports $MS_VERSION)}; its rooms are idle: restarting it"
+if ! systemctl restart dilla-media; then
+	log "error: dilla-media did not restart; read journalctl -o cat -u dilla-media"
+	exit 1
+fi
+clear_pending
+new_pid="$(main_pid)"
+if media_state "$new_pid"; then
+	log "dilla-media now runs $MS_VERSION (pid $new_pid)"
+else
+	log "dilla-media restarted (pid $new_pid)"
+fi
+[ "$handoff" -eq 1 ] || exit 0
+# This media process gets its handoff now; the same-binary path above never repeats it.
+echo "$new_pid" >"$MARK"
+log "TURN handoff: dilla-media takes turn.listen from now on; restarting dilla so it lets go"
+restart_api_for_handoff
+SCRIPT
+	put "$WORK/dilla-media-refresh" "$REFRESH_SCRIPT" 0755
+}
+
+# refresh_timer: enables the timer for a dillad that knows `media --idle` (web3.13 on), and
+# disables it for an older one, which would answer every minute with a usage error.
+refresh_timer() {
+	if [ "$NEW_LEVEL" -ge 2 ]; then
+		systemctl enable --now dilla-media-refresh.timer >&2 || die "systemd could not enable dilla-media-refresh.timer"
+	else
+		systemctl disable --now dilla-media-refresh.timer >&2 || :
+	fi
 }
 
 livekit_mode() {
@@ -558,9 +1050,17 @@ set_livekit_mode() { # MODE
 	mv -f "$CONF.new" "$CONF"
 }
 
+# run_doctor: dillad doctor as the service user, bounded: it reads files dillad writes (media.json)
+# and asks the network, and the upgrade holds the lock while it waits. DILLA_INSTALL_DOCTOR_TIMEOUT
+# shortens the bound for deploy/install_test.sh.
+DOCTOR_TIMEOUT="${DILLA_INSTALL_DOCTOR_TIMEOUT:-120}"
 run_doctor() {
 	DOCTOR_RC=0
-	DOCTOR_OUT="$(runuser -u dillad -- "$BIN_DIR/dillad" doctor --config="$CONF" 2>&1)" || DOCTOR_RC=$?
+	DOCTOR_OUT="$(timeout "$DOCTOR_TIMEOUT" runuser -u dillad -- "$BIN_DIR/dillad" doctor --config="$CONF" 2>&1)" || DOCTOR_RC=$?
+	if [ "$DOCTOR_RC" -eq 124 ]; then
+		DOCTOR_OUT="${DOCTOR_OUT:+$DOCTOR_OUT
+}FAIL  doctor       did not finish within $DOCTOR_TIMEOUT s"
+	fi
 }
 
 doctor_and_report() {
@@ -569,9 +1069,22 @@ doctor_and_report() {
 	printf '%s\n' "$DOCTOR_OUT" | sed 's/^/  /' >&2
 	# Legs that need DNS for the domain, outbound HTTPS or the proxy: red until
 	# those exist, which is expected on a fresh install. The udp leg is never red:
-	# it reads WARN "not probed" by default and cannot prove the forward.
-	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
-	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
+	# it reads WARN "not probed" by default and cannot prove the forward. The turn
+	# leg's ownership reds are not DNS (final review M3): TURN served by both
+	# processes, by neither, or by dilla-media while api.sock does not answer is a
+	# handoff that went wrong, so it counts as a problem with the install itself.
+	# shellcheck disable=SC2016 # an awk program: $0 and $2 are awk's, not the shell's
+	DOCTOR_LEGS='
+		function owner() { return $2 == "turn" && $0 ~ /^FAIL[[:space:]]+turn[[:space:]]+(TURN is served by (both|neither)|dilla-media serves TURN but)/ }
+		function pending() { return $2 == "clock" || $2 == "certificate" || ($2 == "turn" && !owner()) }'
+	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk "$DOCTOR_LEGS"' $1 == "FAIL" && pending() { printf "%s ", $2 }')"
+	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk "$DOCTOR_LEGS"' $1 == "FAIL" && !(pending() || $2 == "media_refresh") { printf "%s ", $2 }')"
+	# A dilla-media restart deferred for over 24 h is the operator's to decide, not the install's.
+	MR_RED=0
+	if printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && $2 == "media_refresh" { found = 1 } END { exit !found }'; then
+		MR_RED=1
+		log "warning: dilla-media has not been idle for over 24 h, so it still runs an older binary (doctor's media_refresh leg above)"
+	fi
 	if [ -n "$PENDING" ]; then
 		log "doctor: these checks need DNS, the network or the proxy set up first, and fail until DNS and the proxy are in place: $PENDING"
 		log "        run the doctor again once they are: runuser -u dillad -- /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml"
@@ -580,7 +1093,7 @@ doctor_and_report() {
 		log "error: doctor found a problem with the install itself: $BROKEN"
 		return 1
 	fi
-	if [ "$DOCTOR_RC" -ne 0 ] && [ -z "$PENDING" ]; then
+	if [ "$DOCTOR_RC" -ne 0 ] && [ -z "$PENDING" ] && [ "$MR_RED" -eq 0 ]; then
 		log "error: dillad doctor exited $DOCTOR_RC"
 		return 1
 	fi
@@ -605,6 +1118,12 @@ rollback_stuck() {
 	else
 		log "dilla could not be stopped, so systemd may still be restarting the new binary ($BIN_DIR/dillad); the previous one is $BIN_DIR/dillad.prev."
 	fi
+	if [ "${MEDIA_RESTARTED:-0}" -eq 1 ]; then
+		log "dilla-media was restarted onto the new binary. Whichever way you go back to the previous one, stop dilla-media"
+		log "before you start the previous dilla, and start it again first, so exactly one of them holds turn.listen:"
+		log "    systemctl stop dilla-media; <put the previous pair back as below>; systemctl start dilla-media; systemctl start dilla"
+		log "A previous release below v0.1.0-web3.$NEW_SCHEME_FIRST (every web3.12.x included) runs dilla-media as Type=simple: set Type=simple in $MEDIA_UNIT_PATH and run systemctl daemon-reload first."
+	fi
 	if [ -z "${SCHEMA_AFTER:-}" ]; then
 		log "First read the database's schema version with the previous binary:"
 		log "    runuser -u dillad -- $BIN_DIR/dillad.prev migrate status --config=$CONF"
@@ -626,19 +1145,182 @@ rollback_stuck() {
 	exit 1
 }
 
+# How long the upgrade waits for a service to come up: dilla-media's READY (TimeoutStartSec=60s)
+# and its own report, or systemd's own restart of a dilla whose first start failed.
+MEDIA_WAIT=60
+API_WAIT=60
+
+# The released dillad binaries a running dilla-media older than web3.13 is recognised by, by the
+# SHA-256 of its executable: such a media server has no media.sock and writes no media.json, and
+# nothing reached through /proc is ever run to ask it. web3.13 and later answer on media.sock, so
+# this table never grows. "<sha256> <version> <media level> <asset>", from the release's SHA256SUMS.
+KNOWN_SFU_BINARIES="
+f13cf8c804d050afd295b178f8ef2a4c87ef1387a6782ba422652fe21a5af8c1 0.1.0-web3.11 1 dillad-linux-amd64
+58e67dbf56bb5df012bf3cd967a5c11ee4631c41a7dc919ffc67120af4afdeee 0.1.0-web3.11 1 dillad-linux-arm64
+"
+
+# media_main_pid: dilla-media's MainPID, 0 when it is not running.
+media_main_pid() {
+	mmp="$(systemctl show -P MainPID dilla-media 2>/dev/null)" || mmp=0
+	case "$mmp" in '' | *[!0-9]*) echo 0 ;; *) echo "$mmp" ;; esac
+}
+
+# parse_report JSON: P_VERSION, P_LEVEL, P_PID and P_CAPS from a media server's self-description
+# (media.sock's GET /media/self, or media.json). Both come from a process dillad controls, so the
+# values are only compared and printed, never evaluated, and anything but plain tokens is refused.
+parse_report() {
+	P_VERSION="$(unquote "$(json_get "$1" version)")"
+	P_LEVEL="$(json_get "$1" media_level)"
+	P_PID="$(json_get "$1" pid)"
+	P_CAPS="$(json_get "$1" capabilities)"
+	case "$P_VERSION" in '' | *[!A-Za-z0-9.+_-]*) return 1 ;; esac
+	[ "${#P_VERSION}" -le 64 ] || return 1
+	case "$P_LEVEL" in '' | *[!0-9]*) return 1 ;; esac
+	[ "${#P_LEVEL}" -le 3 ] || return 1
+	case "$P_PID" in '' | 0 | *[!0-9]*) return 1 ;; esac
+	[ "${#P_PID}" -le 10 ] || return 1
+	printf '%s' "$P_CAPS" | awk '/^\[("[A-Za-z0-9._-]+"(,"[A-Za-z0-9._-]+")*)?\]$/ { ok = 1 } END { exit !ok }'
+}
+
+# media_self: what the RUNNING dilla-media says about itself on media.sock (GET /media/self), asked
+# as dillad (media.sock serves only that uid) through the installed dillad as a client, bounded by
+# timeout so a stalled SFU cannot hang the installer while it holds the lock. Sets SELF_VERSION
+# (used only for readiness, after the executable's identity); 1 when nothing answers, the answer is
+# malformed, or it names another pid than the unit's MainPID. web3.11 and older have no media.sock.
+media_self() {
+	SELF_VERSION=""
+	msf="$(timeout 10 runuser -u dillad -- "$BIN_DIR/dillad" media --self --config="$CONF" 2>/dev/null | head -n 1)" || return 1
+	parse_report "$msf" || return 1
+	msf_main="$(media_main_pid)"
+	[ "$msf_main" -gt 0 ] && [ "$P_PID" = "$msf_main" ] || return 1
+	SELF_VERSION="$P_VERSION"
+}
+
+# media_state: sets MS_VERSION and MS_CAPS from media.json when its pid is dilla-media's MainPID
+# (R-UP3); a file with any other pid was left by an earlier process (a crash, a reboot) and counts
+# as absent. Only a regular file is read (dillad could leave a FIFO or a link there), bounded in
+# size and time; anything malformed counts as absent too. Used for readiness and the TURN wait
+# only, after the executable's identity; never for the level.
+media_state() {
+	MS_VERSION=""
+	MS_CAPS=""
+	[ -f "$MEDIA_DATA/media.json" ] && [ ! -L "$MEDIA_DATA/media.json" ] || return 1
+	ms="$(timeout 5 head -c 4096 "$MEDIA_DATA/media.json" 2>/dev/null)" || return 1
+	parse_report "$ms" || return 1
+	ms_main="$(media_main_pid)"
+	[ "$ms_main" -gt 0 ] && [ "$P_PID" = "$ms_main" ] || return 1
+	MS_VERSION="$P_VERSION"
+	MS_CAPS="$P_CAPS"
+}
+
+# sha256_of FILE: FILE's SHA-256, read as data.
+sha256_of() { sha256sum <"$1" 2>/dev/null | awk '{ print $1 }'; }
+
+# trusted_binary FILE: FILE is a regular file of root's (TRUSTED_UID) that nobody else can write,
+# so asking it its version is asking root's own release.
+trusted_binary() {
+	[ -f "$1" ] && [ ! -L "$1" ] || return 1
+	[ "$(stat -c %u "$1" 2>/dev/null)" = "$TRUSTED_UID" ] || return 1
+	[ -z "$(find "$1" -perm /022 2>/dev/null)" ]
+}
+
+# sfu_level: what the running SFU is (R-UP3). Sets SFU_PID, SFU_VERSION, SFU_LEVEL (empty when it
+# cannot be told) and SFU_FROM, where the answer came from.
+#
+# Only the executable decides, never what the process says about itself: the SHA-256 of
+# /proc/<pid>/exe, read as data, against the pinned web3.11 releases, the installed dillad and
+# dillad.prev. Nothing reached through /proc is ever executed: a dillad process can execve a binary
+# of its own and keep its pid, and this runs as root. A match with root's own file gives the
+# version and the media level from that file's `version --json` (a compile-time constant), and a
+# file without it (web3.11) is level 1, the baseline CI proves (R-UP1). An executable that matches
+# nothing is unknown, and unknown means a restart.
+sfu_level() {
+	SFU_PID="$(media_main_pid)"
+	SFU_VERSION=""
+	SFU_LEVEL=""
+	SFU_FROM=""
+	if [ "$SFU_PID" -eq 0 ]; then
+		SFU_FROM="dilla-media is not running"
+		return 0
+	fi
+	SFU_FROM="the SHA-256 of $PROC/$SFU_PID/exe"
+	sl_sum="$(sha256_of "$PROC/$SFU_PID/exe")"
+	case "$sl_sum" in '' | *[!0-9a-f]*) return 0 ;; esac
+	[ "${#sl_sum}" -eq 64 ] || return 0
+	sl_is="$(printf '%s\n' "$KNOWN_SFU_BINARIES" | awk -v s="$sl_sum" '$1 == s { print $2; exit }')"
+	sl_level=""
+	if [ -n "$sl_is" ]; then
+		sl_level="$(printf '%s\n' "$KNOWN_SFU_BINARIES" | awk -v s="$sl_sum" '$1 == s { print $3; exit }')"
+		SFU_FROM="$SFU_FROM, which is the released v$sl_is"
+	else
+		for sl_cand in "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"; do
+			trusted_binary "$sl_cand" || continue
+			[ "$(sha256_of "$sl_cand")" = "$sl_sum" ] || continue
+			sl_json="$(timeout 10 runuser -u dillad -- "$sl_cand" version --json 2>/dev/null | head -n 1)" || sl_json=""
+			if [ -n "$sl_json" ]; then
+				sl_is="$(unquote "$(json_get "$sl_json" version)")"
+				sl_level="$(json_get "$sl_json" media_level)"
+			else
+				sl_is="$(timeout 10 runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || sl_is=""
+				# web3.11 to web3.12.x know no --json and are level 1, as release-meta.mjs counts them; a web3.13+
+				# binary whose --json failed stays unknown (a restart).
+				if [ -n "$sl_is" ] && web3_at_least "$sl_is" "$BASELINE_SFU_FIRST" && ! new_scheme_release "$sl_is"; then sl_level=1; fi
+			fi
+			SFU_FROM="$SFU_FROM, which is $sl_cand"
+			break
+		done
+	fi
+	case "$sl_is" in *[!A-Za-z0-9.+_-]*) sl_is="" ;; esac
+	case "$sl_level" in *[!0-9]*) sl_level="" ;; esac
+	if [ -z "$sl_is" ]; then
+		SFU_FROM="$SFU_FROM, which is no dillad this installer knows"
+		return 0
+	fi
+	SFU_VERSION="$sl_is"
+	SFU_LEVEL="$sl_level"
+	return 0
+}
+
+# sfu_decision: keep the running SFU, or restart it (R-UP3). The installer decides by level, from
+# the verified release.json, and never guesses. Sets DECISION (keep or restart) and logs why.
+sfu_decision() {
+	DECISION=restart
+	if [ "$RESTART_SFU" -eq 1 ]; then
+		WHY="--restart-sfu was given"
+	elif [ -z "$NEW_MIN" ]; then
+		WHY="v$NEW_VERSION has no release.json, so nothing says which media server it works with"
+	elif [ "$SFU_PID" -eq 0 ]; then
+		WHY="dilla-media is not running"
+	elif [ -z "$SFU_LEVEL" ]; then
+		WHY="the running dilla-media's media level is unknown (${SFU_VERSION:-no version} from $SFU_FROM)"
+	elif [ "$SFU_LEVEL" -ge "$NEW_MIN" ]; then
+		DECISION=keep
+		WHY="dilla-media runs v$SFU_VERSION (media level $SFU_LEVEL, from $SFU_FROM), and v$NEW_VERSION works with level $NEW_MIN or later"
+	else
+		WHY="dilla-media runs v$SFU_VERSION (media level $SFU_LEVEL, from $SFU_FROM), and v$NEW_VERSION needs level $NEW_MIN or later"
+	fi
+	if [ "$DECISION" = keep ]; then
+		log "decision: keep dilla-media running: $WHY. Only dilla restarts; live calls continue"
+	else
+		log "decision: restart dilla-media, which ends any live call: $WHY"
+	fi
+}
+
 # live_calls_preflight refuses (exit 1, nothing touched) while a room has participants or when the
-# check cannot be made, unless --yes. It runs at the moment the upgrade is about to stop things:
-# an answer from earlier does not count. `media --rooms` prints "no live rooms", or per room
-# "<room><TAB><n> participants" followed by the participants' identities indented by two spaces.
+# check cannot be made, unless the operator accepted ending the calls. It runs only when the upgrade
+# restarts the SFU, at the moment it is about to stop things: an answer from earlier does not count.
+# A release that keeps the SFU never comes here, so live calls never refuse it. `media --rooms`
+# prints "no live rooms", or per room "<room><TAB><n> participants" followed by the participants'
+# identities indented by two spaces.
 live_calls_preflight() {
 	_rooms=""
 	if [ "$LIVEKIT_MODE_BEFORE" != sidecar ]; then
 		_why="livekit.mode is $LIVEKIT_MODE_BEFORE, so the SFU runs inside dilla and its rooms cannot be listed; this upgrade restarts it and ends every live call"
 	elif ! systemctl is-active --quiet dilla-media; then
-		# A stopped SFU holds no rooms (a rollback stops dilla first, and dilla-media with it through PartOf).
+		# A stopped SFU holds no rooms (stopped by hand, or a rollback that stopped it first).
 		log "dilla-media is not running, so there are no live calls"
 		return 0
-	elif _rooms="$(runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
+	elif _rooms="$(timeout 30 runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
 		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
 		if [ -z "$_busy" ]; then
 			case "$_rooms" in
@@ -653,91 +1335,269 @@ live_calls_preflight() {
 	else
 		_why="could not list the live rooms (runuser -u dillad -- $BIN_DIR/dillad media --rooms --config=$CONF failed)"
 	fi
+	if [ "$LIVEKIT_MODE_BEFORE" = sidecar ] && [ "$RESTART_SFU" -eq 1 ]; then
+		log "warning: $_why; continuing because of --restart-sfu"
+		return 0
+	fi
 	if [ "$ASSUME_YES" -eq 1 ]; then
 		log "warning: $_why; continuing because of --yes"
 		return 0
 	fi
-	die "$_why. Nothing was changed. Try again when the rooms are empty, or pass --yes to upgrade anyway"
+	if [ "$LIVEKIT_MODE_BEFORE" != sidecar ]; then
+		die "$_why. Nothing was changed. Pass --yes to upgrade anyway, ending any live calls"
+	fi
+	die "$_why. Nothing was changed. Try again when the rooms are empty, or pass --restart-sfu to restart the media server anyway, ending the calls"
+}
+
+# upgrade_lock: one upgrade at a time, and dilla-media-refresh (which takes the same lock, and skips
+# a minute while it is held) never restarts a service in the middle of one.
+upgrade_lock() {
+	if ! have flock; then
+		log "warning: flock is not installed, so dilla-media-refresh.timer is not held off during this upgrade"
+		return 0
+	fi
+	mkdir -p "$ROOT/run"
+	exec 9>"$ROOT/run/dilla-install.lock"
+	flock -w 900 9 || die "another install.sh or dilla-media-refresh holds $ROOT/run/dilla-install.lock; nothing was changed"
+}
+
+# wait_media_ready VERSION NOTIFY: the RUNNING dilla-media is VERSION and ready, within MEDIA_WAIT
+# seconds. It never takes the installed binary's word for it: once restarts are decoupled the
+# installed dillad and the running one can differ, so a probe run from the installed binary would
+# pass and prove nothing. First, always, identity: the unit is active (which a Type=notify unit is
+# only after READY) and the running executable's SHA-256, read as data, is the installed binary's.
+# Then, for a dillad that sends READY=1 (NOTIFY 1): media.json's pid is the MainPID and names
+# VERSION, and the process itself answers on media.sock with VERSION and that pid. For an older one
+# (no media.sock): the authenticated RoomService probe. A start that failed may still come up
+# through systemd's Restart=on-failure, so the wait does not end at the first failure.
+wait_media_ready() {
+	wmr_i=0
+	while :; do
+		if systemctl is-active --quiet dilla-media; then
+			wmr_sum="$(sha256_of "$PROC/$(media_main_pid)/exe")"
+			if [ -n "$wmr_sum" ] && [ "$wmr_sum" = "$(sha256_of "$BIN_DIR/dillad")" ]; then
+				if [ "$2" -eq 1 ]; then
+					if media_state && [ "$MS_VERSION" = "$1" ] && media_self && [ "$SELF_VERSION" = "$1" ]; then return 0; fi
+				elif timeout 30 runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
+					return 0
+				fi
+			fi
+		fi
+		[ "$wmr_i" -lt "$MEDIA_WAIT" ] || return 1
+		sleep 1
+		wmr_i=$((wmr_i + 1))
+	done
+}
+
+# restart_api: restarts dilla and waits for it. A Type=notify restart that fails can still come up
+# through systemd's Restart=on-failure (serve exits 69 while it cannot bind api.sock or reach
+# dilla-media), so a failed restart is followed by a bounded wait for systemd's own retry.
+restart_api() {
+	systemctl restart dilla >&2 && return 0
+	log "dilla did not report ready; waiting up to $API_WAIT s for systemd's own restart of it (Restart=on-failure)"
+	ra_i=0
+	while [ "$ra_i" -lt "$API_WAIT" ]; do
+		sleep 1
+		if systemctl is-active --quiet dilla; then
+			log "dilla came up on systemd's restart"
+			return 0
+		fi
+		ra_i=$((ra_i + 1))
+	done
+	return 1
+}
+
+# restore_prev: the previous binary and core back in place, and dilla-media.service rewritten for
+# the previous binary (no PartOf either way, so starting dilla never restarts the SFU). The refresh
+# timer follows the previous binary too: off below the new scheme, and on again for a web3.13 or
+# later one, whose timer a failed rollback below web3.13 had disabled (final review M1). A timer
+# that will not enable is a warning here, not a second failure on top of the rollback.
+restore_prev() {
+	put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
+	put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
+	NEW_LEVEL="$OLD_LEVEL"
+	write_media_unit "$(media_unit_type)"
+	systemctl daemon-reload >&2 || :
+	if [ "$OLD_LEVEL" -ge 2 ]; then
+		systemctl enable --now dilla-media-refresh.timer >&2 ||
+			log "warning: systemd could not enable dilla-media-refresh.timer again; run: systemctl enable --now dilla-media-refresh.timer"
+	else
+		systemctl disable --now dilla-media-refresh.timer >&2 || :
+	fi
+}
+
+# restart_media_on_previous: dilla-media back on the previous binary, stopped first so the new one
+# lets go of turn.listen before anything else binds it.
+restart_media_on_previous() {
+	systemctl stop dilla-media >&2 || :
+	systemctl start dilla-media >&2 || :
+	wait_media_ready "$OLD_VERSION" "$OLD_NOTIFY" ||
+		log "warning: dilla-media did not become ready on the previous binary; read journalctl -o cat -u dilla-media"
+}
+
+# api_rollback: dilla did not come up on the new binary. The database goes back to the schema the
+# previous binary reads, the previous pair goes back, and, when dilla-media was restarted onto the
+# new binary, dilla-media is stopped and started on the previous one before dilla starts. A kept
+# dilla-media is not touched: it still runs the previous binary.
+api_rollback() {
+	log "error: dilla did not restart with the new binary"
+	# Stopped first: systemd restarts a failed dilla on its own (Restart=on-failure), and each
+	# start of the new binary would migrate the database up again.
+	STOPPED=1
+	systemctl stop dilla >&2 || STOPPED=0
+	# Read with the PREVIOUS binary: it loaded this dilla.toml a minute ago, and its `migrate
+	# status` reports a newer schema without refusing it. The new binary may refuse the config
+	# (a release that validates it more strictly), in which case it never migrated anything.
+	SCHEMA_AFTER=""
+	SCHEMA_AFTER="$(schema_version "$BIN_DIR/dillad.prev")" || {
+		SCHEMA_AFTER=""
+		rollback_stuck "could not read the database's schema version with the previous binary"
+	}
+	if [ "$SCHEMA_AFTER" -gt "$SCHEMA_BEFORE" ]; then
+		# The new binary got past its config load and migrated, so it can take the database down.
+		[ "$STOPPED" -eq 1 ] || rollback_stuck "dilla could not be stopped, so the database cannot be migrated down safely"
+		log "the new binary migrated the database from schema $SCHEMA_BEFORE to $SCHEMA_AFTER; taking it back to $SCHEMA_BEFORE"
+		runuser -u dillad -- "$BIN_DIR/dillad" migrate down --to="$SCHEMA_BEFORE" --i-know-what-i-am-doing --config="$CONF" >&2 ||
+			rollback_stuck "migrate down --to=$SCHEMA_BEFORE failed"
+	fi
+	log "putting the previous binary and core back"
+	if [ "$LIVEKIT_MODE_BEFORE" = in_process ]; then
+		systemctl disable --now dilla-media >&2 || :
+		cp -p "$CONF.prev" "$CONF"
+	fi
+	restore_prev
+	if [ "$LIVEKIT_MODE_BEFORE" = sidecar ] && [ "$MEDIA_RESTARTED" -eq 1 ]; then
+		log "dilla-media runs the new binary: stopping it, then starting it on the previous one before dilla"
+		restart_media_on_previous
+	fi
+	# dilla was stopped above; one that could not be stopped is restarted onto the previous binary.
+	api_verb=start
+	[ "$STOPPED" -eq 1 ] || api_verb=restart
+	if systemctl "$api_verb" dilla >&2; then
+		die "the upgrade failed and was rolled back; the previous release is running. Read why with: journalctl -o cat -u dilla"
+	fi
+	die "the upgrade failed and was rolled back, but dilla did not start with the previous binary either; read its log with: journalctl -o cat -u dilla"
 }
 
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
-	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
+	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME to v$NEW_VERSION"
+	upgrade_lock
 	LIVEKIT_MODE_BEFORE="$(livekit_mode)"
 	case "$LIVEKIT_MODE_BEFORE" in
 	in_process | sidecar) ;;
 	*) die "livekit.mode is $LIVEKIT_MODE_BEFORE; the upgrade supports in_process or sidecar" ;;
 	esac
+	MEDIA_DATA="$(conf_value instance data_dir)"
+	[ -n "$MEDIA_DATA" ] || MEDIA_DATA="$DATA_DIR"
+	# A release below the new scheme (web3.11, every web3.12.x) refuses turn.listen in every tls.mode
+	# but behind_proxy (its config validation), and an omitted tls.mode defaults to acme_tls_alpn, so
+	# a rollback there with the opt-in set would leave the instance down (R-UP11).
+	if ! new_scheme_release "$NEW_VERSION" && [ "$(conf_value tls mode)" != behind_proxy ] && [ -n "$(conf_value turn listen)" ]; then
+		die "v$NEW_VERSION refuses turn.listen in public mode (tls.mode is not behind_proxy; an omitted tls.mode is acme_tls_alpn), and dilla.toml sets it: remove turn.listen from dilla.toml first; public-mode TURN goes back to 443. Nothing was changed"
+	fi
+	# The binary being replaced: what a rollback starts again, and how its media server reports ready.
+	OLD_VERSION="$("$BIN_DIR/dillad" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || OLD_VERSION=""
+	OLD_LEVEL="$(json_get "$("$BIN_DIR/dillad" version --json 2>/dev/null | head -n 1)" media_level)"
+	case "$OLD_LEVEL" in '' | *[!0-9]*) OLD_LEVEL=1 ;; esac
+	OLD_NOTIFY=0
+	[ "$OLD_LEVEL" -lt 2 ] || OLD_NOTIFY=1
 	# The schema the previous binary runs on. The new binary migrates the database when it
 	# starts, and a dillad refuses a database newer than its own migrations, so a rollback must
 	# first take the database back to this version, with the new binary (the only one that knows
 	# the way down).
 	SCHEMA_BEFORE="$(schema_version "$BIN_DIR/dillad")" ||
 		die "could not read the database's schema version with the installed binary (runuser -u dillad -- $BIN_DIR/dillad migrate status --config=$CONF); nothing was changed"
-	# Last check before anything is written or stopped.
-	live_calls_preflight
+	MEDIA_RESTARTED=0
+	DECISION=restart
+	SFU_LEVEL=""
+	SFU_VERSION=""
+	if [ "$LIVEKIT_MODE_BEFORE" = sidecar ]; then
+		sfu_level
+		sfu_decision
+	fi
+	if [ "$ASSUME_YES" -eq 1 ] && [ "$RESTART_SFU" -eq 0 ] && [ "$LIVEKIT_MODE_BEFORE" = sidecar ]; then
+		log "note: --yes only lets a restart that this release needs end live calls; --restart-sfu restarts dilla-media now. --yes goes away in the next release"
+	fi
+	# Last check before anything is written or stopped, and only when the SFU restarts.
+	[ "$DECISION" = keep ] || live_calls_preflight
+
 	# The previous pair stays beside the new one, for the rollback below and by hand.
 	cp -p "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"
 	cp -p "$BIN_DIR/$CORE_NAME" "$BIN_DIR/$CORE_NAME.prev"
 	cp -p "$CONF" "$CONF.prev"
 	put "$WORK/$BIN_NAME" "$BIN_DIR/dillad" 0755
 	put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
-	write_media_unit
+	write_media_unit "$(media_unit_type)"
+	write_refresh_units
 	systemctl daemon-reload >&2 || die "systemd could not load dilla-media.service"
+	refresh_timer
+
 	if [ "$LIVEKIT_MODE_BEFORE" = in_process ]; then
+		# The one path that still ends calls by design: the SFU leaves the API process.
 		log "moving the SFU into dilla-media.service"
 		systemctl stop dilla >&2 || die "could not stop the previous in-process SFU"
 		set_livekit_mode sidecar
-	fi
-	if ! systemctl enable --now dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
-		log "error: dilla-media did not start; restoring the previous binary and config"
-		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || systemctl disable --now dilla-media >&2 || :
-		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || cp -p "$CONF.prev" "$CONF"
-		put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
-		put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
-		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || systemctl start dilla >&2 || :
-		die "the media service did not start; read journalctl -o cat -u dilla-media"
-	fi
-	log "restarting dilla"
-	if ! systemctl restart dilla >&2; then
-		log "error: dilla did not restart with the new binary"
-		# Stopped first: systemd restarts a failed dilla on its own (Restart=on-failure), and each
-		# start of the new binary would migrate the database up again.
-		STOPPED=1
-		systemctl stop dilla >&2 || STOPPED=0
-		# Read with the PREVIOUS binary: it loaded this dilla.toml a minute ago, and its `migrate
-		# status` reports a newer schema without refusing it. The new binary may refuse the config
-		# (a release that validates it more strictly), in which case it never migrated anything.
-		SCHEMA_AFTER=""
-		SCHEMA_AFTER="$(schema_version "$BIN_DIR/dillad.prev")" || {
-			SCHEMA_AFTER=""
-			rollback_stuck "could not read the database's schema version with the previous binary"
-		}
-		if [ "$SCHEMA_AFTER" -gt "$SCHEMA_BEFORE" ]; then
-			# The new binary got past its config load and migrated, so it can take the database down.
-			[ "$STOPPED" -eq 1 ] || rollback_stuck "dilla could not be stopped, so the database cannot be migrated down safely"
-			log "the new binary migrated the database from schema $SCHEMA_BEFORE to $SCHEMA_AFTER; taking it back to $SCHEMA_BEFORE"
-			runuser -u dillad -- "$BIN_DIR/dillad" migrate down --to="$SCHEMA_BEFORE" --i-know-what-i-am-doing --config="$CONF" >&2 ||
-				rollback_stuck "migrate down --to=$SCHEMA_BEFORE failed"
-		fi
-		log "putting the previous binary and core back"
-		if [ "$LIVEKIT_MODE_BEFORE" = in_process ]; then
+		systemctl enable --now dilla-media >&2 || :
+		if ! wait_media_ready "$NEW_VERSION" "$NEW_NOTIFY"; then
+			log "error: dilla-media did not start; restoring the previous binary and config"
 			systemctl disable --now dilla-media >&2 || :
 			cp -p "$CONF.prev" "$CONF"
+			restore_prev
+			systemctl start dilla >&2 || :
+			die "the media service did not start; read journalctl -o cat -u dilla-media"
 		fi
-		put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
-		put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
-		if systemctl restart dilla >&2; then
-			die "the upgrade failed and was rolled back; the previous release is running. Read why with: journalctl -o cat -u dilla"
+		MEDIA_RESTARTED=1
+		log "restarting dilla"
+		restart_api || api_rollback
+		doctor_and_report || exit 1
+		log "upgrade done: dilla and dilla-media run v$NEW_VERSION; the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
+		log "dilla.service was not rewritten; compare it with the release's deploy/dilla.service"
+		exit 0
+	fi
+
+	if [ "$DECISION" = keep ]; then
+		log "restarting dilla; dilla-media keeps running v$SFU_VERSION"
+		restart_api || api_rollback
+		doctor_and_report || exit 1
+		log "upgrade done: dilla runs v$NEW_VERSION. dilla-media keeps v$SFU_VERSION until its calls end; dilla-media-refresh.timer then restarts it onto v$NEW_VERSION"
+	else
+		# Each restarts once, dilla-media first: the API then sees the new SFU's capabilities at
+		# its start (R-UP11), and a media server that does not come up never takes the API down.
+		MEDIA_RESTARTED=1
+		if ! new_scheme_release "$NEW_VERSION" && [ "${SFU_LEVEL:-0}" -ge 2 ]; then
+			log "rolling back below v0.1.0-web3.$NEW_SCHEME_FIRST while dilla-media runs v$SFU_VERSION, which holds turn.listen: stopping dilla-media first, which ends every live call, then starting it on v$NEW_VERSION before dilla"
+			systemctl stop dilla-media >&2 || die "could not stop dilla-media; nothing else was restarted"
+			systemctl start dilla-media >&2 || log "dilla-media did not report ready at once; waiting up to $MEDIA_WAIT s for systemd's retry"
+		else
+			log "restarting dilla-media on v$NEW_VERSION first"
+			systemctl restart dilla-media >&2 || log "dilla-media did not report ready at once; waiting up to $MEDIA_WAIT s for systemd's retry"
 		fi
-		die "the upgrade failed and was rolled back, but dilla did not start with the previous binary either; read its log with: journalctl -o cat -u dilla"
+		if ! wait_media_ready "$NEW_VERSION" "$NEW_NOTIFY"; then
+			log "error: dilla-media did not become ready on v$NEW_VERSION; putting the previous binary back (dilla was not restarted and still runs the previous release)"
+			restore_prev
+			restart_media_on_previous
+			die "the media service did not start on the new binary; read journalctl -o cat -u dilla-media"
+		fi
+		log "dilla-media runs v$NEW_VERSION; restarting dilla"
+		restart_api || api_rollback
+		# The TURN handoff: the new dilla-media binds turn.listen once the API let go of it.
+		if [ "$NEW_NOTIFY" -eq 1 ] && turn_listen_served && has_turn "$(json_get "$NEW_JSON" media_capabilities)"; then
+			th_i=0
+			until media_state && has_turn "$MS_CAPS"; do
+				if [ "$th_i" -ge "$MEDIA_WAIT" ]; then
+					log "warning: dilla-media has not bound turn.listen $MEDIA_WAIT s after dilla restarted; dillad doctor's turn leg names who serves TURN"
+					break
+				fi
+				sleep 1
+				th_i=$((th_i + 1))
+			done
+			if has_turn "$MS_CAPS"; then log "dilla-media serves TURN on turn.listen"; fi
+		fi
+		doctor_and_report || exit 1
+		log "upgrade done: dilla and dilla-media run v$NEW_VERSION"
 	fi
-	doctor_and_report || exit 1
-	log "restarting the sidecar SFU on the new binary; this disconnects everyone in a call, and not every client rejoins"
-	if ! systemctl restart dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
-		die "the API upgraded, but dilla-media did not become ready; read journalctl -o cat -u dilla-media"
-	fi
-	log "upgrade done; the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
+	log "the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
 	log "dilla.service was not rewritten; compare it with the release's deploy/dilla.service"
 	exit 0
 fi
@@ -811,8 +1671,9 @@ WantedBy=multi-user.target
 UNIT
 put "$WORK/dilla.service" "$UNIT_PATH" 0644
 
-# deploy/dilla-media.service, verbatim.
-write_media_unit
+# deploy/dilla-media.service, and the refresh timer with its service and script, verbatim.
+write_media_unit "$(media_unit_type)"
+write_refresh_units
 
 if getent passwd dillad >/dev/null 2>&1; then
 	log "the dillad user exists"
@@ -893,9 +1754,11 @@ fi
 
 log "starting the service"
 STATUS=0
-if systemctl daemon-reload >&2 && systemctl enable --now dilla-media >&2 &&
-	runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2 &&
+MEDIA_DATA="$DATA_DIR"
+if systemctl daemon-reload >&2 && { systemctl enable --now dilla-media >&2 || :; } &&
+	wait_media_ready "$NEW_VERSION" "$NEW_NOTIFY" &&
 	systemctl enable --now dilla >&2; then
+	refresh_timer
 	doctor_and_report || STATUS=1
 else
 	STATUS=1

@@ -82,7 +82,7 @@ export class HttpClient {
         }
         const responseBody = await readBody(response, r.maxBodyBytes);
         if ((r.ok ?? [200, 201, 204]).includes(response.status)) return { status: response.status, body: responseBody };
-        error = decodeErrorBody(response.status, responseBody, response.headers.get('Retry-After'));
+        error = decodeErrorBody(response.status, responseBody, response.headers.get('Retry-After'), generation !== null);
       } catch (e) {
         if (r.signal?.aborted) throw abort();
         if (e instanceof DillaHttpError) throw e;
@@ -91,7 +91,8 @@ export class HttpClient {
         error = new DillaHttpError({ status: 0, code: 'E_NETWORK',
           detail: timedOut ? 'the request timed out' : e instanceof Error ? e.message : 'network failure', retryAfterMs: null, extra: [] });
       }
-      if (error.status === 401 && r.auth !== false && !reauthenticated) {
+      // UP7c: a proxy's 401 (no X-Dilla-Generation) says nothing about the session: no re-authentication.
+      if (error.status === 401 && error.fromInstance !== false && r.auth !== false && !reauthenticated) {
         reauthenticated = true;
         const renewed = await this.deps.reauthenticate();
         if (renewed && attempt < RETRY.maxAttempts) continue;
@@ -126,8 +127,10 @@ async function readBody(response: Response, maxBodyBytes?: number): Promise<Uint
   if (bound === undefined) {
     return new Uint8Array(await response.arrayBuffer());
   }
+  // UP7b fix round 2 (N2): an oversized error page still says who answered (a proxy's carries no X-Dilla-Generation).
   const tooLarge = (): DillaHttpError => new DillaHttpError({ status: response.status, code: 'E_BODY_TOO_LARGE',
-    detail: 'the response body is larger than ' + bound + ' bytes', retryAfterMs: null, extra: [] });
+    detail: 'the response body is larger than ' + bound + ' bytes', retryAfterMs: null, extra: [],
+    fromInstance: response.headers.get('X-Dilla-Generation') !== null });
   const length = response.headers.get('Content-Length');
   if (length !== null && /^\d+$/.test(length) && Number(length) > bound) {
     await response.body?.cancel();

@@ -9,7 +9,7 @@ import type { PageCallOptions } from '../../call/session.ts';
 import { t } from '../../strings/index.ts';
 import { A, CHANNELS, FakeClient, FakeSession, GENV, callState } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
-import { AFK_READ_WAIT_MS, REMOVED_HOLD_MS, RESTORE_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
+import { AFK_READ_WAIT_MS, HELD_RETRY_MAX_MS, REMOVED_HOLD_MS, RESTORE_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
 
 const AFK_CH = 'af'.repeat(16);
 const B = 'b7'.repeat(16);
@@ -62,6 +62,10 @@ function harness(o: { lagging?: boolean; recoverEnded?: (id: string) => boolean 
   const log: string[] = [];
   const sessions: Session[] = [];
   const started: { channelId: string; opts: PageCallOptions }[] = [];
+  /** UP7: what the worker's callJoin answers about a held group (a resume's gate reads it). */
+  const answer = { resumed: true, expired: false };
+  /** UP7: the next starts fail with these, in order (a 503 with retry_after_ms, an unreachable instance). */
+  const failures: Error[] = [];
   const module: VoiceModule = {
     isVoiceSupported: () => ({ ok: true as const, path: 'insertable-streams' as const }),
     localDecodeList: () => 'vp8',
@@ -69,7 +73,19 @@ function harness(o: { lagging?: boolean; recoverEnded?: (id: string) => boolean 
     startPageCall: vi.fn<VoiceModule['startPageCall']>(async (_deps, target, opts) => {
       started.push({ channelId: target.channelId, opts });
       await Promise.resolve();
+      const failure = failures.shift();
+      if (failure !== undefined) throw failure;
+      // As the real session: a resume's gate runs after callJoin answered and before the connect; a refusal leaves.
+      if (opts.resume !== undefined) {
+        try {
+          await opts.resume.gate({ ...answer });
+        } catch (e) {
+          await client.call({ m: 'callLeave', reason: 'user' });
+          throw e;
+        }
+      }
       const s = new Session(log, client);
+      s.channelId = target.channelId;
       sessions.push(s);
       // As the worker: phase 'in' is published before callJoin answers (L-TS-56 step 1).
       client.set('call', callState({ phase: 'in', channelId: target.channelId, callId: target.channelId }));
@@ -112,7 +128,7 @@ function harness(o: { lagging?: boolean; recoverEnded?: (id: string) => boolean 
     act(() => { client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
     act(() => view.rerender({ afk: { channels: AFK_SET } }));
   };
-  return { client, log, sessions, started, module, view, said, joined, setAfk, awayMe, cut, lefts,
+  return { client, log, sessions, started, module, view, said, joined, setAfk, awayMe, cut, lefts, answer, failures,
     get v() { return view.result.current; } };
 }
 
@@ -383,6 +399,91 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
     h.setAfk(B, { pending: true, seq: 2 });
     h.cut();
     await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+  });
+});
+
+describe('UP11: a Remove while the media is reconnecting is a lost connection, not a removal', () => {
+  const GONE = { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null };
+  /** The worker's call slice says removed with `error` (a kick or ban: E_NOT_FOUND, the server is gone). */
+  const cutWith = (h: ReturnType<typeof harness>, error: typeof GONE) => {
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV, error })); });
+    act(() => h.view.rerender({ afk: { channels: AFK_SET } }));
+  };
+
+  it('the absence Remove lands while reconnecting: the media stops, nothing says removed, and the recovery rejoins', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.cut();
+    await waitFor(() => expect(general.leave).toHaveBeenCalledWith('removed'));
+    expect(h.v.session).toBeNull();
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: REMOVED_HOLD_MS + 4_000 });
+    expect(h.started[1].channelId).toBe(GENV);
+    expect(h.v.notice).toBeNull();
+    expect(h.v.lasting).toBe('');
+    expect(h.said).not.toContain(t('voice.removed'));
+  });
+
+  it('control: the same Remove while connected still ends the call as a removal, with no rejoin', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    h.cut();
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('control: a kick or ban (E_NOT_FOUND) while reconnecting still ends the call, with no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    cutWith(h, GONE);
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    expect(h.v.lasting).toBe(t('voice.removedNotMember'));
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('control: a plain Remove while reconnecting whose re-read then says the server is gone ends the call, with no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.cut();
+    await flush();
+    // The worker's re-read of the channel answers 404 within the hold: this device was kicked or banned.
+    cutWith(h, GONE);
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    expect(h.v.lasting).toBe(t('voice.removedNotMember'));
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('a recovery so started that then learns the server is gone (E_NOT_FOUND) stops, rejoins nothing and says why', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.cut();
+    await waitFor(() => expect(h.v.recoveryChannelId).toBe(GENV), HELD);
+    cutWith(h, GONE);
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+    expect(h.v.lasting).toBe(t('voice.removedNotMember'));
+  });
+
+  it('control: the AFK sweep’s cut while reconnecting says afk.moved, with no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.setAfk(A, { pending: true, seq: 2 });
+    h.cut();
+    await waitFor(() => expect(h.v.lasting).toBe(MOVED));
+    await wait(REMOVED_HOLD_MS + 1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
   });
 });
 
@@ -916,6 +1017,396 @@ describe('late rejoin (Jonas 2026-10-21): a device gone longer than its server�
     goneFor(600_000);
     act(() => h.v.restore(GENV, false, false));
     await until(() => h.started.length === 1);
+    expect(h.v.notice).toBeNull();
+  });
+});
+
+describe('UP7: calls survive an upgrade (Q1 = B, R-UP6 to R-UP9)', () => {
+  const unavailable = (ms: number) => Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE', status: 503, retryAfterMs: ms });
+  const forbidden = () => Object.assign(new Error('E_FORBIDDEN'), { code: 'E_FORBIDDEN', status: 403, retryAfterMs: null });
+  const unreachable = () => Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK', status: 0, retryAfterMs: null });
+  type H = ReturnType<typeof harness>;
+  const offline = (h: H) => { act(() => { h.client.set('connection', { status: 'offline', generation: null }); }); };
+  const online = (h: H) => { act(() => { h.client.set('connection', { status: 'online', generation: null }); }); };
+  /** A just-reloaded page's held restore, saved `agoMs` before now with an absence since `goneMs` before now. */
+  const heldNow = (agoMs = 0, goneMs = agoMs) => ({ at: Date.now() - agoMs, gone: Date.now() - goneMs });
+
+  it('the update path: holdForReload holds the live call (callHold), posts no callLeave, and nothing rejoins', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    await act(async () => { await h.v.holdForReload(); });
+    expect(general.leave).toHaveBeenCalledWith('hold');
+    expect(h.client.callsOf('callHold')).toEqual([{ m: 'callHold', channelId: GENV }]);
+    expect(h.client.callsOf('callLeave')).toEqual([]);
+    expect(h.v.session).toBeNull();
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('the update path while recovering: the held group is persisted (callHold) and no attempt joins', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    await act(async () => { await h.v.holdForReload(); });
+    expect(h.client.callsOf('callHold')).toEqual([{ m: 'callHold', channelId: GENV }]);
+    await wait(2_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.client.callsOf('callRelease')).toEqual([]);
+  });
+
+  it('an update reload mid-call resumes the held group at once, its AFK read in parallel, with no fresh join or leave', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => h.v.restore(GENV, false, false, heldNow()));
+    // The AFK read is out before the start's callJoin has answered: they run side by side.
+    expect(h.client.callsOf('afkRead')).toHaveLength(1);
+    // No recovery tick (1 s) is waited for.
+    await until(() => h.started.length === 1, 300);
+    expect(h.started[0].opts.resume).toBeDefined();
+    await until(() => h.v.session !== null, 1_000);
+    expect(h.v.recoveryChannelId).toBeNull();
+    expect(h.v.notice).toBeNull();
+    await advance(3_000);
+    expect(h.started).toHaveLength(1);
+    expect(h.client.callsOf('callLeave')).toEqual([]);
+    expect(h.client.callsOf('callRelease')).toEqual([]);
+  });
+
+  it('the parallel AFK read still cancels before the connect: away since, the resume leaves (its one self-Remove)', async () => {
+    const h = harness();
+    h.awayMe(A);
+    act(() => h.v.restore(GENV, false, false, heldNow()));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.sessions).toEqual([]);
+    expect(h.client.callsOf('callLeave')).toEqual([{ m: 'callLeave', reason: 'user' }]);
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('late rejoin never fires on an update reload: the wall clock moved 10 min ahead before pagehide (AFK timeout 60 s, unexpired hold)', async () => {
+    fakeClocks();
+    const old = harness();
+    old.setAfk(A, { timeoutSeconds: 60 });
+    act(() => old.v.join(GENV));
+    await until(() => old.v.session !== null);
+    await advance(1_000);
+    // The clock moves before pagehide: the old page's liveness sees it as a 10-minute gap, and saves that absence.
+    goneFor(600_000);
+    const gone = old.v.absentSince();
+    const at = Date.now();
+    expect(at - gone).toBeGreaterThanOrEqual(600_000);
+    await act(async () => { await old.v.holdForReload(); });
+    expect(old.client.callsOf('callHold')).toEqual([{ m: 'callHold', channelId: GENV }]);
+    old.view.unmount();
+
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    h.answer.expired = false;
+    act(() => h.v.restore(GENV, false, false, { at, gone }));
+    await until(() => h.v.session !== null);
+    expect(h.v.notice).toBeNull();
+    expect(h.v.lasting).toBe('');
+    expect(h.client.callsOf('callLeave')).toEqual([]);
+  });
+
+  it('late rejoin still fires for an expired hold: an absence over the AFK timeout ends leftAway, with no rejoin', async () => {
+    fakeClocks();
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    h.answer.expired = true;
+    act(() => h.v.restore(GENV, false, false, heldNow(200_000)));
+    await until(() => h.v.recoveryChannelId === null);
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    expect(h.v.session).toBeNull();
+    // The gate refused after the resume's callJoin: the session left it (the one self-Remove).
+    expect(h.client.callsOf('callLeave')).toEqual([{ m: 'callLeave', reason: 'user' }]);
+    await advance(5_000);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('a hold the worker no longer had (a fresh join) counts as expired only past HOLD_MS', async () => {
+    fakeClocks();
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    h.answer.resumed = false;
+    h.answer.expired = false;
+    // Saved 90 s ago with the absence then: not expired by the page's own count, so no leftAway.
+    act(() => h.v.restore(GENV, false, false, heldNow(90_000)));
+    await until(() => h.v.session !== null);
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('E_UNAVAILABLE (503) is transient: the next attempt waits retry_after_ms, and the recovery goes on', async () => {
+    fakeClocks();
+    const h = harness();
+    h.failures.push(unavailable(5_000));
+    act(() => h.v.restore(GENV, false, false));
+    await until(() => h.started.length === 1, 2_000);
+    // A restore asks every second, but not before the instance's own wait.
+    await advance(3_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    await until(() => h.started.length === 2, 3_000);
+    await until(() => h.v.session !== null);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('a held resume refused 503 waits retry_after_ms and resumes through the gate again; E_FORBIDDEN stays permanent', async () => {
+    fakeClocks();
+    const h = harness();
+    h.failures.push(unavailable(3_000));
+    act(() => h.v.restore(GENV, false, false, heldNow()));
+    await until(() => h.started.length === 1, 300);
+    await advance(2_000);
+    expect(h.started).toHaveLength(1);
+    await until(() => h.started.length === 2, 3_000);
+    expect(h.started[1].opts.resume).toBeDefined();
+    await until(() => h.v.session !== null);
+
+    const g = harness();
+    g.failures.push(forbidden());
+    act(() => g.v.restore(GENV, false, false, heldNow()));
+    await until(() => g.v.recoveryChannelId === null, 1_000);
+    await advance(5_000);
+    expect(g.started).toHaveLength(1);
+  });
+
+  it('the restore keeps trying past 120 s of instance downtime, backing off 1, 2, 4 … 30 s, and tries at once when it answers', async () => {
+    fakeClocks();
+    const h = harness();
+    offline(h);
+    for (let i = 0; i < 100; i++) h.failures.push(unreachable());
+    act(() => h.v.restore(GENV, false, false, heldNow()));
+    await advance(200_000);
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    // The fast attempt, then 1, 2, 4, 8, 16, 30, 30, 30, 30, 30 s apart: never every second.
+    expect(h.started.length).toBeGreaterThanOrEqual(8);
+    expect(h.started.length).toBeLessThanOrEqual(13);
+    const before = h.started.length;
+    h.failures.length = 0;
+    online(h);
+    await advance(100);
+    expect(h.started).toHaveLength(before + 1);
+    await until(() => h.v.session !== null, 1_000);
+  });
+
+  it('the restore window counts instance time: it does not run while the instance is down, and ends 120 s of answers later', async () => {
+    fakeClocks();
+    const h = harness();
+    // Every AFK read fails, so no attempt joins (B-I1): only the window can end the restore.
+    const base = h.client.handler;
+    h.client.handler = (c) => (c.m === 'afkRead' ? Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' })) : base(c));
+    offline(h);
+    act(() => h.v.restore(GENV, false, false));
+    await advance(150_000);
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    online(h);
+    await advance(100_000);
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    await advance(25_000);
+    expect(h.v.recoveryChannelId).toBeNull();
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
+    // Giving up lets the held group go.
+    expect(h.client.callsOf('callRelease')).toEqual([{ m: 'callRelease' }]);
+  });
+
+  it('R-UP9: a lost room inside an instance outage does not count toward the late-rejoin absence', async () => {
+    fakeClocks();
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    act(() => h.v.join(GENV));
+    await until(() => h.v.session !== null);
+    await advance(1_000);
+    const general = h.sessions[0];
+    // The API restarts: the gateway goes, LiveKit keeps resuming for a while, then gives up.
+    offline(h);
+    await advance(30_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    // The instance stays down 100 s more: every AFK read fails, so nothing joins and nothing ends.
+    const base = h.client.handler;
+    let down = true;
+    h.client.handler = (c) => (c.m === 'afkRead' && down ? Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' })) : base(c));
+    await advance(100_000);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    down = false;
+    online(h);
+    await until(() => h.started.length === 2, 3_000);
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('R-UP9: a suspend still counts from its start, whatever the instance did after the wake', async () => {
+    fakeClocks();
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    act(() => h.v.join(GENV));
+    await until(() => h.v.session !== null);
+    await advance(1_000);
+    const general = h.sessions[0];
+    goneFor(600_000);
+    await advance(1_000);
+    offline(h);
+    await advance(1_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    online(h);
+    await until(() => h.v.recoveryChannelId === null);
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('the person leaving a pending recovery posts callRelease', async () => {
+    const g = harness();
+    const general = await g.joined(GENV);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    act(() => g.v.leave());
+    expect(g.client.callsOf('callRelease')).toEqual([{ m: 'callRelease' }]);
+    expect(g.v.recoveryChannelId).toBeNull();
+  });
+
+  it('giving up the recovery (its channel gone) posts callRelease', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    act(() => { h.client.set(`channels:${A}`, CHANNELS.filter((c) => c.id !== GENV)); });
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.client.callsOf('callRelease')).toEqual([{ m: 'callRelease' }]);
+  });
+});
+
+describe('UP7 fix round 1', () => {
+  type H = ReturnType<typeof harness>;
+  const failReads = (h: H) => {
+    const base = h.client.handler;
+    let failing = true;
+    h.client.handler = (c) => (c.m === 'afkRead' && failing ? Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' })) : base(c));
+    return { stop: () => { failing = false; } };
+  };
+
+  for (const by of ['the worker', 'the page clock'] as const) {
+    it(`an expired hold (by ${by}) with failing AFK reads makes at most one join attempt before a definite read`, async () => {
+      fakeClocks();
+      const h = harness();
+      if (by === 'the worker') { h.answer.expired = true; } else { h.answer.resumed = false; h.answer.expired = false; }
+      const reads = failReads(h);
+      const at = by === 'the worker' ? Date.now() : Date.now() - 200_000;
+      act(() => h.v.restore(GENV, false, false, { at, gone: Date.now() }));
+      await advance(20_000);
+      // The resume's gate refused once (its one self-Remove); later attempts read first and join nothing on an unknown read.
+      expect(h.started.length).toBeLessThanOrEqual(1);
+      expect(h.client.callsOf('callLeave').length).toBeLessThanOrEqual(1);
+      expect(h.v.recoveryChannelId).toBe(GENV);
+      // A definite clear read joins, through the ordinary path (no gate).
+      reads.stop();
+      await until(() => h.v.session !== null, 3_000);
+      expect(h.started.at(-1)?.opts.resume).toBeUndefined();
+    });
+  }
+
+  it("R-UP9: the device's own network loss is no instance outage: offline longer than the AFK timeout ends leftAway", async () => {
+    fakeClocks();
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    act(() => h.v.join(GENV));
+    await until(() => h.v.session !== null);
+    await advance(1_000);
+    const general = h.sessions[0];
+    // The device loses its network (awake): the browser says offline, and the worker's connection goes with it.
+    const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    act(() => { h.client.set('connection', { status: 'offline', generation: null }); });
+    await advance(30_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await advance(100_000);
+    expect(h.started).toHaveLength(1);
+    onLine.mockReturnValue(true);
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    await until(() => h.v.recoveryChannelId === null);
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    expect(h.started).toHaveLength(1);
+  });
+});
+
+describe('UP6c tail (m2): a held restore the worker keeps refusing backs off', () => {
+  /** Advances in 50 ms steps for `ms`, noting the fake time of every new start. */
+  const startsOver = async (h: { started: unknown[] }, ms: number): Promise<number[]> => {
+    const at: number[] = [];
+    let seen = h.started.length;
+    for (let t = 0; t < ms; t += 50) {
+      await advance(50);
+      while (h.started.length > seen) { seen += 1; at.push(Date.now()); }
+    }
+    return at;
+  };
+  // A refusal the worker answers with the hold kept (a 400 at the resume commit): not permanent, not transient.
+  const keptHold = () => Object.assign(new Error('E_INVALID_REQUEST'), { code: 'E_INVALID_REQUEST', status: 400, retryAfterMs: null });
+
+  it('while the instance answers, the retries come 1, 2, 4, then 8 s apart, capped at HELD_RETRY_MAX_MS', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    for (let i = 0; i < 6; i++) h.failures.push(keptHold());
+    const t0 = Date.now();
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    const at = await startsOver(h, 24_500);
+    const gaps = [at[0] - t0, ...at.slice(1).map((x, i) => x - at[i])].map((g) => Math.round(g / 1_000));
+    expect(HELD_RETRY_MAX_MS).toBe(8_000);
+    expect(gaps).toEqual([0, 1, 2, 4, 8, 8]);
+  });
+
+  it('a tick that finds the previous attempt still starting launches nothing and does not move the backoff on', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    // The restore's own attempt takes 2.5 s to be refused (the worker's commit round trips, a slow instance).
+    const original = h.module.startPageCall;
+    let first = true;
+    h.module.startPageCall = vi.fn(async (...args: Parameters<VoiceModule['startPageCall']>) => {
+      if (first) { first = false; h.started.push({ channelId: args[1].channelId, opts: args[2] }); await new Promise((r) => setTimeout(r, 2_500)); throw keptHold(); }
+      return original(...args);
+    });
+    for (let i = 0; i < 3; i++) h.failures.push(keptHold());
+    const t0 = Date.now();
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    const at = await startsOver(h, 9_500);
+    // At once; the ticks at 1 and 2 s find it starting; the tick at 3 s retries, then 2 s, then 4 s later.
+    expect(at.map((x) => Math.round((x - t0) / 1_000))).toEqual([0, 3, 5, 9]);
+  });
+
+  it('the instance answering again starts the backoff over at 1 s, and a success ends it', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    for (let i = 0; i < 4; i++) h.failures.push(keptHold());
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    await startsOver(h, 7_200);                       // attempts at 0, 1, 3 and 7 s: the next would be 8 s later
+    expect(h.started).toHaveLength(4);
+    act(() => { h.client.set('connection', { status: 'offline', generation: null }); });
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    const at = await startsOver(h, 1_500);           // at once, then (that one succeeding) nothing more
+    expect(at).toHaveLength(1);
+    await until(() => h.v.session !== null, 1_000);
+    await advance(20_000);
+    expect(h.started).toHaveLength(5);
+  });
+});
+
+describe('UP7b: the instance answering again', () => {
+  it('after a 10-minute outage, the held restore attempts within 100 ms of the instance answering, whatever its backoff', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'offline', generation: null }); });
+    for (let i = 0; i < 400; i++) h.failures.push(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK', status: 0, retryAfterMs: null }));
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    await advance(600_000);
+    // Backed off to 30 s apart: the next attempt of its own would be up to 30 s away.
+    await advance(1_000);
+    const before = h.started.length;
+    h.failures.length = 0;
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    await advance(100);
+    expect(h.started).toHaveLength(before + 1);
+    await until(() => h.v.session !== null, 1_000);
     expect(h.v.notice).toBeNull();
   });
 });

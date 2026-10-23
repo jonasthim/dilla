@@ -3,8 +3,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Final review S-I1: runs the whole workflow by hand, upgrade-e2e included.
+  workflow_dispatch:
+# The token is read-only everywhere: no job writes to the repository. sfu-compat reads the previous release through
+# `gh release list/download` (contents: read); artifacts move through the run's own runtime token, not this one.
+permissions:
+  contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
@@ -781,6 +787,130 @@ jobs:
           path: e2e/test-results
           if-no-files-found: error
 
+  # UP4 (calls survive an upgrade): the previous release's media server under this tree's API. e2e/voice/upgrade.spec.ts runs
+  # its compat leg (B1: an API-only restart under a call) with the test host's sidecar SFU taken from the PREVIOUS release's
+  # dillad (DILLA_SFU_BIN). scripts/release-meta.mjs decides whether that pairing is promised: when this tree needs a newer
+  # media server than the previous release runs (min_sfu_media_level above its media_level), the release is incompatible by
+  # design, the leg is skipped with a notice, and the job only checks that the newest release notes say "required". The
+  # previous release is read by the same rule as release.yml reads it (no release.json: web3.11 = media level 1).
+  sfu-compat:
+    needs: [changes, rust-native, rust-wasi, web-build]
+    if: needs.changes.outputs.e2e != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: This tree's media levels
+        run: |
+          go build -o target/dillad ./cmd/dillad
+          target/dillad version --json > "$RUNNER_TEMP/new-version.json"
+          cat "$RUNNER_TEMP/new-version.json"
+      - name: The previous release, verified against its SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary
+      - name: Is the previous media server promised to work?
+        id: plan
+        run: node scripts/release-meta.mjs compat --version-json "$RUNNER_TEMP/new-version.json" --previous-dir "$RUNNER_TEMP/previous"
+      - name: An incompatible release says "required" in its notes
+        if: steps.plan.outputs.run == 'false'
+        run: node scripts/release-meta.mjs notes-required docs/deploy/releases
+      - name: The compat leg against the previous release's media server
+        if: steps.plan.outputs.run == 'true'
+        run: npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+          DILLA_SFU_BIN: ${{ runner.temp }}/previous/dillad-linux-amd64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: sfu-compat-results
+          path: e2e/test-results
+          if-no-files-found: error
+
+  # Final review S-I1 (ruling final-S-I1): the full calls-survive-an-upgrade acceptance run (e2e/voice/upgrade.spec.ts with
+  # DILLA_E2E_UPGRADE=1: B1, B2, A2 and A), Chromium and Firefox, on a push to main and on workflow_dispatch only. It is not
+  # in ci-ok's needs, so it never makes a pull request red: an upgrade regression shows after the merge, and a release
+  # still needs its quiet-machine run. The voice suites of chromium-web and firefox-web skip the spec (no opt-in), and
+  # sfu-compat runs only its compat leg. The spec's own timeout is 25 minutes; the job's budget is one runner's cap.
+  upgrade-e2e:
+    needs: [changes, rust-native, rust-wasi, web-build]
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.e2e != 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      # Headless Firefox needs an audio server, or every AudioContext stays suspended.
+      - if: matrix.engine == 'firefox'
+        run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:voice:${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+          DILLA_E2E_UPGRADE: '1'
+      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: upgrade-e2e-results-${{ matrix.engine }}
+          path: e2e/test-results
+          if-no-files-found: error
+
   deny:
     needs: [changes]
     if: needs.changes.outputs.core != 'false'
@@ -1053,7 +1183,7 @@ jobs:
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, sfu-compat, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:

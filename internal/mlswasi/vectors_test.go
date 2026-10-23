@@ -70,19 +70,22 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // web-3.1 adds the community_changed (op 54) frame case: frames 30 -> 31, total 349 -> 350.
 // web3.7 RB1 adds the message.ct with a null class frame case: frames 31 -> 32, total 350 -> 351.
 // AW3 adds the two afk_away (op 55) frame cases: frames 32 -> 34, total 351 -> 353.
+// UP6b adds the kind-3 mls.handshake withdrawn frame and the withdrawn blob vectors (2 cases x ref
+// and blob, 7 rejects): frames 34 -> 46, total 353 -> 365. The rejects' named codes are checked only
+// where the core builds its client engine (native, wasm32-unknown); this wasip1 core has none.
 var wantSuiteCases = map[string]int{
 	"envelope":   15,
 	"franking":   4,
 	"sframe":     176,
 	"identity":   8,
-	"frames":     34,
+	"frames":     46,
 	"attachment": 14,
 	"rejects":    102,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 353
+const wantTotalCases = 365
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}

@@ -466,6 +466,44 @@ func (q *Queries) GetVoiceSession(ctx context.Context, arg GetVoiceSessionParams
 	return i, err
 }
 
+const listAllLiveVoiceSessions = `-- name: ListAllLiveVoiceSessions :many
+SELECT call_id, channel_id, group_id, livekit_room, started, ended
+FROM voice_sessions WHERE ended IS NULL
+ORDER BY started, call_id
+`
+
+// Every live call of the instance, oldest first: the call routes reconcile each one's room at boot
+// (UP2, calls survive an upgrade).
+func (q *Queries) ListAllLiveVoiceSessions(ctx context.Context) ([]VoiceSessions, error) {
+	rows, err := q.db.QueryContext(ctx, listAllLiveVoiceSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VoiceSessions{}
+	for rows.Next() {
+		var i VoiceSessions
+		if err := rows.Scan(
+			&i.CallID,
+			&i.ChannelID,
+			&i.GroupID,
+			&i.LivekitRoom,
+			&i.Started,
+			&i.Ended,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBans = `-- name: ListBans :many
 SELECT community_id, user_id, reason, by_user, created, expires
 FROM bans WHERE community_id = ? ORDER BY created DESC, user_id

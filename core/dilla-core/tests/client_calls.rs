@@ -138,6 +138,34 @@ fn leave_rotate_and_forget() {
     assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_CORE_STATE");
 }
 
+/// UP13: `call_rotate` takes this device's own self-Remove out of the commit it builds (OpenMLS
+/// refuses to commit it), for that build only. Once the rotation is refused and aborted, the queue
+/// still holds the self-Remove, so a peer's winning commit of it is processed: the leaf is gone
+/// (state 4), not the group state lost (state 3).
+#[test]
+fn an_aborted_rotation_keeps_the_own_self_remove_a_peer_commits() {
+    let (mut call, mut alice, mut bob, _) = call_raw_bob();
+    let p = alice.core.call_leave_proposal(&CALL).expect("proposal");
+    let leaf = u64::from(call.leaf_of(alice.device));
+    let seq = call.propose_bytes(decode_epoch_proposal(&p).1);
+    call.handshakes
+        .iter_mut()
+        .find(|h| h.seq == seq)
+        .expect("row")
+        .sender = Some(leaf);
+    alice.sync(&call);
+    alice.core.call_rotate(&CALL).expect("rotate");
+    alice.core.commit_abort(&CALL).expect("abort");
+
+    bob.queue_proposal(&call, seq);
+    bob.self_update(&mut call);
+    assert_eq!(
+        alice.sync(&call).state,
+        4,
+        "Alice processes Bob's commit of her self-Remove: her leaf is gone, her state not lost"
+    );
+}
+
 /// Attacker: an instance that adds a leaf for a user whose signed list this device never fetched, hoping the pending verdict lets audio through.
 #[test]
 fn no_media_key_while_a_leaf_is_pending() {

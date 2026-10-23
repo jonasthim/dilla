@@ -72,6 +72,20 @@ func (q *Queries) ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownPa
 	return err
 }
 
+const clearWithdrawable = `-- name: ClearWithdrawable :exec
+UPDATE mls_pending_proposals SET withdrawable = 0 WHERE group_id = ? AND ref = ?
+`
+
+type ClearWithdrawableParams struct {
+	GroupID id.ID
+	Ref     []byte
+}
+
+func (q *Queries) ClearWithdrawable(ctx context.Context, arg ClearWithdrawableParams) error {
+	_, err := q.db.ExecContext(ctx, clearWithdrawable, arg.GroupID, arg.Ref)
+	return err
+}
+
 const closeGroup = `-- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = ? WHERE group_id = ?
 `
@@ -386,7 +400,7 @@ func (q *Queries) GetLastResortKeyPackage(ctx context.Context, arg GetLastResort
 }
 
 const getProposal = `-- name: GetProposal :one
-SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at FROM mls_pending_proposals WHERE group_id = ? AND ref = ?
+SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at, withdrawable, withdrawn_at, withdrawn_seq FROM mls_pending_proposals WHERE group_id = ? AND ref = ?
 `
 
 type GetProposalParams struct {
@@ -410,6 +424,9 @@ func (q *Queries) GetProposal(ctx context.Context, arg GetProposalParams) (MlsPe
 		&i.IssuedAt,
 		&i.Ttl,
 		&i.VoidAt,
+		&i.Withdrawable,
+		&i.WithdrawnAt,
+		&i.WithdrawnSeq,
 	)
 	return i, err
 }
@@ -506,8 +523,26 @@ func (q *Queries) GroupsForTarget(ctx context.Context, arg GroupsForTargetParams
 	return items, nil
 }
 
+const isWithdrawn = `-- name: IsWithdrawn :one
+SELECT COUNT(*) FROM mls_pending_proposals
+WHERE group_id = ? AND epoch = ? AND ref = ? AND withdrawn_at IS NOT NULL
+`
+
+type IsWithdrawnParams struct {
+	GroupID id.ID
+	Epoch   int64
+	Ref     []byte
+}
+
+func (q *Queries) IsWithdrawn(ctx context.Context, arg IsWithdrawnParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, isWithdrawn, arg.GroupID, arg.Epoch, arg.Ref)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const listAllProposals = `-- name: ListAllProposals :many
-SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at FROM mls_pending_proposals WHERE group_id = ? AND epoch = ?
+SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at, withdrawable, withdrawn_at, withdrawn_seq FROM mls_pending_proposals WHERE group_id = ? AND epoch = ? AND withdrawn_at IS NULL
 ORDER BY issued_at, ref
 `
 
@@ -538,6 +573,9 @@ func (q *Queries) ListAllProposals(ctx context.Context, arg ListAllProposalsPara
 			&i.IssuedAt,
 			&i.Ttl,
 			&i.VoidAt,
+			&i.Withdrawable,
+			&i.WithdrawnAt,
+			&i.WithdrawnSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -699,6 +737,49 @@ func (q *Queries) ListHandshakes(ctx context.Context, arg ListHandshakesParams) 
 	return items, nil
 }
 
+const listHandshakesWithoutWithdrawn = `-- name: ListHandshakesWithoutWithdrawn :many
+SELECT group_id, seq, epoch, kind, sender_leaf, sender_device, blob, created FROM mls_handshakes WHERE group_id = ? AND seq >= ? AND kind <> 3
+ORDER BY seq LIMIT ?3
+`
+
+type ListHandshakesWithoutWithdrawnParams struct {
+	GroupID id.ID
+	Seq     int64
+	MaxRows int64
+}
+
+func (q *Queries) ListHandshakesWithoutWithdrawn(ctx context.Context, arg ListHandshakesWithoutWithdrawnParams) ([]MlsHandshakes, error) {
+	rows, err := q.db.QueryContext(ctx, listHandshakesWithoutWithdrawn, arg.GroupID, arg.Seq, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsHandshakes{}
+	for rows.Next() {
+		var i MlsHandshakes
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Seq,
+			&i.Epoch,
+			&i.Kind,
+			&i.SenderLeaf,
+			&i.SenderDevice,
+			&i.Blob,
+			&i.Created,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIdleCallGroups = `-- name: ListIdleCallGroups :many
 SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups g
 WHERE g.kind = 1 AND g.closed_at IS NULL AND g.created <= ?
@@ -763,7 +844,8 @@ func (q *Queries) ListIdleCallGroups(ctx context.Context, arg ListIdleCallGroups
 }
 
 const listLiveProposals = `-- name: ListLiveProposals :many
-SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at FROM mls_pending_proposals WHERE group_id = ? AND epoch = ? AND void_at IS NULL
+SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at, withdrawable, withdrawn_at, withdrawn_seq FROM mls_pending_proposals
+WHERE group_id = ? AND epoch = ? AND void_at IS NULL AND withdrawn_at IS NULL
 ORDER BY issued_at, ref
 `
 
@@ -794,6 +876,9 @@ func (q *Queries) ListLiveProposals(ctx context.Context, arg ListLiveProposalsPa
 			&i.IssuedAt,
 			&i.Ttl,
 			&i.VoidAt,
+			&i.Withdrawable,
+			&i.WithdrawnAt,
+			&i.WithdrawnSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -1040,6 +1125,55 @@ func (q *Queries) ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]L
 	return items, nil
 }
 
+const listWithdrawnProposals = `-- name: ListWithdrawnProposals :many
+SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at, withdrawable, withdrawn_at, withdrawn_seq FROM mls_pending_proposals WHERE group_id = ? AND epoch = ? AND withdrawn_at IS NOT NULL
+ORDER BY issued_at, ref
+`
+
+type ListWithdrawnProposalsParams struct {
+	GroupID id.ID
+	Epoch   int64
+}
+
+func (q *Queries) ListWithdrawnProposals(ctx context.Context, arg ListWithdrawnProposalsParams) ([]MlsPendingProposals, error) {
+	rows, err := q.db.QueryContext(ctx, listWithdrawnProposals, arg.GroupID, arg.Epoch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsPendingProposals{}
+	for rows.Next() {
+		var i MlsPendingProposals
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Ref,
+			&i.Epoch,
+			&i.Kind,
+			&i.TargetLeaf,
+			&i.TargetDevice,
+			&i.KeyPackage,
+			&i.Origin,
+			&i.ActionID,
+			&i.IssuedAt,
+			&i.Ttl,
+			&i.VoidAt,
+			&i.Withdrawable,
+			&i.WithdrawnAt,
+			&i.WithdrawnSeq,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markAllGroupsEpochUnknown = `-- name: MarkAllGroupsEpochUnknown :exec
 UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = CAST(?1 AS INTEGER)
 WHERE closed_at IS NULL
@@ -1266,8 +1400,9 @@ func (q *Queries) PutMemberLeaf(ctx context.Context, arg PutMemberLeafParams) er
 
 const putProposal = `-- name: PutProposal :exec
 INSERT INTO mls_pending_proposals (group_id, ref, epoch, kind, target_leaf, target_device,
-                                   key_package, origin, action_id, issued_at, ttl, void_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   key_package, origin, action_id, issued_at, ttl, void_at,
+                                   withdrawable, withdrawn_at, withdrawn_seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type PutProposalParams struct {
@@ -1283,6 +1418,9 @@ type PutProposalParams struct {
 	IssuedAt     int64
 	Ttl          int64
 	VoidAt       sql.NullInt64
+	Withdrawable int64
+	WithdrawnAt  sql.NullInt64
+	WithdrawnSeq sql.NullInt64
 }
 
 func (q *Queries) PutProposal(ctx context.Context, arg PutProposalParams) error {
@@ -1299,6 +1437,9 @@ func (q *Queries) PutProposal(ctx context.Context, arg PutProposalParams) error 
 		arg.IssuedAt,
 		arg.Ttl,
 		arg.VoidAt,
+		arg.Withdrawable,
+		arg.WithdrawnAt,
+		arg.WithdrawnSeq,
 	)
 	return err
 }
@@ -1472,4 +1613,29 @@ type VoidProposalParams struct {
 func (q *Queries) VoidProposal(ctx context.Context, arg VoidProposalParams) error {
 	_, err := q.db.ExecContext(ctx, voidProposal, arg.VoidAt, arg.GroupID, arg.Ref)
 	return err
+}
+
+const withdrawProposal = `-- name: WithdrawProposal :execrows
+UPDATE mls_pending_proposals SET withdrawn_at = ?, withdrawn_seq = ?
+WHERE group_id = ? AND ref = ? AND withdrawn_at IS NULL
+`
+
+type WithdrawProposalParams struct {
+	WithdrawnAt  sql.NullInt64
+	WithdrawnSeq sql.NullInt64
+	GroupID      id.ID
+	Ref          []byte
+}
+
+func (q *Queries) WithdrawProposal(ctx context.Context, arg WithdrawProposalParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, withdrawProposal,
+		arg.WithdrawnAt,
+		arg.WithdrawnSeq,
+		arg.GroupID,
+		arg.Ref,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

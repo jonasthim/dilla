@@ -174,6 +174,9 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 			}
 			errs = append(errs, h.reconcile(ctx, d, ch, row, identity, nil, true))
 		}
+		if h.leases.adopting(row.CallID, row.LivekitRoom) {
+			h.adoptSlots(ctx, d, ch, row, parts, done)
+		}
 	}
 	cut := map[string]bool{}
 	complete := true
@@ -199,9 +202,220 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 		errs = append(errs, err)
 	}
 	if whole && complete {
+		h.leases.endAdopt(row.CallID)
 		h.trackAbsentLocked(ctx, row, parts, cut)
 	}
 	return errors.Join(errs...)
+}
+
+// adoptSlots is F1 (UP2): the first whole-room reconcile of a call live at boot gives a sharing slot
+// back to each participant the room lists publishing a camera or screen track, oldest publication
+// first, up to livekit.max_publishers, so the push that follows keeps its source instead of demoting
+// a sharer whose lease the restart lost. Only the excess is demoted (the reconcile that follows). A
+// participant is adopted only when it may hold a slot now (adoptable): never a barred device, one
+// without a current leaf, one without the bit for the source it publishes, one in the AFK channel,
+// or one penalised or publishing anything that is not dilla-sframe/1 (F11). An identity a drain
+// already reconciled in this pass (done) is not adopted: its permission was decided without a slot.
+// The caller holds the call's lock.
+func (h *Calls) adoptSlots(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow,
+	parts []*livekit.ParticipantInfo, done map[string]bool) {
+	type candidate struct {
+		p     *livekit.ParticipantInfo
+		dev   id.ID
+		since int64 // microseconds
+	}
+	var cands []candidate
+	for _, p := range parts {
+		dev, err := id.Parse(p.GetIdentity())
+		if err != nil || done[p.GetIdentity()] {
+			continue
+		}
+		since, ok := sharedSince(p)
+		if !ok {
+			continue
+		}
+		cands = append(cands, candidate{p: p, dev: dev, since: since})
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].since != cands[j].since {
+			return cands[i].since < cands[j].since
+		}
+		return cands[i].p.GetIdentity() < cands[j].p.GetIdentity()
+	})
+	limit := h.maxPublishers()
+	for _, c := range cands {
+		if ctx.Err() != nil {
+			return
+		}
+		if !h.adoptable(ctx, d, ch, row, c.dev, c.p) {
+			continue
+		}
+		at := c.since / int64(time.Second/time.Microsecond)
+		if at <= 0 {
+			at = h.clk.Now().Unix()
+		}
+		if taken, _ := h.leases.take(row.CallID, row.LivekitRoom, c.dev, limit, at); !taken {
+			return // every slot is held: the rest are the excess
+		}
+		h.log.InfoContext(ctx, "adopted the sharing slot of a publisher the SFU kept across a restart",
+			"room", row.LivekitRoom, "device_id", c.dev.String())
+	}
+}
+
+// sharedSince is when p began publishing a camera or screen track — the earliest such track's
+// publication, else its join — in microseconds, and whether it publishes one at all. A participant
+// with any track that is not dilla-sframe/1 answers false: F11 strikes it, it holds no slot.
+func sharedSince(p *livekit.ParticipantInfo) (int64, bool) {
+	var since int64
+	shares := false
+	for _, t := range p.GetTracks() {
+		if notDillaMedia(t) {
+			return 0, false
+		}
+		switch t.GetSource() {
+		case livekit.TrackSource_CAMERA, livekit.TrackSource_SCREEN_SHARE:
+		default:
+			continue
+		}
+		at := t.GetVersion().GetUnixMicro()
+		if at <= 0 {
+			at = p.GetJoinedAtMs() * int64(time.Millisecond/time.Microsecond)
+		}
+		if at <= 0 {
+			at = p.GetJoinedAt() * int64(time.Second/time.Microsecond)
+		}
+		if !shares || at < since {
+			since = at
+		}
+		shares = true
+	}
+	return since, shares
+}
+
+// adoptable reports whether dev, whose participant p publishes a camera or screen track, may hold a
+// sharing slot of row's call now: the reconcile's own rule (a device row, not barred, view_channel
+// and connect, a current leaf of the call group) plus the bit for a source it publishes, no F11
+// penalty and not the AFK channel. Anything it cannot read answers false: the device is then
+// demoted, and re-shares.
+func (h *Calls) adoptable(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow,
+	dev id.ID, p *livekit.ParticipantInfo) bool {
+	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
+		return false
+	}
+	dv, err := d.repo.GetDevice(ctx, dev)
+	if err != nil {
+		return false
+	}
+	if bar, err := barred(ctx, d.repo, dv); err != nil || bar {
+		return false
+	}
+	bits, err := d.res.Resolve(ctx, dv.UserID, ch)
+	if err != nil || !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
+		return false
+	}
+	if leaf, err := leafOfCall(ctx, d.repo, row, dev); err != nil || !leaf {
+		return false
+	}
+	for _, t := range p.GetTracks() {
+		switch t.GetSource() {
+		case livekit.TrackSource_CAMERA:
+			if bits.Has(PermVideo) {
+				return true
+			}
+		case livekit.TrackSource_SCREEN_SHARE:
+			if bits.Has(PermScreenShare) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// BootReconcile is UP2's boot step, run once by the composition root before the routes serve: one
+// whole-room reconcile (reconcileRoom with no scope) of every live call's room, the whole pass
+// bounded by sweepPassBudget. After an API restart the SFU (a sidecar) still holds its rooms, while
+// this process's memory — sharing slots, pending repairs, F11 strikes, admissions — is empty; the
+// reconcile rebuilds what the SFU shows: the slots of the camera and screen publishers (adoptSlots,
+// F1) and the cuts of participants that are barred or hold no current leaf, so a device barred
+// while the API was down is evicted before the first request is served.
+//
+// It reaps nothing. If the SFU does not answer, no room is reconciled: each live call's room is left
+// as a pending room resync (roomResync) for the retry loop, and the instance serves anyway. It ends
+// no call either — a call whose channel is gone or whose call group is closed is left to the room
+// sweep — so nothing at start ends a live call whose room the SFU still holds; and the first sight
+// of an absent leaf only starts its absence (trackAbsentLocked), so no Remove is proposed at boot.
+// A room the pass does not reach within its budget is left as a pending room resync too.
+func (h *Calls) BootReconcile(ctx context.Context) {
+	if h.sfu == nil {
+		return
+	}
+	rows, err := h.repo.ListAllLiveVoiceSessions(ctx)
+	if err != nil {
+		h.log.WarnContext(ctx, "listing the live calls to reconcile at boot failed; the room sweep covers them", "err", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	defer h.reportPending()
+	for _, row := range rows {
+		h.leases.markAdopt(row.CallID, row.LivekitRoom)
+	}
+	ctx, cancel := context.WithTimeout(ctx, sweepPassBudget)
+	defer cancel()
+	if _, err := h.listRooms(ctx); err != nil {
+		h.log.WarnContext(ctx, "the SFU did not answer at boot: nothing is reaped, and each live call's room is left to the retry loop",
+			"calls", len(rows), "err", err)
+		for _, row := range rows {
+			h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
+		}
+		return
+	}
+	for _, row := range rows {
+		if ctx.Err() != nil {
+			h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
+			continue
+		}
+		if err := h.bootRoom(ctx, row); err != nil {
+			h.log.WarnContext(ctx, "reconciling a call's room at boot did not finish; the retry loop goes on with it",
+				"room", row.LivekitRoom, "err", err)
+		}
+	}
+	h.log.InfoContext(ctx, "reconciled the live calls' rooms at boot", "calls", len(rows), "pending", h.leases.pendingCount())
+}
+
+// bootRoom is BootReconcile's visit of one live call, under its lock. What it cannot read is left as
+// a pending room resync; a call that is over is left to the room sweep, never ended here.
+func (h *Calls) bootRoom(ctx context.Context, row store.VoiceSessionRow) error {
+	resync := func(err error) error {
+		h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
+		return err
+	}
+	ctx, unlock, err := h.lock(ctx, row.CallID, callLockWait, callHoldBackground)
+	if err != nil {
+		return resync(err)
+	}
+	defer unlock()
+	cur, live, err := h.liveRow(ctx, h.repo, row)
+	if err != nil {
+		return resync(err)
+	}
+	if !live {
+		return nil
+	}
+	ch, err := h.repo.GetChannel(ctx, cur.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil // the room sweep ends a call whose channel is gone (CALLS-1)
+	}
+	if err != nil {
+		return resync(err)
+	}
+	if over, err := h.groupOver(ctx, cur); err != nil {
+		return resync(err)
+	} else if over {
+		return nil // the room sweep ends a call whose group is closed or gone (CALLS-2)
+	}
+	return h.reconcileRoom(ctx, h.deps(), ch, cur, nil, nil, nil)
 }
 
 // strikeListed is ruling (b): F11 checked from the room's participant list, so a publication whose

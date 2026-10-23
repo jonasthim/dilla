@@ -171,7 +171,15 @@ type Frame struct {
 	GroupID *id.ID
 	Payload cbor.RawMessage
 	Replay  bool
+	// Caps is the capability bits a connection must have set at identify to receive the frame; 0
+	// is every connection. A connection without them never sees the frame, so it takes no n and
+	// never sits in its replay ring (UP6b: kind-3 handshake rows, CapWithdrawnRows).
+	Caps uint64
 }
+
+// CapWithdrawnRows is identify's caps bit 0, `withdrawn_rows` (protocol/02 § Handshake records):
+// the client applies handshake rows of kind 3, so the instance may send it them.
+const CapWithdrawnRows uint64 = 1
 
 // Encode stamps n onto a frame. A frame with Replay false is always sent with n = 0.
 func Encode(f Frame, n uint64) ([]byte, error) {

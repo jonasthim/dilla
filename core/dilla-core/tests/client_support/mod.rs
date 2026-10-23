@@ -1983,6 +1983,27 @@ impl RawPeer {
         seq_of_answer(&answer)
     }
 
+    /// UP13: processes the proposal at the relay's handshake row `seq` and queues it, so this
+    /// peer's next `self_update` commits it by reference.
+    pub fn queue_proposal(&mut self, relay: &Relay, seq: u64) {
+        let row = relay
+            .handshakes
+            .iter()
+            .find(|h| h.seq == seq)
+            .expect("a handshake row at that seq");
+        let message = protocol_in(&row.blob).expect("a protocol message");
+        let group = self.group.as_mut().expect("joined");
+        match group
+            .process_message(&self.provider, message)
+            .expect("process the proposal")
+        {
+            DillaProcessed::Proposal(proposal) => group
+                .store_pending_proposal(&self.provider, *proposal)
+                .expect("queue"),
+            other => panic!("expected a proposal at seq {seq}, got {other:?}"),
+        }
+    }
+
     /// Processes and merges another member's commit, the relay's handshake row at `seq`.
     pub fn apply_commit(&mut self, relay: &Relay, seq: u64) {
         let row = relay
@@ -2046,6 +2067,11 @@ impl Relay {
     /// instance) and lists it as outstanding. Answers its seq.
     pub fn propose(&mut self, message: MlsMessageOut) -> u64 {
         let blob = message.tls_serialize_detached().expect("serialize");
+        self.propose_bytes(blob)
+    }
+
+    /// `propose` of an already serialized `MLSMessage` (a client core's own proposal body).
+    pub fn propose_bytes(&mut self, blob: Vec<u8>) -> u64 {
         let crypto = &self.crypto;
         let public = self.public.as_mut().expect("the group is registered");
         let reference = public
@@ -2071,6 +2097,48 @@ impl Relay {
             blob,
         });
         seq
+    }
+
+    /// A member's proposal from `leaf`, queued and listed as `propose` does the instance's.
+    pub fn propose_from(&mut self, message: MlsMessageOut, leaf: u64) -> u64 {
+        let seq = self.propose(message);
+        self.handshakes
+            .iter_mut()
+            .find(|h| h.seq == seq)
+            .expect("the row just appended")
+            .sender = Some(leaf);
+        seq
+    }
+
+    /// UP6b: the instance withdraws an outstanding proposal of its own. It leaves the listing and a
+    /// `withdrawn` row (kind 3, sender null, blob `[ref]`) is appended; the public view keeps it
+    /// queued, as the delivery service does (correction C3). Answers the row's seq.
+    pub fn withdraw(&mut self, reference: &[u8]) -> u64 {
+        self.unlist(reference);
+        let mut blob = Encoder::new();
+        blob.array(1).bytes(reference);
+        self.push_handshake(3, blob.into_vec())
+    }
+
+    /// Takes a proposal out of the listing alone: no row is appended (a client that missed it).
+    pub fn unlist(&mut self, reference: &[u8]) {
+        self.proposals.retain(|p| p.reference != reference);
+    }
+
+    /// The reference of the listed proposal appended at `seq`.
+    pub fn reference_at(&self, seq: u64) -> Vec<u8> {
+        let blob = &self
+            .handshakes
+            .iter()
+            .find(|h| h.seq == seq)
+            .expect("a handshake at that seq")
+            .blob;
+        self.proposals
+            .iter()
+            .find(|p| &p.blob == blob)
+            .expect("listed")
+            .reference
+            .clone()
     }
 
     /// GET /v1/groups/{id}/proposals: [[ref, kind, target_leaf|null, blob, void]].

@@ -24,6 +24,15 @@ type DS interface {
 	// ds.ErrRemoveTargetGone once the device left the leaf or holds it again from a later epoch. The
 	// call paths use it for a departed device (DS-7, ruling (a) of the calls re-review).
 	ProposeRemoveOfMember(ctx context.Context, groupID id.ID, leaf uint32, deviceID id.ID, addedEpoch uint64, actionID id.ID) error
+	// ProposeAbsenceRemove is ProposeRemoveOfMember for the two absence paths alone, the room
+	// sweep's (flushLeafRemovals) and a leave's (proposeLeave): the Remove is withdrawable, so the
+	// departed device's own resume can withdraw it (UP6b, protocol/02 invariant 6 "Withdrawal").
+	// Within 30 s of such a withdrawal the same Remove counts as standing; later it is re-armed.
+	ProposeAbsenceRemove(ctx context.Context, groupID id.ID, leaf uint32, deviceID id.ID, addedEpoch uint64, actionID id.ID) error
+	// WithdrawAbsenceRemoves withdraws the withdrawable Removes of deviceID's own membership (leaf,
+	// addedEpoch) at the group's current epoch, under the group lock, after checking that the device
+	// still holds it (ds.ErrMembershipGone otherwise). The call start runs it last before the mint.
+	WithdrawAbsenceRemoves(ctx context.Context, groupID, deviceID id.ID, leaf uint32, addedEpoch uint64) (int, error)
 	// ProposeRemoveDevice proposes removing deviceID's leaf, resolving it under the group lock, and
 	// drops the action when the device holds no leaf or an instance Remove of that leaf already
 	// stands (DEV-45). The call paths use it: a call leaf is short-lived and races the device's own

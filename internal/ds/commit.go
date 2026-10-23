@@ -215,6 +215,14 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			}
 		}()
 
+		// (4a) UP6b, correction C3: a commit that applies a withdrawn proposal is refused right
+		// after the parse, before the clause checks and the merge: 409 E_COMMIT_CONFLICT, detail
+		// `withdrawn`, an empty winning_commit and the current listing. The withdrawn ref stays
+		// queued in the PublicGroup, so a commit that omits it is processed as before.
+		if err := d.appliesWithdrawn(ctx, groupID, row.Epoch, processed.Applied); err != nil {
+			return err
+		}
+
 		// A commit is KindCommit on BOTH paths. KindExternalJoin (2) is the external-join
 		// PROPOSAL arm — exports.rs returns `(2, None, None, Some(proposal_ref))` for it, with no
 		// staged commit at all — while a genuine external commit is a StagedCommitMessage and so
@@ -384,6 +392,15 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 				refs = append(refs, a.ProposalRef)
 			}
 			refs = append(refs, satisfied...)
+			// A withdrawn proposal is pruned with its epoch (UP6b): this commit ends the epoch, and
+			// the 409 that named it can no longer be asked.
+			withdrawn, err := tx.ListWithdrawnProposals(ctx, groupID, row.Epoch)
+			if err != nil {
+				return err
+			}
+			for _, w := range withdrawn {
+				refs = append(refs, w.Ref)
+			}
 			if err := tx.DeleteProposals(ctx, groupID, refs); err != nil {
 				return err
 			}
@@ -1157,9 +1174,32 @@ func (d *DS) unqueueProposal(ctx context.Context, g *mlswasi.PublicGroup, groupI
 
 // proposalRowExists reports whether SQL holds a proposal row with ref at epoch, void or not. A
 // proposal's ref covers its epoch, so the epoch the group is at is the one place to look.
+//
+// A withdrawn row counts (UP6b): the listings leave it out, but the ref stays queued in the guest
+// (correction C3). A failed re-arm of it that unqueued the ref would turn a later commit applying it
+// into a 422 from g.Process instead of the 409 `withdrawn`.
 func (d *DS) proposalRowExists(ctx context.Context, groupID id.ID, epoch uint64, ref []byte) (bool, error) {
-	row, err := d.proposalRowAt(ctx, groupID, epoch, ref)
+	row, err := d.proposalRowOrWithdrawnAt(ctx, groupID, epoch, ref)
 	return row != nil, err
+}
+
+// proposalRowOrWithdrawnAt is proposalRowAt, or the withdrawn row with ref at epoch (UP6b): the
+// listings leave a withdrawn row out, and a re-proposal of the same deterministic ref re-arms it.
+func (d *DS) proposalRowOrWithdrawnAt(ctx context.Context, groupID id.ID, epoch uint64, ref []byte) (*store.ProposalRow, error) {
+	row, err := d.proposalRowAt(ctx, groupID, epoch, ref)
+	if err != nil || row != nil {
+		return row, err
+	}
+	rows, err := d.opts.Store.ListWithdrawnProposals(ctx, groupID, epoch)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if bytes.Equal(rows[i].Ref, ref) {
+			return &rows[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // proposalRowAt is proposalRowExists' row, or nil.

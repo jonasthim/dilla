@@ -17,6 +17,7 @@
 
 mod binding;
 mod policy;
+mod withdrawn;
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod config;
@@ -41,6 +42,7 @@ pub(crate) use policy::{
     commit_extensions_unchanged, leaf_credentials_unchanged, proposal_credential_verdict,
     proposal_extensions_unchanged,
 };
+pub use withdrawn::{HANDSHAKE_WITHDRAWN, decode_withdrawn_blob, encode_withdrawn_blob};
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use config::{

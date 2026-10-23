@@ -135,7 +135,7 @@ class FakeSocket {
 
 const flush = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
 
-function harness(opts: { random?: number; mint?: () => Promise<string> } = {}) {
+function harness(opts: { random?: number; mint?: () => Promise<string>; probe?: () => Promise<boolean> } = {}) {
   const clock = new FakeClock();
   const events: GatewayEvent[] = [];
   let minted = 0;
@@ -150,6 +150,7 @@ function harness(opts: { random?: number; mint?: () => Promise<string> } = {}) {
     random: () => opts.random ?? 0,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
+    ...(opts.probe !== undefined ? { probe: opts.probe } : {}),
   };
   const gw = new Gateway(deps);
   gw.subscribe((e) => events.push(e));
@@ -181,7 +182,8 @@ beforeEach(() => {
 describe('Gateway connect', () => {
   it('pins the timing constants', () => {
     expect(GATEWAY).toEqual({ heartbeatMaxMs: 15000, ackTimeoutMs: 10000, helloTimeoutMs: 15000,
-      reconnectBaseMs: 500, reconnectCapMs: 30000, reconnectJitterMs: 500 });
+      reconnectBaseMs: 500, reconnectCapMs: 30000, reconnectJitterMs: 500, probeMs: 1500, probeJitterMs: 500,
+      probeSlowAfterMs: 300_000, probeCapMs: 10_000 });
     expect(CLIENT_CLOSE).toEqual({ normal: 1000, version: 4006, helloTimeout: 4100, heartbeatTimeout: 4101,
       undecodable: 4102, tooLarge: 4109 });
   });
@@ -207,7 +209,7 @@ describe('Gateway connect', () => {
     s.open();
     expect(s.sent).toHaveLength(0);
     s.receive(hello());
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1])]);
     s.receive(ready());
     expect(h.gw.status).toBe('ready');
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
@@ -248,7 +250,7 @@ describe('Gateway connect', () => {
     const s = h.last();
     s.open();
     s.receive(hello({ wire: [1, 2] }));
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1])]);
     for (const bad of [[[2], [2], [1]], [[2], [1], [2]]]) {
       const g = harness();
       g.gw.start();
@@ -599,7 +601,7 @@ describe('Gateway reconnect', () => {
     h.gw.commitAck(GROUP, 3n);
     const ops = [...s1.sentFrames(), ...s2.sentFrames()].map((f) => f.op);
     expect(ops).toEqual([Op.identify, Op.heartbeat, Op.identify, Op.commitAck]);
-    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0]));
+    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1]));
     expect(s2.protocols).toEqual(['dilla.v1', 'dilla.ticket.t2']);
   });
 });
@@ -622,7 +624,10 @@ it('identifies with the frames.json identify vector, the token aside', async () 
   s.receive(hello());
   const sent = s.sentFrames()[0];
   expect([sent.op, sent.n]).toEqual([vector!.op, BigInt(vector!.n)]);
-  expect(toHex(encode(['tok', ...sent.payload.slice(1)] as CborInput))).toBe(vector!.payload);
+  // The vector's caps is 0; this client sets bit 0, `withdrawn_rows` (UP6b), and the four elements before it are the
+  // vector's.
+  expect(sent.payload[4]).toBe(1n);
+  expect(toHex(encode(['tok', ...sent.payload.slice(1, 4), want[4]!] as CborInput))).toBe(vector!.payload);
   expect(sent.payload[0]).toBe('');
 });
 
@@ -696,6 +701,7 @@ describe('Gateway revocation and stop', () => {
       if (m.refuseWith === null) return Promise.resolve(`t${m.calls}`);
       return Promise.reject(new DillaHttpError({
         status: m.refuseWith, code: m.refuseWith === 401 ? 'E_UNAUTHENTICATED' : 'E_HTTP', detail: '', retryAfterMs: null, extra: [],
+        fromInstance: m.refuseWith === 401,
       }));
     };
     return { m, mint };
@@ -806,5 +812,232 @@ describe('Gateway revocation and stop', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// UP7b (R-UP8): an instance that comes back after a long outage is noticed within about 2 s, not at the end of a 30 s
+// reconnect backoff. While the instance cannot be reached (a ticket mint with no answer), a cheap probe runs every
+// probeMs plus jitter; its first answer reconnects at once. A refusal the instance answers (a 503) keeps the backoff.
+describe('UP7b: the outage probe', () => {
+  const unreachable = () => new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: '', retryAfterMs: null, extra: [] });
+  /** A reverse proxy's own error page: no dilla refusal body and no X-Dilla-Generation (fix round 1, I1). */
+  const proxy = (status: number) => new DillaHttpError({ status, code: 'E_HTTP', detail: '', retryAfterMs: null, extra: [], fromInstance: false });
+  /** The instance's own refusal: it carries X-Dilla-Generation. */
+  const instance = (status: number, code: string) => new DillaHttpError({ status, code, detail: '', retryAfterMs: null, extra: [], fromInstance: true });
+  const run = async (h: ReturnType<typeof harness>, ms: number, step = 100) => {
+    for (let t = 0; t < ms; t += step) { h.clock.advance(step); await flush(); }
+  };
+
+  for (const [what, down] of [['unreachable (no answer)', unreachable], ['behind a proxy that answers 502', () => proxy(502)],
+    ['behind a proxy that answers 504', () => proxy(504)]] as const) {
+    it(`${what}: after 110 s down, the instance answering is noticed within 2 s and the gateway reconnects at once`, async () => {
+      let up = false;
+      let probes = 0;
+      const h = harness({
+        mint: () => (up ? Promise.resolve('t') : Promise.reject(down())),
+        probe: () => { probes += 1; return Promise.resolve(up); },
+      });
+      h.gw.start();
+      await run(h, 110_000);
+      expect(h.gw.status).toBe('waiting');
+      expect(FakeSocket.instances).toHaveLength(0);
+      // Probes are cheap and spaced: about one per probeMs, never a burst.
+      expect(probes).toBeGreaterThan(40);
+      expect(probes).toBeLessThanOrEqual(110_000 / GATEWAY.probeMs + 1);
+      up = true;
+      const answered = h.clock.now;
+      while (FakeSocket.instances.length === 0 && h.clock.now - answered < 5_000) { h.clock.advance(50); await flush(); }
+      expect(FakeSocket.instances).toHaveLength(1);
+      expect(h.clock.now - answered).toBeLessThanOrEqual(GATEWAY.probeMs + GATEWAY.probeJitterMs);
+      expect(GATEWAY.probeMs + GATEWAY.probeJitterMs).toBeLessThanOrEqual(2_000);
+    });
+  }
+
+  it('the probe is jittered, so many clients do not probe in step', async () => {
+    const delays = new Set<number>();
+    for (const r of [0, 0.5, 0.99]) {
+      FakeSocket.instances = [];
+      const h = harness({ random: r, mint: () => Promise.reject(unreachable()), probe: () => Promise.resolve(false) });
+      h.gw.start();
+      for (let i = 0; i < 6; i++) { h.clock.advance(h.clock.pending()[0] ?? 0); await flush(); }
+      delays.add(h.clock.pending()[0] ?? -1);
+    }
+    expect(delays.size).toBe(3);
+  });
+
+  for (const [status, code] of [[503, 'E_UNAVAILABLE'], [429, 'E_RATE_LIMITED']] as const) {
+    it(`a refusal the instance answered (${String(status)}, with its generation header) keeps the ordinary backoff and runs no probe`, async () => {
+      let probes = 0;
+      const h = harness({
+        mint: () => Promise.reject(instance(status, code)),
+        probe: () => { probes += 1; return Promise.resolve(true); },
+      });
+      h.gw.start();
+      await run(h, 120_000);
+      expect(probes).toBe(0);
+    });
+  }
+
+  it('a proxy answering 200 without the header (its maintenance page) never loops: the probe does not count it, only the backoff connects', async () => {
+    // The ticket's 200 body is no CBOR: the mint fails with a decode error; the probe sees no X-Dilla-Generation (false).
+    let mints = 0;
+    let probes = 0;
+    const h = harness({
+      mint: () => { mints += 1; return Promise.reject(new Error('the body is not CBOR')); },
+      probe: () => { probes += 1; return Promise.resolve(false); },
+    });
+    h.gw.start();
+    await run(h, 300_000);
+    // The ordinary backoff alone: 0.5, 1, 2 … 30 s, so about a dozen mints in 5 min, never one per probe.
+    expect(mints).toBeLessThanOrEqual(20);
+    expect(probes).toBeGreaterThan(0);
+    expect(FakeSocket.instances).toHaveLength(0);
+  });
+
+  it('after 5 minutes of probing the interval grows to a 10 s cap (with jitter); a ready resets it', async () => {
+    const at: number[] = [];
+    let up = false;
+    const h = harness({
+      random: 0.5,
+      mint: () => (up ? Promise.resolve('t') : Promise.reject(unreachable())),
+      probe: () => { at.push(h.clock.now); return Promise.resolve(false); },
+    });
+    h.gw.start();
+    await run(h, 900_000);
+    const gaps = at.slice(1).map((t, i) => t - at[i]);
+    // N4 (Jonas): the fast interval holds for the first 5 minutes.
+    const early = gaps.filter((_, i) => at[i + 1] < 295_000);
+    const late = gaps.filter((_, i) => at[i] > 330_000);
+    expect(GATEWAY.probeSlowAfterMs).toBe(300_000);
+    expect(Math.max(...early)).toBeLessThanOrEqual(GATEWAY.probeMs + GATEWAY.probeJitterMs + 100);
+    expect(Math.min(...late)).toBeGreaterThanOrEqual(GATEWAY.probeCapMs);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(GATEWAY.probeCapMs * 1.2 + 100);
+    // After the first 5 minutes, about one probe per 10 s, not one per 2 s.
+    expect(at.filter((t) => t > 330_000).length).toBeLessThanOrEqual((900_000 - 330_000) / GATEWAY.probeCapMs + 1);
+    // The instance answers: the next probe connects, the gateway is ready, and a later outage starts fast again.
+    up = true;
+    await run(h, GATEWAY.probeCapMs * 1.3);
+    expect(FakeSocket.instances).toHaveLength(1);
+    const s = FakeSocket.instances[0];
+    s.open(); s.receive(hello()); s.receive(ready());
+    expect(h.gw.status).toBe('ready');
+    up = false;
+    const before = at.length;
+    s.serverClose(1006);
+    await run(h, 10_000);
+    const fresh = at.slice(before);
+    expect(fresh.length).toBeGreaterThanOrEqual(2);
+    expect(fresh[1] - fresh[0]).toBeLessThanOrEqual(GATEWAY.probeMs + GATEWAY.probeJitterMs);
+  });
+
+  // N3: a probe answer is not a recovery. A proxy that replaces the instance's 5xx with its own page leaves the mint
+  // unreachable while GET /v1/instance answers stamped; the probe-triggered connects still slow down after 5 minutes.
+  it('a probe that answers while the mint stays unreachable does not reset the slow-down', async () => {
+    const at: number[] = [];
+    const h = harness({
+      random: 0.5,
+      mint: () => Promise.reject(new DillaHttpError({ status: 503, code: 'E_HTTP', detail: '', retryAfterMs: null, extra: [], fromInstance: false })),
+      probe: () => { at.push(h.clock.now); return Promise.resolve(true); },
+    });
+    h.gw.start();
+    await run(h, 900_000);
+    const gaps = at.slice(1).map((t, i) => t - at[i]);
+    expect(Math.min(...gaps.filter((_, i) => at[i] > 330_000))).toBeGreaterThanOrEqual(GATEWAY.probeCapMs);
+    expect(at.filter((t) => t > 330_000).length).toBeLessThanOrEqual((900_000 - 330_000) / GATEWAY.probeCapMs + 1);
+  });
+
+  // N2: a proxy error page over the 64 KiB cap (E_BODY_TOO_LARGE) is no answer of the instance unless it is stamped.
+  for (const [what, err, probes] of [
+    ['an unstamped oversized 502 page', new DillaHttpError({ status: 502, code: 'E_BODY_TOO_LARGE', detail: '', retryAfterMs: null, extra: [], fromInstance: false }), true],
+    ['a refusal whose origin is unknown', new DillaHttpError({ status: 502, code: 'E_BODY_TOO_LARGE', detail: '', retryAfterMs: null, extra: [] }), true],
+    ['a stamped oversized refusal', new DillaHttpError({ status: 502, code: 'E_BODY_TOO_LARGE', detail: '', retryAfterMs: null, extra: [], fromInstance: true }), false],
+  ] as const) {
+    it(`${what} ${probes ? 'starts' : 'does not start'} the probe`, async () => {
+      let n = 0;
+      const h = harness({ mint: () => Promise.reject(err), probe: () => { n += 1; return Promise.resolve(false); } });
+      h.gw.start();
+      await run(h, 60_000);
+      expect(n > 0).toBe(probes);
+    });
+  }
+
+  // UP7c: a 401 is "signed out or revoked" only when the instance said it (X-Dilla-Generation). A reverse proxy's login
+  // page or its error while dillad is down is a 401 too, and it is an outage, not a revocation.
+  it("a proxy's 401 on the ticket mint is out of reach: the gateway probes, and is neither idle nor revoked", async () => {
+    let probes = 0;
+    const h = harness({ mint: () => Promise.reject(proxy(401)), probe: () => { probes += 1; return Promise.resolve(false); } });
+    h.gw.start();
+    await run(h, 20_000);
+    expect(h.gw.status).toBe('waiting');
+    expect(probes).toBeGreaterThan(0);
+    expect(h.events.some((e) => e.type === 'revoked')).toBe(false);
+    expect(h.events.some((e) => e.type === 'status' && e.status === 'idle')).toBe(false);
+  });
+
+  it("a 401 whose origin is unknown (made here) is out of reach too", async () => {
+    let probes = 0;
+    const h = harness({
+      mint: () => Promise.reject(new DillaHttpError({ status: 401, code: 'E_HTTP', detail: '', retryAfterMs: null, extra: [] })),
+      probe: () => { probes += 1; return Promise.resolve(false); },
+    });
+    h.gw.start();
+    await run(h, 20_000);
+    expect(probes).toBeGreaterThan(0);
+    expect(h.events.some((e) => e.type === 'revoked')).toBe(false);
+  });
+
+  it("control: the instance's own 401 on the mint still revokes", async () => {
+    const h = harness({ mint: () => Promise.reject(instance(401, 'E_UNAUTHENTICATED')) });
+    h.gw.start();
+    await flush();
+    expect(h.events.at(-1)).toEqual({ type: 'revoked' });
+    expect(h.gw.status).toBe('idle');
+  });
+
+  // M3: the probe in flight against stop(), against the reconnect timer, and a stalled mint.
+  const slowProbe = () => {
+    const pending: Array<(v: boolean) => void> = [];
+    return { probe: () => new Promise<boolean>((r) => { pending.push(r); }), answer: (v: boolean) => { for (const r of pending.splice(0)) r(v); }, count: () => pending.length };
+  };
+
+  it('stop() while a probe is in flight: its late answer connects nothing and no timer is left', async () => {
+    const p = slowProbe();
+    const h = harness({ mint: () => Promise.reject(unreachable()), probe: p.probe });
+    h.gw.start();
+    await run(h, 20_000);
+    expect(p.count()).toBeGreaterThan(0);
+    h.gw.stop();
+    p.answer(true);
+    await flush();
+    await run(h, 60_000);
+    expect(FakeSocket.instances).toHaveLength(0);
+    expect(h.gw.status).toBe('idle');
+    expect(h.clock.pending()).toEqual([]);
+  });
+
+  it('the reconnect timer fires while a probe is in flight: one connect, the late probe answer opens no second socket', async () => {
+    const p = slowProbe();
+    let up = false;
+    const h = harness({ random: 0, mint: () => (up ? Promise.resolve('t') : Promise.reject(unreachable())), probe: p.probe });
+    h.gw.start();
+    // Run until a probe is in flight, then let the reconnect timer win.
+    for (let i = 0; i < 2_000 && p.count() === 0; i++) { h.clock.advance(50); await flush(); }
+    expect(p.count()).toBe(1);
+    up = true;
+    while (FakeSocket.instances.length === 0) { h.clock.advance(h.clock.pending()[0] ?? 100); await flush(); }
+    expect(FakeSocket.instances).toHaveLength(1);
+    p.answer(true);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.gw.status).toBe('connecting');
+  });
+
+  it('a mint that never settles is out of reach: the hello timeout fails it and the probe runs', async () => {
+    let probes = 0;
+    const h = harness({ mint: () => new Promise<string>(() => undefined), probe: () => { probes += 1; return Promise.resolve(false); } });
+    h.gw.start();
+    await run(h, 120_000);
+    expect(probes).toBeGreaterThan(0);
+    expect(FakeSocket.instances).toHaveLength(0);
   });
 });

@@ -1,0 +1,33 @@
+# UP6b: a commit racing the withdrawal. (a) The commit lands first: bob's resume answers
+# E_LEAF_NOT_CURRENT and his external join succeeds (the Remove is committed, so there is no
+# E_REMOVE_PENDING). (b) The withdrawal lands first: a commit built on the old queue is refused
+# 409 withdrawn, and the rebuilt commit succeeds and leaves carol in.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=ecececececececececececececececec community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent bob call
+sync alice
+commit alice call
+expect_reject E_LEAF_NOT_CURRENT resume bob call
+resync bob call
+sync alice
+sync carol
+absent carol call
+sync alice
+stash_commit alice call
+resume carol call withdrawn=1
+expect_reject E_COMMIT_CONFLICT rule=withdrawn post_stash alice call
+sync alice
+commit alice call
+sync bob
+sync carol
+send alice call everyone is in
+expect_decrypts bob call everyone is in
+expect_decrypts carol call everyone is in

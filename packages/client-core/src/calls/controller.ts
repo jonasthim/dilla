@@ -6,13 +6,13 @@ import { callRingOf, Op, voiceStateOf, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { CallStats, Routes } from '../http/routes';
-import { isMuted } from '../state/settings';
+import { CALL_KEEP_KEY, isMuted } from '../state/settings';
 import { CALL_IDLE, type CallJoinResult, type CallKeys, type CallPhase, type CallState, type SliceTypes,
   type VoiceParticipant, type WorkerError } from '../state/types';
 import type { FromWorker } from '../worker/protocol';
-import { joinCall, JoinRefused, type JoinRoutes } from './join';
+import { CommitUnconfirmed, joinCall, JoinRefused, type JoinRoutes } from './join';
 import { Rings } from './ring';
-import { statusOf, sweepStaleCalls } from './sweep';
+import { HOLD_MS, holdRuns, statusOf, sweepStaleCalls } from './sweep';
 import { VoiceBook, type VoiceRoutes } from './voice';
 
 /** L-TS-56 step 5: a fresh leaf secret every hour of a call, and a conflicted rotation tried again a minute later. */
@@ -25,9 +25,10 @@ export const CALL_ROTATE_RETRIES = 5;
 export const WAIT_LIST_MS = 10_000;
 /** web3.7 3a-client: a join waits at most this long for the boot sweep of leftover call groups (calls/sweep.ts). */
 export const SWEEP_JOIN_WAIT_MS = 5000;
+export { HOLD_MS };
 
 export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
-  | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
+  | 'declineCall' | 'postCommit' | 'endCallIfAlone' | 'relayCall'>;
 
 /** What the call controller reads from, and publishes through, the worker's composition root. */
 export interface CallDeps {
@@ -56,11 +57,14 @@ export interface CallDeps {
   /** The worker's trust refresh of a group's leaves (the existing one, L-TS-56: no second implementation). */
   refreshLeaves(groupId: Id): Promise<void>;
   /** Runs a job on the sync engine's lane of the group, so a rotation never interleaves with an apply. */
-  serial(groupId: Id, job: () => Promise<void>): Promise<void>;
+  serial<T>(groupId: Id, job: () => Promise<T>): Promise<T>;
   /** An own commit of a call group (the rotation) was confirmed: reported like any other group change. */
   onCommitted(groupId: Id, result: ApplyResult): void;
   /** After a join's answer: the engine takes the group up (held frames, catch-up). */
   afterJoin(groupId: Id): void;
+  /** UP6: the engine's catch-up of a group, on its lane; it never throws (a refusal reports through onGroupChanged or
+   *  onMembershipLost). */
+  catchUp(groupId: Id): Promise<void>;
   /** A call of this id begins or ends here: what the worker kept for it (the last voice_self) goes (review M3). */
   callEnded(callHex: string): void;
   track(job: Promise<unknown>): void;
@@ -72,6 +76,8 @@ export class CallRefusal extends CoreError {}
 interface Live {
   channel: string; channelId: Id; dm: boolean; members: string[]; groupId: Id; callId: Id; vdec: string;
   postedEpoch: bigint; leaving: boolean;
+  /** UP6b: the last rotation was refused 409 (`withdrawn`): the next one catches the group up first. */
+  catchUpFirst?: boolean;
   /** Re-review N-m1: a hold made the page drop the key of postedEpoch (the pipeline then bars that epoch as a sender), so
    *  the hold ends only with a newer epoch's key. */
   keysDropped: boolean;
@@ -88,10 +94,21 @@ interface Live {
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
  *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
  *  removed); `done` settles once the join has torn down or finished. web3.7 3a-client: `waiting` while it waits for the
- *  boot sweep (it holds no group yet), and `wake` ends that wait at once when it is cancelled. */
+ *  boot sweep (it holds no group yet), and `wake` ends that wait at once when it is cancelled. Final review client M9:
+ *  `holdOnHide`, set by callHold while the join resumes the held group, makes the page's pagehide cancel it with 'hold':
+ *  the held group stays held (no self-Remove), so the update reload's next page resumes it. */
 /** Review I3: a channel's sweep requests: the signal they carry and those still in flight. */
 interface SweepChannel { abort: AbortController; inflight: Set<Promise<unknown>> }
-interface JoinToken { cancelled: 'leave' | 'reset' | 'dropped' | null; done: Promise<void>; channel: string; waiting: boolean; wake: (() => void) | null }
+/** UP6 (R-UP6): the call group this device holds without a live call. The page's callHold makes one for a room lost
+ *  with E_DISCONNECTED and for an update reload, and it is `persisted`: the callKeep marker names it in the worker store,
+ *  so the next page's boot sweep spares it until `until`. Final review I1: a fresh join whose start a transient 503
+ *  refused is held too, not persisted (a reload's boot sweep leaves it), until callHold persists it. `until` is
+ *  wall-clock ms. */
+interface Held { groupId: Id; channel: string; channelId: Id; until: number; persisted: boolean; timer: number | null }
+interface JoinToken {
+  cancelled: 'leave' | 'reset' | 'dropped' | 'hold' | null; done: Promise<void>; channel: string; waiting: boolean; wake: (() => void) | null;
+  holdOnHide?: boolean;
+}
 
 const IN_A_CALL: readonly CallPhase[] = ['joining', 'in', 'paused', 'leaving'];
 
@@ -113,6 +130,10 @@ export class CallController {
   private sweepGen = 0;
   /** Review I3: the running sweep's requests by channel hex: their signal and the requests still in flight. */
   private sweepChannels = new Map<string, SweepChannel>();
+  /** UP6: the held call group, or null. */
+  private held: Held | null = null;
+  /** UP6: the release of an expired hold in flight (one at a time). */
+  private expiring: Promise<void> | null = null;
 
   constructor(private readonly deps: CallDeps) {
     this.book = new VoiceBook({
@@ -145,7 +166,13 @@ export class CallController {
    *  A sweep that found the instance unreachable (status 0) is deferred: the next call (the first online) sweeps again.
    *  A join waits for it, at most SWEEP_JOIN_WAIT_MS. A failing sweep never fails a join. */
   startSweep(): void {
-    if (this.sweeping !== null) return;
+    if (this.sweeping !== null) {
+      // UP6: a hold that expired while the instance was unreachable is acted on now that it answers again (a sweep
+      // that runs takes it up itself).
+      if (this.held !== null && this.expired(this.held)) this.expireHeld();
+      return;
+    }
+    if (this.held === null) this.loadKeep();
     this.sweepGen += 1;
     const gen = this.sweepGen;
     const stopped = (): boolean => this.sweepGen !== gen;
@@ -190,9 +217,12 @@ export class CallController {
         return (out as { value: T }).value;
       },
       heldGroup: () => this.heldGroup(),
+      keep: () => this.held,
+      now: () => this.deps.now(),
       stopped,
     }).catch(() => undefined).then(() => {
       if (!stopped() && offline) this.sweeping = null;
+      this.settleHeld();
     });
     this.sweeping = run;
   }
@@ -209,6 +239,8 @@ export class CallController {
   private heldGroup(): Id | null {
     if (this.live !== null) return this.live.groupId;
     const joining = this.joining;
+    // UP6: a join of the held group's channel decides about it (it resumes it, or forgets it), whatever its hold says.
+    if (joining !== null && this.held !== null && this.held.channel === joining.channel) return this.held.groupId;
     if (joining === null || joining.waiting) return null;
     try {
       return this.deps.core()?.groups().find((g) => g.kind === 1 && g.state !== 4 && toHex(g.targetId) === joining.channel)?.groupId ?? null;
@@ -241,7 +273,7 @@ export class CallController {
 
   /** A join in flight is cancelled (`reset` overrides an earlier reason; the others keep the first), and its wait for
    *  the boot sweep ends now. */
-  private cancelJoining(token: JoinToken, reason: 'leave' | 'reset' | 'dropped'): void {
+  private cancelJoining(token: JoinToken, reason: 'leave' | 'reset' | 'dropped' | 'hold'): void {
     if (reason === 'reset') token.cancelled = 'reset';
     else token.cancelled ??= reason;
     token.wake?.();
@@ -284,6 +316,8 @@ export class CallController {
     const token: JoinToken = { cancelled: null, done: new Promise<void>((resolve) => { finish = resolve; }), channel, waiting: true, wake: null };
     this.joining = token;
     try {
+      // UP6: a hold of another channel is abandoned first (its self-Remove), so only one call group is ever kept.
+      if (this.held !== null && this.held.channel !== channel) await this.release();
       // web3.7 3a-client: before anything reaches the instance, the boot sweep leaves what a page of this browser left
       // behind (a rejoin after a reload waits for it), bounded by SWEEP_JOIN_WAIT_MS.
       await this.awaitSweep(token);
@@ -293,12 +327,18 @@ export class CallController {
     } finally {
       if (this.joining === token) this.joining = null;
       finish();
+      // UP6: what the join did with the held group (resumed, forgotten, or left) ends the hold; a hold it kept (a
+      // transient failure) that has expired meanwhile is acted on now.
+      this.settleHeld();
+      if (this.held !== null && this.expired(this.held)) this.expireHeld();
     }
   }
 
   private async joinOnce(token: JoinToken, core: CorePort, instance: { policyVersion: bigint; externalSenderPub: Uint8Array },
     target: { communityId: string | null; members: string[] }, channel: string, channelId: Id, vdec: string): Promise<CallJoinResult> {
     const dm = target.communityId === null;
+    const held = this.held !== null && this.held.channel === channel ? this.held : null;
+    const expired = held !== null && this.expired(held);
     let joined;
     try {
       joined = await joinCall({
@@ -310,10 +350,21 @@ export class CallController {
         rejoining: () => {
           if (token.cancelled === null && this.joining === token && this.state.phase === 'joining') this.setState({ ...this.state, rejoining: true });
         },
-      }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec });
+        catchUp: async (g) => {
+          await this.deps.catchUp(g);
+          return this.held !== null && toHex(this.held.groupId) === toHex(g) && this.deps.core()?.groupRow(g)?.state === 2;
+        },
+        commitFresh: (g) => this.commitFresh(core, g),
+      }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec, held: held?.groupId ?? null });
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
       if (e instanceof JoinRefused && e.leave !== null) await this.teardown(token, e.leave, e.alone ? channelId : null);
+      // Final review I1: a joined group whose start a transient 503 refused is held (not persisted), so the next join
+      // resumes it; a cancelled join leaves it instead.
+      if (e instanceof JoinRefused && e.keep !== null) {
+        if (token.cancelled !== null) await this.teardown(token, e.keep, e.alone ? channelId : null);
+        else this.keepJoined(e.keep, channel, channelId);
+      }
       if (token.cancelled !== null) throw this.cancelled(token, channel);
       const phase = e instanceof JoinRefused ? e.phase : 'failed';
       const code = this.deps.errorOf(cause).code;
@@ -325,7 +376,7 @@ export class CallController {
         changedUser: code === 'E_UMK_CHANGED' ? this.changedUser([], candidates, reportedUser(cause)) : null });
       throw cause;
     }
-    const { groupId, media, started } = joined;
+    const { groupId, media, started, resumed } = joined;
     // Review I1: a leave, sign-out, forget or revocation during the join: the key is zero-filled here and never posted,
     // the group is left (or, revoked, forgotten locally) and nothing is armed for it.
     if (token.cancelled !== null) {
@@ -349,14 +400,19 @@ export class CallController {
     this.rotateFailures = 0;
     this.armRotation(CALL_ROTATE_MS);
     this.deps.afterJoin(groupId);
+    // UP6: a resumed hold is the live call now; its marker goes. `expired`: the hold's `until` had passed, so the page
+    // applies late-rejoin to it (R-UP9).
+    if (resumed === true && this.held !== null && toHex(this.held.groupId) === toHex(groupId)) this.clearHeld();
     return { callId: toHex(started.callId), groupId: toHex(groupId), livekitUrl: started.livekitUrl, token: started.token,
-      iceServers: started.iceServers, caps: started.caps, epoch: media.epoch.toString() };
+      iceServers: started.iceServers, caps: started.caps, epoch: media.epoch.toString(), ...(resumed === true ? { resumed: true, expired } : {}) };
   }
 
   // ---- step 2: the keys of later epochs ----
 
   /** A batch applied in a group: for the call group, a new epoch is keyed, and a gone own leaf is phase removed. */
   onGroupChanged(groupId: Id, result: ApplyResult): void {
+    // UP6: the held group's own leaf is gone (an applied Remove) or its state is lost: forgotten, with no Remove.
+    if ((result.state === 4 || result.state === 3) && this.isHeld(groupId)) this.forgetHeldGroup();
     const live = this.live;
     if (live === null || toHex(live.groupId) !== toHex(groupId)) return;
     if (live.leaving) return;
@@ -371,6 +427,7 @@ export class CallController {
 
   /** The engine lost this device's membership of a call group (a refused read, a lost state): the call is removed. */
   onMembershipLost(groupId: Id): void {
+    if (this.isHeld(groupId)) this.forgetHeldGroup();
     const live = this.live;
     if (live === null || live.leaving || toHex(live.groupId) !== toHex(groupId)) return;
     this.lost(live);
@@ -525,15 +582,19 @@ export class CallController {
 
   /** `lost` (WB client I3): the page's room ended on its own; the call ends in phase removed (E_DISCONNECTED), so the
    *  page and every other reader see a defined end rather than a silent idle. */
-  async leave(blocked = false, lost = false): Promise<null> {
+  /** `person` (UP6): the person's own leave or switch. With no live call and no join, it abandons a held call group
+   *  (callRelease: its self-Remove); a page's pagehide never does (the update reload holds through it). */
+  async leave(blocked = false, lost = false, person = false): Promise<null> {
     // Review I1: a join in flight is cancelled and this answers once it has torn down (its self-Remove sent).
     const joining = this.joining;
     if (joining !== null && this.live === null) {
-      this.cancelJoining(joining, 'leave');
+      // Final review client M9: the update reload's pagehide (after its callHold) cancels a held resume as a hold.
+      this.cancelJoining(joining, joining.holdOnHide === true && !person && !lost ? 'hold' : 'leave');
       await joining.done;
       return null;
     }
     const live = this.live;
+    if (live === null && person && this.held !== null) await this.release();
     if (live === null) {
       // Task 8b review I1: the page's leave after the worker's own blocked or removed end keeps that phase, with its error
       // and changedUser (plan :403, "stays blocked when leaving because of a block"); only a live call's leave idles.
@@ -543,6 +604,8 @@ export class CallController {
     // A leave already running (the worker's own blocked leave, or an earlier callLeave): wait for it, never a second
     // self-Remove, and its outcome stands.
     if (live.leaveRun !== null) { await live.leaveRun; return null; }
+    // UP7 fix round 1: 'lost' leaves at once (one self-Remove). A room lost with E_DISCONNECTED is held by the page's
+    // callHold (R-UP6); 'lost' is a closed room (E_CALL_ENDED: released) or a removal (E_REMOVED: no key material kept).
     live.leaveRun = this.leaveLive(live, blocked, lost);
     await live.leaveRun;
     return null;
@@ -569,6 +632,168 @@ export class CallController {
     this.setState(blocked ? { ...this.state, phase: 'blocked' }
       : lost ? { ...CALL_IDLE, phase: 'removed', channelId: live.channel, error: this.deps.errorOf(new CallRefusal('E_DISCONNECTED', '')) }
         : { ...CALL_IDLE });
+  }
+
+  // ---- UP6 (R-UP6): the held call ----
+
+  /** callHold (the update reload): the live call of `channel` is held as a lost room's is, and the callKeep marker is
+   *  written, so the next page's boot sweep spares the group until `until`. A hold of that channel already made and not
+   *  persisted (a fresh join kept after a transient start 503, final review I1) is persisted. Anything else: nothing to
+   *  hold. */
+  callHold(channel: string): Promise<null> {
+    const live = this.live;
+    if (live !== null && live.channel === channel && !live.leaving && live.leaveRun === null) this.hold(live);
+    else if (this.held !== null && this.held.channel === channel && !this.held.persisted) {
+      this.held.persisted = true;
+      this.writeKeep(this.held);
+    }
+    // Final review client M9: a resume of the held group still starting (the page's restore, retrying) is not left by the
+    // pagehide that follows this callHold: its cancel keeps the hold (teardown), and the next page resumes it.
+    const joining = this.joining;
+    if (live === null && joining !== null && joining.channel === channel && this.held !== null && this.held.channel === channel) {
+      joining.holdOnHide = true;
+    }
+    return Promise.resolve(null);
+  }
+
+  /** callRelease: the hold is abandoned with its self-Remove and forget (leaveGroup); no hold, nothing is sent. */
+  async release(): Promise<null> {
+    const held = this.held;
+    if (held === null) return null;
+    this.clearHeld();
+    await this.leaveGroup(held.groupId);
+    return null;
+  }
+
+  /** The live call becomes the held group, persisted (callHold is its only caller): the core state stays, nothing is
+   *  posted, the rotation stops, and the phase is removed with E_DISCONNECTED, as a lost room's was. */
+  private hold(live: Live): void {
+    live.leaving = true;
+    this.stopRotation();
+    if (this.live === live) this.live = null;
+    this.deps.callEnded(toHex(live.callId));
+    this.holdGroup(live.groupId, live.channel, live.channelId, true);
+    this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel, error: this.deps.errorOf(new CallRefusal('E_DISCONNECTED', '')) });
+  }
+
+  /** Final review I1: a fresh join's group whose start a transient 503 refused (its external commit landed, its leaf is
+   *  current) is held, not persisted: the next join of the channel resumes it (a start and an own-leaf commit, no second
+   *  external commit), a person's leave or another channel's join releases it (its self-Remove), and expiry sweeps it.
+   *  The engine takes it up as after any join, so a Remove that lands meanwhile drops the hold. */
+  private keepJoined(groupId: Id, channel: string, channelId: Id): void {
+    this.holdGroup(groupId, channel, channelId, false);
+    this.deps.afterJoin(groupId);
+  }
+
+  private holdGroup(groupId: Id, channel: string, channelId: Id, persisted: boolean): void {
+    if (this.held !== null) this.clearHeld();
+    const held: Held = { groupId, channel, channelId, until: this.deps.now() + HOLD_MS, persisted, timer: null };
+    this.held = held;
+    if (persisted) this.writeKeep(held);
+    this.armExpiry(held);
+  }
+
+  /** A hold whose `until` has passed, or lies beyond the longest hold (the wall clock stepped back): acted on as expired. */
+  private expired(held: Held): boolean { return !holdRuns(held.until, this.deps.now()); }
+  private isHeld(groupId: Id): boolean { return this.held !== null && toHex(this.held.groupId) === toHex(groupId); }
+
+  private armExpiry(held: Held): void {
+    if (held.timer !== null) this.deps.clearTimeout(held.timer);
+    held.timer = this.deps.setTimeout(() => { held.timer = null; if (this.held === held) this.expireHeld(); },
+      Math.max(0, Math.min(held.until - this.deps.now(), HOLD_MS)));
+  }
+
+  /** The hold ends without anything sent; the marker goes. */
+  private clearHeld(): void {
+    const held = this.held;
+    if (held === null) return;
+    this.held = null;
+    if (held.timer !== null) this.deps.clearTimeout(held.timer);
+    if (held.persisted) { try { this.deps.core()?.settingDelete(CALL_KEEP_KEY); } catch { /* the next boot finds no group for it */ } }
+  }
+
+  /** The held group's leaf is gone: its state is forgotten, with no Remove (the room sweep is the authority). */
+  private forgetHeldGroup(): void {
+    const held = this.held;
+    if (held === null) return;
+    this.clearHeld();
+    const groupId = held.groupId;
+    this.deps.track(this.deps.serial(groupId, () => {
+      try {
+        const core = this.deps.core();
+        const state = core?.groupRow(groupId)?.state;
+        if (state === 2 || state === 3) core?.callGroupForget(groupId);
+      } catch { /* forgotten already */ }
+      return Promise.resolve();
+    }));
+  }
+
+  /** The hold ends once the core no longer holds its group active (a sweep or a join left or forgot it), or it is the
+   *  live call's again. */
+  private settleHeld(): void {
+    const held = this.held;
+    if (held === null) return;
+    if (this.live !== null && toHex(this.live.groupId) === toHex(held.groupId)) { this.clearHeld(); return; }
+    let state: number | undefined;
+    try { state = this.deps.core()?.groupRow(held.groupId)?.state; } catch { state = undefined; }
+    if (state !== 2) this.clearHeld();
+  }
+
+  /** An expired hold is swept as a leftover (the sweep's own leave rules: a conditional end when alone, else exactly one
+   *  self-Remove, then the forget), and only once the instance answers its call read: offline, nothing is posted or
+   *  forgotten and the hold stays, to be acted on at the next ready. A join of its channel decides instead. */
+  private expireHeld(): void {
+    const held = this.held;
+    if (held === null || this.expiring !== null || (this.joining !== null && this.joining.channel === held.channel)) return;
+    const run = sweepStaleCalls({
+      core: () => this.deps.core(),
+      me: () => this.deps.me(),
+      routes: this.deps.routes,
+      serial: async <T>(groupId: Id, job: () => Promise<T>): Promise<T> => {
+        let out: { value: T } | null = null;
+        await this.deps.serial(groupId, async () => { out = { value: await job() }; });
+        if (out === null) throw new CallRefusal('E_INTERNAL', 'the lane ran nothing');
+        return (out as { value: T }).value;
+      },
+      heldGroup: () => this.heldGroup(),
+      stopped: () => this.held !== held,
+      only: held.groupId,
+    }).catch(() => undefined).then(() => {
+      this.expiring = null;
+      this.settleHeld();
+    });
+    this.expiring = run;
+    this.deps.track(run);
+  }
+
+  /** At the first ready of a page: the callKeep marker an update reload left, if the core still holds its group
+   *  active for that channel; a marker that does not read, or names nothing held, goes. */
+  private loadKeep(): void {
+    const core = this.deps.core();
+    if (core === null) return;
+    let raw: string | undefined;
+    try { raw = core.settings()[CALL_KEEP_KEY]; } catch { return; }
+    if (raw === undefined) return;
+    const keep = parseKeep(raw);
+    let row = null;
+    try { row = keep === null ? null : core.groupRow(fromHex(keep.groupId)); } catch { row = null; }
+    // An `until` beyond the longest hold that can have been made now (the clock stepped back since, or a forged row) is
+    // invalid: the marker goes and the boot sweep sweeps the group as any leftover.
+    if (keep === null || keep.until > this.deps.now() + HOLD_MS || row?.kind !== 1 || row.state !== 2 || toHex(row.targetId) !== keep.channelId) {
+      try { core.settingDelete(CALL_KEEP_KEY); } catch { /* read again at the next boot */ }
+      return;
+    }
+    const held: Held = { groupId: fromHex(keep.groupId), channel: keep.channelId, channelId: fromHex(keep.channelId), until: keep.until,
+      persisted: true, timer: null };
+    this.held = held;
+    // An expired marker is the boot sweep's (once the instance answers); an unexpired one expires on its own.
+    if (!this.expired(held)) this.armExpiry(held);
+  }
+
+  private writeKeep(held: Held): void {
+    try {
+      this.deps.core()?.settingPut(CALL_KEEP_KEY, JSON.stringify({ groupId: toHex(held.groupId), channelId: held.channel, until: held.until }));
+    } catch { /* not persisted: the next page's boot sweep leaves the group, as after a plain reload */ }
   }
 
   /** Whether this device is the call's only one: the last keyed roster holds no other leaf, and the room's snapshot read
@@ -608,6 +833,9 @@ export class CallController {
       try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten already */ }
       return;
     }
+    // Final review client M9: a held resume cancelled by the update reload's pagehide keeps its group held (persisted by
+    // callHold); a fresh join it fell back to has no hold, and leaves as before.
+    if (token.cancelled === 'hold' && this.isHeld(groupId)) return;
     if (aloneIn !== null) {
       // The call id of a call is its channel's id (protocol/09 § Voice). A start that never reached the instance left no
       // call to end (404): the group stays with this one leaf until the idle close (RV-2), and the next join resyncs it.
@@ -626,9 +854,33 @@ export class CallController {
 
   private cancelled(token: JoinToken, channel: string): CallRefusal {
     if (token.cancelled === 'leave') this.setState({ ...CALL_IDLE });
+    // Final review client M9: a held resume cancelled as a hold reads as a held call does.
+    if (token.cancelled === 'hold') this.setState({ ...CALL_IDLE, phase: 'removed', channelId: channel, error: this.deps.errorOf(new CallRefusal('E_DISCONNECTED', '')) });
     // C4 fix round 2: the channel's server was dropped while joining; the page says the call was removed.
     if (token.cancelled === 'dropped') this.setState({ ...CALL_IDLE, phase: 'removed', channelId: channel, error: this.goneError() });
     return new CallRefusal('E_NO_CALL', 'the call was left while it was joining');
+  }
+
+  /** UP6c (protocol/05 N1): a resumed call's commit of a fresh epoch (call_rotate), on the group's lane as the
+   *  rotation's is: built, posted, then confirmed and reported like any own commit; a refused post is aborted and thrown
+   *  as it came. Answers the epoch the commit moved the group to. A confirm that throws is handled as the rotation's is
+   *  (WB client m7): the instance accepted the commit, so its pending state is kept for the engine to adopt; it is
+   *  thrown as CommitUnconfirmed, so no key of the old epoch follows and the resume keeps the hold. */
+  private async commitFresh(core: CorePort, groupId: Id): Promise<bigint> {
+    return this.deps.serial(groupId, async () => {
+      const body = core.callRotate(groupId);
+      try {
+        await this.deps.routes.postCommit(groupId, body);
+      } catch (e) {
+        try { core.commitAbort(groupId); } catch { /* nothing pending */ }
+        throw e;
+      }
+      let result: ApplyResult;
+      try { result = core.commitConfirm(groupId); }
+      catch (e) { throw new CommitUnconfirmed(e); }
+      this.deps.onCommitted(groupId, result);
+      return result.epoch;
+    });
   }
 
   // ---- step 5: the rotation ----
@@ -659,6 +911,12 @@ export class CallController {
     const heldOut = this.state.phase === 'paused' && live.rotateOut;
     if (this.state.phase === 'paused' && !heldOut) { this.armRotation(CALL_ROTATE_MS); return; }
     if (this.state.phase !== 'in' && !heldOut) return;
+    if (live.catchUpFirst) {
+      // Outside the lane: catchUp runs on it, and this job's own lane work starts below.
+      live.catchUpFirst = false;
+      await this.deps.catchUp(live.groupId);
+      if (this.live !== live || live.leaving) return;
+    }
     await this.deps.serial(live.groupId, async () => {
       // A leave that started while this waited for the lane (blocked or not, it sets `leaving` first): never a rotation,
       // since call_rotate would cancel the posted self-Remove. This is the one in-lane guard against it.
@@ -670,8 +928,11 @@ export class CallController {
       catch { this.retryRotation(live); return; }
       try {
         await this.deps.routes.postCommit(live.groupId, body);
-      } catch {
+      } catch (e) {
         try { core.commitAbort(live.groupId); } catch { /* nothing pending */ }
+        // UP6b: a 409 (E_COMMIT_CONFLICT, `withdrawn` among them) means this queue is behind the group: the retry
+        // catches up first, which applies the kind-3 row that takes a withdrawn Remove out of the queue.
+        if (e instanceof DillaHttpError && e.status === 409 && e.code === 'E_COMMIT_CONFLICT') live.catchUpFirst = true;
         this.retryRotation(live);
         return;
       }
@@ -704,6 +965,14 @@ export class CallController {
     const live = this.requireLive();
     const started = await this.deps.routes.startCall(live.channelId, live.vdec);
     return { token: started.token, iceServers: started.iceServers };
+  }
+
+  /** callRelay (UP11-b): fresh relay credentials for the live call, by its id, and nothing else. A media reconnect asks
+   *  this rather than `refresh`: a start opens the call's room, which re-opens one the SFU lost in a restart, and the
+   *  reconnect then meets a room that does not know this participant. */
+  async relay(): Promise<{ iceServers: CallJoinResult['iceServers'] }> {
+    const live = this.requireLive();
+    return { iceServers: await this.deps.routes.relayCall(live.callId) };
   }
 
   async stats(report: CallStats): Promise<null> {
@@ -801,6 +1070,8 @@ export class CallController {
   async shutdown(): Promise<void> {
     this.stopSweep();
     try { await this.leave(); } catch { /* the instance removes the leaf when the call ends */ }
+    // UP6: a sign-out, a wipe or a handover abandons a hold too, with its self-Remove.
+    try { await this.release(); } catch { /* the room sweep removes the leaf */ }
     this.rings.clear();
     this.setState({ ...CALL_IDLE });
   }
@@ -813,6 +1084,9 @@ export class CallController {
     this.stopSweep();
     this.stopRotation();
     this.live = null;
+    // UP6: the hold goes with the account's store; nothing is sent.
+    if (this.held !== null && this.held.timer !== null) this.deps.clearTimeout(this.held.timer);
+    this.held = null;
     this.state = CALL_IDLE;
     this.rings.clear();
     this.book.clear();
@@ -892,4 +1166,19 @@ export class CallController {
 /** The changed contact a core refusal names (CoreError.changedUser), else null. */
 function reportedUser(cause: unknown): string | null {
   return cause instanceof CoreError ? cause.changedUser : null;
+}
+
+const HEX32 = /^[0-9a-f]{32}$/;
+/** The callKeep marker (UP6), or null when it does not read. */
+function parseKeep(raw: string): { groupId: string; channelId: string; until: number } | null {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (typeof v !== 'object' || v === null) return null;
+    const { groupId, channelId, until } = v as Record<string, unknown>;
+    if (typeof groupId !== 'string' || !HEX32.test(groupId) || typeof channelId !== 'string' || !HEX32.test(channelId)
+      || typeof until !== 'number' || !Number.isFinite(until)) return null;
+    return { groupId, channelId, until };
+  } catch {
+    return null;
+  }
 }

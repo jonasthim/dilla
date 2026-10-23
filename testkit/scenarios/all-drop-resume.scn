@@ -1,0 +1,39 @@
+# UP6b (R-UP12, protocol/02 invariant 6 "Withdrawal"): every member of a call drops at once and
+# comes back. The room sweep issues three absence Removes, and each member's queue holds the Remove
+# of its own leaf, which OpenMLS refuses to commit: before the withdrawal nobody could commit. The
+# first device back resumes and withdraws its own Remove (only its own), commits the other two, and
+# the other two, refused at their start (E_LEAF_NOT_CURRENT), join afresh by external commit: the
+# Removes are committed, so there is no freeze and no E_REMOVE_PENDING. All three end in the same
+# call, and a rotation after they are back succeeds.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent alice call
+absent bob call
+absent carol call
+sync alice
+sync bob
+sync carol
+resume alice call withdrawn=1
+sync alice
+commit alice call
+expect_reject E_LEAF_NOT_CURRENT resume bob call
+resync bob call
+expect_reject E_LEAF_NOT_CURRENT resume carol call
+resync carol call
+sync alice
+sync bob
+sync carol
+commit bob call
+sync alice
+sync carol
+send alice call all three are back
+expect_decrypts bob call all three are back
+expect_decrypts carol call all three are back

@@ -1584,6 +1584,35 @@ it('ignores incoming typing frames after an open channel loses membership', asyn
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
 });
 
+// UP7b (R-UP8), fix round 1 (I1, I2): the gateway's outage probe is one plain GET /v1/instance, no retry. Only an answer
+// of the instance counts: one that carries X-Dilla-Generation, which dillad stamps on every response (a 401 or its own
+// 503 too). A reverse proxy's 502/503/504 or its own 200 page carries none, and neither does a network failure.
+it('the outage probe asks /v1/instance once and counts only an answer that carries X-Dilla-Generation', async () => {
+  let status = 200;
+  let stamped = true;
+  let fail = false;
+  const asked: string[] = [];
+  const fetchFn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    asked.push(`${init?.method ?? 'GET'} ${input instanceof Request ? input.url : input.toString()}`);
+    return fail ? Promise.reject(new TypeError('Failed to fetch'))
+      : Promise.resolve(new Response(null, { status, headers: stamped ? { 'X-Dilla-Generation': '1' } : {} }));
+  }) as unknown as typeof fetch;
+  const w = world({ fetch: fetchFn });
+  await toReady(w);
+  const deps = w.gatewayDeps.value!;
+  const probe = (): Promise<boolean> => deps.probe!();
+  asked.length = 0;
+  expect(await probe()).toBe(true);
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toMatch(/^GET .*\/v1\/instance$/);
+  for (const s of [401, 404, 503]) { status = s; expect(await probe(), `the instance's ${String(s)}`).toBe(true); }
+  stamped = false;
+  for (const s of [200, 502, 503, 504]) { status = s; expect(await probe(), `a proxy's ${String(s)}`).toBe(false); }
+  fail = true;
+  expect(await probe()).toBe(false);
+  expect(asked).toHaveLength(9);
+});
+
 // expires_ts is on the instance's clock (L-HTTP-96: now + 10 s there). Read against this browser's clock, a lagging
 // instance made every indicator expire on arrival (task 10: the test host's clock lags, so no browser ever showed one).
 it('reads a typing expiry on the instance clock and holds it at most the relay window here', async () => {
@@ -2591,6 +2620,27 @@ describe('Controller in the ready phase', () => {
     const phases = w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === 'account').map((m) => (m.value as AccountState).phase);
     expect(phases).not.toContain('ready');
     expect(phases).not.toContain('error');
+  });
+
+  it("a proxy's 401 (no X-Dilla-Generation) is no revocation: no re-authentication, no revoked", async () => {
+    const paths: string[] = [];
+    const instanceAndLimits = fakeFetch(paths);
+    const proxy401 = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (path === '/v1/communities') {
+        paths.push(path);
+        return Promise.resolve(new Response('sign in', { status: 401, headers: { 'content-type': 'text/html' } }));
+      }
+      return instanceAndLimits(input, init);
+    }) as typeof fetch;
+    const w = world({ realRoutes: true, fetch: proxy401 });
+    w.session.establish.mockImplementation(() => Promise.resolve(false));
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(paths).toContain('/v1/communities'));
+    await settle();
+    expect(w.session.establish).not.toHaveBeenCalled();
+    expect(w.account()?.phase).not.toBe('revoked');
+    expect(w.gateway.stops).toBe(0);
   });
 
   it('a resumed signup whose device is refused shows revoked and deletes nothing', async () => {
@@ -5451,6 +5501,7 @@ describe('call commands in the worker (task 6)', () => {
       { m: 'callLeave', reason: 'user' }, { m: 'callLeave', reason: 'pagehide' }, { m: 'callLeave', reason: 'switch' },
       { m: 'callShare', on: true }, { m: 'callShare', on: false },
       { m: 'callRefresh' },
+      { m: 'callRelay' },
       { m: 'callStats', report: [3, null, 40, 0, 0, 1_048_576] },
       { m: 'callStats', report: [0, 2, 0, 1000, 7, 0] },
       { m: 'loadVoice', communityId: HEXID, channelId: null },
@@ -5461,7 +5512,7 @@ describe('call commands in the worker (task 6)', () => {
     commands.forEach((command, i) => { w.call(7100 + i, command); });
     await vi.waitFor(() => { for (let i = 0; i < commands.length; i++) expect(w.ret(7100 + i)).toBeDefined(); });
     const expected: Record<string, string | null> = {
-      callJoin: 'E_BAD_INPUT', loadVoice: 'E_BAD_INPUT', callShare: 'E_NO_CALL', callRefresh: 'E_NO_CALL', callStats: 'E_NO_CALL',
+      callJoin: 'E_BAD_INPUT', loadVoice: 'E_BAD_INPUT', callShare: 'E_NO_CALL', callRefresh: 'E_NO_CALL', callRelay: 'E_NO_CALL', callStats: 'E_NO_CALL',
       callLeave: null, callDecline: null,
     };
     commands.forEach((command, i) => {

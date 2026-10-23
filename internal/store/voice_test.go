@@ -141,3 +141,45 @@ func TestEndAllVoiceSessionsEndsEveryLiveCall(t *testing.T) {
 		})
 	}
 }
+
+// UP2 (calls survive an upgrade): ListAllLiveVoiceSessions is every live call of the instance,
+// across channels, oldest first, and no ended one: what the call routes reconcile at boot.
+func TestListAllLiveVoiceSessionsIsEveryLiveCall(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			if live, err := repo.ListAllLiveVoiceSessions(ctx); err != nil || len(live) != 0 {
+				t.Fatalf("ListAllLiveVoiceSessions with no call = %+v, %v", live, err)
+			}
+			cid := seedCommunity(ctx, t, repo)
+			one := channelIn(cid, 1, 0, 0, "voice-1", 0)
+			two := channelIn(cid, 1, 0, 0, "voice-2", 1)
+			for _, ch := range []store.ChannelRow{one, two} {
+				if err := repo.CreateChannel(ctx, ch); err != nil {
+					t.Fatalf("CreateChannel: %v", err)
+				}
+			}
+			late, early, done := id.New(), id.New(), id.New()
+			for _, v := range []store.VoiceSessionRow{
+				{CallID: late, ChannelID: one.ID, LivekitRoom: "late", Started: 30},
+				{CallID: early, ChannelID: two.ID, LivekitRoom: "early", Started: 10},
+				{CallID: done, ChannelID: one.ID, LivekitRoom: "done", Started: 5},
+			} {
+				if err := repo.PutVoiceSession(ctx, v); err != nil {
+					t.Fatalf("PutVoiceSession: %v", err)
+				}
+			}
+			if err := repo.EndVoiceSession(ctx, done, 6); err != nil {
+				t.Fatalf("EndVoiceSession: %v", err)
+			}
+			live, err := repo.ListAllLiveVoiceSessions(ctx)
+			if err != nil {
+				t.Fatalf("ListAllLiveVoiceSessions: %v", err)
+			}
+			if len(live) != 2 || live[0].CallID != early || live[1].CallID != late ||
+				live[0].LivekitRoom != "early" || live[1].ChannelID != one.ID || live[0].Ended != nil {
+				t.Fatalf("ListAllLiveVoiceSessions = %+v, want early then late", live)
+			}
+		})
+	}
+}

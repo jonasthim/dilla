@@ -44,6 +44,10 @@ type callDS struct {
 	memberRemoves []memberRemove
 	// closeBlocks makes Close wait until its context ends: a delivery service stuck on the group.
 	closeBlocks bool
+	// withdrawals is every WithdrawAbsenceRemoves call (UP6b); withdrawErr is its answer.
+	withdrawals []memberRemove
+	withdrawErr error
+	onWithdraw  func()
 }
 
 var _ api.DS = (*callDS)(nil)
@@ -84,6 +88,30 @@ func (d *callDS) ProposeRemoveOfMember(ctx context.Context, g id.ID, leaf uint32
 	d.removes = append(d.removes, [2]id.ID{g, dev})
 	d.memberRemoves = append(d.memberRemoves, memberRemove{Group: g, Leaf: leaf, Device: dev, Added: added})
 	return nil
+}
+
+// ProposeAbsenceRemove is the absence paths' Remove (UP6b): recorded as ProposeRemoveOfMember is.
+func (d *callDS) ProposeAbsenceRemove(ctx context.Context, g id.ID, leaf uint32, dev id.ID, added uint64, a id.ID) error {
+	return d.ProposeRemoveOfMember(ctx, g, leaf, dev, added, a)
+}
+
+// WithdrawAbsenceRemoves records the call (UP6b) and answers withdrawErr; onWithdraw, when set, runs
+// first, so a test can read what the start had done by then (the mint comes after).
+func (d *callDS) WithdrawAbsenceRemoves(_ context.Context, g, dev id.ID, leaf uint32, added uint64) (int, error) {
+	d.mu.Lock()
+	hook, err := d.onWithdraw, d.withdrawErr
+	d.withdrawals = append(d.withdrawals, memberRemove{Group: g, Leaf: leaf, Device: dev, Added: added})
+	d.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return 0, err
+}
+
+func (d *callDS) withdrawn() []memberRemove {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.withdrawals)
 }
 
 // memberRemove is one membership-bound Remove callDS issued.

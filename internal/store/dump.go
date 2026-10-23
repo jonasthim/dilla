@@ -40,7 +40,9 @@ const (
 	DumpVersion = uint32(1)
 )
 
-// DumpTables is the replay order: parents before children. It grows with the
+// DumpTables is the replay order: parents before children. Migration 00024 (UP6b) adds columns to
+// mls_pending_proposals and kind 3 to mls_handshakes and no table, so the list is unchanged; the
+// binary COPY carries the new columns (TestADumpRoundTripsAWithdrawal). It grows with the
 // schema — task 19 appends the mls_* tables, task 23 mls_app_messages, Plan 2
 // the structure, readable and blob tables — and a restore replays it front to
 // back.

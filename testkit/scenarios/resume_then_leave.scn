@@ -1,0 +1,24 @@
+# UP6b, correction I1: a device resumes and then leaves for good. Inside the 30 s window the sweep's
+# re-proposal is a no-op; after it, the re-proposal re-arms the row and appends a kind-0 row, the
+# members queue it again, the Remove is committed and the leaf is gone.
+instance dilla
+client alice
+client bob
+group call kind=call target=ebebebebebebebebebebebebebebebeb community=none creator=alice
+join bob call via=external
+sync alice
+absent bob call
+sync alice
+resume bob call withdrawn=1
+sync alice
+absent bob call
+sync alice
+send alice call the late flush was a no-op
+expect_decrypts bob call the late flush was a no-op
+advance_clock 31s
+absent bob call
+expect_425 send alice call the re-armed Remove stands
+sync alice
+commit alice call
+expect_reject E_LEAF_NOT_CURRENT send bob call am I still in the call
+expect_reject E_LEAF_NOT_CURRENT resume bob call

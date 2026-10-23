@@ -49,6 +49,7 @@ frames	mls.commit_needed	frame
 frames	mls.epoch_changed	frame
 frames	mls.handshake	frame
 frames	mls.handshake from the instance	frame
+frames	mls.handshake withdrawn	frame
 frames	mls.welcome	frame
 frames	presence	frame
 frames	ready	frame
@@ -61,6 +62,17 @@ frames	typing_set on	frame
 frames	unsubscribe	frame
 frames	voice_self muted	frame
 frames	voice_state	frame
+frames	withdrawn a one-byte ref	blob
+frames	withdrawn a one-byte ref	ref
+frames	withdrawn one 32-byte ref	blob
+frames	withdrawn one 32-byte ref	ref
+frames	withdrawn reject a bare bstr	blob
+frames	withdrawn reject a non-minimal array head	blob
+frames	withdrawn reject a uint instead of a bstr	blob
+frames	withdrawn reject an empty array	blob
+frames	withdrawn reject an empty ref	blob
+frames	withdrawn reject trailing bytes	blob
+frames	withdrawn reject two refs	blob
 franking	case 0	tag
 franking	case 1	tag
 franking	case 2	tag

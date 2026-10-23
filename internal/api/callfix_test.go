@@ -232,6 +232,9 @@ func TestAStartThatReopensACallOnAGroupAnEndClosedIsEnded(t *testing.T) {
 		t.Fatalf("the start that reopened the call on a closed group = %d %s, want 503 E_UNAVAILABLE",
 			a.status, code)
 	}
+	if !endedAsOpened(t, a.body) {
+		t.Fatalf("the ended-as-opened 503 %x has no reason call_ended", a.body)
+	}
 	if len(f.stub.minted()) != minted {
 		t.Fatal("a token was minted for a call on a closed group")
 	}

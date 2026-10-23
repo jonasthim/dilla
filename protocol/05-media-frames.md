@@ -133,7 +133,12 @@ within an epoch, so three rules keep its counters unique across worker restarts,
 - **N1.** A sender created after its device committed epoch `e_C` — the external commit or own-leaf
   resync that began this sender's life in the call — encrypts only in epochs at or above `e_C`; an
   older epoch is `E_SFRAME_STALE_EPOCH`. A restarted worker therefore never reuses a counter an
-  earlier worker spent: it commits a new epoch first.
+  earlier worker spent: it commits a new epoch first. This holds for the resume of a held `call`
+  leaf too (`01` § Group kinds): the page's media worker is new, so the device makes a commit of its own
+  (`call_rotate`: an UpdatePath of its own leaf, carrying every proposal it holds) before any media
+  key reaches it and publishes only in that epoch or later; keeping the held
+  epoch would seal from `seq` 0 again under a KID and key the earlier worker already used. A sender
+  counter floor kept in browser storage is no substitute: storage can be cleared or lost.
 - **N2.** A browser publishes in a call only while it holds the Web Lock
   `dilla-media:<instance_id>:<call_group_id>`, requested with `mode: 'exclusive'` and
   `ifAvailable: true`, never `steal`. A tab that does not get it does not publish.

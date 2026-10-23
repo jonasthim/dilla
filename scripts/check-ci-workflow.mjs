@@ -8,6 +8,7 @@ import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas
  * make the Go half of the tree ungated without this gate saying a word. The `go` job additionally has
  * to declare its `needs: rust-wasi` edge (see below).
  */
+// "Must exist in ci.yml", not "required for ci-ok": NOT_REQUIRED_JOBS below lists the ones that are never required checks.
 export const REQUIRED_JOBS = [
   // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
   'changes',
@@ -46,7 +47,27 @@ export const REQUIRED_JOBS = [
   'chromium-web',
   'firefox-web',
   'webkit-web',
+  // UP4 (calls survive an upgrade): the previous release's media server under this tree's API.
+  'sfu-compat',
+  // Final review S-I1: the full upgrade acceptance run, Chromium and Firefox; never required (NOT_REQUIRED_JOBS).
+  'upgrade-e2e',
 ];
+
+/**
+ * Final review S-I1 (ruling final-S-I1): jobs ci-ok must NOT need, so they never make a pull request red, each with the
+ * event condition its job-level `if:` puts before its area gate. upgrade-e2e is the full calls-survive-an-upgrade run
+ * (e2e/voice/upgrade.spec.ts with DILLA_E2E_UPGRADE=1), which runs on a push to main and on workflow_dispatch only.
+ */
+export const NOT_REQUIRED_JOBS = { 'upgrade-e2e': "github.event_name != 'pull_request'" };
+
+/** The job-level `if:` a job must carry: its area gate, behind its event condition for a job ci-ok does not need. */
+export function jobIf(job) {
+  const event = NOT_REQUIRED_JOBS[job];
+  return event === undefined ? gateExpression(job) : `${event} && (${gateExpression(job)})`;
+}
+
+/** The opt-in env line of the full upgrade run: only upgrade-e2e's spec step carries it. */
+const UPGRADE_OPT_IN = "DILLA_E2E_UPGRADE: '1'";
 
 /**
  * The two jobs that run for every change. Every other job needs `changes` and carries the `if:` that JOB_GATES
@@ -272,6 +293,36 @@ const REQUIRED_STEPS = {
   // Task 26/C18: each engine and the native peer against the downloaded web and core builds, one job per engine.
   ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(spec)])),
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
+  // UP4. Which pairing is promised is decided by scripts/release-meta.mjs, shared with release.yml and check-release-meta;
+  // checkSfuCompatSteps holds the order and the env of the steps.
+  // Final review S-I1: checkUpgradeSteps holds the spec step, its opt-in and the matrix.
+  'upgrade-e2e': [
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'npx playwright install --with-deps ${{ matrix.engine }}',
+    'if: failure()',
+    'name: upgrade-e2e-results-${{ matrix.engine }}',
+    'path: e2e/test-results',
+  ],
+  'sfu-compat': [
+    'timeout-minutes: 25',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'go build -o target/dillad ./cmd/dillad',
+    'target/dillad version --json',
+    'bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary',
+    'node scripts/release-meta.mjs compat --version-json "$RUNNER_TEMP/new-version.json" --previous-dir "$RUNNER_TEMP/previous"',
+    'node scripts/release-meta.mjs notes-required docs/deploy/releases',
+    'npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat',
+    'name: sfu-compat-results',
+    'path: e2e/test-results',
+  ],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
   // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
   // green having proved nothing. The third is the only compile of the pinned LiveKit/wazero/sqlite
@@ -636,6 +687,64 @@ function checkVoiceSteps(jobs, problems) {
   }
 }
 
+/**
+ * UP4: the compat leg is a `run:` step of its own, gated on the plan step's answer, whose env points DILLA_SFU_BIN at the
+ * downloaded previous binary (without it the spec would test this tree's own SFU against itself and prove nothing) and
+ * carries the testkit. The fetch comes before the plan and the plan before both users; the skip path checks the notes.
+ */
+function checkSfuCompatSteps(jobs, problems) {
+  if (!('sfu-compat' in jobs)) return;
+  const steps = jobSteps(jobs['sfu-compat']);
+  const at = (prefix) => steps.findIndex((s) => s.some((l) => l.startsWith(prefix)));
+  const fetchAt = at('run: bash scripts/fetch-previous-release.sh');
+  const planAt = at('run: node scripts/release-meta.mjs compat');
+  const notesAt = at('run: node scripts/release-meta.mjs notes-required');
+  const specAt = at('run: npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat');
+  for (const [what, i] of [['the fetch of the previous release', fetchAt], ['the compat plan', planAt], ['the notes check for an incompatible release', notesAt], ['the compat spec', specAt]]) {
+    if (i < 0) problems.push(`ci.yml: job "sfu-compat" is missing ${what} (a run step of its own)`);
+  }
+  if (fetchAt >= 0 && planAt >= 0 && fetchAt > planAt) problems.push('ci.yml: job "sfu-compat" must fetch the previous release before it plans');
+  if (planAt >= 0 && specAt >= 0 && planAt > specAt) problems.push('ci.yml: job "sfu-compat" must plan before it runs the compat spec');
+  if (planAt >= 0 && !steps[planAt].some((l) => l === 'id: plan')) problems.push('ci.yml: job "sfu-compat"\'s plan step must be id: plan');
+  if (notesAt >= 0 && !steps[notesAt].includes("if: steps.plan.outputs.run == 'false'")) problems.push('ci.yml: job "sfu-compat" must check the notes only when the plan says run == false');
+  if (specAt >= 0) {
+    if (!steps[specAt].includes("if: steps.plan.outputs.run == 'true'")) problems.push('ci.yml: job "sfu-compat" must run the compat spec only when the plan says run == true');
+    if (!steps[specAt].includes('DILLA_SFU_BIN: ${{ runner.temp }}/previous/dillad-linux-amd64')) problems.push('ci.yml: job "sfu-compat" must run the compat spec with DILLA_SFU_BIN set to the previous release\'s dillad');
+    if (!steps[specAt].includes(TESTKIT_ENV)) problems.push(`ci.yml: job "sfu-compat" runs the compat spec without its own env ${TESTKIT_ENV}`);
+  }
+}
+
+/**
+ * Final review S-I1 (ruling final-S-I1): the full upgrade run is upgrade-e2e's alone. Its spec step is a `run:` step of
+ * its own for both engines, carrying the opt-in and the testkit, after Firefox's audio server; the workflow can be
+ * dispatched by hand; and no other job opts in (the voice suites skip the spec, sfu-compat runs its compat leg only).
+ */
+function checkUpgradeSteps(text, jobs, problems) {
+  if (!/^ {2}workflow_dispatch:\s*$/m.test(text.slice(0, text.indexOf('\njobs:')))) {
+    problems.push('ci.yml: on: must carry workflow_dispatch, so upgrade-e2e can be run by hand (final-S-I1)');
+  }
+  for (const [name, body] of Object.entries(jobs)) {
+    // Comments may name it (the job's own header comment sits at the end of the job before it).
+    const code = body.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    if (name !== 'upgrade-e2e' && code.includes('DILLA_E2E_UPGRADE')) {
+      problems.push(`ci.yml: job "${name}" sets DILLA_E2E_UPGRADE; only upgrade-e2e runs the full upgrade spec (final-S-I1)`);
+    }
+  }
+  if (!('upgrade-e2e' in jobs)) return;
+  const body = jobs['upgrade-e2e'];
+  if (!body.split('\n').includes('        engine: [chromium, firefox]')) problems.push('ci.yml: job "upgrade-e2e" must run on chromium and firefox (matrix engine: [chromium, firefox])');
+  const steps = jobSteps(body);
+  const specAt = steps.findIndex((s) => s[0] === 'run: npm run test:e2e:voice:${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts');
+  if (specAt < 0) problems.push('ci.yml: job "upgrade-e2e" is missing: npm run test:e2e:voice:${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts (a run step of its own)');
+  else {
+    if (!steps[specAt].includes(UPGRADE_OPT_IN)) problems.push(`ci.yml: job "upgrade-e2e" runs the spec without ${UPGRADE_OPT_IN}: it would skip itself`);
+    if (!steps[specAt].includes(TESTKIT_ENV)) problems.push(`ci.yml: job "upgrade-e2e" runs the spec without its own env ${TESTKIT_ENV}`);
+  }
+  const audioAt = steps.findIndex((s) => s[0] === "if: matrix.engine == 'firefox'" && s.includes('run: sh scripts/ci-audio-server.sh'));
+  if (audioAt < 0) problems.push('ci.yml: job "upgrade-e2e" is missing the firefox audio server step (if: matrix.engine == \'firefox\', run: sh scripts/ci-audio-server.sh)');
+  else if (specAt >= 0 && audioAt > specAt) problems.push('ci.yml: upgrade-e2e audio server must start before the spec');
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -696,6 +805,10 @@ export function checkWorkflow(root) {
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
   }
+  // A workflow_dispatch on main's head must not cancel the push run of the same commit (the release gate reads sfu-compat from push runs).
+  if (!/^\s{2}group:.*github\.event_name/m.test(text)) {
+    problems.push('ci.yml: the concurrency group must include github.event_name, so a workflow_dispatch cannot cancel the push run of the same commit');
+  }
   // gap-29 §4 ii: a workflow-level RUSTFLAGS overrides every target.*.rustflags outright.
   if (/^\s{2}RUSTFLAGS:/m.test(text)) {
     problems.push('ci.yml: workflow-level RUSTFLAGS overrides .cargo/config.toml — use cargo clippy -- -D warnings');
@@ -723,7 +836,10 @@ export function checkWorkflow(root) {
     if (name === 'ci-ok') {
       if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
       for (const other of Object.keys(jobs)) {
-        if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
+        if (other === 'ci-ok') continue;
+        if (other in NOT_REQUIRED_JOBS) {
+          if (needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must not list "${other}" in its needs: it is never required (final-S-I1)`);
+        } else if (!needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
       }
       continue;
     }
@@ -736,7 +852,7 @@ export function checkWorkflow(root) {
       continue;
     }
     if (!needList.includes('changes')) problems.push(`ci.yml: job "${name}" must list "changes" in its needs:`);
-    if (!body.split('\n').includes(`    if: ${gateExpression(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${gateExpression(name)}`);
+    if (!body.split('\n').includes(`    if: ${jobIf(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${jobIf(name)}`);
     // A job whose needs are skipped is skipped too, so its gate may not be true where a needed job's is false.
     for (const need of needList) {
       if (!(need in JOB_GATES)) continue;
@@ -759,6 +875,7 @@ export function checkWorkflow(root) {
 
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
   assertEveryUploadFailsOnNoFiles(text, problems);
+  if (!/^permissions:\n {2}contents: read$/m.test(text)) problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
   assertWasmPackUsesTheSizeProfile(text, problems);
   assertWasmJobsUseClang23(text, jobs, problems);
 
@@ -833,6 +950,8 @@ export function checkWorkflow(root) {
   }
 
   checkVoiceSteps(jobs, problems);
+  checkSfuCompatSteps(jobs, problems);
+  checkUpgradeSteps(text, jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
@@ -869,7 +988,7 @@ export function checkWorkflow(root) {
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
 export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'release.json'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -906,6 +1025,14 @@ const RELEASE_STEPS = {
     'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',
+    // UP4: release.json is generated from the built binary and the previous release (scripts/release-meta.mjs), never by hand;
+    // five assets; ci.yml's sfu-compat job must have passed on this commit (checkReleaseGate holds the order).
+    'release/dillad-linux-amd64 version --json',
+    'node scripts/release-meta.mjs write --tag "$TAG"',
+    '--previous-dir "$RUNNER_TEMP/previous"',
+    'bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --exclude-from "$TAG"',
+    'bash scripts/check-sfu-compat-gate.sh',
+    'test "$(ls | wc -l)" -eq 5',
     'gh release create "$TAG" --verify-tag',
     'flags="--prerelease"',
     `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,
@@ -971,6 +1098,10 @@ export function checkReleaseWorkflow(root) {
   }
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
+  }
+  // UP4: the gate reads ci.yml's jobs through the API; without actions: read it would 403 only at release time.
+  if ('release' in jobs && !/^ {4}permissions:\n(?: {6}\S.*\n)*? {6}actions: read$/m.test(jobs.release)) {
+    problems.push(`${file}: job "release" needs permissions: actions: read for the sfu-compat gate`);
   }
   if ('tag' in jobs && !/^ {6}version: \$\{\{ steps\.tag\.outputs\.version \}\}$/m.test(jobs.tag)) {
     problems.push(`${file}: job "tag" must output version: \${{ steps.tag.outputs.version }}`);

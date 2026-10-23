@@ -13,7 +13,7 @@ import {
   screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
 import { reportProcessorStatus } from './processor-status.ts';
-import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
+import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type MicResult, type ScreenCapture, type ShareAudioKind } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
@@ -85,8 +85,13 @@ export interface PageCallState {
    */
   error: string | null;
 }
-/** 'lost' (WB client I3): the room ended on its own; media stops first and the worker hears callLeave 'lost'. */
-export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'lost';
+/** 'lost' (WB client I3): the room ended on its own; media stops first. A room lost with E_DISCONNECTED is held (UP7,
+ *  R-UP6): the worker hears callHold, so the call group is kept for the recovery's resume; any other end (E_CALL_ENDED,
+ *  E_REMOVED) posts callLeave 'lost' as before.
+ *  'hold' (UP7, Q1 = B): the update reload. callHold is posted and answered first (the worker keeps the call group and
+ *  persists its callKeep marker), then the LiveKit room is disconnected with no group self-Remove, so the SFU frees the old
+ *  participant at once, and the media goes. The next page resumes the held group. */
+export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'lost' | 'hold';
 export interface PageCall {
   readonly state: PageCallState;
   subscribe(fn: () => void): () => void;
@@ -213,25 +218,48 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
+  /**
+   * UP7 (Q1 = B): the resume of a call group held across an update reload, the fast path. The microphone is acquired in
+   * parallel with callJoin (the worker's catch-up, media epoch and token mint) instead of before it, and `gate` is awaited
+   * between callJoin's answer and the LiveKit connect: it rejects (any error) to cancel the start before anything reaches
+   * the SFU, and the start then ends as a failed one does (media released, callLeave 'user': the worker's one self-Remove).
+   * `mark` hears the budget's marks (token, connected, published).
+   */
+  resume?: {
+    gate(answer: { resumed: boolean; expired: boolean }): Promise<void>;
+    mark?(name: 'token' | 'connected' | 'published'): void;
+  };
 }
 
-/** A refusal or failure of the session, by code only (copy maps codes, never error text). */
+/** A refusal or failure of the session, by code only (copy maps codes, never error text). `retryAfterMs` (UP7, R-UP8):
+ *  the instance's own wait for a transient refusal (503 E_UNAVAILABLE, 429), carried from the worker's error. */
 export class PageCallError extends Error {
   readonly code: string;
-  constructor(code: string) {
+  readonly retryAfterMs: number | null;
+  constructor(code: string, retryAfterMs: number | null = null) {
     super(code);
     this.name = 'PageCallError';
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
 const CODE = /^E_[A-Z0-9_]+/;
 export function pageCallError(err: unknown): PageCallError {
   if (err instanceof PageCallError) return err;
-  const code = (err as { code?: unknown } | null)?.code;
-  if (typeof code === 'string' && CODE.test(code)) return new PageCallError(code);
+  const { code, retryAfterMs } = (err ?? {}) as { code?: unknown; retryAfterMs?: unknown };
+  const retry = typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 ? retryAfterMs : null;
+  if (typeof code === 'string' && CODE.test(code)) return new PageCallError(code, retry);
   const fromMessage = err instanceof Error ? CODE.exec(err.message)?.[0] : undefined;
   return new PageCallError(fromMessage ?? 'E_INTERNAL');
+}
+
+/** UP11 review M6: a refusal of the relay refresh that no retry within the same reconnect can turn: the instance's 403
+ *  (no longer a leaf, barred, without connect) or 404 (the call or its channel gone), or the worker's own E_NO_CALL. A
+ *  503, a 429 or no answer at all is transient and is retried. */
+export function finalRefusal(err: unknown): boolean {
+  const { status } = (err ?? {}) as { status?: unknown };
+  return status === 403 || status === 404 || pageCallError(err).code === 'E_NO_CALL';
 }
 
 /** The browser’s own dependencies, for the shell (task 9). */
@@ -313,6 +341,10 @@ export const TILE_POLL_MS = 1_000;
 /** ICE credentials are refreshed this long before the expiry their username carries (DEV-53). */
 export const ICE_EARLY_MS = 300_000;
 const ICE_RETRY_MS = 30_000;
+/** UP11: while the room reconnects, fresh relay credentials are asked for at once, then after these waits (the last one
+ *  repeats), never sooner than a transient refusal’s retry_after_ms. A relay that restarted with the API refuses every
+ *  credential minted before its start, and livekit’s reconnects reuse room.engine.rtcConfig, so only a fresh one passes. */
+export const RECONNECT_ICE_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 5_000];
 /** How long a share waits for the SFU’s new permission. */
 export const SHARE_WAIT_MS = 10_000;
 
@@ -393,17 +425,27 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     : null;
   // A refused device at the start leaves the system default playing.
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
-  let mic: Awaited<ReturnType<typeof acquireMic>>;
-  try {
-    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
-  } catch (err) {
-    closeCtx();
-    throw err;
-  }
-  if (opts.signal?.aborted === true) {
-    if ('track' in mic) mic.track.stop();
-    closeCtx();
-    throw new PageCallError('E_ABORTED');
+  // UP7 (Q1 = B): a resume acquires the microphone in parallel with callJoin (below); `micPending` is that capture until
+  // it is taken. Every other start asks for it first.
+  let mic!: MicResult;
+  let micTaken = false;
+  let micPending: Promise<MicResult> | null = null;
+  if (opts.resume === undefined) {
+    try {
+      mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+      micTaken = true;
+    } catch (err) {
+      closeCtx();
+      throw err;
+    }
+    if (opts.signal?.aborted === true) {
+      if ('track' in mic) mic.track.stop();
+      closeCtx();
+      throw new PageCallError('E_ABORTED');
+    }
+  } else {
+    if (opts.signal?.aborted === true) { closeCtx(); throw new PageCallError('E_ABORTED'); }
+    micPending = acquireMic(deps.media, opts.input, false);
   }
   let roster = new Map<string, { userId: string; leaf: number }>();
   let selfLeaf = -1;
@@ -422,7 +464,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const statusOwner = Symbol('microphone');
   let aborted = false;
   let joinedSession: CallSession | null = null;
-  const stopMic = (): void => { if ('track' in mic) mic.track.stop(); };
+  /** Stops the microphone, or (a resume's capture not taken yet) the one its pending capture yields. */
+  const stopMic = (): void => {
+    if (micTaken) { if ('track' in mic) mic.track.stop(); return; }
+    void micPending?.then((late) => { if ('track' in late) late.track.stop(); }, () => undefined);
+  };
   /** A pagehide, or the page's abort (WB client I1), during startup: everything stops now, nothing waits. */
   const startupHide = (reason: 'pagehide' | 'user' = 'pagehide'): void => {
     if (aborted) return;
@@ -487,6 +533,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     throw await abandon(err, false);
   }
   if (aborted) throw new PageCallError('E_ABORTED');
+  // UP7 (Q1 = B): the resume's gate (the page's AFK verdict, read in parallel with the worker's resume) and its
+  // microphone, both before the key is taken and before anything reaches the SFU. A gate that refuses ends the start as a
+  // failed one: media released, then callLeave 'user' (the worker's one self-Remove of the resumed leaf).
+  if (opts.resume !== undefined) {
+    opts.resume.mark?.('token');
+    try {
+      await opts.resume.gate({ resumed: join.resumed === true, expired: join.expired === true });
+    } catch (err) {
+      throw await abandon(err, true);
+    }
+    if (aborted) throw new PageCallError('E_ABORTED');
+    const taken = await (micPending ?? Promise.resolve<MicResult>({ mic: 'missing' }));
+    if (aborted) { if ('track' in taken) taken.track.stop(); throw new PageCallError('E_ABORTED'); }
+    mic = taken;
+    micTaken = true;
+  }
   let joinEpoch: bigint;
   let caps: CallCaps;
   try {
@@ -520,6 +582,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   }
   if (session === null) throw await abandon(joinError ?? new PageCallError('E_INTERNAL'), true);
   joinedSession = session;
+  opts.resume?.mark?.('connected');
   // WB client m2: the room's end and its reconnects are heard from here on, not only once the microphone is published.
   let onRoomEnd: (reason: unknown) => void = (reason) => { endedBy ??= endCodeOf(reason); };
   let onRoomReconnecting: () => void = () => undefined;
@@ -969,6 +1032,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.muted || mode === 'ptt') mic.track.enabled = false;
       try {
         micPub = await local.publishTrack(mic.track, micOptions(caps));
+        opts.resume?.mark?.('published');
       } catch {
         mic.track.stop();
         micTrack = null;
@@ -1345,12 +1409,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
       later(linkTick, LINK_EVERY_MS);
     };
+    /** The one TTL refresh pending (UP11: a refresh while reconnecting restarts it from its own answer). */
+    let iceTimer: unknown = null;
     const scheduleIce = (list: IceServerTuple[], retry = false): void => {
       if (ended) return;
+      cancel(iceTimer);
+      iceTimer = null;
       const expiry = iceExpiryMs(list);
       if (expiry === null && !retry) return;
       const delay = retry || expiry === null ? ICE_RETRY_MS : Math.max(ICE_RETRY_MS, expiry - ICE_EARLY_MS - deps.now());
-      later(() => { void refreshIce(list); }, delay);
+      iceTimer = later(() => { void refreshIce(list); }, delay);
     };
     const refreshIce = async (current: IceServerTuple[]): Promise<void> => {
       try {
@@ -1363,15 +1431,60 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
     };
 
+    /** UP11: the reconnecting episode in progress (from the room’s reconnecting to its reconnected or end): its tries,
+     *  its pending retry, and whether a refresh is in flight or has landed. At most one of each per episode. */
+    interface IceEpisode { tries: number; timer: unknown; busy: boolean; done: boolean }
+    let episode: IceEpisode | null = null;
+    /** UP11: fresh relay credentials for the reconnect of `ep`, retried while it lasts (RECONNECT_ICE_BACKOFF_MS). A
+     *  credential that lands after its episode ended is still applied: it is the newest one. UP11-b: callRelay, the
+     *  credentials alone; a start (callRefresh) would re-open a room the SFU lost, and the reconnect would then meet a
+     *  room that does not know this participant (STATE_MISMATCH). */
+    const refreshReconnecting = (ep: IceEpisode): void => {
+      if (ended || episode !== ep || ep.done || ep.busy) return;
+      ep.timer = null;
+      ep.busy = true;
+      deps.bridge.call({ m: 'callRelay' }).then((answer) => {
+        ep.busy = false;
+        if (ended) return;
+        const { iceServers } = answer as { iceServers: IceServerTuple[] };
+        refreshIceServers(room, iceServers);
+        scheduleIce(iceServers);
+        ep.done = true;
+      }, (err: unknown) => {
+        ep.busy = false;
+        if (ended || episode !== ep) return;
+        // Review M6: a refusal no retry in this reconnect can turn (403, 404, or no live call in the worker) ends the
+        // episode's asking; the room's own end then runs the lost-connection path, as for any reconnect that fails.
+        if (finalRefusal(err)) { ep.done = true; return; }
+        const step = RECONNECT_ICE_BACKOFF_MS[Math.min(ep.tries, RECONNECT_ICE_BACKOFF_MS.length - 1)];
+        ep.tries += 1;
+        ep.timer = later(() => { refreshReconnecting(ep); }, Math.max(step, pageCallError(err).retryAfterMs ?? 0));
+      });
+    };
+    const endEpisode = (): void => {
+      if (episode !== null) cancel(episode.timer);
+      episode = null;
+    };
+
     // ---- room events
     const onPeople = (): void => { applyGains(); refresh(); };
     const onSpeakers = (): void => refresh();
     // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
-    onRoomReconnecting = () => { if (!ended) { linkTotals = null; set({ phase: 'reconnecting', link: undefined }); } };
-    onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
+    onRoomReconnecting = () => {
+      if (ended) return;
+      linkTotals = null;
+      set({ phase: 'reconnecting', link: undefined });
+      if (episode === null) {
+        episode = { tries: 0, timer: null, busy: false, done: false };
+        refreshReconnecting(episode);
+      }
+    };
+    onRoomReconnected = () => { endEpisode(); if (!ended) set({ phase: 'connected' }); };
     onRoomEnd = (reason) => {
       if (ended) return;
       set({ error: endCodeOf(reason) });
+      // UP7 (R-UP6): a lost connection (E_DISCONNECTED) holds the call group (callHold, below); a closed room or a removal
+      // posts callLeave 'lost' as before.
       void leave('lost');
     };
     const onSubscribed = (track: unknown, pub: unknown, participant: unknown): void => {
@@ -1437,8 +1550,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (leaving !== null) return leaving;
       stopEverything();
       const post = (r: 'user' | 'pagehide' | 'switch' | 'lost') => deps.bridge.call({ m: 'callLeave', reason: r }).then(() => undefined, () => undefined);
+      const hold = () => deps.bridge.call({ m: 'callHold', channelId: target.channelId }).then(() => undefined, () => undefined);
       const releaseAll = () => release().catch(() => undefined).finally(stopCaptures);
-      if (reason === 'pagehide') {
+      if (reason === 'hold') {
+        // UP7 (Q1 = B): the update reload. The worker holds the group (and persists its marker) before anything else; then
+        // the room is disconnected with no group self-Remove, so the SFU frees this participant at once, and the media goes.
+        leaving = hold().then(() => {
+          try { manager.dispose(); } catch { /* released below */ }
+          return Promise.resolve(room.disconnect()).catch(() => undefined);
+        }).then(releaseAll);
+      } else if (reason === 'pagehide') {
         // The page is going away: nothing here may wait. callLeave is posted, then media stops in this same task.
         void post('pagehide');
         try { manager.dispose(); } catch { /* released below */ }
@@ -1446,7 +1567,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         leaving = releaseAll();
       } else if (reason === 'blocked' || reason === 'removed' || reason === 'lost') {
         // Keys must stop before anything else: media first, then the worker’s leave.
-        leaving = releaseAll().then(() => post(reason === 'lost' ? 'lost' : 'user'));
+        const held = reason === 'lost' && state.error === 'E_DISCONNECTED';
+        leaving = releaseAll().then(() => (held ? hold() : post(reason === 'lost' ? 'lost' : 'user')));
       } else {
         const posted = post(reason);
         leaving = releaseAll().then(() => posted);

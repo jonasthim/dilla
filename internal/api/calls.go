@@ -222,6 +222,8 @@ type Calls struct {
 	// relay is the TURN relay's revocation state (task 13 review I1): a cut device's relay
 	// allocations end with its call session. nil when the instance runs no relay.
 	relay RelayRevoker
+	// mints records when the start routes minted call tokens, for GET /media/recent-mints (R-UP4).
+	mints mintLog
 
 	// memMu guards the call-group membership state (callmembers.go): the memberships devices were
 	// admitted to rooms with, the absences the sweep tracks, the Removes it decided and when it last
@@ -385,7 +387,7 @@ func (b BarredDevices) DeviceBarred(ctx context.Context, device id.ID) (bool, er
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
 	afkCtx, afkCancel := context.WithCancel(context.Background())
 	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases(),
-		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1),
+		mints: mintLog{startedAt: clk.Now()}, sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1),
 		awayWake: make(chan struct{}, 1), afkCtx: afkCtx, afkCancel: afkCancel}
 }
 
@@ -402,6 +404,7 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
 	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
+	mux.HandleFunc("POST /v1/calls/{call_id}/relay", h.refreshRelay)
 	h.registerReads(mux)
 }
 
@@ -573,7 +576,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 				server.WriteError(w, err)
 				return
 			}
-			server.WriteError(w, server.Unavailable(startRetryAfterMS, "the call ended as it was opened; retry"))
+			// final-I1: the one start 503 that carries reason call_ended (server.CallEnded); every other
+			// start 503 (a busy call, a pending repair or relay cut, an undecided withdrawal, an SFU that
+			// does not answer) is transient and has none, so the client keeps its leaf.
+			server.WriteError(w, server.CallEnded(startRetryAfterMS))
 			return
 		case err != nil:
 			server.WriteError(w, err)
@@ -592,9 +598,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	// DEV-44: the SFU never creates a room on a join (room.auto_create: false), so every start opens
 	// it first. CreateRoom is idempotent on a live room, and re-opens one LiveKit reaped (20 s after
 	// the last leave, 300 s when nobody joined) while the row was still live.
+	// R-UP7: an SFU that does not answer (dilla-media restarting, or not up yet) is transient: 503
+	// with retry_after_ms, which the client retries, not a 500 it gives up on.
 	if err := h.sfu.CreateRoom(r.Context(), row.LivekitRoom); err != nil {
 		h.log.ErrorContext(r.Context(), "opening a LiveKit room failed", "room", row.LivekitRoom, "err", err)
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not open the room"))
+		server.WriteError(w, errMediaDown())
 		return
 	}
 	// A device whose cut or demotion in this call has not landed in the SFU gets no token for it until
@@ -603,8 +611,8 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if h.leases.isPending(callID, s.DeviceID) {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
+	if h.leases.isPending(callID, s.DeviceID) || h.relayPending(s.DeviceID) {
+		server.WriteError(w, errRepairPending())
 		return
 	}
 	if h.callFull(r.Context(), row.LivekitRoom, s.DeviceID) {
@@ -615,10 +623,26 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
+	// UP6b (R-UP12, correction I2): the device's own absence Remove is withdrawn here, immediately
+	// before the mint and noteAdmission, after every check that may still refuse the start (the
+	// leaf gate, retryOwn, isPending, callFull, CreateRoom). A refused start withdraws nothing.
+	//
+	// A failure AFTER the withdrawal (the sfu.Token error below, or stillEntitled refusing once the
+	// relay credential is minted) leaves the Remove withdrawn with no admission. That is bounded:
+	// the device is still absent, so the room sweep proposes its Remove again, and after the 30 s
+	// WithdrawnStandWindow that re-proposal re-arms the row (ds.ProposeAbsenceRemove); a device that
+	// is barred meanwhile is re-proposed by the reconcile, which taints the row so no later resume can
+	// withdraw it.
+	if err := h.withdrawOwnAbsence(r.Context(), groupID, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	// R-UP4: a token on its way to the SFU keeps `dillad media --idle` busy for 60 s.
+	h.mints.note(h.clk.Now())
 	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
+		server.WriteError(w, errMediaDown())
 		return
 	}
 	h.startStage("mint")
@@ -1169,9 +1193,10 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 // source, exactly what a token is minted with — which the gate compares the token's grants against,
 // so a token can never confer more at admission than the device holds now (a microphone after speak
 // was revoked, a camera after an unshare). A refusal is a *server.Error: E_LEAF_NOT_CURRENT for a
-// room that is no live call's or a device that is no current leaf of it, E_FORBIDDEN for a device
-// that is barred, lost access or whose repair is pending, and for a room of the AFK channel (R-AW1).
-// Anything else is a store failure.
+// room that is no live call's or a device that is no current leaf of it, E_UNAVAILABLE with
+// retry_after_ms for a device whose repair is pending (R-UP7: still a refusal, and once the repair
+// lands every check below runs again), E_FORBIDDEN for a device that is barred or lost access, and
+// for a room of the AFK channel (R-AW1). Anything else is a store failure.
 func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error) {
 	notLeaf := server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
 	callHex, _, ok := strings.Cut(room, "-")
@@ -1205,8 +1230,8 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if err := h.retryOwn(ctx, callID, device); err != nil {
 		return nil, err
 	}
-	if h.leases.isPending(callID, device) {
-		return nil, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked")
+	if h.leases.isPending(callID, device) || h.relayPending(device) {
+		return nil, errRepairPending()
 	}
 	dev, err := h.repo.GetDevice(ctx, device)
 	if errors.Is(err, store.ErrNotFound) {
@@ -1300,6 +1325,67 @@ func barred(ctx context.Context, repo store.Repository, dv store.DeviceRow) (boo
 
 func errBarred() error {
 	return server.Errorf(server.CodeForbidden, "your device or account may not take part in calls")
+}
+
+// transientRetryAfterMS is the retry_after_ms of R-UP7's transient refusals (errRepairPending,
+// errMediaDown).
+const transientRetryAfterMS = 2_000
+
+// errRepairPending is R-UP7's answer at the start and at the /rtc gate to a device whose cut or
+// demotion in the call has not landed in the SFU, or whose relay cut the media relay has not
+// acknowledged (relayPending, R-UP11): 503 E_UNAVAILABLE with retry_after_ms. It is a
+// refusal like the 403 it replaces — nothing is minted or admitted — but a transient one: once the
+// repair lands, every other check runs again, so a barred device then gets its 403.
+func errRepairPending() error {
+	return server.Unavailable(transientRetryAfterMS, "your device's access to this call is being settled")
+}
+
+// withdrawOwnAbsence withdraws the absence Removes of dev's own current membership of the call group
+// (ds.WithdrawAbsenceRemoves): only its own, never another member's ("Only its own"), so a device
+// that really left is still removed within the sweep window. The membership read here is checked
+// again under the group lock: a commit that removed the device first answers E_LEAF_NOT_CURRENT,
+// and the device forgets the group and joins afresh, which cannot deadlock because the Remove is
+// committed. Any other failure is 503 E_UNAVAILABLE, and no token is minted.
+func (h *Calls) withdrawOwnAbsence(ctx context.Context, groupID, dev id.ID) error {
+	if h.dsvc == nil {
+		return nil
+	}
+	members, err := h.repo.ListMembers(ctx, groupID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "reading the call group's members for the withdrawal failed", "group_id", groupID.String(), "err", err)
+		return errWithdrawFailed()
+	}
+	for _, m := range members {
+		if m.DeviceID != dev || m.RemovedEpoch != nil {
+			continue
+		}
+		n, err := h.dsvc.WithdrawAbsenceRemoves(ctx, groupID, dev, m.LeafIndex, m.AddedEpoch)
+		switch {
+		case errors.Is(err, ds.ErrMembershipGone):
+			return server.Errorf(server.CodeLeafNotCurrent, "your device's leaf was removed from this call group")
+		case err != nil:
+			h.log.ErrorContext(ctx, "withdrawing a resuming device's absence Remove failed", "group_id", groupID.String(),
+				"device_id", dev.String(), "err", err)
+			return errWithdrawFailed()
+		case n > 0:
+			h.log.InfoContext(ctx, "a resuming device's own absence Remove was withdrawn", "group_id", groupID.String(),
+				"device_id", dev.String(), "removes", n)
+		}
+		return nil
+	}
+	return server.Errorf(server.CodeLeafNotCurrent, "your device is not a leaf of this call group's current epoch")
+}
+
+// errWithdrawFailed is the start's answer when the withdrawal could not be decided (UP6b): 503
+// E_UNAVAILABLE with retry_after_ms, and no token.
+func errWithdrawFailed() error {
+	return server.Unavailable(transientRetryAfterMS, "your device's place in this call is being settled")
+}
+
+// errMediaDown is R-UP7's answer to a start whose CreateRoom or token mint the SFU failed: 503
+// E_UNAVAILABLE with retry_after_ms, since the media server restarting is transient.
+func errMediaDown() error {
+	return server.Unavailable(transientRetryAfterMS, "the media server is not answering")
 }
 
 // refuseBarred is 403 E_FORBIDDEN for a barred device (barred), nil otherwise, or a store failure.

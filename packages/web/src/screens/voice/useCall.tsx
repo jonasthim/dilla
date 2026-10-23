@@ -7,11 +7,11 @@
 // unpause media on its way out.
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CallState, CoreClient } from '@dilla/client-core';
-import { SETTINGS } from '@dilla/client-core';
+import { HOLD_MS, SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey } from '@dilla/ui';
 import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
-import type { PageCall, PageCallState, ShareSource } from '../../call/session.ts';
+import type { PageCall, PageCallOptions, PageCallState, ShareSource } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
 import { errorOf } from '../../core/errors.ts';
 import { t, type StringKey } from '../../strings/index.ts';
@@ -153,7 +153,16 @@ export interface CallView {
   /** The outgoing ring of the DM call this device opened has run its 30 s (product walk I6). */
   ringExpired: boolean;
   join: (channelId: string) => void;
-  restore: (channelId: string, camera: boolean, sharing: boolean) => void;
+  /** `held` (UP7, Q1 = B): the update reload held this call (callHold): `at` is when (wall ms), `gone` since when the
+   *  device had been away by then (absentSince). The restore then resumes at once (the fast path). */
+  restore: (channelId: string, camera: boolean, sharing: boolean, held?: HeldRestore | null) => void;
+  /** UP7 (Q1 = B): the update reload's hold, in place of the person's leave: the live call is held (callHold, then its
+   *  room disconnected with no MLS leave), or a pending recovery's held group is persisted (callHold); no attempt joins
+   *  after it. Answers once the worker holds the group. */
+  holdForReload: () => Promise<void>;
+  /** UP7 (R-UP9): since when (wall ms) this device has been away as far as late-rejoin counts it: a suspend the call has
+   *  not come through, a lost call's absence (an instance outage taken out), else now. The update reload saves it. */
+  absentSince: () => number;
   /** `after`: the notice the stage or strip shows once left (product walk I6: the unanswered ring's last line). */
   leave: (after?: CallNotice) => void;
   closeUnsupported: () => void;
@@ -228,6 +237,17 @@ export const SUSPEND_GAP_MS = 5_000;
  *  this long after the wake (the connection survived a short suspend). A reconnect that is still trying holds it however
  *  long it takes (LiveKit's retries take about a minute). */
 export const SUSPEND_SETTLE_MS = 60_000;
+/** UP7 (R-UP9): a loss this close before an outage of the instance began is part of that outage. */
+export const OUTAGE_LEAD_MS = 5_000;
+/** UP7 (R-UP8): the longest wait between two recovery attempts while the instance is unreachable (1, 2, 4 … 30 s). */
+export const RECOVERY_BACKOFF_MAX_MS = 30_000;
+/** UP6c tail (m2): the longest wait between two attempts of a held restore while the instance answers. A resume the
+ *  worker refuses with the hold kept is tried again 1, 2, 4, then every 8 s; the instance answering again, or the hold
+ *  going, starts over at 1 s. */
+export const HELD_RETRY_MAX_MS = 8_000;
+
+/** UP7 (Q1 = B): a call the update reload held, as the next page restores it (wall ms; see CallView.restore). */
+export interface HeldRestore { at: number; gone: number }
 
 /** One moment on both of the page's clocks. */
 interface Stamp { perf: number; wall: number }
@@ -237,6 +257,19 @@ const stampNow = (): Stamp => ({ perf: performance.now(), wall: Date.now() });
 const elapsedSince = (s: Stamp): number => Math.max(performance.now() - s.perf, Date.now() - s.wall);
 /** How long a gap between two stamps lasted, by the same larger-clock rule. */
 const gapLength = (g: { from: Stamp; to: Stamp }): number => Math.max(g.to.perf - g.from.perf, g.to.wall - g.from.wall);
+/** A wall-clock moment of an earlier page (an update reload's), on both of this page's clocks. */
+const stampOfWall = (wall: number): Stamp => ({ perf: performance.now() - Math.max(0, Date.now() - wall), wall });
+/** UP7 (R-UP9): an absence's start: `suspend` when it comes from a suspend late-rejoin detected (it counts from its
+ *  start, whatever the instance did), else a loss noticed while awake (an instance outage around it is taken out). */
+interface Gone { at: Stamp; suspend: boolean }
+/** UP7: the restore's AFK verdicts (afkFresh). */
+type Verdict = 'clear' | 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone' | 'unknown';
+/** UP7 (Q1 = B): a resume's gate as the session takes it, and the verdict that refused it (null: none, or not yet). */
+type HeldResume = NonNullable<PageCallOptions['resume']> & { refused: Verdict | null };
+/** UP7: a budget mark of the update reload's resume (performance.mark, read by the e2e). Never throws. */
+function resumeMark(name: string, detail?: unknown): void {
+  try { performance.mark(`dilla.resume.${name}`, detail === undefined ? undefined : { detail }); } catch { /* no marks here */ }
+}
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -249,6 +282,10 @@ export function useCall(o: UseCallOptions): CallView {
   const [recoverySharing, setRecoverySharing] = useState(false);
   const [recentlyEnded, setRecentlyEnded] = useState<CallView['recentlyEnded']>(null);
   const recoveryRef = useRef<string | null>(null);
+  /** UP11: the channel whose plain removal (no reason code) this page recovers as a lost connection; the recovery’s
+   *  attempts accept that removed phase for it. A new session clears it, and so does the end of its recovery (UP11 M9),
+   *  so a later recovery of the same channel never inherits it. */
+  const lostRemoved = useRef<string | null>(null);
   const recoveryCameraRef = useRef(false);
   const [joining, setJoining] = useState(false);
   const [announcement, setAnnouncement] = useState('');
@@ -295,13 +332,50 @@ export function useCall(o: UseCallOptions): CallView {
   const awayAtAttach = useRef<{ channelId: string; since: number | null } | null>(null);
   /** The mark a recovery compares against: the call's own (E_DISCONNECTED), or null for a restore (any away row counts). */
   const recoveryMark = useRef<{ since: number | null } | null>(null);
-  /** Fix round 3 (B2-M4, B2-n2): a restore's recovery ends as lost at this time (the upgrade's rejoin window); null for
-   *  a recovery after a lost connection, which only the join's refusals, a pending reason or the person end. */
-  const recoveryUntil = useRef<number | null>(null);
+  /** Fix round 3 (B2-M4, B2-n2): a restore's recovery ends as lost once its window (RESTORE_WAIT_MS, the upgrade's
+   *  rejoin window) has run from this moment; null for a recovery after a lost connection, which only the join's
+   *  refusals, a pending reason or the person end. UP7 (R-UP8): the window counts instance time only, the time the
+   *  worker's connection was online (instanceMs), so an instance that stays down never ends it. */
+  const recoveryWindow = useRef<Stamp | null>(null);
   /** Late rejoin (Jonas 2026-10-21): since when the device has been gone, for a recovery after a lost connection (null for
    *  a restore and an upgrade's recovery, which keep RESTORE_WAIT_MS). A recovery gone longer than its community's AFK
-   *  timeout joins nothing. */
-  const recoveryGoneFrom = useRef<Stamp | null>(null);
+   *  timeout joins nothing. UP7 (R-UP9): an instance outage around the loss is not counted (instanceGone). */
+  const recoveryGoneFrom = useRef<Gone | null>(null);
+  /** UP7 (Q1 = B): the restore of a call the update reload held; its attempts resume through the gate (resumeOf). */
+  const recoveryHeld = useRef<HeldRestore | null>(null);
+  /** UP7 (R-UP8): a transient refusal's retry_after_ms: no recovery attempt before this wall time. */
+  const retryAt = useRef(0);
+  /**
+   * UP7 (R-UP8, R-UP9): the instance's outages this page saw, oldest first: from when the worker's connection left
+   * 'online' (or this page's start, before its first 'online') to when it was 'online' again (null: still out). An
+   * absent connection slice counts as online.
+   */
+  const outages = useRef<Array<{ from: Stamp; to: Stamp | null }>>([]);
+  const instanceOnline = useCallback((): boolean => (client.get('connection')?.status ?? 'online') === 'online', [client]);
+  /** UP7 (R-UP8): how much of the time since `from` the instance answered (monotonic clock): the restore window's count. */
+  const instanceMs = useCallback((from: Stamp): number => {
+    const now = performance.now();
+    let out = 0;
+    for (const o of outages.current) {
+      const a = Math.max(o.from.perf, from.perf);
+      const b = Math.min(o.to?.perf ?? now, now);
+      if (b > a) out += b - a;
+    }
+    return Math.max(0, now - from.perf - out);
+  }, []);
+  /** UP7 (R-UP9): an absence that began inside an outage of the instance, or within OUTAGE_LEAD_MS before one, begins
+   *  when the instance answered again (now, while it is still out); outages in a row carry it on. A suspend's is kept. */
+  const instanceGone = useCallback((gone: Gone): Stamp => {
+    if (gone.suspend) return gone.at;
+    let at = gone.at;
+    for (const o of outages.current) {
+      // Both clocks: a loss is part of an outage only when neither clock puts it further before the outage's start.
+      const lead = Math.max(o.from.perf - at.perf, o.from.wall - at.wall);
+      const inside = o.to === null || (at.perf <= o.to.perf && at.wall <= o.to.wall);
+      if (lead <= OUTAGE_LEAD_MS && inside) at = o.to ?? stampNow();
+    }
+    return at;
+  }, []);
   /** The attached call's liveness: its last tick (one a second) and the suspend found between two ticks that the call has
    *  not yet shown it came through (`reconnecting`: the session left 'connected' after the wake). A later gap extends a held
    *  one only while it is reconnecting; otherwise the longer of the two is kept. */
@@ -341,14 +415,14 @@ export function useCall(o: UseCallOptions): CallView {
    *  after counts all of its time since (the reconnect never came through). One still settling (connected all along
    *  since the wake) counts only its own length: the awake, connected time after it is not an absence, and counting it
    *  made the kept gap's age, not its length, decide (flake fix, PR #67: a 10 s stall kept from 70 s back read as 70 s). */
-  const goneSince = useCallback((): Stamp => {
+  const goneSince = useCallback((): Gone => {
     tickAlive();
     const a = alive.current;
     const gap = a?.gap;
-    if (gap != null && gap.reconnecting) return gap.from;
+    if (gap != null && gap.reconnecting) return { at: gap.from, suspend: true };
     const now = stampNow();
-    if (gap != null) { const len = gapLength(gap); return { perf: now.perf - len, wall: now.wall - len }; }
-    return now;
+    if (gap != null) { const len = gapLength(gap); return { at: { perf: now.perf - len, wall: now.wall - len }, suspend: true }; }
+    return { at: now, suspend: false };
   }, [tickAlive]);
   /** Sets the absence a recovery of `id` is measured from: a lost connection's (`lost`), kept when the same recovery is
    *  armed again (the session's end and the worker's slice both arm it); none for an upgrade's recovery. */
@@ -366,7 +440,7 @@ export function useCall(o: UseCallOptions): CallView {
   const removedHold = useRef<{ timer: ReturnType<typeof setTimeout>; off: () => void } | null>(null);
   /** M2: a removal's decision in flight (its fresh read) is dropped by any later hold, join or removal. */
   const removedSeq = useRef(0);
-  const dropHold = useCallback((): void => {
+  const dropRemovedHold = useCallback((): void => {
     removedSeq.current += 1;
     const hold = removedHold.current;
     if (hold === null) return;
@@ -445,7 +519,7 @@ export function useCall(o: UseCallOptions): CallView {
    *  joins or recovers. The reason may land after the cut, so the notice waits for a fresh read of it (at most
    *  AFK_READ_WAIT_MS) and at least REMOVED_HOLD_MS for the instance's own re-read; with no reason it says `say`. */
   const sayRemoved = useCallback((id: string, say: () => void): void => {
-    dropHold();
+    dropRemovedHold();
     const settle = (): boolean => {
       const cut = cutReason(id);
       if (cut === null) return false;
@@ -468,18 +542,18 @@ export function useCall(o: UseCallOptions): CallView {
     let holding = true;
     const finish = (): void => {
       if (mine !== removedSeq.current || reading || holding) return;
-      dropHold();
+      dropRemovedHold();
       if (mounted.current && !settle()) say();
     };
     const off = client.subscribe(`afk:${cid}`, () => {
       if (mine !== removedSeq.current || cutReason(id) === null) return;
-      dropHold();
+      dropRemovedHold();
       if (mounted.current) settle();
     });
     const timer = setTimeout(() => { holding = false; finish(); }, REMOVED_HOLD_MS);
     removedHold.current = { timer, off };
     void readAfk(cid).then(() => { reading = false; finish(); });
-  }, [client, reasonCommunity, cutReason, afkNameFor, readAfk, dropHold]);
+  }, [client, reasonCommunity, cutReason, afkNameFor, readAfk, dropRemovedHold]);
   /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
    *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
    *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
@@ -545,6 +619,7 @@ export function useCall(o: UseCallOptions): CallView {
 
   const attach = useCallback((next: PageCall, id: string) => {
     answered.current = false;
+    lostRemoved.current = null;
     attachedAt.current = Date.now();
     // AW5: a pending read this call starts under is the server's earlier one, cleared at this admission (the read of its
     // own community, or for a DM call the one its pending reason is read from).
@@ -596,7 +671,8 @@ export function useCall(o: UseCallOptions): CallView {
           armGoneFrom(id, next.state.error === 'E_DISCONNECTED');
           recoveryRef.current = id;
           recoveryMark.current = { since: awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null };
-          recoveryUntil.current = null;
+          recoveryWindow.current = null;
+          recoveryHeld.current = null;
           setRecoveryChannelId(id);
           recoveryCameraRef.current = cameraBeforeLoss;
           setRecoveryCamera(cameraBeforeLoss);
@@ -621,8 +697,9 @@ export function useCall(o: UseCallOptions): CallView {
 
   /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). AW5 (R-AW1): an
    *  AFK channel is never joined; the person's press on one is `goAway` (joinOnly), and nothing else asks for one. */
-  const join = useCallback((id: string, made?: AudioContext | null) => {
-    dropHold();
+  /** `resume` (UP7, Q1 = B): a held restore's attempt, through the session's fast path and its gate. */
+  const join = useCallback((id: string, made?: AudioContext | null, resume?: HeldResume) => {
+    dropRemovedHold();
     if (isAfk(id)) { closeContext(made); return; }
     if (recoveryRef.current !== null && recoveryRef.current !== id) {
       recoveryRef.current = null;
@@ -705,6 +782,7 @@ export function useCall(o: UseCallOptions): CallView {
           selfNow,
           watchSelf,
           ...(ctx !== null ? { audioContext: ctx } : {}),
+          ...(resume !== undefined ? { resume } : {}),
         };
         handed = true;
         const next = await mod.startPageCall(callDeps, target, opts);
@@ -723,7 +801,18 @@ export function useCall(o: UseCallOptions): CallView {
         // A start the person cancelled says nothing (WB client I1). The worker's side of it (its join cancelled, its
         // self-Remove sent) is awaited by the next join through a leave of its own, which answers once that is done.
         if (abort.signal.aborted) leaving.current = client.call({ m: 'callLeave', reason: 'user' }).catch(() => undefined);
-        const code = errorOf(e).code;
+        const failure = errorOf(e);
+        const code = failure.code;
+        // UP7 (R-UP8): a transient refusal (503 E_UNAVAILABLE, 429) names its own wait; the recovery's next attempt
+        // honours it. It is never a permanent refusal.
+        if (failure.retryAfterMs !== null && recoveryRef.current === id) retryAt.current = Date.now() + failure.retryAfterMs;
+        // UP7: a held restore's gate refused (its AFK verdict): the session already left the resumed group (its one
+        // self-Remove); the verdict ends the recovery, and an unknown read only skips this attempt.
+        const refused = resume?.refused ?? null;
+        if (refused !== null) {
+          if (refused !== 'unknown' && refused !== 'clear' && recoveryRef.current === id) endRecoveryRef.current(id, refused);
+          return;
+        }
         // A disconnected room may come back after a network or media restart. A refusal that
         // cannot improve by waiting ends the automatic attempt and leaves its reason visible.
         if (recoveryRef.current === id && ['E_FORBIDDEN', 'E_REMOVED', 'E_CALL_FULL', 'E_CALL_IN_OTHER_TAB',
@@ -749,7 +838,7 @@ export function useCall(o: UseCallOptions): CallView {
     })();
     startDone.current = run;
     void run;
-  }, [deps, client, attach, detach, selfNow, watchSelf, dropHold, isAfk]);
+  }, [deps, client, attach, detach, selfNow, watchSelf, dropRemovedHold, isAfk]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /**
@@ -757,7 +846,9 @@ export function useCall(o: UseCallOptions): CallView {
    * call's row does not take it.
    */
   const leaveCall = useCallback((after?: CallNotice, quiet = false) => {
+    const recovering = recoveryRef.current !== null;
     recoveryRef.current = null;
+    recoveryHeld.current = null;
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
     setRecoveryCamera(false);
@@ -775,7 +866,12 @@ export function useCall(o: UseCallOptions): CallView {
       setChannelId(null);
       return;
     }
-    if (current === null || id === null) return;
+    if (current === null || id === null) {
+      // UP7: the person leaves a pending recovery: the group the worker holds for it is let go (callRelease, its one
+      // self-Remove; nothing when it holds none).
+      if (recovering && current === null) void client.call({ m: 'callRelease' }).catch(() => undefined);
+      return;
+    }
     detach();
     if (after !== undefined) setNotice(after);
     const done = current.leave('user').finally(() => {
@@ -784,7 +880,7 @@ export function useCall(o: UseCallOptions): CallView {
       if (!quiet) live.current.onLeft(id);
     });
     leaving.current = done;
-  }, [detach]);
+  }, [detach, client]);
   const leave = useCallback((after?: CallNotice) => { leaveCall(after); }, [leaveCall]);
   const leaveRef = useRef<(after?: CallNotice) => void>(() => undefined);
   /**
@@ -854,7 +950,7 @@ export function useCall(o: UseCallOptions): CallView {
    *   DM call, the recovery goes on as before.
    */
   const afkFresh = useCallback(async (id: string, mark: { since: number | null } | null, goneFrom: Stamp | null = null)
-    : Promise<'clear' | 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone' | 'unknown'> => {
+    : Promise<Verdict> => {
     const deadline = Date.now() + AFK_READ_WAIT_MS;
     const isDm = (): boolean => (client.get('dms') ?? []).some((d) => d.id === id);
     const listsLoaded = (): boolean => {
@@ -889,8 +985,13 @@ export function useCall(o: UseCallOptions): CallView {
    *  stage's join button joins again as any join. */
   const endRecovery = useCallback((id: string, verdict: 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone') => {
     recoveryRef.current = null;
-    recoveryUntil.current = null;
+    recoveryWindow.current = null;
     recoveryGoneFrom.current = null;
+    recoveryHeld.current = null;
+    lostRemoved.current = null;
+    // UP7: the recovery gives up: the group the worker holds for it is let go (callRelease, its one self-Remove). A start
+    // in flight (a gate that refused) has already left its group.
+    if (sessionRef.current === null && !starting.current) void client.call({ m: 'callRelease' }).catch(() => undefined);
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
     setRecoveryCamera(false);
@@ -910,13 +1011,57 @@ export function useCall(o: UseCallOptions): CallView {
     const text = verdict === 'moved' && cid !== null ? t('afk.moved', { channel: afkNameFor(id) }) : t('voice.disconnected');
     setNotice(verdict === 'moved' && cid !== null ? { channelId: id, key: 'afk.moved', text } : { channelId: id, key: 'voice.disconnected' });
     if (!live.current.stageShown(id)) setLasting(text);
-  }, [reasonCommunity, afkNameFor]);
+  }, [reasonCommunity, afkNameFor, client]);
   // Fix round 2 (B-n2): the recovery effect reads these through refs, so a slice change does not re-arm its backoff.
   const afkFreshRef = useRef(afkFresh);
   afkFreshRef.current = afkFresh;
   const endRecoveryRef = useRef(endRecovery);
   endRecoveryRef.current = endRecovery;
-  const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
+  /**
+   * UP7 (Q1 = B): a held restore's gate. The AFK read starts now, in parallel with the worker's resume (catch-up, media
+   * epoch, token), and its verdict is applied once callJoin has answered, before the LiveKit connect. A resume of an
+   * unexpired hold records no absence and never ends as leftAway, whatever the clocks say (R-UP9: an update reload is no
+   * absence of the person). A resume of an expired hold (the worker says so, or, the group gone, the page's own count
+   * of HOLD_MS) takes the normal late-rejoin path from the saved absence; an unknown read then skips the attempt.
+   * Measured budget (e2e voice/update-resume.spec.ts, local test host, 2026-10-22), ms from pagehide (the hold):
+   * chromium ready 298, token 761, LiveKit connected 857, microphone published 884; firefox 347, 847, 941, 969. Well
+   * inside the 5 s target. In both runs the worker's resume lost the race with the absence Remove (see the spec) and
+   * joined afresh, which this budget includes.
+   */
+  /** UP7 fix round 1: a held restore whose hold has expired becomes an ordinary restore with the saved absence. */
+  const endHeldRestore = useCallback((id: string, held: HeldRestore): void => {
+    if (recoveryRef.current !== id || recoveryHeld.current !== held) return;
+    recoveryHeld.current = null;
+    recoveryGoneFrom.current = { at: stampOfWall(held.gone), suspend: false };
+  }, []);
+  const resumeOf = useCallback((id: string, held: HeldRestore): HeldResume => {
+    const read = afkFreshRef.current(id, null, instanceGone({ at: stampOfWall(held.gone), suspend: false }));
+    const gate: HeldResume = {
+      refused: null,
+      gate: async (answer) => {
+        resumeMark('answer', answer);
+        let verdict = await read;
+        // A group the worker no longer had (forgotten, or swept after its own expiry) is judged by the wall clock alone:
+        // it only decides whether late-rejoin applies, and the instance's leaf check already decided the group.
+        const expired = answer.resumed ? answer.expired : Date.now() - held.at > HOLD_MS;
+        // UP7 fix round 1: an expired hold leaves the fast path for good. Later attempts read first and join only on a
+        // clear read (the ordinary restore), from the saved absence, so an unknown read never churns joins.
+        if (expired) endHeldRestore(id, held);
+        if (!expired && verdict === 'leftAway') verdict = awayAfter(id, null) ? 'away' : 'clear';
+        if (verdict === 'clear' || (verdict === 'unknown' && !expired)) return;
+        gate.refused = verdict;
+        // A plain coded error: the session module (and livekit with it) stays out of the entry chunk.
+        throw Object.assign(new Error('E_ABORTED'), { code: 'E_ABORTED' });
+      },
+      mark: (name) => { resumeMark(name); },
+    };
+    return gate;
+  }, [instanceGone, awayAfter, endHeldRestore]);
+  const endHeldRestoreRef = useRef(endHeldRestore);
+  endHeldRestoreRef.current = endHeldRestore;
+  const resumeOfRef = useRef(resumeOf);
+  resumeOfRef.current = resumeOf;
+  const restore = useCallback((id: string, camera: boolean, sharing: boolean, held: HeldRestore | null = null) => {
     // AW5 (R-AW7), fix rounds 1-3: the restore is a recovery that may take until RESTORE_WAIT_MS (the upgrade's rejoin
     // window), with the rejoining banner and its Leave from the start (B2-M4). It joins only on a fresh clear read; the AFK
     // channel, a pending reason, an away row or a gone channel join nothing, and past the window it ends as lost.
@@ -927,12 +1072,39 @@ export function useCall(o: UseCallOptions): CallView {
     recoveryRef.current = id;
     recoveryMark.current = null;
     recoveryGoneFrom.current = null;
-    recoveryUntil.current = Date.now() + RESTORE_WAIT_MS;
+    recoveryWindow.current = stampNow();
+    recoveryHeld.current = held;
     recoveryCameraRef.current = camera;
     setRecoveryChannelId(id);
     setRecoveryCamera(camera);
     setRecoverySharing(sharing);
+    // UP7 (Q1 = B): the held call resumes at once, not on the recovery's first tick.
+    if (held !== null) {
+      resumeMark('ready', { pagehide: held.at });
+      joinRef.current(id, undefined, resumeOfRef.current(id, held));
+    }
   }, [isAfk]);
+  /** UP7 (Q1 = B): see CallView.holdForReload. */
+  const holdForReload = useCallback(async (): Promise<void> => {
+    const s = sessionRef.current;
+    const id = channelRef.current;
+    const recovering = recoveryRef.current;
+    // No attempt joins while the page goes (the reload's restore resumes it).
+    recoveryRef.current = null;
+    if (s !== null && id !== null) {
+      detach();
+      await s.leave('hold');
+      return;
+    }
+    const held = recovering ?? id;
+    if (held !== null) await client.call({ m: 'callHold', channelId: held }).catch(() => undefined);
+  }, [client, detach]);
+  /** UP7 (R-UP9): see CallView.absentSince. */
+  const absentSince = useCallback((): number => {
+    if (sessionRef.current !== null) { const g = goneSince(); return instanceGone(g).wall; }
+    const g = recoveryGoneFrom.current;
+    return g === null ? Date.now() : instanceGone(g).wall;
+  }, [goneSince, instanceGone]);
 
   /** Product walk M5: the own mute and deafen are kept per browser (a device-local setting), for the next call. */
   const keepSelf = useCallback((s: PageCall) => {
@@ -1128,7 +1300,8 @@ export function useCall(o: UseCallOptions): CallView {
         armGoneFrom(id, now?.error?.code === 'E_DISCONNECTED');
         recoveryRef.current = id;
         recoveryMark.current = { since: awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null };
-        recoveryUntil.current = null;
+        recoveryWindow.current = null;
+        recoveryHeld.current = null;
         setRecoveryChannelId(id);
         recoveryCameraRef.current = s.state.camera;
         setRecoveryCamera(s.state.camera);
@@ -1145,13 +1318,39 @@ export function useCall(o: UseCallOptions): CallView {
         // Off the stage, nothing else would say why the call ended (review I6).
         // The bookkeeping is never held; only the visible notice and the spoken line wait (the hold changes timing, not words).
         removedFrom.current = id;
-        sayRemoved(id, () => {
+        const sayIt = (): void => {
           setNotice({ channelId: id, key: 'voice.removed' });
           // The worker's re-read may have said the channel is gone for this device meanwhile: that line is the right one.
           const now = client.get('call');
           const gone = now?.channelId === id && now.phase === 'removed' && now.error?.code === 'E_NOT_FOUND';
           if (!live.current.stageShown(id)) setLasting(t(gone ? 'voice.removedNotMember' : 'voice.removed'));
-        });
+        };
+        // UP11: a plain Remove (no reason code) that lands while this page’s media is reconnecting is the room sweep’s
+        // absence Remove of a lost media path (a relay that restarted with the API), not a kick: it is recovered as a
+        // lost connection is. The hold still decides first: the AFK sweep’s reason says afk.moved, and the worker’s
+        // re-read answering E_NOT_FOUND (a kick, a ban, a deleted server) ends the call as a removal, as before.
+        if (now?.error == null && s.state.phase === 'reconnecting') {
+          armGoneFrom(id, true);
+          const camera = s.state.camera;
+          const sharing = s.state.sharing;
+          const since = awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null;
+          sayRemoved(id, () => {
+            const after = client.get('call');
+            if (after?.channelId !== id || after.phase !== 'removed' || after.error != null) { sayIt(); return; }
+            // removedFrom stays: a later E_NOT_FOUND from the worker’s re-read ends this recovery and still says why.
+            lostRemoved.current = id;
+            recoveryRef.current = id;
+            recoveryMark.current = { since };
+            recoveryWindow.current = null;
+            recoveryHeld.current = null;
+            setRecoveryChannelId(id);
+            recoveryCameraRef.current = camera;
+            setRecoveryCamera(camera);
+            setRecoverySharing(sharing);
+          });
+        } else {
+          sayRemoved(id, sayIt);
+        }
       }
       setPauseFocusPending(false);
       teardown(s, phase);
@@ -1167,45 +1366,120 @@ export function useCall(o: UseCallOptions): CallView {
     const timer = setInterval(tickAlive, 1_000);
     return () => { clearInterval(timer); };
   }, [session, tickAlive]);
+  // UP7 (R-UP8, R-UP9): the instance's outages, from the worker's connection slice (see `outages`).
+  useEffect(() => {
+    // UP7 fix round 1: an outage is the instance's only while this device is online itself (navigator.onLine); a loss of
+    // its own network is the device's absence, which late-rejoin counts.
+    const deviceOnline = (): boolean => typeof navigator === 'undefined' || navigator.onLine;
+    let online = instanceOnline();
+    if (!online && deviceOnline()) outages.current.push({ from: stampNow(), to: null });
+    return client.subscribe('connection', () => {
+      const now = instanceOnline();
+      if (now === online) return;
+      online = now;
+      const last = outages.current.at(-1);
+      if (now) { if (last !== undefined && last.to === null) last.to = stampNow(); }
+      else if (deviceOnline()) {
+        outages.current.push({ from: stampNow(), to: null });
+        // Only outages around a recent loss matter; the oldest go.
+        if (outages.current.length > 32) outages.current.shift();
+      }
+    });
+  }, [client, instanceOnline]);
   useEffect(() => {
     if (recoveryChannelId === null) return;
     let delay = 1_000;
-    let timer: ReturnType<typeof setTimeout>;
+    /** UP6c tail (m2): the held resumes this recovery's ticks launched (the restore's own one at once is not counted)
+     *  since the instance last answered again. Only a tick that launched one moves the backoff on: a tick that found the
+     *  previous attempt still starting launches nothing, and the next tick stays 1 s away. */
+    let heldTries = 0;
+    let launched = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
+    let running = false;
+    /** The next attempt in `ms`, never before a transient refusal's retry_after_ms (R-UP8). */
+    const schedule = (ms: number): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { void retry(); }, Math.max(ms, retryAt.current - Date.now()));
+    };
     const retry = async (): Promise<void> => {
+      if (cancelled || recoveryRef.current !== recoveryChannelId || running) return;
+      // A transient refusal that landed since this attempt was scheduled names a later moment (R-UP8).
+      const wait = retryAt.current - Date.now();
+      if (wait > 0) { schedule(wait); return; }
+      running = true;
+      launched = false;
+      try {
+        await attempt();
+      } finally {
+        running = false;
+      }
       if (cancelled || recoveryRef.current !== recoveryChannelId) return;
+      // A restore asks every second through its window while the instance answers (B-M2); a lost connection, and any
+      // recovery while the instance is unreachable, backs off 1, 2, 4 … 30 s (R-UP8). UP6c tail (m2): a held restore
+      // whose resume the worker refused with the hold kept backs off 1, 2, 4, 8 s while the instance answers, since each
+      // attempt is a start and a commit at the instance.
+      if (recoveryWindow.current !== null && instanceOnline()) {
+        if (recoveryHeld.current !== null && launched) heldTries += 1;
+        delay = recoveryHeld.current !== null ? Math.min(1_000 * 2 ** heldTries, HELD_RETRY_MAX_MS) : 1_000;
+      } else {
+        delay = Math.min(delay * 2, RECOVERY_BACKOFF_MAX_MS);
+      }
+      schedule(delay);
+    };
+    const attempt = async (): Promise<void> => {
       const phase = client.get('call')?.phase;
       const removedCode = client.get('call')?.error?.code;
       if (phase === 'blocked' || (phase === 'removed' && removedCode !== 'E_DISCONNECTED'
+        && !(removedCode === undefined && lostRemoved.current === recoveryChannelId)
         && !(removedCode === 'E_CALL_ENDED' && live.current.recoverEnded?.(recoveryChannelId)))) {
         // Fix round 3 (B2-n2): an upgrade's recovery that outlived its window ends as a lost call, not silently.
         if (phase === 'removed' && removedCode === 'E_CALL_ENDED') { endRecoveryRef.current(recoveryChannelId, 'gone'); return; }
         recoveryRef.current = null;
+        recoveryHeld.current = null;
+        lostRemoved.current = null;
         setRecoveryChannelId(null);
+        // UP7: whatever the worker still holds for it is let go.
+        if (sessionRef.current === null && !starting.current) void client.call({ m: 'callRelease' }).catch(() => undefined);
         return;
       }
-      // Fix round 3 (B2-M4): a restore's recovery past the upgrade's rejoin window ends as a lost call.
-      const until = recoveryUntil.current;
-      if (until !== null && Date.now() > until) { endRecoveryRef.current(recoveryChannelId, 'gone'); return; }
-      if (navigator.onLine && sessionRef.current === null && !starting.current) {
-        // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
-        // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.
-        // Fix round 2 (B-I1): a read that fails or does not come in time skips this attempt only; the backoff and the
-        // join's permanent refusals end a recovery, as before. Only the AFK channel or an away answer ends it here.
-        // Fix round 3: a pending reason (moved, elsewhere) or a gone channel (B2-M1) ends it too.
-        // Late rejoin (Jonas 2026-10-21): a device gone longer than its community's AFK timeout ends it too ('leftAway').
-        const verdict = await afkFreshRef.current(recoveryChannelId, recoveryMark.current, recoveryGoneFrom.current);
-        if (cancelled || recoveryRef.current !== recoveryChannelId) return;
-        if (verdict !== 'clear' && verdict !== 'unknown') { endRecoveryRef.current(recoveryChannelId, verdict); return; }
-        if (verdict === 'clear' && sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
-      }
-      // A restore asks every second through its window (B-M2); a lost connection backs off.
-      delay = recoveryUntil.current !== null ? 1_000 : Math.min(delay * 2, 30_000);
-      timer = setTimeout(() => { void retry(); }, delay);
+      // Fix round 3 (B2-M4): a restore's recovery past the upgrade's rejoin window ends as a lost call. UP7 (R-UP8): the
+      // window counts only the time the instance answered.
+      const from = recoveryWindow.current;
+      if (from !== null && instanceMs(from) > RESTORE_WAIT_MS) { endRecoveryRef.current(recoveryChannelId, 'gone'); return; }
+      if (!navigator.onLine || sessionRef.current !== null || starting.current) return;
+      // UP7 (Q1 = B): a held restore's attempts resume through the gate, its AFK read in parallel with the resume.
+      const held = recoveryHeld.current;
+      // UP7 fix round 1: past HOLD_MS by the page's clock the hold is expired whatever the worker would say: read first.
+      if (held !== null && Date.now() - held.at > HOLD_MS) endHeldRestoreRef.current(recoveryChannelId, held);
+      else if (held !== null) { launched = true; joinRef.current(recoveryChannelId, undefined, resumeOfRef.current(recoveryChannelId, held)); return; }
+      // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
+      // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.
+      // Fix round 2 (B-I1): a read that fails or does not come in time skips this attempt only; the backoff and the
+      // join's permanent refusals end a recovery, as before. Only the AFK channel or an away answer ends it here.
+      // Fix round 3: a pending reason (moved, elsewhere) or a gone channel (B2-M1) ends it too.
+      // Late rejoin (Jonas 2026-10-21): a device gone longer than its community's AFK timeout ends it too ('leftAway');
+      // UP7 (R-UP9): an outage of the instance around the loss is not part of that absence.
+      const gone = recoveryGoneFrom.current;
+      const verdict = await afkFreshRef.current(recoveryChannelId, recoveryMark.current, gone === null ? null : instanceGone(gone));
+      if (cancelled || recoveryRef.current !== recoveryChannelId) return;
+      if (verdict !== 'clear' && verdict !== 'unknown') { endRecoveryRef.current(recoveryChannelId, verdict); return; }
+      if (verdict === 'clear' && sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
     };
-    timer = setTimeout(() => { void retry(); }, delay);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [recoveryChannelId, client]);
+    // UP7 (R-UP8): the instance answering again is an attempt at once, and the backoff starts over.
+    let online = instanceOnline();
+    const off = client.subscribe('connection', () => {
+      const now = instanceOnline();
+      if (now === online) return;
+      online = now;
+      if (!now || cancelled) return;
+      delay = 1_000;
+      heldTries = 0;
+      schedule(0);
+    });
+    schedule(delay);
+    return () => { cancelled = true; clearTimeout(timer); off(); };
+  }, [recoveryChannelId, client, instanceOnline, instanceMs, instanceGone]);
 
   // Product walk I6: the outgoing ring of a DM call this device opened. It lasts 30 s from the call's start, whoever was
   // rung; once every ring ended with nobody else ever in the call, the caller leaves by itself after a short grace, and the
@@ -1331,7 +1605,7 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, sharePool, setShareSource, setVolume, setStreamVolume, toggleStreamMute, startAudio,
+    join: joinOnly, restore, holdForReload, absentSince, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, sharePool, setShareSource, setVolume, setStreamVolume, toggleStreamMute, startAudio,
   };
 }
 

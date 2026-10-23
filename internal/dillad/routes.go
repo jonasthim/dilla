@@ -173,8 +173,13 @@ func callsConfig(cfg *config.Config) (api.CallsConfig, error) {
 		return api.CallsConfig{}, fmt.Errorf("dillad: turn.shared_secret_file: %w", err)
 	}
 	scheme, listen := "turns", cfg.Server.Listen
-	if cfg.BehindProxy() {
+	switch {
+	case cfg.BehindProxy():
 		scheme, listen = "turn", cfg.TURN.Listen
+	case cfg.TURN.Listen != "":
+		// The public-mode opt-in (R-UP11): `turns:` on turn.listen, served by dilla-media. No relay
+		// runs behind the 443 demux then, so this is the only relay handed out.
+		listen = cfg.TURN.Listen
 	}
 	_, port, err := net.SplitHostPort(listen)
 	if err != nil || port == "" {

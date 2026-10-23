@@ -1,0 +1,15 @@
+# UP6b security fix: an absence Remove of bob's leaf already stands when alice kicks bob. The kick is
+# folded into the standing Remove, which loses its withdrawable flag for good: bob's resume withdraws
+# nothing, and the kick is committed.
+instance dilla
+client alice
+client bob
+group call kind=call target=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee community=none creator=alice
+join bob call via=external
+sync alice
+absent bob call
+kick alice bob
+resume bob call withdrawn=0
+sync alice
+commit alice call
+expect_reject E_LEAF_NOT_CURRENT resume bob call

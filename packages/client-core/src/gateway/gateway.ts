@@ -31,11 +31,21 @@ export interface GatewayDeps {
   random(): number;
   setTimeout(fn: () => void, ms: number): number;
   clearTimeout(id: number): void;
+  /** UP7b (R-UP8): a cheap, single check that the instance answers again (true), used only while it could not be reached;
+   *  absent, the reconnect backoff alone decides. Never throws. */
+  probe?(): Promise<boolean>;
 }
 
 export const GATEWAY = {
   heartbeatMaxMs: 15000, ackTimeoutMs: 10000, helloTimeoutMs: 15000,
   reconnectBaseMs: 500, reconnectCapMs: 30000, reconnectJitterMs: 500,
+  /** UP7b (R-UP8): while the instance cannot be reached, a probe every probeMs plus up to probeJitterMs (so a returning
+   *  instance is noticed within 2 s, and clients do not probe in step); its first answer reconnects at once. */
+  probeMs: 1500, probeJitterMs: 500,
+  /** UP7b fix rounds 1 and 2 (M2, N3, N4): after probeSlowAfterMs (5 min, Jonas) of continuous probing the interval
+   *  doubles from 2 × probeMs up to probeCapMs, with up to 20 % jitter. Only a ready (or a stop) starts the next outage at
+   *  the fast interval again: a probe answer whose connect fails again is no recovery. */
+  probeSlowAfterMs: 300_000, probeCapMs: 10_000,
 } as const;
 
 export const CLIENT_CLOSE = {
@@ -46,7 +56,9 @@ export const CLIENT_CLOSE = {
 const DEFAULT_MAX_FRAME_BYTES = 131584;
 /** web3.8 (R2): the wire version this client identifies with; a hello that does not offer it closes 4006 (protocol/07). */
 const WIRE = 2n;
-type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
+/** identify's caps (protocol/02 § Control): bit 0 `withdrawn_rows`, handshake kind 3 (UP6b). */
+export const CAPS = 1;
+type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer' | 'probeTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & { versions: bigint[][] };
 
 function readHello(payload: CborValue[]): HelloInfo {
@@ -93,6 +105,12 @@ export class Gateway {
   private handshakeTimer: number | null = null;
   private heartbeatTimer: number | null = null;
   private ackTimer: number | null = null;
+  private probeTimer: number | null = null;
+  /** When the current run of probes began (null: none), and the slowed interval it has reached (M2). */
+  private probeSince: number | null = null;
+  private probeSlowMs = 0;
+  /** When the next probe is due (null: none armed): a failed connect in between keeps it, so probes stay evenly spaced. */
+  private probeAt: number | null = null;
   private readonly lastTyping = new Map<string, number>();
 
   constructor(deps: GatewayDeps) { this.deps = deps; }
@@ -145,7 +163,8 @@ export class Gateway {
     const id = ++this.attempt;
     // The mint is the first step of the handshake and is bounded like the others: a ticket request stalled
     // on a dead connection fails the attempt (the late ticket is then ignored by the attempt check).
-    this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => { this.fail(null); });
+    // A mint with no answer at all: the instance is out of reach (UP7b: probed while waiting).
+    this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => { this.fail(null, true); });
     void this.open(id);
   }
 
@@ -154,13 +173,19 @@ export class Gateway {
     try { ticket = await this.deps.mintTicket(); }
     catch (err) {
       if (id !== this.attempt) return;
-      if (err instanceof DillaHttpError && err.status === 401) {
+      // UP7c: only the instance's own 401 (X-Dilla-Generation) is a revocation; a proxy's falls through to out of reach.
+      if (err instanceof DillaHttpError && err.status === 401 && err.fromInstance === true) {
         this.goIdle();
         this.setStatus('idle', null);
         this.emit({ type: 'revoked' });
         return;
       }
-      this.fail(null);
+      // UP7b: no answer from the instance means it is out of reach: no HTTP answer (status 0), an answer that is not the
+      // instance's (fix round 1, I1: a reverse proxy's 502/503/504 or its own page, without X-Dilla-Generation), or a body
+      // that is not the instance's (a decode error). A refusal the instance answered (a 503, a 429) keeps the backoff.
+      // Fix round 2 (N2): only a refusal known to be the instance's (stamped) keeps the backoff; one whose origin is
+      // unknown (an oversized page, an error made here) is treated as out of reach.
+      this.fail(null, !(err instanceof DillaHttpError) || err.status === 0 || err.fromInstance !== true);
       return;
     }
     if (id !== this.attempt) return;
@@ -208,7 +233,8 @@ export class Gateway {
         return;
       }
       this.hello = hello;
-      this.send(encodeFrame(Op.identify, 1, null, ['', WIRE, 1, 1, 0]));
+      // caps bit 0 (`withdrawn_rows`, UP6b): this core applies handshake rows of kind 3.
+      this.send(encodeFrame(Op.identify, 1, null, ['', WIRE, 1, 1, CAPS]));
       this.phase = 'ready-wait';
       this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => this.teardown(CLIENT_CLOSE.helloTimeout, true));
       return;
@@ -220,6 +246,7 @@ export class Gateway {
         catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
         this.cancel('handshakeTimer');
         this.failures = 0;
+        this.resetProbe();
         this.phase = 'ready';
         this.setStatus('ready', null);
         this.emit({ type: 'ready', info });
@@ -293,11 +320,12 @@ export class Gateway {
     if (reconnect) this.fail(code);
   }
 
-  private fail(closeCode: number | null): void {
+  private fail(closeCode: number | null, unreachable = false): void {
     this.attempt += 1;
     this.cancel('handshakeTimer');
     this.cancel('heartbeatTimer');
     this.cancel('ackTimer');
+    this.cancel('probeTimer');
     this.socket = null;
     this.setStatus('waiting', closeCode);
     const delay = Math.floor(Math.max(this.afterMs,
@@ -305,12 +333,49 @@ export class Gateway {
       + this.deps.random() * GATEWAY.reconnectJitterMs));
     this.failures += 1;
     this.afterMs = 0;
-    this.arm('reconnectTimer', delay, () => { this.setStatus('connecting', null); this.connect(); });
+    this.arm('reconnectTimer', delay, () => { this.cancel('probeTimer'); this.setStatus('connecting', null); this.connect(); });
+    if (unreachable && this.deps.probe !== undefined && delay > GATEWAY.probeMs) this.armProbe();
   }
+
+  /** UP7b (R-UP8): while waiting on an instance that could not be reached, probes it every probeMs plus jitter; the
+   *  first answer cancels the backoff's timer and connects at once (the backoff itself is reset only by a ready). */
+  private armProbe(): void {
+    const deps = this.deps;
+    if (deps.probe === undefined) return;
+    const now = deps.now();
+    this.probeSince ??= now;
+    let wait: number;
+    // A probe that was due while a connect ran (it cancelled the timer) runs now.
+    if (this.probeAt !== null) wait = Math.max(0, this.probeAt - now);
+    else if (now - this.probeSince < GATEWAY.probeSlowAfterMs) wait = GATEWAY.probeMs + Math.floor(deps.random() * GATEWAY.probeJitterMs);
+    else {
+      // M2: a long outage is probed ever less often, up to probeCapMs, still jittered.
+      this.probeSlowMs = Math.min(GATEWAY.probeCapMs, this.probeSlowMs === 0 ? 2 * GATEWAY.probeMs : 2 * this.probeSlowMs);
+      wait = this.probeSlowMs + Math.floor(deps.random() * 0.2 * this.probeSlowMs);
+    }
+    this.probeAt = now + wait;
+    this.arm('probeTimer', wait, () => {
+      this.probeAt = null;
+      const id = this.attempt;
+      const still = (): boolean => id === this.attempt && this.current === 'waiting' && this.reconnectTimer !== null;
+      void (deps.probe?.() ?? Promise.resolve(false)).catch(() => false).then((answered) => {
+        if (!still()) return;
+        if (!answered) { this.armProbe(); return; }
+        // N3: the slow-down is reset only by a ready, so an answering probe with a mint that keeps failing still slows.
+        this.cancel('reconnectTimer');
+        this.setStatus('connecting', null);
+        this.connect();
+      });
+    });
+  }
+
+  private resetProbe(): void { this.probeSince = null; this.probeSlowMs = 0; this.probeAt = null; }
 
   private goIdle(): void {
     this.attempt += 1;
     this.cancel('reconnectTimer');
+    this.cancel('probeTimer');
+    this.resetProbe();
     this.cancel('handshakeTimer');
     this.cancel('heartbeatTimer');
     this.cancel('ackTimer');

@@ -38,6 +38,10 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'message.ct with 8 elements': 'E_FRAME_SHAPE',
   // The instance answers E_FRAME_TYPE (op 55 is S->C, AW3); this client decodes op 55 and refuses four elements, not three (AW4).
   'afk_away with 4 elements': 'E_FRAME_SHAPE',
+  // The instance answers E_FRAME_TYPE (op 16 is S->C); this client refuses a kind-3 row whose blob is not [bstr] or
+  // whose sender is not null (UP6b).
+  'mls.handshake withdrawn blob with two refs': 'E_FRAME_SHAPE',
+  'mls.handshake withdrawn with a sender': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -52,9 +56,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 34 cases and 20 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(34);
-    expect(vectors.rejects).toHaveLength(20);
+  it('holds the 35 cases and 22 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(35);
+    expect(vectors.rejects).toHaveLength(22);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 

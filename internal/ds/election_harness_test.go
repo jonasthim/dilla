@@ -299,7 +299,10 @@ func (h *dsHarness) offline(devices ...id.ID) {
 // connect dials one device in: hello, identify, ready, then a reader goroutine that records every
 // later frame. The three handshake frames are read synchronously, because a connection that is not
 // yet ready is not online and every invariant here is defined over the online predicate.
-func (h *dsHarness) connect(device id.ID) *deviceConn {
+func (h *dsHarness) connect(device id.ID) *deviceConn { return h.connectCaps(device, 0) }
+
+// connectCaps is connect with identify's caps set (UP6b: bit 0 asks for kind-3 handshake rows).
+func (h *dsHarness) connectCaps(device id.ID, caps uint64) *deviceConn {
 	t := h.t
 	t.Helper()
 	session, ok := h.sessions[device]
@@ -347,7 +350,7 @@ func (h *dsHarness) connect(device id.ID) *deviceConn {
 	}
 	h.hello = hello
 
-	identify, err := cborx.Marshal([]any{"", uint64(1), uint64(1), uint64(1), uint64(0)})
+	identify, err := cborx.Marshal([]any{"", uint64(1), uint64(1), uint64(1), caps})
 	if err != nil {
 		t.Fatalf("encode identify: %v", err)
 	}

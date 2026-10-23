@@ -299,12 +299,12 @@ const CASES: Case[] = [
   },
   {
     name: 'getHandshakes counts rows and reads the last seq', call: (r) => r.getHandshakes(GROUP, 1n, 512),
-    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=1&limit=512`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=1&limit=512&kinds=3`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => bytesReply(200, HANDSHAKES), expected: { raw: HANDSHAKES, count: 2, lastSeq: 2n },
   },
   {
     name: 'getHandshakes of an empty page', call: (r) => r.getHandshakes(GROUP, 9n, 512),
-    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=9&limit=512`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=9&limit=512&kinds=3`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => bytesReply(200, EMPTY_ARRAY), expected: { raw: EMPTY_ARRAY, count: 0, lastSeq: null },
   },
   {
@@ -1278,6 +1278,22 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect((await routes.startCall(CHANNEL, '')).rung).toEqual([]);
     t.replies.push(cborReply(201, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', ICE, [64_000, 2_500_000, 1], [new Uint8Array(3)]]));
     await expect(routes.startCall(CHANNEL, '')).rejects.toThrow();
+  });
+
+  // UP11-b: the relay credentials alone, for a call this device is in; the instance opens no room for it.
+  it('relayCall is POST /v1/calls/{call_id}/relay [] and reads [ice_servers]', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(cborReply(200, [ICE]));
+    expect(await routes.relayCall(CALL)).toEqual(ICE);
+    expect(`${t.seen[0].method} ${new URL(t.seen[0].url).pathname}`).toBe(`POST /v1/calls/${hex(CALL)}/relay`);
+    expect(t.seen[0].body).toEqual(encode([]));
+    expect(http.requests[0].bucket).toBe('write');
+    t.replies.push(cborReply(200, [[]]));
+    expect(await routes.relayCall(CALL)).toEqual([]);
+    t.replies.push(cborReply(200, [[['turn:x', 'user']]]));
+    await expect(routes.relayCall(CALL)).rejects.toThrow();
+    t.replies.push(cborReply(200, []));
+    await expect(routes.relayCall(CALL)).rejects.toThrow();
   });
 
   it('share, unshare and stats map onto their routes', async () => {
