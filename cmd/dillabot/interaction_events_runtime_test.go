@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
@@ -23,6 +24,21 @@ type interactionGroupInspectorFunc func(context.Context, id.ID) (native.GroupInf
 
 func (f interactionGroupInspectorFunc) InspectGroup(ctx context.Context, group id.ID) (native.GroupInfo, error) {
 	return f(ctx, group)
+}
+
+type interactionEventDescriptorInspector struct {
+	descriptors []native.InteractionGroupDescriptor
+	err         error
+	listCalls   int
+}
+
+func (i *interactionEventDescriptorInspector) InspectGroup(context.Context, id.ID) (native.GroupInfo, error) {
+	return native.GroupInfo{}, i.err
+}
+
+func (i *interactionEventDescriptorInspector) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	i.listCalls++
+	return i.descriptors, nil
 }
 
 type interactionDispatcherFunc func(context.Context, native.GroupEvent) (string, error)
@@ -117,6 +133,34 @@ func TestInteractionEventHandlerDispatchesOnlyNativeInteractionGroups(t *testing
 	)
 	if err := handler.HandleGroupEvent(context.Background(), event); err == nil {
 		t.Fatal("unsupported text group was silently accepted")
+	}
+}
+
+func TestInteractionEventHandlerResolvesKind3AfterGenericScopeRefusal(t *testing.T) {
+	group, community, participant, device := id.New(), id.New(), id.New(), id.New()
+	event := native.GroupEvent{DeliveryID: 7, Group: group, Community: community, Channel: participant, SenderUser: participant, SenderDevice: device}
+	descriptor := native.InteractionGroupDescriptor{Group: group, BotDevice: id.New(), State: 2, Binding: native.InteractionGroupBinding{
+		Instance: id.New(), Installation: id.New(), Community: community, BotUser: id.New(), ParticipantUser: participant,
+		ParticipantDevice: device, PolicyVersion: 1, E2EEVersion: 1,
+	}}
+	inspector := &interactionEventDescriptorInspector{err: &helper.StatusError{Status: 2}, descriptors: []native.InteractionGroupDescriptor{descriptor}}
+	dispatches := 0
+	handler := newInteractionEventHandler(inspector,
+		interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) { dispatches++; return "response", nil }),
+		&interactionResumingSender{})
+	router := newGroupEventRouter(inspector, handler, nil, 0, 0)
+	if err := router.HandleGroupEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if dispatches != 1 || inspector.listCalls != 2 {
+		t.Fatalf("dispatches=%d descriptor lookups=%d", dispatches, inspector.listCalls)
+	}
+	event.SenderDevice = id.New()
+	if err := router.HandleGroupEvent(context.Background(), event); err == nil {
+		t.Fatal("event from a different participant device was accepted")
+	}
+	if dispatches != 1 {
+		t.Fatal("mismatched participant device reached dispatcher")
 	}
 }
 

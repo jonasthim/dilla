@@ -8,6 +8,7 @@ import (
 	"math"
 	"sync"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
@@ -158,8 +159,17 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		return "", protocol.ErrContext
 	}
 	group, err := d.native.InspectGroup(ctx, event.Group)
+	proofInspected := false
 	if err != nil {
-		return "", err
+		var status *helper.StatusError
+		if !errors.As(err, &status) || status.Status != interactionStatusForbidden {
+			return "", err
+		}
+		group, err = d.inspectInteractionEventGroup(ctx, event)
+		if err != nil {
+			return "", err
+		}
+		proofInspected = true
 	}
 	// GroupEvent fields alone do not prove a kind-3 installation or participant
 	// binding. Require a fresh signed context and native MLS inspection first.
@@ -167,16 +177,10 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		return "", protocol.ErrContext
 	}
 	if group.Kind == 3 {
-		if d.snapshots == nil || event.SenderKind != 0 {
-			return "", protocol.ErrContext
-		}
-		expected, snapshot, snapshotErr := d.snapshots.InteractionSnapshot(ctx, event)
-		if snapshotErr != nil || len(snapshot) == 0 || expected.Instance != d.binding.Instance || expected.Installation != d.binding.Installation || expected.Community != d.binding.Community || expected.Group != event.Group || expected.ParticipantUser != event.SenderUser || expected.ParticipantDevice != event.SenderDevice {
-			return "", protocol.ErrContext
-		}
-		inspected, inspectErr := d.native.InspectInteractionGroup(ctx, expected, snapshot)
-		if inspectErr != nil || inspected.Binding.Instance != expected.Instance || inspected.Binding.Installation != expected.Installation || inspected.Binding.Community != expected.Community || inspected.Binding.BotUser != expected.BotUser || inspected.BotDevice != expected.BotDevice || inspected.Binding.ParticipantUser != expected.ParticipantUser || inspected.Binding.ParticipantDevice != expected.ParticipantDevice || inspected.Binding.PolicyVersion != expected.PolicyVersion || inspected.Binding.E2EEVersion != 1 || inspected.Binding.MediaVersion != 0 || inspected.Epoch == 0 || inspected.State != 2 {
-			return "", protocol.ErrContext
+		if !proofInspected {
+			if _, err = d.inspectInteractionEventGroup(ctx, event); err != nil {
+				return "", err
+			}
 		}
 	} else if group.Kind != 0 {
 		return "", protocol.ErrContext
@@ -284,6 +288,32 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	response.Revision = result.Revision
 	response.Data = append([]byte{}, result.Data...)
 	return finish()
+}
+
+func (d *InteractionDispatcher) inspectInteractionEventGroup(ctx context.Context, event native.GroupEvent) (native.GroupInfo, error) {
+	if d.snapshots == nil || event.SenderKind != 0 {
+		return native.GroupInfo{}, protocol.ErrContext
+	}
+	expected, snapshot, err := d.snapshots.InteractionSnapshot(ctx, event)
+	if err != nil {
+		return native.GroupInfo{}, protocol.ErrContext
+	}
+	if len(snapshot) == 0 || expected.Instance != d.binding.Instance || expected.Installation != d.binding.Installation || expected.Community != d.binding.Community ||
+		expected.Group != event.Group || expected.ParticipantUser != event.SenderUser || expected.ParticipantUser != event.Channel || expected.ParticipantDevice != event.SenderDevice {
+		return native.GroupInfo{}, protocol.ErrContext
+	}
+	inspected, err := d.native.InspectInteractionGroup(ctx, expected, snapshot)
+	if err != nil {
+		return native.GroupInfo{}, protocol.ErrContext
+	}
+	if inspected.Binding.Instance != expected.Instance || inspected.Binding.Installation != expected.Installation || inspected.Binding.Community != expected.Community ||
+		inspected.Binding.BotUser != expected.BotUser || inspected.BotDevice != expected.BotDevice || inspected.Binding.ParticipantUser != expected.ParticipantUser ||
+		inspected.Binding.ParticipantDevice != expected.ParticipantDevice || inspected.Binding.PolicyVersion != expected.PolicyVersion || inspected.Binding.E2EEVersion != 1 ||
+		inspected.Binding.MediaVersion != 0 || inspected.Epoch == 0 || inspected.State != 2 || inspected.PendingCommit || inspected.NextSequence == 0 {
+		return native.GroupInfo{}, protocol.ErrContext
+	}
+	community := expected.Community
+	return native.GroupInfo{ID: expected.Group, Kind: 3, Community: &community, Target: expected.ParticipantUser, State: 2, Epoch: inspected.Epoch, NextSequence: inspected.NextSequence}, nil
 }
 
 // ReauthorizeReadReplay reruns a registered read handler and discards its

@@ -223,15 +223,6 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		if g.State != 2 || g.Community == nil || *g.Community != r.binding.Community {
 			continue
 		}
-		if g.Kind == 3 {
-			res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: g.Target, Kind: 3})
-			if e != nil {
-				return out, e
-			}
-			out.GroupsSynced++
-			out.SourcePages += res.Pages
-			continue
-		}
 		if g.Kind > 1 {
 			continue
 		}
@@ -248,6 +239,39 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
+	}
+	interactionNative, ok := r.native.(interface {
+		InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
+	})
+	if ok {
+		interactionGroups, listErr := interactionNative.InteractionGroups(ctx)
+		if listErr != nil {
+			return out, listErr
+		}
+		if len(interactionGroups) > maxMembershipGroups {
+			return out, errors.New("native interaction group set exceeds bound")
+		}
+		for i, g := range interactionGroups {
+			if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
+				return out, client.ErrProtocol
+			}
+			seenGroups[g.Group] = true
+			b := g.Binding
+			if b.Instance != r.binding.Instance || b.Installation != r.binding.Installation || b.Community != r.binding.Community ||
+				b.BotUser.IsZero() || g.BotDevice.IsZero() || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() || b.PolicyVersion == 0 ||
+				b.E2EEVersion != 1 || b.MediaVersion != 0 {
+				return out, client.ErrProtocol
+			}
+			if g.State != 2 {
+				continue
+			}
+			res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
+			if syncErr != nil {
+				return out, syncErr
+			}
+			out.GroupsSynced++
+			out.SourcePages += res.Pages
+		}
 	}
 	return out, nil
 }

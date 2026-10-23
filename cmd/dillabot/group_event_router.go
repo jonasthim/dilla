@@ -39,7 +39,7 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	group, err := h.inspector.InspectGroup(ctx, event.Group)
+	group, err := inspectInteractionEventGroup(ctx, h.inspector, event)
 	if err != nil {
 		return err
 	}

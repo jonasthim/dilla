@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -37,12 +39,28 @@ type sourceSyncSession interface {
 }
 
 type interactionGroupSyncSession interface {
+	IssueBotInteractionAdmission(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
+	BotInteractionContextSnapshot(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
 	BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error)
 	BotInteractionGroupPage(context.Context, id.ID, id.ID, string, uint64, uint64) (client.Page, error)
 	AdvanceBotInteractionGroupCursor(context.Context, id.ID, id.ID, uint64, uint64) error
 }
 
-type sourceSyncOptions struct{ PageLimit, PageBudget uint64 }
+type interactionGroupSourceNative interface {
+	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
+	InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error)
+}
+
+type interactionGroupMutationNative interface {
+	InteractionGroupCursor(context.Context, native.InteractionGroupExpected, []byte) (*native.GroupCursor, error)
+	ApplyInteractionGroup(context.Context, native.InteractionGroupExpected, []byte, []byte, []byte, uint64) (native.GroupApplyResult, error)
+	AcknowledgeInteractionGroupCursor(context.Context, native.InteractionGroupExpected, []byte, native.GroupCursor) error
+}
+
+type sourceSyncOptions struct {
+	PageLimit, PageBudget uint64
+	now                   func() time.Time
+}
 
 // SourceSyncOptions bounds one serialized catch-up pass. Zero values use a 256-row page and two
 // paired page reads. Each paired read requests one page from each append-only source.
@@ -57,9 +75,17 @@ type SourceSyncResult struct {
 }
 
 type SourceSync struct {
-	native  sourceSyncNative
-	binding native.Binding
-	options sourceSyncOptions
+	native     sourceSyncNative
+	binding    native.Binding
+	options    sourceSyncOptions
+	snapshotMu sync.Mutex
+	snapshots  map[id.ID]interactionSnapshotCacheEntry
+}
+
+type interactionSnapshotCacheEntry struct {
+	wire      []byte
+	details   interactionSnapshotDetails
+	refreshAt time.Time
 }
 
 // NewSourceSync binds synchronization to one opened native identity. The caller serializes this
@@ -85,13 +111,17 @@ func newSourceSync(n sourceSyncNative, options sourceSyncOptions) (*SourceSync, 
 	if options.PageBudget == 0 {
 		options.PageBudget = defaultSourcePageBudget
 	}
+	if options.now == nil {
+		options.now = time.Now
+	}
 	if options.PageLimit > defaultSourcePageLimit || options.PageBudget > 2 {
 		return nil, errors.New("source sync budget exceeds bound")
 	}
-	return &SourceSync{native: n, binding: binding, options: options}, nil
+	return &SourceSync{native: n, binding: binding, options: options, snapshots: make(map[id.ID]interactionSnapshotCacheEntry)}, nil
 }
 
-// Sync performs one bounded pass for an already admitted active own-community text or call group.
+// Sync performs one bounded pass for an active own-community text/call group or a registered
+// kind-3 interaction group. Interaction native reads and mutations require fresh signed context.
 // It does not create groups, commit membership, acknowledge authenticated events, or dispatch them.
 func (s *SourceSync) Sync(ctx context.Context, session *client.Session, expected native.GroupExpected) (SourceSyncResult, error) {
 	if session == nil {
@@ -109,7 +139,13 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 		(expected.Kind != 0 && expected.Kind != 1 && expected.Kind != 3) {
 		return out, errors.New("invalid source sync target")
 	}
-	local, err := s.native.InspectGroup(ctx, expected.Group)
+	var local native.GroupInfo
+	var err error
+	if expected.Kind == 3 {
+		local, err = s.inspectInteractionGroup(ctx, session, expected)
+	} else {
+		local, err = s.native.InspectGroup(ctx, expected.Group)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -178,11 +214,30 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 		if err = ctx.Err(); err != nil {
 			return out, err
 		}
-		applied, applyErr := s.native.ApplyGroup(ctx, expected.Group, hsBody, msBody, through)
+		var applied native.GroupApplyResult
+		var applyErr error
+		if expected.Kind == 3 {
+			proof, snapshot, _, proofErr := s.interactionProof(ctx, session, expected)
+			if proofErr != nil {
+				return out, proofErr
+			}
+			localSync, ok := s.native.(interactionGroupMutationNative)
+			if !ok {
+				return out, errors.New("native proof-bound interaction apply is unavailable")
+			}
+			applied, applyErr = localSync.ApplyInteractionGroup(ctx, proof, snapshot, hsBody, msBody, through)
+		} else {
+			applied, applyErr = s.native.ApplyGroup(ctx, expected.Group, hsBody, msBody, through)
+		}
 		if applyErr != nil {
 			// The helper can commit before its response is lost. Re-read durable state, but leave
 			// process replacement and retry to the installation supervisor.
-			_, readErr := s.native.InspectGroup(ctx, expected.Group)
+			var readErr error
+			if expected.Kind == 3 {
+				_, readErr = s.inspectInteractionGroup(ctx, session, expected)
+			} else {
+				_, readErr = s.native.InspectGroup(ctx, expected.Group)
+			}
 			if readErr != nil {
 				return out, fmt.Errorf("apply result uncertain (%v); native state unavailable: %w", applyErr, readErr)
 			}
@@ -203,7 +258,11 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 		if err = s.flushCursor(ctx, session, expected, head); err != nil {
 			return out, err
 		}
-		local, err = s.native.InspectGroup(ctx, expected.Group)
+		if expected.Kind == 3 {
+			local, err = s.inspectInteractionGroup(ctx, session, expected)
+		} else {
+			local, err = s.native.InspectGroup(ctx, expected.Group)
+		}
 		if err != nil {
 			return out, err
 		}
@@ -236,6 +295,115 @@ func validateSourceGroup(g native.GroupInfo, binding native.Binding, expected na
 		return errors.New("invalid native group sequence")
 	}
 	return nil
+}
+
+// inspectInteractionGroup is the only local kind-3 read. A candidate descriptor from the native
+// helper is never sufficient by itself: the helper authenticates its local MLS group against a
+// fresh server-signed admission context before SourceSync can fetch any ciphertext.
+func (s *SourceSync) interactionProof(ctx context.Context, session sourceSyncSession, expected native.GroupExpected) (native.InteractionGroupExpected, []byte, native.InteractionGroupDescriptor, error) {
+	local, ok := s.native.(interactionGroupSourceNative)
+	if !ok {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, errors.New("native interaction group inspection is unavailable")
+	}
+	remote, ok := session.(interactionGroupSyncSession)
+	if !ok {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, errors.New("interaction group reads are unsupported by this session")
+	}
+	descriptors, err := local.InteractionGroups(ctx)
+	if err != nil {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, err
+	}
+	var descriptor *native.InteractionGroupDescriptor
+	for i := range descriptors {
+		if descriptors[i].Group == expected.Group {
+			if descriptor != nil {
+				return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, errors.New("duplicate native interaction group descriptor")
+			}
+			descriptor = &descriptors[i]
+		}
+	}
+	if descriptor == nil {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, errors.New("native interaction group is unavailable")
+	}
+	b := descriptor.Binding
+	if descriptor.Group.IsZero() || b.Instance != s.binding.Instance || b.Installation != s.binding.Installation || b.Community != s.binding.Community ||
+		b.ParticipantUser != expected.Channel || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() || b.BotUser.IsZero() || descriptor.BotDevice.IsZero() ||
+		b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 || descriptor.State != 2 {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, errors.New("native interaction group descriptor does not match the source target")
+	}
+	wire, details, err := s.freshInteractionSnapshot(ctx, remote, *descriptor)
+	if err != nil {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, err
+	}
+	expectedNative := native.InteractionGroupExpected{Instance: b.Instance, Installation: b.Installation, Community: b.Community,
+		BotUser: b.BotUser, BotDevice: descriptor.BotDevice, ParticipantUser: b.ParticipantUser, ParticipantDevice: b.ParticipantDevice,
+		Group: descriptor.Group, MinimumEligibilityRevision: details.MinimumRevision, ServerNow: details.Now, PolicyVersion: details.PolicyVersion}
+	if details.Group != expectedNative.Group || details.Instance != b.Instance || details.Installation != b.Installation || details.Community != b.Community ||
+		details.BotUser != b.BotUser || details.BotDevice != descriptor.BotDevice || details.ParticipantUser != b.ParticipantUser || details.ParticipantDevice != b.ParticipantDevice ||
+		details.PolicyVersion != b.PolicyVersion || details.E2EEVersion != b.E2EEVersion || details.MediaVersion != b.MediaVersion {
+		return native.InteractionGroupExpected{}, nil, native.InteractionGroupDescriptor{}, errors.New("signed interaction snapshot does not match the native group descriptor")
+	}
+	return expectedNative, wire, *descriptor, nil
+}
+
+func (s *SourceSync) inspectInteractionGroup(ctx context.Context, session sourceSyncSession, expected native.GroupExpected) (native.GroupInfo, error) {
+	local, ok := s.native.(interactionGroupSourceNative)
+	if !ok {
+		return native.GroupInfo{}, errors.New("native interaction group inspection is unavailable")
+	}
+	expectedNative, wire, descriptor, err := s.interactionProof(ctx, session, expected)
+	if err != nil {
+		return native.GroupInfo{}, err
+	}
+	b := descriptor.Binding
+	inspected, err := local.InspectInteractionGroup(ctx, expectedNative, wire)
+	if err != nil {
+		return native.GroupInfo{}, err
+	}
+	if inspected.Binding != b || inspected.BotDevice != descriptor.BotDevice || inspected.Epoch != descriptor.Epoch || inspected.State != descriptor.State || inspected.NextSequence == 0 || inspected.PendingCommit {
+		return native.GroupInfo{}, errors.New("native interaction inspection does not match the persisted group")
+	}
+	community, target := b.Community, b.ParticipantUser
+	return native.GroupInfo{ID: descriptor.Group, Kind: 3, Community: &community, Target: target, State: inspected.State, Epoch: inspected.Epoch,
+		NextSequence: inspected.NextSequence, PendingCommit: inspected.PendingCommit}, nil
+}
+
+func (s *SourceSync) freshInteractionSnapshot(ctx context.Context, session interactionGroupSyncSession, descriptor native.InteractionGroupDescriptor) ([]byte, interactionSnapshotDetails, error) {
+	now := s.options.now()
+	s.snapshotMu.Lock()
+	if cached, ok := s.snapshots[descriptor.Group]; ok && now.Before(cached.refreshAt) {
+		wire := append([]byte(nil), cached.wire...)
+		s.snapshotMu.Unlock()
+		return wire, cached.details, nil
+	}
+	s.snapshotMu.Unlock()
+	requestID := id.New()
+	if _, err := session.IssueBotInteractionAdmission(ctx, s.binding.Installation, requestID, descriptor.Group, descriptor.Binding.ParticipantUser, descriptor.Binding.ParticipantDevice); err != nil {
+		return nil, interactionSnapshotDetails{}, err
+	}
+	wire, err := session.BotInteractionContextSnapshot(ctx, s.binding.Installation, requestID, descriptor.Group, descriptor.Binding.ParticipantUser, descriptor.Binding.ParticipantDevice)
+	if err != nil {
+		return nil, interactionSnapshotDetails{}, err
+	}
+	details, err := interactionSnapshotDetailsFromWire(wire)
+	if err != nil {
+		return nil, interactionSnapshotDetails{}, err
+	}
+	entry := interactionSnapshotCacheEntry{wire: append([]byte(nil), wire...), details: details, refreshAt: s.options.now().Add(15 * time.Second)}
+	s.snapshotMu.Lock()
+	if len(s.snapshots) >= maxMembershipGroups {
+		for group, old := range s.snapshots {
+			if !s.options.now().Before(old.refreshAt) {
+				delete(s.snapshots, group)
+			}
+		}
+		if len(s.snapshots) >= maxMembershipGroups {
+			clear(s.snapshots)
+		}
+	}
+	s.snapshots[descriptor.Group] = entry
+	s.snapshotMu.Unlock()
+	return append([]byte(nil), entry.wire...), entry.details, nil
 }
 
 func validateSourcePage(page client.Page, from, limit uint64, kind string) error {
@@ -329,7 +497,25 @@ func sourceGroupPage(ctx context.Context, session sourceSyncSession, installatio
 }
 
 func (s *SourceSync) flushCursor(ctx context.Context, session sourceSyncSession, expected native.GroupExpected, head uint64) error {
-	cursor, err := s.native.GroupCursor(ctx, expected.Group)
+	var cursor *native.GroupCursor
+	var err error
+	var localSync interactionGroupMutationNative
+	var proof native.InteractionGroupExpected
+	var snapshot []byte
+	if expected.Kind == 3 {
+		var ok bool
+		localSync, ok = s.native.(interactionGroupMutationNative)
+		if !ok {
+			return errors.New("native proof-bound interaction cursor is unavailable")
+		}
+		proof, snapshot, _, err = s.interactionProof(ctx, session, expected)
+		if err != nil {
+			return err
+		}
+		cursor, err = localSync.InteractionGroupCursor(ctx, proof, snapshot)
+	} else {
+		cursor, err = s.native.GroupCursor(ctx, expected.Group)
+	}
 	if err != nil {
 		return err
 	}
@@ -350,6 +536,13 @@ func (s *SourceSync) flushCursor(ctx context.Context, session sourceSyncSession,
 	}
 	if err != nil {
 		return err
+	}
+	if expected.Kind == 3 {
+		proof, snapshot, _, err = s.interactionProof(ctx, session, expected)
+		if err != nil {
+			return err
+		}
+		return localSync.AcknowledgeInteractionGroupCursor(ctx, proof, snapshot, *cursor)
 	}
 	return s.native.AcknowledgeGroupCursor(ctx, expected.Group, *cursor)
 }

@@ -330,6 +330,18 @@ func TestInteractionRegistrationSnapshotProviderUsesPersistedBinding(t *testing.
 	}
 }
 
+func TestInteractionRegistrationSnapshotAllowsNoMediaDespiteDiscoveryMediaSupport(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.d.value.MediaVersions = []uint64{1}
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	event := native.GroupEvent{Group: f.request.Group, Community: f.community, SenderUser: f.request.ParticipantUser, SenderDevice: f.request.ParticipantDevice}
+	if _, wire, err := f.coordinator.InteractionSnapshot(context.Background(), event); err != nil || len(wire) == 0 {
+		t.Fatalf("valid kind-3 mediaVersion=0 context rejected when discovery supports mediaVersion=1: wire=%d err=%v", len(wire), err)
+	}
+}
+
 func TestInteractionRegistrationSnapshotProviderRequiresAdmissionAndExactTuple(t *testing.T) {
 	t.Run("admission failure prevents context lookup", func(t *testing.T) {
 		f := newInteractionRegistrationFixture(t)

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -149,6 +150,7 @@ func TestInteractionDispatcherAcceptsKind3OnlyAfterSnapshotMatchesNativeParticip
 	event.SenderTier = 1
 	participant := interactionID(6)
 	device := interactionID(7)
+	event.Channel = participant
 	n := d.native.(*interactionNativeFake)
 	n.group = native.GroupInfo{ID: event.Group, Kind: 3, Community: &binding.Community, Target: event.Channel, State: 2}
 	expected := native.InteractionGroupExpected{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: interactionID(10), BotDevice: interactionID(11), ParticipantUser: participant, ParticipantDevice: device, Group: event.Group, PolicyVersion: 3, ServerNow: 100}
@@ -162,7 +164,10 @@ func TestInteractionDispatcherAcceptsKind3OnlyAfterSnapshotMatchesNativeParticip
 	if err != nil {
 		t.Fatal(err)
 	}
-	n.interaction = native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: expected.BotUser, ParticipantUser: participant, ParticipantDevice: device, PolicyVersion: 3, E2EEVersion: 1, MediaVersion: 0}, BotDevice: expected.BotDevice, Epoch: 1, State: 2}
+	n.interaction = native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: expected.BotUser, ParticipantUser: participant, ParticipantDevice: device, PolicyVersion: 3, E2EEVersion: 1, MediaVersion: 0}, BotDevice: expected.BotDevice, Epoch: 1, State: 2, NextSequence: 1}
+	// Generic inspection refuses kind 3 for the Bot helper. The dispatcher must
+	// use its fresh signed interaction snapshot and native op22 inspection.
+	n.err = &helper.StatusError{Status: interactionStatusForbidden}
 	got, err := d.Dispatch(context.Background(), event)
 	if err != nil {
 		t.Fatal(err)
@@ -544,6 +549,7 @@ func TestInteractionDispatcherAllowsAuthorizedMusicVoiceContextOnlyForKind3(t *t
 	})
 	event.SenderTier = 1
 	n := d.native.(*interactionNativeFake)
+	event.Channel = participant
 	n.group = native.GroupInfo{ID: event.Group, Kind: 3, Community: &binding.Community, Target: event.Channel, State: 2}
 	expected := native.InteractionGroupExpected{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: interactionID(10), BotDevice: interactionID(11), ParticipantUser: participant, ParticipantDevice: device, Group: event.Group, PolicyVersion: 3, ServerNow: 100}
 	d, err := newInteractionDispatcherWithSnapshots(n, d.handlers, d.now, interactionSnapshotSourceFunc(func(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
@@ -552,7 +558,7 @@ func TestInteractionDispatcherAllowsAuthorizedMusicVoiceContextOnlyForKind3(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	n.interaction = native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: expected.BotUser, ParticipantUser: participant, ParticipantDevice: device, PolicyVersion: 3, E2EEVersion: 1}, BotDevice: expected.BotDevice, Epoch: 1, State: 2}
+	n.interaction = native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: expected.BotUser, ParticipantUser: participant, ParticipantDevice: device, PolicyVersion: 3, E2EEVersion: 1}, BotDevice: expected.BotDevice, Epoch: 1, State: 2, NextSequence: 1}
 	request := protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community, ChannelID: &voice, Operation: protocol.OpMusicState, Args: []any{}}
 	body, err := protocol.EncodeRequest(request)
 	if err != nil {

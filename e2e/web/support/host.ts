@@ -11,7 +11,7 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
@@ -122,7 +122,9 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`));
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
   let bot: ChildProcess | null = null;
+  let clockTicker: NodeJS.Timeout | null = null;
   const teardown = async () => {
+    if (clockTicker !== null) clearInterval(clockTicker);
     if (bot !== null) await stop(bot);
     await stop(host);
     log.end();
@@ -136,13 +138,26 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
     if (!invite) throw new Error(`dilla-testhost printed no DILLA_TESTKIT_INVITE= line:\n${banner}`);
     const url = `http://127.0.0.1:${c.port}`;
     await waitForHttp(url + '/', WAIT_MS);
-    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port);
+    if (c.advanceClockWithWall === true) {
+      // Native clients validate signed interaction snapshots against SystemTime. Keep this
+      // host's otherwise manually advanced fake clock within the protocol's shared-clock skew.
+      // Start ticking before the Bot/helper binaries are built, because those builds happen after
+      // the test-host fake clock starts and can take tens of seconds.
+      const clockURL = `http://127.0.0.1:${c.control}/debug/clock`;
+      await assertWallClock(clockURL, 'before Bot runtime startup');
+      clockTicker = setInterval(() => {
+        void fetch(clockURL, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds: 1 }),
+        }).catch(() => undefined);
+      }, 1_000);
+    }
+    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
     return { url, control: `http://127.0.0.1:${c.control}`, invite,
       ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}), stop: teardown };
   } catch (e) { await teardown(); throw e; }
 }
 
-async function startBotRuntime(baseURL: string, dataDir: string, port: number): Promise<ChildProcess> {
+async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string): Promise<ChildProcess> {
   const runtimeToken = join(dataDir, 'bot-runtime.token');
   const stateDir = join(dataDir, 'bot-state');
   const configPath = join(dataDir, 'bot.toml');
@@ -153,8 +168,9 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number): 
   if (!(instanceIdBytes instanceof Uint8Array) || instanceIdBytes.length !== 16) throw new Error('bot test discovery returned an invalid instance ID');
   const instanceId = Buffer.from(instanceIdBytes).toString('hex');
 
-  execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot'], { stdio: 'inherit' });
-  execFileSync(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked'], { cwd: REPO_ROOT, stdio: 'inherit' });
+  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
+  await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
+  if (clockURL !== undefined) await assertWallClock(clockURL, 'after Bot/helper build and before Bot installation');
   let helperInfo;
   try { helperInfo = statSync(BOT_HELPER_BIN); } catch {
     throw new Error(`${BOT_HELPER_BIN} is missing after cargo build -p dilla-bot-core --release --locked`);
@@ -190,6 +206,26 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number): 
     log.end();
     throw error;
   }
+}
+
+async function assertWallClock(clockURL: string, stage: string): Promise<void> {
+  const response = await fetch(clockURL);
+  if (!response.ok) throw new Error(`Bot host clock probe failed ${stage}: HTTP ${response.status}`);
+  const now = (await response.json() as { now?: unknown }).now;
+  if (typeof now !== 'number' || !Number.isSafeInteger(now) || Math.abs(now - Math.floor(Date.now() / 1000)) > 5) {
+    throw new Error(`Bot host fake clock is outside the 5-second wall-clock bound ${stage}`);
+  }
+}
+
+function runInherited(command: string, args: string[]): Promise<void> {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(command, args, { cwd: REPO_ROOT, stdio: 'inherit' });
+    child.once('error', rejectRun);
+    child.once('close', (code, signal) => {
+      if (code === 0) resolveRun();
+      else rejectRun(new Error(`${command} ${args.join(' ')} exited with ${signal ?? code ?? 'unknown status'}`));
+    });
+  });
 }
 
 function waitForBotHealthy(child: ChildProcess, log: ReturnType<typeof createWriteStream>, port: number): Promise<void> {

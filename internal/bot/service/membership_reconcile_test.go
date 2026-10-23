@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -11,22 +12,37 @@ import (
 )
 
 type membershipFakeNative struct {
-	binding              native.Binding
-	groups               []native.GroupInfo
-	inspected            native.GroupInfo
-	welcomes             []native.GroupWelcome
-	expected             []native.GroupExpected
-	outcomes             []native.GroupWelcomeOutcome
-	state                native.StateValue
-	acks                 []id.ID
-	applyCalls           int
-	applyErr             error
-	changeGroupOnInspect bool
+	binding                native.Binding
+	groups                 []native.GroupInfo
+	interactionGroups      []native.InteractionGroupDescriptor
+	interactionInspected   native.InteractionGroupInspectResult
+	inspected              native.GroupInfo
+	welcomes               []native.GroupWelcome
+	expected               []native.GroupExpected
+	outcomes               []native.GroupWelcomeOutcome
+	state                  native.StateValue
+	acks                   []id.ID
+	applyCalls             int
+	applyErr               error
+	interactionCursorCalls int
+	interactionApplyCalls  int
+	interactionAckCalls    int
+	genericApplyCalls      int
+	genericCursorCalls     int
+	genericAckCalls        int
+	interactionCursor      *native.GroupCursor
+	changeGroupOnInspect   bool
 }
 
 func (n *membershipFakeNative) Binding() native.Binding { return n.binding }
 func (n *membershipFakeNative) Groups(context.Context) ([]native.GroupInfo, error) {
 	return n.groups, nil
+}
+func (n *membershipFakeNative) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	return n.interactionGroups, nil
+}
+func (n *membershipFakeNative) InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error) {
+	return n.interactionInspected, nil
 }
 func (n *membershipFakeNative) InspectGroup(_ context.Context, group id.ID) (native.GroupInfo, error) {
 	if n.inspected.ID != group {
@@ -39,12 +55,39 @@ func (n *membershipFakeNative) InspectGroup(_ context.Context, group id.ID) (nat
 	return got, nil
 }
 func (n *membershipFakeNative) ApplyGroup(context.Context, id.ID, []byte, []byte, uint64) (native.GroupApplyResult, error) {
+	n.genericApplyCalls++
 	return native.GroupApplyResult{}, nil
 }
 func (n *membershipFakeNative) GroupCursor(context.Context, id.ID) (*native.GroupCursor, error) {
+	n.genericCursorCalls++
 	return nil, nil
 }
 func (n *membershipFakeNative) AcknowledgeGroupCursor(context.Context, id.ID, native.GroupCursor) error {
+	n.genericAckCalls++
+	return nil
+}
+func (n *membershipFakeNative) InteractionGroupCursor(_ context.Context, expected native.InteractionGroupExpected, snapshot []byte) (*native.GroupCursor, error) {
+	n.interactionCursorCalls++
+	if expected.Group.IsZero() || len(snapshot) == 0 {
+		return nil, errors.New("missing kind3 proof")
+	}
+	return n.interactionCursor, nil
+}
+func (n *membershipFakeNative) ApplyInteractionGroup(_ context.Context, expected native.InteractionGroupExpected, snapshot, handshakes, messages []byte, through uint64) (native.GroupApplyResult, error) {
+	n.interactionApplyCalls++
+	if expected.Group.IsZero() || len(snapshot) == 0 || through == 0 {
+		return native.GroupApplyResult{}, errors.New("missing kind3 proof")
+	}
+	n.interactionCursor = &native.GroupCursor{Sequence: through, Epoch: 1}
+	n.interactionInspected.NextSequence = through + 1
+	return native.GroupApplyResult{State: 2, NextSequence: through + 1}, nil
+}
+func (n *membershipFakeNative) AcknowledgeInteractionGroupCursor(_ context.Context, expected native.InteractionGroupExpected, snapshot []byte, _ native.GroupCursor) error {
+	n.interactionAckCalls++
+	if expected.Group.IsZero() || len(snapshot) == 0 {
+		return errors.New("missing kind3 proof")
+	}
+	n.interactionCursor = nil
 	return nil
 }
 func (n *membershipFakeNative) ApplyWelcomes(_ context.Context, ws []native.GroupWelcome, expected []native.GroupExpected) ([]native.GroupWelcomeOutcome, error) {
@@ -62,17 +105,25 @@ func (n *membershipFakeNative) StateTransaction(_ context.Context, _ id.ID, chan
 }
 
 type membershipFakeSession struct {
-	communities         []client.Community
-	community           client.Community
-	communityCalls      int
-	communitiesCalls    int
-	channels            []client.Channel
-	welcomes            []client.Welcome
-	acked               []uint64
-	ackErr              error
-	channelsCalls       int
-	removeOnSecond      bool
-	changeGroupOnSecond bool
+	communities           []client.Community
+	community             client.Community
+	communityCalls        int
+	communitiesCalls      int
+	channels              []client.Channel
+	welcomes              []client.Welcome
+	acked                 []uint64
+	ackErr                error
+	channelsCalls         int
+	removeOnSecond        bool
+	changeGroupOnSecond   bool
+	interactionBinding    native.InteractionGroupBinding
+	interactionBotDevice  id.ID
+	interactionGroup      id.ID
+	interactionInfo       client.GroupInfo
+	interactionPages      map[sourcePageKey]client.Page
+	interactionPageCalls  []sourcePageKey
+	interactionAdmissions int
+	interactionSnapshots  int
 }
 
 func (s *membershipFakeSession) Communities(context.Context) ([]client.Community, error) {
@@ -113,19 +164,34 @@ func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupI
 	return client.GroupInfo{NextSequence: 1}, nil
 }
 func (s *membershipFakeSession) BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error) {
+	if s.interactionInfo.NextSequence != 0 {
+		return s.interactionInfo, nil
+	}
 	return client.GroupInfo{NextSequence: 1}, nil
 }
 func (s *membershipFakeSession) GroupPage(context.Context, id.ID, string, uint64, uint64) (client.Page, error) {
 	return client.Page{Next: 1}, nil
 }
-func (s *membershipFakeSession) BotInteractionGroupPage(context.Context, id.ID, id.ID, string, uint64, uint64) (client.Page, error) {
-	return client.Page{Next: 1}, nil
+func (s *membershipFakeSession) BotInteractionGroupPage(_ context.Context, _, _ id.ID, kind string, from, _ uint64) (client.Page, error) {
+	key := sourcePageKey{kind: kind, from: from}
+	s.interactionPageCalls = append(s.interactionPageCalls, key)
+	return s.interactionPages[key], nil
 }
 func (s *membershipFakeSession) AdvanceCursor(context.Context, id.ID, uint64, uint64) error {
 	return nil
 }
 func (s *membershipFakeSession) AdvanceBotInteractionGroupCursor(context.Context, id.ID, id.ID, uint64, uint64) error {
 	return nil
+}
+func (s *membershipFakeSession) IssueBotInteractionAdmission(_ context.Context, _, _, _, _, _ id.ID) ([]byte, error) {
+	s.interactionAdmissions++
+	return []byte{1}, nil
+}
+func (s *membershipFakeSession) BotInteractionContextSnapshot(_ context.Context, _, request, group, user, device id.ID) ([]byte, error) {
+	s.interactionSnapshots++
+	b := s.interactionBinding
+	expected := []any{b.Instance, b.Installation, b.Community, b.BotUser, s.interactionBotDevice, user, device, group}
+	return makeSignedSnapshotFixtureFor(request, expected, 100)
 }
 
 func membershipID(n byte) id.ID { var v id.ID; v[15] = n; return v }
@@ -229,20 +295,89 @@ func TestMembershipSyncsOnlyGroupsWhoseNativeBindingMatchesAuthorizedChannel(t *
 
 func TestMembershipSyncsActiveInteractionGroupsByExactNativeTarget(t *testing.T) {
 	r, n, s, community, _, _ := membershipFixture(t)
+	now := time.Unix(100, 0)
+	var err error
+	r.source, err = newSourceSync(n, sourceSyncOptions{now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
 	group, participant := membershipID(21), membershipID(22)
-	groupInfo := native.GroupInfo{ID: group, Kind: 3, Community: &community, Target: participant, State: 2, NextSequence: 1}
-	n.groups = []native.GroupInfo{groupInfo}
-	n.inspected = groupInfo
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community,
+		BotUser: membershipID(23), ParticipantUser: participant, ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	descriptor := native.InteractionGroupDescriptor{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}
+	n.interactionGroups = []native.InteractionGroupDescriptor{descriptor}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
 	result, err := r.reconcileOnce(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.GroupsSynced != 1 || result.SourcePages != 0 {
+	if result.GroupsSynced != 1 || result.SourcePages != 0 || s.interactionAdmissions != 1 || s.interactionSnapshots != 1 || n.interactionCursorCalls != 1 {
 		t.Fatalf("sync result=%+v", result)
 	}
-	n.inspected.Target = membershipID(23)
+	if _, err = r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionAdmissions != 1 || s.interactionSnapshots != 1 {
+		t.Fatal("unexpired current snapshot was unnecessarily reissued")
+	}
+	now = now.Add(16 * time.Second)
+	if _, err = r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionAdmissions != 2 || s.interactionSnapshots != 2 {
+		t.Fatal("expired current snapshot was reused")
+	}
+	r, err = newMembershipReconciler(n, sourceSyncOptions{now: func() time.Time { return now }}, membershipOptions{WelcomePageLimit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionAdmissions != 3 || s.interactionSnapshots != 3 {
+		t.Fatal("new reconciler reused an in-memory snapshot from before restart")
+	}
+	n.interactionGroups[0].Binding.ParticipantUser = membershipID(23)
 	if _, err = r.reconcileOnce(context.Background(), s); err == nil {
 		t.Fatal("interaction group rebound to another participant was accepted")
+	}
+}
+
+func TestInteractionSourceSyncUsesProofBoundNativeCursorApplyAndAck(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	now := time.Unix(100, 0)
+	var err error
+	r.source, err = newSourceSync(n, sourceSyncOptions{PageLimit: 4, PageBudget: 1, now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, participant := membershipID(31), membershipID(32)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community,
+		BotUser: membershipID(33), ParticipantUser: participant, ParticipantDevice: membershipID(34), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(35)
+	n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	s.interactionInfo = client.GroupInfo{Epoch: 1, NextSequence: 3}
+	s.interactionPages = map[sourcePageKey]client.Page{
+		{kind: "handshakes", from: 1}: {Rows: [][]any{sourceHandshake(1)}, Next: 2},
+		{kind: "messages", from: 1}:   {Rows: [][]any{sourceMessage(2)}, Next: 3},
+	}
+	expected := native.GroupExpected{Group: group, Community: community, Channel: participant, Kind: 3}
+	result, err := r.source.sync(context.Background(), s, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pages != 1 || result.AppliedThrough != 2 || n.interactionApplyCalls != 1 || n.interactionCursorCalls != 2 || n.interactionAckCalls != 1 {
+		t.Fatalf("result=%+v interaction calls: apply=%d cursor=%d ack=%d", result, n.interactionApplyCalls, n.interactionCursorCalls, n.interactionAckCalls)
+	}
+	if n.genericApplyCalls != 0 || n.genericCursorCalls != 0 || n.genericAckCalls != 0 {
+		t.Fatalf("kind3 reached generic native ops: apply=%d cursor=%d ack=%d", n.genericApplyCalls, n.genericCursorCalls, n.genericAckCalls)
+	}
+	if s.interactionAdmissions != 1 || s.interactionSnapshots != 1 || len(s.interactionPageCalls) != 2 {
+		t.Fatalf("proof/page counts: admissions=%d snapshots=%d pages=%v", s.interactionAdmissions, s.interactionSnapshots, s.interactionPageCalls)
 	}
 }
 

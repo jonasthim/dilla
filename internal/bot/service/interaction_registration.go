@@ -428,7 +428,7 @@ func (c *InteractionRegistrationCoordinator) InteractionSnapshot(ctx context.Con
 		return expected, nil, ErrInteractionRegistrationRecovery
 	}
 	snapshot, err := interactionSnapshotDetailsFromWire(wire)
-	if err != nil || snapshot.Request != requestID || snapshot.Instance != c.instance || snapshot.Installation != c.installation || snapshot.Community != c.community || snapshot.BotUser != in.BotUser || snapshot.BotDevice != in.BotDevice || snapshot.ParticipantUser != in.ParticipantUser || snapshot.ParticipantDevice != in.ParticipantDevice || snapshot.Group != in.Group || snapshot.PolicyVersion != in.Policy || !containsVersion(discovery.E2EEVersions, snapshot.E2EEVersion) || !containsVersion(discovery.MediaVersions, snapshot.MediaVersion) {
+	if err != nil || snapshot.Request != requestID || snapshot.Instance != c.instance || snapshot.Installation != c.installation || snapshot.Community != c.community || snapshot.BotUser != in.BotUser || snapshot.BotDevice != in.BotDevice || snapshot.ParticipantUser != in.ParticipantUser || snapshot.ParticipantDevice != in.ParticipantDevice || snapshot.Group != in.Group || snapshot.PolicyVersion != in.Policy || !containsVersion(discovery.E2EEVersions, snapshot.E2EEVersion) || snapshot.MediaVersion != 0 {
 		return expected, nil, ErrInteractionRegistrationRecovery
 	}
 	expected = native.InteractionGroupExpected{Instance: snapshot.Instance, Installation: snapshot.Installation, Community: snapshot.Community, BotUser: snapshot.BotUser, BotDevice: snapshot.BotDevice, ParticipantUser: snapshot.ParticipantUser, ParticipantDevice: snapshot.ParticipantDevice, Group: snapshot.Group, MinimumEligibilityRevision: snapshot.MinimumRevision, ServerNow: snapshot.Now, PolicyVersion: snapshot.PolicyVersion}
