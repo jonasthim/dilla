@@ -11,9 +11,9 @@ import (
 )
 
 type Querier interface {
-	AcceptBotAutoModerationGrant(ctx context.Context, arg AcceptBotAutoModerationGrantParams) (int64, error)
 	AFKAwayExists(ctx context.Context, arg AFKAwayExistsParams) (int64, error)
 	AFKAwayExistsUser(ctx context.Context, arg AFKAwayExistsUserParams) (int64, error)
+	AcceptBotAutoModerationGrant(ctx context.Context, arg AcceptBotAutoModerationGrantParams) (int64, error)
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)

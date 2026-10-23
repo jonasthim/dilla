@@ -287,6 +287,12 @@ type CommunityAfk struct {
 	TimeoutSeconds int64
 }
 
+type CommunityAfkAway struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Since       int64
+}
+
 type CommunityMemberEpisodes struct {
 	CommunityID id.ID
 	UserID      id.ID
@@ -299,12 +305,6 @@ type CommunityMemberTimeouts struct {
 	ByUser      id.ID
 	Created     int64
 	Expires     int64
-}
-
-type CommunityAfkAway struct {
-	CommunityID id.ID
-	UserID      id.ID
-	Since       int64
 }
 
 type DeviceCursors struct {
@@ -408,6 +408,17 @@ type LoginAttempts struct {
 	Method int64
 	Ok     int64
 	At     int64
+}
+
+type ManualWarningActions struct {
+	CommunityID   id.ID
+	RequestID     id.ID
+	ActionID      id.ID
+	ActorUserID   id.ID
+	ActorDeviceID id.ID
+	TargetUserID  id.ID
+	Revision      int64
+	AcceptedAt    int64
 }
 
 type MemberRoleGrantSources struct {
@@ -633,11 +644,12 @@ type RolePanelOptions struct {
 }
 
 type RolePanels struct {
-	CommunityID    id.ID
-	ChannelID      id.ID
-	MessageSeq     int64
-	AuthorID       id.ID
-	InstallationID id.ID
+	CommunityID     id.ID
+	ChannelID       id.ID
+	MessageSeq      int64
+	AuthorID        id.ID
+	InstallationID  id.ID
+	SendOperationID id.ID
 }
 
 type Roles struct {
