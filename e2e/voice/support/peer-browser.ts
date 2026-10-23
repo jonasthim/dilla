@@ -7,7 +7,7 @@
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
 import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Worker } from '@playwright/test';
-import { copy, recordNotifications } from '../../web/support/app';
+import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNotifications } from '../../web/support/app';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -255,7 +255,9 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
   return {
     cspViolations, consoleErrors, pageErrors,
     async attach(context: BrowserContext): Promise<void> {
-      await context.exposeBinding('__dillaCspViolation', (_source, v: CspViolation) => { cspViolations.push(v); });
+      await context.exposeBinding('__dillaCspViolation', (_source, v: CspViolation) => {
+        if (!isFirefoxBrowserFaviconViolation(projectName, v)) cspViolations.push(v);
+      });
       await context.addInitScript(() => {
         document.addEventListener('securitypolicyviolation', (e) => {
           (window as unknown as { __dillaCspViolation(v: unknown): void }).__dillaCspViolation({
@@ -265,7 +267,8 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
       });
       context.on('console', (m) => {
         const resourceLine = projectName === 'chromium-voice' && BY_DESIGN_RESOURCE_LINE.test(m.text());
-        if (m.type() === 'error' && !resourceLine && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
+        const firefoxFavicon = projectName.startsWith('firefox') && FIREFOX_FAVICON_LINE.test(m.text());
+        if (m.type() === 'error' && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
       });
       context.on('weberror', (e) => { pageErrors.push(String(e.error())); });
       context.on('page', watchPage);
