@@ -62,14 +62,6 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 		cfg = logOnlyModerationConfig()
 		revision = 0
 	}
-	for _, rule := range []moderation.Rule{moderation.RuleRate, moderation.RuleDuplicate, moderation.RuleMentions} {
-		if cfg.Actions[rule] == moderation.ActionWarn || cfg.Actions[rule] == moderation.ActionTimeout {
-			if logger != nil {
-				logger.Warn("bot automatic moderation action is unsupported and will be log-only", "installation_id", installation.String(), "rule", string(rule))
-			}
-			cfg.Actions[rule] = moderation.ActionLog
-		}
-	}
 	var authority service.ModerationActorAuthority
 	if cfg.Enabled {
 		resolved, authorityErr := service.NewCommunityActorAuthority(session, community, nil)
@@ -79,22 +71,14 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 		authority = resolved
 	}
 	var backend service.ModerationEnforcementBackend
-	if cfg.Enabled {
-		for _, action := range cfg.Actions {
-			if action != moderation.ActionRemove {
-				continue
+	if cfg.Enabled && moderationBackendRequired(cfg) {
+		backend, err = service.NewModerationRemovalBackend(n, session)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("bot moderation enforcement unavailable; keeping rules log-only", "installation_id", installation.String())
 			}
-			backend, err = service.NewModerationRemovalBackend(n, session)
-			if err != nil {
-				if logger != nil {
-					logger.Warn("bot moderation removal unavailable; keeping rules log-only", "installation_id", installation.String())
-				}
-				for _, rule := range []moderation.Rule{moderation.RuleRate, moderation.RuleDuplicate, moderation.RuleMentions} {
-					cfg.Actions[rule] = moderation.ActionLog
-				}
-				backend = nil
-			}
-			break
+			setModerationActionsLogOnly(&cfg)
+			backend = nil
 		}
 	}
 	sink, err := service.NewModerationCaseSink(n, backend, nil)
@@ -103,6 +87,26 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 	}
 	runtime, replayThrough, replayReceivedThrough, err := state.Configure(ctx, n, installation, community, revision, cfg, authority, sink)
 	return runtime, replayThrough, replayReceivedThrough, sink, err
+}
+
+func moderationBackendRequired(cfg moderation.Config) bool {
+	for _, action := range cfg.Actions {
+		if action == moderation.ActionRemove || action == moderation.ActionWarn || action == moderation.ActionTimeout {
+			return true
+		}
+	}
+	return false
+}
+
+func setModerationActionsLogOnly(cfg *moderation.Config) {
+	if cfg == nil {
+		return
+	}
+	for rule, action := range cfg.Actions {
+		if action == moderation.ActionRemove || action == moderation.ActionWarn || action == moderation.ActionTimeout {
+			cfg.Actions[rule] = moderation.ActionLog
+		}
+	}
 }
 
 func (s *autoModerationEventState) Configure(ctx context.Context, source groupEventHighWaterSource, installation, community id.ID, revision uint64,

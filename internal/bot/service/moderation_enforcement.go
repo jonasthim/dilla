@@ -125,6 +125,9 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 			receipt, err = b.session.AcceptModerationRemoval(ctx, group, signed)
 		}
 		if err != nil {
+			if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && apiErr.Code == "E_FORBIDDEN" {
+				return AcceptedModerationAction{}, ErrModerationActionRefused
+			}
 			return AcceptedModerationAction{}, err
 		}
 		if receipt.ActionID.IsZero() || receipt.Revision == 0 || receipt.Revision > math.MaxInt64 {
