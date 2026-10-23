@@ -55,7 +55,7 @@ func TestOpusStarterBridgesBoundedPCMEoFToOpusWithoutPublisher(t *testing.T) {
 		Capacity: 100,
 		Encoder:  encode.Options{FFmpegPath: ffmpeg},
 	}
-	track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=aqz-KE-bpKQ"}
+	track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "aqz-KE-bpKQ"}
 	// Construction and metadata validation remain inert; this explicit call owns
 	// only PCM decoding and Opus encoding. It never creates a LiveKit publisher.
 	session, err := starter.Start(context.Background(), track)
@@ -94,14 +94,17 @@ func TestOpusStarterCancellationClosesBoundedPCMSource(t *testing.T) {
 	started := make(chan struct{})
 	closed := make(chan struct{})
 	starter := OpusStarter{
-		PCM: pcmStarterFunc(func(context.Context, string) (io.ReadCloser, error) {
+		PCM: pcmStarterFunc(func(_ context.Context, source string) (io.ReadCloser, error) {
 			close(started)
+			if source != "https://www.youtube.com/watch?v=aqz-KE-bpKQ" {
+				return nil, ErrInvalidInput
+			}
 			return &testBlockingPCM{closed: closed}, nil
 		}),
 		Capacity: 1,
 		Encoder:  encode.Options{StallTimeout: time.Hour},
 	}
-	session, err := starter.Start(ctx, music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=aqz-KE-bpKQ"})
+	session, err := starter.Start(ctx, music.Track{Provider: music.ProviderYouTube, CanonicalID: "aqz-KE-bpKQ"})
 	if err != nil {
 		t.Fatal(err)
 	}

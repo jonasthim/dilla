@@ -54,6 +54,9 @@ type MusicInteractions struct {
 	// CurrentState exposes the retained supervisor's live state. The handler
 	// accepts it only when its revision still matches the durable store row.
 	CurrentState musicRuntimeStateReader
+	// Now makes the write-boundary expiry check deterministic in tests. Nil uses
+	// the system clock.
+	Now func() time.Time
 	// OnPersistedSnapshot applies the exact state returned by a successful CAS
 	// commit. The liveResume flag is true only for an explicit Resume operation.
 	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error)
@@ -237,6 +240,16 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	}
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
+	}
+	if req.Expires != nil {
+		now := time.Now
+		if h.Now != nil {
+			now = h.Now
+		}
+		currentTime := now().Unix()
+		if currentTime >= 0 && *req.Expires <= uint64(currentTime) {
+			return InteractionResult{Status: interactionStatusExpired}, nil
+		}
 	}
 	saved, err := h.Store.Save(ctx, channel, snapshot.Revision, next)
 	if errors.Is(err, persistence.ErrConflict) || errors.Is(err, music.ErrRevisionConflict) {

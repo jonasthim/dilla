@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
@@ -16,13 +17,17 @@ import (
 )
 
 type musicInteractionResolverFake struct {
-	tracks []music.Track
-	err    error
-	inputs []string
+	tracks    []music.Track
+	err       error
+	inputs    []string
+	onResolve func()
 }
 
 func (r *musicInteractionResolverFake) Resolve(_ context.Context, input string) ([]music.Track, error) {
 	r.inputs = append(r.inputs, input)
+	if r.onResolve != nil {
+		r.onResolve()
+	}
 	return append([]music.Track(nil), r.tracks...), r.err
 }
 
@@ -379,6 +384,23 @@ func TestMusicEnqueueRequiresFinalCallAndDJRecheckAfterResolution(t *testing.T) 
 				t.Fatalf("enqueue after %s change result=%+v err=%v saves=%d, want refused before persistence", change, result, err, store.saves)
 			}
 		})
+	}
+}
+
+func TestMusicEnqueueRejectsExpiredRequestAfterSlowResolution(t *testing.T) {
+	channel, community := interactionID(115), interactionID(112)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	now := time.Unix(1000, 0)
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"}}, onResolve: func() {
+		now = time.Unix(1030, 0)
+	}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver, Now: func() time.Time { return now }}
+	expires := uint64(1030)
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Expires: &expires, Args: []any{"one song"}}
+	result, err := h.handle(context.Background(), InteractionActor{User: interactionID(118)}, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != interactionStatusExpired || store.saves != 0 || len(store.snapshot.State.Queue) != 0 {
+		t.Fatalf("late enqueue result=%+v err=%v saves=%d queue=%d, want expired with no mutation", result, err, store.saves, len(store.snapshot.State.Queue))
 	}
 }
 

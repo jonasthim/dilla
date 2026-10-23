@@ -342,7 +342,7 @@ func makeTrack(id, title, uploader string, rawDuration json.RawMessage, availabi
 	}
 	return music.Track{
 		ID: "yt:" + id, Provider: music.ProviderYouTube,
-		CanonicalID: videoURL(id), Title: title, Artist: uploader, DurationMS: duration,
+		CanonicalID: id, Title: title, Artist: uploader, DurationMS: duration,
 	}, nil
 }
 

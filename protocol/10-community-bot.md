@@ -95,7 +95,9 @@ For `music.search`, successful data is `[1, tracks]`, with at most five YouTube
 track tuples. Each tuple is `[queue_item_id, provider, canonical_track_id, title,
 artist, album, duration_ms, requester_id]`, matching the track tuple in
 `music.state`; search tuples use the resolver's stable `yt:<video-id>` ID and an
-empty requester ID. The entire data array is at most 2400 encoded bytes; if the
+empty requester ID. YouTube `canonical_track_id` is the raw 11-character video
+ID stored in the queue; the playback adapter converts it to the validated watch
+URL used by the provider. The entire data array is at most 2400 encoded bytes; if the
 provider results do not fit, the server returns the largest prefix that fits.
 `music.enqueue` accepts one search term, video URL, or playlist URL. It resolves
 at most 500 YouTube tracks and commits all descriptors in one revision-checked

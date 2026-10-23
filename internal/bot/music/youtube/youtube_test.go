@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/music"
 )
 
 func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {
@@ -62,6 +64,27 @@ func TestResolveBuildsBoundedQueueDescriptors(t *testing.T) {
 	}
 	if len(tracks) != 2 || tracks[0].ID != "yt:aqz-KE-bpKQ" || tracks[0].Provider != "youtube" || tracks[0].DurationMS != 12345 || tracks[1].DurationMS != 0 {
 		t.Fatalf("resolved descriptors = %#v", tracks)
+	}
+}
+
+func TestResolvedVideoCanonicalIDFitsDurableQueueAndPlaybackAdapter(t *testing.T) {
+	body := `{"_type":"video","extractor_key":"Youtube","id":"aqz-KE-bpKQ","title":"sample","duration":1}`
+	resolver := NonProductionMetadataResolver{
+		YTDLP: "/qualified/yt-dlp", Node: "/qualified/node",
+		runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return []byte(body), nil }),
+	}
+	tracks, err := resolver.Resolve(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("Resolve() = %#v, %v", tracks, err)
+	}
+	if tracks[0].CanonicalID != "aqz-KE-bpKQ" {
+		t.Fatalf("resolver canonical ID = %q, want raw provider ID for queue and YouTubePCM adapter", tracks[0].CanonicalID)
+	}
+	queued := tracks[0]
+	queued.ID = "queue-item-1"
+	queued.RequesterID = "member-1"
+	if _, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{queued}}); err != nil {
+		t.Fatalf("resolver-derived descriptor rejected by durable queue: %v", err)
 	}
 }
 
@@ -157,7 +180,7 @@ func TestMetadataResolverUsesProductionNetworkSandbox(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	if len(tracks) != 1 || tracks[0].CanonicalID != "https://www.youtube.com/watch?v=aqz-KE-bpKQ" {
+	if len(tracks) != 1 || tracks[0].CanonicalID != "aqz-KE-bpKQ" {
 		t.Fatalf("resolved tracks = %#v", tracks)
 	}
 }

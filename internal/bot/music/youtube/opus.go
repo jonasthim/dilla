@@ -34,8 +34,8 @@ func (s OpusStarter) Start(ctx context.Context, track music.Track) (*musicruntim
 	if ctx == nil || s.PCM == nil || track.Provider != music.ProviderYouTube {
 		return nil, ErrOpusSource
 	}
-	kind, canonical, err := NormalizeInput(track.CanonicalID)
-	if err != nil || kind != "video" || canonical != track.CanonicalID {
+	canonical, err := resolvedVideoInput(track.CanonicalID)
+	if err != nil {
 		return nil, ErrInvalidInput
 	}
 	pcm, err := s.PCM.Start(ctx, canonical)
@@ -52,4 +52,15 @@ func (s OpusStarter) Start(ctx context.Context, track music.Track) (*musicruntim
 		return nil, err
 	}
 	return encoded, nil
+}
+
+func resolvedVideoInput(value string) (string, error) {
+	if idPattern.MatchString(value) {
+		return videoURL(value), nil
+	}
+	kind, canonical, err := NormalizeInput(value)
+	if err != nil || kind != "video" || canonical != value {
+		return "", ErrInvalidInput
+	}
+	return canonical, nil
 }
