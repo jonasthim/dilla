@@ -1,6 +1,6 @@
-use crate::helper::{DispatchError, body, empty, map_client};
+use crate::helper::{body, empty, map_client, DispatchError};
 use dilla_core::{
-    cbor::{Decoder, Encoder, decode_strict},
+    cbor::{decode_strict, Decoder, Encoder},
     client::ClientCore,
 };
 use zeroize::Zeroizing;
@@ -127,7 +127,11 @@ fn interaction_send_prepare(
             &expected,
         )
         .map_err(map_client)?;
-    Ok(Zeroizing::new(out))
+    Ok(interaction_send_prepare_response(out))
+}
+
+fn interaction_send_prepare_response(out: Vec<u8>) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(body(out))
 }
 
 fn interaction_expected(
@@ -1037,6 +1041,31 @@ mod tests {
         })
         .expect("group response");
         assert_eq!(count, 1, "generic group list changed");
+    }
+
+    #[test]
+    fn interaction_send_prepare_wraps_core_result_for_group_transfer_decoder() {
+        let mut core_result = Encoder::new();
+        core_result
+            .array(2)
+            .bytes(&[0x41; 16])
+            .bytes(&[0x82, 0x00, 0x41]);
+        let core_result = core_result.into_vec();
+
+        let helper_result = interaction_send_prepare_response(core_result.clone());
+        let wrapped = decode_strict(&helper_result, |d| {
+            d.array(1)?;
+            Ok(d.bytes()?.to_vec())
+        })
+        .expect("helper response envelope");
+        assert_eq!(wrapped, core_result);
+        decode_strict(&wrapped, |d| {
+            d.array(2)?;
+            assert_eq!(d.bytes_exact::<16>()?, [0x41; 16]);
+            assert_eq!(d.bytes()?, &[0x82, 0x00, 0x41]);
+            Ok(())
+        })
+        .expect("core send result");
     }
 
     #[test]
