@@ -283,7 +283,8 @@ export function useCall(o: UseCallOptions): CallView {
   const [recentlyEnded, setRecentlyEnded] = useState<CallView['recentlyEnded']>(null);
   const recoveryRef = useRef<string | null>(null);
   /** UP11: the channel whose plain removal (no reason code) this page recovers as a lost connection; the recovery’s
-   *  attempts accept that removed phase for it. A new session clears it. */
+   *  attempts accept that removed phase for it. A new session clears it, and so does the end of its recovery (UP11 M9),
+   *  so a later recovery of the same channel never inherits it. */
   const lostRemoved = useRef<string | null>(null);
   const recoveryCameraRef = useRef(false);
   const [joining, setJoining] = useState(false);
@@ -439,7 +440,7 @@ export function useCall(o: UseCallOptions): CallView {
   const removedHold = useRef<{ timer: ReturnType<typeof setTimeout>; off: () => void } | null>(null);
   /** M2: a removal's decision in flight (its fresh read) is dropped by any later hold, join or removal. */
   const removedSeq = useRef(0);
-  const dropHold = useCallback((): void => {
+  const dropRemovedHold = useCallback((): void => {
     removedSeq.current += 1;
     const hold = removedHold.current;
     if (hold === null) return;
@@ -518,7 +519,7 @@ export function useCall(o: UseCallOptions): CallView {
    *  joins or recovers. The reason may land after the cut, so the notice waits for a fresh read of it (at most
    *  AFK_READ_WAIT_MS) and at least REMOVED_HOLD_MS for the instance's own re-read; with no reason it says `say`. */
   const sayRemoved = useCallback((id: string, say: () => void): void => {
-    dropHold();
+    dropRemovedHold();
     const settle = (): boolean => {
       const cut = cutReason(id);
       if (cut === null) return false;
@@ -541,18 +542,18 @@ export function useCall(o: UseCallOptions): CallView {
     let holding = true;
     const finish = (): void => {
       if (mine !== removedSeq.current || reading || holding) return;
-      dropHold();
+      dropRemovedHold();
       if (mounted.current && !settle()) say();
     };
     const off = client.subscribe(`afk:${cid}`, () => {
       if (mine !== removedSeq.current || cutReason(id) === null) return;
-      dropHold();
+      dropRemovedHold();
       if (mounted.current) settle();
     });
     const timer = setTimeout(() => { holding = false; finish(); }, REMOVED_HOLD_MS);
     removedHold.current = { timer, off };
     void readAfk(cid).then(() => { reading = false; finish(); });
-  }, [client, reasonCommunity, cutReason, afkNameFor, readAfk, dropHold]);
+  }, [client, reasonCommunity, cutReason, afkNameFor, readAfk, dropRemovedHold]);
   /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
    *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
    *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
@@ -698,7 +699,7 @@ export function useCall(o: UseCallOptions): CallView {
    *  AFK channel is never joined; the person's press on one is `goAway` (joinOnly), and nothing else asks for one. */
   /** `resume` (UP7, Q1 = B): a held restore's attempt, through the session's fast path and its gate. */
   const join = useCallback((id: string, made?: AudioContext | null, resume?: HeldResume) => {
-    dropHold();
+    dropRemovedHold();
     if (isAfk(id)) { closeContext(made); return; }
     if (recoveryRef.current !== null && recoveryRef.current !== id) {
       recoveryRef.current = null;
@@ -837,7 +838,7 @@ export function useCall(o: UseCallOptions): CallView {
     })();
     startDone.current = run;
     void run;
-  }, [deps, client, attach, detach, selfNow, watchSelf, dropHold, isAfk]);
+  }, [deps, client, attach, detach, selfNow, watchSelf, dropRemovedHold, isAfk]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /**
@@ -987,6 +988,7 @@ export function useCall(o: UseCallOptions): CallView {
     recoveryWindow.current = null;
     recoveryGoneFrom.current = null;
     recoveryHeld.current = null;
+    lostRemoved.current = null;
     // UP7: the recovery gives up: the group the worker holds for it is let go (callRelease, its one self-Remove). A start
     // in flight (a gate that refused) has already left its group.
     if (sessionRef.current === null && !starting.current) void client.call({ m: 'callRelease' }).catch(() => undefined);
@@ -1027,7 +1029,7 @@ export function useCall(o: UseCallOptions): CallView {
    * joined afresh, which this budget includes.
    */
   /** UP7 fix round 1: a held restore whose hold has expired becomes an ordinary restore with the saved absence. */
-  const dropHeld = useCallback((id: string, held: HeldRestore): void => {
+  const endHeldRestore = useCallback((id: string, held: HeldRestore): void => {
     if (recoveryRef.current !== id || recoveryHeld.current !== held) return;
     recoveryHeld.current = null;
     recoveryGoneFrom.current = { at: stampOfWall(held.gone), suspend: false };
@@ -1044,7 +1046,7 @@ export function useCall(o: UseCallOptions): CallView {
         const expired = answer.resumed ? answer.expired : Date.now() - held.at > HOLD_MS;
         // UP7 fix round 1: an expired hold leaves the fast path for good. Later attempts read first and join only on a
         // clear read (the ordinary restore), from the saved absence, so an unknown read never churns joins.
-        if (expired) dropHeld(id, held);
+        if (expired) endHeldRestore(id, held);
         if (!expired && verdict === 'leftAway') verdict = awayAfter(id, null) ? 'away' : 'clear';
         if (verdict === 'clear' || (verdict === 'unknown' && !expired)) return;
         gate.refused = verdict;
@@ -1054,9 +1056,9 @@ export function useCall(o: UseCallOptions): CallView {
       mark: (name) => { resumeMark(name); },
     };
     return gate;
-  }, [instanceGone, awayAfter, dropHeld]);
-  const dropHeldRef = useRef(dropHeld);
-  dropHeldRef.current = dropHeld;
+  }, [instanceGone, awayAfter, endHeldRestore]);
+  const endHeldRestoreRef = useRef(endHeldRestore);
+  endHeldRestoreRef.current = endHeldRestore;
   const resumeOfRef = useRef(resumeOf);
   resumeOfRef.current = resumeOf;
   const restore = useCallback((id: string, camera: boolean, sharing: boolean, held: HeldRestore | null = null) => {
@@ -1435,6 +1437,7 @@ export function useCall(o: UseCallOptions): CallView {
         if (phase === 'removed' && removedCode === 'E_CALL_ENDED') { endRecoveryRef.current(recoveryChannelId, 'gone'); return; }
         recoveryRef.current = null;
         recoveryHeld.current = null;
+        lostRemoved.current = null;
         setRecoveryChannelId(null);
         // UP7: whatever the worker still holds for it is let go.
         if (sessionRef.current === null && !starting.current) void client.call({ m: 'callRelease' }).catch(() => undefined);
@@ -1448,7 +1451,7 @@ export function useCall(o: UseCallOptions): CallView {
       // UP7 (Q1 = B): a held restore's attempts resume through the gate, its AFK read in parallel with the resume.
       const held = recoveryHeld.current;
       // UP7 fix round 1: past HOLD_MS by the page's clock the hold is expired whatever the worker would say: read first.
-      if (held !== null && Date.now() - held.at > HOLD_MS) dropHeldRef.current(recoveryChannelId, held);
+      if (held !== null && Date.now() - held.at > HOLD_MS) endHeldRestoreRef.current(recoveryChannelId, held);
       else if (held !== null) { launched = true; joinRef.current(recoveryChannelId, undefined, resumeOfRef.current(recoveryChannelId, held)); return; }
       // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
       // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.

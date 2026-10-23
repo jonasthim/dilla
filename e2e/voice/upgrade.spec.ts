@@ -304,6 +304,7 @@ test(`${COMPAT ? 'compat: ' : ''}calls survive an upgrade: API-only restarts, an
       const before = groupRows(DB, voice);
       const callsFrom = await Promise.all(pages.map(async (page) => (await history(page)).calls.length));
       const joinsFrom = await Promise.all(pages.map(async (page) => (await history(page)).joins.length));
+      const leftAwayFrom = await Promise.all(pages.map(async (page) => (await history(page)).leftAway.length));
       const reqFrom = peers.map((p) => p.requests.length);
       const replayFrom = await replays();
       const stopAt = Date.now();
@@ -387,7 +388,9 @@ test(`${COMPAT ? 'compat: ' : ''}calls survive an upgrade: API-only restarts, an
         // UP7b fix round 1 (I3): exactly one call start per page for its one resume; a double start fails here.
         expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === `/v1/channels/${voice}/calls` && r.status >= 200 && r.status < 300).length,
           `${p.name}: back through exactly one start`).toBe(1);
-        expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'PUT' && /\/afk\/away$/.test(r.path)), `${p.name}: no leftAway`).toEqual([]);
+        // Final review client M5: a leftAway end sends no request, only its notice, so the notice is what is checked.
+        expect((await history(pages[i])).leftAway.slice(leftAwayFrom[i]), `${p.name}: no "You left the call while away." notice`).toEqual([]);
+        expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'PUT' && /\/afk\/away$/.test(r.path)), `${p.name}: not reported away`).toEqual([]);
       }
       const settled = groupRows(DB, voice);
       expect(resumers, 'at least the first device back resumed').toBeGreaterThan(0);
@@ -404,14 +407,16 @@ test(`${COMPAT ? 'compat: ' : ''}calls survive an upgrade: API-only restarts, an
       await allHear();
       // UP6c (protocol/05 N1): no listener refused a frame as a replay since the drop. The resumer sealed in a fresh epoch
       // of its own commit, never from seq 0 again under the held epoch's KID. A worker that lived through the drop is
-      // read as a difference from its count before it.
+      // read as a difference from its count before it. Final review client M5: in A2 every page's LiveKit session ended,
+      // so senders and listeners all run fresh media workers with empty replay windows, and this check cannot fail here:
+      // it is a smoke check, not N1 evidence. update-resume.spec.ts, whose listener survives the reload, proves N1.
       const replayAfter = await replays();
       const replayA2 = Object.fromEntries(replayAfter.map((r, i) => {
         const same = r.worker !== null && r.worker === replayFrom[i].worker;
         return [peers[i].name, { replay: r.replay === null ? null : r.replay - (same ? replayFrom[i].replay ?? 0 : 0), sameWorker: same }];
       }));
       timings['A2.replay'] = replayA2;
-      for (const p of peers) expect(replayA2[p.name].replay, `${p.name}: no frame refused as a replay since the drop`).toBe(0);
+      for (const p of peers) expect(replayA2[p.name].replay, `${p.name}: no frame refused as a replay since the drop (fresh workers: a smoke check)`).toBe(0);
       const resumeCommits = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && /\/commit$/.test(r.path) && r.at < allBackAt).map((r) => r.status));
       timings['A2.resumeCommits'] = Object.fromEntries(peers.map((p, i) => [p.name, resumeCommits[i]]));
       // The first back's group requests in order (ms from the answer): which of its commits is the engine's elected one

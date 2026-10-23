@@ -342,6 +342,10 @@ stays ended and has to be started again. A community voice channel usually reope
 about two minutes after dilla detects the update); otherwise press **join voice**. If your connection stays down for longer than the server's inactive timeout, you see "You left the call while away." and
 press **join voice**, as before.
 
+One exception: if your device was away (asleep or offline) and the page reloads for an update in the few seconds after
+it wakes, before it has rejoined, the reloaded page can put you back in the call instead of saying "You left the call
+while away.". Leave the call if you did not mean to be in it.
+
 ## When voice stops or pauses
 
 ### A contact's identity changed

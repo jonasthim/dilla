@@ -18,6 +18,9 @@ export interface UpgradeRecord {
   dock: { at: number; phase: string }[];
   conn: { at: number; status: string }[];
   joins: { at: number; resumed: boolean }[];
+  /** Final review client M5: each time the page began to show "You left the call while away." (voice.leftWhileAway, the
+   *  notice endRecovery('leftAway') sets; it sends no request). */
+  leftAway: number[];
   requests: { at: number; method: string; path: string; status: number }[];
 }
 
@@ -25,17 +28,24 @@ export interface UpgradeRecord {
  *  (iceTransportPolicy 'relay'), as a client behind a UDP-blocking firewall. Times are performance.timeOrigin +
  *  performance.now(), never Date.now(), which the spec moves. */
 export function installUpgradeRecorder(relay: boolean): void {
-  type Rec = { calls: unknown[]; conn: unknown[]; joins: unknown[]; dock: { at: number; phase: string }[]; pcs: RTCPeerConnection[] };
+  type Rec = { calls: unknown[]; conn: unknown[]; joins: unknown[]; dock: { at: number; phase: string }[]; leftAway: number[]; pcs: RTCPeerConnection[] };
   const w = window as unknown as { __up9?: Rec };
   if (w.__up9 !== undefined) return;
   const now = () => performance.timeOrigin + performance.now();
-  const rec: Rec = { calls: [], conn: [], joins: [], dock: [], pcs: [] };
+  const rec: Rec = { calls: [], conn: [], joins: [], dock: [], leftAway: [], pcs: [] };
   w.__up9 = rec;
   // The dock's session phase, sampled every 50 ms (its changes only).
   setInterval(() => {
     const phase = document.querySelector('.dw-voice-dock .d-voice-dock')?.getAttribute('data-phase') ?? '';
     if (rec.dock.at(-1)?.phase !== phase) rec.dock.push({ at: now(), phase });
   }, 50);
+  // The leftAway notice (en.ts 'voice.leftWhileAway'), sampled every 250 ms: each time it begins to show.
+  let leftAwayShown = false;
+  setInterval(() => {
+    const shown = document.body?.textContent?.includes('You left the call while away.') === true;
+    if (shown && !leftAwayShown) rec.leftAway.push(now());
+    leftAwayShown = shown;
+  }, 250);
   const NativeWorker = window.Worker;
   class UpgradeWorker extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
@@ -81,11 +91,11 @@ export function recordRequests(context: BrowserContext, out: UpgradeRecord['requ
   });
 }
 
-/** The page's history so far (`calls`, `conn`, `joins`). */
+/** The page's history so far (`calls`, `conn`, `joins`, `dock`, `leftAway`). */
 export async function history(page: Page): Promise<Omit<UpgradeRecord, 'requests'>> {
   return page.evaluate(() => {
     const r = (window as unknown as { __up9: Omit<UpgradeRecord, 'requests'> }).__up9;
-    return { calls: [...r.calls], conn: [...r.conn], joins: [...r.joins], dock: [...r.dock] };
+    return { calls: [...r.calls], conn: [...r.conn], joins: [...r.joins], dock: [...r.dock], leftAway: [...r.leftAway] };
   });
 }
 
