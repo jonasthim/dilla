@@ -396,7 +396,7 @@ fn managed_kind3_participant_message_is_journaled_with_actor_and_revocation_supp
         deleted: false,
         class: None,
     };
-    bot.group_apply(&GROUP, &[0x80], &encode_message(&row), source_seq)
+    bot.bot_apply_interaction_group(&GROUP, &signed, &expected, &[0x80], &encode_message(&row), source_seq)
         .expect("accept participant sync row");
     let page = bot.bot_events_read(0, 10).expect("drain journal");
     assert_eq!(
@@ -432,7 +432,7 @@ fn managed_kind3_participant_message_is_journaled_with_actor_and_revocation_supp
         deleted: false,
         class: None,
     };
-    bot.group_apply(&GROUP, &[0x80], &encode_message(&second_row), second_seq)
+    bot.bot_apply_interaction_group(&GROUP, &signed, &expected, &[0x80], &encode_message(&second_row), second_seq)
         .expect("accept second row");
     let mut revoked = participant.list.clone();
     revoked.unsigned.version = 2;
