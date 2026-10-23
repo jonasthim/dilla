@@ -110,8 +110,9 @@ impl ClientCore {
     }
 
     /// The group, from the cache or loaded from the store. A loaded group must be the one its
-    /// row describes: its MLS group id and its binding's community, target and kind equal the
-    /// row's. Otherwise `E_CORE_STATE` and nothing is cached; the caller repairs the row with a
+    /// row describes: its MLS group id and its authenticated binding match the row and, for an
+    /// interaction group, this identity's instance/user/device. Otherwise `E_CORE_STATE` and
+    /// nothing is cached; the caller repairs the row with a
     /// resync (`group_join_external`, states 2 and 3), which replaces the stored group. The cache
     /// only ever holds a group that passed this check or that a join of this core wrote.
     fn take_group(&mut self, group_id: &[u8; 16]) -> Result<Option<DillaGroup>, ClientError> {
@@ -122,10 +123,11 @@ impl ClientCore {
             return Ok(None);
         };
         let row = self.read(|c| groups::group_row(c, group_id))?;
-        if let Some(row) = row
-            && !matches_row(&group, group_id, &row)
-        {
-            return Err(mismatched());
+        if let Some(row) = row {
+            let own = self.own()?;
+            if !matches_row(&group, group_id, &row, &own) {
+                return Err(mismatched());
+            }
         }
         Ok(Some(group))
     }
@@ -264,9 +266,9 @@ impl ClientCore {
     }
 }
 
-/// Whether a loaded group is the one its row describes: its MLS group id, authenticated kind,
-/// target and community equal the row's.
-fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) -> bool {
+/// Whether a loaded group is the one its row describes: its MLS group id and authenticated
+/// binding match the row, including this identity's participant tuple for interaction groups.
+fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow, own: &Own) -> bool {
     if group.group_id().as_slice() != group_id {
         return false;
     }
@@ -275,6 +277,7 @@ fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) 
             return false;
         };
         return row.kind == i64::from(crate::mls::GroupKind::Interaction.as_u8())
+            && interaction_binding_matches_own(&binding, own)
             && binding.bot_user_id.as_slice() == row.target_id.as_slice()
             && binding.community_id.as_bytes().as_slice()
                 == row.community_id.as_deref().unwrap_or_default();
@@ -292,6 +295,73 @@ fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) 
             .as_ref()
             .map(|c| c.as_bytes().as_slice())
             == row.community_id.as_deref()
+}
+
+fn interaction_binding_matches_own(
+    binding: &crate::mls::DillaInteractionBinding,
+    own: &Own,
+) -> bool {
+    binding.instance_id.as_bytes() == &own.instance_id
+        && binding.participant_user_id.as_slice() == own.user_id
+        && binding.participant_device_id.as_bytes() == &own.device_id
+}
+
+#[cfg(test)]
+mod interaction_reload_tests {
+    use super::{Own, interaction_binding_matches_own};
+    use crate::{
+        ids::{CommunityId, DeviceId, InstanceId},
+        mls::DillaInteractionBinding,
+    };
+
+    fn binding() -> DillaInteractionBinding {
+        DillaInteractionBinding {
+            instance_id: InstanceId::from_bytes([1; 16]),
+            bot_user_id: [2; 16],
+            installation_id: [3; 16],
+            community_id: CommunityId::from_bytes([4; 16]),
+            participant_user_id: [5; 16],
+            participant_device_id: DeviceId::from_bytes([6; 16]),
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: 1,
+        }
+    }
+
+    fn own() -> Own {
+        Own {
+            instance_id: [1; 16],
+            user_id: [5; 16],
+            device_id: [6; 16],
+            dsk_pub: [0; 32],
+            credential: Vec::new(),
+            kind: 1,
+            tier: 1,
+        }
+    }
+
+    #[test]
+    fn interaction_reload_binding_must_belong_to_this_instance_user_and_device() {
+        let mut b = binding();
+        assert!(interaction_binding_matches_own(&b, &own()));
+        b.instance_id = InstanceId::from_bytes([9; 16]);
+        assert!(
+            !interaction_binding_matches_own(&b, &own()),
+            "wrong instance"
+        );
+        b = binding();
+        b.participant_user_id = [9; 16];
+        assert!(
+            !interaction_binding_matches_own(&b, &own()),
+            "wrong participant user"
+        );
+        b = binding();
+        b.participant_device_id = DeviceId::from_bytes([9; 16]);
+        assert!(
+            !interaction_binding_matches_own(&b, &own()),
+            "wrong participant device"
+        );
+    }
 }
 
 fn mismatched() -> ClientError {

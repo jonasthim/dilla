@@ -131,7 +131,26 @@ fn a_registration_that_lost_is_discarded_and_leaves_nothing() {
             &instance.public(),
         )
         .expect("create");
+    a.probe
+        .lock()
+        .expect("probe")
+        .execute(
+            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
+            rusqlite::params![GROUP.as_slice(), [0x77u8; 16].as_slice()],
+        )
+        .expect("record interaction response claim");
     a.core.group_discard(&GROUP).expect("discard");
+    let remaining: i64 = a
+        .probe
+        .lock()
+        .expect("probe")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("query discarded response claims");
+    assert_eq!(remaining, 0, "discard removes durable claims for the group");
     assert!(groups(&a.core).is_empty());
     assert_eq!(code(a.core.group_discard(&GROUP)), "E_CORE_NOT_FOUND");
 

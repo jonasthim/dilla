@@ -238,7 +238,7 @@ impl ClientCore {
         }
         let group = DillaGroup::load(&self.provider, &GroupId::from_slice(id))?
             .ok_or_else(|| ClientError::new(E_CORE_NOT_FOUND, ""))?;
-        if !super::matches_row(&group, id, row) {
+        if !super::matches_row(&group, id, row, &self.own()?) {
             return Err(super::mismatched());
         }
         Ok(slot.insert(group))
