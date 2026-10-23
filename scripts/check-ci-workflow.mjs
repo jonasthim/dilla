@@ -13,6 +13,7 @@ export const REQUIRED_JOBS = [
   'rust-native',
   'rust-wasm-node',
   'rust-wasi',
+  'spotify-helper',
   'vectors',
   'browser-spike',
   'browser-media',
@@ -170,6 +171,12 @@ const REQUIRED_STEPS = {
     'name: dilla-core-wasi',
     'path: target/wasm32-wasip1/release/dilla_core_wasi.wasm',
     'if-no-files-found: error',
+  ],
+  'spotify-helper': [
+    'cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check',
+    'cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings',
+    'cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked',
+    'cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked',
   ],
   // The repository's pattern is that every scripts/check-*.mjs gate runs its own unit tests in the
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
@@ -834,8 +841,8 @@ export function checkWorkflow(root) {
  * 23 pin, the size profile, the placeholder guard), and it uses only actions ci.yml uses at the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'spotify-helper', 'go-release', 'release'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -855,6 +862,12 @@ const RELEASE_STEPS = {
     'name: dilla-web-dist',
   ],
   'rust-wasi': REQUIRED_STEPS['rust-wasi'],
+  'spotify-helper': [
+    ...REQUIRED_STEPS['spotify-helper'],
+    'name: dilla-spotify-helper-${{ matrix.arch }}',
+    'path: dist/dilla-spotify-helper-linux-${{ matrix.arch }}',
+    'if-no-files-found: error',
+  ],
   'go-release': [
     // v0.1.0-web3.1: the tag job's version is stamped into main.Version, and the stamp is checked on both binaries.
     'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-amd64 ./cmd/dillad',
@@ -866,6 +879,8 @@ const RELEASE_STEPS = {
   ],
   release: [
     'cp deploy/install.sh release/install.sh',
+    'pattern: dilla-spotify-helper-*',
+    'merge-multiple: true',
     // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
     `sed -i "s/^DILLA_RELEASE_TAG=\\"\\"$/DILLA_RELEASE_TAG=\\"$TAG\\"/" release/install.sh`,
     'test "$(grep -c "^DILLA_RELEASE_TAG=\\"$TAG\\"$" release/install.sh)" -eq 1',
@@ -878,7 +893,7 @@ const RELEASE_STEPS = {
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
@@ -918,6 +933,11 @@ export function checkReleaseWorkflow(root) {
   }
 
   const jobs = splitJobs(text);
+  if (!/runner: ubuntu-24\.04-arm/.test(jobs['spotify-helper'] ?? '')
+    || !/arch: arm64/.test(jobs['spotify-helper'] ?? '')
+    || !/arch: amd64/.test(jobs['spotify-helper'] ?? '')) {
+    problems.push(`${file}: job "spotify-helper" must build native amd64 and arm64 assets`);
+  }
   for (const name of RELEASE_JOBS) {
     if (!(name in jobs)) {
       problems.push(`${file}: missing job "${name}"`);

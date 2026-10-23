@@ -147,6 +147,13 @@ jobs:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
           if-no-files-found: error
+  spotify-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
+      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
   vectors:
     runs-on: ubuntu-latest
     steps:
@@ -1617,6 +1624,13 @@ test('the real release workflow passes every rule', () => {
   assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
 });
 
+test('the release Spotify helper must be built for arm64', () => {
+  assertReported(
+    releaseProblems((t) => t.replace('runner: ubuntu-24.04-arm', 'runner: ubuntu-latest')),
+    'build native amd64 and arm64 assets',
+  );
+});
+
 test('a release workflow without the release job is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/\n {2}release:\n[\s\S]*$/, '\n')), 'missing job "release"');
 });
@@ -1627,7 +1641,7 @@ test('a release that no longer attaches install.sh is reported', () => {
 
 test('SHA256SUMS that leaves an asset out is reported', () => {
   assertReported(
-    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
+    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla-spotify-helper-linux-amd64 dilla-spotify-helper-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
     '> SHA256SUMS',
   );
 });

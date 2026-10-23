@@ -424,8 +424,9 @@ Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 
 `deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as
 root, with no Docker: it runs the static `dillad` binary as the two systemd services above. Every
-release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, `dilla_core_wasi.wasm` and
-`SHA256SUMS`, with the release's own tag stamped into it. So the `install.sh` of a release installs
+release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, the two architecture-matched
+`dilla-spotify-helper-linux-*` binaries, `dilla_core_wasi.wasm` and `SHA256SUMS`, with the release's
+own tag stamped into it. So the `install.sh` of a release installs
 that release, and there is no "latest". Download it from the release you want, read it, then run it
 in one of two modes. The examples use the tag `v0.1.0-web3`; take yours from the
 [releases page](https://github.com/jonasthim/dilla/releases).
@@ -449,12 +450,13 @@ What it does, in order:
 
 1. It checks every argument against what dillad accepts. It refuses to run as anyone but root, and
    refuses if `/etc/dilla/dilla.toml` or a non-empty `/var/lib/dillad` already holds an instance.
-2. It downloads `dillad-linux-<amd64|arm64>` (by `uname -m`), `dilla_core_wasi.wasm` and
-   `SHA256SUMS` from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
+2. It downloads `dillad-linux-<amd64|arm64>`, the matching `dilla-spotify-helper-linux-<amd64|arm64>`,
+   `dilla_core_wasi.wasm` and `SHA256SUMS` from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
    what is missing of `curl` and `ca-certificates`. Every downloaded file is checked with
    `sha256sum -c` before anything is installed. Any of these stops it: a mismatch, an empty
-   `SHA256SUMS`, or one without a line for either asset.
-3. It installs the binary, the core beside it and the unit, and creates the `dillad` user.
+   `SHA256SUMS`, or one without a line for an asset.
+3. It installs `dillad`, the core beside it, the Spotify helper at `/usr/local/libexec/dilla-spotify-helper`,
+   the unit, and creates the `dillad` user.
 4. It runs `dillad init --config=/etc/dilla/dilla.toml` and edits that file for the mode. In both modes it sets
    `livekit.udp_port` (`--udp-port`, 7882) and `livekit.node_ip` (`--node-ip`, when given).
    - `--behind-proxy` sets:
@@ -620,8 +622,8 @@ stdout is the bootstrap invite link and nothing else; every progress line goes t
 - **Flags.** The container flags (`--ctid`, `--hostname`, `--bridge`, `--storage`,
   `--template-storage`) stay on the host. The mode flags, `--version`, `--release-url`,
   `--udp-port`, `--node-ip` and `--insecure-skip-verify` are passed to `install.sh`.
-- **Files.** `--binary`, `--core` and `--sums` are pushed into the container first. Anything not
-  given locally is downloaded and checked inside the container.
+- **Files.** `--binary`, `--core`, `--spotify-helper` and `--sums` are pushed into the container
+  first. Anything not given locally is downloaded and checked inside the container.
 - **Failures.** If the install fails after the container was created, the helper prints the
   `pct stop`/`pct destroy` commands that remove it.
 
@@ -634,10 +636,14 @@ and run `install.sh` inside it directly.
 
 ### Dilla Bot operator status
 
-The current `install.sh` release installs `dillad` only. `deploy/dillabot.service` is a systemd
-unit fragment, not a Bot installer: no release flow currently creates the `dillabot` account,
-installs the Bot binary, native helper or WASI module, provisions `/etc/dilla/bot.toml` and its
-runtime credential, or enables the unit. Do not treat copying the unit as a supported installation.
+The current `install.sh` release installs `dillad` and the optional Spotify PCM helper at
+`/usr/local/libexec/dilla-spotify-helper`. `deploy/dillabot.service` is a systemd unit fragment,
+not a Bot installer: no release flow currently creates the `dillabot` account, installs the Bot
+binary, native identity helper or WASI module, provisions `/etc/dilla/bot.toml` and its runtime
+credential, or enables the unit. Do not treat copying the unit as a supported Bot installation.
+For an offline or locally built server install, pass `--spotify-helper FILE` with `--sums FILE`
+(or explicitly use `--insecure-skip-verify`) to install the architecture-matched helper. The
+installer places it at the same path.
 
 `dillabot doctor --config=/etc/dilla/bot.toml` checks the owner-only runtime credential, native
 identity helper, compiled WASI identity module, optional Spotify PCM helper and private state
@@ -650,12 +656,14 @@ sudo -u dillabot dillabot doctor --config=/etc/dilla/bot.toml
 This is a local dependency check. It does not contact the Dilla server, prove that an installation
 is reconciled, or establish that Bot interactions or music are usable. `systemctl status dillabot`
 and `journalctl -u dillabot` show process and reconciliation status. Queue metadata restores
-paused. To enable the Spotify PCM starter, configure `spotify_client_id`,
-`spotify_redirect_url` and the absolute `spotify_helper_executable` path in `bot.toml`; Spotify
-authorization remains in Dilla server settings. The child receives its short-lived access token
-through inherited file descriptor 3, while its arguments contain only the canonical track URI.
-This wiring and its synthetic subprocess tests do not qualify real Spotify playback. Do not put
-provider credentials in command arguments or logs.
+paused. Spotify OAuth settings (`spotify_client_id` and `spotify_redirect_url`) may be configured
+without the PCM helper; that keeps authorization available while Spotify PCM playback remains
+unavailable. To enable PCM playback, configure the same OAuth pair and the absolute
+`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path in `bot.toml`;
+Spotify authorization remains in Dilla server settings. The child receives its short-lived access
+token through inherited file descriptor 3, while its arguments contain only the canonical track
+URI. This wiring and its synthetic subprocess tests do not qualify real Spotify playback. Do not
+put provider credentials in command arguments or logs.
 
 The service uses `/etc/dilla/bot.toml`, the owner-only runtime-credential file named by that config,
 and private state under `/var/lib/dillabot`. Per-installation state includes `database.key` and an

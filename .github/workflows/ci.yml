@@ -170,6 +170,15 @@ jobs:
           path: target/release/dilla-testkit
           if-no-files-found: error
 
+  spotify-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
+      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
+
   rust-wasi:
     runs-on: ubuntu-latest
     steps:

@@ -83,8 +83,8 @@ func loadConfig(path string) (config, error) {
 			parseErr != nil || redirect.Scheme != "https" || redirect.Host == "" || redirect.User != nil || redirect.Fragment != "" || len(c.SpotifyRedirectURL) > 2048 {
 			errs = append(errs, errors.New("spotify_client_id and spotify_redirect_url must form a valid HTTPS OAuth pair"))
 		}
-		if c.SpotifyHelperExecutable == "" || !filepath.IsAbs(c.SpotifyHelperExecutable) {
-			errs = append(errs, errors.New("spotify_helper_executable must be an absolute path when Spotify is configured"))
+		if c.SpotifyHelperExecutable != "" && !filepath.IsAbs(c.SpotifyHelperExecutable) {
+			errs = append(errs, errors.New("spotify_helper_executable must be an absolute path"))
 		}
 	} else if c.SpotifyHelperExecutable != "" {
 		errs = append(errs, errors.New("spotify_helper_executable requires Spotify OAuth configuration"))
