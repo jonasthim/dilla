@@ -7,7 +7,7 @@ import { t } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
 
 type Config = { enabled: boolean; rate: string; duplicate: string; mention: string; timeout: number; exempt: string[] };
-type Row = { requestId: string; communityId: string; operation: number; status: number; revision: string | null; data: Uint8Array };
+type Row = { deliveryId: string; requestId: string; communityId: string; operation: number; status: number; revision: string | null; data: Uint8Array };
 type SaveRetry = { requestId: string; revision: string; document: Uint8Array; stepUp: string };
 const id = (): string => [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2, '0')).join('');
 const defaults: Config = { enabled: false, rate: 'log', duplicate: 'log', mention: 'log', timeout: 600_000, exempt: [] };
