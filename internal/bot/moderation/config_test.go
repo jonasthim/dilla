@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,16 +15,38 @@ import (
 type configNative struct {
 	binding  native.Binding
 	value    native.StateValue
+	readErr  error
 	conflict bool
 	receipts map[id.ID][]uint64
 }
 
 func (n *configNative) Binding() native.Binding { return n.binding }
 func (n *configNative) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+	if n.readErr != nil {
+		return native.StateValue{}, n.readErr
+	}
 	if area != configStateArea || string(key) != string(configKey(n.binding)) {
 		return native.StateValue{}, errors.New("unexpected state address")
 	}
 	return n.value, nil
+}
+
+func TestConfigStorePreservesStateReadFailureCause(t *testing.T) {
+	n := testConfigNative()
+	n.readErr = errors.New("native state read failed")
+	_, _, err := NewStore(n).Load(context.Background())
+	if err == nil || !errors.Is(err, ErrConfigState) || !strings.Contains(err.Error(), n.readErr.Error()) {
+		t.Fatalf("state read error = %v, want config-state sentinel and underlying cause", err)
+	}
+}
+
+func TestConfigKeyFitsNativeStateAddress(t *testing.T) {
+	binding := testConfigNative().binding
+	want := "dilla.bot.moderation.v1/" + binding.Instance.String() + "/" + binding.Community.String() + "/" + binding.Installation.String()
+	got := string(configKey(binding))
+	if got != want || len(got) > 128 {
+		t.Fatalf("config key = %q (%d bytes), want %q (at most 128 bytes)", got, len(got), want)
+	}
 }
 func (n *configNative) StateTransaction(_ context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
 	if revisions, ok := n.receipts[tx]; ok {

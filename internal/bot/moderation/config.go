@@ -62,7 +62,7 @@ func (s *Store) Load(ctx context.Context) (Config, uint64, error) {
 	}
 	v, err := s.native.StateGet(ctx, configStateArea, configKey(s.binding))
 	if err != nil {
-		return Config{}, 0, ErrConfigState
+		return Config{}, 0, fmt.Errorf("%w: state read: %v", ErrConfigState, err)
 	}
 	if v.Tombstone {
 		return Config{}, v.Revision, ErrConfigState
@@ -214,7 +214,7 @@ func validConfigBinding(b native.Binding) bool {
 }
 
 func configKey(b native.Binding) []byte {
-	return []byte(fmt.Sprintf("dilla.bot.moderation.v1/%x/%x/%x", b.Instance, b.Community, b.Installation))
+	return []byte("dilla.bot.moderation.v1/" + b.Instance.String() + "/" + b.Community.String() + "/" + b.Installation.String())
 }
 
 func configID(v any) (id.ID, bool) {

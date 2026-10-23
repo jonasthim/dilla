@@ -57,7 +57,7 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 	cfg, revision, err := moderation.NewStore(n).Load(ctx)
 	if err != nil {
 		if logger != nil {
-			logger.Warn("bot automatic moderation settings unavailable; keeping log-only defaults", "installation_id", installation.String())
+			logger.Warn("bot automatic moderation settings unavailable; keeping log-only defaults", "installation_id", installation.String(), "error", err.Error())
 		}
 		cfg = logOnlyModerationConfig()
 		revision = 0
