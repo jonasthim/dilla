@@ -99,7 +99,8 @@ function stop(child: ChildProcess): Promise<void> {
 }
 
 /** A started test host: its public origin, its control origin, the bootstrap invite it printed, and its stop. */
-export interface StartedHost { url: string; control: string; invite: string; runtimeCredentialFile?: string; stop(): Promise<void> }
+export interface StartedHost { url: string; control: string; invite: string; runtimeCredentialFile?: string;
+  restartBotRuntime(): Promise<void>; stop(): Promise<void> }
 
 /**
  * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under `DILLA_E2E_HOST_DATA_ROOT`
@@ -152,8 +153,16 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       }, 1_000);
     }
     if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
+    const restartBotRuntime = async (): Promise<void> => {
+      if (bot === null || c.botRuntime !== true) throw new Error('test host has no Bot runtime to restart');
+      await stop(bot);
+      bot = null;
+      rmSync(join(dataDir, 'bot.toml'), { force: true });
+      bot = await startBotRuntime(url, dataDir, c.port,
+        c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
+    };
     return { url, control: `http://127.0.0.1:${c.control}`, invite,
-      ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}), stop: teardown };
+      ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}), restartBotRuntime, stop: teardown };
   } catch (e) { await teardown(); throw e; }
 }
 
