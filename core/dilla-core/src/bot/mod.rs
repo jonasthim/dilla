@@ -122,6 +122,7 @@ fn check_id16(b: &[u8; 16]) -> Result<(), CodecError> {
 #[derive(Clone, PartialEq, Eq)]
 pub enum RequestArgs {
     None,
+    Cursor(Option<Vec<u8>>),
     Section {
         section: u64,
     },
@@ -326,7 +327,10 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         21 => matches!(a, RequestArgs::Id(_)),
         22 => matches!(a, RequestArgs::Move { .. }),
         30 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,2000,false)),
-        40 | 50 | 60 => matches!(a, RequestArgs::Number(_)),
+        40 | 50 => matches!(a, RequestArgs::Number(_)),
+        60 => {
+            matches!(a, RequestArgs::Cursor(cursor) if cursor.as_ref().is_none_or(|v| (1..=256).contains(&v.len())))
+        }
         51 => matches!(a, RequestArgs::AnnouncementPut { .. }),
         52 => matches!(a, RequestArgs::AnnouncementDelete { .. }),
         61 => {
@@ -356,6 +360,14 @@ fn encode_args(e: &mut Encoder, a: &RequestArgs) {
         }
         RequestArgs::Number(n) => {
             e.array(1).uint(*n);
+        }
+        RequestArgs::Cursor(cursor) => {
+            e.array(1);
+            if let Some(cursor) = cursor {
+                e.bytes(cursor);
+            } else {
+                e.null();
+            }
         }
         RequestArgs::Id(id) => {
             e.array(1).bytes(id.as_bytes());
@@ -422,9 +434,27 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
             };
             RequestArgs::Text(bounded_text(d, lo, hi, clean)?)
         }
-        17 | 18 | 20 | 40 | 50 | 60 => {
+        17 | 18 | 20 | 40 | 50 => {
             d.array(1)?;
             RequestArgs::Number(d.uint()?)
+        }
+        60 => {
+            d.array(1)?;
+            let cursor = if d.try_null()? {
+                None
+            } else {
+                Some(d.bytes()?.to_vec())
+            };
+            if cursor
+                .as_ref()
+                .is_some_and(|v| !(1..=256).contains(&v.len()))
+            {
+                return Err(CborError::WrongByteLen {
+                    expected: 256,
+                    actual: cursor.as_ref().map_or(0, Vec::len),
+                });
+            }
+            RequestArgs::Cursor(cursor)
         }
         21 => {
             d.array(1)?;
@@ -1338,10 +1368,57 @@ fn b64url_decode(s: &[u8]) -> Result<Vec<u8>, CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cbor::Encoder;
     #[test]
     fn base64url_rejects_nonzero_unused_bits_and_padding() {
         assert!(b64url_decode(b"Zh").is_err());
         assert!(b64url_decode(b"Zg==").is_err());
         assert_eq!(b64url_decode(b"Zg").unwrap(), b"f");
+    }
+
+    #[test]
+    fn moderation_cases_request_uses_optional_bounded_opaque_cursor() {
+        fn request(cursor: Option<&[u8]>) -> Vec<u8> {
+            let mut e = Encoder::new();
+            e.array(8)
+                .uint(1)
+                .bytes(&[1; 16])
+                .bytes(&[2; 16])
+                .null()
+                .uint(60)
+                .null()
+                .null()
+                .array(1);
+            if let Some(cursor) = cursor {
+                e.bytes(cursor);
+            } else {
+                e.null();
+            }
+            e.into_vec()
+        }
+        let first = Request::decode_cbor(&request(None)).unwrap();
+        assert_eq!(first.operation, 60);
+        assert!(matches!(first.args, RequestArgs::Cursor(None)));
+        assert_eq!(first.encode_cbor().unwrap(), request(None));
+        let next = Request::decode_cbor(&request(Some(&[1, 2, 3]))).unwrap();
+        assert!(
+            matches!(next.args, RequestArgs::Cursor(Some(ref cursor)) if cursor.as_slice() == [1, 2, 3])
+        );
+        assert_eq!(next.encode_cbor().unwrap(), request(Some(&[1, 2, 3])));
+        assert!(Request::decode_cbor(&request(Some(&[]))).is_err());
+        assert!(Request::decode_cbor(&request(Some(&[1; 257]))).is_err());
+        let mut number = Encoder::new();
+        number
+            .array(8)
+            .uint(1)
+            .bytes(&[1; 16])
+            .bytes(&[2; 16])
+            .null()
+            .uint(60)
+            .null()
+            .null()
+            .array(1)
+            .uint(0);
+        assert!(Request::decode_cbor(&number.into_vec()).is_err());
     }
 }
