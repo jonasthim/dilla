@@ -47,10 +47,16 @@ func TestBotJoinRoleGrantIsEpisodeBoundIdempotentAndSourceSeparated(t *testing.T
 			}
 			rollback := errors.New("rollback bot join grant")
 			if err := repo.Tx(ctx, func(tx store.Repository) error {
-				if _, _, err := tx.(store.BotJoinRoleGrants).GrantBotJoinRoleForEpisode(ctx, request); err != nil { return err }
+				if _, _, err := tx.(store.BotJoinRoleGrants).GrantBotJoinRoleForEpisode(ctx, request); err != nil {
+					return err
+				}
 				return rollback
-			}); !errors.Is(err, rollback) { t.Fatalf("rollback transaction = %v, want sentinel", err) }
-			if held, err := repo.ListMemberRoles(ctx, community, member); err != nil || slices.Contains(held, role.ID) { t.Fatalf("role after rollback = %v, %v; want absent", held, err) }
+			}); !errors.Is(err, rollback) {
+				t.Fatalf("rollback transaction = %v, want sentinel", err)
+			}
+			if held, err := repo.ListMemberRoles(ctx, community, member); err != nil || slices.Contains(held, role.ID) {
+				t.Fatalf("role after rollback = %v, %v; want absent", held, err)
+			}
 			var first store.BotJoinRoleGrantReceipt
 			var created bool
 			if err := repo.Tx(ctx, func(tx store.Repository) error {

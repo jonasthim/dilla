@@ -350,7 +350,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
 			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
-			r := httptest.NewRequest(tc.method, "/", nil)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
 			r.Header.Set("Authorization", "Bearer "+tok.Token)
 			r.Pattern = tc.pattern
 			if tc.pathValue != "" {
@@ -418,7 +418,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 			called := false
 			mux := http.NewServeMux()
 			mux.Handle("GET /v1/groups/{id}/info", s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled))
-			req := httptest.NewRequest(http.MethodGet, "/v1/groups/"+tc.group+"/info", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/groups/"+tc.group+"/info", nil)
 			req.Header.Set("Authorization", "Bearer "+tc.token)
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
@@ -444,7 +444,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	negotiationMux.Handle("POST /v1/sessions/negotiate", s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		negotiationReached = true
 	}), auth.ScopeEnrolled))
-	negotiationReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/negotiate", nil)
+	negotiationReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/sessions/negotiate", nil)
 	negotiationReq.Header.Set("Authorization", "Bearer "+renewed.Token)
 	negotiationRec := httptest.NewRecorder()
 	negotiationMux.ServeHTTP(negotiationRec, negotiationReq)
@@ -460,7 +460,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		config.Default().Auth.Session, id.New(), 7)
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/groups/{id}/info", faultSessions.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), auth.ScopeEnrolled))
-	req := httptest.NewRequest(http.MethodGet, "/v1/groups/"+ownGroup.String()+"/info", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/groups/"+ownGroup.String()+"/info", nil)
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -497,7 +497,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
 			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
-			r := httptest.NewRequest(tc.method, "/", nil)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
 			r.Header.Set("Authorization", "Bearer "+tok.Token)
 			r.Pattern = tc.pattern
 			if tc.pathName != "" {
@@ -575,7 +575,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
 			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
-			r := httptest.NewRequest(tc.method, "/", nil)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
 			r.Header.Set("Authorization", "Bearer "+tok.Token)
 			r.Pattern = tc.pattern
 			installationValue, groupValue := tc.installation, tc.group
@@ -615,7 +615,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
 			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
-			r := httptest.NewRequest(tc.method, "/", nil)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
 			r.Header.Set("Authorization", "Bearer "+tok.Token)
 			r.Pattern = tc.pattern
 			r.SetPathValue(tc.pathName, tc.pathValue)
@@ -639,7 +639,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
 			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
-			r := httptest.NewRequest(tc.method, "/", nil)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
 			r.Header.Set("Authorization", "Bearer "+renewed.Token)
 			r.Pattern = tc.pattern
 			r.SetPathValue(tc.pathName, tc.pathValue)

@@ -309,7 +309,6 @@ func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(channels))
 	for _, channel := range channels {
-		channel := channel
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

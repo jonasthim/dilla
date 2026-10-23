@@ -256,7 +256,7 @@ func (w WASIInteractionRegistrationExtractor) ExtractInteractionRegistration(ctx
 	if err != nil {
 		return AuthenticatedInteractionRegistration{}, err
 	}
-	defer group.Close(ctx)
+	defer func() { _ = group.Close(ctx) }()
 	state, err := group.State(ctx)
 	if err != nil {
 		return AuthenticatedInteractionRegistration{}, err

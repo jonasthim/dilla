@@ -63,7 +63,7 @@ func readTokenFile(path string) (string, error) {
 		return "", errors.New("token file is unavailable or unsafe")
 	}
 	f := os.NewFile(uintptr(fd), "token")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return "", errors.New("token file is unavailable or unsafe")

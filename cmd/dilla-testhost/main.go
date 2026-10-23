@@ -211,7 +211,7 @@ func createBotRuntimeSecret(ctx context.Context, database, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil { //nolint:gosec // G302: this is a directory and needs owner search permission.
 		return err
 	}
 	write, err := sqlite.OpenWrite(database)
@@ -227,7 +227,7 @@ func createBotRuntimeSecret(ctx context.Context, database, path string) error {
 	defer func() { _ = repo.Close() }()
 	manager := botruntime.New(repo, nil)
 	_, err = manager.Create(ctx, func(_ id.ID, token string) error {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: local testhost CLI supplies this absolute credential path; exclusive owner-only creation prevents overwrite.
 		if err != nil {
 			return err
 		}

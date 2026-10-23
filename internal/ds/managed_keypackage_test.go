@@ -16,9 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
+
+	"github.com/jonasthim/dilla/internal/clock"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -426,7 +427,6 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	results := make(chan publishResult, 2)
 	var publishers sync.WaitGroup
 	for _, pkg := range []nativeBotKeyPackage{raceA, raceB} {
-		pkg := pkg
 		body, err := cborx.Marshal([]any{[]any{pkg.blob(t)}, nil})
 		if err != nil {
 			t.Fatal(err)

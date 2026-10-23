@@ -2,6 +2,7 @@ package mlswasi
 
 import (
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
@@ -36,7 +37,8 @@ func TestDecodeWelcomeKeyPackageRefsRejectsMalformedResponse(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			elems, err := responseElements(response)
 			if err != nil {
-				if _, ok := err.(*ABIError); ok {
+				var abiErr *ABIError
+				if errors.As(err, &abiErr) {
 					t.Fatal(err)
 				}
 				return // malformed frame is already rejected at the response boundary

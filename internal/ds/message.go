@@ -284,7 +284,7 @@ func (d *DS) NotifyMessageDeleted(groupID id.ID, seq uint64, at int64) {
 	if d.opts.Gateway == nil || at < 0 {
 		return
 	}
-	payload, err := gateway.MessageDeletedPayload(seq, uint64(at)) //nolint:gosec // G115: checked nonnegative Unix timestamp
+	payload, err := gateway.MessageDeletedPayload(seq, uint64(at))
 	if err != nil {
 		return
 	}

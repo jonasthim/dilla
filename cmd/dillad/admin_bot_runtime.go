@@ -56,7 +56,7 @@ func adminBotRuntime(verb string, args []string, stdout, stderr io.Writer) error
 					if errors.Is(err, botruntime.ErrCommitUncertain) {
 						return fmt.Errorf("rotate bot runtime %s: %w: %w", runtimeID, err, exit.Software)
 					}
-					if err == store.ErrNotFound {
+					if errors.Is(err, store.ErrNotFound) {
 						return notFound("bot runtime", err)
 					}
 					return fmt.Errorf("rotate bot runtime: %w: %w", err, exit.Software)
@@ -79,7 +79,7 @@ func adminBotRuntime(verb string, args []string, stdout, stderr io.Writer) error
 			}, run: func(ctx context.Context, e *adminEnv) error {
 				manager := botruntime.New(e.repo, func() time.Time { return cliClock.Now() })
 				if err := manager.Revoke(ctx, runtimeID); err != nil {
-					if err == store.ErrNotFound {
+					if errors.Is(err, store.ErrNotFound) {
 						return notFound("bot runtime", err)
 					}
 					return fmt.Errorf("revoke bot runtime: %w: %w", err, exit.Software)
@@ -215,7 +215,7 @@ func validateBotRuntimeSecretPath(path string, stderr io.Writer, command string)
 	if err := validateSecretParent(parent); err != nil {
 		return usageError(stderr, command, "--out parent must be an owned private 0700 directory with no symlink ancestors: %v", err)
 	}
-	if _, err := os.Lstat(abs); err == nil {
+	if _, err := os.Lstat(abs); err == nil { //nolint:gosec // G703: admin CLI path has an owned private parent validated above; Lstat does not follow the final component.
 		return usageError(stderr, command, "--out already exists")
 	} else if !os.IsNotExist(err) {
 		return usageError(stderr, command, "cannot inspect --out path")
@@ -238,7 +238,7 @@ func (s *createdBotRuntimeSecret) cleanup() error {
 		return nil
 	}
 	s.cleaned = true
-	defer s.dir.Close()
+	defer func() { _ = s.dir.Close() }()
 	err := unlinkCreatedSecret(s.dir, s.name, s.identity)
 	if err != nil {
 		return err
@@ -265,7 +265,7 @@ func writeBotRuntimeSecret(path, token string) (*createdBotRuntimeSecret, error)
 	name := filepath.Base(absolute)
 	f, err := openNewSecretFileAt(dir, name)
 	if err != nil {
-		dir.Close()
+		_ = dir.Close()
 		return nil, fmt.Errorf("cannot create new secret file")
 	}
 	identity, err := f.Stat()

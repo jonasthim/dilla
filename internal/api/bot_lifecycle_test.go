@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -41,7 +43,6 @@ import (
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
 )
 
 // This integration catches a coordinator that bootstraps only against test doubles, skips a

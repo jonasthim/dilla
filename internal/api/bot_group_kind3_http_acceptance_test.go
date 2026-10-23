@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/bot/capability"
@@ -28,8 +31,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
 )
 
 const kind3APIFixtureDir = "../ds/dstest/testdata/kind3-interaction"

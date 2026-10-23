@@ -112,7 +112,6 @@ func TestBotCASAllowsOnlyOneConcurrentRevision(t *testing.T) {
 			results := make(chan error, 2)
 			var wg sync.WaitGroup
 			for state := uint8(store.BotInstallationEnrolling); state <= store.BotInstallationJoining; state++ {
-				state := state
 				wg.Add(1)
 				go func() {
 					defer wg.Done()

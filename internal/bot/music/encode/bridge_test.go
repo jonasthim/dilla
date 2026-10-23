@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/media"
 	"github.com/livekit/server-sdk-go/v2/pkg/oggreader"
+
+	"github.com/jonasthim/dilla/internal/media"
 )
 
 func TestBridgeEncodesPCMToBoundedOpusPackets(t *testing.T) {

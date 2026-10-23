@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -64,6 +65,9 @@ func errKeyPackageDirectoryFull(held int64, adding, limit int) *Error {
 // overflows or wraps it; `now` is a clock reading and never negative in practice, and a negative
 // one is treated as zero rather than as a huge unsigned number.
 func checkKeyPackageLifetime(now int64, notAfter uint64, maxLifetime time.Duration) error {
+	if notAfter > math.MaxInt64 {
+		return errCommitInvalid("key_package", "the package expiry cannot be stored")
+	}
 	base := uint64(0)
 	if now > 0 {
 		base = uint64(now)

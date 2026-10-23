@@ -92,6 +92,7 @@ func TestPreflightKind3RegistrationVerifiesSignedReceiptAndAuthenticatedRoster(t
 		count := uint64(2)
 		if extraLeaf {
 			user, device := interactionID(90), interactionID(91)
+			//nolint:makezero // The two existing roster leaves must remain before the optional third.
 			out = append(out, mlswasi.RosterLeaf{UserID: user[:], DeviceID: device[:], DSKPub: make([]byte, 32)})
 			count++
 		}

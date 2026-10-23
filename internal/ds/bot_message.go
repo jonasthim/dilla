@@ -86,14 +86,14 @@ func (d *DS) AcceptBotMessage(ctx context.Context, r BotMessageRequest) (BotMess
 			return errForbidden("the managed installation is not ready for sends")
 		}
 		op := store.BotSendOperationRow{InstallationID: r.InstallationID, OperationID: r.OperationID, UserID: r.Session.UserID, DeviceID: r.Session.DeviceID, CommunityID: r.CommunityID, GroupID: r.GroupID, CurrentAttempt: r.AttemptID, State: uint8(store.BotSendOperationActive)}
-		storedOp, inserted, err := tx.CreateBotSendOperationIfAbsent(ctx, op)
+		_, inserted, err := tx.CreateBotSendOperationIfAbsent(ctx, op)
 		if err != nil {
 			return err
 		}
 		if inserted && r.PredecessorAttempt != nil {
 			return botSendConflict("the first attempt must not name a predecessor")
 		}
-		storedOp, err = tx.LockBotSendOperation(ctx, r.InstallationID, r.OperationID)
+		storedOp, err := tx.LockBotSendOperation(ctx, r.InstallationID, r.OperationID)
 		if err != nil {
 			return err
 		}
@@ -182,7 +182,7 @@ func (d *DS) AcceptBotMessage(ctx context.Context, r BotMessageRequest) (BotMess
 		if group.Epoch != r.Epoch {
 			return errCommitInvalid("epoch", "the message's epoch is not the group's")
 		}
-		if err := requireNoFreezeTx(ctx, tx, group, uint64(d.opts.Policy.CommitDeadline.Milliseconds())); err != nil {
+		if err := requireNoFreezeTx(ctx, tx, group, uint64(d.opts.Policy.CommitDeadline.Milliseconds())); err != nil { //nolint:gosec // G115: normalisePolicy makes this duration positive.
 			return err
 		}
 		currentLeaf, err := txHasCurrentLeaf(ctx, tx, r.GroupID, r.Session.DeviceID)
@@ -294,11 +294,11 @@ func (d *DS) ResolveBotMessage(ctx context.Context, r BotMessageResolveRequest) 
 			return errForbidden("the managed installation is not ready for sends")
 		}
 		operation := store.BotSendOperationRow{InstallationID: r.InstallationID, OperationID: r.OperationID, UserID: r.Session.UserID, DeviceID: r.Session.DeviceID, CommunityID: r.CommunityID, GroupID: r.GroupID, CurrentAttempt: r.AttemptID, State: uint8(store.BotSendOperationActive)}
-		storedOp, inserted, err := tx.CreateBotSendOperationIfAbsent(ctx, operation)
+		_, inserted, err := tx.CreateBotSendOperationIfAbsent(ctx, operation)
 		if err != nil {
 			return err
 		}
-		storedOp, err = tx.LockBotSendOperation(ctx, r.InstallationID, r.OperationID)
+		storedOp, err := tx.LockBotSendOperation(ctx, r.InstallationID, r.OperationID)
 		if err != nil {
 			return err
 		}

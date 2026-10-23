@@ -235,7 +235,7 @@ func (d *DS) AuthenticatedBotInteractionBinding(ctx context.Context, registratio
 	if err != nil {
 		return BotInteractionGroupBinding{}, errBinding("invalid authenticated kind-3 GroupInfo")
 	}
-	defer group.Close(ctx)
+	defer func() { _ = group.Close(ctx) }()
 	state, err := group.State(ctx)
 	if err != nil {
 		return BotInteractionGroupBinding{}, err

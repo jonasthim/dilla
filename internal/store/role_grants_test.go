@@ -7,10 +7,11 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
 )
 
 func TestRoleGrantMigrationBackfillsLegacyAssignmentsAsManual(t *testing.T) {

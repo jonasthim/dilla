@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"

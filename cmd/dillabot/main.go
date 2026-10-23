@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"github.com/jonasthim/dilla/internal/bot/announcements"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
@@ -33,7 +35,6 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/pelletier/go-toml/v2"
 )
 
 const maxConfigBytes = 64 << 10

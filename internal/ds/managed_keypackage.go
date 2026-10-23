@@ -113,6 +113,9 @@ func (d *DS) PublishBotKeyPackages(ctx context.Context, s Session, installation,
 		if err := checkKeyPackageLifetime(d.now(), info.NotAfter, d.opts.Policy.MaxKeyPackageLifetime); err != nil {
 			return err
 		}
+		if info.NotAfter > math.MaxInt64 {
+			return errCommitInvalid("key_package", "the package expiry cannot be stored")
+		}
 		row := store.KeyPackageRow{DeviceID: s.DeviceID, KPRef: info.KPRef, Blob: blob, Expires: int64(info.NotAfter), Created: d.now()}
 		if last {
 			row.LastResort = 1
@@ -353,7 +356,7 @@ func (d *DS) ManagedBotKeyPackageInventory(ctx context.Context, s Session, insta
 		if err != nil {
 			return err
 		}
-		if count < 0 || count > math.MaxInt64 {
+		if count < 0 {
 			return errForbidden("the directory count cannot be represented by the wire format")
 		}
 		fallback, err := tx.HasCurrentLastResortKeyPackage(ctx, s.DeviceID, now)

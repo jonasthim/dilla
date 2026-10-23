@@ -109,7 +109,6 @@ func TestBotSendImmutableChainAndSingleSuccessor(t *testing.T) {
 			results := make(chan error, 2)
 			var wg sync.WaitGroup
 			for _, branch := range branches {
-				branch := branch
 				wg.Add(1)
 				go func() {
 					defer wg.Done()

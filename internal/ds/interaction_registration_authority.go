@@ -140,7 +140,7 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	users := []id.ID{expected.BotUserID, expected.ParticipantUserID}
 	slices.SortFunc(users, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
 	for i, userID := range users {
-		if i > 0 && userID == users[i-1] {
+		if i > 0 && userID == users[i-1] { //nolint:gosec // G602: i-1 is accessed only when i > 0.
 			continue
 		}
 		if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
@@ -227,7 +227,10 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 		return out, errors.New("ds: current instance key context is stale")
 	}
 	instanceKey := ed25519.NewKeyFromSeed(d.opts.Keys.ExternalSenderPriv[:])
-	pub := instanceKey.Public().(ed25519.PublicKey)
+	pub, ok := instanceKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return out, errors.New("ds: instance signing key has an unexpected type")
+	}
 	receipts, ok := tx.(store.BotInteractionAdmissionReceipts)
 	if !ok {
 		return out, errors.New("ds: interaction admission receipt source unavailable")
@@ -239,12 +242,13 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	if issued.InstallationID != installation.ID || issued.RequestID != admissionRequestID || issued.NotAfter <= now || len(issued.Payload) == 0 || len(issued.Signature) != ed25519.SignatureSize || !bytes.Equal(issued.Payload, evidence.receiptPayload) || !bytes.Equal(issued.Signature, evidence.receiptSig) || !ed25519.Verify(pub, append([]byte(interactionAdmissionDomain), issued.Payload...), issued.Signature) {
 		return out, errors.New("ds: current issued admission receipt is expired, changed, or invalid")
 	}
+	issuedNotAfter := uint64(issued.NotAfter) //nolint:gosec // G115: issued.NotAfter > now >= 0 above.
 	var wire interactionAdmissionAuthorityWire
 	if err := cborx.Unmarshal(issued.Payload, &wire); err != nil {
 		return out, err
 	}
 	canonical, err := cborx.Marshal(wire)
-	if err != nil || !bytes.Equal(canonical, issued.Payload) || wire.Version != 1 || wire.AdmissionID != admissionID || wire.InstanceID != instance.InstanceID || wire.InstallationID != installation.ID || wire.CommunityID != installation.CommunityID || wire.BotUserID != bot.ID || wire.BotDeviceID != botDevice.ID || wire.ParticipantUserID != participant.ID || wire.ParticipantDeviceID != participantDevice.ID || wire.GroupID != expected.GroupID || wire.EligibilityRevision != revision || wire.NotAfter <= uint64(now) || wire.NotAfter != uint64(issued.NotAfter) {
+	if err != nil || !bytes.Equal(canonical, issued.Payload) || wire.Version != 1 || wire.AdmissionID != admissionID || wire.InstanceID != instance.InstanceID || wire.InstallationID != installation.ID || wire.CommunityID != installation.CommunityID || wire.BotUserID != bot.ID || wire.BotDeviceID != botDevice.ID || wire.ParticipantUserID != participant.ID || wire.ParticipantDeviceID != participantDevice.ID || wire.GroupID != expected.GroupID || wire.EligibilityRevision != revision || wire.NotAfter <= uint64(now) || wire.NotAfter != issuedNotAfter {
 		return out, errors.New("ds: current admission receipt does not match final trusted context")
 	}
 	requestTuple, err := cborx.Marshal([]any{expected.GroupID, expected.ParticipantUserID, expected.ParticipantDeviceID})
