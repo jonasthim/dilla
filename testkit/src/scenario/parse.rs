@@ -715,7 +715,10 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             let expect = match named(args, "withdrawn=") {
                 None => None,
                 Some(n) => Some(n.parse::<u64>().map_err(|_| {
-                    err(line_no, format!("resume's withdrawn= needs a count, got {n:?}"))
+                    err(
+                        line_no,
+                        format!("resume's withdrawn= needs a count, got {n:?}"),
+                    )
                 })?),
             };
             Stmt::Resume {

@@ -249,7 +249,10 @@ fn the_vector_runner_is_green_from_the_testkit_too() {
 #[test]
 fn the_withdrawal_scenarios_parse() {
     for (name, src) in [
-        ("all-drop-resume", include_str!("../scenarios/all-drop-resume.scn")),
+        (
+            "all-drop-resume",
+            include_str!("../scenarios/all-drop-resume.scn"),
+        ),
         (
             "all_drop_second_resumes_first",
             include_str!("../scenarios/all_drop_second_resumes_first.scn"),
@@ -270,7 +273,10 @@ fn the_withdrawal_scenarios_parse() {
             "resume_then_leave",
             include_str!("../scenarios/resume_then_leave.scn"),
         ),
-        ("withdraw_races", include_str!("../scenarios/withdraw_races.scn")),
+        (
+            "withdraw_races",
+            include_str!("../scenarios/withdraw_races.scn"),
+        ),
         (
             "really_left_is_removed",
             include_str!("../scenarios/really_left_is_removed.scn"),

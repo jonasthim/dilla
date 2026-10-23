@@ -172,10 +172,7 @@ impl Runner {
                 ) => {
                     let mut text = e.to_string();
                     if let TestkitError::Ds(DsError::CommitConflict { winning_commit, .. }) = &e {
-                        text.push_str(&format!(
-                            " (winning_commit {} bytes)",
-                            winning_commit.len()
-                        ));
+                        text.push_str(&format!(" (winning_commit {} bytes)", winning_commit.len()));
                     }
                     // A rule, when named, must be the one the instance's E_COMMIT_INVALID names:
                     // invariant 4 has a dozen reasons to refuse a commit, and a scenario about one
@@ -290,9 +287,8 @@ impl Runner {
                 let answer: serde_json::Value = if out.is_empty() {
                     serde_json::Value::Null
                 } else {
-                    serde_json::from_slice(&out).map_err(|e| {
-                        DsError::Protocol(format!("control {path}: {e}"))
-                    })?
+                    serde_json::from_slice(&out)
+                        .map_err(|e| DsError::Protocol(format!("control {path}: {e}")))?
                 };
                 if answer["code"].as_str() == Some("E_LEAF_NOT_CURRENT") {
                     return Err(DsError::LeafNotCurrent.into());
