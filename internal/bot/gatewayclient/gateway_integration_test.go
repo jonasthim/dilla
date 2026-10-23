@@ -264,6 +264,16 @@ func TestUnackedDeliveryIsDeduplicatedAcrossDisconnectDuringHandler(t *testing.T
 		defer ws.Close(websocket.StatusNormalClosure, "test")
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		// A closed drop channel must interrupt a blocked read immediately. Merely
+		// checking it around ws.Read makes disconnect timing depend on the next
+		// heartbeat, which can outlast the test's replay synchronization bound.
+		go func() {
+			select {
+			case <-drop[n-1]:
+				_ = ws.CloseNow()
+			case <-ctx.Done():
+			}
+		}()
 		if err := sendServerFrame(ctx, ws, OpHello, 0, nil, helloPayload(instance, 7)); err != nil {
 			t.Errorf("hello: %v", err)
 			return
@@ -332,16 +342,8 @@ func TestUnackedDeliveryIsDeduplicatedAcrossDisconnectDuringHandler(t *testing.T
 			}
 		}
 		for {
-			select {
-			case <-drop[n-1]:
+			if _, _, err := ws.Read(ctx); err != nil {
 				return
-			case <-ctx.Done():
-				return
-			default:
-				_, _, err := ws.Read(ctx)
-				if err != nil {
-					return
-				}
 			}
 		}
 	}))
