@@ -297,11 +297,11 @@ const REQUIRED_STEPS = {
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 25',
+    'timeout-minutes: 40',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 20m ./internal/ds/...',
+    'go test -race -shuffle=on -timeout 30m ./internal/ds/...',
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [

@@ -853,11 +853,14 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     # The delivery service's tests drive the real wasm core over a 1,500-leaf fixture, and under the
     # race detector they are the slowest package of the module, so they have a job and a budget of
-    # their own; the go job runs everything else. Measured on a 4-core machine: 250 s (447 s before
-    # the reconcile asked its ACL once per group); the runner is roughly three times slower.
+    # their own; the go job runs everything else. Run 39994739630 reached go test's 20m package
+    # deadline with TestRegisterRefusesADuplicateGroupID in SQLite setup for 1s, so this was suite
+    # time, not a stuck migration (the job ended at 22m24s, with no assertion failure). Keep the
+    # race detector and shuffle, but give the package 30m and the job 10m for setup, reporting and
+    # cleanup.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -870,7 +873,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The delivery service's tests with the race detector
-        run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
+        run: go test -race -shuffle=on -timeout 30m ./internal/ds/...
         env:
           GORACE: halt_on_error=1
 
