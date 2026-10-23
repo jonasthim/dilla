@@ -488,7 +488,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		ready := false
 		membershipReady := false
 		if ensureErr == nil {
-			reconcileStage = "membership"
+			reconcileStage = "interaction_restore"
 			if result.Session == nil {
 				ensureErr = errors.New("identity lifecycle returned no scoped device session")
 			} else {
@@ -499,11 +499,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				}
 			}
 			if ensureErr == nil {
+				reconcileStage = "membership_source_sync"
 				var membership *service.MembershipReconciler
 				membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 				if ensureErr == nil {
 					_, ensureErr = membership.ReconcileOnce(ctx, result.Session)
 					if ensureErr == nil {
+						reconcileStage = "membership_trust"
 						// Newly joined MLS members are not actionable until their
 						// signed device-list history has been checked by the core.
 						var trust *service.SourceTrust
@@ -513,6 +515,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 						}
 					}
 					if ensureErr == nil {
+						reconcileStage = "readiness"
 						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
 						// A 409 means required MLS joins are still pending. Keep
 						// reconciling membership, but do not call Ready-only bot APIs.
