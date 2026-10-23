@@ -32,6 +32,7 @@ The existing offline checks establish:
   `dillabot doctor` accepts it.
 - Queue tests retain the current track as paused and do not resolve or start a provider; they use an in-memory native-state seam.
 - The stale-send test refuses a Bot message request while the group is `epoch_unknown` and verifies no additional application message was stored. It calls `DS.OnRestore` directly; it does not submit from a restored Bot process.
+- `TestCompiledHelperNativeSendIntentIntegration` (Linux, with `DILLA_BOT_HELPER_INTEGRATION=1` and `DILLA_BOT_HELPER_BIN`) now copies the compiled helper's real encrypted SQLite state into a fresh restore directory and confirms that the restored native client replays the exact durable send intent. This is a reusable native-state restore leg, but still does not pair with a restored server or start `dillabot` itself.
 
 The cold archive test uses opaque fixture bytes, not a production encrypted database or real
 service account. The doctor checks local files and permissions; it does not contact dillad or prove

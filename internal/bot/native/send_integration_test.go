@@ -5,6 +5,7 @@ package native
 import (
 	"context"
 	"crypto/sha256"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,7 +29,9 @@ func TestCompiledHelperNativeSendIntentIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := filepath.Join(t.TempDir(), "send")
+	root := t.TempDir()
+	state := filepath.Join(root, "send")
+	restoredState := filepath.Join(root, "restored-send")
 	binding := Binding{Instance: integrationID(111), Community: integrationID(112), Installation: integrationID(113)}
 	key := make([]byte, 32)
 	copy(key, "native-send-integration-key")
@@ -68,7 +71,42 @@ func TestCompiledHelperNativeSendIntentIntegration(t *testing.T) {
 	if err = c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	c, err = open()
+	// Restore the real helper-produced encrypted SQLite state into a fresh
+	// directory, as the Bot archive does. Copy only files that SQLite actually
+	// created; sidecars are intentionally optional and must not be fabricated.
+	if err := os.Mkdir(restoredState, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			t.Fatalf("unexpected directory in native state: %s", entry.Name())
+		}
+		source := filepath.Join(state, entry.Name())
+		dest := filepath.Join(restoredState, entry.Name())
+		in, err := os.Open(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			_ = in.Close()
+			t.Fatal(err)
+		}
+		_, copyErr := io.Copy(out, in)
+		closeOutErr := out.Close()
+		closeInErr := in.Close()
+		if copyErr != nil || closeOutErr != nil || closeInErr != nil {
+			t.Fatalf("copy native state %s: copy=%v close destination=%v close source=%v", entry.Name(), copyErr, closeOutErr, closeInErr)
+		}
+	}
+	openRestored := func() (*Client, error) {
+		return Start(ctx, helper.Options{Executable: binary, StateDir: restoredState}, binding, append([]byte(nil), key...))
+	}
+	c, err = openRestored()
 	if err != nil {
 		t.Fatal(err)
 	}
