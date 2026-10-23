@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '../voice/support/peer-browser';
 import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, WAIT } from '../voice/support/voice';
 import { addServerVia, channelRow, completeSignUp, copy, makeInviteLink, newAccount, signUp } from '../web/support/app';
@@ -9,6 +10,32 @@ const DJ_ROLE = 'Music DJ';
 const FRIEND = 'Bea';
 const FRIEND_TWO = 'Cal';
 const YOUTUBE_SAMPLE = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ';
+// Public, two-video playlist. Keep the expected order below so this exercises
+// provider expansion and playback of a later imported item, not just URL routing.
+const YOUTUBE_PLAYLIST = 'https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf';
+const QUALIFIED_YTDLP = '2026.10.21';
+
+function toolVersion(command: string, args: string[]): string {
+  try {
+    return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().split('\n')[0] ?? '';
+  } catch {
+    throw new Error(`YouTube music E2E requires ${command} on PATH; install the qualified Bot provider tools first.`);
+  }
+}
+
+test.beforeAll(() => {
+  const ytdlp = toolVersion('yt-dlp', ['--version']);
+  if (ytdlp !== QUALIFIED_YTDLP) {
+    throw new Error(`YouTube music E2E requires yt-dlp ${QUALIFIED_YTDLP}, found ${ytdlp}. Use experiments/bot-providers/youtube-requirements.txt.`);
+  }
+  const node = toolVersion('node', ['--version']);
+  const nodeMajor = Number(/^v(\d+)/u.exec(node)?.[1]);
+  if (!Number.isInteger(nodeMajor) || nodeMajor < 22) throw new Error(`YouTube music E2E requires Node 22 or newer, found ${node}.`);
+  const bwrap = toolVersion('bwrap', ['--version']);
+  const python = toolVersion('python3', ['--version']);
+  const ffmpeg = toolVersion('ffmpeg', ['-version']);
+  console.info(`YouTube music E2E provider tools: yt-dlp ${ytdlp}, ${node}, ${bwrap}, ${python}, ${ffmpeg}`);
+});
 
 const dialog = (page: import('@playwright/test').Page, name: string, vars?: Record<string, string | number>) =>
   page.getByRole('dialog', { name: copy(name, vars), exact: true });
@@ -281,11 +308,20 @@ test('two communities run isolated YouTube playback with independent Bot identit
       throw new Error(`${String(error)}\nSafe music trace (no IDs or payloads): ${JSON.stringify(trace)}`);
     }
   }
-  const enqueue = async (panel: typeof panelA) => {
-    await panel.getByRole('textbox', { name: copy('voice.music.urlLabel'), exact: true }).fill(YOUTUBE_SAMPLE);
+  const enqueue = async (panel: typeof panelA, input = YOUTUBE_SAMPLE) => {
+    const requestsBefore = await panel.evaluate(() => {
+      const trace = (window as unknown as { __dillaMusicTrace?: { sent?: Record<string, number> } }).__dillaMusicTrace;
+      return trace?.sent?.['humanInteractionRequest:12'] ?? 0;
+    });
+    await panel.getByRole('textbox', { name: copy('voice.music.urlLabel'), exact: true }).fill(input);
     await panel.getByRole('button', { name: copy('voice.music.enqueueAction'), exact: true }).last().click();
     try {
       await expect(panel.getByText(copy('voice.music.enqueueSuccess'), { exact: true })).toBeVisible({ timeout: 90_000 });
+      const requestsAfter = await panel.evaluate(() => {
+        const trace = (window as unknown as { __dillaMusicTrace?: { sent?: Record<string, number> } }).__dillaMusicTrace;
+        return trace?.sent?.['humanInteractionRequest:12'] ?? 0;
+      });
+      expect(requestsAfter - requestsBefore, 'one authenticated queue request for each submitted input').toBe(1);
     } catch (error) {
       const diagnostic = await panel.evaluate((element) => ({ text: element.innerText,
         trace: (window as unknown as { __dillaMusicTrace?: unknown }).__dillaMusicTrace ?? null }));
@@ -296,15 +332,15 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const queueB = panelB.getByRole('list', { name: copy('voice.music.queue'), exact: true });
   await panelA.getByRole('button', { name: copy('voice.music.showQueue'), exact: true }).click();
   await panelB.getByRole('button', { name: copy('voice.music.showQueue'), exact: true }).click();
-  await enqueue(panelA);
-  await expect(queueA.getByRole('listitem')).toHaveCount(1);
+  await enqueue(panelA, YOUTUBE_PLAYLIST);
+  await expect(queueA.getByRole('listitem')).toHaveCount(2);
   await expect(queueB.getByRole('listitem')).toHaveCount(0);
   // Exercise B before doing the second real YouTube extraction for A so both calls stay active.
   await enqueue(panelB);
   await expect(queueB.getByRole('listitem')).toHaveCount(1);
-  await expect(queueA.getByRole('listitem')).toHaveCount(1);
-  await enqueue(panelA);
   await expect(queueA.getByRole('listitem')).toHaveCount(2);
+  await enqueue(panelA);
+  await expect(queueA.getByRole('listitem')).toHaveCount(3);
   await expect(queueB.getByRole('listitem')).toHaveCount(1);
   await panelA.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
   await panelB.getByRole('button', { name: copy('voice.music.play'), exact: true }).click();
@@ -323,6 +359,37 @@ test('two communities run isolated YouTube playback with independent Bot identit
     const botDevice = tileID?.split(':')[0] ?? '';
     expect(botDevice).toMatch(/^[0-9a-f]{32}$/);
     return botDevice;
+  };
+  const requireAudible = async (musicPage: typeof page, panel: typeof panelA, botDevice: string,
+    previousFrames?: number, tracksBefore?: string[]) => {
+    try {
+      await audible(musicPage);
+    } catch (error) {
+      const diagnostic = await musicPage.evaluate(({ currentTitle, rms, verifiedFrames, previousFrames, tracksBefore }) => {
+        const windowState = window as unknown as {
+          __dw?: { contexts?: AudioContext[]; remoteTracks?: Set<string>; remoteAnalysers?: AnalyserNode[] };
+          __dillaMusicTrace?: { sent?: Record<string, number>; reads?: { errors?: string[]; responses?: { operation: number; status: number }[] } };
+        };
+        return {
+          title: currentTitle,
+          rms,
+          verifiedFrames,
+          contexts: (windowState.__dw?.contexts ?? []).map((context) => context.state),
+          remoteTrackIDs: [...(windowState.__dw?.remoteTracks ?? [])].sort(),
+          remoteAnalyserCount: windowState.__dw?.remoteAnalysers?.length ?? 0,
+          previousFrames,
+          framesAddedSincePrevious: previousFrames === undefined ? null : verifiedFrames - previousFrames,
+          trackIDsAddedSincePrevious: tracksBefore === undefined ? null :
+            [...(windowState.__dw?.remoteTracks ?? [])].filter((trackID) => !tracksBefore.includes(trackID)).sort(),
+          musicRequests: windowState.__dillaMusicTrace?.sent ?? {},
+          musicReadErrors: windowState.__dillaMusicTrace?.reads?.errors ?? [],
+          musicResponseStatuses: (windowState.__dillaMusicTrace?.reads?.responses ?? []).map((response) => response.status),
+        };
+      }, { currentTitle: await panel.locator('.dw-voice-music__now > strong').textContent().catch(() => null),
+        rms: await audibleLevel(musicPage), verifiedFrames: await heardCount(musicPage, botDevice), previousFrames,
+        tracksBefore });
+      throw new Error(`${String(error)}\nSafe audio diagnostic (no IDs or media payloads): ${JSON.stringify(diagnostic)}`);
+    }
   };
   const botDeviceA = await botDeviceFor(djPage);
   const botDeviceB = await botDeviceFor(djTwoPage);
@@ -348,14 +415,27 @@ test('two communities run isolated YouTube playback with independent Bot identit
     return verifiedFrames;
   }, { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
   await expect.poll(() => heardCount(djTwoPage, botDeviceB), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
-  await audible(djPage);
-  await audible(djTwoPage);
+  await requireAudible(djPage, panelA, botDeviceA);
+  await requireAudible(djTwoPage, panelB, botDeviceB);
   for (const musicPage of [djPage, djTwoPage]) {
     const result = await keyPath(musicPage);
     expect(result.callKeys).toBeGreaterThan(0);
     expect(result.messages).toBeGreaterThan(0);
     expect(result.findings).toEqual([]);
   }
+
+  // Verify the first imported item is actually playing before advancing within
+  // the playlist. Then require another authenticated media frame on item two.
+  const nowPlayingA = panelA.locator('.dw-voice-music__now > strong');
+  await expect(nowPlayingA).toHaveText('Deep Learning State of the Art (2020)', { timeout: WAIT });
+  const framesBeforePlaylistSkip = await heardCount(djPage, botDeviceA);
+  const tracksBeforePlaylistSkip = await djPage.evaluate(() =>
+    [...((window as unknown as { __dw: { remoteTracks: Set<string> } }).__dw.remoteTracks)].sort());
+  await panelA.getByRole('button', { name: copy('voice.music.skip'), exact: true }).click();
+  await expect(nowPlayingA).toHaveText('Deep Learning Basics: Introduction and Overview', { timeout: WAIT });
+  await expect.poll(() => heardCount(djPage, botDeviceA), { timeout: 90_000, intervals: [250, 500, 1_000] })
+    .toBeGreaterThan(framesBeforePlaylistSkip);
+  await requireAudible(djPage, panelA, botDeviceA, framesBeforePlaylistSkip, tracksBeforePlaylistSkip);
 
   const pause = panelA.getByRole('button', { name: copy('voice.music.pause'), exact: true });
   await expect(pause).toBeEnabled();
