@@ -94,7 +94,8 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
           if (result !== undefined) {
             setListedCases(previous => {
               const seen = new Set(previous.map(row => row.key));
-              return [...previous, ...result.cases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
+              const pageCases = page.responses.flatMap(response => response.cases);
+              return [...previous, ...pageCases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
             });
             setCursor(source === 'manual' ? result.nextCursor : null);
             setAutomaticHasMore(source === 'automatic' && result.hasMore);

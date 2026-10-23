@@ -315,6 +315,34 @@ describe('the server bot settings', () => {
     expect(fake.callsOf('listManualModerationEvidence')[1]).toMatchObject({ cursor: '0102' });
   });
 
+  it('renders every response in the acknowledged prefix before acknowledging it', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3 });
+    let requestId = '';
+    const priorRequestId = '55'.repeat(16);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
+      if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
+        { deliveryId: '2', requestId: priorRequestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
+          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
+          reason: 'prior reason', action: 'warn', excerpt: 'prior response evidence', receivedAt: '1800000000' }] },
+        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'd'.repeat(32) + ':1',
+          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'd'.repeat(32), revision: '1',
+          reason: 'current reason', action: 'remove', excerpt: 'current response evidence', receivedAt: '1800000000' }] },
+      ] });
+      if (command.m === 'ackHumanInteractionResponses') {
+        expect(screen.getByText('prior response evidence')).toBeInTheDocument();
+        expect(screen.getByText('current response evidence')).toBeInTheDocument();
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
+    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toHaveLength(1));
+  });
+
   it('renders a safe date fallback for an out-of-range received timestamp', async () => {
     const { fake, user } = setup({ ...ROW, state: 3 });
     let requestId = '';

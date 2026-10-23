@@ -483,3 +483,23 @@ func TestEvidenceListFailsClosedOnMalformedStoredRow(t *testing.T) {
 		t.Fatalf("malformed evidence list error = %v", err)
 	}
 }
+
+func TestEvidenceListFailsClosedWhenScannedKeyDoesNotMatchStoredEvidenceID(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding}
+	input := validEvidenceInput()
+	input.Rule = RuleManual
+	input.CreatedAt = time.Now().UTC().Truncate(time.Second)
+	input.AcceptedActionID, input.AcceptedRevision = id.ID{30}, 1
+	input.ActorUserID, input.ActorDeviceID = id.ID{6}, id.ID{7}
+	input.GroupID, input.TargetSequence = id.ID{8}, 5
+	if err := NewEvidenceWriter(state).Save(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	correct := state.rows[string(evidenceKey(binding, input.OperationID))]
+	state.rows["000-mismatched-key"] = correct
+	authority := &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}
+	if _, _, err := NewEvidenceReader(state, authority).List(context.Background(), id.ID{9}, nil, 1); !errors.Is(err, ErrEvidenceAccess) {
+		t.Fatalf("mismatched scanned key error = %v", err)
+	}
+}

@@ -317,7 +317,8 @@ func (r *EvidenceReader) List(ctx context.Context, actor id.ID, after []byte, li
 			return nil, nil, ErrEvidenceAccess
 		}
 		evidenceID, valid := configID(stored[5])
-		if !valid || evidenceID.IsZero() {
+		if !valid || evidenceID.IsZero() ||
+			!bytes.Equal(entry.Key, evidenceKey(r.binding, evidenceID)) && !bytes.Equal(entry.Key, legacyEvidenceKey(r.binding, evidenceID)) {
 			return nil, nil, ErrEvidenceAccess
 		}
 		row, readErr := r.Read(ctx, actor, evidenceID)
