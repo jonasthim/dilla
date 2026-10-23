@@ -108,6 +108,54 @@ func (p *StructuralEventPoller) PollOnce(ctx context.Context, session *client.Se
 	return p.pollOnce(ctx, session, handler)
 }
 
+// CompleteGapReconciliation advances the structural cursor only after the
+// caller has durably staged registrations for the current member set. It first
+// verifies that the fixed high-water remains readable; a newer retention gap
+// must be reconciled before advancing.
+func (p *StructuralEventPoller) CompleteGapReconciliation(ctx context.Context, session *client.Session, highWater uint64) error {
+	if p == nil || session == nil || highWater > math.MaxInt64 {
+		return errors.New("invalid structural event gap completion")
+	}
+	return p.completeGapReconciliation(ctx, session, highWater)
+}
+
+func (p *StructuralEventPoller) completeGapReconciliation(ctx context.Context, session structuralEventSession, highWater uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cursor, revision, err := p.loadCursor(ctx)
+	if err != nil {
+		return err
+	}
+	if cursor.Sequence > highWater {
+		return errors.New("structural gap high-water precedes durable cursor")
+	}
+	page, err := session.StructuralEvents(ctx, p.binding.Community, highWater, 1)
+	if err != nil {
+		var gap *client.EventHistoryGapError
+		if errors.As(err, &gap) {
+			return &StructuralEventGapError{Floor: gap.Floor, HighWater: gap.HighWater}
+		}
+		return err
+	}
+	if err = validateStructuralPage(page, p.binding.Community, highWater, 1); err != nil {
+		return err
+	}
+	if cursor.Sequence < highWater {
+		cursor = structuralEventCursor{Sequence: highWater}
+		revision, err = p.saveCursor(ctx, revision, cursor)
+		if err != nil {
+			return fmt.Errorf("persist structural reconciliation cursor: %w", err)
+		}
+	}
+	if err = session.AcknowledgeStructuralEvents(ctx, p.binding.Community, highWater); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (p *StructuralEventPoller) pollOnce(ctx context.Context, session structuralEventSession, handler StructuralEventHandler) (StructuralEventPollResult, error) {
 	var result StructuralEventPollResult
 	if p == nil || session == nil || handler == nil {

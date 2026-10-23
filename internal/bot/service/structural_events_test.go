@@ -106,6 +106,27 @@ func TestStructuralEventGapRequiresReconciliationAndDoesNotAckOrApply(t *testing
 	}
 }
 
+func TestStructuralGapCompletionPersistsCursorBeforeAckAndVerifiesSnapshot(t *testing.T) {
+	community := testID(1)
+	n := &structuralEventState{binding: native.Binding{Instance: testID(7), Community: community, Installation: testID(8)}}
+	event := botprotocol.Event{ID: testID(30), CommunityID: community, Sequence: 16, Timestamp: 1, Kind: botprotocol.EventMemberJoin, Data: []any{testID(3), testID(4)}}
+	s := &fakeStructuralEventSession{page: client.StructuralEventPage{Events: []botprotocol.Event{event}, NextSequence: 16, HighWater: 18, Floor: 11}, order: &n.order}
+	p, err := newStructuralEventPoller(n, StructuralEventPollerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = p.completeGapReconciliation(context.Background(), s, 15); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(n.order) != "[persist ack]" || fmt.Sprint(s.acks) != "[15]" || fmt.Sprint(s.requests) != "[15 1]" {
+		t.Fatalf("order=%v acks=%v requests=%v", n.order, s.acks, s.requests)
+	}
+	cursor, _, err := p.loadCursor(context.Background())
+	if err != nil || cursor.Sequence != 15 {
+		t.Fatalf("cursor=%+v err=%v", cursor, err)
+	}
+}
+
 func TestFailClosedStructuralEventLeavesCursorAndAckBeforeUnhandledEvent(t *testing.T) {
 	community := testID(1)
 	event := botprotocol.Event{ID: testID(2), CommunityID: community, Sequence: 1, Timestamp: 6, Kind: botprotocol.EventMemberJoin, Data: []any{testID(3), testID(4)}}
