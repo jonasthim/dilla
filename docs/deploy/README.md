@@ -642,6 +642,8 @@ checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, 
 `dilla_core_wasi.wasm`; creates the dedicated `dillabot` account; registers one protected runtime
 credential through `dillad admin bot-runtime create`; writes Bot files under `/etc/dillabot` and
 `/var/lib/dillabot`; runs `dillabot doctor`; and enables `dillabot.service`.
+Tagged release builds report their embedded tag with `dillabot version`; development builds report
+`0.0.0-dev`.
 
 Get the lowercase hexadecimal instance ID from the `instance_id` field of the server's
 `GET /v1/instance` discovery document. The server must permit discovery without a session for that

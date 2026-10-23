@@ -872,7 +872,8 @@ const RELEASE_STEPS = {
     'cargo test -p dilla-bot-core --locked',
     'cargo build -p dilla-bot-core --release --locked',
     'go test ./internal/bot/... ./cmd/dillabot',
-    "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot",
+    'GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot',
+    'test "$(dist/dillabot-linux-${{ matrix.arch }} version)" = "dillabot $VERSION"',
     'install -m 0755 target/release/dilla-bot-core dist/dilla-bot-core-linux-${{ matrix.arch }}',
     'name: dilla-bot-${{ matrix.arch }}',
     'if-no-files-found: error',
@@ -991,6 +992,16 @@ export function checkReleaseWorkflow(root) {
     const buildAt = body.indexOf('go build');
     if (!(fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && fetchAt < guardAt && guardAt < buildAt)) {
       problems.push(`${file}: job "go-release" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
+    }
+  }
+  if ('bot-release' in jobs) {
+    for (const step of jobSteps(jobs['bot-release'])) {
+      if (step.some((l) => /\bgo build\b/.test(l) && l.includes('dillabot-linux-') && !l.includes('-X main.Version=${VERSION}'))) {
+        problems.push(`${file}: job "bot-release" has a dillabot build without -X main.Version=\${VERSION}; a release Bot binary says its version`);
+      }
+      if (step.some((l) => /main\.Version|\$\{?VERSION\b/.test(l)) && !step.includes(RELEASE_VERSION_ENV)) {
+        problems.push(`${file}: job "bot-release" uses the version without its own env ${RELEASE_VERSION_ENV}`);
+      }
     }
   }
   assertEveryUploadFailsOnNoFiles(text, problems, file);

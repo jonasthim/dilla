@@ -179,7 +179,14 @@ jobs:
       - run: cargo test -p dilla-bot-core --locked
       - run: cargo build -p dilla-bot-core --release --locked
       - run: go test ./internal/bot/... ./cmd/dillabot
-      - run: mkdir -p dist && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot
+      - name: Build the architecture-matched Bot binary with the release version
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot
+      - name: The Bot binary carries the release version
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: test "$(dist/dillabot-linux-${{ matrix.arch }} version)" = "dillabot $VERSION"
       - run: install -m 0755 target/release/dilla-bot-core dist/dilla-bot-core-linux-${{ matrix.arch }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

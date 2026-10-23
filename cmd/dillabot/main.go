@@ -39,6 +39,10 @@ import (
 const maxConfigBytes = 64 << 10
 const maxCredentialBytes = 4096
 
+// Version is stamped by the release workflow. Development builds retain the
+// explicit fallback so operators can distinguish them from tagged releases.
+var Version = "0.0.0-dev"
+
 type config struct {
 	BaseURL                 string        `toml:"base_url"`
 	InstanceIDText          string        `toml:"instance_id"`
@@ -301,6 +305,9 @@ func serviceCanExecute(info os.FileInfo) bool {
 }
 
 func main() {
+	if runVersionCommand(os.Args[1:], os.Stdout) {
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		os.Exit(runDoctorCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
@@ -322,6 +329,14 @@ func main() {
 		logger.Error("bot service stopped", "error", err.Error())
 		os.Exit(1)
 	}
+}
+
+func runVersionCommand(args []string, stdout io.Writer) bool {
+	if len(args) != 1 || args[0] != "version" {
+		return false
+	}
+	fmt.Fprintf(stdout, "dillabot %s\n", Version)
+	return true
 }
 
 func run(ctx context.Context, cfg config, logger *slog.Logger) error {

@@ -1639,6 +1639,11 @@ test('a release without the native Bot build is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/\n {2}bot-release:\n[\s\S]*?\n {2}go-release:/, '\n  go-release:')), 'bot-release');
 });
 
+test('a Bot release without a stamped and checked version is reported', () => {
+  const unstamped = REAL_RELEASE.replace(' -X main.Version=${VERSION}', '');
+  assertReported(releaseProblems(() => unstamped), 'Bot binary says its version');
+});
+
 test('a release checksum that omits Bot binaries is reported', () => {
   assertReported(
     releaseProblems((t) => t.replace(`sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
