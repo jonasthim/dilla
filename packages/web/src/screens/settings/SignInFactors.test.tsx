@@ -320,7 +320,7 @@ describe('new backup codes', () => {
     await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
     await user.click(within(await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
     await confirmPassword(user);
-    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
+    expect(await within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).findByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
     await confirmPassword(user, 'hunter3');
     expect(await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] })).toBeInTheDocument();
     expect(fake.callsOf('regenerateBackupCodes')).toHaveLength(2);
@@ -357,7 +357,7 @@ describe('adding a factor', () => {
     const { user } = setup({ ...ONLY_PASSKEY }, (c, f) => c.m === 'factorTotpBegin' ? Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })) : happy(c, f));
     await user.click(await screen.findByRole('button', { name: en['factorSettings.totp.add'] }));
     await confirmPassword(user);
-    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
+    expect(await within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).findByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
   });
   it('refuses a passkey name over 64 bytes before the begin (final review M3)', async () => {
     const { fake, user } = setup({ ...ONLY_TOTP });
