@@ -126,8 +126,17 @@ func (t *SourceTrust) trustPendingLeaves(ctx context.Context, session senderHist
 		}
 		// TrustSender validates the signed list against every current leaf for this user and
 		// updates the shared cached list. A second pending row from this snapshot would still
-		// carry the old cached version and be rejected as stale by the native core.
+		// carry the old cached version and be rejected as stale by the native core. Every
+		// row still gets its own group revalidation so pending events are not left behind.
 		if refreshedUsers[leaf.User] {
+			n, e := t.native.RevalidateGroup(ctx, leaf.Group, uint64(leaf.Leaf), 256)
+			if e != nil {
+				return 0, trustPhaseError(TrustPhaseGroupRevalidation, e)
+			}
+			recovered += uint64(n)
+			if recovered > math.MaxUint32 {
+				return 0, errors.New("sender revalidation count overflow")
+			}
 			continue
 		}
 		n, e := t.trustSender(ctx, session, leaf.Group, uint64(leaf.Leaf), leaf.User, leaf.CachedVersion)

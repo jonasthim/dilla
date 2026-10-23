@@ -18,9 +18,10 @@ type fakeDeviceListSession struct {
 }
 
 type duplicatePendingTrustNative struct {
-	binding native.Binding
-	leaves  []native.GroupPendingLeaf
-	calls   int
+	binding     native.Binding
+	leaves      []native.GroupPendingLeaf
+	calls       int
+	revalidated []id.ID
 }
 
 func (n *duplicatePendingTrustNative) Binding() native.Binding { return n.binding }
@@ -40,7 +41,8 @@ func (n *duplicatePendingTrustNative) TrustSender(context.Context, id.ID, uint64
 func (*duplicatePendingTrustNative) TrustProposedAdd(context.Context, id.ID, []byte, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error) {
 	return native.GroupTrustVerdict{}, nil
 }
-func (*duplicatePendingTrustNative) RevalidateGroup(context.Context, id.ID, uint64, uint64) (uint32, error) {
+func (n *duplicatePendingTrustNative) RevalidateGroup(_ context.Context, group id.ID, _ uint64, _ uint64) (uint32, error) {
+	n.revalidated = append(n.revalidated, group)
 	return 1, nil
 }
 
@@ -185,7 +187,7 @@ func TestTrustPendingLeavesRefreshesEachUserOncePerBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("same-user stale batch row should be coalesced after first refresh: %v", err)
 	}
-	if recovered != 1 || n.calls != 1 {
-		t.Fatalf("recovered=%d trust calls=%d, want one user refresh", recovered, n.calls)
+	if recovered != 2 || n.calls != 1 || !reflect.DeepEqual(n.revalidated, []id.ID{sid(29), sid(30)}) {
+		t.Fatalf("recovered=%d trust calls=%d revalidated=%v, want one list refresh and both group revalidations", recovered, n.calls, n.revalidated)
 	}
 }
