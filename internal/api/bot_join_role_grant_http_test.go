@@ -22,6 +22,93 @@ func TestBotJoinRoleGrantRejectsHumanSession(t *testing.T) {
 	}
 }
 
+func TestBotMemberEpisodeIsCapabilityNeutralButInstallationScoped(t *testing.T) {
+	handler, deps := newTestAPI(t)
+	ctx := context.Background()
+	owner, _, _ := seedAPISession(t, deps)
+	now := deps.Clock.Now().Unix()
+	cid, otherCommunity := id.New(), id.New()
+	for _, community := range []id.ID{cid, otherCommunity} {
+		if err := deps.Repo.CreateCommunity(ctx, store.CommunityRow{ID: community, Owner: owner.ID, Name: "episode-read", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot, target, device, installation, runtime := id.New(), id.New(), id.New(), id.New(), id.New()
+	for _, user := range []store.UserRow{
+		{ID: bot, Username: "episode-bot", Display: "Bot", Kind: 1, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now},
+		newAPITestUser(target, "episode-target", now),
+	} {
+		if err := deps.Repo.CreateUser(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, user := range []id.ID{bot, target} {
+		if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: user, Joined: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verified := now
+	if err := deps.Repo.CreateDevice(ctx, store.DeviceRow{ID: device, UserID: bot, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now, LastSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateBotRuntime(ctx, store.BotRuntimeRow{ID: runtime, TokenHash: bytes.Repeat([]byte{0x31}, 32), Created: now, Rotated: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installation, CommunityID: cid, RuntimeID: &runtime, UserID: &bot, DeviceID: &device, State: store.BotInstallationReady, Revision: 1, Capabilities: 1 << 0, ApprovedBy: owner.ID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
+		t.Fatal(err)
+	}
+	token := "episode-music-bot-session"
+	if err := deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: auth.TokenHash(token), DeviceID: device, UserID: bot, Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation, UserID: bot, DeviceID: device, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/v1/communities/" + cid.String() + "/bot/members/" + target.String() + "/episode"
+	resp := getAuth(handler, path, token)
+	var reply []any
+	member, err := deps.Repo.GetMember(ctx, cid, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Code != http.StatusOK || cborx.Unmarshal(resp.Body.Bytes(), &reply) != nil || len(reply) != 2 || !bytes.Equal(reply[0].([]byte), target[:]) || !bytes.Equal(reply[1].([]byte), member.EpisodeID[:]) {
+		t.Fatalf("Music-only member episode = %d %#v, want [%s,%s]", resp.Code, reply, target, member.EpisodeID)
+	}
+
+	grant := postCBORAuth(handler, "/v1/communities/"+cid.String()+"/bot/join-role-grants", mustCBOR(t, []any{id.New(), target, member.EpisodeID}), token)
+	if grant.Code != http.StatusForbidden {
+		t.Fatalf("Music-only join-role grant = %d (%x), want 403", grant.Code, grant.Body.Bytes())
+	}
+	wrongCommunity := getAuth(handler, "/v1/communities/"+otherCommunity.String()+"/bot/members/"+target.String()+"/episode", token)
+	if wrongCommunity.Code == http.StatusOK {
+		t.Fatal("episode lookup for a community outside the bound installation succeeded")
+	}
+	missingMember := getAuth(handler, "/v1/communities/"+cid.String()+"/bot/members/"+id.New().String()+"/episode", token)
+	if missingMember.Code == http.StatusOK {
+		t.Fatal("episode lookup for a nonmember succeeded")
+	}
+
+	current, err := deps.Repo.GetBotInstallation(ctx, installation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.State = store.BotInstallationDisabled
+	current.Revision++
+	current.Updated++
+	if err := deps.Repo.UpdateBotInstallation(ctx, installation, current.Revision-1, current); err != nil {
+		t.Fatal(err)
+	}
+	disabled := getAuth(handler, path, token)
+	if disabled.Code == http.StatusOK {
+		t.Fatal("episode lookup for a disabled installation succeeded")
+	}
+
+}
+
 func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
 	grantNotifications := 0
 	var notifiedCommunity, notifiedMember id.ID

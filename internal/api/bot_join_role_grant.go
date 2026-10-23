@@ -135,8 +135,8 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 	_ = server.WriteCBOR(w, http.StatusOK, []any{receipt.RequestID, receipt.InstallationID, receipt.CommunityID, receipt.UserID, receipt.EpisodeID, receipt.RoleID})
 }
 
-// GetBotMemberEpisode supplies a bot with the current episode token needed to
-// bind a later join-role request. The grant route rechecks it under its lock.
+// GetBotMemberEpisode supplies a ready installed bot with a member's current
+// episode token. The grant route independently rechecks it under its lock.
 func (d Deps) GetBotMemberEpisode(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)
 	if !ok {
@@ -174,9 +174,6 @@ func (d Deps) GetBotMemberEpisode(w http.ResponseWriter, r *http.Request) {
 		if err != nil || installation.ID != s.Bot.InstallationID || installation.State != store.BotInstallationReady ||
 			installation.UserID == nil || *installation.UserID != s.UserID || installation.DeviceID == nil || *installation.DeviceID != s.DeviceID {
 			return server.Errorf(server.CodeForbidden, "ready bot installation required")
-		}
-		if installation.Capabilities&uint8(botCapRoles) == 0 || s.Bot.Capabilities&uint8(botCapRoles) == 0 {
-			return server.Errorf(server.CodeForbidden, "roles capability required")
 		}
 		if _, err := tx.GetMember(r.Context(), cid, s.UserID); err != nil {
 			return server.Errorf(server.CodeForbidden, "installed bot must be a current community member")
