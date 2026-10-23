@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	musicBotCapability     uint8  = 1 << 0 // bot_installations capability bit 0
 	musicPermissionConnect uint64 = 1 << 7
 	musicPermissionSpeak   uint64 = 1 << 8
 )
@@ -96,9 +97,13 @@ func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor In
 	for _, role := range resolved.RoleIDs {
 		roleSet[role] = struct{}{}
 	}
+	member, err := a.actorInCall(ctx, actor.User, call)
+	if err != nil || !member {
+		return false, err
+	}
 	for _, approved := range roles {
 		if _, held := roleSet[approved.RoleID]; held {
-			return a.actorInCall(ctx, actor.User, call)
+			return a.botCanSpeak(ctx, call.ChannelID)
 		}
 	}
 	return false, nil
@@ -140,10 +145,18 @@ func (a *CommunityMusicInteractionAuthority) currentInstallation(ctx context.Con
 	if err != nil {
 		return store.BotInstallationRow{}, err
 	}
-	if installation.ID != a.InstallationID || installation.State != store.BotInstallationReady || installation.RemovedAt != nil {
+	if installation.ID != a.InstallationID || installation.State != store.BotInstallationReady || installation.RemovedAt != nil || installation.Capabilities&musicBotCapability == 0 {
 		return store.BotInstallationRow{}, nil
 	}
 	return installation, nil
+}
+
+func (a *CommunityMusicInteractionAuthority) botCanSpeak(ctx context.Context, channel id.ID) (bool, error) {
+	bits, err := a.Session.ChannelPermissions(ctx, channel)
+	if err != nil {
+		return false, err
+	}
+	return bits&(musicPermissionConnect|musicPermissionSpeak) == musicPermissionConnect|musicPermissionSpeak, nil
 }
 
 func (a *CommunityMusicInteractionAuthority) valid() error {
