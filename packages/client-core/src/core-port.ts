@@ -96,6 +96,12 @@ export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; statu
  *  held), its shown reply count and the latest reply's `recvTs`. */
 export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: number; lastTs: bigint; excerpt: string; }
 export interface RemovalFeedEntry { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
+/** Encrypted local outbox entry for a human removal's op61 evidence. State 1 means POST outcome unknown. */
+export interface ManualRemovalEvidence {
+  proofRequestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; groupId: Id;
+  channelId: Id; messageId: Id; targetSequence: bigint; reason: string; excerpt: string; signedBody: Uint8Array;
+  state: 0 | 1 | 2; createdAt: bigint; expires: bigint; evidenceExpires: bigint;
+}
 export interface HumanInteractionEvent {
   deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
   senderUser: Id; senderDevice: Id; messageId: Id; body: string; operation: number; channelId: Id | null;
@@ -114,6 +120,14 @@ export interface CorePort {
   deviceListDrop(): void;
   sessionSign(nonce: Uint8Array, purpose: 0 | 1): Uint8Array;
   signRemoval(requestId: Id, groupId: Id, targetSeq: bigint, expires: bigint, now: bigint): Uint8Array;
+  prepareManualRemovalEvidence?(proofRequestId: Id, evidenceRequestId: Id, communityId: Id, groupId: Id, channelId: Id,
+    messageId: Id, targetSeq: bigint, reason: string, excerpt: string, createdAt: bigint, expires: bigint, now: bigint): Uint8Array;
+  manualRemovalEvidence?(): ManualRemovalEvidence[];
+  ensureManualRemovalEvidenceRequest?(proofRequestId: Id, candidateRequestId: Id, now: bigint): { requestId: Id; expires: bigint };
+  markManualRemovalSubmitted?(requestId: Id): void;
+  markManualRemovalAccepted?(requestId: Id): void;
+  completeManualRemovalEvidence?(requestId: Id, now: bigint): void;
+  rejectUnsubmittedManualRemoval?(requestId: Id, now: bigint): void;
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
   groups(): GroupInfo[];
@@ -257,6 +271,15 @@ export interface CoreHandle {
       session_sign(nonce: Uint8Array, purpose: number): Uint8Array;
       /** Present after rebuilding the WASM package from a facade that includes moderator removals. */
       sign_removal?(request_id: Uint8Array, group_id: Uint8Array, target_sequence: bigint, expires: bigint, now: bigint): Uint8Array;
+      prepare_manual_removal_evidence?(proof_request_id: Uint8Array, evidence_request_id: Uint8Array, community_id: Uint8Array,
+        group_id: Uint8Array, channel_id: Uint8Array, message_id: Uint8Array, target_sequence: bigint, reason: string,
+        excerpt: string, created_at: bigint, expires: bigint, now: bigint): Uint8Array;
+      manual_removal_evidence?(): Uint8Array;
+      ensure_manual_removal_evidence_request?(proof_request_id: Uint8Array, candidate_request_id: Uint8Array, now: bigint): Uint8Array;
+      mark_manual_removal_submitted?(request_id: Uint8Array): void;
+      mark_manual_removal_accepted?(request_id: Uint8Array): void;
+      complete_manual_removal_evidence?(request_id: Uint8Array, now: bigint): void;
+      reject_unsubmitted_manual_removal?(request_id: Uint8Array, now: bigint): void;
       session_store(token: string, expires: bigint, idle_expires: bigint): void;
       session(): Uint8Array; session_clear(): void;
       key_packages(count: number, last_resort: boolean): Uint8Array;
@@ -501,6 +524,44 @@ export function wrapCore(handle: CoreHandle): CorePort {
     signRemoval: (requestId, groupId, targetSeq, expires, now) => call(() => {
       if (handle.sign_removal === undefined) throw new CoreError('E_CORE_STATE', 'moderation signing is not available in this WASM build');
       return handle.sign_removal(requestId, groupId, targetSeq, expires, now);
+    }),
+    prepareManualRemovalEvidence: (proofRequestId, evidenceRequestId, communityId, groupId, channelId, messageId, targetSeq, reason, excerpt, createdAt, expires, now) => call(() => {
+      if (handle.prepare_manual_removal_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return handle.prepare_manual_removal_evidence(proofRequestId, evidenceRequestId, communityId, groupId, channelId, messageId, targetSeq, reason, excerpt, createdAt, expires, now);
+    }),
+    manualRemovalEvidence: () => call(() => {
+      if (handle.manual_removal_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('manualRemovalEvidence', handle.manual_removal_evidence(), (v) => arr(v).map((row) => {
+        const a = arr(row, 16); const state = u53(a[12] ?? null);
+        if (state > 2) throw new CoreError('E_CORE_DECODE', 'manual removal evidence state is invalid');
+        return { proofRequestId: bin(a[0] ?? null, 16), evidenceRequestId: bin(a[1] ?? null, 16),
+          actorUserId: bin(a[2] ?? null, 16), actorDeviceId: bin(a[3] ?? null, 16), communityId: bin(a[4] ?? null, 16),
+          groupId: bin(a[5] ?? null, 16), channelId: bin(a[6] ?? null, 16), messageId: bin(a[7] ?? null, 16),
+          targetSequence: u64(a[8] ?? null), reason: str(a[9] ?? null), excerpt: str(a[10] ?? null), signedBody: bin(a[11] ?? null),
+          state: state as 0 | 1 | 2, createdAt: u64(a[13] ?? null), expires: u64(a[14] ?? null), evidenceExpires: u64(a[15] ?? null) };
+      }));
+    }),
+    ensureManualRemovalEvidenceRequest: (proofRequestId, candidateRequestId, now) => call(() => {
+      if (handle.ensure_manual_removal_evidence_request === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('ensureManualRemovalEvidenceRequest', handle.ensure_manual_removal_evidence_request(proofRequestId, candidateRequestId, now), (v) => {
+        const a = arr(v, 2); return { requestId: bin(a[0] ?? null, 16), expires: u64(a[1] ?? null) };
+      });
+    }),
+    markManualRemovalSubmitted: (requestId) => call(() => {
+      if (handle.mark_manual_removal_submitted === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.mark_manual_removal_submitted(requestId);
+    }),
+    markManualRemovalAccepted: (requestId) => call(() => {
+      if (handle.mark_manual_removal_accepted === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.mark_manual_removal_accepted(requestId);
+    }),
+    completeManualRemovalEvidence: (requestId, now) => call(() => {
+      if (handle.complete_manual_removal_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.complete_manual_removal_evidence(requestId, now);
+    }),
+    rejectUnsubmittedManualRemoval: (requestId, now) => call(() => {
+      if (handle.reject_unsubmitted_manual_removal === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.reject_unsubmitted_manual_removal(requestId, now);
     }),
     sessionStore: (s) => call(() => handle.session_store(s.token, s.expires, s.idleExpires)),
     session: () => call(() => decoded('session', handle.session(), readSession)),

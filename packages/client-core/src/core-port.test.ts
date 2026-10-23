@@ -76,6 +76,20 @@ it('passes moderator-removal signing inputs directly to ClientCore and returns o
   expect(s.calls).toEqual([{ method: 'sign_removal', args: [requestId, G, 9n, 140n, 110n] }]);
 });
 
+it('bridges the durable manual-removal evidence record and preserves its exact encrypted payload fields', () => {
+  const proof = new Uint8Array(16).fill(0x41); const evidence = new Uint8Array(16).fill(0x42);
+  const body = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+  const row = [proof, evidence, USER, DEV, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', body, 1, 100n, 130n, 160n];
+  const s = stub({
+    prepare_manual_removal_evidence: (...args) => { expect(args).toEqual([proof, evidence, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', 100n, 130n, 100n]); return body; },
+    manual_removal_evidence: () => encode([row]),
+  });
+  expect(s.port.prepareManualRemovalEvidence?.(proof, evidence, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', 100n, 130n, 100n)).toBe(body);
+  expect(s.port.manualRemovalEvidence?.()).toEqual([{ proofRequestId: proof, evidenceRequestId: evidence, actorUserId: USER,
+    actorDeviceId: DEV, communityId: COMM, groupId: G, channelId: CHAN, messageId: MSG, targetSequence: 9n,
+    reason: 'why', excerpt: 'excerpt', signedBody: body, state: 1, createdAt: 100n, expires: 130n, evidenceExpires: 160n }]);
+});
+
 it('passes an opaque human interaction context proof to the dedicated Welcome export', () => {
   const welcomes = encode([[1, G, 2, 9, new Uint8Array([1]), new Uint8Array([2]), new Uint8Array(32)]]);
   const proof = new Uint8Array([0x81, 0x00]);

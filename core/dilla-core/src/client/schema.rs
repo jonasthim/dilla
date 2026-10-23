@@ -308,6 +308,25 @@ CREATE TABLE IF NOT EXISTS app_removal_actor_lists (
   user_id BLOB PRIMARY KEY CHECK(length(user_id)=16), version INTEGER NOT NULL CHECK(version>0),
   list BLOB NOT NULL, credential BLOB NOT NULL CHECK(length(credential)>0)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_manual_removal_evidence (
+  proof_request_id BLOB PRIMARY KEY CHECK(length(proof_request_id)=16 AND proof_request_id != zeroblob(16)),
+  evidence_request_id BLOB NOT NULL CHECK(length(evidence_request_id)=16 AND evidence_request_id != zeroblob(16)),
+  actor_user_id BLOB NOT NULL CHECK(length(actor_user_id)=16 AND actor_user_id != zeroblob(16)),
+  actor_device_id BLOB NOT NULL CHECK(length(actor_device_id)=16 AND actor_device_id != zeroblob(16)),
+  community_id BLOB NOT NULL CHECK(length(community_id)=16 AND community_id != zeroblob(16)),
+  group_id BLOB NOT NULL CHECK(length(group_id)=16 AND group_id != zeroblob(16)),
+  channel_id BLOB NOT NULL CHECK(length(channel_id)=16 AND channel_id != zeroblob(16)),
+  message_id BLOB NOT NULL CHECK(length(message_id)=16 AND message_id != zeroblob(16)),
+  target_sequence INTEGER NOT NULL CHECK(target_sequence>0),
+  reason TEXT NOT NULL CHECK(length(CAST(reason AS BLOB)) BETWEEN 1 AND 1024),
+  excerpt TEXT NOT NULL CHECK(length(CAST(excerpt AS BLOB))<=512),
+  signed_body BLOB NOT NULL CHECK(length(signed_body) BETWEEN 1 AND 512),
+  state INTEGER NOT NULL CHECK(state IN (0,1,2,3)),
+  created_at INTEGER NOT NULL CHECK(created_at>=0),
+  expires INTEGER NOT NULL CHECK(expires>0),
+  evidence_expires INTEGER NOT NULL DEFAULT 0 CHECK(evidence_expires>=0)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS app_manual_removal_evidence_pending ON app_manual_removal_evidence(state,created_at);
 ";
 
 /// Schema 5 (web3.7 public threads): the thread column, added to a store found at schema 4 or

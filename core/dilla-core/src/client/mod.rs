@@ -26,6 +26,7 @@ mod wire;
 pub use error::ClientError;
 pub use identity::{recovery_key_check, session_preimage};
 pub use messages::{mentions_me, mentions_me_with_roles};
+pub use moderation::ManualRemovalEvidence;
 pub use removals::RemovalFeedEntry;
 #[cfg(feature = "test-hooks")]
 pub use schema::test_force_missing_fts5;

@@ -205,6 +205,8 @@ pub(super) fn ingest(
                 }
                 let rev = revision as i64;
                 let target = seq as i64;
+            let proof = RemovalProof::decode(&entry.proof)
+                .map_err(|_| StorageError::Codec("removal proof is malformed".into()))?;
                 if rev <= cursor {
                     let prior: Option<(i64, Vec<u8>, Vec<u8>, i64)> = c.query_row(
                         "SELECT seq,proof,signature,accepted_at FROM app_removal_entries WHERE group_id=?1 AND revision=?2",
@@ -215,6 +217,7 @@ pub(super) fn ingest(
                     }) {
                         return Err(StorageError::Codec("removal feed replay does not match stored revision".into()));
                     }
+                    mark_matching_manual_evidence(c, group_id, &proof)?;
                     continue;
                 }
                 if rev != cursor + 1 {
@@ -222,6 +225,7 @@ pub(super) fn ingest(
                 }
                 c.execute("INSERT INTO app_removal_entries(group_id,revision,seq,proof,signature,accepted_at) VALUES(?1,?2,?3,?4,?5,?6)",
                     params![group_id.as_slice(), rev, target, entry.proof, entry.signature.as_slice(), entry.accepted_at as i64])?;
+                mark_matching_manual_evidence(c, group_id, &proof)?;
                 let seq_revision: Option<i64> = c.query_row(
                     "SELECT revision FROM app_removal_tombstones WHERE group_id=?1 AND seq=?2",
                     params![group_id.as_slice(), target], |r| r.get(0),
@@ -269,6 +273,21 @@ pub(super) fn ingest(
         }
         e
     })
+}
+
+/// Only a proof that has passed `verify_entry_with_list` above can move the durable outbox to
+/// accepted. All local request context is compared so a colliding ID cannot release another
+/// action's evidence.
+fn mark_matching_manual_evidence(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    proof: &RemovalProof,
+) -> Result<(), StorageError> {
+    c.execute(
+        "UPDATE app_manual_removal_evidence SET state=2 WHERE proof_request_id=?1 AND actor_user_id=?2 AND actor_device_id=?3 AND community_id=?4 AND group_id=?5 AND target_sequence=?6 AND state<2",
+        params![proof.request_id.as_bytes().as_slice(), proof.actor_user.as_bytes().as_slice(), proof.actor_device.as_bytes().as_slice(), proof.community_id.as_bytes().as_slice(), group_id.as_slice(), proof.target_seq as i64],
+    )?;
+    Ok(())
 }
 
 pub(super) fn is_tombstoned(

@@ -90,6 +90,77 @@ fn removal_proof_derives_actor_and_signs_exact_domain_for_active_community_group
 }
 
 #[test]
+fn manual_removal_evidence_is_durable_and_follows_the_acceptance_state() {
+    let (mut core, _) = ready_core_with_key(0x49, "moderator");
+    let instance = Instance::generate();
+    core.core
+        .group_create(&GROUP, Some(&COMMUNITY), &CHANNEL, 1, &instance.public())
+        .expect("create group");
+    core.core.group_registered(&GROUP, 1).expect("active group");
+
+    let evidence_id = [0x72; 16];
+    let body = core
+        .core
+        .prepare_manual_removal_evidence(
+            &REQUEST,
+            &evidence_id,
+            &COMMUNITY,
+            &GROUP,
+            &CHANNEL,
+            &[0x73; 16],
+            TARGET_SEQUENCE,
+            "reviewed by moderator",
+            "bounded excerpt",
+            NOW,
+            NOW + 30,
+            NOW,
+        )
+        .expect("persist signed evidence before POST");
+    let pending = core
+        .core
+        .manual_removal_evidence()
+        .expect("read durable evidence");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].proof_request_id, REQUEST);
+    assert_eq!(pending[0].evidence_request_id, evidence_id);
+    assert_eq!(pending[0].signed_body, body);
+    assert_eq!(pending[0].reason, "reviewed by moderator");
+    assert_eq!(pending[0].excerpt, "bounded excerpt");
+    assert_eq!(pending[0].state, 0);
+
+    core.core
+        .mark_manual_removal_submitted(&REQUEST)
+        .expect("mark before POST");
+    assert_eq!(core.core.manual_removal_evidence().unwrap()[0].state, 1);
+    core.core
+        .mark_manual_removal_accepted(&REQUEST)
+        .expect("authoritative acceptance");
+    assert_eq!(core.core.manual_removal_evidence().unwrap()[0].state, 2);
+    let first = core
+        .core
+        .ensure_manual_removal_evidence_request(&REQUEST, &[0x74; 16], NOW)
+        .unwrap();
+    assert_eq!(first, (evidence_id, NOW + 30));
+    let rotated = core
+        .core
+        .ensure_manual_removal_evidence_request(&REQUEST, &[0x75; 16], NOW + 31)
+        .unwrap();
+    assert_eq!(rotated, ([0x75; 16], NOW + 61));
+    let persisted = &core.core.manual_removal_evidence().unwrap()[0];
+    assert_eq!(persisted.evidence_request_id, [0x75; 16]);
+    assert_eq!(persisted.evidence_expires, NOW + 61);
+    let stable = core
+        .core
+        .ensure_manual_removal_evidence_request(&REQUEST, &[0x76; 16], NOW + 32)
+        .unwrap();
+    assert_eq!(stable, rotated);
+    core.core
+        .complete_manual_removal_evidence(&REQUEST, NOW + 1)
+        .expect("evidence accepted");
+    assert!(core.core.manual_removal_evidence().unwrap().is_empty());
+}
+
+#[test]
 fn removal_signing_rejects_invalid_window_unbound_and_interaction_groups() {
     let (mut core, _) = ready_core_with_key(0x42, "moderator");
     let instance = Instance::generate();

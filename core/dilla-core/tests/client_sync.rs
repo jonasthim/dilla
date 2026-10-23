@@ -111,8 +111,45 @@ fn signed_removal(
 #[test]
 fn moderator_removal_feed_is_contiguous_replay_safe_persistent_and_applies_before_history() {
     let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
-    let (_, seq) = b.send(&mut relay, &GROUP, "removed before sync", NOW + 1);
+    let own_list = b.core.device_list_body().expect("own signed list");
+    let actor_user = b.user;
+    let actor_device = b.device;
+    ingest_list_body(&mut b, &relay, actor_user, actor_device, &own_list);
+    let (msg_id, seq) = b.send(&mut relay, &GROUP, "removed before sync", NOW + 1);
     let entry = signed_removal(&mut b, &GROUP, 1, seq);
+    b.core
+        .prepare_manual_removal_evidence(
+            &[91; 16],
+            &[92; 16],
+            &COMMUNITY,
+            &GROUP,
+            &CHANNEL,
+            &msg_id,
+            seq,
+            "manual reason",
+            "bounded excerpt",
+            NOW,
+            NOW + 30,
+            NOW,
+        )
+        .expect("durably save evidence before posting removal");
+    assert_eq!(b.core.manual_removal_evidence().unwrap()[0].state, 0);
+    assert_eq!(
+        b.core
+            .ingest_removals(&GROUP, std::slice::from_ref(&entry))
+            .expect("actor feed receipt"),
+        1
+    );
+    let accepted = b.core.manual_removal_evidence().unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(
+        accepted[0].state, 2,
+        "only the verified feed receipt releases evidence"
+    );
+    assert_eq!(accepted[0].proof_request_id, [91; 16]);
+    assert_eq!(accepted[0].target_sequence, seq);
+    assert_eq!(accepted[0].actor_user_id, b.user);
+    assert_eq!(accepted[0].actor_device_id, b.device);
     assert_eq!(
         a.core
             .ingest_removals(&GROUP, std::slice::from_ref(&entry))

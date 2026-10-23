@@ -17,7 +17,7 @@ import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
+  type ManualRemovalEvidence, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op, communityChangedOf, voiceStateOf, type Frame } from '../gateway/frames';
@@ -41,6 +41,7 @@ import {
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
+import { recoverModerationRemovals } from '../sync/removals';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
@@ -1375,7 +1376,7 @@ export class Controller {
   }
 
   /** Sends a revision-bound built-in Bot request. The result describes ciphertext upload only. */
-  private async humanInteractionRequest(command: Extract<Command, { m: 'humanInteractionRequest' }>): Promise<{
+  private async humanInteractionRequest(command: Extract<Command, { m: 'humanInteractionRequest' }>, reservedExpires?: bigint): Promise<{
     requestId: string; upload: 'accepted' | 'pending' | 'rejected' | 'unknown';
   }> {
     const { communityId: communityHex, channelId: channelHex, requestId: requestHex, operation } = command;
@@ -1405,7 +1406,7 @@ export class Controller {
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
       const now = BigInt(Math.floor(this.deps.now() / 1000));
-      let requestExpires = mutation ? now + 30n : null;
+      let requestExpires = mutation ? (reservedExpires ?? now + 30n) : null;
       const request = { requestId, communityId, channelId, operation, revision: mutation ? BigInt(command.revision!) : null,
         expires: requestExpires, args };
       if (operation === 63) {
@@ -2070,6 +2071,7 @@ export class Controller {
     // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
     // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
     this.calls.startSweep();
+    void this.barrier.track(this.resumeManualRemovalEvidence()).catch(() => undefined);
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -4844,25 +4846,83 @@ export class Controller {
     const bits = channelBitsOf({ owner, everyoneId: access.everyoneId, roles, members, overwrites: overwrites[channelId] ?? [] }, me);
     if (bits === null || (bits & PERM.manageMessages) === 0) throw new Refusal('E_FORBIDDEN', 'manage messages permission required');
     const requestId = crypto.getRandomValues(new Uint8Array(16));
+    const evidenceRequestId = crypto.getRandomValues(new Uint8Array(16));
     const now = BigInt(Math.floor(this.deps.now() / 1000));
-    const signed = core.signRemoval(requestId, group.groupId, seq, now + 30n, now);
+    if (core.prepareManualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined) {
+      throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    }
+    const signed = core.prepareManualRemovalEvidence(requestId, evidenceRequestId, fromHex(communityId), group.groupId,
+      fromHex(channelId), fromHex(msgId), seq, reason, excerpt, now, now + 30n, now);
+    // This durable transition precedes the request. A restart can now distinguish "never submitted"
+    // from "POST may have succeeded" and only ever retries the same proof ID and signed bytes.
+    core.markManualRemovalSubmitted(requestId);
     await this.routes.postModerationRemoval(group.groupId, signed);
+    core.markManualRemovalAccepted(requestId);
     this.refreshTimeline(channelId, group.groupId);
-    // Keep the action request ID in op61 and send its evidence only after the
-    // server has accepted the signed removal.
     const proofRequestId = toHex(requestId);
-    const evidenceRequestId = toHex(crypto.getRandomValues(new Uint8Array(16)));
+    const evidenceRequestIdHex = toHex(evidenceRequestId);
     let evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
     try {
-      const evidence = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId, channelId: null,
-        requestId: evidenceRequestId, operation: 61, args: [proofRequestId, reason, excerpt], revision: '0' });
+      const evidence = await this.uploadManualRemovalEvidence({ proofRequestId, evidenceRequestId: evidenceRequestIdHex,
+        communityId, reason, excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
       evidenceUpload = evidence.upload;
+      if (evidenceUpload === 'accepted') core.completeManualRemovalEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
     } catch {
       // The removal is already accepted. Return its status separately so the page
-      // can retry evidence with these same IDs without issuing another removal.
+      // can see its evidence state; the encrypted outbox resumes it without another removal.
       evidenceUpload = 'unknown';
     }
-    return { removal: 'accepted', proofRequestId, evidenceRequestId, evidenceUpload };
+    return { removal: 'accepted', proofRequestId, evidenceRequestId: evidenceRequestIdHex, evidenceUpload };
+  }
+
+  /** Reconcile crash-interrupted removals against the verified feed, then resume their same-ID op61 evidence. */
+  private async resumeManualRemovalEvidence(): Promise<void> {
+    const core = this.core;
+    if (core?.manualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined) return;
+    const initial = core.manualRemovalEvidence();
+    for (const saved of initial) {
+      if (this.revoked() || this.wiping || this.storeCleared) return;
+      const group = core.groups().find((row) => toHex(row.groupId) === toHex(saved.groupId));
+      if (group?.kind !== 0 || group.state !== 2 || group.communityId === null || toHex(group.communityId) !== toHex(saved.communityId)) continue;
+
+      if (saved.state === 1) {
+        // Feed ingestion promotes only an authenticated proof matching this exact actor, device,
+        // group, community and sequence. A failed lookup leaves the outcome unknown.
+        try { await recoverModerationRemovals(core, this.routes, saved.groupId); } catch { /* retry next ready */ }
+      }
+      let current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
+      if (current === undefined) continue;
+      if (current.state === 0 || current.state === 1) {
+        const now = BigInt(Math.floor(this.deps.now() / 1000));
+        if (current.expires <= now) {
+          if (current.state === 0) core.rejectUnsubmittedManualRemoval?.(current.proofRequestId, now);
+          continue; // A submitted proof stays unknown unless the verified feed resolves it.
+        }
+        try {
+          core.markManualRemovalSubmitted(current.proofRequestId);
+          await this.routes.postModerationRemoval(current.groupId, current.signedBody);
+          core.markManualRemovalAccepted(current.proofRequestId);
+        } catch { continue; } // exact replay is server-idempotent; state 1 remains an explicit unknown.
+        current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
+      }
+      if (current?.state !== 2) continue;
+      try {
+        const result = await this.uploadManualRemovalEvidence({ proofRequestId: toHex(current.proofRequestId),
+          evidenceRequestId: toHex(current.evidenceRequestId), communityId: toHex(current.communityId),
+          reason: current.reason, excerpt: current.excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
+        if (result.upload === 'accepted') core.completeManualRemovalEvidence(current.proofRequestId, BigInt(Math.floor(this.deps.now() / 1000)));
+      } catch { /* same encrypted evidence remains for the next ready */ }
+    }
+  }
+
+  private uploadManualRemovalEvidence(input: { proofRequestId: string; evidenceRequestId: string; communityId: string; reason: string; excerpt: string; now: bigint }) {
+    const core = this.requireCore();
+    if (core.ensureManualRemovalEvidenceRequest === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    const reserved = core.ensureManualRemovalEvidenceRequest(fromHex(input.proofRequestId), crypto.getRandomValues(new Uint8Array(16)), input.now);
+    return this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: input.communityId, channelId: null,
+      requestId: toHex(reserved.requestId), operation: 61, args: [input.proofRequestId, input.reason, input.excerpt], revision: '0' }, reserved.expires);
   }
 
   /** Ruling 28: the worker does not de-duplicate reactions; the core folds them per user. */

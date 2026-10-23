@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode } from '../cbor';
-import { encodeBotResponse } from '../bot/protocol';
+import { encodeBotResponse, encodeRemovalProof } from '../bot/protocol';
 import { Enrol } from '../account/enrol';
 import { FakeCore } from '../testing/fake-core';
 import { FakeServer, NOW_S as FAKE_NOW_S, sessionFor } from '../testing/fake-server';
@@ -19,6 +19,93 @@ import type { FromWorker } from './protocol';
 import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('resumes accepted removal evidence after restart without posting another removal', async () => {
+    const w = world();
+    const proofRequestId = new Uint8Array(16).fill(0x71);
+    const evidenceRequestId = new Uint8Array(16).fill(0x72);
+    const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3,
+      targetId: new Uint8Array(16).fill(0x53) });
+    w.state.manualEvidence.push({ proofRequestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE,
+      communityId: COMMUNITY, groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x73),
+      targetSequence: 3n, reason: 'persisted reason', excerpt: 'persisted excerpt', signedBody, state: 2,
+      createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 0n });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request[1]).toEqual(evidenceRequestId);
+    expect(request[7]).toEqual([proofRequestId, 'persisted reason', 'persisted excerpt']);
+    expect(w.core.completeManualRemovalEvidence).toHaveBeenCalledWith(proofRequestId, 1_700_000_000n);
+  });
+
+  it('rotates an expired op61 envelope after restart while preserving proof and exact evidence', async () => {
+    const w = world({ now: () => 1_700_000_040_000 });
+    const proofRequestId = new Uint8Array(16).fill(0x77);
+    const oldEvidenceRequestId = new Uint8Array(16).fill(0x78);
+    const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3,
+      targetId: new Uint8Array(16).fill(0x53) });
+    w.state.manualEvidence.push({ proofRequestId, evidenceRequestId: oldEvidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE,
+      communityId: COMMUNITY, groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x79),
+      targetSequence: 3n, reason: 'persisted reason', excerpt: 'persisted excerpt', signedBody, state: 2,
+      createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 1_700_000_030n });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+    const [proof, candidate, now] = w.core.ensureManualRemovalEvidenceRequest.mock.calls[0];
+    expect(proof).toEqual(proofRequestId);
+    expect(now).toBe(1_700_000_040n);
+    expect(candidate).not.toEqual(oldEvidenceRequestId);
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request[1]).not.toEqual(oldEvidenceRequestId);
+    expect(request[6]).toBe(1_700_000_070n);
+    expect(request[7]).toEqual([proofRequestId, 'persisted reason', 'persisted excerpt']);
+  });
+
+  it('uses the authenticated removal feed to resolve an interrupted POST before op61 and avoids replaying the removal', async () => {
+    const w = world();
+    const proofRequestId = new Uint8Array(16).fill(0x74);
+    const evidenceRequestId = new Uint8Array(16).fill(0x75);
+    const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+    const saved = { proofRequestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE, communityId: COMMUNITY,
+      groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x76), targetSequence: 3n,
+      reason: 'recovered reason', excerpt: 'recovered excerpt', signedBody, state: 1 as 0 | 1 | 2,
+      createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 0n };
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3,
+      targetId: new Uint8Array(16).fill(0x53) });
+    w.state.manualEvidence.push(saved);
+    const proof = encodeRemovalProof({ requestId: proofRequestId, actorUser: USER, actorDevice: DEVICE,
+      communityId: COMMUNITY, groupId: GROUP, targetSeq: 3n, expires: 1_700_000_030n });
+    const getModerationRemovals = vi.fn(() => Promise.resolve({
+      rows: [{ revision: 1n, proof, signature: new Uint8Array(64).fill(7), acceptedAt: 1_700_000_001n }], nextRevision: 1n,
+    }));
+    Object.assign(w.routes, { getModerationRemovals });
+    const signedList = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+    w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedList });
+    w.routes.getDeviceListHistory.mockResolvedValue({ raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n });
+    w.core.ingestRemoval.mockImplementation(() => { saved.state = 2; return 1n; });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(getModerationRemovals).toHaveBeenCalledWith(GROUP, 0n, 250);
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request[1]).toEqual(evidenceRequestId);
+    expect(request[7]).toEqual([proofRequestId, 'recovered reason', 'recovered excerpt']);
+  });
+
   it('checks the persisted instance signer pin on restart before entering ready', async () => {
     const w = world();
     await toReady(w);
@@ -389,7 +476,8 @@ describe('Controller', () => {
     const accepted = w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } };
     expect(accepted.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
     expect(accepted.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
-    expect(w.core.signRemoval).toHaveBeenCalledWith(expect.any(Uint8Array), GROUP, 3n, 1_700_000_030n, 1_700_000_000n);
+    expect(w.core.prepareManualRemovalEvidence).toHaveBeenCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), COMMUNITY,
+      GROUP, CHANNEL, w.state.rows[0].msgId, 3n, 'reviewed by moderator', 'bounded excerpt', 1_700_000_000n, 1_700_000_030n, 1_700_000_000n);
     expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
     const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
     const evidenceRequest = decode(prepared[3]) as unknown[];
@@ -397,11 +485,12 @@ describe('Controller', () => {
     expect(evidenceRequest[5]).toBe(0n);
     expect(evidenceRequest[6]).toBe(1_700_000_030n);
     expect(evidenceRequest[1]).toEqual(prepared[0]);
-    expect(evidenceRequest[1]).not.toEqual(w.core.signRemoval.mock.calls[0][0]);
+    const removalRequest = w.core.prepareManualRemovalEvidence.mock.calls[0];
+    expect(evidenceRequest[1]).toEqual(prepared[0]);
     expect((w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } }).value)
-      .toMatchObject({ proofRequestId: toHex(w.core.signRemoval.mock.calls[0][0]), evidenceRequestId: toHex(prepared[0]) });
-    expect(evidenceRequest[7]).toEqual([w.core.signRemoval.mock.calls[0][0], 'reviewed by moderator', 'bounded excerpt']);
-    expect(prepared[0]).not.toEqual(w.core.signRemoval.mock.calls[0][0]);
+      .toMatchObject({ proofRequestId: toHex(removalRequest[0]), evidenceRequestId: toHex(removalRequest[1]) });
+    expect(evidenceRequest[7]).toEqual([removalRequest[0], 'reviewed by moderator', 'bounded excerpt']);
+    expect(w.core.markManualRemovalSubmitted.mock.invocationCallOrder[0]).toBeLessThan(w.routes.postModerationRemoval.mock.invocationCallOrder[0]);
     expect(w.routes.postModerationRemoval.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionSendPrepare.mock.invocationCallOrder[0]);
     expect(w.routes.postMessage).toHaveBeenCalledWith(new Uint8Array(16).fill(0x52), expect.any(Uint8Array));
 
@@ -429,7 +518,7 @@ describe('Controller', () => {
       : { channelId: toHex(channelId), msgId: label === 'mismatched message id' ? 'ff'.repeat(16) : actualMsgId, seq: '3' };
     w.call(10_211, { m: 'moderateRemoveMessage', ...request, reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_211)).toMatchObject({ ok: false, error: { code } }));
-    expect(w.core.signRemoval).not.toHaveBeenCalled();
+    expect(w.core.prepareManualRemovalEvidence).not.toHaveBeenCalled();
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
   });
 
@@ -468,7 +557,7 @@ describe('Controller', () => {
     w.state.rows.push(strangerRow(3));
     w.call(10_212, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3', reason, excerpt });
     await vi.waitFor(() => expect(w.ret(10_212)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
-    expect(w.core.signRemoval).not.toHaveBeenCalled();
+    expect(w.core.prepareManualRemovalEvidence).not.toHaveBeenCalled();
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
   });
 
@@ -488,7 +577,7 @@ describe('Controller', () => {
     w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_221)).toMatchObject({ ok: false,
       error: { code: label === 'denied ManageMessages' ? 'E_FORBIDDEN' : 'E_NOT_READY' } }));
-    expect(w.core.signRemoval).not.toHaveBeenCalled();
+    expect(w.core.prepareManualRemovalEvidence).not.toHaveBeenCalled();
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
   });
 

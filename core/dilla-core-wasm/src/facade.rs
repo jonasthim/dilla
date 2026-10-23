@@ -3,7 +3,8 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 
-use dilla_core::client::{ClientCore, ClientError, RemovalFeedEntry};
+use dilla_core::cbor::Encoder;
+use dilla_core::client::{ClientCore, ClientError, ManualRemovalEvidence, RemovalFeedEntry};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -21,6 +22,31 @@ const E_PAUSED: &str = "E_STORE_PAUSED: the store is paused";
 const E_NOT_OPEN: &str = "E_CORE_STATE: the core is not open";
 const E_RESUMING: &str = "E_CORE_STATE: resume in progress";
 const E_BUSY: &str = "E_CORE_STATE: the core is busy";
+
+fn encode_manual_removal_evidence(rows: &[ManualRemovalEvidence]) -> Vec<u8> {
+    let mut out = Encoder::new();
+    out.array(rows.len());
+    for row in rows {
+        out.array(16)
+            .bytes(&row.proof_request_id)
+            .bytes(&row.evidence_request_id)
+            .bytes(&row.actor_user_id)
+            .bytes(&row.actor_device_id)
+            .bytes(&row.community_id)
+            .bytes(&row.group_id)
+            .bytes(&row.channel_id)
+            .bytes(&row.message_id)
+            .uint(row.target_sequence)
+            .text(&row.reason)
+            .text(&row.excerpt)
+            .bytes(&row.signed_body)
+            .uint(u64::from(row.state))
+            .uint(row.created_at)
+            .uint(row.expires)
+            .uint(row.evidence_expires);
+    }
+    out.into_vec()
+}
 
 #[doc(hidden)]
 pub fn fixed_arg<const N: usize>(name: &'static str, bytes: &[u8]) -> Result<[u8; N], ClientError> {
@@ -389,6 +415,92 @@ impl CoreHandle {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.sign_removal(&request_id, &group_id, target_sequence, expires, now))
             .map(Vec::into_boxed_slice)
+    }
+    /// Persists all manual-removal evidence and its exact signed body before the caller POSTs it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_manual_removal_evidence(
+        &self,
+        proof_request_id: &[u8],
+        evidence_request_id: &[u8],
+        community_id: &[u8],
+        group_id: &[u8],
+        channel_id: &[u8],
+        message_id: &[u8],
+        target_sequence: u64,
+        reason: &str,
+        excerpt: &str,
+        created_at: u64,
+        expires: u64,
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let proof_request_id = js_fixed_arg::<16>("proof_request_id", proof_request_id)?;
+        let evidence_request_id = js_fixed_arg::<16>("evidence_request_id", evidence_request_id)?;
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let channel_id = js_fixed_arg::<16>("channel_id", channel_id)?;
+        let message_id = js_fixed_arg::<16>("message_id", message_id)?;
+        self.with_core(|c| {
+            c.prepare_manual_removal_evidence(
+                &proof_request_id,
+                &evidence_request_id,
+                &community_id,
+                &group_id,
+                &channel_id,
+                &message_id,
+                target_sequence,
+                reason,
+                excerpt,
+                created_at,
+                expires,
+                now,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
+    /// CBOR list of unresolved manual-removal evidence rows; the encrypted SQLite store is authoritative.
+    pub fn manual_removal_evidence(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.manual_removal_evidence())
+            .map(|rows| encode_manual_removal_evidence(&rows).into_boxed_slice())
+    }
+
+    pub fn ensure_manual_removal_evidence_request(
+        &mut self,
+        proof_request_id: &[u8],
+        candidate_request_id: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let proof_request_id = fixed_arg::<16>("proof_request_id", proof_request_id)?;
+        let candidate_request_id = fixed_arg::<16>("candidate_request_id", candidate_request_id)?;
+        let (request_id, expires) = self.with_core(|c| {
+            c.ensure_manual_removal_evidence_request(&proof_request_id, &candidate_request_id, now)
+        })?;
+        let mut out = Encoder::new();
+        out.array(2).bytes(&request_id).uint(expires);
+        Ok(out.into_vec().into_boxed_slice())
+    }
+    pub fn mark_manual_removal_submitted(&self, request_id: &[u8]) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.mark_manual_removal_submitted(&request_id))
+    }
+    pub fn mark_manual_removal_accepted(&self, request_id: &[u8]) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.mark_manual_removal_accepted(&request_id))
+    }
+    pub fn complete_manual_removal_evidence(
+        &self,
+        request_id: &[u8],
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.complete_manual_removal_evidence(&request_id, now))
+    }
+    pub fn reject_unsubmitted_manual_removal(
+        &self,
+        request_id: &[u8],
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.reject_unsubmitted_manual_removal(&request_id, now))
     }
     /// Bounded hint for refreshing a previously trusted moderator before ingesting a removal entry.
     pub fn removal_actor_history_version(
