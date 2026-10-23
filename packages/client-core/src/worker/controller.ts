@@ -4886,7 +4886,7 @@ export class Controller {
       if (evidenceUpload === 'accepted') core.completeManualRemovalEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
     } catch {
       // The removal is already accepted. Return its status separately so the page
-      // can see its evidence state; the encrypted outbox resumes it without another removal.
+      // can see its evidence state; the durable outbox resumes it without another removal.
       evidenceUpload = 'unknown';
     }
     return { removal: 'accepted', proofRequestId, evidenceRequestId: evidenceRequestIdHex, evidenceUpload };
@@ -4985,7 +4985,7 @@ export class Controller {
           evidenceRequestId: toHex(current.evidenceRequestId), communityId: toHex(current.communityId),
           reason: current.reason, excerpt: current.excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
         if (result.upload === 'accepted') core.completeManualRemovalEvidence(current.proofRequestId, BigInt(Math.floor(this.deps.now() / 1000)));
-      } catch { /* same encrypted evidence remains for the next ready */ }
+      } catch { /* same durable evidence remains for the next ready */ }
     }
   }
 

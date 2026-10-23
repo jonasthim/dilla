@@ -76,7 +76,7 @@ it('passes moderator-removal signing inputs directly to ClientCore and returns o
   expect(s.calls).toEqual([{ method: 'sign_removal', args: [requestId, G, 9n, 140n, 110n] }]);
 });
 
-it('bridges the durable manual-removal evidence record and preserves its exact encrypted payload fields', () => {
+  it('bridges the durable manual-removal evidence record and preserves its exact payload fields', () => {
   const proof = new Uint8Array(16).fill(0x41); const evidence = new Uint8Array(16).fill(0x42);
   const body = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
   const row = [proof, evidence, USER, DEV, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', body, 1, 100n, 130n, 160n];

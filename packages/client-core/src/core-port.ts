@@ -96,7 +96,7 @@ export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; statu
  *  held), its shown reply count and the latest reply's `recvTs`. */
 export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: number; lastTs: bigint; excerpt: string; }
 export interface RemovalFeedEntry { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
-/** Encrypted local outbox entry for a human removal's op61 evidence. State 1 means POST outcome unknown. */
+/** Protected local outbox entry for a human removal's op61 evidence. State 1 means POST outcome unknown. */
 export interface ManualRemovalEvidence {
   proofRequestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; groupId: Id;
   channelId: Id; messageId: Id; targetSequence: bigint; reason: string; excerpt: string; signedBody: Uint8Array;
