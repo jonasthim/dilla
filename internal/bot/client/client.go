@@ -501,6 +501,9 @@ func expectedStatus(method, path string) (int, bool) {
 	}
 	if len(parts) >= 2 && parts[0] == "bot-runtime" && parts[1] == "installations" {
 		if len(parts) == 6 && parts[3] == "interaction-groups" {
+			if parts[5] == "heal" && (method == http.MethodGet || method == http.MethodPost) {
+				return 200, true
+			}
 			if method == http.MethodGet && (parts[5] == "info" || parts[5] == "handshakes" || parts[5] == "messages") {
 				return 200, true
 			}

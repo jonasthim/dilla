@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -73,6 +74,49 @@ func TestBotInteractionGroupReadsUseInstallationScopedRoutes(t *testing.T) {
 	}
 	if seen != 4 {
 		t.Fatalf("scoped route calls = %d, want 4", seen)
+	}
+}
+
+func TestBotInteractionHealUsesInstallationScopedRoutes(t *testing.T) {
+	installation, group := testID(7), testID(8)
+	base := "/v1/bot-runtime/installations/" + installation.String() + "/interaction-groups/" + group.String() + "/heal"
+	var posted bool
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, http.StatusOK, discovery(testID(99)))
+			return
+		}
+		if r.URL.Path != base {
+			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
+			reply(w, http.StatusNotFound, []any{"E_NOT_FOUND", "", nil})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			reply(w, http.StatusOK, []any{uint64(2), uint64(9), uint64(3), uint64(8), uint64(1)})
+		case http.MethodPost:
+			posted = true
+			var body []any
+			if err := cborx.Unmarshal(readRequest(t, r), &body); err != nil || len(body) != 3 ||
+				!bytes.Equal(body[0].([]byte), []byte{1, 2}) || len(body[1].([]any)) != 0 || body[2] != nil {
+				t.Errorf("heal request = %v, %v", body, err)
+			}
+			reply(w, http.StatusOK, []any{uint64(2), uint64(10)})
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}, time.Second)
+	s, err := c.Session("bot-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.BotInteractionHealStatus(context.Background(), installation, group)
+	if err != nil || !status.NeedsHeal || status.Generation != 3 || status.NeedFromSequence != 8 {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	result, err := s.BotInteractionHeal(context.Background(), installation, group, []byte{1, 2}, nil, nil)
+	if err != nil || !posted || result.Epoch != 2 || result.NextSequence != 10 {
+		t.Fatalf("result=%+v posted=%v err=%v", result, posted, err)
 	}
 }
 

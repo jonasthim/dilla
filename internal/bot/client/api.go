@@ -1185,12 +1185,16 @@ func (s *Session) Proposals(ctx context.Context, group id.ID) ([][]any, error) {
 
 // HealStatus reports whether this server generation needs the client's post-restore snapshot.
 func (s *Session) HealStatus(ctx context.Context, group id.ID) (HealStatus, error) {
-	var out HealStatus
 	g, err := pathID(group)
 	if err != nil {
-		return out, err
+		return HealStatus{}, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "groups/"+g+"/heal", nil, nil, MaxSmallBody, false)
+	return s.healStatusAt(ctx, "groups/"+g+"/heal")
+}
+
+func (s *Session) healStatusAt(ctx context.Context, path string) (HealStatus, error) {
+	var out HealStatus
+	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}
@@ -1209,12 +1213,76 @@ func (s *Session) HealStatus(ctx context.Context, group id.ID) (HealStatus, erro
 	return out, nil
 }
 
+// BotInteractionHealStatus reports whether a restored private interaction group
+// needs a member-authenticated MLS heal. The scoped route returns the ordinary
+// heal cursor plus an explicit epoch-unknown flag.
+func (s *Session) BotInteractionHealStatus(ctx context.Context, installation, group id.ID) (InteractionHealStatus, error) {
+	path, err := botInteractionHealPath(installation, group)
+	if err != nil {
+		return InteractionHealStatus{}, err
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	if err != nil {
+		return InteractionHealStatus{}, err
+	}
+	a, err := decode(raw, 5)
+	if err != nil {
+		return InteractionHealStatus{}, err
+	}
+	var out InteractionHealStatus
+	values := []*uint64{&out.Epoch, &out.NextSequence, &out.Generation, &out.NeedFromSequence}
+	for i, value := range values {
+		n, ok := asUint(a[i])
+		if !ok {
+			return InteractionHealStatus{}, ErrProtocol
+		}
+		*value = n
+	}
+	needsHeal, ok := asUint(a[4])
+	if !ok || needsHeal > 1 {
+		return InteractionHealStatus{}, ErrProtocol
+	}
+	out.NeedsHeal = needsHeal == 1
+	return out, nil
+}
+
+func botInteractionHealPath(installation, group id.ID) (string, error) {
+	inst, err := pathID(installation)
+	if err != nil {
+		return "", err
+	}
+	g, err := pathID(group)
+	if err != nil {
+		return "", err
+	}
+	return "bot-runtime/installations/" + inst + "/interaction-groups/" + g + "/heal", nil
+}
+
 // Heal uploads a client-authenticated snapshot and its bounded handshake tail after a restore.
 // Each tail row is [sequence, epoch, kind, sender-or-null, blob].
 func (s *Session) Heal(ctx context.Context, group id.ID, groupInfo []byte, tail [][]any, ratchetTree []byte) (HealResult, error) {
+	g, err := pathID(group)
+	if err != nil {
+		return HealResult{}, err
+	}
+	return s.healAt(ctx, "groups/"+g+"/heal", groupInfo, tail, ratchetTree)
+}
+
+func (s *Session) BotInteractionHeal(ctx context.Context, installation, group id.ID, groupInfo []byte, tail [][]any, ratchetTree []byte) (HealResult, error) {
+	path, err := botInteractionHealPath(installation, group)
+	if err != nil {
+		return HealResult{}, err
+	}
+	return s.healAt(ctx, path, groupInfo, tail, ratchetTree)
+}
+
+func (s *Session) healAt(ctx context.Context, path string, groupInfo []byte, tail [][]any, ratchetTree []byte) (HealResult, error) {
 	var out HealResult
 	if len(groupInfo) == 0 || len(tail) > 64 {
 		return out, ErrInvalidConfig
+	}
+	if tail == nil {
+		tail = make([][]any, 0)
 	}
 	for _, row := range tail {
 		if len(row) != 5 {
@@ -1241,15 +1309,11 @@ func (s *Session) Heal(ctx context.Context, group id.ID, groupInfo []byte, tail 
 			return out, ErrInvalidConfig
 		}
 	}
-	g, err := pathID(group)
-	if err != nil {
-		return out, err
-	}
 	b, err := encode([]any{groupInfo, tail, nullableBytes(ratchetTree)})
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/heal", nil, b, MaxDSBody, true)
+	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, b, MaxDSBody, true)
 	if err != nil {
 		return out, err
 	}

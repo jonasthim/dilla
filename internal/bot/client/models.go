@@ -60,6 +60,10 @@ type GroupTree struct {
 }
 type SequenceResult struct{ Sequence, Epoch uint64 }
 type HealStatus struct{ Epoch, NextSequence, Generation, NeedFromSequence uint64 }
+type InteractionHealStatus struct {
+	HealStatus
+	NeedsHeal bool
+}
 type HealResult struct{ Epoch, NextSequence uint64 }
 type MessageResult struct {
 	Sequence    uint64
