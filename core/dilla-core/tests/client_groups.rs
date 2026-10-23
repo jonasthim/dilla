@@ -497,7 +497,29 @@ fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_res
         )),
         "E_CORE_STATE"
     );
+    b.probe
+        .lock()
+        .expect("probe")
+        .execute(
+            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
+            rusqlite::params![GROUP.as_slice(), [0x78u8; 16].as_slice()],
+        )
+        .expect("record acknowledged interaction response claim");
     b.core.group_discard(&GROUP).expect("discard");
+    let preserved: i64 = b
+        .probe
+        .lock()
+        .expect("probe")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("read response claim after preserving history");
+    assert_eq!(
+        preserved, 1,
+        "resync discard must retain response claims with message history"
+    );
     let row = b.group(&GROUP).expect("the row stays");
     assert_eq!(row.state, 3);
     assert_eq!(

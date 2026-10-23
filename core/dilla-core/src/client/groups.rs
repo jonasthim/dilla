@@ -589,10 +589,6 @@ impl ClientCore {
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],
                 )?;
-                c.execute(
-                    "DELETE FROM app_human_interaction_response_claims WHERE group_id=?1",
-                    [id.as_slice()],
-                )?;
                 if r.state == STATE_JOINING && r.resync == 1 {
                     c.execute(
                         "UPDATE app_groups SET state=3,resync=0,epoch=0,pending_commit=0 WHERE group_id=?1",
@@ -606,6 +602,10 @@ impl ClientCore {
                         [id.as_slice()],
                     )?;
                 } else {
+                    c.execute(
+                        "DELETE FROM app_human_interaction_response_claims WHERE group_id=?1",
+                        [id.as_slice()],
+                    )?;
                     for table in [
                         "app_handshake_tail",
                         "app_messages",
