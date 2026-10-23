@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { voiceMusicAdapter, type VoiceMusicAdapter } from '@dilla/client-core';
+import { VoiceMusicError, voiceMusicAdapter, type VoiceMusicAdapter } from '@dilla/client-core';
 import { t } from '../../strings/index.ts';
 
 function time(ms: number): string {
@@ -9,7 +9,8 @@ function time(ms: number): string {
 
 const RANGE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 
-function isSpotifyURL(value: string): boolean {
+function isSpotifyInput(value: string): boolean {
+  if (/^spotify:(?:track|album|playlist):/iu.test(value.trim())) return true;
   try {
     const host = new URL(value).hostname.toLowerCase();
     return host === 'spotify.link' || host === 'spotify.com' || host.endsWith('.spotify.com');
@@ -36,7 +37,7 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
     channelId: string; adapter: VoiceMusicAdapter; items: Awaited<ReturnType<VoiceMusicAdapter['search']>>;
   } | null>(null);
   const [queueInput, setQueueInput] = useState('');
-  const [enqueueMessage, setEnqueueMessage] = useState<'idle' | 'pending' | 'added' | 'error' | 'spotify'>('idle');
+  const [enqueueMessage, setEnqueueMessage] = useState<'idle' | 'pending' | 'added' | 'error' | 'spotify-unavailable' | 'spotify-busy'>('idle');
   const searchSequence = useRef(0);
   const searchContext = useRef({ channelId, adapter });
   searchContext.current = { channelId, adapter };
@@ -128,7 +129,7 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
       if (query.length === 0) setSearchMessage('error');
       return;
     }
-    if (isSpotifyURL(query)) {
+    if (isSpotifyInput(query)) {
       setSearchResults(null);
       setSearchMessage('spotify');
       return;
@@ -157,18 +158,15 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
         await adapter.enqueue(channelId, input);
         setEnqueueMessage('added');
         setQueueInput('');
-      } catch {
-        setEnqueueMessage('error');
+      } catch (error) {
+        setEnqueueMessage(error instanceof VoiceMusicError && (error.code === 'spotify-unavailable' || error.code === 'spotify-busy')
+          ? error.code : 'error');
       }
     });
   };
   const submitQueueInput = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const input = queueInput.trim();
-    if (isSpotifyURL(input)) {
-      setEnqueueMessage('spotify');
-      return;
-    }
     if (input.length === 0) {
       setEnqueueMessage('error');
       return;
@@ -246,7 +244,7 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
           <button type="submit" disabled={searching}>{t('voice.music.searchAction')}</button>
         </form>
         {searching && <p role="status">{t('voice.music.searching')}</p>}
-        {searchMessage !== 'none' && <p role="status">{t(searchMessage === 'spotify' ? 'voice.music.spotifyUnavailable'
+        {searchMessage !== 'none' && <p role="status">{t(searchMessage === 'spotify' ? 'voice.music.searchTextOnly'
           : searchMessage === 'empty' ? 'voice.music.searchEmpty' : 'voice.music.searchError')}</p>}
         {visibleSearchResults.length > 0 && <ol className="dw-voice-music__results" aria-label={t('voice.music.results')}>
           {visibleSearchResults.map(result => <li key={result.id}>
@@ -258,14 +256,15 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
         </ol>}
         <form onSubmit={submitQueueInput}>
           <label>{t('voice.music.urlLabel')}
-            <input type="url" value={queueInput} placeholder={t('voice.music.urlPlaceholder')}
+            <input type="text" value={queueInput} placeholder={t('voice.music.urlPlaceholder')}
               onChange={event => { setQueueInput(event.currentTarget.value); setEnqueueMessage('idle'); }} />
           </label>
           <button type="submit" disabled={pending || !manage || enqueueMessage === 'pending'}>{t('voice.music.enqueueAction')}</button>
         </form>
         {enqueueMessage !== 'idle' && <p role="status">{t(enqueueMessage === 'pending' ? 'voice.music.enqueuePending'
           : enqueueMessage === 'added' ? 'voice.music.enqueueSuccess'
-            : enqueueMessage === 'spotify' ? 'voice.music.spotifyUnavailable' : 'voice.music.enqueueError')}</p>}
+            : enqueueMessage === 'spotify-unavailable' ? 'voice.music.spotifyUnavailable'
+              : enqueueMessage === 'spotify-busy' ? 'voice.music.spotifyBusy' : 'voice.music.enqueueError')}</p>}
       </section>
       <div id="dw-voice-music-queue" className="dw-voice-music__queue-wrap" role="region" aria-labelledby="dw-voice-music-queue-title"
         hidden={!queueOpen}>

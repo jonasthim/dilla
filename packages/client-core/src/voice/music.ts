@@ -13,6 +13,13 @@ export interface VoiceMusicTrack {
 export interface VoiceMusicQueueItem { id: string; track: VoiceMusicTrack; }
 export interface VoiceMusicSearchResult extends VoiceMusicTrack { input: string; }
 export interface VoiceMusicPermissions { control: boolean; manageQueue: boolean; }
+export type VoiceMusicErrorCode = 'forbidden' | 'conflict' | 'spotify-unavailable' | 'spotify-busy' | 'unavailable';
+export class VoiceMusicError extends Error {
+  constructor(readonly code: VoiceMusicErrorCode, message: string) {
+    super(message);
+    this.name = 'VoiceMusicError';
+  }
+}
 export type VoiceMusicState =
   | { status: 'unavailable'; reason: 'authenticated-transport-missing' | 'bot-unavailable' }
   | { status: 'available'; track: VoiceMusicTrack | null; queue: readonly VoiceMusicQueueItem[]; positionMs: number;
@@ -131,7 +138,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       await refresh(channelId);
       throw responseError(result.status);
     }
-    if (result.status !== 0) throw responseError(result.status);
+    if (result.status !== 0) throw responseError(result.status, operation === 12 && isSpotifyInput(args[0]));
     // A successful operation response is not the accepted state. Wait for an authenticated state read
     // after the operation result so the panel only settles when the server-confirmed snapshot arrives.
     await refresh(channelId);
@@ -200,9 +207,20 @@ interface InteractionResponse { requestId: string; channelId: string | null; ope
 interface ReadResult { responses: InteractionResponse[]; through: string | null; blocked: boolean; }
 interface UploadResult { upload: 'accepted' | 'pending' | 'rejected' | 'unknown'; }
 function unavailable(): Promise<never> { return Promise.reject(new Error('Authenticated voice music transport is unavailable.')); }
-function responseError(status: number): Error {
-  return new Error(status === 2 ? 'You do not have permission to control this Bot.'
-    : status === 4 ? 'Music state changed. Refresh and try again.' : 'The Bot could not complete the music request.');
+function responseError(status: number, spotifyInput = false): Error {
+  if (spotifyInput && status === 5) return new VoiceMusicError('spotify-unavailable', 'Spotify is unavailable or not linked for this community.');
+  if (spotifyInput && status === 6) return new VoiceMusicError('spotify-busy', 'Spotify playback is already active in another voice channel.');
+  return status === 2 ? new VoiceMusicError('forbidden', 'You do not have permission to control this Bot.')
+    : status === 4 ? new VoiceMusicError('conflict', 'Music state changed. Refresh and try again.')
+      : new VoiceMusicError('unavailable', 'The Bot could not complete the music request.');
+}
+function isSpotifyInput(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (/^spotify:(?:track|album|playlist):/iu.test(value.trim())) return true;
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === 'spotify.link' || host === 'spotify.com' || host.endsWith('.spotify.com');
+  } catch { return false; }
 }
 function delay(ms: number): Promise<null> { return new Promise(resolve => setTimeout(() => resolve(null), ms)); }
 function newRequestId(): string {

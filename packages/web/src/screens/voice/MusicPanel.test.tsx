@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { VoiceMusicAdapter, VoiceMusicState } from '@dilla/client-core';
+import { VoiceMusicError, type VoiceMusicAdapter, type VoiceMusicState } from '@dilla/client-core';
 import { MusicPanel } from './MusicPanel.tsx';
 
 type MusicCalls = { [K in Exclude<keyof VoiceMusicAdapter, 'state' | 'subscribe'>]: ReturnType<typeof vi.fn<VoiceMusicAdapter[K]>> };
@@ -109,6 +109,18 @@ describe('MusicPanel', () => {
     await waitFor(() => expect(music.calls.enqueue).toHaveBeenCalledWith('channel-1', 'https://www.youtube.com/watch?v=abcdefghijk'));
   });
 
+  it('keeps Spotify links and URIs out of YouTube text search', () => {
+    const music = adapter();
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+    const search = screen.getByRole('searchbox', { name: 'Search music' });
+    for (const value of ['https://open.spotify.com/track/1234567890123456789012', 'spotify:playlist:1234567890123456789012']) {
+      fireEvent.change(search, { target: { value } });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      expect(screen.getByRole('status')).toHaveTextContent('Search YouTube by text. Paste Spotify links or URIs below to queue them.');
+    }
+    expect(music.calls.search).not.toHaveBeenCalled();
+  });
+
   it('does not show or enqueue an earlier channel search after switching channels', async () => {
     const music = adapter();
     let resolveSearch: ((results: Awaited<ReturnType<VoiceMusicAdapter['search']>>) => void) | undefined;
@@ -129,17 +141,41 @@ describe('MusicPanel', () => {
     expect(music.calls.enqueue).not.toHaveBeenCalled();
   });
 
-  it('explains that Spotify URLs are unsupported without submitting them', () => {
+  it('passes Spotify track, album, and playlist links or URIs to the queue adapter', async () => {
     const music = adapter();
     render(<MusicPanel channelId="channel-1" adapter={music} />);
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'YouTube or Spotify URL' }), {
-      target: { value: 'https://open.spotify.com/track/1234567890123456789012' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Add URL to queue' }));
+    const input = screen.getByRole('textbox', { name: 'YouTube or Spotify link or URI' });
+    for (const value of [
+      'https://open.spotify.com/track/1234567890123456789012',
+      'https://open.spotify.com/album/1234567890123456789012',
+      'https://open.spotify.com/playlist/1234567890123456789012',
+      'spotify:track:1234567890123456789012',
+      'spotify:album:1234567890123456789012',
+      'spotify:playlist:1234567890123456789012',
+    ]) {
+      fireEvent.change(input, { target: { value } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add to queue' }));
+      await waitFor(() => expect(music.calls.enqueue).toHaveBeenLastCalledWith('channel-1', value));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Add to queue' })).toBeEnabled());
+    }
+  });
 
-    expect(screen.getByRole('status')).toHaveTextContent("Spotify links aren't supported yet. Paste a YouTube link instead.");
-    expect(music.calls.enqueue).not.toHaveBeenCalled();
+  it('shows clear Spotify setup and busy errors returned by the adapter', async () => {
+    const music = adapter();
+    music.calls.enqueue.mockRejectedValueOnce(new VoiceMusicError('spotify-unavailable', 'Spotify is unavailable or not linked for this community.'))
+      .mockRejectedValueOnce(new VoiceMusicError('spotify-busy', 'Spotify playback is already active in another voice channel.'));
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+    const input = screen.getByRole('textbox', { name: 'YouTube or Spotify link or URI' });
+
+    fireEvent.change(input, { target: { value: 'spotify:track:1234567890123456789012' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to queue' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Spotify is not available. A community manager may need to link the Spotify account.');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add to queue' })).toBeEnabled());
+
+    fireEvent.change(input, { target: { value: 'spotify:playlist:1234567890123456789012' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to queue' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Spotify is already playing in another voice channel. Stop it there and try again.');
   });
 
   it('announces search loading and a retryable failure', async () => {
@@ -162,14 +198,14 @@ describe('MusicPanel', () => {
     music.calls.enqueue.mockImplementation(() => new Promise((_resolve, reject) => { rejectEnqueue = reject; }));
     render(<MusicPanel channelId="channel-1" adapter={music} />);
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'YouTube or Spotify URL' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'YouTube or Spotify link or URI' }), {
       target: { value: 'https://www.youtube.com/watch?v=abcdefghijk' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add URL to queue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add to queue' }));
     expect(screen.getByText('Adding to queue…')).toBeInTheDocument();
     await act(() => { rejectEnqueue?.(new Error('resolver unavailable')); return Promise.resolve(); });
     await waitFor(() => expect(screen.getByText('Could not add that input to the queue. Check it and try again.')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Add URL to queue' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Add to queue' })).toBeEnabled();
   });
 
   it('refreshes from the adapter subscription after an action succeeds', async () => {
@@ -260,7 +296,7 @@ describe('MusicPanel', () => {
     expect(screen.getByRole('button', { name: 'Move South up' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Remove South from queue' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Add URL to queue' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add to queue' })).toBeDisabled();
     expect(screen.getByRole('slider', { name: 'Seek' })).toBeDisabled();
     expect(pause).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
