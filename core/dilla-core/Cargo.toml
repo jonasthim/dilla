@@ -18,7 +18,7 @@ vectors = ["dep:serde_json"]
 testkit = []
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 # MLS - pinned by the spec; openmls 0.9.0 rust-version = 1.91.0.
 # `=` pins, per gap-2 section 5: 0.8.1 cannot serve this plan at all (its `js` feature pulls
 # fluvio-wasm-timer, RUSTSEC-2024-0384), and every wasm32 build here depends on 0.9.0's `js`
