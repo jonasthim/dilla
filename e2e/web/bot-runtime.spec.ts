@@ -1,6 +1,8 @@
 import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp, test } from './support/app';
+import {
+  FIREFOX_FAVICON_LINE, addServerVia, completeSignUp, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, newAccount, signUp, test,
+} from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -8,6 +10,17 @@ const HOST: HostConfig = { port: 8491, control: 8492, webRoot: 'packages/web/dis
 const SERVER = 'Runtime Bot Acceptance';
 
 test.use({ baseURL: 'http://127.0.0.1:8491' });
+
+test('the Firefox web guard exempts only its browser-chrome favicon refusal', () => {
+  const favicon = {
+    directive: 'img-src', blockedURI: 'http://127.0.0.1:8491/favicon.ico', sourceFile: 'resource', sample: '',
+  };
+  expect(isFirefoxBrowserFaviconViolation('firefox-web', favicon)).toBe(true);
+  expect(isFirefoxBrowserFaviconViolation('chromium-web', favicon)).toBe(false);
+  expect(isFirefoxBrowserFaviconViolation('firefox-web', { ...favicon, sourceFile: 'http://127.0.0.1:8491/i/invite' })).toBe(false);
+  expect(isFirefoxBrowserFaviconViolation('firefox-web', { ...favicon, blockedURI: 'http://127.0.0.1:8491/avatar.png' })).toBe(false);
+  expect(FIREFOX_FAVICON_LINE.test('[JavaScript Error: "Content-Security-Policy: The page.s settings blocked the loading of a resource (img-src) at http://127.0.0.1:8491/favicon.ico . {file: "resource:///modules/FaviconLoader.sys.mjs" line: 52}]')).toBe(true);
+});
 
 test('a bot enabled through server settings reaches ready through the native runtime', async ({ page, instanceName }) => {
   let host: StartedHost | null = null;
