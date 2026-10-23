@@ -74,6 +74,17 @@ func openNewSecretFileAt(dir *os.File, name string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
+// retainSecretInode keeps the just-created inode allocated until cleanup or
+// release, so a replacement cannot reuse its device/inode identity.
+func retainSecretInode(file *os.File) (*os.File, error) {
+	fd, err := syscall.Dup(int(file.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseOnExec(fd)
+	return os.NewFile(uintptr(fd), file.Name()), nil
+}
+
 func unlinkCreatedSecret(dir *os.File, name string, identity os.FileInfo) error {
 	if identity == nil {
 		return fmt.Errorf("cannot verify created secret inode")

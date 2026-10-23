@@ -228,6 +228,7 @@ func validateBotRuntimeSecretPath(path string, stderr io.Writer, command string)
 // inode this call created; successful callers own cleanup if the DB commit fails.
 type createdBotRuntimeSecret struct {
 	dir      *os.File
+	file     *os.File
 	name     string
 	identity os.FileInfo
 	cleaned  bool
@@ -238,7 +239,10 @@ func (s *createdBotRuntimeSecret) cleanup() error {
 		return nil
 	}
 	s.cleaned = true
-	defer func() { _ = s.dir.Close() }()
+	defer func() {
+		_ = s.file.Close()
+		_ = s.dir.Close()
+	}()
 	err := unlinkCreatedSecret(s.dir, s.name, s.identity)
 	if err != nil {
 		return err
@@ -249,6 +253,7 @@ func (s *createdBotRuntimeSecret) cleanup() error {
 func (s *createdBotRuntimeSecret) release() {
 	if s != nil && !s.cleaned {
 		s.cleaned = true
+		_ = s.file.Close()
 		_ = s.dir.Close()
 	}
 }
@@ -269,12 +274,27 @@ func writeBotRuntimeSecret(path, token string) (*createdBotRuntimeSecret, error)
 		return nil, fmt.Errorf("cannot create new secret file")
 	}
 	identity, err := f.Stat()
-	created := &createdBotRuntimeSecret{dir: dir, name: name, identity: identity}
-	cleanup := func() { _ = f.Close(); _ = created.cleanup() }
 	if err != nil {
-		cleanup()
+		_ = f.Close()
+		_ = dir.Close()
 		return nil, fmt.Errorf("cannot inspect secret file")
 	}
+	pinned, err := retainSecretInode(f)
+	if err != nil {
+		created := &createdBotRuntimeSecret{dir: dir, file: f, name: name, identity: identity}
+		_ = created.cleanup()
+		return nil, fmt.Errorf("cannot retain secret file identity")
+	}
+	created := &createdBotRuntimeSecret{dir: dir, file: pinned, name: name, identity: identity}
+	sourceClosed := false
+	closeSource := func() error {
+		if sourceClosed {
+			return nil
+		}
+		sourceClosed = true
+		return f.Close()
+	}
+	cleanup := func() { _ = closeSource(); _ = created.cleanup() }
 	if err := verifySecretOwnerAndMode(f); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("secret file owner or mode is unsafe")
@@ -287,8 +307,8 @@ func writeBotRuntimeSecret(path, token string) (*createdBotRuntimeSecret, error)
 		cleanup()
 		return nil, fmt.Errorf("cannot sync secret file")
 	}
-	if err := f.Close(); err != nil {
-		cleanup()
+	if err := closeSource(); err != nil {
+		_ = created.cleanup()
 		return nil, fmt.Errorf("cannot close secret file")
 	}
 	if err := dir.Sync(); err != nil {
