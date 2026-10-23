@@ -238,7 +238,7 @@ session. This endpoint does not claim cryptographic evaluator attestation.
 
 ## Durable structural event
 
-`[1, event_id, sequence uint>0, community_id, timestamp uint, kind uint1..7, data]`.
+`[1, event_id, sequence uint>0, community_id, timestamp uint, kind uint1..8, data]`.
 Data schemas (all arrays) by kind:
 1 member_join [user_id, episode_id]
 2 member_leave [user_id, episode_id]
@@ -248,6 +248,7 @@ Data schemas (all arrays) by kind:
 6 moderation [action_id, request_id, actor_user, actor_device, target_user|null,
  group_id|null, target_seq uint>0|null, action uint0..6, expires uint|null]
 7 role_panel [panel_id, revision uint, active uint0..1]
+8 device_list [user_id, signed_list_version uint>0]
 State:0pending,1enrolling,2joining,3ready,4disabled,5error. Permission target:
 0community,1channel,2role,3member. Channel change:0created,1updated,2deleted.
 Moderation:0warn,1timeout,2kick,3ban,4remove,5clear_timeout,6unban. For remove,
@@ -256,7 +257,11 @@ group+target_seq null. Timeout requires expires>timestamp; other actions expires
 null except ban may have expires>timestamp. Identifiers and metadata only: no
 message text, reasons, excerpts, names, URLs. Max encoded event4096 bytes.
 Validate community separately against route/session binding. Stream retention30d;
-ack semantics and pagination handled by API. Event id survives retries.
+ack semantics and pagination handled by API. Event id survives retries. A human signed-device-list
+publication appends kind 8 in the same transaction as the new list, once for each of the user's
+current community memberships; the event contains only the account ID
+and accepted list version, never device keys or list contents. The Bot resolves the current member
+episode from the community before using the event to enqueue device registration.
 
 ## Send receipt
 

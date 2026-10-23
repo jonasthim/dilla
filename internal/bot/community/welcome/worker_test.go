@@ -289,6 +289,8 @@ func TestConfiguredEventHandlerValidatesThenIgnoresOtherKnownStructuralEvents(t 
 			Data: []any{testID(22), testID(23), testID(24), testID(25), testID(26), nil, nil, uint64(0), nil}},
 		{ID: testID(31), Sequence: 2, CommunityID: community, Timestamp: 101, Kind: protocol.EventRolePanel,
 			Data: []any{testID(32), uint64(1), uint64(0)}},
+		{ID: testID(33), Sequence: 3, CommunityID: community, Timestamp: 102, Kind: protocol.EventDeviceList,
+			Data: []any{testID(34), uint64(2)}},
 	} {
 		if err := handler(context.Background(), event); err != nil {
 			t.Fatalf("known unrelated event kind %d blocked dispatch: %v", event.Kind, err)

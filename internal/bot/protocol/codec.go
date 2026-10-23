@@ -546,6 +546,7 @@ const (
 	EventChannel
 	EventModeration
 	EventRolePanel
+	EventDeviceList
 )
 
 type Event struct {
@@ -556,7 +557,7 @@ type Event struct {
 }
 
 func EncodeEvent(e Event) ([]byte, error) {
-	if !isID(e.ID) || !isID(e.CommunityID) || e.Sequence == 0 || e.Kind < 1 || e.Kind > 7 || validateEventData(e.Kind, e.Data, e.Timestamp) != nil {
+	if !isID(e.ID) || !isID(e.CommunityID) || e.Sequence == 0 || e.Kind < 1 || e.Kind > 8 || validateEventData(e.Kind, e.Data, e.Timestamp) != nil {
 		return nil, invalid()
 	}
 	b, er := cborx.Marshal([]any{uint64(1), e.ID, e.Sequence, e.CommunityID, e.Timestamp, uint64(e.Kind), e.Data})
@@ -600,7 +601,7 @@ func validateEventData(k EventKind, d []any, ts uint64) error {
 	u := func(i int, maximum uint64) bool { v, ok := d[i].(uint64); return ok && v <= maximum }
 	ii := func(i int) bool { v, ok := d[i].(id.ID); return ok && isID(v) }
 	ni := func(i int) bool { return nullableID(d[i]) }
-	count := map[EventKind]int{1: 2, 2: 2, 3: 3, 4: 3, 5: 3, 6: 9, 7: 3}[k]
+	count := map[EventKind]int{1: 2, 2: 2, 3: 3, 4: 3, 5: 3, 6: 9, 7: 3, 8: 2}[k]
 	if len(d) != count {
 		return invalid()
 	}
@@ -654,12 +655,16 @@ func validateEventData(k EventKind, d []any, ts uint64) error {
 		if !ii(0) || !isUint(d[1]) || !u(2, 1) {
 			return invalid()
 		}
+	case 8:
+		if !ii(0) || !u(1, math.MaxInt64) || d[1].(uint64) == 0 {
+			return invalid()
+		}
 	}
 	return nil
 }
 func nullableUint(v any) bool { return v == nil || isUint(v) }
 func eventIDs(k EventKind, d []any) {
-	positions := map[EventKind][]int{1: {0, 1}, 2: {0, 1}, 3: {0}, 4: {1}, 5: {0}, 6: {0, 1, 2, 3}, 7: {0}}[k]
+	positions := map[EventKind][]int{1: {0, 1}, 2: {0, 1}, 3: {0}, 4: {1}, 5: {0}, 6: {0, 1, 2, 3}, 7: {0}, 8: {0}}[k]
 	for _, i := range positions {
 		if b, ok := d[i].([]byte); ok && len(b) == 16 {
 			var v id.ID

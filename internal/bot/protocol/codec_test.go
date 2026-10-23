@@ -877,6 +877,7 @@ func TestEveryEventKindRoundTrips(t *testing.T) {
 		{ID: fixtureID(1), Sequence: 1, CommunityID: fixtureID(2), Kind: EventChannel, Data: []any{fixtureID(3), uint64(2), uint64(1)}},
 		{ID: fixtureID(1), Sequence: 1, CommunityID: fixtureID(2), Kind: EventModeration, Data: []any{fixtureID(3), fixtureID(4), fixtureID(5), fixtureID(6), nil, fixtureID(7), uint64(8), uint64(4), nil}},
 		{ID: fixtureID(1), Sequence: 1, CommunityID: fixtureID(2), Kind: EventRolePanel, Data: []any{fixtureID(3), uint64(1), uint64(1)}},
+		{ID: fixtureID(1), Sequence: 1, CommunityID: fixtureID(2), Kind: EventDeviceList, Data: []any{fixtureID(3), uint64(2)}},
 	}
 	for _, ev := range tests {
 		raw, err := EncodeEvent(ev)

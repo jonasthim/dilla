@@ -34,7 +34,7 @@ export async function botVectors() {
  cases.push({name:'signed moderation removal proof',kind:'removal',hex:cbor(proof),preimage_hex:hex(pre),context:{...context,group:hex(group),actor_user:hex(id(4)),actor_device:hex(id(5))}});
  const eventData:any[]=[
   [id(1),id(2)],[id(1),id(2)],[id(1),3n,7n],[0n,id(2),7n],[id(2),1n,7n],
-  [id(1),id(2),id(3),id(4),null,group,9n,4n,null],[id(1),7n,1n],
+  [id(1),id(2),id(3),id(4),null,group,9n,4n,null],[id(1),7n,1n],[id(1),2n],
  ];
  eventData.forEach((d,i)=>{const v=[1n,id(0x80+i),BigInt(i+1),comm,1700000000n,BigInt(i+1),d];cases.push({name:`event kind ${i+1}`,kind:'event',hex:cbor(v),context});});
  const sendResponse=(seq:bigint,tag:Uint8Array,at:bigint)=>encode([seq,tag,at]);

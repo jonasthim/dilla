@@ -22,6 +22,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -680,6 +681,54 @@ func TestAPublishedDeviceListIsVerified(t *testing.T) {
 	var row []any
 	if err := cborx.Unmarshal(got.Body.Bytes(), &row); err != nil || row[0] != uint64(2) || !bytes.Equal(row[1].([]byte), blob2) {
 		t.Fatalf("GET after v2 = %v (err %v), want v2", row, err)
+	}
+}
+
+func TestPublishedDeviceListAppendsOneEventPerCurrentCommunity(t *testing.T) {
+	h, deps := listAPI(t, nil)
+	lu := seedListedUser(t, deps, 0x5a, 1)
+	ctx := context.Background()
+	owner, _, _ := seedAPIDevice(t, deps)
+	communities := make([]id.ID, 257)
+	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error {
+		for i := range communities {
+			community := id.New()
+			communities[i] = community
+			if err := tx.CreateCommunity(ctx, store.CommunityRow{ID: community, Owner: owner.ID,
+				Name: "device-list-event-" + community.String()[:8], PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: deps.Clock.Now().Unix()}); err != nil {
+				return err
+			}
+			if err := tx.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: lu.User.ID, Joined: deps.Clock.Now().Unix() + int64(i)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := signedListPut(t, lu.SSK, lu.User.ID, 1, nil, []apiListEntry{entryOf(lu, 0, nil)})
+	path := "/v1/users/" + lu.User.ID.String() + "/device-list"
+	if rec := cborCall(t, h, http.MethodPut, path, lu.Tokens[0], body); rec.Code != http.StatusNoContent {
+		t.Fatalf("publish v1 = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	for _, community := range communities {
+		page, err := deps.Repo.ListBotStructuralEvents(ctx, community, 0, 10)
+		if err != nil || len(page.Events) != 1 {
+			t.Fatalf("community %s event page=%+v err=%v, want one device-list event", community, page, err)
+		}
+		event := page.Events[0]
+		if event.ID.IsZero() || event.Sequence != 1 || event.Kind != protocol.EventDeviceList || len(event.Data) != 2 || event.Data[0] != lu.User.ID || event.Data[1] != uint64(1) {
+			t.Fatalf("community %s event=%+v, want device-list [user, version]", community, event)
+		}
+	}
+	if rec := cborCall(t, h, http.MethodPut, path, lu.Tokens[0], body); rec.Code != http.StatusConflict {
+		t.Fatalf("replay v1 = %d, want conflict", rec.Code)
+	}
+	for _, community := range communities {
+		page, err := deps.Repo.ListBotStructuralEvents(ctx, community, 0, 10)
+		if err != nil || len(page.Events) != 1 {
+			t.Fatalf("replayed list changed event stream for %s: page=%+v err=%v", community, page, err)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"math"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	botaccess "github.com/jonasthim/dilla/internal/bot/access"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
@@ -333,6 +335,11 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 		UserID: userID, Version: req.Version, Blob: req.Blob,
 		SSKSignature: req.SSKSignature, PrevHash: req.PrevHash, Created: d.Clock.Now().Unix(),
 	}
+	eventTimestamp, validEventTimestamp := checkedUint64(row.Created)
+	if !isBot && !validEventTimestamp {
+		server.WriteError(w, server.Errorf(server.CodeInternal, "device-list publication timestamp is unavailable"))
+		return
+	}
 	versionConflict := func() error {
 		return server.WithStatus(http.StatusConflict,
 			server.Errorf(server.CodeInvalidRequest, "device-list version %d is not the next version", req.Version))
@@ -358,6 +365,19 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 				return versionConflict()
 			}
 			return err
+		}
+		if !isBot {
+			communities, err := tx.ListCommunitiesForUser(ctx, userID)
+			if err != nil {
+				return err
+			}
+			for _, community := range communities {
+				eventID := deviceListEventID(community.ID, userID, req.Version)
+				if _, err := tx.AppendBotStructuralEvent(ctx, protocol.Event{ID: eventID, CommunityID: community.ID,
+					Timestamp: eventTimestamp, Kind: protocol.EventDeviceList, Data: []any{userID, req.Version}}); err != nil {
+					return err
+				}
+			}
 		}
 		for _, entry := range entries {
 			if !entry.Revoked || len(entry.DeviceID) != 16 {
@@ -403,6 +423,22 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 		_ = http.NewResponseController(w).Flush()
 		d.AfterDeviceList(context.WithoutCancel(r.Context()), userID, revoked)
 	}
+}
+
+func deviceListEventID(community, user id.ID, version uint64) id.ID {
+	h := sha256.New()
+	_, _ = h.Write([]byte("dilla bot device-list event v1\x00"))
+	_, _ = h.Write(community[:])
+	_, _ = h.Write(user[:])
+	var v [8]byte
+	binary.BigEndian.PutUint64(v[:], version)
+	_, _ = h.Write(v[:])
+	sum := h.Sum(nil)
+	var out id.ID
+	copy(out[:], sum[:len(out)])
+	out[6] = (out[6] & 0x0f) | 0x50
+	out[8] = (out[8] & 0x3f) | 0x80
+	return out
 }
 
 // GetDeviceList permits enrolled sessions to read any user and pending sessions only their own.

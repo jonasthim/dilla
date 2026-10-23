@@ -95,7 +95,7 @@ func ConfiguredEventHandlerWithCapabilities(n Native, granter JoinRoleGranter, w
 			return err
 		}
 		switch event.Kind {
-		case protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel, protocol.EventModeration, protocol.EventRolePanel:
+		case protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel, protocol.EventModeration, protocol.EventRolePanel, protocol.EventDeviceList:
 			// The service reconciles current installation and membership state
 			// before polling this durable stream. These events belong to other
 			// handlers in the composed dispatcher or need no welcome action here.

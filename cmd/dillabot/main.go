@@ -483,10 +483,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		var musicOwnedNative bool
 		var musicQueueCount int
+		reconcileStage := "identity"
 		result, ensureErr := lifecycle.Ensure(ctx)
 		ready := false
 		membershipReady := false
 		if ensureErr == nil {
+			reconcileStage = "membership"
 			if result.Session == nil {
 				ensureErr = errors.New("identity lifecycle returned no scoped device session")
 			} else {
@@ -515,6 +517,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 						// A 409 means required MLS joins are still pending. Keep
 						// reconciling membership, but do not call Ready-only bot APIs.
 						if ensureErr == nil && ready {
+							reconcileStage = "structural_events_and_registration"
 							membershipReady = true
 							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
 							if pollerErr != nil {
@@ -529,7 +532,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										ensureErr = registrationErr
 									} else if catchup, catchupErr := service.NewMemberRegistrationCatchup(nativeClient, service.MemberRegistrationCatchupOptions{}); catchupErr != nil {
 										ensureErr = catchupErr
-									} else if registrationHandler, registrationHandlerErr := newInteractionRegistrationHandler(registration, installation.ID); registrationHandlerErr != nil {
+									} else if registrationMembers, registrationMembersErr := result.Session.CommunityMembers(installation.CommunityID); registrationMembersErr != nil {
+										ensureErr = registrationMembersErr
+									} else if registrationHandler, registrationHandlerErr := newInteractionRegistrationHandler(registration, installation.ID, registrationMembers); registrationHandlerErr != nil {
 										ensureErr = registrationHandlerErr
 									} else {
 										handler = composeStructuralEventHandlers(handler, registrationHandler)
@@ -688,6 +693,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 							}
 							if interactionErr != nil {
+								reconcileStage = "interaction_events"
 								logger.Error("bot interaction event dispatch paused", "installation_id", installation.ID.String(), "error", interactionErr.Error())
 								ensureErr = errors.Join(ensureErr, interactionErr)
 							}
@@ -706,6 +712,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "configured_pcm_providers", providers)
 							}
 							if scheduleErr == nil {
+								reconcileStage = "scheduled_services"
 								scheduleErr = scheduler.RunDue(ctx)
 							}
 							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, nil, time.Now)
@@ -740,7 +747,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			closeErr = nativeClient.Close()
 		}
 		if ensureErr != nil || closeErr != nil {
-			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_membership_or_service")
+			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", reconcileStage)
 			continue
 		}
 		succeeded++

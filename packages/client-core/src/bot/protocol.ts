@@ -359,7 +359,7 @@ export interface DurableEvent {
 function eventData(kind: number, data: unknown[]): void {
   const ident = (index: number) => { data[index] = id(data[index]); };
   const uintAt = (index: number, min = 0n, max = MAX) => { data[index] = uint(data[index], min, max); };
-  const lengths: Record<number, number> = { 1: 2, 2: 2, 3: 3, 4: 3, 5: 3, 6: 9, 7: 3 };
+  const lengths: Record<number, number> = { 1: 2, 2: 2, 3: 3, 4: 3, 5: 3, 6: 9, 7: 3, 8: 2 };
   const expectedLength = lengths[kind];
   if (expectedLength === undefined) fail('E_BOT_OPERATION');
   if (data.length !== expectedLength) fail('E_BOT_SHAPE');
@@ -406,6 +406,10 @@ function eventData(kind: number, data: unknown[]): void {
       uintAt(1);
       uintAt(2, 0n, 1n);
       break;
+    case 8:
+      ident(0);
+      uintAt(1, 1n, MAX);
+      break;
   }
 }
 
@@ -414,7 +418,7 @@ function eventValue(event: DurableEvent): CborInput[] {
   uint(event.sequence, 1n);
   id(event.communityId);
   uint(event.timestamp);
-  uint(event.kind, 1n, 7n);
+  uint(event.kind, 1n, 8n);
   if (!Number.isInteger(event.kind)) fail('E_BOT_RANGE');
   if (!Array.isArray(event.data)) fail('E_BOT_SHAPE');
 
