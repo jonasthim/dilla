@@ -170,6 +170,19 @@ func TestAnnouncementSendRequestTimestampIsStableAcrossRetry(t *testing.T) {
 	}
 }
 
+func TestAnnouncementRetryTimeBoundsUnixConversions(t *testing.T) {
+	if _, err := announcementRetryAt(time.Unix(-1, 0)); !errors.Is(err, ErrInvalidRetryTime) {
+		t.Fatalf("pre-epoch retry clock error = %v", err)
+	}
+	if !retryNotBefore(5, time.Unix(-1, 0)) || retryNotBefore(0, time.Unix(-1, 0)) {
+		t.Fatal("pre-epoch comparison did not preserve zero and positive retry timestamp behavior")
+	}
+	got, err := announcementRetryAt(time.Unix(10, 0))
+	if err != nil || got != 15 {
+		t.Fatalf("retry timestamp = %d, err = %v; want 15", got, err)
+	}
+}
+
 func schedulerID(v byte) id.ID { var out id.ID; out[15] = v; return out }
 func mustCBOR(v any) []byte    { b, _ := cborx.Marshal(v); return b }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -36,6 +37,7 @@ var (
 	ErrMutationIDConflict   = errors.New("announcement mutation request ID reused with different input")
 	ErrMutationReceiptLimit = errors.New("announcement mutation receipt capacity reached")
 	ErrMutationExpired      = errors.New("announcement mutation request expired")
+	ErrInvalidRetryTime     = errors.New("invalid announcement retry time")
 )
 
 // Native exposes the helper's encrypted, community-bound application state.
@@ -540,7 +542,7 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			}
 			continue
 		}
-		if state.Status == occurrenceSending && state.RetryAt > uint64(s.now().UTC().Unix()) {
+		if state.Status == occurrenceSending && retryNotBefore(state.RetryAt, s.now().UTC()) {
 			continue
 		}
 		if state.Status == occurrenceReady {
@@ -592,7 +594,10 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		if found {
 			if validClosedReceipt(receipt, req) {
 				state.Attempt++
-				state.RetryAt = uint64(s.now().UTC().Add(5 * time.Second).Unix())
+				state.RetryAt, err = announcementRetryAt(s.now().UTC())
+				if err != nil {
+					return err
+				}
 				if err := s.replaceOne(ctx, state, revision); err != nil {
 					return err
 				}
@@ -720,7 +725,10 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		}
 		if validClosedReceipt(receipt, req) {
 			state.Attempt++
-			state.RetryAt = uint64(s.now().UTC().Add(5 * time.Second).Unix())
+			state.RetryAt, err = announcementRetryAt(s.now().UTC())
+			if err != nil {
+				return err
+			}
 			if err = s.replaceOne(ctx, state, start.revision); err != nil {
 				return err
 			}
@@ -899,13 +907,27 @@ func attemptID(installation, announcement id.ID, occurrence Occurrence, sequence
 	h := sha256.Sum256(append([]byte("dilla.bot.announcement.attempt.v1\x00"), op[:]...))
 	if len(sequence) > 0 && sequence[0] > 0 {
 		var counter [8]byte
-		for i := range counter {
-			counter[7-i] = byte(sequence[0] >> (8 * i))
-		}
+		binary.BigEndian.PutUint64(counter[:], sequence[0])
 		h = sha256.Sum256(append(append([]byte("dilla.bot.announcement.attempt.retry.v1\x00"), op[:]...), counter[:]...))
 	}
 	return nonzeroID(h[:16])
 }
+func announcementRetryAt(now time.Time) (uint64, error) {
+	seconds := now.UTC().Unix()
+	if seconds < 0 || seconds > math.MaxInt64-5 {
+		return 0, ErrInvalidRetryTime
+	}
+	return uint64(seconds + 5), nil
+}
+
+func retryNotBefore(retryAt uint64, now time.Time) bool {
+	seconds := now.UTC().Unix()
+	if seconds < 0 {
+		return retryAt > 0
+	}
+	return retryAt > uint64(seconds)
+}
+
 func nonzeroID(b []byte) id.ID {
 	var out id.ID
 	copy(out[:], b)
