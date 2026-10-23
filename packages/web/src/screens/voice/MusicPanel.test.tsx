@@ -229,6 +229,27 @@ describe('MusicPanel', () => {
     expect(screen.queryByText('Added to the queue.')).toBeNull();
   });
 
+  it('unblocks the new channel and ignores an old playback result', async () => {
+    const music = adapter();
+    let rejectOld: ((reason: Error) => void) | undefined;
+    let resolveNew: (() => void) | undefined;
+    music.calls.pause.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveNew = resolve; }));
+    const view = render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+    view.rerender(<MusicPanel channelId="channel-2" adapter={music} />);
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(music.calls.pause).toHaveBeenLastCalledWith('channel-2', true);
+    await act(async () => { rejectOld?.(new Error('old channel failed')); await Promise.resolve(); });
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Updating music…');
+    await act(async () => { resolveNew?.(); await Promise.resolve(); });
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+  });
+
   it('refreshes from the adapter subscription after an action succeeds', async () => {
     const music = adapter();
     render(<MusicPanel channelId="channel-1" adapter={music} />);

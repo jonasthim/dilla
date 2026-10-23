@@ -44,6 +44,9 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const enqueueSequence = useRef(0);
   const enqueueContext = useRef({ channelId, adapter });
   enqueueContext.current = { channelId, adapter };
+  const actionSequence = useRef(0);
+  const actionContext = useRef({ channelId, adapter });
+  actionContext.current = { channelId, adapter };
   const pendingRef = useRef(false);
   const queuedSliders = useRef(new Map<'seek' | 'volume', () => void | Promise<void>>());
   const seekEditing = useRef(false);
@@ -66,6 +69,15 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
     enqueueSequence.current += 1;
     setQueueInput('');
     setEnqueueMessage('idle');
+    actionSequence.current += 1;
+    pendingRef.current = false;
+    queuedSliders.current.clear();
+    seekEditing.current = false;
+    volumeEditing.current = false;
+    setPending(false);
+    setActionError(false);
+    setSeekDraft(null);
+    setVolumeDraft(null);
   }, [channelId, adapter]);
 
   useEffect(() => {
@@ -96,10 +108,12 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const control = current.permissions.control;
   const manage = current.permissions.manageQueue;
   const execute = (command: () => void | Promise<void>) => {
+    const sequence = ++actionSequence.current;
     pendingRef.current = true;
     setPending(true);
     setActionError(false);
     const finish = (failed: boolean) => {
+      if (sequence !== actionSequence.current || actionContext.current.channelId !== channelId || actionContext.current.adapter !== adapter) return;
       if (failed) setActionError(true);
       const nextQueued = queuedSliders.current.entries().next();
       if (!nextQueued.done) {
