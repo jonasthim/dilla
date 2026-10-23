@@ -37,7 +37,7 @@ import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
   type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
-  type PresenceChoice, type PresenceStatus, type TimelineState,
+  type PresenceChoice, type PresenceStatus,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -5143,7 +5143,7 @@ export class Controller {
         if (channel?.communityId !== null && channel?.communityId !== undefined) {
           const rows = core.timeline(g, 0n, 200);
           const event = rows.find(row => row.msgId !== null && toHex(row.msgId) === toHex(posted.msgId));
-          const targetTimeline = this.slices.get(`timeline:${channelId}`) as TimelineState | undefined;
+          const targetTimeline = this.slices.get(`timeline:${channelId}`);
           const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
           if (event?.status === 0 && event.type === type && event.senderDevice.every((byte, i) => byte === me.deviceId[i])
             && target?.state === 'ok' && target.seq !== null) {
