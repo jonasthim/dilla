@@ -106,6 +106,7 @@ func (h AutoModerationConfigInteractions) authorize(ctx context.Context, actor I
 	return resolved, manager, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h AutoModerationConfigInteractions) get(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if len(request.Args) != 0 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -128,6 +129,7 @@ func (h AutoModerationConfigInteractions) get(ctx context.Context, actor Interac
 	return InteractionResult{Revision: &revision, Data: data}, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h AutoModerationConfigInteractions) put(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if len(request.Args) != 2 || request.Revision == nil || request.Expires == nil || *request.Revision >= math.MaxInt64 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil

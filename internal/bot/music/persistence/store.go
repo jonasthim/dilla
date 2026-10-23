@@ -206,7 +206,7 @@ func clone(state music.State) music.State {
 
 func appendUint64(dst []byte, value uint64) []byte {
 	for shift := uint(56); ; shift -= 8 {
-		dst = append(dst, byte(value>>shift))
+		dst = append(dst, byte((value>>shift)&0xff))
 		if shift == 0 {
 			return dst
 		}

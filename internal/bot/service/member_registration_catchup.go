@@ -161,7 +161,7 @@ func (c *MemberRegistrationCatchup) StageOnce(ctx context.Context, session membe
 		}
 		if len(page.Members) < client.MaxCommunityMemberPage {
 			cursor.Done = true
-			revision, err = c.saveCursor(ctx, revision, cursor)
+			_, err = c.saveCursor(ctx, revision, cursor)
 			if err != nil {
 				return result, fmt.Errorf("persist member registration completion: %w", err)
 			}

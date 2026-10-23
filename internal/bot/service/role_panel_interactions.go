@@ -60,6 +60,7 @@ func (h RolePanelInteractions) Handlers() map[protocol.Operation]InteractionHand
 	}
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if h.Authority == nil || h.Destination == nil || h.Sender == nil || h.Discovery == nil || h.Session == nil || h.CommunityID.IsZero() || actor.User.IsZero() || actor.Kind != 0 ||
 		request.Operation != protocol.OpRolePanelPublish || request.CommunityID != h.CommunityID || request.RequestID.IsZero() || request.Revision == nil || request.Expires == nil || len(request.Args) != 2 {
@@ -78,7 +79,7 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 	if err != nil {
 		return InteractionResult{}, err
 	}
-	if !present || actor.Kind != 0 || !(authority.Owner || authority.Administrator || authority.EffectiveBits&rolePanelManageRolesBit != 0) {
+	if !present || actor.Kind != 0 || (!authority.Owner && !authority.Administrator && authority.EffectiveBits&rolePanelManageRolesBit == 0) {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, channel)

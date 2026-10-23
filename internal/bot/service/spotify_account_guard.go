@@ -69,7 +69,7 @@ func (g *SpotifyAccountGuard) Bind(accountID string) error {
 		return ErrSpotifyCredentials
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if err = temp.Chmod(0o600); err == nil {
 		_, err = temp.WriteString(accountID + "\n")
 	}
@@ -114,7 +114,7 @@ func (g *SpotifyAccountGuard) lockInstallation(ctx context.Context, installation
 		return nil, ErrSpotifyCredentials
 	}
 	for _, c := range installationID {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return nil, ErrSpotifyCredentials
 		}
 	}
@@ -141,7 +141,7 @@ func (g *SpotifyAccountGuard) lockInstallation(ctx context.Context, installation
 		if err == nil {
 			return func() { _ = syscall.Flock(fd, syscall.LOCK_UN); _ = f.Close() }, nil
 		}
-		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
 			_ = f.Close()
 			return nil, ErrSpotifyCredentials
 		}
@@ -160,7 +160,7 @@ func (g *SpotifyAccountGuard) read() (string, error) {
 		return "", err
 	}
 	f := os.NewFile(uintptr(fd), "spotify-account")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return "", ErrSpotifyCredentials
@@ -192,7 +192,7 @@ func validSpotifyAccountID(value string) bool {
 		return false
 	}
 	for _, c := range value {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
 			return false
 		}
 	}

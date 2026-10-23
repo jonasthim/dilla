@@ -56,7 +56,7 @@ func (s *musicInteractionStoreFake) Load(context.Context, id.ID) (persistence.Sn
 type musicInteractionRestartViewStore struct{ *musicInteractionStoreFake }
 
 func (s musicInteractionRestartViewStore) Load(_ context.Context, _ id.ID) (persistence.Snapshot, error) {
-	snapshot := s.musicInteractionStoreFake.snapshot
+	snapshot := s.snapshot
 	snapshot.State.Paused = true // Match persistence.Store's restart-safe read view.
 	return snapshot, nil
 }

@@ -133,7 +133,7 @@ func readCredential(path string) ([]byte, error) {
 		return nil, errors.New("credential file is unavailable or unsafe")
 	}
 	f := os.NewFile(uintptr(fd), "runtime-credential")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, errors.New("credential file is unavailable or unsafe")
@@ -174,7 +174,7 @@ func loadDatabaseKey(root, installation string) ([]byte, string, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err == nil {
 		f := os.NewFile(uintptr(fd), "database-key")
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		info, statErr := f.Stat()
 		if statErr != nil {
 			return nil, "", errors.New("database key is unavailable or unsafe")
@@ -265,7 +265,7 @@ func validateHelperExecutable(path string) error {
 		return errors.New("native helper executable is unavailable")
 	}
 	f := os.NewFile(uintptr(fd), "native-helper")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || !trustedLocalCode(info) || !serviceCanExecute(info) {
 		return errors.New("native helper must be a regular executable file")
@@ -629,10 +629,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											if moderationErr != nil {
 												logger.Warn("bot automatic moderation event intake paused; text events will be acknowledged without action", "installation_id", installation.ID.String(), "error", moderationErr.Error())
 											}
-											var caseReader *service.ModerationCaseReader
-											if interactionErr == nil {
-												caseReader, interactionErr = service.NewModerationCaseReader(caseSink, result.Session)
-											}
+											caseReader, interactionErr := service.NewModerationCaseReader(caseSink, result.Session)
 											if interactionErr == nil {
 												var announcementAuthority *service.CommunityActorAuthority
 												announcementAuthority, interactionErr = service.NewCommunityActorAuthority(result.Session, installation.CommunityID, nil)

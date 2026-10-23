@@ -124,7 +124,7 @@ func scheduleLocation(schedule Schedule) (*time.Location, error) {
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
-		return nil, fmt.Errorf("%w: timezone %q: %v", ErrInvalidSchedule, name, err)
+		return nil, fmt.Errorf("%w: timezone %q: %w", ErrInvalidSchedule, name, err)
 	}
 	return loc, nil
 }

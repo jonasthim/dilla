@@ -210,7 +210,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			out.Acknowledged++
 		}
 		last := welcomes[len(welcomes)-1].ID
-		revision, err = r.saveMembershipCursor(ctx, revision, last)
+		_, err = r.saveMembershipCursor(ctx, revision, last)
 		if err != nil {
 			return out, fmt.Errorf("persist welcome cursor: %w", err)
 		}

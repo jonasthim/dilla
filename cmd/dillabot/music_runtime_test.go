@@ -145,9 +145,7 @@ func (liveRuntimeEncoderStarter) Start(context.Context, io.ReadCloser) (session.
 }
 
 type liveRuntimePublisher struct {
-	done  chan struct{}
-	mu    *sync.Mutex
-	count *int
+	done chan struct{}
 }
 
 func (p *liveRuntimePublisher) Done() <-chan struct{} { return p.done }

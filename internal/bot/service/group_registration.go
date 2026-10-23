@@ -152,7 +152,7 @@ func (c *GroupRegistrationCoordinator) RegisterFirstGroup(ctx context.Context, r
 			return c.acceptGroupRegistration(ctx, key, revision, intent, receipt)
 		}
 		if !errors.Is(err, client.ErrRegistrationReceiptNotFound) {
-			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: receipt lookup failed: %v", ErrGroupRegistrationOutcomeUnknown, err)
+			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: receipt lookup failed: %w", ErrGroupRegistrationOutcomeUnknown, err)
 		}
 		if err := c.proveRetrySafe(ctx, intent); err != nil {
 			return client.BotGroupRegistrationReceipt{}, err
@@ -160,7 +160,7 @@ func (c *GroupRegistrationCoordinator) RegisterFirstGroup(ctx context.Context, r
 	} else {
 		created, err := c.native.CreateGroup(ctx, intent.Operation, intent.Group, intent.Target, intent.Kind, intent.Policy, intent.ExternalSender)
 		if err != nil {
-			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: native create intent remains pending: %v", ErrGroupRegistrationRecovery, err)
+			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: native create intent remains pending: %w", ErrGroupRegistrationRecovery, err)
 		}
 		if created.Group != intent.Group || created.Binding.Instance != c.instance || created.Binding.Community == nil || *created.Binding.Community != c.community || created.Binding.Target != intent.Target || created.Binding.Kind != intent.Kind || created.Binding.Policy != intent.Policy {
 			return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationRecovery
@@ -198,13 +198,13 @@ func (c *GroupRegistrationCoordinator) RegisterFirstGroup(ctx context.Context, r
 			return c.acceptGroupRegistration(ctx, key, revision, intent, receipt)
 		}
 		if !errors.Is(lookupErr, client.ErrRegistrationReceiptNotFound) {
-			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: receipt lookup failed: %v", ErrGroupRegistrationOutcomeUnknown, lookupErr)
+			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: receipt lookup failed: %w", ErrGroupRegistrationOutcomeUnknown, lookupErr)
 		}
 		if err := c.proveRetrySafe(ctx, intent); err != nil {
 			return client.BotGroupRegistrationReceipt{}, err
 		}
 		if isDefinitiveRegistrationRefusal(postErr) {
-			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: %v", ErrGroupRegistrationDenied, postErr)
+			return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: %w", ErrGroupRegistrationDenied, postErr)
 		}
 	}
 	return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationOutcomeUnknown
@@ -213,7 +213,7 @@ func (c *GroupRegistrationCoordinator) RegisterFirstGroup(ctx context.Context, r
 func (c *GroupRegistrationCoordinator) proveRetrySafe(ctx context.Context, intent groupRegistrationIntent) error {
 	discovery, err := c.discovery.Discover(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: cannot verify instance generation: %v", ErrGroupRegistrationOutcomeUnknown, err)
+		return fmt.Errorf("%w: cannot verify instance generation: %w", ErrGroupRegistrationOutcomeUnknown, err)
 	}
 	if discovery.InstanceID != c.instance || discovery.Generation != intent.Generation {
 		return ErrGroupRegistrationOutcomeUnknown
@@ -223,7 +223,7 @@ func (c *GroupRegistrationCoordinator) proveRetrySafe(ctx context.Context, inten
 		return ErrGroupRegistrationRecovery
 	}
 	if !apiNotFound(err) {
-		return fmt.Errorf("%w: cannot verify group absence: %v", ErrGroupRegistrationOutcomeUnknown, err)
+		return fmt.Errorf("%w: cannot verify group absence: %w", ErrGroupRegistrationOutcomeUnknown, err)
 	}
 	return nil
 }
@@ -234,12 +234,12 @@ func (c *GroupRegistrationCoordinator) acceptGroupRegistration(ctx context.Conte
 		return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationRecovery
 	}
 	if err := c.native.GroupRegistered(ctx, intent.Operation, intent.Group, receipt.NextSequence); err != nil {
-		return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: native registration resolution failed: %v", ErrGroupRegistrationRecovery, err)
+		return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: native registration resolution failed: %w", ErrGroupRegistrationRecovery, err)
 	}
 	intent.Phase = groupRegistrationComplete
 	intent.Receipt = receipt
 	if _, err := c.saveGroupRegistration(ctx, key, revision, intent); err != nil {
-		return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: persist completed registration: %v", ErrGroupRegistrationRecovery, err)
+		return client.BotGroupRegistrationReceipt{}, fmt.Errorf("%w: persist completed registration: %w", ErrGroupRegistrationRecovery, err)
 	}
 	return receipt, nil
 }

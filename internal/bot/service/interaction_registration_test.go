@@ -618,19 +618,6 @@ func newInteractionRegistrationFixture(t *testing.T) *interactionRegistrationFix
 	return f
 }
 
-func signedSnapshotFixture(t *testing.T, request id.ID) []byte {
-	t.Helper()
-	wire, err := makeSignedSnapshotFixture(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire
-}
-
-func makeSignedSnapshotFixture(request id.ID) ([]byte, error) {
-	return makeSignedSnapshotFixtureFor(request, []any{id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New()}, 100)
-}
-
 func makeSignedSnapshotFixtureFor(request id.ID, expected []any, now uint64) ([]byte, error) {
 	payload, err := cborx.Marshal([]any{uint64(1), request, id.New(), []byte{1}, make([]byte, 64), now, uint64(4), uint64(3), uint64(1), uint64(0), id.New(), id.New(), make([]byte, 32), expected, []any{}, []any{}})
 	if err != nil {
@@ -736,7 +723,7 @@ func (d *interactionRegistrationDiscoveryFake) Discover(context.Context) (client
 }
 
 type interactionRegistrationSessionFake struct {
-	admission, snapshot         []byte
+	admission                   []byte
 	registerCalls, receiptCalls uint64
 	storeThenLoseResponse       bool
 	dropRegistrationResponse    bool

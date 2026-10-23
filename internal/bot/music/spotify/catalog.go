@@ -204,10 +204,6 @@ type spotifyAlbum struct {
 		Total int `json:"total"`
 	} `json:"tracks"`
 }
-type spotifyPage struct {
-	Total int             `json:"total"`
-	Items json.RawMessage `json:"items"`
-}
 type spotifyTrackPage struct {
 	Total int            `json:"total"`
 	Items []spotifyTrack `json:"items"`
@@ -335,7 +331,7 @@ func (c *Catalog) getJSON(ctx context.Context, token, path string, query url.Val
 	if err != nil {
 		return ErrCatalogRequest
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return ErrCatalogRequest
 	}

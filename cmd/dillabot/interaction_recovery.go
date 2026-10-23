@@ -200,7 +200,7 @@ func openExistingInteractionStateKey(root, installation string) ([]byte, bool, e
 		return nil, false, err
 	}
 	f := os.NewFile(uintptr(fd), "database-key")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	keyInfo, err := f.Stat()
 	if err != nil {
 		return nil, false, err

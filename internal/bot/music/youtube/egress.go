@@ -95,7 +95,7 @@ func (b *egressBroker) handle(conn net.Conn) {
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 	_ = conn.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
@@ -180,7 +180,7 @@ func parseConnectHeader(header []byte) (string, error) {
 
 func headerToken(value string) bool {
 	for _, r := range value {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", r)) {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune("!#$%&'*+-.^_`|~", r) {
 			return false
 		}
 	}
@@ -209,7 +209,7 @@ func hostDomainSyntax(host string) bool {
 			return false
 		}
 		for _, r := range label {
-			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
 				return false
 			}
 		}
@@ -268,8 +268,8 @@ func bridgeBounded(client, upstream net.Conn, broker *egressBroker) {
 	var wg sync.WaitGroup
 	copyOne := func(dst, src net.Conn) {
 		defer wg.Done()
-		defer client.Close()
-		defer upstream.Close()
+		defer func() { _ = client.Close() }()
+		defer func() { _ = upstream.Close() }()
 		buf := make([]byte, 32*1024)
 		var local int64
 		for {

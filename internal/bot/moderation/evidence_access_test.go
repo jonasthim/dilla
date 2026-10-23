@@ -261,7 +261,7 @@ func TestManualWarningEvidencePersistsTargetAndAuthoritativeReceipt(t *testing.T
 
 func TestEvidenceReaderRejectsAnotherCommunityBinding(t *testing.T) {
 	storedBinding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
-	state := &evidenceState{binding: storedBinding, value: encodedEvidence(t, storedBinding, testEvidenceID)}
+	state := &evidenceState{value: encodedEvidence(t, storedBinding, testEvidenceID)}
 	otherCommunity := native.Binding{Instance: storedBinding.Instance, Community: id.ID{8}, Installation: storedBinding.Installation}
 	reader := NewEvidenceReader(&evidenceState{binding: otherCommunity, value: state.value}, &evidenceAuthority{
 		result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true,

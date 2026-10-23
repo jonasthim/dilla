@@ -486,7 +486,7 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 					if err := s.replaceOne(ctx, state, revision); err != nil {
 						return err
 					}
-					states, revision, err = s.snapshot(ctx)
+					_, revision, err = s.snapshot(ctx)
 					if err != nil {
 						return err
 					}

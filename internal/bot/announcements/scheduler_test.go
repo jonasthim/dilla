@@ -66,12 +66,6 @@ func (a schedulerAuthorization) CanAnnounce(context.Context, id.ID) (bool, error
 	return bool(a), nil
 }
 
-type schedulerDestinationFunc func(context.Context, id.ID, id.ID) (id.ID, error)
-
-func (f schedulerDestinationFunc) ResolveTextGroup(ctx context.Context, community, channel id.ID) (id.ID, error) {
-	return f(ctx, community, channel)
-}
-
 type schedulerAuthorizationFunc func(context.Context, id.ID) (bool, error)
 
 func (f schedulerAuthorizationFunc) CanAnnounce(ctx context.Context, dest id.ID) (bool, error) {

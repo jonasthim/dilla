@@ -17,7 +17,6 @@ type structuralEventState struct {
 	binding native.Binding
 	value   native.StateValue
 	order   []string
-	acks    []uint64
 }
 
 func (n *structuralEventState) Binding() native.Binding { return n.binding }

@@ -3,6 +3,7 @@ package youtube
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -91,7 +92,7 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		return nil, ErrSandboxUnavailable
 	}
 	socketPath := filepath.Join(root, "e.sock")
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
 	if err != nil {
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
@@ -211,10 +212,13 @@ func (p *isolatedPCM) wait() {
 	p.err = err
 	if err == nil {
 		p.exitCode = 0
-	} else if exit, ok := err.(*exec.ExitError); ok {
-		p.exitCode = exit.ExitCode()
 	} else {
-		p.exitCode = -1
+		exit := &exec.ExitError{}
+		if errors.As(err, &exit) {
+			p.exitCode = exit.ExitCode()
+		} else {
+			p.exitCode = -1
+		}
 	}
 	p.ctxErr = p.ctx.Err()
 	p.cancel()

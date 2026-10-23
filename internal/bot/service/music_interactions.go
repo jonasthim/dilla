@@ -91,6 +91,7 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 	return result
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (InteractionResult, error) {
 	if h.Store == nil || h.Authority == nil || h.CommunityID.IsZero() || req.CommunityID != h.CommunityID || req.ChannelID == nil || req.ChannelID.IsZero() {
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")

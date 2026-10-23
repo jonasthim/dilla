@@ -225,7 +225,11 @@ func readSenderHistory(ctx context.Context, session senderHistorySession, user i
 			if len(collected) == 0 {
 				return nil, nil, 0, ErrSenderHistoryStale
 			}
-			lastVersion, lastRaw, lastErr := encodeSenderOuter(collected[len(collected)-1].([]any))
+			lastRow, ok := collected[len(collected)-1].([]any)
+			if !ok {
+				return nil, nil, 0, ErrSenderHistoryStale
+			}
+			lastVersion, lastRaw, lastErr := encodeSenderOuter(lastRow)
 			if lastErr != nil || lastVersion != version || !bytesEqual(lastRaw, candidateRaw) {
 				return nil, nil, 0, ErrSenderHistoryStale
 			}
@@ -236,7 +240,11 @@ func readSenderHistory(ctx context.Context, session senderHistorySession, user i
 		}
 		current, currentVersion, decodeErr := decodeSenderOuter(currentRaw)
 		if decodeErr == nil && currentVersion == version && bytesEqual(currentRaw, candidateRaw) && !overranCandidate {
-			inner := append([]byte(nil), candidate[1].([]byte)...)
+			innerValue, ok := candidate[1].([]byte)
+			if !ok {
+				return nil, nil, 0, ErrSenderHistoryStale
+			}
+			inner := append([]byte(nil), innerValue...)
 			body, marshalErr := cborx.Marshal(collected)
 			if marshalErr != nil || len(body) > maxSenderHistoryBytes {
 				return nil, nil, 0, ErrSenderHistoryStale

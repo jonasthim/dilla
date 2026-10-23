@@ -36,9 +36,6 @@ func (f *interactionNativeFake) InspectInteractionGroup(context.Context, native.
 	return f.interaction, f.interactionErr
 }
 
-type interactionSnapshotSource interface {
-	InteractionSnapshot(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error)
-}
 type interactionSnapshotSourceFunc func(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error)
 
 func (f interactionSnapshotSourceFunc) InteractionSnapshot(ctx context.Context, event native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {

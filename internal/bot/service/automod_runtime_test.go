@@ -199,7 +199,8 @@ func TestAutoModerationRuntimeClassifiesAuthorityAndSinkFailures(t *testing.T) {
 			}), automodSinkFunc(func(context.Context, ModerationAction) error { t.Fatal("sink ran after authority failure"); return nil }),
 			func() time.Time { return now })
 		_, err := runtime.Handle(context.Background(), base, false, []string{"1", "2", "3", "4", "5", "6"})
-		stage, ok := err.(AutoModerationStageError)
+		var stage AutoModerationStageError
+		ok := errors.As(err, &stage)
 		if !ok || stage.Stage != "actor_authorization" || strings.Contains(err.Error(), "private") {
 			t.Fatalf("authority error = %v, want redacted actor_authorization stage", err)
 		}
@@ -209,7 +210,8 @@ func TestAutoModerationRuntimeClassifiesAuthorityAndSinkFailures(t *testing.T) {
 			automodSinkFunc(func(context.Context, ModerationAction) error { return errors.New("private sink details") }),
 			func() time.Time { return now })
 		_, err := runtime.Handle(context.Background(), base, false, []string{"1", "2", "3", "4", "5", "6"})
-		stage, ok := err.(AutoModerationStageError)
+		var stage AutoModerationStageError
+		ok := errors.As(err, &stage)
 		if !ok || stage.Stage != "case_sink" || strings.Contains(err.Error(), "private") {
 			t.Fatalf("sink error = %v, want redacted case_sink stage", err)
 		}

@@ -201,7 +201,7 @@ func musicCallJoinOperation(installation, group id.ID, epoch uint64) id.ID {
 	input = append(input, group[:]...)
 	var encodedEpoch [8]byte
 	for i := range encodedEpoch {
-		encodedEpoch[len(encodedEpoch)-1-i] = byte(epoch >> (8 * i))
+		encodedEpoch[len(encodedEpoch)-1-i] = byte((epoch >> (8 * i)) & 0xff)
 	}
 	input = append(input, encodedEpoch[:]...)
 	digest := sha256.Sum256(input)
@@ -274,7 +274,12 @@ func musicDeviceListHistory(ctx context.Context, calls *client.Session, user id.
 	if !ok || len(headList) == 0 {
 		return nil, nil, client.ErrProtocol
 	}
-	rows := make([]any, 0, min(maxVersions, int(version-cachedVersion+1)))
+	count := version - cachedVersion + 1
+	capacity := maxVersions
+	if count < uint64(maxVersions) {
+		capacity = int(count)
+	}
+	rows := make([]any, 0, capacity)
 	after := cachedVersion
 	if cachedVersion > 0 {
 		after = cachedVersion - 1

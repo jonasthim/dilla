@@ -191,7 +191,7 @@ func readDoctorWASI(path string) ([]byte, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), "wasi-module")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > 64<<20 || !trustedLocalCode(info) {
 		return nil, os.ErrInvalid

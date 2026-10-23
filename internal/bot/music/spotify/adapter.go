@@ -113,7 +113,7 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	if err != nil {
 		return nil, ErrPlaybackFailed
 	}
-	cmd := exec.Command(a.config.HelperPath, source)
+	cmd := exec.CommandContext(ctx, a.config.HelperPath, source) // #nosec G204 -- helper is absolute validated config; source is restricted by validTrackSource.
 	cmd.Env = []string{}
 	cmd.ExtraFiles = []*os.File{credentialRead} // child descriptor 3
 	stdin, err := cmd.StdinPipe()
@@ -246,7 +246,7 @@ func (p *Playback) wait() { p.pipeReaders.Wait(); p.waitErr = p.cmd.Wait(); clos
 // leaves the configured source offset untouched, and the transient chunk is cleared.
 func (p *Playback) writeCredential(source *os.File, target *os.File, size int64) {
 	defer p.pipeReaders.Done()
-	defer target.Close()
+	defer func() { _ = target.Close() }()
 	buf := make([]byte, 4096)
 	defer clear(buf)
 	for offset := int64(0); offset < size; {
@@ -255,7 +255,7 @@ func (p *Playback) writeCredential(source *os.File, target *os.File, size int64)
 			want = int(remaining)
 		}
 		n, err := source.ReadAt(buf[:want], offset)
-		if n != want || (err != nil && !(err == io.EOF && n == want)) {
+		if n != want || (err != nil && (err != io.EOF || n != want)) {
 			return
 		}
 		for written := 0; written < n; {
@@ -301,14 +301,6 @@ func (p *Playback) startPCMWatchdog() {
 			}
 		}
 	}()
-}
-func (p *Playback) failure() error {
-	select {
-	case <-p.done:
-		return ErrPlaybackFailed
-	default:
-		return ErrPlaybackFailed
-	}
 }
 func (p *Playback) kill() {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
@@ -380,7 +372,7 @@ func (p *Playback) readStatuses(r io.Reader) {
 	for {
 		var header [4]byte
 		nread, err := io.ReadFull(r, header[:])
-		if err == io.EOF && nread == 0 {
+		if errors.Is(err, io.EOF) && nread == 0 {
 			return
 		}
 		if err != nil {
@@ -442,7 +434,7 @@ func (p *Playback) Read(b []byte) (int, error) {
 			break
 		}
 		select {
-		case p.frame, _ = <-p.frames:
+		case p.frame = <-p.frames:
 			if len(p.frame) == 0 {
 				return 0, p.readEndError()
 			}
@@ -602,7 +594,7 @@ func validTrackSource(source string) bool {
 		return false
 	}
 	for _, c := range id {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 			return false
 		}
 	}

@@ -79,6 +79,7 @@ func (h ModerationInteractions) Handlers() map[protocol.Operation]InteractionHan
 	}
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h ModerationInteractions) listManualEvidence(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if ctx == nil || h.EvidenceReader == nil || h.CommunityID.IsZero() || h.InstallationID.IsZero() || request.CommunityID != h.CommunityID || actor.User.IsZero() || len(request.Args) != 1 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -145,6 +146,7 @@ func decodeEvidenceInteractionCursor(value any, community, installation id.ID) (
 	return append([]byte(nil), after...), true
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h ModerationInteractions) saveManualEvidence(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if ctx == nil || h.CommunityID.IsZero() || request.CommunityID != h.CommunityID || actor.User.IsZero() || actor.Device.IsZero() ||
 		h.InstallationID.IsZero() || h.EvidenceWriter == nil ||

@@ -216,13 +216,6 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 	return session.QueueStarter{OptionsFor: options}, nil
 }
 
-// newInstallationYouTubeQueueStarter constructs the production YouTube track
-// path for one already-enrolled installation. It obtains fresh, channel-bound
-// call credentials only when a track is explicitly started. Queue restoration
-// never starts audio by itself; constructing this value does not start audio.
-// Spotify remains unavailable until its account and PCM provider are qualified.
-// The client Session exposes its pinned instance without exposing its credential;
-// both the session and native epoch source must match this installation.
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
 	return newInstallationMusicQueueStarter(instance, installation, community, channel, calls, source, nil, nil, nil)
 }
@@ -258,12 +251,6 @@ func newInstallationMusicQueueStarter(instance, installation, community, channel
 		}},
 		Epochs: source, Lifetime: 30 * time.Minute,
 	})
-}
-
-func newInstallationYouTubeQueueStarterFactory(instance, installation, community id.ID, calls *client.Session, source installationMusicNative) musicStarterFactory {
-	return func(channel id.ID) (session.QueueStarter, error) {
-		return newInstallationYouTubeQueueStarter(instance, installation, community, channel, calls, source)
-	}
 }
 
 type persistedMusicQueue struct{ store *persistence.Store }
@@ -573,10 +560,6 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 	}
 	r.runtimes[installation] = &retainedMusicRuntime{community: community, queues: queues, native: nativeClient}
 	return true, nil
-}
-
-func syncMusicSupervisors(ctx context.Context, runtime *musicQueueRuntime, channels []client.Channel, starter session.QueueStarter) error {
-	return syncMusicSupervisorsWithStarterFactory(ctx, runtime, channels, func(id.ID) (session.QueueStarter, error) { return starter, nil })
 }
 
 func syncMusicSupervisorsWithStarterFactory(ctx context.Context, runtime *musicQueueRuntime, channels []client.Channel, starterFor musicStarterFactory) error {

@@ -39,7 +39,7 @@ func TestSourceSyncWithCompiledHelperAndRealRustPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixtureDir := filepath.Join(t.TempDir(), "peer")
-	cmd := exec.Command("cargo", "test", "-p", "dilla-core", "--test", "native_bot_group_peer_fixture", "--", "--exact", "bridge_public_cbor_peer", "--nocapture")
+	cmd := exec.CommandContext(t.Context(), "cargo", "test", "-p", "dilla-core", "--test", "native_bot_group_peer_fixture", "--", "--exact", "bridge_public_cbor_peer", "--nocapture")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "DILLA_NATIVE_GROUP_FIXTURE_DIR="+fixtureDir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -341,7 +341,7 @@ func TestStopPeerFixtureReapsProcessGroup(t *testing.T) {
 	const childMode = "DILLA_TEST_STUBBORN_PEER_CHILD"
 	if os.Getenv(childMode) == "1" {
 		pidFile := os.Getenv("DILLA_TEST_STUBBORN_PEER_PID_FILE")
-		child := exec.Command("/bin/sh", "-c", `trap '' TERM; echo $$ > "$1"; while :; do sleep 1; done`, "stubborn-peer", pidFile)
+		child := exec.CommandContext(t.Context(), "/bin/sh", "-c", `trap '' TERM; echo $$ > "$1"; while :; do sleep 1; done`, "stubborn-peer", pidFile)
 		if err := child.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -351,7 +351,7 @@ func TestStopPeerFixtureReapsProcessGroup(t *testing.T) {
 	}
 
 	pidFile := filepath.Join(t.TempDir(), "stubborn-peer.pid")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestStopPeerFixtureReapsProcessGroup$")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestStopPeerFixtureReapsProcessGroup$")
 	cmd.Env = append(os.Environ(), childMode+"=1", "DILLA_TEST_STUBBORN_PEER_PID_FILE="+pidFile)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {

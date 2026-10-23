@@ -56,6 +56,7 @@ func (a *CommunityMusicInteractionAuthority) CurrentCall(ctx context.Context, ch
 	return MusicCallBinding{CallID: *state.CallID, ChannelID: channel, Active: true}, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (a *CommunityMusicInteractionAuthority) CanUse(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
 	if err := a.validCall(call); err != nil || actor.User.IsZero() {
 		return false, nil
@@ -77,6 +78,7 @@ func (a *CommunityMusicInteractionAuthority) CanUse(ctx context.Context, actor I
 	return true, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
 	if err := a.validCall(call); err != nil || actor.User.IsZero() {
 		return false, nil
@@ -109,6 +111,7 @@ func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor In
 	return false, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (a *CommunityMusicInteractionAuthority) CanEmergencyStop(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
 	if err := a.validCall(call); err != nil || actor.User.IsZero() {
 		return false, nil

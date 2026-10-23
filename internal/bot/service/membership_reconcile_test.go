@@ -21,7 +21,6 @@ type membershipFakeNative struct {
 	expected               []native.GroupExpected
 	outcomes               []native.GroupWelcomeOutcome
 	state                  native.StateValue
-	acks                   []id.ID
 	applyCalls             int
 	applyErr               error
 	interactionCursorCalls int

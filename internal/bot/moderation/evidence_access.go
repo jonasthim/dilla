@@ -258,7 +258,7 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 	var groupID id.ID
 	var targetSequence uint64
 	var targetUserID id.ID
-	metadataOK := true
+	var metadataOK bool
 	if len(row) >= 19 {
 		acceptedActionID, metadataOK = configID(row[13])
 		var ok bool
@@ -402,7 +402,7 @@ func evidenceMatches(value native.StateValue, binding native.Binding, input Evid
 	var groupID id.ID
 	var targetSequence uint64
 	var targetUserID id.ID
-	metadataOK := false
+	var metadataOK bool
 	if len(row) == 13 {
 		metadataOK = row[0] == uint64(1) && input.AcceptedActionID.IsZero() && input.AcceptedRevision == 0 && input.ActorUserID.IsZero() && input.ActorDeviceID.IsZero()
 	} else {

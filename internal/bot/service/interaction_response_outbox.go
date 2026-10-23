@@ -40,7 +40,6 @@ type interactionResponseOutboxNative interface {
 // this record is committed can cause that handler to run again on redelivery.
 type InteractionResponseOutbox struct {
 	native   interactionResponseOutboxNative
-	session  *client.Session
 	binding  native.Binding
 	sendFn   func(context.Context, SendInput) (protocol.SendReceipt, error)
 	resumeFn func(context.Context, SendInput, func(context.Context) error) (protocol.SendReceipt, error)

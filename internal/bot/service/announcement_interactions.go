@@ -119,6 +119,7 @@ func (h AnnouncementInteractions) list(ctx context.Context, actor InteractionAct
 	return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h AnnouncementInteractions) put(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	fingerprint, valid := announcementMutationFingerprint(request, h.CommunityID, protocol.OpAnnouncementsPut)
 	if !valid {

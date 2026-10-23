@@ -64,7 +64,7 @@ func (r IsolatedMetadataRunner) Run(ctx context.Context, executable string, args
 	if err != nil {
 		return nil, err
 	}
-	defer process.Close()
+	defer func() { _ = process.Close() }()
 	output, err := io.ReadAll(io.LimitReader(process.stdout, int64(outputLimit)+1))
 	if err != nil {
 		return nil, ErrExtractFailed

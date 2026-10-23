@@ -251,7 +251,7 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		response.Status = interactionStatusForbidden
 		return finish()
 	}
-	if request.ChannelID != nil && *request.ChannelID != event.Channel && !(group.Kind == 3 && handler.AllowMusicChannelContext) {
+	if request.ChannelID != nil && *request.ChannelID != event.Channel && (group.Kind != 3 || !handler.AllowMusicChannelContext) {
 		response.Status = interactionStatusForbidden
 		return finish()
 	}
@@ -352,7 +352,10 @@ func (d *InteractionDispatcher) begin(ctx context.Context, key interactionReplay
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if element := d.entries[key]; element != nil {
-		entry := element.Value.(*interactionReplay)
+		entry, ok := element.Value.(*interactionReplay)
+		if !ok || entry == nil {
+			return nil, false, ErrInteractionDispatcherBusy
+		}
 		if entry.fingerprint != fingerprint {
 			return nil, false, ErrInteractionRequestIDConflict
 		}
@@ -363,7 +366,11 @@ func (d *InteractionDispatcher) begin(ctx context.Context, key interactionReplay
 		if oldest == nil {
 			break
 		}
-		entry := oldest.Value.(*interactionReplay)
+		entry, ok := oldest.Value.(*interactionReplay)
+		if !ok || entry == nil {
+			d.order.Remove(oldest)
+			return nil, false, ErrInteractionDispatcherBusy
+		}
 		select {
 		case <-entry.done:
 			d.order.Remove(oldest)

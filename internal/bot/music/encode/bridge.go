@@ -121,7 +121,7 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 }
 
 func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider *media.LiveOpusProvider, ffmpeg string, activity chan<- struct{}) error {
-	cmd := exec.CommandContext(ctx, ffmpeg,
+	cmd := exec.CommandContext(ctx, ffmpeg, // #nosec G204 -- FFmpegPath is operator-configured; all arguments are fixed.
 		"-hide_banner", "-loglevel", "error", "-nostdin",
 		"-f", "s16le", "-ar", fmt.Sprint(sampleRate), "-ac", fmt.Sprint(channels), "-i", "pipe:0",
 		"-map", "0:a:0", "-ar", fmt.Sprint(outputRate), "-ac", fmt.Sprint(outputChannels),
@@ -131,16 +131,16 @@ func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider 
 	configureProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("%w: stdin pipe: %v", ErrEncoderFailed, err)
+		return fmt.Errorf("%w: stdin pipe: %w", ErrEncoderFailed, err)
 	}
-	defer stdin.Close()
+	defer func() { _ = stdin.Close() }()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("%w: stdout pipe: %v", ErrEncoderFailed, err)
+		return fmt.Errorf("%w: stdout pipe: %w", ErrEncoderFailed, err)
 	}
-	defer stdout.Close()
+	defer func() { _ = stdout.Close() }()
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%w: start: %v", ErrEncoderFailed, err)
+		return fmt.Errorf("%w: start: %w", ErrEncoderFailed, err)
 	}
 	pumpErr := make(chan error, 1)
 	go func() {
@@ -155,7 +155,7 @@ func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider 
 		_ = stdin.Close()
 		<-pumpErr
 		_ = cmd.Wait()
-		return fmt.Errorf("%w: Ogg headers: %v", ErrInvalidOpus, err)
+		return fmt.Errorf("%w: Ogg headers: %w", ErrInvalidOpus, err)
 	}
 	if !validOpusHeader(header) {
 		_ = cmd.Cancel()
@@ -167,12 +167,12 @@ func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider 
 	for {
 		packet, readErr := readPacketSafely(reader)
 		if readErr != nil {
-			if readErr != io.EOF {
+			if !errors.Is(readErr, io.EOF) {
 				_ = cmd.Cancel()
 				_ = stdin.Close()
 				<-pumpErr
 				_ = cmd.Wait()
-				return fmt.Errorf("%w: Ogg packet: %v", ErrInvalidOpus, readErr)
+				return fmt.Errorf("%w: Ogg packet: %w", ErrInvalidOpus, readErr)
 			}
 			break
 		}
@@ -339,7 +339,9 @@ func (r *checkedOggReader) readPage() error {
 	if ending && lastLaceContinues {
 		return ErrInvalidOpus
 	}
-	page = append(page, make([]byte, payloadSize)...)
+	completePage := make([]byte, len(page)+payloadSize)
+	copy(completePage, page)
+	page = completePage
 	if _, err := io.ReadFull(r.source, page[len(header)+segments:]); err != nil {
 		return err
 	}

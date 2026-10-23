@@ -220,7 +220,8 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 	}
 	var boot native.BootstrapResult
 	hasBootstrap := false
-	if identity.Phase == 0 {
+	switch identity.Phase {
+	case 0:
 		if (inst.BotUser != nil || inst.BotDevice != nil) && state.PendingDevice.IsZero() {
 			return out, fmt.Errorf("%w: server Bot is enrolled while local pending identity proof is missing", ErrRecovery)
 		}
@@ -250,7 +251,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 		} else if state.PendingDevice != device || state.BootstrapFingerprint != fingerprint {
 			return out, ErrRecovery
 		}
-	} else if identity.Phase == 2 {
+	case 2:
 		if state.PendingDevice.IsZero() || state.BootstrapFingerprint == ([32]byte{}) {
 			return out, fmt.Errorf("%w: completed native Bot has no encrypted bootstrap receipt", ErrRecovery)
 		}

@@ -64,6 +64,7 @@ func (h WelcomeInteractions) authorizeSettings(ctx context.Context, actor Intera
 	return true, InteractionResult{}, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h WelcomeInteractions) getSettings(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if len(request.Args) != 1 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -92,6 +93,7 @@ func (h WelcomeInteractions) getSettings(ctx context.Context, actor InteractionA
 	return InteractionResult{Revision: &revision, Data: data}, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h WelcomeInteractions) putSettings(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if len(request.Args) != 2 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -167,6 +169,7 @@ func decodeWelcomeSettings(raw []byte) (welcome.Config, error) {
 	return cfg, nil
 }
 
+//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (h WelcomeInteractions) preview(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if h.Authority == nil || h.CommunityID.IsZero() || actor.User.IsZero() {
 		return InteractionResult{}, errors.New("missing welcome preview authority")

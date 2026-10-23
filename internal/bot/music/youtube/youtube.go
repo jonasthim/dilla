@@ -164,7 +164,7 @@ func (r ExecRunner) Run(ctx context.Context, executable string, args []string, o
 	if r.MaxStderr <= 0 {
 		r.MaxStderr = 64 << 10
 	}
-	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd := exec.CommandContext(ctx, executable, args...) // #nosec G204 -- executable is resolved from configured dependencies; args use validated URLs.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {

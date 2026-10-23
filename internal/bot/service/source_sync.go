@@ -193,13 +193,26 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 			return out, err
 		}
 		out.Pages++
-		hsThrough, msThrough := sourceFrontier(hs, from, head, s.options.PageLimit), sourceFrontier(ms, from, head, s.options.PageLimit)
+		hsThrough, e := sourceFrontier(hs, from, head, s.options.PageLimit)
+		if e != nil {
+			return out, e
+		}
+		msThrough, e := sourceFrontier(ms, from, head, s.options.PageLimit)
+		if e != nil {
+			return out, e
+		}
 		through := minUint64(head, minUint64(hsThrough, msThrough))
 		if through < from {
 			return out, errors.New("source pages made no common progress")
 		}
-		hsRows := rowsThrough(hs.Rows, through)
-		msRows := rowsThrough(ms.Rows, through)
+		hsRows, e := rowsThrough(hs.Rows, through)
+		if e != nil {
+			return out, e
+		}
+		msRows, e := rowsThrough(ms.Rows, through)
+		if e != nil {
+			return out, e
+		}
 		if err = rejectCrossStreamDuplicates(hsRows, msRows); err != nil {
 			return out, err
 		}
@@ -239,7 +252,7 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 				_, readErr = s.native.InspectGroup(ctx, expected.Group)
 			}
 			if readErr != nil {
-				return out, fmt.Errorf("apply result uncertain (%v); native state unavailable: %w", applyErr, readErr)
+				return out, fmt.Errorf("apply result uncertain (%w); native state unavailable: %w", applyErr, readErr)
 			}
 			return out, applyErr
 		}
@@ -436,25 +449,40 @@ func validateSourcePage(page client.Page, from, limit uint64, kind string) error
 	return nil
 }
 
-func sourceFrontier(page client.Page, from, head, limit uint64) uint64 {
+func sourceFrontier(page client.Page, from, head, limit uint64) (uint64, error) {
 	if uint64(len(page.Rows)) < limit {
-		return head
+		return head, nil
 	}
-	return page.Rows[len(page.Rows)-1][0].(uint64)
+	last, ok := page.Rows[len(page.Rows)-1][0].(uint64)
+	if !ok {
+		return 0, errors.New("malformed source sequence")
+	}
+	return last, nil
 }
 
-func rowsThrough(rows [][]any, through uint64) [][]any {
+func rowsThrough(rows [][]any, through uint64) ([][]any, error) {
 	end := 0
-	for end < len(rows) && rows[end][0].(uint64) <= through {
+	for end < len(rows) {
+		seq, ok := rows[end][0].(uint64)
+		if !ok {
+			return nil, errors.New("malformed source sequence")
+		}
+		if seq > through {
+			break
+		}
 		end++
 	}
-	return rows[:end]
+	return rows[:end], nil
 }
 
 func rejectCrossStreamDuplicates(handshakes, messages [][]any) error {
 	i, j := 0, 0
 	for i < len(handshakes) && j < len(messages) {
-		h, m := handshakes[i][0].(uint64), messages[j][0].(uint64)
+		h, hok := handshakes[i][0].(uint64)
+		m, mok := messages[j][0].(uint64)
+		if !hok || !mok {
+			return errors.New("malformed source sequence")
+		}
 		if h == m {
 			return errors.New("duplicate source sequence across streams")
 		}

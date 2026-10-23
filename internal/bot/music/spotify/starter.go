@@ -45,7 +45,6 @@ func (s *PCMStarter) Start(ctx context.Context, track string) (io.ReadCloser, er
 		return nil, ErrCredentialUnavailable
 	}
 	credential, err := NewAccessTokenFile(token)
-	token = ""
 	if err != nil {
 		return nil, ErrCredentialUnavailable
 	}

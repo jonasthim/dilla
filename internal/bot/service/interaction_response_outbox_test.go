@@ -16,7 +16,6 @@ type responseOutboxState struct {
 	binding native.Binding
 	value   native.StateValue
 	failCAS bool
-	sends   int
 }
 
 func (s *responseOutboxState) Binding() native.Binding { return s.binding }
