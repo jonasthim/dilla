@@ -4805,7 +4805,10 @@ export class Controller {
   private deleteMessage(channelId: string, msgId: string): Promise<null> { return this.fold(channelId, msgId, 2, ''); }
 
   /** A distinct human moderation path: validate local target/group and loaded authority, then let the instance recheck. */
-  private async moderateRemoveMessage(channelId: string, msgId: string, rawSeq: string, reason: string, excerpt: string): Promise<null> {
+  private async moderateRemoveMessage(channelId: string, msgId: string, rawSeq: string, reason: string, excerpt: string): Promise<{
+    removal: 'accepted'; proofRequestId: string; evidenceRequestId: string;
+    evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown';
+  }> {
     const core = this.requireCore();
     if (!SEQ.test(rawSeq)) throw new Refusal('E_BAD_INPUT', 'invalid target sequence');
     const reasonBytes = new TextEncoder().encode(reason);
@@ -4847,11 +4850,19 @@ export class Controller {
     this.refreshTimeline(channelId, group.groupId);
     // Keep the action request ID in op61 and send its evidence only after the
     // server has accepted the signed removal.
-    const requestHex = toHex(crypto.getRandomValues(new Uint8Array(16)));
-    const evidence = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId, channelId: null,
-      requestId: requestHex, operation: 61, args: [toHex(requestId), reason, excerpt], revision: '0' });
-    if (evidence.upload === 'rejected') throw new Refusal('E_UNAVAILABLE', 'removal accepted but evidence upload was refused');
-    return null;
+    const proofRequestId = toHex(requestId);
+    const evidenceRequestId = toHex(crypto.getRandomValues(new Uint8Array(16)));
+    let evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
+    try {
+      const evidence = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId, channelId: null,
+        requestId: evidenceRequestId, operation: 61, args: [proofRequestId, reason, excerpt], revision: '0' });
+      evidenceUpload = evidence.upload;
+    } catch {
+      // The removal is already accepted. Return its status separately so the page
+      // can retry evidence with these same IDs without issuing another removal.
+      evidenceUpload = 'unknown';
+    }
+    return { removal: 'accepted', proofRequestId, evidenceRequestId, evidenceUpload };
   }
 
   /** Ruling 28: the worker does not de-duplicate reactions; the core folds them per user. */

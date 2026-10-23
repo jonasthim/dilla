@@ -385,7 +385,10 @@ describe('Controller', () => {
     w.state.rows.push(strangerRow(3));
     const msgId = toHex(w.state.rows[0].msgId!);
     w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
-    await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: null }));
+    await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: { removal: 'accepted', evidenceUpload: 'accepted' } }));
+    const accepted = w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } };
+    expect(accepted.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(accepted.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
     expect(w.core.signRemoval).toHaveBeenCalledWith(expect.any(Uint8Array), GROUP, 3n, 1_700_000_030n, 1_700_000_000n);
     expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
     const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
@@ -395,6 +398,8 @@ describe('Controller', () => {
     expect(evidenceRequest[6]).toBe(1_700_000_030n);
     expect(evidenceRequest[1]).toEqual(prepared[0]);
     expect(evidenceRequest[1]).not.toEqual(w.core.signRemoval.mock.calls[0][0]);
+    expect((w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } }).value)
+      .toMatchObject({ proofRequestId: toHex(w.core.signRemoval.mock.calls[0][0]), evidenceRequestId: toHex(prepared[0]) });
     expect(evidenceRequest[7]).toEqual([w.core.signRemoval.mock.calls[0][0], 'reviewed by moderator', 'bounded excerpt']);
     expect(prepared[0]).not.toEqual(w.core.signRemoval.mock.calls[0][0]);
     expect(w.routes.postModerationRemoval.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionSendPrepare.mock.invocationCallOrder[0]);
@@ -426,6 +431,31 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(10_211)).toMatchObject({ ok: false, error: { code } }));
     expect(w.core.signRemoval).not.toHaveBeenCalled();
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
+  it('reports an accepted removal separately when op61 is refused, so the page can retry evidence only', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_213, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_213)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    w.state.rows.push(strangerRow(3));
+    w.routes.postMessage.mockRejectedValue(new DillaHttpError({ status: 403, code: 'E_FORBIDDEN', detail: '', retryAfterMs: null, extra: [] }));
+    w.call(10_214, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3',
+      reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
+    await vi.waitFor(() => expect(w.ret(10_214)).toMatchObject({ ok: true, value: { removal: 'accepted', evidenceUpload: 'rejected' } }));
+    const rejectedEvidence = w.ret(10_214) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } };
+    expect(rejectedEvidence.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(rejectedEvidence.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(w.routes.postModerationRemoval).toHaveBeenCalledTimes(1);
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
+    expect(w.core.sendFail).toHaveBeenCalledWith(expect.any(Uint8Array), 'E_FORBIDDEN');
   });
 
   it.each([

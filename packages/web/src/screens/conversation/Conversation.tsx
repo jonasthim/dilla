@@ -4,6 +4,7 @@ import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, typ
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
 import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
+import { useRoute } from '../../router.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { t } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
@@ -12,6 +13,7 @@ import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachmen
 import { dayLabel, groupedWithAbove, startsDay } from './log-model.ts';
 import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
 import { PinsPanel } from './Pins.tsx';
+import { sendManualRemovalEvidence, type ManualRemovalDialogState } from './manual-removal.ts';
 
 export const FLASH_MS = 1400;
 /** How far from the end, in CSS px, the log may be and still count as at the newest message (the log's own pin slack). */
@@ -75,6 +77,8 @@ export interface ConversationProps { channelId: string; logKey: string; label: s
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
+  const [route] = useRoute();
+  const communityId = route.name === 'channel' ? route.communityId : null;
   // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
   const bits = props.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;
@@ -85,7 +89,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;
   const [emojiFor, setEmojiFor] = useState<{ key: string; opener: HTMLElement } | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ key: string; msgId: string } | null>(null);
-  const [moderateFor, setModerateFor] = useState<{ key: string; msgId: string; seq: string; reason: string; excerpt: string } | null>(null);
+  const [moderateFor, setModerateFor] = useState<ManualRemovalDialogState | null>(null);
+  const [moderateDialogOpen, setModerateDialogOpen] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
@@ -117,6 +122,40 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const now = Date.now();
 
   const command = (m: Parameters<typeof client.call>[0]) => { client.call(m).catch(e => p.onError(e)); };
+  const closeModerateDialog = () => {
+    setModerateDialogOpen(false);
+    setModerateFor(current => current === null || current.phase === 'confirm' || current.evidenceUpload === 'accepted' ? null : current);
+  };
+  const removeForEveryone = async () => {
+    const current = moderateFor;
+    if (current === null || communityId === null || current.reason.trim().length === 0
+      || new TextEncoder().encode(current.reason).length > 1024) return;
+    setModerateFor({ ...current, phase: 'sending' });
+    try {
+      const result = await client.call({ m: 'moderateRemoveMessage', channelId: p.channelId, msgId: current.msgId, seq: current.seq,
+        reason: current.reason, excerpt: current.excerpt }) as {
+        removal?: unknown; proofRequestId?: unknown; evidenceRequestId?: unknown; evidenceUpload?: unknown;
+      };
+      if (result?.removal !== 'accepted' || typeof result.proofRequestId !== 'string' || typeof result.evidenceRequestId !== 'string') {
+        throw new Error('E_REMOVAL_RESULT');
+      }
+      const evidenceUpload = result.evidenceUpload === 'accepted' || result.evidenceUpload === 'pending' || result.evidenceUpload === 'rejected'
+        ? result.evidenceUpload : 'unknown';
+      setModerateFor({ ...current, phase: 'result', proofRequestId: result.proofRequestId,
+        evidenceRequestId: result.evidenceRequestId, evidenceUpload });
+    } catch (error) {
+      p.onError(error);
+      setModerateFor({ ...current, phase: 'confirm' });
+    }
+  };
+  const retryModerationEvidence = async () => {
+    const current = moderateFor;
+    if (current === null || communityId === null || current.proofRequestId === null) return;
+    setModerateDialogOpen(true);
+    setModerateFor({ ...current, phase: 'sending' });
+    const result = await sendManualRemovalEvidence(client, communityId, current);
+    setModerateFor({ ...current, phase: 'result', evidenceRequestId: result.requestId, evidenceUpload: result.upload });
+  };
   const closeEmoji = (returnFocus: boolean) => {
     const opener = emojiFor?.opener;
     setEmojiFor(null);
@@ -193,7 +232,11 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       case 'edit': if (msgId !== null) p.dispatch({ type: 'edit', msgId, value: editableText(item.body, p.book) }); break;
       case 'pin': if (msgId !== null) command({ m: 'pin', channelId: p.channelId, msgId, on: ev.on }); break;
       case 'delete': if (msgId !== null) setDeleteFor({ key: item.key, msgId }); break;
-      case 'moderateRemove': if (msgId !== null) setModerateFor({ key: item.key, msgId, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, p.book)) }); break;
+      case 'moderateRemove': if (msgId !== null) {
+        setModerateFor({ key: item.key, msgId, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, p.book),
+          120), phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+        setModerateDialogOpen(true);
+      } break;
       case 'toggle': if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); break;
       case 'jump': jump(ev.msgId); break;
       case 'retry': command({ m: 'retrySend', msgId: ev.msgId }); break;
@@ -317,20 +360,33 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         deleted.current = { key: deleteFor.key };
         setDeleteFor(null);
       }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
-    <Dialog open={moderateFor !== null} title={t('shell.moderation.removeTitle')} closeLabel={t('shell.delete.cancel')}
-      onClose={() => setModerateFor(null)} footer={<Button variant="danger" aria-disabled={moderateFor === null || moderateFor.reason.trim().length === 0
-        || new TextEncoder().encode(moderateFor.reason).length > 1024 || undefined} onClick={() => {
-        if (moderateFor === null || moderateFor.reason.trim().length === 0 || new TextEncoder().encode(moderateFor.reason).length > 1024) return;
-        command({ m: 'moderateRemoveMessage', channelId: p.channelId, msgId: moderateFor.msgId, seq: moderateFor.seq,
-          reason: moderateFor.reason, excerpt: moderateFor.excerpt });
-        rowEls.current.get(moderateFor.key)?.focus();
-        setModerateFor(null);
-      }}>{t('shell.moderation.removeConfirm')}</Button>}>{<>
+    <Dialog open={moderateDialogOpen && moderateFor !== null} title={t('shell.moderation.removeTitle')}
+      closeLabel={moderateFor?.phase === 'sending' ? t('shell.moderation.submitting') : t('shell.delete.cancel')}
+      onClose={() => { if (moderateFor?.phase !== 'sending') closeModerateDialog(); }}
+      footer={moderateFor?.phase === 'confirm' ? <Button variant="danger" aria-disabled={moderateFor.reason.trim().length === 0
+        || new TextEncoder().encode(moderateFor.reason).length > 1024 || undefined} onClick={() => void removeForEveryone()}>
+        {t('shell.moderation.removeConfirm')}</Button>
+        : moderateFor?.phase === 'sending' ? <Button aria-disabled="true">{t('shell.moderation.submitting')}</Button>
+          : moderateFor?.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
+            : <Button variant="danger" onClick={() => void retryModerationEvidence()}>{t('shell.moderation.retryEvidence')}</Button>}>
+      {moderateFor?.phase === 'confirm' ? <>
         <p>{t('shell.moderation.removeBody')}</p>
-        <label>{t('shell.moderation.reason')}<textarea maxLength={1024} value={moderateFor?.reason ?? ''}
+        <label>{t('shell.moderation.reason')}<textarea maxLength={1024} value={moderateFor.reason}
           onChange={e => setModerateFor(current => current === null ? null : { ...current, reason: e.target.value })} /></label>
-        <p><strong>{t('shell.moderation.excerptLabel')}</strong> {moderateFor?.excerpt || t('shell.moderation.emptyExcerpt')}</p>
-      </>}</Dialog>
+        <p><strong>{t('shell.moderation.excerptLabel')}</strong> {moderateFor.excerpt || t('shell.moderation.emptyExcerpt')}</p>
+      </> : moderateFor?.phase === 'sending' ? <p>{t('shell.moderation.submitting')}</p>
+        : moderateFor?.evidenceUpload === 'accepted' ? <p role="status">{t('shell.moderation.evidenceSent')}</p>
+          : moderateFor?.evidenceUpload === 'pending' ? <p role="status">{t('shell.moderation.evidencePending')}</p>
+            : moderateFor?.evidenceUpload === 'rejected' ? <p role="alert">{t('shell.moderation.evidenceRejected')}</p>
+              : <p role="alert">{t('shell.moderation.evidenceUnknown')}</p>}
+    </Dialog>
+    {moderateFor !== null && !moderateDialogOpen && moderateFor.phase === 'result' ? <div role="status" className="d-moderation-evidence-status">
+      <p>{moderateFor.evidenceUpload === 'accepted' ? t('shell.moderation.evidenceSent')
+        : moderateFor.evidenceUpload === 'pending' ? t('shell.moderation.evidencePending')
+          : moderateFor.evidenceUpload === 'rejected' ? t('shell.moderation.evidenceRejected') : t('shell.moderation.evidenceUnknown')}</p>
+      {moderateFor.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
+        : <Button onClick={() => void retryModerationEvidence()}>{t('shell.moderation.retryEvidence')}</Button>}
+    </div> : null}
     <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} note={bits !== null ? t('perm.pinsNote') : undefined} canUnpin={bits === null || (bits & PERM.pinMessages) !== 0} book={p.book} items={items} now={now}
       onClose={() => p.dispatch({ type: 'pins', open: false })} onJump={jump} onError={e => p.onError(e)} />
     {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}

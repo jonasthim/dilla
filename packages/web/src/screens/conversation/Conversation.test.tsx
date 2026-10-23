@@ -142,6 +142,8 @@ describe('the toolbar (L-UI-41)', () => {
 describe('moderator message removal', () => {
   it('shows a separate control only with loaded ManageMessages authority and confirms with the target sequence', async () => {
     const { fake, user } = renderConversation({ items: [peerRow(P1, '7', 'theirs')] });
+    fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'accepted',
+      proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'accepted' }) : Promise.resolve(null);
     expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
     const everyone = '01'.repeat(16);
     const access = { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
@@ -168,6 +170,9 @@ describe('moderator message removal', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P1, seq: '7',
       reason: 'reviewed by moderator', excerpt: 'theirs' }]);
+    expect(await screen.findByText(en['shell.moderation.evidenceSent'])).toBeInTheDocument();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: en['shell.moderation.done'] }));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
 
