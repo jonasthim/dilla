@@ -913,20 +913,25 @@ array
 error = [
   code,            ; tstr, one of the codes below
   detail,          ; tstr, human text; may be empty; a client MUST NOT parse it
-  retry_after_ms   ; uint or null; present only for E_RATE_LIMITED and E_COMMIT_REQUIRED
+  retry_after_ms   ; uint or null; present only for E_RATE_LIMITED, E_COMMIT_REQUIRED and E_UNAVAILABLE
 ]
 ```
 
 served as `Content-Type: application/cbor`. Codes are stable strings and are the only thing a
-client switches on. Four refusals carry additional fixed-position elements appended after
-`retry_after_ms`, and only those four:
+client switches on. Five refusals carry additional fixed-position elements appended after
+`retry_after_ms`, and only those five:
 
 ```
 E_COMMIT_CONFLICT : [code, detail, null, winning_commit(bstr), proposals([bstr])]
 E_COMMIT_REQUIRED : [code, detail, retry_after_ms, proposals([bstr])]
 E_COMMIT_INVALID  : [code, detail, null, rule(tstr)]
 E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint])]
+E_UNAVAILABLE     : [code, detail, retry_after_ms, reason(tstr)]   ; a call start only, reason "call_ended"
 ```
+
+`E_UNAVAILABLE` has its fourth element only at a call start whose call ended as it was opened
+(`09` § Voice); every other `E_UNAVAILABLE` has three. A client that does not know the element reads
+a plain `503`.
 
 | HTTP | code | meaning | client action |
 |---|---|---|---|
@@ -962,7 +967,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
 | 429 | `E_RATE_LIMITED` | a token bucket is empty | wait `retry_after_ms`; a `Retry-After` header in whole seconds carries the same value |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
-| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck); or, detail `call_ended` (a call start only), the call ended as the start opened it (`09` § Voice, Ending) | wait `retry_after_ms`, then retry; on `call_ended`, forget the call group and read the call again first |
+| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck); or, with reason `call_ended` (a call start only), the call ended as the start opened it (`09` § Voice, Ending) | wait `retry_after_ms`, then retry; on `call_ended`, forget the call group and read the call again first |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid

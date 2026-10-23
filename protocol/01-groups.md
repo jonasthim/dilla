@@ -24,7 +24,7 @@ membership, so a device that has rejoined the group since is never removed (`09`
 
 A client MAY hold its `call` group leaf without a live room for a bounded time (a held leaf): when
 its room is lost with `E_DISCONNECTED`, when the page reloads into a new build, or when the call
-start after its own external join is refused with a `503` that does not carry `call_ended` (`09` §
+start after its own external join is refused with a `503` that does not carry reason `call_ended` (`09` §
 Voice; the group is open and the leaf current, so it is resumed, not joined again). It then sends no
 self-`Remove` and keeps the group state. The leaf stays a member until the room sweep's `Remove` is
 committed, so a commit another member makes before then (a rotation, an Add) carries path secrets to

@@ -105,7 +105,7 @@ func TestAStartRacingTheIdleCloseRetries(t *testing.T) {
 	}
 	// final-I1: the one start 503 after which the client forgets the group carries the marker.
 	if !endedAsOpened(t, body) {
-		t.Fatalf("the ended-as-opened 503 has detail %q, want call_ended", detailOf(t, body))
+		t.Fatalf("the ended-as-opened 503 %x has no reason call_ended", body)
 	}
 	if !groupClosed(t, e, group) || !callEnded(t, e, ch) {
 		t.Fatalf("group closed %v, call ended %v; want both", groupClosed(t, e, group), callEnded(t, e, ch))

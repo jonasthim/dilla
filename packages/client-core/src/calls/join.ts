@@ -85,14 +85,13 @@ function stopped(leave: Id | null, alone = false): JoinRefused {
 
 const codeOf = (e: unknown): string => (e instanceof CoreError || e instanceof DillaHttpError ? e.code : 'E_INTERNAL');
 const isHttp = (e: unknown, status: number, code: string): boolean => e instanceof DillaHttpError && e.status === status && e.code === code;
-/** Final review I1 (protocol/09 § Voice): the one start 503 whose call ended as it was opened carries detail
- *  `call_ended`; its call group is closed. An instance before web3.13 sent its prose detail instead. Every other start
- *  503 (the media server not answering, a pending repair or relay cut, an undecided withdrawal, a busy call) is
- *  transient: the group stays open and this device's leaf in it current. */
-export const CALL_ENDED_DETAIL = 'call_ended';
-const LEGACY_CALL_ENDED_DETAIL = 'the call ended as it was opened; retry';
-const callEnded = (e: unknown): boolean => isHttp(e, 503, 'E_UNAVAILABLE')
-  && ((e as DillaHttpError).detail === CALL_ENDED_DETAIL || (e as DillaHttpError).detail === LEGACY_CALL_ENDED_DETAIL);
+/** Final review I1 (protocol/02 § Errors, 09 § Voice): the one start 503 whose call ended as it was opened carries a
+ *  fourth element, reason `call_ended`; its call group is closed. Every other start 503 (the media server not answering,
+ *  a pending repair or relay cut, an undecided withdrawal, a busy call) has none and is transient: the group stays open
+ *  and this device's leaf in it current. An instance before web3.13 marks none, so its ended 503 is read as transient:
+ *  the group is held, and the next join's call read (which no longer names a closed group) forgets it. */
+export const REASON_CALL_ENDED = 'call_ended';
+const callEnded = (e: unknown): boolean => isHttp(e, 503, 'E_UNAVAILABLE') && (e as DillaHttpError).extra[0] === REASON_CALL_ENDED;
 /** A gate refusal: a trust block (E_BINDING included) is `blocked`; anything else, a pending list included, `failed`. */
 function refused(e: unknown, leave: Id | null, alone = false): JoinRefused {
   const code = codeOf(e);

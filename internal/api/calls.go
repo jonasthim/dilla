@@ -109,11 +109,6 @@ const (
 	retryPassBudget = 15 * time.Second
 	// startRetryAfterMS is the retry_after_ms of a start whose call ended as it was opened.
 	startRetryAfterMS = 250
-	// CallEndedDetail is the detail of the one start 503 whose call ended as it was opened (final-I1,
-	// protocol/09 § Voice): its call group is closed, so the client forgets it and reads the call
-	// again. Every other start 503 (a busy call, a pending repair or relay cut, an undecided
-	// withdrawal, an SFU that does not answer) is transient, lacks it, and keeps the client's leaf.
-	CallEndedDetail = "call_ended"
 )
 
 // lock takes call's lock for at most wait (or until ctx ends) and returns a context bounded by hold
@@ -581,7 +576,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 				server.WriteError(w, err)
 				return
 			}
-			server.WriteError(w, server.Unavailable(startRetryAfterMS, CallEndedDetail))
+			// final-I1: the one start 503 that carries reason call_ended (server.CallEnded); every other
+			// start 503 (a busy call, a pending repair or relay cut, an undecided withdrawal, an SFU that
+			// does not answer) is transient and has none, so the client keeps its leaf.
+			server.WriteError(w, server.CallEnded(startRetryAfterMS))
 			return
 		case err != nil:
 			server.WriteError(w, err)
