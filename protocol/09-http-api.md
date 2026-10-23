@@ -191,10 +191,21 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]`; kind-3 adds `admission_request_id` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B (joining/ready) | — | registration receipt or 404 |
 | `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B (ready, matching live admission receipt) | — | strict CBOR boolean; true only when the receipt's exact group ID is absent |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info` | B (ready, exact current registered kind-3 interaction group) | — | `[epoch,group_info,tree_hash32,next_seq]` |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | handshake rows, same format and bounds as ordinary group sync |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | application-message rows, same format and bounds as ordinary group sync |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor` | B (ready, exact current registered kind-3 interaction group) | `[last_seq,last_epoch]` | 204; advances this Bot device's cursor monotonically |
 | `POST /v1/bot-runtime/installations/{installation}/moderation/actions` | B (ready, warnings/timeouts capability, owning installation) | `[request_id,group_id,source_seq,action,rules,timeout_ms,expires]` | `[action_id,community_revision,expires|null]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B (ready, removal capability, owning installation) | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; accepted signed removal only |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B (joining/ready) | `[request_id,group_id,participant_user_id,participant_device_id]` | `[snapshot_payload,signature]`; read-only signed context v1, max 160 KiB |
 | `GET /v1/groups/{id}/interaction-admission-context` | E (enrolled human session bound to the accepted participant device) | — | `[current_context_payload,signature]`; read-only current kind-3 context v1, max 160 KiB; requires current membership and exact authenticated two-leaf group state |
+
+Managed Bot synchronization of private kind-3 interaction groups uses only the four
+installation-scoped routes above. Each read and cursor update validates the exact
+accepted registration, current two-leaf MLS state, Ready installation, Bot session,
+participant membership/device, signed device lists and current eligibility while
+holding the group fence through the database operation. Generic group read routes
+remain limited to kinds 0 and 1; Bot interaction routes do not grant group writes.
 | `POST /v1/groups/{group}/automod-grants/arm` | E (human, current interaction participant, `manage_community`, fresh step-up) | `[request_id,community_id,expected_revision,request_expires,config_hash32,step_up]` | `[opaque_grant,expires_unix]`; one minute maximum; grant binds the current interaction group, participant user/device, operation 63, revision, expiry and config digest |
 | `POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` | B (ready installation) | `[opaque_grant,community_id,group_id,request_id,expected_revision,request_expires,actor_user_id,actor_device_id,config_hash32]` | `[1,receipt_id]`; exact retries return the same receipt; changed tuple or config digest is refused |
 

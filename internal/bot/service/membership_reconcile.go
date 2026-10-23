@@ -220,7 +220,19 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		if err = ctx.Err(); err != nil {
 			return out, err
 		}
-		if g.State != 2 || g.Community == nil || *g.Community != r.binding.Community || g.Kind > 1 {
+		if g.State != 2 || g.Community == nil || *g.Community != r.binding.Community {
+			continue
+		}
+		if g.Kind == 3 {
+			res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: g.Target, Kind: 3})
+			if e != nil {
+				return out, e
+			}
+			out.GroupsSynced++
+			out.SourcePages += res.Pages
+			continue
+		}
+		if g.Kind > 1 {
 			continue
 		}
 		ch, ok := channelByID[g.Target]

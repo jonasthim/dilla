@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"net/http"
@@ -74,6 +75,136 @@ type currentInteractionLeafWire struct {
 	SignatureKey []byte
 }
 
+type currentInteractionLiveState struct {
+	User, Bot                store.UserRow
+	Device, BotDevice        store.DeviceRow
+	ParticipantList, BotList store.DeviceListRow
+	EligibilityRevision      uint64
+}
+
+// BotInteractionGroupReadAllowed proves that a Bot session may read the exact
+// active kind-3 group after rechecking the accepted MLS roster and live account state.
+// verifyCurrentInteractionLiveState is shared by the human snapshot route and the
+// Bot's narrowly-scoped kind-3 read gate. It rechecks the accepted registration
+// against the current Ready installation, membership, device rows, signed lists,
+// bans, policy and eligibility revision. A non-nil lockedTx is the same repository
+// transaction that holds the DS interaction-group fence.
+func (d Deps) verifyCurrentInteractionLiveState(ctx context.Context, current ds.CurrentBotInteractionGroupContext, now int64,
+	installationID, communityID, botUserID, botDeviceID, participantUserID, participantDeviceID id.ID, readyOnly bool, lockedTx store.Repository) (currentInteractionLiveState, error) {
+	var state currentInteractionLiveState
+	if now < 0 || d.Repo == nil || d.DeviceLists == nil || d.Instance.InstanceID.IsZero() ||
+		current.Binding.InstallationID != installationID || current.Binding.CommunityID != communityID || current.Binding.BotUserID != botUserID ||
+		current.Binding.ParticipantUserID != participantUserID || current.Binding.ParticipantDeviceID != participantDeviceID ||
+		current.Registration.InstallationID != installationID || current.Registration.CommunityID != communityID || current.Registration.UserID != botUserID ||
+		current.Registration.DeviceID != botDeviceID || current.Registration.GroupID.IsZero() || current.Registration.AcceptedAt < 0 {
+		return state, errors.New("current interaction identity mismatch")
+	}
+	check := func(tx store.Repository) error {
+		if err := tx.LockCommunity(ctx, communityID); err != nil {
+			return err
+		}
+		if err := tx.LockBotInstallation(ctx, installationID); err != nil {
+			return err
+		}
+		install, err := tx.GetBotInstallation(ctx, installationID)
+		validState := install.State == store.BotInstallationReady || (!readyOnly && install.State == store.BotInstallationJoining)
+		if err != nil || !validState || install.RemovedAt != nil || install.CommunityID != communityID || install.UserID == nil || install.DeviceID == nil || *install.UserID != botUserID || *install.DeviceID != botDeviceID {
+			return errors.New("inactive Bot installation")
+		}
+		lockedUsers := []id.ID{botUserID, participantUserID}
+		if bytes.Compare(lockedUsers[0][:], lockedUsers[1][:]) > 0 {
+			lockedUsers[0], lockedUsers[1] = lockedUsers[1], lockedUsers[0]
+		}
+		for i, uid := range lockedUsers {
+			if i > 0 && uid == lockedUsers[i-1] {
+				continue
+			}
+			if err := tx.LockUserForDeviceRegistration(ctx, uid); err != nil {
+				return err
+			}
+		}
+		state.Bot, err = tx.GetUser(ctx, botUserID)
+		if err != nil || state.Bot.Kind != 1 || state.Bot.Flags != 0 || state.Bot.DisabledAt != nil || state.Bot.DeletedAt != nil {
+			return errors.New("inactive Bot account")
+		}
+		state.BotDevice, err = tx.GetDevice(ctx, botDeviceID)
+		if err != nil || state.BotDevice.UserID != botUserID || state.BotDevice.VerifiedAt == nil || state.BotDevice.RevokedAt != nil || state.BotDevice.QuarantinedAt != nil {
+			return errors.New("inactive Bot device")
+		}
+		state.User, err = tx.GetUser(ctx, participantUserID)
+		if err != nil || state.User.Kind != kindHuman || state.User.DisabledAt != nil || state.User.DeletedAt != nil {
+			return errors.New("inactive human participant")
+		}
+		state.Device, err = tx.GetDevice(ctx, participantDeviceID)
+		if err != nil || !ds.ActiveHumanInteractionDevice(participantUserID, state.Device) {
+			return errors.New("inactive participant device")
+		}
+		if _, err := tx.GetMember(ctx, communityID, participantUserID); err != nil {
+			return err
+		}
+		if _, err := tx.GetMember(ctx, communityID, botUserID); err != nil {
+			return err
+		}
+		community, err := tx.GetCommunity(ctx, communityID)
+		if err != nil || community.PolicyVersion != current.Binding.PolicyVersion {
+			return errors.New("community policy changed")
+		}
+		for _, uid := range []id.ID{participantUserID, botUserID} {
+			ban, banErr := tx.GetBan(ctx, communityID, uid)
+			if banErr == nil && (ban.Expires == nil || *ban.Expires > now) {
+				return errors.New("current member is banned")
+			}
+			if banErr != nil && !errors.Is(banErr, store.ErrNotFound) {
+				return banErr
+			}
+		}
+		state.ParticipantList, err = tx.GetDeviceList(ctx, participantUserID)
+		if err != nil {
+			return err
+		}
+		state.BotList, err = tx.GetDeviceList(ctx, botUserID)
+		if err != nil {
+			return err
+		}
+		participantEntries, verifyErr := d.DeviceLists.Verify(ctx, state.ParticipantList.Blob, state.User.SSKPub, state.User.ID)
+		if verifyErr != nil || !ds.EligibleHumanInteractionDevice(state.User.ID, state.Device, participantEntries) {
+			return errors.New("participant device absent from signed list")
+		}
+		botEntries, verifyErr := d.DeviceLists.Verify(ctx, state.BotList.Blob, state.Bot.SSKPub, state.Bot.ID)
+		if verifyErr != nil || !deviceListContains(botEntries, state.BotDevice) {
+			return errors.New("Bot device absent from signed list")
+		}
+		eligibility, ok := tx.(store.BotInteractionEligibility)
+		if !ok {
+			return errors.New("eligibility revision unavailable")
+		}
+		state.EligibilityRevision, err = eligibility.GetBotInteractionEligibilityRevision(ctx, communityID, participantUserID)
+		if err != nil || state.EligibilityRevision == 0 {
+			return errors.New("eligibility revision unavailable")
+		}
+		instance, err := tx.GetInstance(ctx)
+		if err != nil || instance.InstanceID != current.Binding.InstanceID || instance.InstanceID != d.Instance.InstanceID || instance.ExternalSenderKeyID != d.Instance.ExternalSenderKeyID {
+			return errors.New("instance key context stale")
+		}
+		return nil
+	}
+	var err error
+	if lockedTx != nil {
+		err = check(lockedTx)
+	} else {
+		err = d.Repo.Tx(ctx, check)
+	}
+	if err != nil {
+		return currentInteractionLiveState{}, err
+	}
+	if len(state.BotList.Blob) == 0 || len(state.ParticipantList.Blob) == 0 || len(state.BotList.Blob) > maxInteractionListBlob || len(state.ParticipantList.Blob) > maxInteractionListBlob ||
+		!validSnapshotList(interactionSnapshotDeviceList{UserID: state.Bot.ID, Version: state.BotList.Version, UMKPub: state.Bot.UMKPub, SSKPub: state.Bot.SSKPub, SSKBindingSignature: state.Bot.SigUMKSSK, Blob: state.BotList.Blob, Signature: state.BotList.SSKSignature, PrevHash: state.BotList.PrevHash}) ||
+		!validSnapshotList(interactionSnapshotDeviceList{UserID: state.User.ID, Version: state.ParticipantList.Version, UMKPub: state.User.UMKPub, SSKPub: state.User.SSKPub, SSKBindingSignature: state.User.SigUMKSSK, Blob: state.ParticipantList.Blob, Signature: state.ParticipantList.SSKSignature, PrevHash: state.ParticipantList.PrevHash}) {
+		return currentInteractionLiveState{}, errors.New("invalid current interaction signed lists")
+	}
+	return state, nil
+}
+
 func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *http.Request) {
 	d := h.Deps
 	s, err := sessionOf(r)
@@ -100,109 +231,15 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "current interaction context unavailable"))
 		return
 	}
-	var user store.UserRow
-	var device store.DeviceRow
-	var bot store.UserRow
-	var botDevice store.DeviceRow
-	var botList, participantList store.DeviceListRow
-	var revision uint64
-	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
-		communityID := current.Binding.CommunityID
-		if err := tx.LockCommunity(r.Context(), communityID); err != nil {
-			return err
-		}
-		if err := tx.LockBotInstallation(r.Context(), current.Binding.InstallationID); err != nil {
-			return err
-		}
-		install, err := tx.GetBotInstallation(r.Context(), current.Binding.InstallationID)
-		if err != nil || (install.State != store.BotInstallationJoining && install.State != store.BotInstallationReady) || install.RemovedAt != nil || install.CommunityID != communityID || install.UserID == nil || install.DeviceID == nil || *install.UserID != current.Binding.BotUserID || *install.DeviceID != current.Registration.DeviceID {
-			return errors.New("inactive Bot installation")
-		}
-		lockedUsers := []id.ID{*install.UserID, s.UserID}
-		if bytes.Compare(lockedUsers[0][:], lockedUsers[1][:]) > 0 {
-			lockedUsers[0], lockedUsers[1] = lockedUsers[1], lockedUsers[0]
-		}
-		for i, uid := range lockedUsers {
-			if i > 0 && uid == lockedUsers[i-1] {
-				continue
-			}
-			if err := tx.LockUserForDeviceRegistration(r.Context(), uid); err != nil {
-				return err
-			}
-		}
-		bot, err = tx.GetUser(r.Context(), *install.UserID)
-		if err != nil || bot.Kind != 1 || bot.Flags != 0 || bot.DisabledAt != nil || bot.DeletedAt != nil {
-			return errors.New("inactive Bot account")
-		}
-		botDevice, err = tx.GetDevice(r.Context(), *install.DeviceID)
-		if err != nil || botDevice.UserID != bot.ID || botDevice.VerifiedAt == nil || botDevice.RevokedAt != nil || botDevice.QuarantinedAt != nil {
-			return errors.New("inactive Bot device")
-		}
-		user, err = tx.GetUser(r.Context(), s.UserID)
-		if err != nil || user.Kind != kindHuman || user.DisabledAt != nil || user.DeletedAt != nil {
-			return errors.New("inactive human participant")
-		}
-		device, err = tx.GetDevice(r.Context(), s.DeviceID)
-		if err != nil || !ds.ActiveHumanInteractionDevice(user.ID, device) {
-			return errors.New("inactive participant device")
-		}
-		if _, err := tx.GetMember(r.Context(), communityID, user.ID); err != nil {
-			return err
-		}
-		if _, err := tx.GetMember(r.Context(), communityID, bot.ID); err != nil {
-			return err
-		}
-		community, err := tx.GetCommunity(r.Context(), communityID)
-		if err != nil || community.PolicyVersion != current.Binding.PolicyVersion {
-			return errors.New("community policy changed")
-		}
-		for _, uid := range []id.ID{user.ID, bot.ID} {
-			ban, e := tx.GetBan(r.Context(), communityID, uid)
-			if e == nil && (ban.Expires == nil || *ban.Expires > now) {
-				return errors.New("current member is banned")
-			}
-			if e != nil && !errors.Is(e, store.ErrNotFound) {
-				return e
-			}
-		}
-		participantList, err = tx.GetDeviceList(r.Context(), user.ID)
-		if err != nil {
-			return err
-		}
-		botList, err = tx.GetDeviceList(r.Context(), bot.ID)
-		if err != nil {
-			return err
-		}
-		participantEntries, err := d.DeviceLists.Verify(r.Context(), participantList.Blob, user.SSKPub, user.ID)
-		if err != nil || !ds.EligibleHumanInteractionDevice(user.ID, device, participantEntries) {
-			return errors.New("participant device absent from signed list")
-		}
-		botEntries, err := d.DeviceLists.Verify(r.Context(), botList.Blob, bot.SSKPub, bot.ID)
-		if err != nil || !deviceListContains(botEntries, botDevice) {
-			return errors.New("Bot device absent from signed list")
-		}
-		eligibility, ok := tx.(store.BotInteractionEligibility)
-		if !ok {
-			return errors.New("eligibility revision unavailable")
-		}
-		revision, err = eligibility.GetBotInteractionEligibilityRevision(r.Context(), communityID, user.ID)
-		if err != nil || revision == 0 {
-			return errors.New("eligibility revision unavailable")
-		}
-		instance, err := tx.GetInstance(r.Context())
-		if err != nil || instance.InstanceID != current.Binding.InstanceID || instance.InstanceID != d.Instance.InstanceID || instance.ExternalSenderKeyID != d.Instance.ExternalSenderKeyID {
-			return errors.New("instance key context stale")
-		}
-		return nil
-	})
+	live, err := d.verifyCurrentInteractionLiveState(r.Context(), current, now,
+		current.Binding.InstallationID, current.Binding.CommunityID, current.Binding.BotUserID, current.Registration.DeviceID,
+		s.UserID, s.DeviceID, false, nil)
 	if err != nil {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "current interaction context unavailable"))
 		return
 	}
-	if len(botList.Blob) == 0 || len(participantList.Blob) == 0 || len(botList.Blob) > maxInteractionListBlob || len(participantList.Blob) > maxInteractionListBlob || !validSnapshotList(interactionSnapshotDeviceList{UserID: bot.ID, Version: botList.Version, UMKPub: bot.UMKPub, SSKPub: bot.SSKPub, SSKBindingSignature: bot.SigUMKSSK, Blob: botList.Blob, Signature: botList.SSKSignature, PrevHash: botList.PrevHash}) || !validSnapshotList(interactionSnapshotDeviceList{UserID: user.ID, Version: participantList.Version, UMKPub: user.UMKPub, SSKPub: user.SSKPub, SSKBindingSignature: user.SigUMKSSK, Blob: participantList.Blob, Signature: participantList.SSKSignature, PrevHash: participantList.PrevHash}) {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "current interaction context unavailable"))
-		return
-	}
+	user, bot := live.User, live.Bot
+	participantList, botList, revision := live.ParticipantList, live.BotList, live.EligibilityRevision
 	nowU := uint64(now)
 	wire := currentInteractionContextWire{Version: 1, InstanceID: current.Binding.InstanceID, InstanceKeyID: d.Instance.ExternalSenderKeyID, InstanceSignerPub: append([]byte(nil), d.ExternalSenderPub...), IssuedAt: nowU, NotAfter: nowU + 30,
 		Registration: currentInteractionRegistrationWire{InstallationID: current.Registration.InstallationID, OperationID: current.Registration.OperationID, UserID: current.Registration.UserID, DeviceID: current.Registration.DeviceID, CommunityID: current.Registration.CommunityID, GroupID: current.Registration.GroupID, BodySHA256: current.Registration.BodySHA256, Generation: current.Registration.Generation, Epoch: current.Registration.Epoch, NextSeq: current.Registration.NextSeq, AcceptedAt: uint64(current.Registration.AcceptedAt)},

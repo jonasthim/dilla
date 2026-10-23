@@ -772,12 +772,24 @@ func (s *Session) AcknowledgeWelcome(ctx context.Context, welcome uint64) error 
 }
 
 func (s *Session) GroupInfo(ctx context.Context, group id.ID) (GroupInfo, error) {
+	return s.groupInfoAt(ctx, "groups/", group)
+}
+
+func (s *Session) BotInteractionGroupInfo(ctx context.Context, installation, group id.ID) (GroupInfo, error) {
+	inst, err := pathID(installation)
+	if err != nil {
+		return GroupInfo{}, err
+	}
+	return s.groupInfoAt(ctx, "bot-runtime/installations/"+inst+"/interaction-groups/", group)
+}
+
+func (s *Session) groupInfoAt(ctx context.Context, base string, group id.ID) (GroupInfo, error) {
 	var out GroupInfo
 	g, e := pathID(group)
 	if e != nil {
 		return out, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "groups/"+g+"/info", nil, nil, MaxBody, false)
+	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, base+g+"/info", nil, nil, MaxBody, false)
 	if e != nil {
 		return out, e
 	}
@@ -1000,6 +1012,18 @@ func botGroupRegistrationHash(body []byte) [32]byte {
 }
 
 func (s *Session) GroupPage(ctx context.Context, group id.ID, kind string, from, limit uint64) (Page, error) {
+	return s.groupPageAt(ctx, "groups/", group, kind, from, limit)
+}
+
+func (s *Session) BotInteractionGroupPage(ctx context.Context, installation, group id.ID, kind string, from, limit uint64) (Page, error) {
+	inst, err := pathID(installation)
+	if err != nil {
+		return Page{}, err
+	}
+	return s.groupPageAt(ctx, "bot-runtime/installations/"+inst+"/interaction-groups/", group, kind, from, limit)
+}
+
+func (s *Session) groupPageAt(ctx context.Context, base string, group id.ID, kind string, from, limit uint64) (Page, error) {
 	var out Page
 	if kind != "messages" && kind != "handshakes" {
 		return out, ErrInvalidConfig
@@ -1014,7 +1038,7 @@ func (s *Session) GroupPage(ctx context.Context, group id.ID, kind string, from,
 	q := url.Values{}
 	qnum(q, "from", from)
 	qnum(q, "limit", limit)
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "groups/"+g+"/"+kind, q, nil, MaxBody, false)
+	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, base+g+"/"+kind, q, nil, MaxBody, false)
 	if e != nil {
 		return out, e
 	}
@@ -1390,6 +1414,18 @@ func (s *Session) groupMutation(ctx context.Context, group id.ID, action string,
 	return out, nil
 }
 func (s *Session) AdvanceCursor(ctx context.Context, group id.ID, sequence, epoch uint64) error {
+	return s.advanceCursorAt(ctx, "groups/", group, sequence, epoch)
+}
+
+func (s *Session) AdvanceBotInteractionGroupCursor(ctx context.Context, installation, group id.ID, sequence, epoch uint64) error {
+	inst, e := pathID(installation)
+	if e != nil {
+		return e
+	}
+	return s.advanceCursorAt(ctx, "bot-runtime/installations/"+inst+"/interaction-groups/", group, sequence, epoch)
+}
+
+func (s *Session) advanceCursorAt(ctx context.Context, base string, group id.ID, sequence, epoch uint64) error {
 	g, e := pathID(group)
 	if e != nil {
 		return e
@@ -1401,7 +1437,7 @@ func (s *Session) AdvanceCursor(ctx context.Context, group id.ID, sequence, epoc
 	if e != nil {
 		return e
 	}
-	_, _, e = s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/cursor", nil, b, MaxSmallBody, true)
+	_, _, e = s.c.do(ctx, s.token, http.MethodPost, base+g+"/cursor", nil, b, MaxSmallBody, true)
 	return e
 }
 

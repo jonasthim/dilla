@@ -102,6 +102,7 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
 	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
+	h.registerBotInteractionGroupReads(mux, sessions)
 	h.RegisterBotRegistration(mux, sessions)
 	h.RegisterBotMessages(mux, sessions)
 	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))

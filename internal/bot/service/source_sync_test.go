@@ -81,6 +81,9 @@ type fakeSourceSyncSession struct {
 func (s *fakeSourceSyncSession) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
 	return s.info, nil
 }
+func (s *fakeSourceSyncSession) BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error) {
+	return s.info, nil
+}
 func (s *fakeSourceSyncSession) GroupPage(_ context.Context, _ id.ID, kind string, from, limit uint64) (client.Page, error) {
 	k := sourcePageKey{kind, from}
 	s.pageCalls = append(s.pageCalls, k)
@@ -92,9 +95,15 @@ func (s *fakeSourceSyncSession) GroupPage(_ context.Context, _ id.ID, kind strin
 	}
 	return s.pages[k], nil
 }
+func (s *fakeSourceSyncSession) BotInteractionGroupPage(ctx context.Context, _ id.ID, _ id.ID, kind string, from, limit uint64) (client.Page, error) {
+	return s.GroupPage(ctx, id.ID{}, kind, from, limit)
+}
 func (s *fakeSourceSyncSession) AdvanceCursor(_ context.Context, _ id.ID, seq, epoch uint64) error {
 	s.advances = append(s.advances, [2]uint64{seq, epoch})
 	return s.advanceErr
+}
+func (s *fakeSourceSyncSession) AdvanceBotInteractionGroupCursor(ctx context.Context, _, _ id.ID, seq, epoch uint64) error {
+	return s.AdvanceCursor(ctx, id.ID{}, seq, epoch)
 }
 
 func sourceGroupInfo(binding native.Binding, group, target id.ID, next uint64) native.GroupInfo {

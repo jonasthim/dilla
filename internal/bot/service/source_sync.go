@@ -36,6 +36,12 @@ type sourceSyncSession interface {
 	AdvanceCursor(context.Context, id.ID, uint64, uint64) error
 }
 
+type interactionGroupSyncSession interface {
+	BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error)
+	BotInteractionGroupPage(context.Context, id.ID, id.ID, string, uint64, uint64) (client.Page, error)
+	AdvanceBotInteractionGroupCursor(context.Context, id.ID, id.ID, uint64, uint64) error
+}
+
 type sourceSyncOptions struct{ PageLimit, PageBudget uint64 }
 
 // SourceSyncOptions bounds one serialized catch-up pass. Zero values use a 256-row page and two
@@ -99,7 +105,8 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
-	if session == nil || expected.Group.IsZero() || expected.Community != s.binding.Community || expected.Community.IsZero() || expected.Channel.IsZero() || expected.Kind > 1 {
+	if session == nil || expected.Group.IsZero() || expected.Community != s.binding.Community || expected.Community.IsZero() || expected.Channel.IsZero() ||
+		(expected.Kind != 0 && expected.Kind != 1 && expected.Kind != 3) {
 		return out, errors.New("invalid source sync target")
 	}
 	local, err := s.native.InspectGroup(ctx, expected.Group)
@@ -109,7 +116,7 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 	if err = validateSourceGroup(local, s.binding, expected); err != nil {
 		return out, err
 	}
-	remote, err := session.GroupInfo(ctx, expected.Group)
+	remote, err := remoteSourceGroupInfo(ctx, session, s.binding.Installation, expected)
 	if err != nil {
 		return out, err
 	}
@@ -123,7 +130,7 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 	if local.NextSequence > remote.NextSequence {
 		return out, errors.New("native source cursor is beyond current server head")
 	}
-	if err = s.flushCursor(ctx, session, expected.Group, head); err != nil {
+	if err = s.flushCursor(ctx, session, expected, head); err != nil {
 		return out, err
 	}
 
@@ -132,14 +139,14 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 		if err = ctx.Err(); err != nil {
 			return out, err
 		}
-		hs, e := session.GroupPage(ctx, expected.Group, "handshakes", from, s.options.PageLimit)
+		hs, e := sourceGroupPage(ctx, session, s.binding.Installation, expected, "handshakes", from, s.options.PageLimit)
 		if e != nil {
 			return out, e
 		}
 		if err = ctx.Err(); err != nil {
 			return out, err
 		}
-		ms, e := session.GroupPage(ctx, expected.Group, "messages", from, s.options.PageLimit)
+		ms, e := sourceGroupPage(ctx, session, s.binding.Installation, expected, "messages", from, s.options.PageLimit)
 		if e != nil {
 			return out, e
 		}
@@ -193,7 +200,7 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 		out.AppliedThrough = applied.NextSequence - 1
 		out.Handshakes += uint64(len(hsRows))
 		out.Messages += uint64(len(msRows))
-		if err = s.flushCursor(ctx, session, expected.Group, head); err != nil {
+		if err = s.flushCursor(ctx, session, expected, head); err != nil {
 			return out, err
 		}
 		local, err = s.native.InspectGroup(ctx, expected.Group)
@@ -299,8 +306,30 @@ func minUint64(a, b uint64) uint64 {
 	return b
 }
 
-func (s *SourceSync) flushCursor(ctx context.Context, session sourceSyncSession, group id.ID, head uint64) error {
-	cursor, err := s.native.GroupCursor(ctx, group)
+func remoteSourceGroupInfo(ctx context.Context, session sourceSyncSession, installation id.ID, expected native.GroupExpected) (client.GroupInfo, error) {
+	if expected.Kind == 3 {
+		interaction, ok := session.(interactionGroupSyncSession)
+		if !ok {
+			return client.GroupInfo{}, errors.New("interaction group reads are unsupported by this session")
+		}
+		return interaction.BotInteractionGroupInfo(ctx, installation, expected.Group)
+	}
+	return session.GroupInfo(ctx, expected.Group)
+}
+
+func sourceGroupPage(ctx context.Context, session sourceSyncSession, installation id.ID, expected native.GroupExpected, kind string, from, limit uint64) (client.Page, error) {
+	if expected.Kind == 3 {
+		interaction, ok := session.(interactionGroupSyncSession)
+		if !ok {
+			return client.Page{}, errors.New("interaction group reads are unsupported by this session")
+		}
+		return interaction.BotInteractionGroupPage(ctx, installation, expected.Group, kind, from, limit)
+	}
+	return session.GroupPage(ctx, expected.Group, kind, from, limit)
+}
+
+func (s *SourceSync) flushCursor(ctx context.Context, session sourceSyncSession, expected native.GroupExpected, head uint64) error {
+	cursor, err := s.native.GroupCursor(ctx, expected.Group)
 	if err != nil {
 		return err
 	}
@@ -310,8 +339,17 @@ func (s *SourceSync) flushCursor(ctx context.Context, session sourceSyncSession,
 	if cursor.Sequence == 0 || cursor.Sequence > head || cursor.Sequence > math.MaxInt64 || cursor.Epoch > math.MaxInt64 {
 		return errors.New("native group cursor is beyond source head")
 	}
-	if err = session.AdvanceCursor(ctx, group, cursor.Sequence, cursor.Epoch); err != nil {
+	if expected.Kind == 3 {
+		interaction, ok := session.(interactionGroupSyncSession)
+		if !ok {
+			return errors.New("interaction group reads are unsupported by this session")
+		}
+		err = interaction.AdvanceBotInteractionGroupCursor(ctx, s.binding.Installation, expected.Group, cursor.Sequence, cursor.Epoch)
+	} else {
+		err = session.AdvanceCursor(ctx, expected.Group, cursor.Sequence, cursor.Epoch)
+	}
+	if err != nil {
 		return err
 	}
-	return s.native.AcknowledgeGroupCursor(ctx, group, *cursor)
+	return s.native.AcknowledgeGroupCursor(ctx, expected.Group, *cursor)
 }

@@ -1155,8 +1155,31 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		if err != nil {
 			return false, err
 		}
-		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID &&
-			group.ClosedAt == nil && group.Kind <= 1, nil
+		if group.CommunityID == nil || *group.CommunityID != bot.CommunityID || group.ClosedAt != nil {
+			return false, nil
+		}
+		return group.Kind <= 1, nil
+	}
+	interactionGroupPath := func() (bool, error) {
+		if !ready || !pathIDEquals(r, "installation", bot.InstallationID) {
+			return false, nil
+		}
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		groupID, ok := pathID(r, "group")
+		if !ok {
+			return false, nil
+		}
+		group, err := s.repo.GetGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID && group.Kind == 3 && group.ClosedAt == nil, nil
 	}
 	channelPath := func(name string) (bool, error) {
 		allowed, err := communityPathForBot(ctx, s.repo, bot)
@@ -1213,6 +1236,11 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/ready":
 		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info",
+		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes",
+		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages",
+		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor":
+		return interactionGroupPath()
 	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}":

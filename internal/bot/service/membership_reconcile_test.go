@@ -112,10 +112,19 @@ func (s *membershipFakeSession) AcknowledgeWelcome(_ context.Context, w uint64) 
 func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
 	return client.GroupInfo{NextSequence: 1}, nil
 }
+func (s *membershipFakeSession) BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error) {
+	return client.GroupInfo{NextSequence: 1}, nil
+}
 func (s *membershipFakeSession) GroupPage(context.Context, id.ID, string, uint64, uint64) (client.Page, error) {
 	return client.Page{Next: 1}, nil
 }
+func (s *membershipFakeSession) BotInteractionGroupPage(context.Context, id.ID, id.ID, string, uint64, uint64) (client.Page, error) {
+	return client.Page{Next: 1}, nil
+}
 func (s *membershipFakeSession) AdvanceCursor(context.Context, id.ID, uint64, uint64) error {
+	return nil
+}
+func (s *membershipFakeSession) AdvanceBotInteractionGroupCursor(context.Context, id.ID, id.ID, uint64, uint64) error {
 	return nil
 }
 
@@ -215,6 +224,25 @@ func TestMembershipSyncsOnlyGroupsWhoseNativeBindingMatchesAuthorizedChannel(t *
 	n.inspected.Target = membershipID(77)
 	if _, err = r.reconcileOnce(context.Background(), s); err == nil {
 		t.Fatal("native group rebound to another channel was accepted")
+	}
+}
+
+func TestMembershipSyncsActiveInteractionGroupsByExactNativeTarget(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	group, participant := membershipID(21), membershipID(22)
+	groupInfo := native.GroupInfo{ID: group, Kind: 3, Community: &community, Target: participant, State: 2, NextSequence: 1}
+	n.groups = []native.GroupInfo{groupInfo}
+	n.inspected = groupInfo
+	result, err := r.reconcileOnce(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GroupsSynced != 1 || result.SourcePages != 0 {
+		t.Fatalf("sync result=%+v", result)
+	}
+	n.inspected.Target = membershipID(23)
+	if _, err = r.reconcileOnce(context.Background(), s); err == nil {
+		t.Fatal("interaction group rebound to another participant was accepted")
 	}
 }
 

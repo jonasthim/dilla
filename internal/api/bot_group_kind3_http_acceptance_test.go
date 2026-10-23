@@ -428,6 +428,69 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if h.do(t, http.MethodGet, contextPath, token, nil).Code < 400 {
 		t.Fatal("managed Bot session obtained human current interaction context")
 	}
+	readyInstallationID := idFromHex(t, meta.InstallationID)
+	installRow, err := h.deps.Repo.GetBotInstallation(ctx, readyInstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installRevision := installRow.Revision
+	installRow.State = store.BotInstallationReady
+	installRow.Revision++
+	installRow.Updated = h.deps.Clock.Now().Unix()
+	if err := h.deps.Repo.UpdateBotInstallation(ctx, readyInstallationID, installRevision, installRow); err != nil {
+		t.Fatalf("set fixture installation ready: %v", err)
+	}
+	h.deps.CurrentBotInteractionGroupContext = func(ctx context.Context, group id.ID) (ds.CurrentBotInteractionGroupContext, error) {
+		return h.ds.CurrentBotInteractionGroupContext(ctx, group)
+	}
+	installationID := readyInstallationID
+	botGroupBase := "/v1/bot-runtime/installations/" + installationID.String() + "/interaction-groups/" + groupID.String()
+	botGroupInfoPath := botGroupBase + "/info"
+	if got := h.do(t, http.MethodGet, botGroupInfoPath, token, nil); got.Code != http.StatusOK {
+		t.Fatalf("current registered Bot interaction group read: %d, want 200: %x", got.Code, got.Body.Bytes())
+	}
+	for _, suffix := range []string{"/messages?from=1&limit=1", "/handshakes?from=1&limit=1"} {
+		if got := h.do(t, http.MethodGet, botGroupBase+suffix, token, nil).Code; got != http.StatusOK {
+			t.Fatalf("dedicated group page %s: %d, want 200", suffix, got)
+		}
+	}
+	if got := h.do(t, http.MethodPost, botGroupBase+"/cursor", token, mustCBOR(t, []any{uint64(0), uint64(0)})).Code; got != http.StatusNoContent {
+		t.Fatalf("dedicated group cursor: %d, want 204", got)
+	}
+	if got := h.do(t, http.MethodGet, "/v1/bot-runtime/installations/"+id.New().String()+"/interaction-groups/"+groupID.String()+"/info", token, nil).Code; got < 400 {
+		t.Fatalf("foreign installation read accepted: %d", got)
+	}
+	unregisteredGroup := id.New()
+	communityID := idFromHex(t, meta.CommunityID)
+	if err := h.deps.Repo.CreateGroup(ctx, store.GroupRow{GroupID: unregisteredGroup, Binding: []byte{0x80}, Kind: 3,
+		CommunityID: &communityID, TargetID: id.New(), Ciphersuite: 1, ExternalSenderKeyID: id.New(),
+		E2EEVersion: 1, PolicyVersion: meta.PolicyVersion, Created: h.deps.Clock.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.do(t, http.MethodGet, "/v1/bot-runtime/installations/"+installationID.String()+"/interaction-groups/"+unregisteredGroup.String()+"/info", token, nil).Code; got < 400 {
+		t.Fatalf("unregistered kind-3 group read accepted: %d", got)
+	}
+	if got := h.do(t, http.MethodGet, "/v1/groups/"+groupID.String()+"/info", token, nil).Code; got < 400 {
+		t.Fatalf("generic kind-3 read remained enabled: %d", got)
+	}
+	if got := h.do(t, http.MethodPost, "/v1/groups/"+groupID.String()+"/message", token, mustCBOR(t, []any{})).Code; got < 400 {
+		t.Fatalf("Bot wrote directly to private interaction group: %d", got)
+	}
+	if err := h.deps.Repo.DeleteMember(ctx, idFromHex(t, meta.CommunityID), idFromHex(t, meta.ParticipantUserID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.do(t, http.MethodGet, botGroupInfoPath, token, nil).Code; got < 400 {
+		t.Fatalf("interaction group remained readable after participant removal: %d", got)
+	}
+	if err := h.deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: idFromHex(t, meta.CommunityID), UserID: idFromHex(t, meta.ParticipantUserID), Joined: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.deps.Repo.RevokeDevice(ctx, idFromHex(t, meta.ParticipantDeviceID), now+1); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.do(t, http.MethodGet, botGroupInfoPath, token, nil).Code; got < 400 {
+		t.Fatalf("interaction group remained readable after participant device revocation: %d", got)
+	}
 
 	// Expire and compact the server proof. A new valid Bot session then exercises only the durable
 	// operation+admission-consumption replay path through HTTP.

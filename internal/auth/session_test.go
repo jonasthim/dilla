@@ -514,6 +514,50 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	if err := repo.UpdateBotInstallation(ctx, installation.ID, readyRow.Revision-1, readyRow); err != nil {
 		t.Fatalf("advance seeded installation to ready: %v", err)
 	}
+	interactionGroupRow := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 3, CommunityID: &community.ID,
+		TargetID: owner, Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 0,
+		PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateGroup(ctx, interactionGroupRow); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, pattern, method, installation, group string
+		allow                                      bool
+	}{
+		{name: "ready bot can enter dedicated interaction info route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction messages route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction handshakes route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction cursor route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor", method: http.MethodPost, allow: true},
+		{name: "ready bot cannot use a foreign installation path", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, installation: id.New().String()},
+		{name: "ready bot cannot use a foreign community group", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, group: foreignGroup.String()},
+		{name: "ready bot cannot use generic group messages route", pattern: "GET /v1/groups/{id}/messages", method: http.MethodGet},
+		{name: "ready bot cannot use generic group cursor route", pattern: "POST /v1/groups/{id}/cursor", method: http.MethodPost},
+		{name: "ready bot cannot upload to interaction group", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost},
+		{name: "ready bot cannot commit to interaction group", pattern: "POST /v1/groups/{id}/commit", method: http.MethodPost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequest(tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			installationValue, groupValue := tc.installation, tc.group
+			if installationValue == "" {
+				installationValue = installation.ID.String()
+			}
+			if groupValue == "" {
+				groupValue = interactionGroupRow.GroupID.String()
+			}
+			r.SetPathValue("installation", installationValue)
+			r.SetPathValue("group", groupValue)
+			r.SetPathValue("id", interactionGroupRow.GroupID.String())
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.allow {
+				t.Fatalf("next called=%v allow=%v response=%d %s", called, tc.allow, w.Code, w.Body.String())
+			}
+		})
+	}
 	for _, tc := range []struct {
 		name, pattern, method, pathName, pathValue string
 	}{
