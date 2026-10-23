@@ -60,6 +60,36 @@ fn response_matches_request(
             && request.revision.is_some()
             && request.expires.is_some()
             && matches!(request.args, RequestArgs::RolePanel { .. }))
+        || (request.operation == 50
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::Number(_)))
+        || (request.operation == 51
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::AnnouncementPut { .. }))
+        || (request.operation == 52
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::AnnouncementDelete { .. }))
+        || (request.operation == 61
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::Evidence { .. }))
+        || (request.operation == 62
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::None))
+        || (request.operation == 63
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::AutoModerationPut { .. }))
         || ((10..=11).contains(&request.operation)
             && request.channel_id.is_some()
             && request.revision.is_none()
@@ -560,9 +590,22 @@ mod tests {
                 .contains(&operation)
                 .then(|| crate::ids::ChannelId::from_bytes([3; 16])),
             operation,
-            revision: (operation == 13 || operation == 2 || operation == 31)
+            revision: (operation == 13
+                || operation == 2
+                || operation == 31
+                || operation == 51
+                || operation == 52
+                || operation == 61
+                || operation == 63)
                 .then_some(if operation == 31 { 0 } else { 7 }),
-            expires: (operation == 13 || operation == 2 || operation == 31).then_some(20),
+            expires: (operation == 13
+                || operation == 2
+                || operation == 31
+                || operation == 51
+                || operation == 52
+                || operation == 61
+                || operation == 63)
+                .then_some(20),
             args,
         }
         .encode_body()
@@ -695,6 +738,69 @@ mod tests {
             request_body.as_bytes(),
             &[2; 16]
         ));
+    }
+
+    #[test]
+    fn announcement_responses_require_their_exact_local_request_and_community() {
+        for (operation, args) in [
+            (50, RequestArgs::Number(0)),
+            (
+                51,
+                RequestArgs::AnnouncementPut {
+                    schedule: None,
+                    document: vec![0x80],
+                },
+            ),
+            (
+                52,
+                RequestArgs::AnnouncementDelete {
+                    schedule: MsgId::from_bytes([9; 16]),
+                    expected_revision: 2,
+                },
+            ),
+            (
+                61,
+                RequestArgs::Evidence {
+                    action: MsgId::from_bytes([8; 16]),
+                    reason: String::new(),
+                    excerpt: String::new(),
+                },
+            ),
+            (62, RequestArgs::None),
+            (
+                63,
+                RequestArgs::AutoModerationPut {
+                    grant_token: "grant".into(),
+                    document: vec![0x80],
+                },
+            ),
+        ] {
+            let request_body = request([1; 16], [2; 16], operation, args);
+            assert!(
+                response_matches_request(
+                    response([1; 16], [2; 16]).as_bytes(),
+                    request_body.as_bytes(),
+                    &[2; 16]
+                ),
+                "operation {operation}"
+            );
+            assert!(
+                !response_matches_request(
+                    response([3; 16], [2; 16]).as_bytes(),
+                    request_body.as_bytes(),
+                    &[2; 16]
+                ),
+                "wrong request id for operation {operation}"
+            );
+            assert!(
+                !response_matches_request(
+                    response([1; 16], [4; 16]).as_bytes(),
+                    request_body.as_bytes(),
+                    &[2; 16]
+                ),
+                "wrong community for operation {operation}"
+            );
+        }
     }
 
     #[test]
