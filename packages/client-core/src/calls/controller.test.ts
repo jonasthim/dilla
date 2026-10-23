@@ -2782,6 +2782,47 @@ describe('a held call (UP6, R-UP6)', () => {
     }
   });
 
+  // Final review client M9: an update reload that lands while the held resume is still starting (the page's callHold,
+  // then its pagehide's callLeave) cancels the start as a hold, not a leave: no self-Remove, the group and its marker
+  // stay, and the next page's join resumes it. A person's leave of that start still leaves.
+  it('a pagehide after callHold while the held resume is starting keeps the hold: no self-Remove, the next join resumes', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    const start = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await start.reached;
+    expect(await w.call({ m: 'callHold', channelId: w.voice })).toBeNull();
+    const leave = w.send({ m: 'callLeave', reason: 'pagehide' });
+    start.release();
+    for (let i = 0; i < 40 && (w.ret(id) === undefined || w.ret(leave) === undefined); i++) await settled(w);
+    expect(w.ret(id)).toMatchObject({ ok: false });
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', w.callGroup)).toBe(0);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
+    expect(marker(w)).toMatchObject({ groupId: toHex(w.callGroup) });
+    expect(keysPosted(w)).toHaveLength(0);
+    w.server.reset();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+    expect(callRoutes(w)).not.toContain('POST resync');
+  });
+
+  it("a person's leave of a held resume that is starting still leaves, after callHold too", async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    const start = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await start.reached;
+    await w.call({ m: 'callHold', channelId: w.voice });
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    start.release();
+    for (let i = 0; i < 40 && (w.ret(id) === undefined || w.ret(leave) === undefined); i++) await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
   it('a reload without a marker still sweeps the call group (reload.spec)', async () => {
     const seed = reloaded(0, (b) => { b.model.settingDelete(CALL_KEEP_KEY); });
     const w = await harness({ voiceChannel: true, before: seed.before });

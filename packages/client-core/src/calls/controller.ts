@@ -94,7 +94,9 @@ interface Live {
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
  *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
  *  removed); `done` settles once the join has torn down or finished. web3.7 3a-client: `waiting` while it waits for the
- *  boot sweep (it holds no group yet), and `wake` ends that wait at once when it is cancelled. */
+ *  boot sweep (it holds no group yet), and `wake` ends that wait at once when it is cancelled. Final review client M9:
+ *  `holdOnHide`, set by callHold while the join resumes the held group, makes the page's pagehide cancel it with 'hold':
+ *  the held group stays held (no self-Remove), so the update reload's next page resumes it. */
 /** Review I3: a channel's sweep requests: the signal they carry and those still in flight. */
 interface SweepChannel { abort: AbortController; inflight: Set<Promise<unknown>> }
 /** UP6 (R-UP6): the call group this device holds without a live call. The page's callHold makes one for a room lost
@@ -103,7 +105,10 @@ interface SweepChannel { abort: AbortController; inflight: Set<Promise<unknown>>
  *  refused is held too, not persisted (a reload's boot sweep leaves it), until callHold persists it. `until` is
  *  wall-clock ms. */
 interface Held { groupId: Id; channel: string; channelId: Id; until: number; persisted: boolean; timer: number | null }
-interface JoinToken { cancelled: 'leave' | 'reset' | 'dropped' | null; done: Promise<void>; channel: string; waiting: boolean; wake: (() => void) | null }
+interface JoinToken {
+  cancelled: 'leave' | 'reset' | 'dropped' | 'hold' | null; done: Promise<void>; channel: string; waiting: boolean; wake: (() => void) | null;
+  holdOnHide?: boolean;
+}
 
 const IN_A_CALL: readonly CallPhase[] = ['joining', 'in', 'paused', 'leaving'];
 
@@ -268,7 +273,7 @@ export class CallController {
 
   /** A join in flight is cancelled (`reset` overrides an earlier reason; the others keep the first), and its wait for
    *  the boot sweep ends now. */
-  private cancelJoining(token: JoinToken, reason: 'leave' | 'reset' | 'dropped'): void {
+  private cancelJoining(token: JoinToken, reason: 'leave' | 'reset' | 'dropped' | 'hold'): void {
     if (reason === 'reset') token.cancelled = 'reset';
     else token.cancelled ??= reason;
     token.wake?.();
@@ -407,7 +412,7 @@ export class CallController {
   /** A batch applied in a group: for the call group, a new epoch is keyed, and a gone own leaf is phase removed. */
   onGroupChanged(groupId: Id, result: ApplyResult): void {
     // UP6: the held group's own leaf is gone (an applied Remove) or its state is lost: forgotten, with no Remove.
-    if ((result.state === 4 || result.state === 3) && this.isHeld(groupId)) this.dropHeld();
+    if ((result.state === 4 || result.state === 3) && this.isHeld(groupId)) this.forgetHeldGroup();
     const live = this.live;
     if (live === null || toHex(live.groupId) !== toHex(groupId)) return;
     if (live.leaving) return;
@@ -422,7 +427,7 @@ export class CallController {
 
   /** The engine lost this device's membership of a call group (a refused read, a lost state): the call is removed. */
   onMembershipLost(groupId: Id): void {
-    if (this.isHeld(groupId)) this.dropHeld();
+    if (this.isHeld(groupId)) this.forgetHeldGroup();
     const live = this.live;
     if (live === null || live.leaving || toHex(live.groupId) !== toHex(groupId)) return;
     this.lost(live);
@@ -583,7 +588,8 @@ export class CallController {
     // Review I1: a join in flight is cancelled and this answers once it has torn down (its self-Remove sent).
     const joining = this.joining;
     if (joining !== null && this.live === null) {
-      this.cancelJoining(joining, 'leave');
+      // Final review client M9: the update reload's pagehide (after its callHold) cancels a held resume as a hold.
+      this.cancelJoining(joining, joining.holdOnHide === true && !person && !lost ? 'hold' : 'leave');
       await joining.done;
       return null;
     }
@@ -640,6 +646,12 @@ export class CallController {
     else if (this.held !== null && this.held.channel === channel && !this.held.persisted) {
       this.held.persisted = true;
       this.writeKeep(this.held);
+    }
+    // Final review client M9: a resume of the held group still starting (the page's restore, retrying) is not left by the
+    // pagehide that follows this callHold: its cancel keeps the hold (teardown), and the next page resumes it.
+    const joining = this.joining;
+    if (live === null && joining !== null && joining.channel === channel && this.held !== null && this.held.channel === channel) {
+      joining.holdOnHide = true;
     }
     return Promise.resolve(null);
   }
@@ -701,7 +713,7 @@ export class CallController {
   }
 
   /** The held group's leaf is gone: its state is forgotten, with no Remove (the room sweep is the authority). */
-  private dropHeld(): void {
+  private forgetHeldGroup(): void {
     const held = this.held;
     if (held === null) return;
     this.clearHeld();
@@ -821,6 +833,9 @@ export class CallController {
       try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten already */ }
       return;
     }
+    // Final review client M9: a held resume cancelled by the update reload's pagehide keeps its group held (persisted by
+    // callHold); a fresh join it fell back to has no hold, and leaves as before.
+    if (token.cancelled === 'hold' && this.isHeld(groupId)) return;
     if (aloneIn !== null) {
       // The call id of a call is its channel's id (protocol/09 § Voice). A start that never reached the instance left no
       // call to end (404): the group stays with this one leaf until the idle close (RV-2), and the next join resyncs it.
@@ -839,6 +854,8 @@ export class CallController {
 
   private cancelled(token: JoinToken, channel: string): CallRefusal {
     if (token.cancelled === 'leave') this.setState({ ...CALL_IDLE });
+    // Final review client M9: a held resume cancelled as a hold reads as a held call does.
+    if (token.cancelled === 'hold') this.setState({ ...CALL_IDLE, phase: 'removed', channelId: channel, error: this.deps.errorOf(new CallRefusal('E_DISCONNECTED', '')) });
     // C4 fix round 2: the channel's server was dropped while joining; the page says the call was removed.
     if (token.cancelled === 'dropped') this.setState({ ...CALL_IDLE, phase: 'removed', channelId: channel, error: this.goneError() });
     return new CallRefusal('E_NO_CALL', 'the call was left while it was joining');
