@@ -27,6 +27,7 @@ jobs:
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - run: npm run test:install
+      - run: bash deploy/install_bot_test.sh
       - run: npm test
       - name: vectors are up to date
         run: |

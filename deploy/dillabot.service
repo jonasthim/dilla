@@ -8,7 +8,7 @@ PartOf=dilla.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dillabot --config=%E/dilla/bot.toml
+ExecStart=/usr/local/bin/dillabot --config=/etc/dillabot/bot.toml
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s

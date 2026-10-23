@@ -11,7 +11,7 @@ func TestBotUnitRunsBesideServerWithPrivateState(t *testing.T) {
 	for _, want := range []string{
 		"After=network-online.target dilla.service",
 		"Requires=dilla.service",
-		"ExecStart=/usr/local/bin/dillabot --config=%E/dilla/bot.toml",
+		"ExecStart=/usr/local/bin/dillabot --config=/etc/dillabot/bot.toml",
 		"User=dillabot",
 		"Group=dillabot",
 		"StateDirectory=dillabot",

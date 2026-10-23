@@ -634,47 +634,97 @@ the relay binds the container's own address.
 On a container that already exists, such as one from the Proxmox community scripts, skip the helper
 and run `install.sh` inside it directly.
 
-### Dilla Bot operator status
+### Dilla Bot installation
 
-The release workflow now attaches architecture-matched `dillabot` and `dilla-bot-core` binaries
-beside `dillad`, the WASI core and the Spotify PCM helper. The current `install.sh` installs
-`dillad` and the optional Spotify PCM helper at `/usr/local/libexec/dilla-spotify-helper`.
-`deploy/dillabot.service` is a systemd unit fragment, not a Bot installer: no guided flow yet
-creates the `dillabot` account, installs the Bot binaries and WASI module, provisions
-`/etc/dilla/bot.toml` and its runtime credential, or enables the unit. Do not treat copying the
-unit as a supported Bot installation.
-For an offline or locally built server install, pass `--spotify-helper FILE` with `--sums FILE`
-(or explicitly use `--insecure-skip-verify`) to install the architecture-matched helper. The
-installer places it at the same path.
+The release includes `install-bot.sh` alongside `install.sh`. Run the Bot installer as root on the
+Linux host after `dillad` is installed and its instance is initialized. The installer downloads and
+checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, and
+`dilla_core_wasi.wasm`; creates the dedicated `dillabot` account; registers one protected runtime
+credential through `dillad admin bot-runtime create`; writes Bot files under `/etc/dillabot` and
+`/var/lib/dillabot`; runs `dillabot doctor`; and enables `dillabot.service`.
 
-`dillabot doctor --config=/etc/dilla/bot.toml` checks the owner-only runtime credential, native
-identity helper, compiled WASI identity module, optional Spotify PCM helper and private state
-directory. Run it as the service account after installing or replacing any of those files:
+Get the lowercase hexadecimal instance ID from the `instance_id` field of the server's
+`GET /v1/instance` discovery document. The server must permit discovery without a session for that
+lookup. Supply the public HTTPS origin without a trailing slash:
 
 ```sh
-sudo -u dillabot dillabot doctor --config=/etc/dilla/bot.toml
+sudo sh install-bot.sh \
+  --base-url https://chat.example.org \
+  --instance-id 32_LOWERCASE_HEX_CHARACTERS
 ```
 
-This is a local dependency check. It does not contact the Dilla server, prove that an installation
-is reconciled, or establish that Bot interactions or music are usable. `systemctl status dillabot`
-and `journalctl -u dillabot` show process and reconciliation status. Queue metadata restores
-paused. Spotify OAuth settings (`spotify_client_id` and `spotify_redirect_url`) may be configured
-without the PCM helper; that keeps authorization available while Spotify PCM playback remains
-unavailable. To enable PCM playback, configure the same OAuth pair and the absolute
-`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path in `bot.toml`;
-Spotify authorization remains in Dilla server settings. The child receives its short-lived access
-token through inherited file descriptor 3, while its arguments contain only the canonical track
-URI. This wiring and its synthetic subprocess tests do not qualify real Spotify playback. Do not
-put provider credentials in command arguments or logs.
+For a checkout copy rather than the tagged release script, also pass `--version TAG` (or
+`--release-url URL`). To install locally built assets, pass `--binary FILE --helper FILE --module
+FILE --sums SHA256SUMS`. The script refuses to overwrite an existing Bot account, config, service,
+credential, binaries or state. It creates an instance-scoped runtime credential; after it starts,
+use **Server Settings > Bot** to enable the Bot for a community. If setup fails after dillad created
+the runtime record, the installer prints its runtime ID; revoke that record with
+`dillad admin bot-runtime revoke --id=ID --config=/etc/dilla/dilla.toml` after inspecting the
+partial installation.
 
-The service uses `/etc/dilla/bot.toml`, the owner-only runtime-credential file named by that config,
-and private state under `/var/lib/dillabot`. Per-installation state includes `database.key` and an
-encrypted SQLite database with possible WAL/journal sidecars. Keep the key and its database files
-together; losing the key makes that local state unreadable, while replacing it beside existing
-state is refused. The existing `dillad backup` archive does not include these Bot files. There is
-not yet a supported coordinated Bot backup/restore procedure or restore acceptance run, so a
-`dillad` restore alone must not be represented as a complete Bot restore. Those packaging,
-diagnostics and coordinated restore steps remain release blockers.
+To upgrade, use the tagged installer on the same host with `--upgrade`:
+
+```sh
+sudo sh install-bot.sh --upgrade --version TAG
+```
+
+The upgrade keeps `bot.toml`, the runtime credential and service state. It runs the existing local
+doctor, stops the Bot if it is active, saves a root-only cold copy of state and the previous
+binaries/unit under `/var/backups/dillabot`, installs the checked assets, runs doctor again, and
+restarts the service if it was active before. If installation, doctor or restart fails, it restores
+the previous assets and state. The retained copy contains `database.key` and must be protected as a
+secret. The upgrade path has not yet been exercised against a prior released Bot database schema.
+
+For a cold operator backup of the complete Bot files, including its config and runtime credential:
+
+```sh
+sudo install -d -m 0700 /srv/backups/dillabot
+archive="/srv/backups/dillabot/dillabot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+sudo sh -c 'set -eu
+systemctl stop dillabot
+trap "systemctl start dillabot" EXIT
+umask 077
+tar -C / -czf "$1" etc/dillabot var/lib/dillabot
+tar -tzf "$1" >/dev/null
+systemctl start dillabot
+trap - EXIT' sh "$archive"
+```
+
+Restore only with the matching Dilla server database/runtime record available, while dillabot is
+stopped. Restore as root to `/`, run the local doctor, then start the service:
+
+```sh
+sudo systemctl stop dillabot
+sudo tar --same-owner -C / -xzf /srv/backups/dillabot/BACKUP.tar.gz
+sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml
+sudo systemctl start dillabot
+```
+
+This is an operator procedure, not a coordinated Bot/dillad backup and restore acceptance run.
+`dillad backup` does not include Bot config, credential or state, so a server restore alone is not a
+complete Bot restore. Keep the Bot archive protected: it includes the credential and database key.
+
+`dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
+native identity helper, compiled WASI identity module, optional Spotify PCM helper and private
+state directory. The installer runs it as `dillabot` before enabling the unit. It does not contact
+the Dilla server or prove that an installation is reconciled; use `systemctl status dillabot` and
+`journalctl -u dillabot` for process and reconciliation diagnostics. A healthy local doctor is not
+qualification of Bot interactions or music.
+
+The server `install.sh` also places the architecture-matched Spotify PCM helper at
+`/usr/local/libexec/dilla-spotify-helper`. Spotify OAuth settings (`spotify_client_id` and
+`spotify_redirect_url`) may be configured in `/etc/dillabot/bot.toml` without that helper; this keeps
+authorization available while Spotify PCM playback remains unavailable. To enable PCM playback,
+configure the same OAuth pair and the absolute
+`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
+remains in Dilla server settings. The child receives its short-lived access token through inherited
+file descriptor 3, while its arguments contain only the canonical track URI. This wiring and its
+synthetic subprocess tests do not qualify real Spotify playback. Do not put provider credentials in
+command arguments or logs.
+
+Per-installation state includes `database.key` and an encrypted SQLite database with possible
+WAL/journal sidecars under `/var/lib/dillabot`. Keep the key and database files together; losing the
+key makes that local state unreadable, while replacing it beside existing state is refused.
 
 For a registration whose server response is uncertain, the Bot retains the exact pending native
 group and stops automatic retries. In a development installation, stop `dillabot` before running
@@ -682,8 +732,8 @@ the offline recovery command because the helper holds an exclusive state lock:
 
 ```sh
 sudo systemctl stop dillabot
-sudo -u dillabot dillabot interaction-recovery --config=/etc/dilla/bot.toml
-sudo -u dillabot dillabot interaction-recovery --config=/etc/dilla/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
 sudo systemctl start dillabot
 ```
 
