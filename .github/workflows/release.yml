@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [tag]
     timeout-minutes: 15
-    # The same build as ci.yml's web-build, clang 23 pin included: the dist is what the binaries embed.
+    # The same build as ci.yml's web-build, LLVM 23.1 pin included: the dist is what the binaries embed.
     env:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
@@ -88,9 +88,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87'
+          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
+          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
       - run: rustup show active-toolchain

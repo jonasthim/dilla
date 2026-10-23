@@ -504,7 +504,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
  * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
  */
-export const WASM_LLVM_VERSION = '1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87';
+export const WASM_LLVM_VERSION = '23.1';
 export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
 const WASM_LLVM_PACKAGES = [
   'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
@@ -528,9 +528,11 @@ export const WASM_CLANG_STEP = [
   '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list',
   '          sudo apt-get update',
   '          apt-cache policy clang-23 llvm-23',
-  `          v='${WASM_LLVM_VERSION}'`,
+  '          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')',
+  `          case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected clang ${WASM_LLVM_VERSION}.x candidate, got $v"; exit 1 ;; esac`,
   `          sudo apt-get install -y --no-install-recommends ${WASM_LLVM_PACKAGES.map((p) => `"${p}=$v"`).join(' ')}`,
   `          for p in ${WASM_LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`,
+  `          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`,
   '          /usr/bin/clang-23 --version',
   '          /usr/bin/llvm-ar-23 --version',
 ].join('\n');

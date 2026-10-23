@@ -1467,14 +1467,16 @@ const ENV_RULE = (job) =>
 const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
 
 test('the canonical step pins every llvm-toolchain-23 package at one version and reads each back', () => {
-  assert.ok(WASM_CLANG_STEP.includes(`          v='${WASM_LLVM_VERSION}'`));
-  assert.match(WASM_LLVM_VERSION, /^1:23\.\d+\.\d+~/);
+  assert.ok(WASM_CLANG_STEP.includes('          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')'));
+  assert.match(WASM_LLVM_VERSION, /^23\.\d+$/);
+  assert.ok(WASM_CLANG_STEP.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*)`), 'the signed apt source candidate must stay on LLVM 23.1');
   const install = WASM_CLANG_STEP.split('\n').find((l) => l.includes('apt-get install'));
   for (const p of LLVM_PACKAGES) {
     assert.ok(install.includes(` "${p}=$v"`), `${p} is not installed at the pinned version`);
   }
   assert.ok(!/\s(clang-23|llvm-23)(\s|$)/.test(install), 'an unpinned package name in the install line');
   assert.ok(WASM_CLANG_STEP.includes(`          for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
+  assert.ok(WASM_CLANG_STEP.includes(`          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`));
   assert.ok(WASM_CLANG_STEP.includes('          apt-cache policy clang-23 llvm-23'));
 });
 
@@ -1509,7 +1511,7 @@ for (const job of WASM_JOBS) {
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job pinned to another build is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1.4', '23.1.3')))));
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1', '23.2')))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job checking another key fingerprint is reported`, () => {
