@@ -6,14 +6,14 @@ import { MusicPanel } from './MusicPanel.tsx';
 type MusicCalls = { [K in Exclude<keyof VoiceMusicAdapter, 'state' | 'subscribe'>]: ReturnType<typeof vi.fn<VoiceMusicAdapter[K]>> };
 type TestAdapter = VoiceMusicAdapter & { calls: MusicCalls };
 
-function adapter(permissions = { control: true, manageQueue: true }): TestAdapter {
+function adapter(permissions = { control: true, manageQueue: true }, initialState: Partial<Extract<VoiceMusicState, { status: 'available' }>> = {}): TestAdapter {
   const state: Extract<VoiceMusicState, { status: 'available' }> = {
     status: 'available', track: { id: 't1', title: 'North', artist: 'Harbor', durationMs: 180_000 },
     queue: [
       { id: 'q0', track: { id: 't0', title: 'East', artist: 'Harbor', durationMs: 170_000 } },
       { id: 'q1', track: { id: 't2', title: 'South', artist: 'Harbor', durationMs: 190_000 } },
     ],
-    positionMs: 30_000, volume: 75, paused: false, shuffle: false, repeat: 'off', permissions,
+    positionMs: 30_000, volume: 75, paused: false, shuffle: false, repeat: 'off', permissions, ...initialState,
   };
   let current = state;
   const listeners = new Set<() => void>();
@@ -91,6 +91,42 @@ describe('MusicPanel', () => {
     expect(setRepeat).toHaveBeenCalledWith('channel-1', 'all');
     expect(move).toHaveBeenCalledWith('channel-1', 'q1', 0);
     expect(remove).toHaveBeenCalledWith('channel-1', 'q1');
+  });
+
+  it('lets an authorized DJ resume a paused queue when there is no current track', async () => {
+    const music = adapter({ control: true, manageQueue: true }, {
+      track: null,
+      queue: [{ id: 'q0', track: { id: 't0', title: 'East', artist: 'Harbor', durationMs: 170_000 } }],
+      positionMs: 0,
+      paused: true,
+    });
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    expect(screen.getByText('Nothing is playing')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull();
+    expect(screen.queryByRole('slider', { name: 'Seek' })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(music.calls.pause).toHaveBeenCalledWith('channel-1', false);
+  });
+
+  it('keeps queued playback disabled without DJ control', () => {
+    const music = adapter({ control: false, manageQueue: true }, {
+      track: null,
+      queue: [{ id: 'q0', track: { id: 't0', title: 'East', artist: 'Harbor', durationMs: 170_000 } }],
+      positionMs: 0,
+      paused: true,
+    });
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull();
+    expect(music.calls.pause).not.toHaveBeenCalled();
   });
 
   it('searches YouTube and lets an authorized DJ enqueue a result', async () => {

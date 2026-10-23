@@ -249,6 +249,11 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
             onBlur={event => { if (seekEditing.current) { const value = Number(event.currentTarget.value); seekEditing.current = false; setSeekDraft(value); runSlider('seek', () => adapter.seek(channelId, value)); } }} />
         </label>
       </>}
+      {!track && current.queue.length > 0 && <div className="dw-voice-music__controls" role="group" aria-label={t('voice.music.controls')}>
+        <button type="button" disabled={pending || !control} onClick={() => run(() => adapter.pause(channelId, false))}>
+          {t('voice.music.play')}
+        </button>
+      </div>}
       <label className="dw-voice-music__volume">{t('voice.music.volume', { volume: current.volume })}
         <input type="range" min="0" max="100" value={volumeDraft ?? current.volume} disabled={!control}
           aria-label={t('voice.music.volumeLabel')} onPointerDown={() => { volumeEditing.current = true; }}
