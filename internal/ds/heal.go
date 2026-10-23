@@ -279,6 +279,14 @@ func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h Heal
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// A reseeded tree already contains its history, so there is no state from which to
+	// reconstruct and publish commits between the restored epoch and this snapshot. With no tail,
+	// accepting an ahead snapshot would clear epoch_unknown while leaving every other member's
+	// handshake log permanently behind.
+	if reseeded && base.Epoch > row.Epoch && len(h.Tail) == 0 {
+		return CommitResult{}, errCommitInvalid("reseed",
+			"an ahead reseed needs a handshake tail to reconcile the restored log")
+	}
 
 	state, err := group.State(ctx)
 	if err != nil {
@@ -306,6 +314,10 @@ func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h Heal
 	if check.Epoch < row.Epoch {
 		return CommitResult{}, errCommitInvalid("heal_epoch",
 			"the uploaded GroupInfo is older than the instance's own stored epoch")
+	}
+	if check.Epoch != state.Epoch {
+		return CommitResult{}, errCommitInvalid("heal_epoch",
+			"the uploaded GroupInfo epoch does not match the replayed group state")
 	}
 	if !bytes.Equal(check.TreeHash, state.TreeHash) {
 		return CommitResult{}, errCommitInvalid("tree_hash",

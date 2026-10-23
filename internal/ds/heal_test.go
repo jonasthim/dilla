@@ -169,6 +169,26 @@ func TestAHealWhoseTailReplaysCleanlyIsAdopted(t *testing.T) {
 	}
 }
 
+// The member's signed GroupInfo must name the exact epoch reached by replay. Tree-hash equality
+// alone cannot stand in for this: an empty MLS commit can advance epoch without changing the tree.
+func TestAHealWhoseGroupInfoEpochDoesNotMatchReplayedStateIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	_, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()),
+		Tail:      h.commitTail(t, g, 0),
+	})
+	if !hasRule(err, "heal_epoch") {
+		t.Fatalf("mismatched GroupInfo epoch: got %v, want E_COMMIT_INVALID/heal_epoch", err)
+	}
+	if !h.epochUnknown(t, g.id) {
+		t.Fatal("a mismatched GroupInfo epoch cleared epoch_unknown")
+	}
+}
+
 func TestHealAcceptanceGuardRefusalLeavesTheRestoredGroupUnknown(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)

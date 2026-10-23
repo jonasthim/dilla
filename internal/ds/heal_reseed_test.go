@@ -27,6 +27,58 @@ import (
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
+// A reseed from an ahead snapshot with no tail can adopt the member's epoch while leaving the
+// instance handshake log without the commit that moved the group there.
+func TestAReseedAheadOfRestoredEpochNeedsAHandshakeTail(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.enrolledGroup(t)
+	ctx := context.Background()
+	inst, err := h.wasm.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := inst.PublicGroupImport(ctx, h.groupRow(t, g.id).PublicGroupState, g.id[:])
+	if err != nil {
+		inst.Release()
+		t.Fatal(err)
+	}
+	processed, err := advanced.Process(ctx, fixtureFile(t, "commits/09.mls"))
+	if err != nil || processed.Staged == nil {
+		t.Fatalf("process advancing commit: staged=%v err=%v", processed.Staged, err)
+	}
+	if _, err := advanced.Merge(ctx, *processed.Staged); err != nil {
+		t.Fatalf("merge advancing commit: %v", err)
+	}
+	tree, _, epoch, err := advanced.Tree(ctx)
+	if err != nil {
+		t.Fatalf("export advanced tree: %v", err)
+	}
+	if epoch != g.Epoch()+1 {
+		t.Fatalf("advanced tree epoch = %d, want %d", epoch, g.Epoch()+1)
+	}
+	if err := advanced.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	inst.Release()
+
+	if err := h.ds.OnRestore(ctx, h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	h.destroyStateBlob(t, g)
+	_, err = h.ds.Heal(ctx, g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, epoch), RatchetTree: tree,
+	})
+	if !hasRule(err, "reseed") {
+		t.Fatalf("ahead reseed with empty tail: got %v, want E_COMMIT_INVALID/reseed", err)
+	}
+	if !h.epochUnknown(t, g.id) {
+		t.Fatal("refused ahead reseed cleared epoch_unknown")
+	}
+	if got := h.handshakeCount(t, g.id); got != 0 {
+		t.Fatalf("refused ahead reseed wrote %d handshakes, want 0", got)
+	}
+}
+
 // restoreWithoutBlob is the reseed's starting point for an enrolled group: the tree and the
 // GroupInfo its healer (leaf 0, the GroupInfo's signer) uploads, after a restore that lost the
 // group's state blob.
