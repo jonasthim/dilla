@@ -169,6 +169,16 @@ This is an implementation checkpoint for `feat/dilla-bot`, not a release sign-of
 
 ## Open release blockers
 
+The latest integrated checks passed the focused Go race test for Bot event routing,
+automatic moderation, and membership; all 69 `dilla-core-wasi` tests; the full web
+suite (115 files, 2,296 tests); the full client-core suite (58 files, 2,134 tests);
+and the Rust core/vector and full Go suites before the release-version-only change.
+The release packaging review verified the guided installer, rollback, workflow
+checker, and tagged Bot version stamping. An independent bounded source review
+found no confirmed exploitable issue in native state binding, kind-3 sender
+authentication, role-panel approval, or Spotify availability checks. These checks
+do not qualify Spotify playback or constitute the complete release matrix.
+
 1. **Encrypted interactions:** native creation, helper IPC, durable Go coordination, Welcome storage, admission-backed synchronization, Bot event dispatch, a fenced private-group read route, dedicated native descriptor/inspection and proof-bound sync/send operations, and a durable response outbox are integrated. Human response correlation reaches moderation log, welcome settings, music controls, and role-panel publication in Chromium. The role-panel reaction and source-removal lifecycle now pass in Chromium and Firefox, with durable timed retry for transient action failures. Cross-device recovery and whole-release browser acceptance remain required. Store/API suites passed against PostgreSQL earlier; this is not the whole-release matrix.
 2. **Production music path:** `cmd/dillabot` reconciles identities, registers authorized encrypted queue handlers, and constructs YouTube and synthetic-tested Spotify PCM starters. Chromium and Firefox prove audible, authenticated YouTube playback from the shipping queue/control flow, including Pause, Resume, and Stop after stale-leaf recovery. Chromium also passes two independent sessions in one server. Playlist controls, cross-server isolation, and dedicated Spotify-account qualification remain open. [Spotify's Developer Policy](https://developer.spotify.com/policy) separately prohibits the planned one-source-to-several-listeners use absent permission.
 3. **Spotify qualification:** the local pinned librespot probe builds as version 0.8.0 and synthetic PCM through FFmpeg passes. The dependency doctor sees yt-dlp 2026.8.19, FFmpeg/ffprobe 9.0.2, and Node 24.15.0, but reports provider qualification unverified. No dedicated Premium account was connected (`DILLA_PROBE_STATE` is unset); actual librespot audio, playlist expansion, playback controls, and encrypted browser playback on the intended host remain unverified. The qualification gate cannot be inferred from passing unit tests.
