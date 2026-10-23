@@ -508,12 +508,16 @@ func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, er
 	if s == nil || ctx == nil {
 		return 0, ErrModerationCaseState
 	}
+	evidenceRemoved, err := s.evidenceWriter.PurgeExpiredResumable(ctx)
+	if err != nil {
+		return evidenceRemoved, err
+	}
 	cursor, err := s.native.StateGet(ctx, moderationPurgeCursorArea, moderationPurgeCursorKey)
 	if err != nil {
-		return 0, err
+		return evidenceRemoved, err
 	}
 	if cursor.Revision > 0 && !cursor.Tombstone && (len(cursor.Value) == 0 || len(cursor.Value) > moderationCaseMaxCursor) {
-		return 0, ErrModerationCaseState
+		return evidenceRemoved, ErrModerationCaseState
 	}
 	var after []byte
 	if cursor.Revision > 0 && !cursor.Tombstone {
@@ -521,13 +525,13 @@ func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, er
 	}
 	removed, next, err := s.PurgeExpired(ctx, after)
 	if err != nil {
-		return removed, err
+		return evidenceRemoved + removed, err
 	}
 	if len(next) > moderationCaseMaxCursor {
-		return removed, ErrModerationCaseState
+		return evidenceRemoved + removed, ErrModerationCaseState
 	}
 	if next == nil && (cursor.Revision == 0 || cursor.Tombstone) || next != nil && !cursor.Tombstone && bytes.Equal(next, cursor.Value) {
-		return removed, nil
+		return evidenceRemoved + removed, nil
 	}
 	var value []byte
 	if next != nil {
@@ -536,11 +540,11 @@ func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, er
 	_, txErr := s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationPurgeCursorArea, Key: moderationPurgeCursorKey,
 		ExpectedRevision: cursor.Revision, Value: value}})
 	if txErr == nil {
-		return removed, nil
+		return evidenceRemoved + removed, nil
 	}
 	actual, readErr := s.native.StateGet(ctx, moderationPurgeCursorArea, moderationPurgeCursorKey)
 	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, next) {
-		return removed, nil
+		return evidenceRemoved + removed, nil
 	}
-	return removed, fmt.Errorf("persist moderation purge cursor: %w", txErr)
+	return evidenceRemoved + removed, fmt.Errorf("persist moderation purge cursor: %w", txErr)
 }

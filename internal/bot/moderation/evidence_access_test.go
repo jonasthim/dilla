@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -20,11 +21,15 @@ type evidenceState struct {
 	rows     map[string]native.StateValue
 	writes   int
 	writeErr error
+	cursor   native.StateValue
 }
 
 func (s *evidenceState) Binding() native.Binding { return s.binding }
 func (s *evidenceState) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	s.reads++
+	if area == evidencePurgeCursorArea && string(key) == string(evidencePurgeCursorKey) {
+		return s.cursor, nil
+	}
 	if area != evidenceStateArea {
 		return native.StateValue{}, errors.New("unexpected evidence state address")
 	}
@@ -34,7 +39,31 @@ func (s *evidenceState) StateGet(_ context.Context, area uint64, key []byte) (na
 	if string(key) == string(evidenceKey(s.binding, testEvidenceID)) {
 		return s.value, nil
 	}
-	return s.value, nil
+	return native.StateValue{}, nil
+}
+func (s *evidenceState) StateScan(_ context.Context, area uint64, after []byte, limit uint64) (native.StatePage, error) {
+	if area != evidenceStateArea || limit == 0 || limit > 100 || after != nil && len(after) > 128 {
+		return native.StatePage{}, errors.New("invalid evidence scan")
+	}
+	keys := make([]string, 0, len(s.rows))
+	for key := range s.rows {
+		if key > string(after) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > int(limit) {
+		keys = keys[:limit]
+	}
+	page := native.StatePage{}
+	for _, key := range keys {
+		value := s.rows[key]
+		page.Entries = append(page.Entries, native.StateEntry{Key: []byte(key), Revision: value.Revision, Value: append([]byte(nil), value.Value...), Tombstone: value.Tombstone})
+	}
+	if len(keys) > 0 {
+		page.Next = []byte(keys[len(keys)-1])
+	}
+	return page, nil
 }
 func (s *evidenceState) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
 	s.writes++
@@ -44,15 +73,28 @@ func (s *evidenceState) StateTransaction(_ context.Context, _ id.ID, changes []n
 	if s.rows == nil {
 		s.rows = make(map[string]native.StateValue)
 	}
-	if len(changes) != 1 || changes[0].Area != evidenceStateArea || changes[0].ExpectedRevision != 0 {
+	if len(changes) != 1 {
 		return nil, errors.New("unexpected evidence state transaction")
 	}
-	key := string(changes[0].Key)
-	if _, exists := s.rows[key]; exists {
+	change := changes[0]
+	if change.Area == evidencePurgeCursorArea && string(change.Key) == string(evidencePurgeCursorKey) {
+		if s.cursor.Revision != change.ExpectedRevision {
+			return nil, errors.New("cursor revision conflict")
+		}
+		s.cursor = native.StateValue{Revision: s.cursor.Revision + 1, Value: append([]byte(nil), change.Value...), Tombstone: change.Value == nil}
+		return []uint64{s.cursor.Revision}, nil
+	}
+	if change.Area != evidenceStateArea {
+		return nil, errors.New("unexpected evidence state area")
+	}
+	key := string(change.Key)
+	old := s.rows[key]
+	if old.Revision != change.ExpectedRevision {
 		return nil, errors.New("evidence state conflict")
 	}
-	s.rows[key] = native.StateValue{Revision: 1, Value: append([]byte(nil), changes[0].Value...)}
-	return []uint64{1}, nil
+	value := native.StateValue{Revision: old.Revision + 1, Tombstone: change.Value == nil, Value: append([]byte(nil), change.Value...)}
+	s.rows[key] = value
+	return []uint64{value.Revision}, nil
 }
 
 type evidenceAuthority struct {
@@ -265,6 +307,59 @@ func TestEvidenceRetentionNinetyDayBoundary(t *testing.T) {
 	}
 	if withinEvidenceRetention(boundary.Add(-time.Second), now) {
 		t.Fatal("evidence older than 90 days was accepted")
+	}
+}
+
+func TestEvidencePurgeResumesAcrossRestartAndKeepsUnexpiredRecords(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding, rows: make(map[string]native.StateValue)}
+	now := time.Now().UTC().Truncate(time.Second)
+	for i := 1; i <= 101; i++ {
+		input := EvidenceInput{OperationID: id.ID{byte(i)}, MessageID: id.ID{byte(i + 1)}, Action: ActionRemove, Rule: RuleDuplicate,
+			Reason: "expired", CreatedAt: now.Add(-EvidenceRetention - time.Second)}
+		value, err := encodeEvidence(binding, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.rows[string(evidenceKey(binding, input.OperationID))] = native.StateValue{Revision: 1, Value: value}
+	}
+	fresh := EvidenceInput{OperationID: id.ID{250}, MessageID: id.ID{251}, Action: ActionRemove, Rule: RuleDuplicate,
+		Reason: "fresh", CreatedAt: now.Add(-EvidenceRetention + time.Second)}
+	freshValue, err := encodeEvidence(binding, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshKey := evidenceKey(binding, fresh.OperationID)
+	state.rows[string(freshKey)] = native.StateValue{Revision: 1, Value: freshValue}
+	if len(freshKey) > 128 {
+		t.Fatalf("evidence key length %d exceeds resumable scan cursor limit", len(freshKey))
+	}
+
+	writer := NewEvidenceWriter(state)
+	removed, err := writer.PurgeExpiredResumable(context.Background())
+	firstRemoved := removed
+	if err != nil || removed == 0 || removed > int(evidenceScanLimit) || state.cursor.Tombstone || len(state.cursor.Value) == 0 {
+		t.Fatalf("first purge = %d cursor=%+v err=%v", removed, state.cursor, err)
+	}
+	restarted := NewEvidenceWriter(state)
+	removed, err = restarted.PurgeExpiredResumable(context.Background())
+	if err != nil || removed+firstRemoved != 101 || state.cursor.Tombstone {
+		t.Fatalf("resumed purge = %d cursor=%+v err=%v", removed, state.cursor, err)
+	}
+	removed, err = restarted.PurgeExpiredResumable(context.Background())
+	if err != nil || removed != 0 || !state.cursor.Tombstone {
+		t.Fatalf("terminal purge = %d cursor=%+v err=%v", removed, state.cursor, err)
+	}
+	for key, value := range state.rows {
+		if key == string(freshKey) {
+			if value.Tombstone || value.Revision != 1 {
+				t.Fatalf("unexpired evidence was tombstoned: %+v", value)
+			}
+			continue
+		}
+		if !value.Tombstone || value.Revision != 2 || len(value.Value) != 0 {
+			t.Fatalf("expired evidence was not tombstoned: %+v", value)
+		}
 	}
 }
 

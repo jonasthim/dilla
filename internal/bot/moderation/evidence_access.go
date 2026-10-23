@@ -1,9 +1,13 @@
 package moderation
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -15,13 +19,18 @@ import (
 )
 
 const (
-	evidenceStateArea      = uint64(9)
-	evidenceVersion        = uint64(2)
-	permViewAuditLog       = uint64(1 << 17)
-	maxEvidenceBytes       = 4 << 10
-	MaxEvidenceReasonBytes = 1024
-	EvidenceRetention      = 90 * 24 * time.Hour
+	evidenceStateArea       = uint64(9)
+	evidencePurgeCursorArea = uint64(8)
+	evidenceVersion         = uint64(2)
+	evidenceScanLimit       = uint64(100)
+	evidenceCursorMax       = 128
+	permViewAuditLog        = uint64(1 << 17)
+	maxEvidenceBytes        = 4 << 10
+	MaxEvidenceReasonBytes  = 1024
+	EvidenceRetention       = 90 * 24 * time.Hour
 )
+
+var evidencePurgeCursorKey = []byte("dilla.bot.moderation.evidence.purge-cursor.v1")
 
 var (
 	ErrEvidenceAccess   = errors.New("moderation evidence unavailable")
@@ -76,6 +85,10 @@ type EvidenceWriter struct {
 	binding native.Binding
 }
 
+type evidenceRetentionState interface {
+	StateScan(context.Context, uint64, []byte, uint64) (native.StatePage, error)
+}
+
 func NewEvidenceWriter(state configStateClient) *EvidenceWriter {
 	if state == nil {
 		return &EvidenceWriter{}
@@ -122,6 +135,15 @@ func (w *EvidenceWriter) Save(ctx context.Context, input EvidenceInput) error {
 	current, err := w.state.StateGet(ctx, evidenceStateArea, key)
 	if err != nil {
 		return ErrEvidenceWrite
+	}
+	if current.Revision == 0 {
+		legacy, legacyErr := w.state.StateGet(ctx, evidenceStateArea, legacyEvidenceKey(w.binding, input.OperationID))
+		if legacyErr == nil && legacy.Revision > 0 {
+			if evidenceMatches(legacy, w.binding, input) {
+				return nil
+			}
+			return ErrEvidenceConflict
+		}
 	}
 	if current.Revision != 0 {
 		if evidenceMatches(current, w.binding, input) {
@@ -177,6 +199,9 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 		return Evidence{}, ErrEvidenceAccess
 	}
 	value, err := r.state.StateGet(ctx, evidenceStateArea, evidenceKey(r.binding, evidenceID))
+	if err == nil && value.Revision == 0 {
+		value, err = r.state.StateGet(ctx, evidenceStateArea, legacyEvidenceKey(r.binding, evidenceID))
+	}
 	if err != nil || value.Tombstone || value.Revision == 0 || len(value.Value) == 0 || len(value.Value) > maxEvidenceBytes || cborx.ExpectMajor(value.Value, cborx.MajorArray) != nil {
 		return Evidence{}, ErrEvidenceAccess
 	}
@@ -283,7 +308,7 @@ func evidenceMatches(value native.StateValue, binding native.Binding, input Evid
 	return iok && cok && inok && ook && eok && mok && tok && exok && metadataOK &&
 		instance == binding.Instance && community == binding.Community && installation == binding.Installation &&
 		operation == input.OperationID && storedID == input.OperationID && message == input.MessageID &&
-		row[0] == evidenceVersion && row[7] == string(input.Action) && row[8] == string(input.Rule) &&
+		((len(row) == 13 && row[0] == uint64(1)) || (len(row) == 19 && row[0] == evidenceVersion)) && row[7] == string(input.Action) && row[8] == string(input.Rule) &&
 		row[9] == input.Reason && row[10] == input.Excerpt && created == uint64(input.CreatedAt.Unix()) && expires == uint64(input.CreatedAt.Add(EvidenceRetention).Unix()) &&
 		(len(row) == 13 || acceptedActionID == input.AcceptedActionID && acceptedRevision == input.AcceptedRevision && actorUserID == input.ActorUserID && actorDeviceID == input.ActorDeviceID && groupID == input.GroupID && targetSequence == input.TargetSequence)
 }
@@ -297,5 +322,123 @@ func validEvidenceRule(rule Rule) bool {
 }
 
 func evidenceKey(binding native.Binding, evidenceID id.ID) []byte {
+	scope := make([]byte, 0, 64)
+	scope = append(scope, binding.Instance[:]...)
+	scope = append(scope, binding.Community[:]...)
+	scope = append(scope, binding.Installation[:]...)
+	scope = append(scope, evidenceID[:]...)
+	sum := sha256.Sum256(scope)
+	return []byte("ev2-" + hex.EncodeToString(sum[:]))
+}
+
+func legacyEvidenceKey(binding native.Binding, evidenceID id.ID) []byte {
 	return []byte(fmt.Sprintf("dilla.bot.moderation.evidence.v1/%x/%x/%x/%x", binding.Instance, binding.Community, binding.Installation, evidenceID))
+}
+
+// PurgeExpired removes expired evidence from at most one native scan page.
+// Its caller can resume from the returned opaque state key.
+func (w *EvidenceWriter) PurgeExpired(ctx context.Context, after []byte) (int, []byte, error) {
+	if w == nil || w.state == nil || ctx == nil || !validConfigBinding(w.binding) ||
+		after != nil && (len(after) == 0 || len(after) > evidenceCursorMax) {
+		return 0, nil, ErrEvidenceWrite
+	}
+	scanner, ok := any(w.state).(evidenceRetentionState)
+	if !ok {
+		return 0, nil, ErrEvidenceWrite
+	}
+	page, err := scanner.StateScan(ctx, evidenceStateArea, after, evidenceScanLimit)
+	if err != nil {
+		return 0, nil, ErrEvidenceWrite
+	}
+	now := time.Now().UTC().Unix()
+	removed := 0
+	for _, entry := range page.Entries {
+		if entry.Tombstone {
+			continue
+		}
+		expires, decodeErr := evidenceExpiry(entry.Value, w.binding, entry.Key)
+		if decodeErr != nil {
+			return removed, page.Next, ErrEvidenceWrite
+		}
+		if expires > now {
+			continue
+		}
+		_, txErr := w.state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: evidenceStateArea, Key: entry.Key, ExpectedRevision: entry.Revision}})
+		if txErr == nil {
+			removed++
+			continue
+		}
+		actual, readErr := w.state.StateGet(ctx, evidenceStateArea, entry.Key)
+		if readErr == nil && actual.Tombstone && actual.Revision == entry.Revision+1 {
+			removed++
+			continue
+		}
+		return removed, page.Next, ErrEvidenceWrite
+	}
+	if len(page.Next) > evidenceCursorMax {
+		return removed, nil, ErrEvidenceWrite
+	}
+	return removed, append([]byte(nil), page.Next...), nil
+}
+
+// PurgeExpiredResumable processes one scan page and persists its cursor in a
+// separate encrypted app-state key so maintenance can continue after restart.
+func (w *EvidenceWriter) PurgeExpiredResumable(ctx context.Context) (int, error) {
+	if w == nil || w.state == nil || ctx == nil {
+		return 0, ErrEvidenceWrite
+	}
+	cursor, err := w.state.StateGet(ctx, evidencePurgeCursorArea, evidencePurgeCursorKey)
+	if err != nil || cursor.Revision > 0 && !cursor.Tombstone && (len(cursor.Value) == 0 || len(cursor.Value) > evidenceCursorMax) {
+		return 0, ErrEvidenceWrite
+	}
+	var after []byte
+	if cursor.Revision > 0 && !cursor.Tombstone {
+		after = append([]byte(nil), cursor.Value...)
+	}
+	removed, next, err := w.PurgeExpired(ctx, after)
+	if err != nil {
+		return removed, err
+	}
+	if (next == nil && (cursor.Revision == 0 || cursor.Tombstone)) || (next != nil && !cursor.Tombstone && bytes.Equal(next, cursor.Value)) {
+		return removed, nil
+	}
+	var value []byte
+	if next != nil {
+		value = next
+	}
+	_, txErr := w.state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: evidencePurgeCursorArea, Key: evidencePurgeCursorKey,
+		ExpectedRevision: cursor.Revision, Value: value}})
+	if txErr == nil {
+		return removed, nil
+	}
+	actual, readErr := w.state.StateGet(ctx, evidencePurgeCursorArea, evidencePurgeCursorKey)
+	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, next) {
+		return removed, nil
+	}
+	return removed, ErrEvidenceWrite
+}
+
+func evidenceExpiry(raw []byte, binding native.Binding, key []byte) (int64, error) {
+	if len(raw) == 0 || len(raw) > maxEvidenceBytes || cborx.CheckDeterministic(raw) != nil {
+		return 0, ErrEvidenceWrite
+	}
+	var row []any
+	if cborx.Unmarshal(raw, &row) != nil || len(row) != 13 && len(row) != 19 {
+		return 0, ErrEvidenceWrite
+	}
+	version, vok := row[0].(uint64)
+	instance, iok := configID(row[1])
+	community, cok := configID(row[2])
+	installation, nok := configID(row[3])
+	operation, ook := configID(row[4])
+	storedID, sok := configID(row[5])
+	created, tok := row[11].(uint64)
+	expires, exok := row[12].(uint64)
+	if !vok || version != 1 && version != evidenceVersion || (version == 1 && len(row) != 13) || (version == evidenceVersion && len(row) != 19) ||
+		!iok || !cok || !nok || !ook || !sok || !tok || !exok || instance != binding.Instance || community != binding.Community || installation != binding.Installation ||
+		operation.IsZero() || storedID != operation || (string(key) != string(evidenceKey(binding, operation)) && string(key) != string(legacyEvidenceKey(binding, operation))) ||
+		created == 0 || created > uint64(math.MaxInt64) || created > uint64(math.MaxInt64)-uint64(EvidenceRetention/time.Second) || expires != created+uint64(EvidenceRetention/time.Second) {
+		return 0, ErrEvidenceWrite
+	}
+	return int64(expires), nil
 }
