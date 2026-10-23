@@ -1335,6 +1335,16 @@ describe('Routes: server admin and moderation', () => {
     return { result, seen: t.seen[0], http };
   };
 
+  it('arms automatic moderation with the exact config digest and decodes the opaque one-use grant', async () => {
+    const token='opaque-grant-token'; const digest=new Uint8Array(32).fill(0x61); const request=fill(16,0x62);
+    const fixture=setup(); fixture.t.replies.push(cborReply(200,[token,900n]));
+    const result=await fixture.routes.armAutoModerationGrant(GROUP,request,COMMUNITY,7n,800n,digest,'step-up-once');
+    expect(result).toEqual({token,expires:900n});
+    expect(fixture.http.requests[0]).toMatchObject({method:'POST',path:`/v1/groups/${hex(GROUP)}/automod-grants/arm`,bucket:'write',idempotent:true,
+      body:encode([request,COMMUNITY,7n,800n,digest,'step-up-once'])});
+    expect(fixture.http.requests[0].body).not.toContain('plaintext config');
+  });
+
   it('posts the opaque ClientCore-signed removal body to the group route and surfaces server refusal', async () => {
     const body = encode([new Uint8Array([1, 2]), new Uint8Array(64).fill(0x7a)]);
     const ok = setup();

@@ -605,6 +605,17 @@ export class Routes {
     return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot`,
       'write', true, { body, retry429: false })), communityId);
   }
+  /** Arms a one-use automatic moderation grant. Config plaintext is represented only by its digest here. */
+  async armAutoModerationGrant(groupId: Uint8Array, requestId: Uint8Array, communityId: Uint8Array,
+    expectedRevision: bigint, requestExpires: bigint, configHash: Uint8Array, stepUp: string): Promise<{ token: string; expires: bigint }> {
+    if (expectedRevision < 0n || expectedRevision > (1n << 63n) - 1n || requestExpires <= 0n
+      || configHash.length !== 32 || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid automatic moderation grant tuple');
+    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/automod-grants/arm`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('communityId', communityId), expectedRevision, requestExpires, configHash, stepUp]), retry429: false });
+    const fields = arr(decode(raw), 2);
+    if (typeof fields[0] !== 'string' || fields[0].length < 1 || fields[0].length > 128) throw new CborError('E_CBOR_SHAPE', 'invalid automatic moderation grant token');
+    return { token: fields[0], expires: u64(fields[1]) };
+  }
   async disableBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint): Promise<BotInstallationRow> {
     if (expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
     const body = encode([inputId('requestId', requestId), expectedRevision]);

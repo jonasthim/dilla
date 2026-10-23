@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PhoneLayoutProvider } from '../../../../ui/src/internal/phoneLayout.ts';
 import { CoreProvider } from '../../core/context.tsx';
@@ -8,6 +8,7 @@ import { account, ME } from '../../test/fixtures.ts';
 import { en } from '../../strings/index.ts';
 import { encode } from '@dilla/client-core';
 import { ServerSettings } from './ServerSettings.tsx';
+import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 
 vi.mock('./spotify-link.ts', async importOriginal => ({ ...await importOriginal<typeof import('./spotify-link.ts')>(), authorizeSpotify: vi.fn() }));
 import { authorizeSpotify, spotifySession } from './spotify-link.ts';
@@ -47,6 +48,119 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
+  it('discards an op 62 upload response after the Server Settings community changes', async () => {
+    const fake=new FakeClient(); let release!: (value:{requestId:string;upload:string})=>void;
+    fake.handler=command=>command.m==='humanInteractionRequest'?new Promise(resolve=>{release=resolve;}):Promise.resolve(null);
+    const user=userEvent.setup(); const other='ee'.repeat(16);
+    const panel=(cid:string)=><CoreProvider client={fake}><AutoModerationSettingsPanel communityId={cid} botReady={true} canManage={true}
+      canManageMessages={true} canModerateMembers={true} capabilities={(1<<4)|(1<<5)}/></CoreProvider>;
+    const view=render(panel(SERVER));
+    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.load']}));
+    await waitFor(()=>expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1));
+    const request=fake.callsOf('humanInteractionRequest')[0];
+    view.rerender(panel(other));
+    await act(async()=>{release({requestId:request.requestId,upload:'accepted'});await Promise.resolve();});
+    expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
+    expect(screen.getByRole('button',{name:en['admin.bot.automod.load']})).toBeInTheDocument();
+  });
+
+  it('loads automatic moderation over op 62 and prepares a step-up protected encrypted op 63 save', async () => {
+    const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
+    const { fake, user } = setup(ready);
+    const latest = new Map<number, { requestId: string; operation: number }>();
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'humanInteractionRequest') { latest.set(command.operation, command); return Promise.resolve({ requestId: command.requestId, upload: 'accepted' }); }
+      if (command.m === 'readBotInteractionResponses') { const last=latest.get(command.operations[0]); return Promise.resolve({ through: '1', blocked: false, responses: last === undefined ? [] : [{
+        deliveryId: '1', sourceSeq: '1', requestId: last.requestId, communityId: SERVER, operation: last.operation,
+        channelId: null, status: 0, revision: last.operation === 62 ? '7' : '8',
+        data: last.operation === 62 ? encode([1n,0n,'log','log','log',600000n,[]]) : encode([]),
+      }] }); }
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toMatchObject([{ operation: 62, channelId: null, revision: null, args: [] }]));
+    await screen.findByText(en['admin.bot.automod.loaded']);
+    const timeout=screen.getByRole('spinbutton',{name:en['admin.bot.automod.timeout']});
+    await user.clear(timeout);await user.type(timeout,'0');
+    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.automod.prepareError']);
+    expect(fake.callsOf('humanInteractionRequest').filter(c=>c.operation===63)).toHaveLength(0);
+    await user.clear(timeout);await user.type(timeout,'600000');
+    await user.click(screen.getByRole('button', { name: en['admin.bot.automod.save'] }));
+    const dialog = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']), 'password');
+    await user.click(within(dialog).getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest').some(c => c.operation === 63)).toBe(true));
+    const save = fake.callsOf('humanInteractionRequest').find(c => c.operation === 63)!;
+    expect(save).toMatchObject({ communityId: SERVER, channelId: null, revision: '7', stepUp: 'short-lived-step-up', args: ['', expect.any(Uint8Array)] });
+    expect(save.args[1]).toBeInstanceOf(Uint8Array);
+    await waitFor(() => expect(screen.getByText(en['admin.bot.automod.loaded'])).toBeInTheDocument());
+    expect(fake.callsOf('humanInteractionRequest').filter(c => c.operation === 62)).toHaveLength(2);
+  });
+
+  it('does not send automatic moderation config when step-up is denied', async () => {
+    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setup(ready);
+    fake.handler=command=>{
+      if(command.m==='getBotInstallation')return Promise.resolve(ready);
+      if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
+      if(command.m==='getBotDjRoles')return Promise.resolve({roleIds:[],installationId:ready.id});
+      if(command.m==='humanInteractionRequest')return Promise.resolve({requestId:command.requestId,upload:'accepted'});
+      if(command.m==='readBotInteractionResponses')return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',
+        requestId:fake.callsOf('humanInteractionRequest').at(-1)?.requestId??'',communityId:SERVER,operation:62,channelId:null,status:0,revision:'7',
+        data:encode([1n,0n,'log','log','log',600000n,[]])}]});
+      if(command.m==='stepUp')return Promise.reject(refusal({code:'E_STEP_UP',status:403}));
+      return Promise.resolve(command.m==='getAFKSettings'?{channelId:null,timeoutSeconds:300}:null);
+    };
+    await user.click(await screen.findByRole('button',{name:en['admin.bot.automod.load']}));
+    await screen.findByText(en['admin.bot.automod.loaded']);
+    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
+    const dialog=await screen.findByRole('dialog',{name:en['factorSettings.stepUp.title']});
+    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']),'wrong');
+    await user.click(within(dialog).getByRole('button',{name:en['factorSettings.stepUp.confirm']}));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(en['factorSettings.stepUp.failed']);
+    expect(fake.callsOf('humanInteractionRequest').filter(c=>c.operation===63)).toHaveLength(0);
+  });
+
+  it('retries an uncertain automatic moderation upload with the same request ID and document', async () => {
+    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setup(ready);
+    const latest=new Map<number,{requestId:string;operation:number}>(); let saves=0;
+    fake.handler=command=>{
+      if(command.m==='getBotInstallation')return Promise.resolve(ready);
+      if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
+      if(command.m==='getBotDjRoles')return Promise.resolve({roleIds:[],installationId:ready.id});
+      if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
+      if(command.m==='humanInteractionRequest'){
+        latest.set(command.operation,command);
+        if(command.operation===63){saves++;return Promise.resolve({requestId:command.requestId,upload:saves===1?'unknown':'accepted'});}
+        return Promise.resolve({requestId:command.requestId,upload:'accepted'});
+      }
+      if(command.m==='readBotInteractionResponses'){
+        const row=latest.get(command.operations[0]);
+        if(row===undefined||row.operation===63&&saves<2)return Promise.resolve({through:null,blocked:false,responses:[]});
+        return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',requestId:row.requestId,communityId:SERVER,
+          operation:row.operation,channelId:null,status:0,revision:row.operation===62?'7':'8',
+          data:row.operation===62?encode([1n,0n,'log','log','log',600000n,[]]):encode([])}]});
+      }
+      return Promise.resolve(command.m==='getAFKSettings'?{channelId:null,timeoutSeconds:300}:null);
+    };
+    await user.click(await screen.findByRole('button',{name:en['admin.bot.automod.load']}));
+    await screen.findByText(en['admin.bot.automod.loaded']);
+    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
+    const dialog=await screen.findByRole('dialog',{name:en['factorSettings.stepUp.title']});
+    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']),'password');
+    await user.click(within(dialog).getByRole('button',{name:en['factorSettings.stepUp.confirm']}));
+    await screen.findByText(en['admin.bot.automod.uncertain']);
+    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.retry']}));
+    await waitFor(()=>expect(saves).toBe(2));
+    const calls=fake.callsOf('humanInteractionRequest').filter(c=>c.operation===63);
+    expect(calls).toHaveLength(2);expect(calls[1].requestId).toBe(calls[0].requestId);expect(calls[1].args[1]).toEqual(calls[0].args[1]);
+    await screen.findByText(en['admin.bot.automod.loaded']);
+  });
+
   it('reaches welcome get and put through authenticated Bot interactions and waits for correlated responses', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: 1 << 1, revision: '7' };
     const { fake, user } = setup(ready);

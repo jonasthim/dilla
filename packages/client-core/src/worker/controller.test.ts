@@ -160,6 +160,50 @@ describe('Controller', () => {
     expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
   });
 
+  it('arms a step-up grant with only the deterministic config digest and binds op 63 to the same group and request', async () => {
+    const w=world(); await toReady(w);
+    const groupId=new Uint8Array(16).fill(0x52), requestId=new Uint8Array(16).fill(0x54);
+    w.state.groups.push({...textGroup(2),groupId,kind:3,targetId:new Uint8Array(16).fill(0x53)});
+    w.state.outbox.push({msgId:requestId,state:0,error:'',created:1n,body:'secret request',type:0,replyTo:null,attachments:[]});
+    const document=encode([1n,1n,'remove','log','warn',600000n,[]]);
+    w.call(10_190,{m:'humanInteractionRequest',communityId:toHex(COMMUNITY),channelId:null,requestId:toHex(requestId),
+      operation:63,args:['',document],revision:'7',stepUp:'one-use-step-up'});
+    await vi.waitFor(()=>expect(w.ret(10_190)).toMatchObject({ok:true,value:{upload:'accepted'}}));
+    const arm=w.routes.armAutoModerationGrant.mock.calls[0];
+    expect(arm).toMatchObject([groupId,requestId,COMMUNITY,7n,NOW_S+30n,expect.any(Uint8Array),'one-use-step-up']);
+    expect([...arm[5]]).not.toEqual([...document]);
+    const digestInput=new Uint8Array(document.length);digestInput.set(document);
+    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',digestInput.buffer));
+    expect(arm[5]).toEqual(digest);
+    const wire=decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]);
+    expect(wire).toEqual([1n,requestId,COMMUNITY,null,63n,7n,NOW_S+30n,['opaque-grant-token',document]]);
+    expect(w.sync.runOnGroup).toHaveBeenCalledWith(groupId,expect.any(Function));
+  });
+
+  it('refuses an automatic moderation mutation without step-up before grant creation or ciphertext preparation', async () => {
+    const w=world(); await toReady(w); const document=encode([1n,0n,'log','log','log',600000n,[]]);
+    w.call(10_189,{m:'humanInteractionRequest',communityId:toHex(COMMUNITY),channelId:null,requestId:'54'.repeat(16),
+      operation:63,args:['',document],revision:'7'});
+    await vi.waitFor(()=>expect(w.ret(10_189)).toMatchObject({ok:false,error:{code:'E_BAD_INPUT'}}));
+    expect(w.routes.armAutoModerationGrant).not.toHaveBeenCalled();
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    expect(w.routes.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('reuses the armed grant and stable outbox request while an automatic moderation upload is pending', async () => {
+    const w=world();await toReady(w);const groupId=new Uint8Array(16).fill(0x52),requestId=new Uint8Array(16).fill(0x54);
+    w.state.groups.push({...textGroup(2),groupId,kind:3,targetId:new Uint8Array(16).fill(0x53)});
+    w.state.outbox.push({msgId:requestId,state:1,error:'',created:1n,body:'pending',type:0,replyTo:null,attachments:[]});
+    const document=encode([1n,1n,'remove','log','warn',600000n,[]]);
+    const command={m:'humanInteractionRequest' as const,communityId:toHex(COMMUNITY),channelId:null,requestId:toHex(requestId),
+      operation:63,args:['',document] as const,revision:'7',stepUp:'one-use-step-up'};
+    w.call(10_188,command);await vi.waitFor(()=>expect(w.ret(10_188)).toMatchObject({ok:true,value:{upload:'pending'}}));
+    w.call(10_187,command);await vi.waitFor(()=>expect(w.ret(10_187)).toMatchObject({ok:true,value:{upload:'pending'}}));
+    expect(w.routes.armAutoModerationGrant).toHaveBeenCalledTimes(1);
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(2);
+    expect(w.core.sendEncrypt).not.toHaveBeenCalled();expect(w.routes.postMessage).not.toHaveBeenCalled();
+  });
+
   it('encodes the destination as an ID and expiry for an encrypted role-panel publish', async () => {
     const w = world(); await toReady(w);
     const groupId = new Uint8Array(16).fill(0x52); const requestId = new Uint8Array(16).fill(0x54);

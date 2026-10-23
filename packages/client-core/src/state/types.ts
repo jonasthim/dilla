@@ -175,7 +175,7 @@ export const RINGS_EMPTY: RingsState = [];
 /** `loaded` is false for a server whose access has not been read (or that is gone): the page shows a loading state, not
  *  "no rights". */
 export interface CommunityAccess { top: number; owner: boolean; manageCommunity: boolean; manageChannels: boolean;
-  kickMembers: boolean; banMembers: boolean; moderateMembers?: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean;
+  kickMembers: boolean; banMembers: boolean; moderateMembers?: boolean; manageMessages?: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean;
   /** The id of the position-0 role (@everyone); '' until the roles are read. */
   everyoneId: string;
   /** Whether the last read of the overwrites succeeded; the `overwrites:` slice keeps its last value for display only. */

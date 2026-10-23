@@ -7,6 +7,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
 import { ModerationLog } from './ModerationLog.tsx';
+import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSettingsPanel.tsx';
 import { type SectionProps } from './shared.ts';
 import { authorizeSpotify, spotifySession } from './spotify-link.ts';
@@ -468,6 +469,11 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       </section>
       <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}
         enabled={welcomeEnabled} canManage={access?.loaded === true && access.manageCommunity} gateway={welcomeGateway} />
+      <AutoModerationSettingsPanel communityId={communityId} botReady={currentInstallation?.state === 3}
+        canManage={access?.loaded === true && access.manageCommunity}
+        canManageMessages={access?.loaded === true && (access.manageMessages ?? access.owner)}
+        canModerateMembers={access?.loaded === true && (access.moderateMembers ?? access.owner)}
+        capabilities={currentInstallation?.capabilities ?? 0} />
       <ModerationLog communityId={communityId} />
       {currentError === null ? null : <p role="alert">{currentError}</p>}
       {statusRefreshError === null ? null : <p role="alert">{statusRefreshError}</p>}

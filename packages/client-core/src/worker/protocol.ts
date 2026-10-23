@@ -23,7 +23,7 @@ export type Command =
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
   | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
-      args: readonly (string | number | Uint8Array | null)[]; revision: string | null }
+      args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
   | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[] }
   | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
   | { m: 'readHumanInteractionResponses'; communityId: string }
