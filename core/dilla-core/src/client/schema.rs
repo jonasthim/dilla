@@ -378,6 +378,12 @@ CREATE TABLE IF NOT EXISTS app_human_interaction_event_state (
   high_water INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO app_human_interaction_event_state(singleton,ack_delivery_id,high_water) VALUES(1,0,0);
+CREATE TABLE IF NOT EXISTS app_human_interaction_response_claims (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  request_id BLOB NOT NULL CHECK(length(request_id)=16),
+  source_seq INTEGER NOT NULL CHECK(source_seq>0),
+  PRIMARY KEY(group_id,request_id)
+);
 ";
 
 /// web3.5 (W2a) authority, created by every open of a store at schema 4 or below, so a v3 store

@@ -906,6 +906,25 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .core
         .human_interaction_events_ack(3)
         .expect("repeated response ack is idempotent");
+    human = human.reopen();
+    let receipts: i64 = human
+        .probe
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1 AND request_id=?2",
+            rusqlite::params![GROUP_ID.as_slice(), request_id.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("read durable response receipt");
+    assert_eq!(receipts, 1, "response dedup survives ack and restart");
+    assert_eq!(
+        human
+            .core
+            .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now)
+            .expect("reload and recognize completed interaction request"),
+        prepared
+    );
     human
         .core
         .group_apply(
@@ -918,7 +937,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
     let after_ack = human
         .core
         .human_interaction_events_read(0, 10)
-        .expect("read after acknowledgement");
+        .expect("read after ack and restart");
     assert_eq!(
         decode_strict(&after_ack, |d| {
             d.array(3)?;
@@ -927,7 +946,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             d.uint()?;
             Ok(count)
         })
-        .expect("empty acknowledged page"),
+        .expect("empty response page after ack"),
         0
     );
     let mut changed_request = Encoder::new();

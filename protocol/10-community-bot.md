@@ -81,7 +81,11 @@ For `moderation.cases`, data is `[1, rows, next_cursor|null]`; each row is
 reason, action, excerpt, received_at_unix]`. The cursor is opaque deterministic
 CBOR bound to the installation community. Clients MUST pass it unchanged to the
 next request and MUST stop when it is null. Each page rechecks current
-`view_audit_log` permission before scanning encrypted case state.
+`view_audit_log` permission before scanning encrypted case state. A human client may receive a
+delayed encrypted page after that check; before rendering its reason or excerpt, the UI/server MUST
+recheck the current human moderator's `view_audit_log` authority through the authoritative human
+API. MLS sender authentication and request correlation do not establish the receiving human's
+current permission.
 Nonempty data is strict deterministic CBOR array. Empty data allowed. status:
 0 ok,1 invalid,2 forbidden,3 expired,4 conflict,5 unavailable,6 busy,7 not_found,
 8 upgrade_required,9 internal. Validate expected community on response separately;

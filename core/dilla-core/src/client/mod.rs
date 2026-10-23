@@ -264,17 +264,28 @@ impl ClientCore {
     }
 }
 
-/// Whether a loaded group is the one its row describes: its MLS group id, and its binding's kind
-/// (text or call), target and community, equal the row's.
+/// Whether a loaded group is the one its row describes: its MLS group id, authenticated kind,
+/// target and community equal the row's.
 fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) -> bool {
+    if group.group_id().as_slice() != group_id {
+        return false;
+    }
+    if group.kind() == crate::mls::GroupKind::Interaction {
+        let Ok(binding) = group.interaction_binding() else {
+            return false;
+        };
+        return row.kind == i64::from(crate::mls::GroupKind::Interaction.as_u8())
+            && binding.bot_user_id.as_slice() == row.target_id.as_slice()
+            && binding.community_id.as_bytes().as_slice()
+                == row.community_id.as_deref().unwrap_or_default();
+    }
     let Ok(binding) = group.binding() else {
         return false;
     };
     matches!(
         binding.kind,
         crate::mls::GroupKind::Text | crate::mls::GroupKind::Call
-    ) && group.group_id().as_slice() == group_id
-        && row.kind == groups::row_kind(binding.kind)
+    ) && row.kind == groups::row_kind(binding.kind)
         && binding.target_id.as_slice() == row.target_id.as_slice()
         && binding
             .community_id

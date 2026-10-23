@@ -50,6 +50,33 @@ fn response_matches_request(
         && response.request_id == request.request_id
 }
 
+fn claim_response_request(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    request_id: &[u8; 16],
+    source_seq: u64,
+    max_pending: i64,
+) -> Result<bool, StorageError> {
+    c.execute(
+        "INSERT OR IGNORE INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,?3)",
+        params![group_id.as_slice(), request_id.as_slice(), source_seq as i64],
+    )?;
+    if c.changes() == 0 {
+        return Ok(false);
+    }
+    let pending: i64 = c.query_row(
+        "SELECT count(*) FROM app_human_interaction_events WHERE disposition=0 AND body IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    if pending >= max_pending {
+        return Err(StorageError::Sqlite(
+            "human interaction event journal is full".into(),
+        ));
+    }
+    Ok(true)
+}
+
 fn human_owns_interaction(
     group: &DillaGroup,
     own: &Own,
@@ -199,11 +226,16 @@ pub(super) fn record_accepted(
     if !source_live {
         return Ok(());
     }
-    let pending: i64 = c.query_row("SELECT count(*) FROM app_human_interaction_events WHERE disposition=0 AND body IS NOT NULL", [], |r| r.get(0))?;
-    if pending >= MAX_PENDING {
-        return Err(StorageError::Sqlite(
-            "human interaction event journal is full".into(),
-        ));
+    // Each moderation.cases cursor page uses its own request ID. This durable claim prevents a
+    // second valid response from replaying the same request after the event itself is acked.
+    if !claim_response_request(
+        c,
+        group_id,
+        response.request_id.as_bytes(),
+        source_seq,
+        MAX_PENDING,
+    )? {
+        return Ok(());
     }
     c.execute(
         "INSERT OR IGNORE INTO app_human_interaction_events(group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
@@ -278,6 +310,10 @@ fn encode_event(row: &EventRow) -> Vec<u8> {
 }
 
 impl ClientCore {
+    /// Reads durable, authenticated kind-3 responses. This verifies MLS origin, local request
+    /// correlation and current core trust; moderation evidence remains sensitive. Before rendering
+    /// a `moderation.cases` body, the caller must recheck current authoritative `view_audit_log`
+    /// permission through the human server API because this core cannot establish that authority.
     pub fn human_interaction_events_read(
         &mut self,
         after: u64,
@@ -468,7 +504,7 @@ impl ClientCore {
 
 #[cfg(test)]
 mod tests {
-    use super::response_matches_request;
+    use super::{MAX_PENDING, claim_response_request, response_matches_request};
     use crate::{
         bot::{Request, RequestArgs, Response},
         ids::{CommunityId, MsgId},
@@ -527,5 +563,61 @@ mod tests {
             other_operation.as_bytes(),
             &[2; 16]
         ));
+    }
+
+    #[test]
+    fn response_request_receipt_is_unique_and_survives_event_ack() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("open journal db");
+        connection
+            .execute_batch(super::super::schema::APP_HUMAN_INTERACTION_EVENTS)
+            .expect("create human event journal");
+        let claims: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_human_interaction_response_claims'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query response receipt table");
+        assert_eq!(
+            claims, 1,
+            "response claims need independent durable storage"
+        );
+        assert!(
+            claim_response_request(&connection, &[1; 16], &[2; 16], 3, MAX_PENDING)
+                .expect("claim first response")
+        );
+        connection
+            .execute("DELETE FROM app_human_interaction_events", [])
+            .expect("acknowledge and clear response event");
+        assert!(
+            !claim_response_request(&connection, &[1; 16], &[2; 16], 4, MAX_PENDING)
+                .expect("deduplicate after event acknowledgement")
+        );
+
+        for seq in 1..=MAX_PENDING {
+            connection
+                .execute(
+                    "INSERT INTO app_human_interaction_events(group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) VALUES(?1,?2,?3,?4,1,1,?5,?6,0,X'',zeroblob(32),?7,'pending')",
+                    rusqlite::params![[3u8; 16].as_slice(), [4u8; 16].as_slice(), [6u8; 16].as_slice(), seq, [7u8; 16].as_slice(), [8u8; 16].as_slice(), [5u8; 16].as_slice()],
+                )
+                .expect("fill pending journal");
+        }
+        assert!(
+            !claim_response_request(&connection, &[1; 16], &[2; 16], 5, MAX_PENDING)
+                .expect("deduplicate even when pending journal is full")
+        );
+        let tx = connection
+            .transaction()
+            .expect("begin capacity transaction");
+        assert!(claim_response_request(&tx, &[1; 16], &[5; 16], 6, MAX_PENDING).is_err());
+        drop(tx);
+        let unclaimed: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1 AND request_id=?2",
+                rusqlite::params![[1u8; 16].as_slice(), [5u8; 16].as_slice()],
+                |row| row.get(0),
+            )
+            .expect("query rolled-back capacity claim");
+        assert_eq!(unclaimed, 0, "failed full-queue writes leave no receipt");
     }
 }
