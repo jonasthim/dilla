@@ -183,6 +183,7 @@ fn encode_human_interaction_request(
     operation_id: &[u8; 16],
     community_id: &[u8; 16],
     request: &[u8],
+    now: u64,
 ) -> Result<String, ClientError> {
     // 4000 body bytes minus the 12-byte prefix leave at most 3988 base64url bytes.
     if request.len() > 2991 {
@@ -191,54 +192,16 @@ fn encode_human_interaction_request(
             "human interaction request exceeds body limit",
         ));
     }
-    let parsed = decode_strict(request, |d| {
-        d.array(8)?;
-        if d.uint()? != 1 {
-            return Err(crate::cbor::CborError::WrongArrayLen {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let request_id = d.bytes_exact::<16>()?;
-        let community = d.bytes_exact::<16>()?;
-        d.null()?; // read-only bot operations are community scoped
-        let operation = d.uint()?;
-        d.null()?; // reads have no revision
-        d.null()?; // reads have no expiry
-        let argument_count = d.array_len()?;
-        match operation {
-            0 if argument_count == 0 => {}
-            50 if argument_count == 1 => {
-                d.uint()?;
-            }
-            60 if argument_count == 1 => {
-                if !d.try_null()? {
-                    let cursor = d.bytes()?;
-                    if cursor.is_empty() || cursor.len() > 256 {
-                        return Err(crate::cbor::CborError::WrongByteLen {
-                            expected: 256,
-                            actual: cursor.len(),
-                        });
-                    }
-                }
-            }
-            0 | 50 | 60 => {
-                return Err(crate::cbor::CborError::WrongArrayLen {
-                    expected: 0,
-                    actual: argument_count,
-                });
-            }
-            _ => {
-                return Err(crate::cbor::CborError::WrongArrayLen {
-                    expected: 3,
-                    actual: operation as usize,
-                });
-            }
-        }
-        Ok((request_id, community))
-    })
-    .map_err(|_| ClientError::new(E_CORE_INPUT, "human interaction request is malformed"))?;
-    if parsed.0 != *operation_id || parsed.1 != *community_id {
+    let parsed = crate::bot::Request::decode_cbor(request)
+        .map_err(|_| ClientError::new(E_CORE_INPUT, "human interaction request is malformed"))?;
+    parsed
+        .validate_context(crate::ids::CommunityId::from_bytes(*community_id), now)
+        .map_err(|_| {
+            ClientError::new(E_CORE_INPUT, "human interaction request context is invalid")
+        })?;
+    if parsed.request_id.as_bytes() != operation_id
+        || parsed.community_id.as_bytes() != community_id
+    {
         return Err(ClientError::new(
             E_CORE_INPUT,
             "human interaction request binding mismatch",
@@ -1602,7 +1565,7 @@ impl ClientCore {
         self.send_prepare_with_id(id, request, now, None, false, None)
     }
 
-    /// Prepare a read-only Bot interaction request for an authenticated human participant.
+    /// Prepare a protocol-defined Bot interaction request for an authenticated human participant.
     /// `request_body` is the strict deterministic CBOR request tuple from protocol/10; the core
     /// binds its request and community ids to the supplied values, derives the application body,
     /// and uses the stable request id as the MLS message id for exact retries.
@@ -1621,7 +1584,8 @@ impl ClientCore {
             ));
         }
         checked("now", now)?;
-        let body = encode_human_interaction_request(request_id, expected_community, request_body)?;
+        let body =
+            encode_human_interaction_request(request_id, expected_community, request_body, now)?;
         let own = self.own()?;
         if own.kind != crate::identity::Kind::User.as_u8() {
             return Err(ClientError::new(

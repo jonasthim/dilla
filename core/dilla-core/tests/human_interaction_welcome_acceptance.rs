@@ -608,6 +608,135 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .array(1)
         .null();
     let bot_request = bot_request.into_vec();
+    // Music commands carry the authenticated voice channel in the protocol tuple. Mutations
+    // also carry the caller's expected revision and short expiry, while the actor stays implicit.
+    let music_state_id = [0x49; 16];
+    let mut music_state = Encoder::new();
+    music_state
+        .array(8)
+        .uint(1)
+        .bytes(&music_state_id)
+        .bytes(&COMMUNITY)
+        .bytes(&[0x4a; 16])
+        .uint(10)
+        .null()
+        .null()
+        .array(0);
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &music_state_id,
+                &COMMUNITY,
+                &GROUP_ID,
+                &music_state.into_vec(),
+                now,
+            )
+            .is_ok(),
+        "music state requests require and accept a voice channel"
+    );
+    let music_mutation_id = [0x4b; 16];
+    let mut music_mutation = Encoder::new();
+    music_mutation
+        .array(8)
+        .uint(1)
+        .bytes(&music_mutation_id)
+        .bytes(&COMMUNITY)
+        .bytes(&[0x4a; 16])
+        .uint(12)
+        .uint(7)
+        .uint(now + 20)
+        .array(1)
+        .text("a song");
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &music_mutation_id,
+                &COMMUNITY,
+                &GROUP_ID,
+                &music_mutation.into_vec(),
+                now,
+            )
+            .is_ok(),
+        "music mutations with a channel, revision, and live expiry are accepted"
+    );
+    let expired_mutation_id = [0x4c; 16];
+    let mut expired_mutation = Encoder::new();
+    expired_mutation
+        .array(8)
+        .uint(1)
+        .bytes(&expired_mutation_id)
+        .bytes(&COMMUNITY)
+        .bytes(&[0x4a; 16])
+        .uint(12)
+        .uint(7)
+        .uint(now)
+        .array(1)
+        .text("a song");
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &expired_mutation_id,
+                &COMMUNITY,
+                &GROUP_ID,
+                &expired_mutation.into_vec(),
+                now,
+            )
+            .is_err(),
+        "expired music mutations are refused"
+    );
+    let wrong_channel_id = [0x4d; 16];
+    let mut wrong_channel = Encoder::new();
+    wrong_channel
+        .array(8)
+        .uint(1)
+        .bytes(&wrong_channel_id)
+        .bytes(&COMMUNITY)
+        .null()
+        .uint(10)
+        .null()
+        .null()
+        .array(0);
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &wrong_channel_id,
+                &COMMUNITY,
+                &GROUP_ID,
+                &wrong_channel.into_vec(),
+                now,
+            )
+            .is_err(),
+        "music requests without a voice channel are refused"
+    );
+    let unknown_operation_id = [0x4e; 16];
+    let mut unknown_operation = Encoder::new();
+    unknown_operation
+        .array(8)
+        .uint(1)
+        .bytes(&unknown_operation_id)
+        .bytes(&COMMUNITY)
+        .null()
+        .uint(99)
+        .null()
+        .null()
+        .array(0);
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &unknown_operation_id,
+                &COMMUNITY,
+                &GROUP_ID,
+                &unknown_operation.into_vec(),
+                now,
+            )
+            .is_err(),
+        "unknown Bot operations are refused"
+    );
     let prepared = human
         .core
         .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now)
