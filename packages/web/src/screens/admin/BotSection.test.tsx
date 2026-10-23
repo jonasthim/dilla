@@ -65,6 +65,55 @@ describe('the server bot settings', () => {
     expect(screen.getByRole('button',{name:en['admin.bot.automod.load']})).toBeInTheDocument();
   });
 
+  it('waits for automatic settings response acknowledgement before reporting loaded', async () => {
+    const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
+    const { fake, user } = setup(ready);
+    let releaseAck!: (value: null) => void;
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
+      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: '1', blocked: false, responses: [{
+        deliveryId: '1', sourceSeq: '1', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
+        communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
+        data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
+      }] });
+      if (command.m === 'ackBotInteractionResponses') return new Promise(resolve => { releaseAck = resolve; });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));
+    await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1));
+    expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
+    await act(async () => { releaseAck(null); await Promise.resolve(); });
+    await screen.findByText(en['admin.bot.automod.loaded']);
+  });
+
+  it('keeps a settings response pending until earlier journal entries are acknowledged', async () => {
+    const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
+    const { fake, user } = setup(ready);
+    let prefixOpen = false;
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
+      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? '4' : null, blocked: !prefixOpen, responses: [{
+        deliveryId: '4', sourceSeq: '8', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
+        communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
+        data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
+      }] });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));
+    await waitFor(() => expect(fake.callsOf('readBotInteractionResponses').length).toBeGreaterThan(0));
+    expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
+    expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(0);
+    prefixOpen = true;
+    await screen.findByText(en['admin.bot.automod.loaded']);
+    await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1));
+  });
+
   it('loads automatic moderation over op 62 and prepares a step-up protected op 63 save', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
     const { fake, user } = setup(ready);
