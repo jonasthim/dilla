@@ -4,7 +4,7 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEventPage, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -252,7 +252,7 @@ export function world(opts: {
     signRemoval: vi.fn((_requestId: Uint8Array, _groupId: Uint8Array, _seq: bigint, _expires: bigint, _now: bigint) =>
       encode([new Uint8Array([1]), new Uint8Array(64).fill(7)])),
     humanInteractionSendPrepare: vi.fn((requestId: Uint8Array) => requestId),
-    humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number) => ({ events: [], next: 0n, highWater: 0n })),
+    humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number): HumanInteractionEventPage => ({ events: [], next: 0n, highWater: 0n })),
     humanInteractionEventsAck: vi.fn((_through: bigint) => {}),
     sendEncrypt: vi.fn((_msgId: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), messageBody: new Uint8Array([0xa1]) })),
     sendConfirm: vi.fn((_msgId: Uint8Array, _response: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), seq: 1n })),

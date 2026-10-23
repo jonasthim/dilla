@@ -60,16 +60,16 @@ describe('the server bot settings', () => {
     const { fake, user } = setup({ ...ROW, state: 3 });
     const requestId = '54'.repeat(16);
     fake.handler = command => {
-      if (command.m === 'getBotInstallation') return { ...ROW, state: 3 };
-      if (command.m === 'getBotJoinRole') return { roleId: null, installationId: ROW.id };
-      if (command.m === 'getBotDjRoles') return { roleIds: [], installationId: ROW.id };
-      if (command.m === 'listModerationCases') return { requestId, status: 'accepted' };
-      if (command.m === 'readHumanInteractionResponses') return { authorized: true, blocked: false, through: '3', responses: [
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
+      if (command.m === 'listModerationCases') return Promise.resolve({ requestId, status: 'accepted' });
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
         { deliveryId: '3', requestId, status: 0, hasMore: false, cases: [{ key: 'a'.repeat(32) + ':1',
           channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
           reason: 'duplicate', action: 'remove', excerpt: 'bounded response excerpt', receivedAt: '1800000000' }] },
-      ] };
-      return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+      ] });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
     expect(await screen.findByText('bounded response excerpt')).toBeInTheDocument();
@@ -83,16 +83,16 @@ describe('the server bot settings', () => {
     const { fake, user } = setup({ ...ROW, state: 3 });
     const requestId = '54'.repeat(16);
     fake.handler = command => {
-      if (command.m === 'getBotInstallation') return { ...ROW, state: 3 };
-      if (command.m === 'getBotJoinRole') return { roleId: null, installationId: ROW.id };
-      if (command.m === 'getBotDjRoles') return { roleIds: [], installationId: ROW.id };
-      if (command.m === 'listModerationCases') return { requestId, status: 'accepted' };
-      if (command.m === 'readHumanInteractionResponses') return { authorized: true, blocked: false, through: null, responses: [
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
+      if (command.m === 'listModerationCases') return Promise.resolve({ requestId, status: 'accepted' });
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [
         { deliveryId: '3', requestId, status: 0, hasMore: false, cases: [{ key: 'a'.repeat(32) + ':1',
           channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
           reason: 'duplicate', action: 'remove', excerpt: 'safe date fallback case', receivedAt: '8640000000000001' }] },
-      ] };
-      return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+      ] });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
     expect(await screen.findByText('safe date fallback case')).toBeInTheDocument();
@@ -189,7 +189,7 @@ describe('the server bot settings', () => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
       if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: initial.id });
-      if (command.m === 'configureBotDjRoles') return Promise.resolve({ acceptedCount: (command.roleIds as string[]).length });
+      if (command.m === 'configureBotDjRoles') return Promise.resolve({ acceptedCount: command.roleIds.length });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     act(() => {
