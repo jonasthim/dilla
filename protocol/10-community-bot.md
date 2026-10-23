@@ -45,7 +45,7 @@ Operation, arguments, channel requirement, mutation:
 - 21 music.remove: [queue_item_id], channel required, mutation
 - 22 music.move: [queue_item_id, before_item_id|null], channel required, mutation
 - 23 music.clear: [], channel required, mutation
-- 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read
+- 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read; requires current `manage_community` and returns data `[1, rendered_text]` using the sample references `member`, `server`, and `channel` without posting
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
 - 50 announcements.list: [cursor uint], no channel, read; response revision is the scheduler document revision from the same encrypted-state read as the page
 - 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation; request revision is the expected scheduler document revision, while the document carries its own per-schedule revision

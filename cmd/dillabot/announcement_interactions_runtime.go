@@ -12,6 +12,9 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 	for operation, handler := range announcements.Handlers() {
 		handlers[operation] = handler
 	}
+	for operation, handler := range (service.WelcomeInteractions{Authority: announcements.Authority, CommunityID: announcements.CommunityID}).Handlers() {
+		handlers[operation] = handler
+	}
 	if cases, ok := moderation.Handlers()[protocol.OpModerationCases]; ok {
 		handlers[protocol.OpModerationCases] = cases
 	}
