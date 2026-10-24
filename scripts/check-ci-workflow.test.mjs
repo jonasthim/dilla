@@ -1718,6 +1718,14 @@ test('a release go-release that does not wait for web-build is reported', () => 
   assertReported(releaseProblems((t) => t.replace('needs: [tag, web-build]', 'needs: [tag]')), '"web-build" in its needs');
 });
 
+test('a release Bot build that does not wait for the WASI core is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('needs: [tag, rust-wasi]', 'needs: [tag]')), '"rust-wasi" in its needs');
+});
+
+test('a release Bot build that omits the WASI core download is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('          path: internal/mlswasi/testdata\n', '')), 'path: internal/mlswasi/testdata');
+});
+
 test('|| true in the release workflow is reported', () => {
   assertReported(releaseProblems((t) => t.replace('sha256sum -c --strict SHA256SUMS', 'sha256sum -c --strict SHA256SUMS || true')), '|| true');
 });
