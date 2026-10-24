@@ -5,8 +5,8 @@
 // version 0, and each of them must be ingested and its held rows released, not only the first one's.
 import { expect, type Page, type Request } from '@playwright/test';
 import {
-  TEST_TIMEOUT, WAIT, addServerVia, channelRow, copy, expectComposerReady, expectShell, instanceInvite, messageRow,
-  newChannelButton, railItem, sendText, signIn, signUp, tag,
+  TEST_TIMEOUT, WAIT, addServerVia, channelRow, composerBox, copy, expectComposerReady, expectShell, instanceInvite,
+  messageRow, newChannelButton, railItem, signIn, signUp, tag,
 } from './support/app';
 import { test } from './support/second';
 
@@ -31,10 +31,18 @@ async function makeChannel(page: Page, name: string): Promise<void> {
 /** Sends in a channel and answers the group the upload went to. */
 async function sendIn(page: Page, channel: string, text: string): Promise<string> {
   await channelRow(page, channel).click();
-  await expectComposerReady(page, channel);
-  const upload = page.waitForRequest((r: Request) => r.method() === 'POST' && UPLOAD.test(r.url()), { timeout: WAIT });
-  await sendText(page, channel, text);
-  return UPLOAD.exec((await upload).url())![1]!;
+  const box = composerBox(page, channel);
+  await box.fill(text, { timeout: WAIT });
+  // A newly enrolled device can briefly pause sending while its signed list is checked.
+  // Clicking Send waits for the composer to become writable again; Enter on a read-only
+  // textbox silently leaves the draft unsent.
+  const [upload] = await Promise.all([
+    page.waitForRequest((r: Request) => r.method() === 'POST' && UPLOAD.test(r.url()), { timeout: WAIT }),
+    page.locator('.d-app-shell__main .d-composer').getByRole('button', { name: copy('shell.composer.send'), exact: true })
+      .click({ timeout: WAIT }),
+  ]);
+  await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  return UPLOAD.exec(upload.url())![1]!;
 }
 
 test('messages that reach a second device mid-sync are readable after it reloads, in every group it joined', async ({ page, second, instanceName }) => {
