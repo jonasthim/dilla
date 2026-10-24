@@ -153,7 +153,7 @@ jobs:
       - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
       - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
       - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
-      - run: mkdir -p dist && install -m 0755 target/release/dilla-spotify-helper dist/dilla-spotify-helper-linux-${{ matrix.arch }}
+      - run: mkdir -p dist && install -m 0755 crates/dilla-spotify-helper/target/release/dilla-spotify-helper dist/dilla-spotify-helper-linux-${{ matrix.arch }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-spotify-helper-${{ matrix.arch }}
