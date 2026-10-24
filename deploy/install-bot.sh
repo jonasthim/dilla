@@ -207,6 +207,8 @@ Group=dillabot
 StateDirectory=dillabot
 StateDirectoryMode=0700
 UMask=0077
+# SQLCipher's enhanced memory security locks SQLite allocations in memory.
+LimitMEMLOCK=256M
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
