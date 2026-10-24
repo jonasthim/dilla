@@ -1288,7 +1288,9 @@ export class Controller {
       throw error;
     }
     try {
-      core.instanceSignerKeyMatches(read.externalSenderPub);
+      // The core writes only a missing pin (browsers enrolled before this check existed) and refuses a changed one.
+      // This runs after an enrolled session was authenticated, including on every gateway reconnection.
+      core.instanceSignerKeyPin(read.instanceId, read.externalSenderPub);
     } catch (e) {
       if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
       throw e;
