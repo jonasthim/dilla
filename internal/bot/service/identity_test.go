@@ -263,6 +263,7 @@ type fakeIdentitySession struct {
 	receiptCalls        int
 	runtime             *fakeLifecycleRuntime
 	finalizeLostOnce    bool
+	finalizeReceipt     *client.Installation
 	finalizeRequests    []id.ID
 	finalizeRevisions   []uint64
 	publishErrOnce      bool
@@ -276,6 +277,9 @@ func (s *fakeIdentitySession) Negotiate(context.Context, []uint64, []uint64, []u
 func (s *fakeIdentitySession) FinalizeCredential(_ context.Context, _, request id.ID, revision uint64, _ []byte) (client.Installation, error) {
 	s.finalizeRequests = append(s.finalizeRequests, request)
 	s.finalizeRevisions = append(s.finalizeRevisions, revision)
+	if s.finalizeReceipt != nil {
+		return *s.finalizeReceipt, nil
+	}
 	if s.finalizeLostOnce {
 		s.finalizeLostOnce = false
 		s.installation.State = 2
@@ -432,6 +436,35 @@ func TestFinalCredentialLostResponseReplaysOriginalRequestAndRevision(t *testing
 	}
 	if len(s.finalizeRequests) != 2 || s.finalizeRequests[0] != firstState.FinalRequest || s.finalizeRequests[1] != firstState.FinalRequest || s.finalizeRevisions[0] != 2 || s.finalizeRevisions[1] != 2 {
 		t.Fatalf("credential retry changed exact request or revision: requests=%v revisions=%v", s.finalizeRequests, s.finalizeRevisions)
+	}
+}
+
+func TestEnsureUsesCurrentInstallationAfterCredentialReceiptReplay(t *testing.T) {
+	ctx := context.Background()
+	instance, community, installation := sid(1), sid(2), sid(3)
+	user, device := sid(45), sid(44)
+	n := newFakeNative(instance, community, installation)
+	r := &fakeLifecycleRuntime{installation: client.Installation{ID: installation, CommunityID: community, State: 0, Revision: 1}, user: user, device: device}
+	list, _ := cborx.Marshal([]any{uint64(1), []byte("list"), make([]byte, 64), make([]byte, 32)})
+	s := &fakeIdentitySession{installation: client.Installation{ID: installation, CommunityID: community, State: 2, Revision: 2, BotUser: &user, BotDevice: &device}, list: list, runtime: r}
+	h := &fakeIdentityHTTP{instance: instance, user: user, device: device, session: s}
+	l := newIdentityLifecycle(instance, community, installation, n, r, h, LifecycleOptions{Now: func() time.Time { return time.Unix(1_800_000_000, 0) }, DesiredPackages: 8})
+	first, err := l.Ensure(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := first.Installation
+	s.finalizeReceipt = &receipt
+	r.installation.Revision = receipt.Revision + 2
+	result, err := l.Ensure(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Installation.Revision != r.installation.Revision || result.Installation.State != 2 {
+		t.Fatalf("credential receipt hid current installation: result=%+v current=%+v", result.Installation, r.installation)
+	}
+	if s.finalizeRevisions[len(s.finalizeRevisions)-1] != s.finalizeRevisions[0] {
+		t.Fatal("credential replay changed its original expected revision")
 	}
 }
 

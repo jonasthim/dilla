@@ -431,6 +431,20 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 	if err != nil {
 		return out, err
 	}
+	// FinalizeCredential replays its original operation receipt. Another valid
+	// installation update may have advanced the revision since that receipt was
+	// recorded, so use the authenticated current head for the subsequent Ready.
+	current, err := l.findInstallation(ctx)
+	if err != nil {
+		return out, err
+	}
+	if current.ID != inst.ID || current.CommunityID != inst.CommunityID ||
+		current.BotUser == nil || *current.BotUser != state.BotUser ||
+		current.BotDevice == nil || *current.BotDevice != state.BotDevice ||
+		(current.State != 2 && current.State != 3) || current.Revision < inst.Revision {
+		return out, ErrRecovery
+	}
+	inst = current
 	if err = l.reconcileDeviceList(ctx, session, state.BotUser, completed.DeviceListBody, deviceList, &identity, &state, &revision); err != nil {
 		return out, err
 	}

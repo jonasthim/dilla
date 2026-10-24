@@ -232,10 +232,11 @@ fn obsolete_batch_keeps_private_keys_and_joins_a_late_welcome() {
     inviter.sync(&relay);
     ingest_add_candidate(&mut inviter, &relay, &bot);
     inviter.commit(&mut relay);
+    let first_welcome = relay.welcomes_body(bot.device);
     let joined = bot
         .core
         .bot_welcomes_apply(
-            &relay.welcomes_body(bot.device),
+            &first_welcome,
             &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
             0,
         )
@@ -261,6 +262,54 @@ fn obsolete_batch_keeps_private_keys_and_joins_a_late_welcome() {
             .any(|row| row.body == "late welcome recovered the private key"),
         "inviter message should decrypt after the late Welcome; rows: {timeline:?}"
     );
+
+    // The Bot is offline for its removal, so its local row still says active.
+    // A later server Add Welcome at a newer epoch must re-admit it on the same
+    // binding without accepting the earlier Welcome as a replay.
+    instance.propose_remove(&mut relay, bot.device);
+    inviter.sync(&relay);
+    inviter.commit(&mut relay);
+    assert_eq!(bot.group(&GROUP).expect("offline local group").state, 2);
+    let next = IntentResult::decode(
+        &bot.core
+            .bot_keypackage_intent(
+                &INSTANCE_ID,
+                &COMMUNITY,
+                &INSTALLATION,
+                &intent(4, 1, 0, 0).encode().expect("re-admission intent"),
+            )
+            .expect("re-admission package"),
+    )
+    .expect("re-admission result");
+    instance.propose_add(&mut relay, &first_package(&next.upload_body));
+    inviter.sync(&relay);
+    ingest_add_candidate(&mut inviter, &relay, &bot);
+    inviter.commit(&mut relay);
+    let readmitted = bot
+        .core
+        .bot_welcomes_apply(
+            &relay.welcomes_body(bot.device),
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+            0,
+        )
+        .expect("newer Welcome re-admits offline Bot");
+    assert_eq!(
+        client_support::decode_outcomes(&readmitted)
+            .last()
+            .unwrap()
+            .outcome,
+        0
+    );
+    assert_eq!(bot.group(&GROUP).expect("re-admitted group").state, 2);
+    let replay = bot
+        .core
+        .bot_welcomes_apply(
+            &first_welcome,
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+            0,
+        )
+        .expect("old Welcome response");
+    assert_eq!(client_support::decode_outcomes(&replay)[0].outcome, 2);
 
     drop(bot);
     drop(inviter);
