@@ -269,7 +269,7 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
 
   await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
   await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
-  if (clockURL !== undefined) await assertWallClock(clockURL, 'after Bot/helper build and before Bot installation');
+  if (clockURL !== undefined) await alignWallClock(clockURL, 'after Bot/helper build and before Bot installation');
   let helperInfo;
   try { helperInfo = statSync(BOT_HELPER_BIN); } catch {
     throw new Error(`${BOT_HELPER_BIN} is missing after cargo build -p dilla-bot-core --release --locked`);
@@ -316,6 +316,23 @@ async function assertWallClock(clockURL: string, stage: string): Promise<void> {
   if (typeof now !== 'number' || !Number.isSafeInteger(now) || Math.abs(now - Math.floor(Date.now() / 1000)) > 5) {
     throw new Error(`Bot host fake clock is outside the 5-second wall-clock bound ${stage}`);
   }
+}
+
+async function alignWallClock(clockURL: string, stage: string): Promise<void> {
+  // Restoring a server snapshot restores its fake clock too. The periodic wall
+  // ticker cannot account for that rewind, so catch up before starting Bot.
+  const response = await fetch(clockURL);
+  if (!response.ok) throw new Error(`Bot host clock probe failed ${stage}: HTTP ${response.status}`);
+  const now = (await response.json() as { now?: unknown }).now;
+  if (typeof now !== 'number' || !Number.isSafeInteger(now)) throw new Error(`Bot host clock probe returned invalid time ${stage}`);
+  const seconds = Math.floor(Date.now() / 1_000) - now;
+  if (seconds > 0) {
+    const advanced = await fetch(clockURL, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
+    });
+    if (!advanced.ok) throw new Error(`Bot host clock catch-up failed ${stage}: HTTP ${advanced.status}`);
+  }
+  await assertWallClock(clockURL, stage);
 }
 
 function runInherited(command: string, args: string[]): Promise<void> {
