@@ -133,20 +133,20 @@ describe('Controller', () => {
     expect(w.routes.postModerationRemoval.mock.calls[1][1]).toBe(exactBody);
   });
 
-  it('checks the persisted instance signer pin on restart before entering ready', async () => {
+  it('checks or initializes the instance signer pin on restart before entering ready', async () => {
     const w = world();
     await toReady(w);
-    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(1);
-    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+    expect(w.core.instanceSignerKeyPin).toHaveBeenCalledTimes(1);
+    expect(w.core.instanceSignerKeyPin).toHaveBeenCalledWith(INSTANCE.instanceId, INSTANCE.externalSenderPub);
   });
 
   it('pins authenticated discovery for an upgraded browser with no saved signer pin', async () => {
     const w = world();
     let pinned = false;
-    w.core.instanceSignerKeyMatches.mockImplementation(() => {
-      if (!pinned) throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
+    w.core.instanceSignerKeyPin.mockImplementation(() => {
+      if (pinned) return;
+      pinned = true;
     });
-    w.core.instanceSignerKeyPin.mockImplementation(() => { pinned = true; });
     await toReady(w);
     expect(w.account()).toMatchObject({ phase: 'ready' });
     expect(w.core.instanceSignerKeyPin).toHaveBeenCalledWith(INSTANCE.instanceId, INSTANCE.externalSenderPub);
@@ -154,21 +154,17 @@ describe('Controller', () => {
 
   it('refuses ready when authenticated discovery reports a rotated instance signer', async () => {
     const w = world();
-    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+    w.core.instanceSignerKeyPin.mockImplementation(() => {
       throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
     });
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
-    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
-    expect(w.core.instanceSignerKeyPin).not.toHaveBeenCalled();
+    expect(w.core.instanceSignerKeyPin).toHaveBeenCalledWith(INSTANCE.instanceId, INSTANCE.externalSenderPub);
     expect(w.gateway.starts).toBe(0);
   });
 
   it('does not enter ready if the legacy first pin refuses authenticated discovery', async () => {
     const w = world();
-    w.core.instanceSignerKeyMatches.mockImplementation(() => {
-      throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
-    });
     w.core.instanceSignerKeyPin.mockImplementation(() => {
       throw new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
     });
@@ -181,12 +177,12 @@ describe('Controller', () => {
     const w = world();
     await toReady(w);
     const starts = w.gateway.starts;
-    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+    w.core.instanceSignerKeyPin.mockImplementation(() => {
       throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
     });
     w.gateway.emit({ type: 'revoked' });
     await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalled());
-    await vi.waitFor(() => expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(w.core.instanceSignerKeyPin).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
     expect(w.gateway.starts).toBe(starts);
     expect(w.gateway.stops).toBeGreaterThan(0);
@@ -207,7 +203,7 @@ describe('Controller', () => {
       w.routes.getInstance.mockResolvedValueOnce(INSTANCE);
       await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs);
       await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 2));
-      expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2);
+      expect(w.core.instanceSignerKeyPin).toHaveBeenCalledTimes(2);
       expect(w.gateway.starts).toBe(starts + 1);
     } finally {
       vi.useRealTimers();
@@ -220,7 +216,7 @@ describe('Controller', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const starts = w.gateway.starts;
-      w.core.instanceSignerKeyMatches.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'weak key'); });
+      w.core.instanceSignerKeyPin.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'weak key'); });
       w.gateway.emit({ type: 'revoked' });
       await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
       await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs * 2);
@@ -236,7 +232,7 @@ describe('Controller', () => {
     await toReady(w);
     const reads = w.routes.getInstance.mock.calls.length;
     const tickets = w.routes.postTicket.mock.calls.length;
-    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+    w.core.instanceSignerKeyPin.mockImplementation(() => {
       throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
     });
 

@@ -1288,18 +1288,10 @@ export class Controller {
       throw error;
     }
     try {
-      core.instanceSignerKeyMatches(read.externalSenderPub);
+      // The core writes only a missing pin (browsers enrolled before this check existed) and refuses a changed one.
+      // This runs after an enrolled session was authenticated, including on every gateway reconnection.
+      core.instanceSignerKeyPin(read.instanceId, read.externalSenderPub);
     } catch (e) {
-      // Browsers enrolled before the instance-signer pin was introduced have a ready identity but no pin.
-      // Only that exact absence may take the authenticated first-write path; a changed or invalid pin still fails.
-      if (e instanceof CoreError && e.code === 'E_CORE_STATE' && e.detail === 'instance signing key is not pinned') {
-        try { core.instanceSignerKeyPin(read.instanceId, read.externalSenderPub); }
-        catch (pinError) {
-          if (this.isInvalidInstancePin(pinError)) this.failInstanceSignerPin(pinError);
-          throw pinError;
-        }
-        return;
-      }
       if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
       throw e;
     }
