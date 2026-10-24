@@ -170,6 +170,9 @@ type Deps struct {
 	// BotEnrolled runs after a new bot identity, membership and role commit, so
 	// the composition root can bring its channel groups in line with the new member.
 	BotEnrolled func(context.Context, store.BotInstallationRow)
+	// BotMembershipPending repairs missing eligible MLS joins after a Ready
+	// transaction has rolled back. It must never run inside Repository.Tx.
+	BotMembershipPending func(context.Context, store.BotInstallationRow, []id.ID)
 	// BotJoinRoleGranted refreshes derived channel eligibility and live clients
 	// after an episode-bound automatic role grant commits or its accepted receipt
 	// is replayed. Replay repairs a crash after commit but before refresh.

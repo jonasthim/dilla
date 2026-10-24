@@ -168,12 +168,15 @@ func TestOpenOwnsQueueAndCancellationAndCloseBehindItAreBounded(t *testing.T) {
 }
 
 func TestGroupApplyHasOneDeadlineAcrossAllTransferFrames(t *testing.T) {
-	c := newFixture(t, "slow-transfer", 150*time.Millisecond)
+	c := newFixture(t, "slow-transfer", time.Second)
 	key := make([]byte, 32)
 	key[0] = 1
 	if _, err := c.Open(context.Background(), fixtureID(1), fixtureID(2), fixtureID(3), key); err != nil {
 		t.Fatal(err)
 	}
+	// Process startup is unrelated to the staged transfer's deadline and can
+	// exceed 150 ms on a busy race-detector runner.
+	c.callTime = 150 * time.Millisecond
 	started := time.Now()
 	_, err := c.GroupApply(context.Background(), []any{uint64(0), make([]byte, 2<<20)})
 	if !errors.Is(err, ErrOutcomeUnknown) {

@@ -1264,6 +1264,7 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		Revision              uint64
 	}{req.RequestID, installationID, req.ExpectedRevision})
 	now := d.Clock.Now().Unix()
+	var missingChannels []id.ID
 	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
 		if row.RuntimeID == nil {
 			return botConflict("installation has no runtime")
@@ -1306,11 +1307,12 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		if cur.UserID == nil || *cur.UserID != s.UserID || cur.DeviceID == nil || *cur.DeviceID != s.DeviceID || cur.State != store.BotInstallationJoining || cur.Revision != req.ExpectedRevision {
 			return botConflict("installation revision or state changed")
 		}
-		ready, err := d.botReadiness(r.Context(), tx, cur)
+		ready, missing, err := d.botReadiness(r.Context(), tx, cur)
 		if err != nil {
 			return err
 		}
 		if !ready {
+			missingChannels = missing
 			return botConflict("installation prerequisites are still pending")
 		}
 		approver, err := tx.GetUser(r.Context(), cur.ApprovedBy)
@@ -1369,55 +1371,60 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		return tx.CreateBotOperation(r.Context(), store.BotOperationRow{CommunityID: cur.CommunityID, RequestID: req.RequestID, InstallationID: cur.ID, ActorKind: 2, ActorID: s.UserID, ActorDevice: &s.DeviceID, Operation: botOpReady, PayloadHash: digest, ResultCBOR: encoded, Created: now})
 	})
 	if err != nil {
+		if len(missingChannels) > 0 && d.BotMembershipPending != nil {
+			// SyncGroupMembers writes through the delivery service. Run it only
+			// after the readiness transaction has released its write lock.
+			d.BotMembershipPending(context.WithoutCancel(r.Context()), row, missingChannels)
+		}
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
 	d.writeBotInstallation(w, r, http.StatusOK, row)
 }
 
-func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store.BotInstallationRow) (bool, error) {
+func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store.BotInstallationRow) (bool, []id.ID, error) {
 	if row.CredentialVerifiedAt == nil || row.DeviceID == nil || row.UserID == nil || d.DeviceLists == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	user, err := repo.GetUser(ctx, *row.UserID)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	list, err := repo.GetDeviceList(ctx, *row.UserID)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+		return false, nil, nil
 	}
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	entries, err := d.DeviceLists.Verify(ctx, list.Blob, user.SSKPub, *row.UserID)
 	if err != nil {
-		return false, nil //nolint:nilerr // An invalid signed device list must fail readiness closed.
+		return false, nil, nil //nolint:nilerr // An invalid signed device list must fail readiness closed.
 	}
 	if len(entries) != 1 || entries[0].Revoked || !bytes.Equal(entries[0].DeviceID, row.DeviceID[:]) {
-		return false, nil
+		return false, nil, nil
 	}
 	device, err := repo.GetDevice(ctx, *row.DeviceID)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if !bytes.Equal(entries[0].DSKPub, device.DSKPub) || entries[0].Tier != tierNative {
-		return false, nil
+		return false, nil, nil
 	}
 	count, err := repo.CountKeyPackages(ctx, *row.DeviceID, d.Clock.Now().Unix())
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if count == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 	channels, err := repo.ListChannels(ctx, row.CommunityID)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	groups, err := repo.GroupsForDevice(ctx, *row.DeviceID)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	joined := make(map[id.ID]bool)
 	for _, gid := range groups {
@@ -1430,7 +1437,7 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 		}
 		members, err := repo.ListMembers(ctx, gid)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		for _, m := range members {
 			if m.UserID == *row.UserID && m.DeviceID == *row.DeviceID && m.RemovedEpoch == nil {
@@ -1438,6 +1445,7 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 			}
 		}
 	}
+	var missing []id.ID
 	for _, channel := range channels {
 		if channel.DeletedAt != nil || channel.Kind != ChannelText || channel.Mode != ModeE2EE {
 			continue
@@ -1445,11 +1453,14 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 		resolver := NewResolver(repo)
 		allowed, err := resolver.Resolve(ctx, *row.UserID, channel)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		if allowed.Has(PermViewChannel) && !joined[channel.ID] {
-			return false, nil
+			missing = append(missing, channel.ID)
 		}
 	}
-	return true, nil
+	if len(missing) > 0 {
+		return false, missing, nil
+	}
+	return true, nil, nil
 }

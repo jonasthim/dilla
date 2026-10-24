@@ -72,6 +72,7 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	t.Cleanup(func() { _ = deviceListRuntime.Close(context.Background()) })
 	var diagnostics bytes.Buffer
 	var afterKeyPackages = make(chan [2]id.ID, 1)
+	var pendingMembership []id.ID
 	var delivery *ds.DS
 	h, deps := newTestAPIFullWithRepoAndMount(t, repo, nil, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
@@ -79,6 +80,9 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		d.Log = slog.New(slog.NewTextHandler(&diagnostics, nil))
 		manager = botruntime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
+		d.BotMembershipPending = func(_ context.Context, _ store.BotInstallationRow, channels []id.ID) {
+			pendingMembership = append(pendingMembership, channels...)
+		}
 	}, func(mux *server.Mux, d api.Deps) {
 		var keys ds.InstanceKeys
 		keys.InstanceID = d.Instance.InstanceID
@@ -95,7 +99,7 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		}
 		groups.RegisterBotDirectory(mux, d.Sessions)
 	})
-	owner, _, humanToken := seedAPISession(t, deps)
+	owner, ownerDevice, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID) // no accessible text channels are required here
 	negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, humanToken); rec.Code != http.StatusOK {
@@ -389,6 +393,31 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	installBeforeReady.Revision++
 	if err := deps.Repo.UpdateBotInstallation(context.Background(), installationID, priorRevision, installBeforeReady); err != nil {
 		t.Fatalf("restore ready approver: %v", err)
+	}
+	// A valid identity with a missing text-group leaf must ask the composition
+	// root to repair that exact channel after the Ready transaction rolls back.
+	channelID, groupID := id.New(), id.New()
+	communityID := cid
+	if err := deps.Repo.CreateChannel(context.Background(), store.ChannelRow{ID: channelID, CommunityID: &communityID, Kind: api.ChannelText, Mode: api.ModeE2EE, Name: "pending-bot", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: deps.Clock.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateGroup(context.Background(), store.GroupRow{GroupID: groupID, Binding: []byte{0x80}, Kind: api.GroupText, CommunityID: &communityID, TargetID: channelID, Ciphersuite: 1, Epoch: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: deps.Clock.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.PutChannelMember(context.Background(), channelID, userID, deps.Clock.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if pending := postCBORAuth(h, readyPath, readyBody, botToken); pending.Code != http.StatusConflict {
+		t.Fatalf("ready before required MLS join = %d (%x), want 409", pending.Code, pending.Body.Bytes())
+	}
+	if len(pendingMembership) != 1 || pendingMembership[0] != channelID {
+		t.Fatalf("pending membership repair channels = %v, want %s", pendingMembership, channelID)
+	}
+	if err := deps.Repo.ReplaceMembers(context.Background(), groupID, 0, []store.MemberRow{
+		{GroupID: groupID, UserID: owner.ID, DeviceID: ownerDevice.ID, LeafIndex: 0, SignatureKey: ownerDevice.DSKPub},
+		{GroupID: groupID, UserID: userID, DeviceID: deviceID, LeafIndex: 1, SignatureKey: deviceRow.DSKPub},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	ready := postCBORAuth(h, readyPath, readyBody, botToken)
 	if ready.Code != http.StatusOK {

@@ -449,7 +449,8 @@ func TestMembershipTreatsNonmemberCallGroupSourceAsPending(t *testing.T) {
 	}{
 		{name: "call group", kind: 1, code: "E_NOT_FOUND"},
 		{name: "unexpected call error", kind: 1, code: "E_OTHER", wantErr: true},
-		{name: "text group", kind: 0, code: "E_NOT_FOUND", wantErr: true},
+		{name: "text group", kind: 0, code: "E_NOT_FOUND"},
+		{name: "unexpected text error", kind: 0, code: "E_OTHER", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, n, s, community, channel, group := membershipFixture(t)

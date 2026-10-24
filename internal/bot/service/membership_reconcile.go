@@ -296,12 +296,12 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: ch.ID, Kind: g.Kind})
 		if e != nil {
-			// A call group can remain readable through channel-level reader access after
-			// this device stops being a current MLS member. Its member-only source reads
-			// intentionally answer 404 in that case. Keep reconciliation of unrelated
-			// groups and interactions moving; a later pass will retry if membership returns.
+			// A locally held group may no longer include this device in the server's
+			// current roster. Member-only source reads then answer 404 for either a
+			// text or call group. Keep other groups and readiness reconciliation
+			// moving; a later pass retries if membership returns.
 			var apiErr *client.APIError
-			if g.Kind == 1 && errors.As(e, &apiErr) && apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
+			if errors.As(e, &apiErr) && apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
 				continue
 			}
 			phase := MembershipPhaseTextSourceSync

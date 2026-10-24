@@ -474,6 +474,28 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"community", installation.CommunityID.String(), "user", installation.UserID.String(), "err", err)
 		}
 	}
+	deps.BotMembershipPending = func(ctx context.Context, installation store.BotInstallationRow, channels []id.ID) {
+		if installation.UserID == nil {
+			return
+		}
+		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, installation.CommunityID, *installation.UserID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "refreshing pending bot channel eligibility failed",
+				"community", installation.CommunityID.String(), "err", err)
+		}
+		for _, channelID := range channels {
+			channel, err := o.Repo.GetChannel(ctx, channelID)
+			if err != nil || channel.CommunityID == nil || *channel.CommunityID != installation.CommunityID ||
+				channel.DeletedAt != nil || channel.Kind != api.ChannelText || channel.Mode != api.ModeE2EE {
+				o.Log.ErrorContext(ctx, "reading a bot's pending text channel failed",
+					"community", installation.CommunityID.String(), "channel", channelID.String(), "err", err)
+				continue
+			}
+			if err := api.SyncGroupMembers(ctx, o.Repo, delivery, channel, o.Clock.Now().Unix()); err != nil {
+				o.Log.ErrorContext(ctx, "proposing a missing bot text-group membership failed",
+					"community", installation.CommunityID.String(), "channel", channelID.String(), "err", err)
+			}
+		}
+	}
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
 	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
 		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {

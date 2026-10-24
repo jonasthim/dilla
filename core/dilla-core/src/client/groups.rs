@@ -1099,6 +1099,19 @@ impl ClientCore {
             if let Some(want) = expected.iter().find(|v| v.group_id == item.group_id) {
                 let id = &item.group_id;
                 let row = self.read(|c| group_row(c, id))?;
+                // A Bot can miss its own removal while offline: the server then
+                // denies member-only source reads and later sends a new Add Welcome.
+                // Removal and a later Add need two commits, so the Welcome must
+                // be at least two epochs above the last locally held one. The
+                // labelled Welcome and epoch floor are verified below.
+                let bot_readmission = bot.is_some()
+                    && row.as_ref().is_some_and(|r| {
+                        r.state == STATE_ACTIVE
+                            && u64::try_from(r.max_epoch)
+                                .ok()
+                                .and_then(|epoch| epoch.checked_add(1))
+                                .is_some_and(|after_one_commit| item.epoch > after_one_commit)
+                    });
                 if let (Some(human), Some(row)) = (human_interaction.as_ref(), row.as_ref()) {
                     if self.human_interaction_welcome_replay_matches(
                         id, &item, want, &own, human, row,
@@ -1123,7 +1136,8 @@ impl ClientCore {
                 }) {
                     outcome = 2;
                     reason = rebound().code;
-                } else if row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) {
+                } else if row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) && !bot_readmission
+                {
                     if let Some(bot) = bot {
                         if row.as_ref().is_some_and(|r| r.state == STATE_ACTIVE) {
                             let actual = self.take_group(id)?;
