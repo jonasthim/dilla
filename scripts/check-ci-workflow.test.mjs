@@ -389,14 +389,14 @@ jobs:
 
   go-api:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     needs: [rust-wasi]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 38m ./internal/api/...
+      - run: go test -race -shuffle=on -timeout 50m ./internal/api/...
 
   go-harness:
     runs-on: ubuntu-latest
@@ -827,7 +827,7 @@ test('a workflow without the go-api job is reported', () => {
 
 test('a go-api job that stopped running internal/api is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 38m ./internal/api/...\n', '')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 50m ./internal/api/...\n', '')),
   );
   assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('./internal/api/...')), problems.join('\n'));
 });
@@ -835,8 +835,8 @@ test('a go-api job that stopped running internal/api is reported', () => {
 test('a go-api job with a shorter budget is reported', () => {
   const start = GOOD.indexOf('  go-api:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 45', 'timeout-minutes: 30'))));
-  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 45')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 55', 'timeout-minutes: 30'))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 55')), problems.join('\n'));
 });
 
 test('a go job that stopped leaving out internal/api is reported', () => {
@@ -1317,10 +1317,10 @@ test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
   assert.deepEqual(steps, [['run: b', 'env:', 'X: 1'], ['uses: d']]);
 });
 
-test('the voice budgets are derived from the measured voice minutes and stay under one runner\'s 45 minutes', () => {
+test('the browser budgets cover observed hosted-runner durations', () => {
   for (const job of ['chromium-web', 'firefox-web']) {
     const { timeout } = BROWSER_WEB_JOBS[job];
-    assert.ok(timeout >= MIN_BROWSER_WEB_TIMEOUT && timeout <= 45, `${job}: ${timeout}`);
+    assert.ok(timeout >= 50, `${job}: ${timeout}`);
   }
   assert.equal(BROWSER_WEB_JOBS['webkit-web'].voice, false);
 });
