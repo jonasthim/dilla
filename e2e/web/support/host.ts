@@ -136,6 +136,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
   let bot: ChildProcess | null = null;
   let clockTicker: NodeJS.Timeout | null = null;
+  let clockTickInFlight = false;
   const teardown = async () => {
     if (clockTicker !== null) clearInterval(clockTicker);
     if (bot !== null) await stop(bot);
@@ -158,10 +159,19 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       // the test-host fake clock starts and can take tens of seconds.
       const clockURL = `http://127.0.0.1:${c.control}/debug/clock`;
       await assertWallClock(clockURL, 'before Bot runtime startup');
+      // Timer callbacks can be delayed under CI load. Advance by elapsed wall
+      // time so the fake host clock stays within the Bot's signed-time window.
+      let advancedThrough = Date.now();
       clockTicker = setInterval(() => {
+        if (clockTickInFlight) return;
+        const seconds = Math.floor((Date.now() - advancedThrough) / 1_000);
+        if (seconds < 1) return;
+        clockTickInFlight = true;
         void fetch(clockURL, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds: 1 }),
-        }).catch(() => undefined);
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
+        }).then((response) => {
+          if (response.ok) advancedThrough += seconds * 1_000;
+        }).catch(() => undefined).finally(() => { clockTickInFlight = false; });
       }, 1_000);
     }
     if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
