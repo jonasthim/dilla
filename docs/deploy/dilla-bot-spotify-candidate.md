@@ -145,7 +145,7 @@ Doctor checks local files; it does not prove server reconciliation or Spotify pl
 
 The OAuth pair is configured in both places: `bot_spotify.client_id` and `bot_spotify.redirect_url` in `/etc/dilla/dilla.toml` for the server settings flow, and `spotify_client_id` and `spotify_redirect_url` in `/etc/dillabot/bot.toml` for Bot token exchange. Use the same public client ID and exact HTTPS redirect URL in both. Register `https://<dilla-host>/settings/bot/music/spotify/callback` in the Spotify application dashboard. Do not configure a client secret. Have the operator edit protected config files locally, validate dillad config, and schedule any required dillad restart; restarting it can interrupt service.
 
-The candidate `install.sh --upgrade` installs the architecture-matched `dilla-spotify-helper` at `/usr/local/libexec/dilla-spotify-helper`. Confirm it exists and matches the candidate checksum. Set `spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` in `/etc/dillabot/bot.toml`, preserving installer-generated values. Restart only Bot after server OAuth config is active:
+The candidate `install.sh --upgrade` installs the architecture-matched `dilla-spotify-helper` at `/usr/local/libexec/dilla-spotify-helper`. Confirm it exists and matches the candidate checksum. The helper uses OpenSSL 3 for native TLS. On Debian 13, install `libssl3t64` and confirm `ldd /usr/local/libexec/dilla-spotify-helper` reports no missing libraries. Set `spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` in `/etc/dillabot/bot.toml`, preserving installer-generated values. Restart only Bot after server OAuth config is active:
 
 ```sh
 sudo systemctl restart dillabot
