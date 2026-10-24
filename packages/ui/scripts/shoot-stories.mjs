@@ -8,7 +8,7 @@
 // Exits 1 when a prefix matched no story or a story page logged an error.
 //
 // A story whose parameters say `phoneViewport: true` is visited at 360×740 by the
-// test runner (.storybook/test-runner.ts), and its play asserts that: such a story
+// browser checker (scripts/check-stories.mjs), and its play asserts that: such a story
 // is shot only in a pass at that viewport and skipped, by name, in any other.
 import http from 'node:http';
 import fs from 'node:fs';
