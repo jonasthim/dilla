@@ -28,10 +28,10 @@ sha2        = "0.11"
 hmac        = "0.13"
 sha1        = "0.11"
 tls_codec   = { version = "0.5.0", features = ["derive", "serde", "mls"] }
-rand_chacha = "0.3"     # deterministic seeding; matches openmls_rust_crypto's major
+rand_chacha = "0.3"     # preserve deterministic fixture streams and published vectors
 # The seeded MLS signature keypair: `SignatureKeyPair::new` draws from the OS RNG, so the testkit
-# derives the Ed25519 key itself. Same pin and same features as dilla-core, so no second major.
-ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+# derives the Ed25519 key itself. Keep this on the OpenMLS crypto provider's major version.
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
 clap        = { version = "4", features = ["derive"] }
 # The remote-DS client. Both are fully synchronous over std::net::TcpStream, which is what keeps
 # the testkit single-threaded and its failures readable. NO TLS on either: the TLS stacks pull

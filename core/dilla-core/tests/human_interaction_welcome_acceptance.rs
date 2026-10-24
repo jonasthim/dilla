@@ -394,7 +394,11 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .with_group_context_extensions(extensions)
         .capabilities(Capabilities::new(
             None,
-            None,
+            Some(&[
+                CIPHERSUITE,
+                Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+                Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+            ]),
             Some(&[ExtensionType::Unknown(DILLA_BINDING_ID)]),
             None,
             Some(&[CredentialType::Basic]),
