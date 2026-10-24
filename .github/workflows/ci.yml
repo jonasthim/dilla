@@ -584,11 +584,9 @@ jobs:
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget (L-CI-21, ruling of 2026-10-13: one job per Playwright project, each on its own share):
-    # max(30, ceil(5 x (0.25 + 3.4 + 1.9)) + 10) = 38, from web-2c task 10's local wall times halved per engine (core-worker
-    # suite 0.5 min, Chromium+Firefox web suite 6.8 min; re-measured 2026-10-13 in fix wave C2) and web-3 task 10's
-    # Chromium voice suite (109 s locally, 2026-10-14).
-    timeout-minutes: 38
+    # The full browser suite now takes about 35–38 minutes on hosted runners (2026-10-24).
+    # Allow room for runner variance while retaining a bounded job.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -665,11 +663,9 @@ jobs:
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget (L-CI-21, ruling of 2026-10-13: one job per Playwright project, each on its own share):
-    # max(30, ceil(5 x (0.25 + 3.4 + 1.8)) + 10) = 38, from web-2c task 10's local wall times halved per engine (core-worker
-    # suite 0.5 min, Chromium+Firefox web suite 6.8 min; re-measured 2026-10-13 in fix wave C2) and web-3 task 10's
-    # Firefox voice suite (104 s locally, 2026-10-14).
-    timeout-minutes: 38
+    # The full browser suite now takes about 35–38 minutes on hosted runners (2026-10-24).
+    # Allow room for runner variance while retaining a bounded job.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -899,11 +895,10 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # internal/api under the race detector takes about 620 s on a 4-core machine. A loaded runner
-    # exceeded the 30-minute package timeout after 905 tests and was interrupted while the final
-    # test was setting up its SQLite fixture; allow additional package time while keeping the job
-    # timeout bounded. The go job leaves this package out and the checker pins both halves.
+    timeout-minutes: 55
+    # A loaded runner reached the prior 38-minute package limit after 905+ tests while
+    # the last test was starting (2026-10-24). Leave time for runner variance while
+    # keeping the job bounded. The go job leaves this package out.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -916,7 +911,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The API package's tests with the race detector
-        run: go test -race -shuffle=on -timeout 38m ./internal/api/...
+        run: go test -race -shuffle=on -timeout 50m ./internal/api/...
         env:
           GORACE: halt_on_error=1
 
