@@ -134,7 +134,9 @@ jobs:
       - if: needs.changes.outputs.core != 'false'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - if: needs.changes.outputs.core != 'false'
-        run: cargo test --workspace --all-features --locked
+        run: |
+          sudo prlimit --pid "$$" --memlock=268435456:268435456
+          cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -725,6 +727,11 @@ test('a rust-native job that stopped building the testkit is reported', () => {
 test('a rust-native job that lost the testkit artifact name is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace('          name: dilla-testkit\n          path: target', '          path: target')));
   assert.ok(problems.some((p) => p.includes('name: dilla-testkit')), problems.join('\n'));
+});
+
+test('a rust-native test step without the SQLCipher memory-lock allowance is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('          sudo prlimit --pid "$$" --memlock=268435456:268435456\n', '')));
+  assert.ok(problems.some((p) => p.includes('sudo prlimit')), problems.join('\n'));
 });
 
 test('a go-harness job that stopped receiving DILLA_TESTKIT is reported', () => {

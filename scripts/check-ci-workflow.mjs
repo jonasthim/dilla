@@ -160,7 +160,7 @@ const REQUIRED_STEPS = {
     // The lint and test steps need the core area; the build and upload run for any code (go-harness and the browser suites download it).
     "if: needs.changes.outputs.core != 'false'\n        run: cargo fmt --all --check",
     "if: needs.changes.outputs.core != 'false'\n        run: cargo clippy --workspace",
-    "if: needs.changes.outputs.core != 'false'\n        run: cargo test --workspace",
+    "if: needs.changes.outputs.core != 'false'\n        run: |\n          sudo prlimit --pid \"$$\" --memlock=268435456:268435456\n          cargo test --workspace",
   ],
   'rust-wasm-node': [
     'bash scripts/install-ci-tool.sh wasm-bindgen',

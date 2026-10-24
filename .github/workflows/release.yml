@@ -179,7 +179,10 @@ jobs:
           cache: false
       - run: rustup show active-toolchain
       - run: cargo fmt --all -- --check
-      - run: cargo test -p dilla-bot-core --locked
+      - run: |
+          # Match the Bot service's memory-lock allowance for SQLCipher tests.
+          sudo prlimit --pid "$$" --memlock=268435456:268435456
+          cargo test -p dilla-bot-core --locked
       - run: cargo build -p dilla-bot-core --release --locked
       - run: go test ./internal/bot/... ./cmd/dillabot
       - name: Build the architecture-matched Bot binary with the release version
