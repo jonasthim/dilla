@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-librespot = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot = { version = "=0.8.0", default-features = false, features = ["native-tls"] }
 nix = { version = "0.29", features = ["fs", "poll"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
