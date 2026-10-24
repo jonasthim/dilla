@@ -103,9 +103,13 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     await expect(targetPage.locator('.d-message-row').filter({ hasText: EXCERPT_BODY })).toHaveCount(3);
 
     const loadCases = settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true });
-    await loadCases.click();
     const automaticCase = settings.locator('article').filter({ hasText: 'duplicate_body' });
-    await expect.poll(async () => automaticCase.count(), { timeout: 45_000, intervals: [500, 1_000, 2_000] }).toBe(1);
+    // Each load is a snapshot. If the Bot has not processed the burst yet, request
+    // another snapshot instead of waiting for the first response to change.
+    await expect(async () => {
+      await loadCases.click();
+      await expect(automaticCase).toHaveCount(1, { timeout: 5_000 });
+    }).toPass({ timeout: 45_000, intervals: [500, 1_000, 2_000] });
     await expect(automaticCase).toContainText('warn');
     const excerpt = await automaticCase.locator('p').nth(1).innerText();
     expect(excerpt.length).toBe(512);
