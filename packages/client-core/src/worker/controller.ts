@@ -3504,9 +3504,7 @@ export class Controller {
     const hex = toHex(groupId);
     const channelId = core === null ? undefined : this.channelMap(core.groups()).get(hex);
     if (core === null || me === null || result.newSeqs.length === 0 || channelId === undefined) { this.publishBadges(); return; }
-    const before = this.lastActivity.get(hex)?.mentions ?? 0;
     this.publishBadges();
-    const after = this.lastActivity.get(hex)?.mentions ?? 0;
     const floor = this.noticeFloor;
     if (floor === null) return;
     const ownUser = toHex(me.userId);
@@ -3520,7 +3518,7 @@ export class Controller {
       const senderName = this.nameOf(toHex(row.senderUser as Id));
       // FACTS-SECURITY-07: the core's flag, set once at apply on the row's original body; never the shown body, which may
       // hold another member's edit folded in the same apply (ruling 4, ruling 34).
-      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && row.mention, senderName, threadRoot }));
+      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: row.mention, senderName, threadRoot }));
     }
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
