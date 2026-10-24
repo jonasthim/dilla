@@ -162,10 +162,19 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		return out, err
 	}
 	channelByID := make(map[id.ID]client.Channel, len(channels))
+	seenChannels := make(map[id.ID]bool, len(channels))
 	textGroup := make(map[id.ID]client.Channel)
 	for _, ch := range channels {
-		if ch.ID.IsZero() || ch.CommunityID != r.binding.Community || ch.Kind > 1 || channelByID[ch.ID].ID == ch.ID {
+		if ch.ID.IsZero() || ch.CommunityID != r.binding.Community || ch.Kind > 2 || seenChannels[ch.ID] {
 			return out, client.ErrProtocol
+		}
+		seenChannels[ch.ID] = true
+		// Categories are returned by the community channel list but have no MLS group to sync.
+		if ch.Kind == 2 {
+			if ch.TextGroupID != nil {
+				return out, client.ErrProtocol
+			}
+			continue
 		}
 		channelByID[ch.ID] = ch
 		if ch.Kind == 0 && ch.TextGroupID != nil && !ch.TextGroupID.IsZero() {
