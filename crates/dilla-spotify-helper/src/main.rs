@@ -117,7 +117,7 @@ impl Sink for PcmSink {
         // librespot 0.8 decodes at 44.1 kHz. A phase accumulator performs bounded
         // nearest-sample conversion to the helper's 48 kHz output contract.
         let samples = converter.f64_to_s16(&samples);
-        for stereo in samples.chunks_exact(2) {
+        for stereo in samples.as_chunks::<2>().0 {
             self.rate_phase += 48_000;
             while self.rate_phase >= 44_100 {
                 self.bytes.extend_from_slice(&stereo[0].to_le_bytes());
