@@ -691,7 +691,10 @@ The server `install.sh` also places the architecture-matched Spotify PCM helper 
 authorization available while Spotify PCM playback remains unavailable. To enable PCM playback,
 configure the same OAuth pair and the absolute
 `spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
-remains in Dilla server settings. The child receives its short-lived access token through inherited
+remains in Dilla server settings. The helper uses librespot's native TLS backend and needs the
+OpenSSL 3 runtime libraries (`libssl.so.3` and `libcrypto.so.3`). On Debian 13, install
+`libssl3t64` and confirm `ldd /usr/local/libexec/dilla-spotify-helper` has no `not found` entries
+before enabling playback. The child receives its short-lived access token through inherited
 file descriptor 3, while its arguments contain only the canonical track URI. This wiring and its
 synthetic subprocess tests do not qualify real Spotify playback. Do not put provider credentials in
 command arguments or logs.
