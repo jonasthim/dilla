@@ -899,6 +899,8 @@ const RELEASE_STEPS = {
     'if-no-files-found: error',
   ],
   'bot-release': [
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
     'cargo test -p dilla-bot-core --locked',
     'cargo build -p dilla-bot-core --release --locked',
     'go test ./internal/bot/... ./cmd/dillabot',
@@ -937,7 +939,7 @@ const RELEASE_STEPS = {
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'bot-release': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper', 'bot-release'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper', 'bot-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
