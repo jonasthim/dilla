@@ -335,6 +335,24 @@ func membershipFixture(t *testing.T) (*MembershipReconciler, *membershipFakeNati
 	}
 	return r, n, s, community, channel, group
 }
+
+func TestMembershipIgnoresCategoriesInCommunityChannelList(t *testing.T) {
+	r, n, s, community, _, group := membershipFixture(t)
+	s.channels = append(s.channels,
+		client.Channel{ID: membershipID(5), CommunityID: community, Kind: 2},
+		client.Channel{ID: membershipID(6), CommunityID: community, Kind: 2},
+	)
+	s.welcomes = []client.Welcome{{ID: 1, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
+	n.outcomes = []native.GroupWelcomeOutcome{{ID: 1, Group: group, Outcome: 0}}
+	result, err := r.reconcileOnce(context.Background(), s)
+	if err != nil {
+		t.Fatalf("valid categories blocked membership: %v", err)
+	}
+	if result.Applied != 1 || len(s.acked) != 1 || n.applyCalls != 1 {
+		t.Fatalf("text welcome not applied with categories present: result=%+v ack=%v apply=%d", result, s.acked, n.applyCalls)
+	}
+}
+
 func TestMembershipDuplicateWelcomeIsAppliedIdempotentlyAndAcked(t *testing.T) {
 	r, n, s, community, channel, group := membershipFixture(t)
 	s.welcomes = []client.Welcome{{ID: 1, GroupID: group, Epoch: 2, CommitSequence: 4, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}, {ID: 2, GroupID: group, Epoch: 2, CommitSequence: 4, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
