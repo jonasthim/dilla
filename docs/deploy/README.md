@@ -932,6 +932,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
 | web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 | web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
+| web3.13 (`v0.1.0-web3.13`) | **12** | **47** | Dilla Bot and its server/browser support. A rollback to web3.12.4 needs a server down migration to 23 with the new binary first; the older browser cannot read a schema-12 store. See the [web3.13 release notes](releases/v0.1.0-web3.13.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
