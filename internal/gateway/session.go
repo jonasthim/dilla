@@ -19,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // connState is where a connection is in the handshake.
@@ -38,6 +39,7 @@ type conn struct {
 	userID       id.ID
 	deviceID     id.ID
 	scope        auth.Scope
+	isBot        bool
 	pairingGroup *id.ID // ScopeProvisional only; see interfaces §2.2 point 4
 	tokenHash    []byte
 	resume       []byte // 32 CSPRNG bytes, rotated on every resumed
@@ -92,7 +94,7 @@ func (c *conn) send(f Frame) {
 		c.n++
 		n = c.n
 		if b, err := Encode(f, n); err == nil {
-			c.ring.add(n, b)
+			c.ring.add(n, b, f.Scope)
 		}
 	}
 	if c.writer == nil {
@@ -149,6 +151,7 @@ var errNotResumable = errors.New("gateway: not resumable")
 type resumeOutcome struct {
 	from, to uint64
 	frames   [][]byte
+	entries  []ringEntry
 }
 
 // tryResume validates a resume frame against a suspended connection's ring.
@@ -157,6 +160,20 @@ type resumeOutcome struct {
 // generation differs, or last_n is below the ring floor; after that the client heals from ready's
 // per-group digest plus the two catch-up endpoints against its durable cursors.
 func (c *conn) tryResume(token []byte, generation, lastN, current uint64) (resumeOutcome, error) {
+	out, err := c.tryResumeSnapshot(token, generation, lastN, current)
+	if err != nil {
+		return resumeOutcome{}, err
+	}
+	out.frames = make([][]byte, 0, len(out.entries))
+	for _, entry := range out.entries {
+		out.frames = append(out.frames, entry.bytes)
+	}
+	return out, nil
+}
+
+// tryResumeSnapshot copies replay scopes while holding only the connection and ring locks. The
+// authoritative policy checks happen after this returns, so database I/O never runs under either.
+func (c *conn) tryResumeSnapshot(token []byte, generation, lastN, current uint64) (resumeOutcome, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !resumeMatch(c.resume, token) || generation != current {
@@ -166,8 +183,8 @@ func (c *conn) tryResume(token []byte, generation, lastN, current uint64) (resum
 	if floor != 0 && lastN < floor-1 {
 		return resumeOutcome{}, errNotResumable
 	}
-	frames := c.ring.since(lastN)
-	return resumeOutcome{from: lastN + 1, to: c.n, frames: frames}, nil
+	entries := c.ring.entriesSince(lastN)
+	return resumeOutcome{from: lastN + 1, to: c.n, entries: entries}, nil
 }
 
 // identify resolves a session token to a device session. A token that does not resolve is
@@ -191,6 +208,9 @@ func (g *Gateway) identify(ctx context.Context, token string) (auth.Session, err
 	// enrolled session whose account owes a second factor (web3.6 S1, protocol/02 § Device
 	// sessions item 8): it reaches only protocol/09's `F` and `P` routes, and the socket is none.
 	if session.Scope != auth.ScopeEnrolled || session.FactorOwed {
+		return auth.Session{}, errNotEnrolledSession
+	}
+	if session.Bot != nil && session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady {
 		return auth.Session{}, errNotEnrolledSession
 	}
 	return session, nil
@@ -392,6 +412,10 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
+	if session.Bot != nil && chosen[0] < 3 {
+		g.refuse(ctx, s, frameErr("E_VERSION", "managed bots require wire version 3; supported versions are [3]", CloseVersion))
+		return nil, false
+	}
 	c, err := g.registerVersions(ctx, session, s, chosen)
 	if err != nil {
 		s.close(CloseUnknown, "register")
@@ -456,10 +480,35 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if session.DeviceID != c.deviceID {
 		return refuse("resume token does not belong to this session")
 	}
-	out, err := c.tryResume(token, generation, lastN, g.Generation())
+	if session.UserID != c.userID {
+		return refuse("resume token does not belong to this account")
+	}
+	if c.isBot != (session.Bot != nil) {
+		return refuse("resume session type changed")
+	}
+	if session.Bot != nil && (c.wire < 3 || session.WireVersion < 3) {
+		return refuse("managed bot wire capability is not resumable; identify again")
+	}
+	out, err := c.tryResumeSnapshot(token, generation, lastN, g.Generation())
 	if err != nil {
 		g.suspended.Delete(string(token))
 		return refuse("resume window elapsed or n below the ring floor")
+	}
+	// Replay is all-or-nothing: skipping a newly blocked entry would create an n hole and hide
+	// protected history from the client. Revalidate every retained entry against committed state
+	// before restoring the connection or queueing any replay bytes.
+	originalWire := g.connectionWire(c)
+	for _, entry := range out.entries {
+		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, entry.scope)
+		if scopeErr != nil || (requiresWire3 && originalWire < 3) {
+			g.suspended.Delete(string(token))
+			return refuse("replay scope is no longer resumable; identify again")
+		}
+		out.frames = append(out.frames, entry.bytes)
+	}
+	versions := [3]uint64{c.wire, c.e2ee, c.media}
+	if err := g.recordCapabilities(ctx, session.TokenHash, versions); err != nil {
+		return refuse("session capability persistence failed")
 	}
 
 	// The connection comes back into the live registry over the NEW sink.
@@ -468,6 +517,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	c.mu.Lock()
 	c.state = stateReady
 	c.lastLive = now
+	c.tokenHash = append(c.tokenHash[:0], session.TokenHash...)
 	// Paused until the connection is live again, as on identify: see newPausedWriter.
 	c.writer = newPausedWriter(s, writerLimits{
 		Frames:   g.opts.QueueFrames,
@@ -537,7 +587,15 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		return err
 	}
 	digests := make([]GroupDigest, 0, len(groups))
+	readyScope := FrameScope{}
 	for _, groupID := range groups {
+		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Groups: []id.ID{groupID}})
+		if scopeErr != nil {
+			return scopeErr
+		}
+		if requiresWire3 && c.wire < 3 {
+			continue
+		}
 		cursor, err := g.opts.Store.GetCursor(ctx, c.deviceID, groupID)
 		if err != nil {
 			return err
@@ -559,6 +617,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		c.mu.Lock()
 		c.groups[groupID] = struct{}{}
 		c.mu.Unlock()
+		readyScope.Groups = append(readyScope.Groups, groupID)
 	}
 	remaining, err := g.opts.Store.CountKeyPackages(ctx, c.deviceID, g.opts.Clock.Now().Unix())
 	if err != nil {
@@ -569,7 +628,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 	if err != nil {
 		return err
 	}
-	c.send(Frame{Op: OpReady, Payload: p, Replay: true})
+	c.send(Frame{Op: OpReady, Payload: p, Replay: true, Scope: readyScope})
 	c.mark(g.opts.Clock.Now())
 	return nil
 }
@@ -601,24 +660,41 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 	for _, gid := range mine {
 		member[gid] = true
 	}
-	refused, full := 0, false
-	c.mu.Lock()
+	refused, versionRefused, full := 0, 0, false
+	allowed := make([]id.ID, 0, len(groups))
 	for _, gid := range groups {
-		if _, ok := c.groups[gid]; ok {
+		if !member[gid] {
+			refused++
 			continue
 		}
-		switch {
-		case !member[gid]:
-			refused++
-		case len(c.groups) >= maxSubscribedGroups:
-			full = true
-		default:
-			c.groups[gid] = struct{}{}
+		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Groups: []id.ID{gid}})
+		if scopeErr != nil {
+			refuse("E_UNAVAILABLE", "group compatibility state is unavailable")
+			continue
 		}
+		if requiresWire3 && g.connectionWire(c) < 3 {
+			versionRefused++
+			continue
+		}
+		allowed = append(allowed, gid)
+	}
+	c.mu.Lock()
+	for _, gid := range allowed {
+		if _, exists := c.groups[gid]; exists {
+			continue
+		}
+		if len(c.groups) >= maxSubscribedGroups {
+			full = true
+			continue
+		}
+		c.groups[gid] = struct{}{}
 	}
 	c.mu.Unlock()
 	if refused > 0 {
 		refuse("E_FORBIDDEN", fmt.Sprintf("%d of the groups are not this device's", refused))
+	}
+	if versionRefused > 0 {
+		refuse("E_VERSION", fmt.Sprintf("%d groups require wire version 3", versionRefused))
 	}
 	if full {
 		refuse("E_FRAME_LIMIT", fmt.Sprintf("the subscription set is full at %d groups", maxSubscribedGroups))
@@ -691,6 +767,14 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 		if in.GroupID == nil || g.opts.CommitAck == nil {
 			return
 		}
+		mine, err := g.opts.Store.GroupsForDevice(ctx, c.deviceID)
+		if err != nil || !slices.Contains(mine, *in.GroupID) {
+			return
+		}
+		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Groups: []id.ID{*in.GroupID}})
+		if scopeErr != nil || (requiresWire3 && g.connectionWire(c) < 3) {
+			return
+		}
 		round, err := rawUint(in.Payload[0])
 		if err != nil {
 			return
@@ -757,6 +841,15 @@ func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
 		g.signalError(c, "E_NOT_FOUND")
 		return
 	}
+	requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Channels: []id.ID{channel}})
+	if scopeErr != nil {
+		g.signalError(c, "E_UNAVAILABLE")
+		return
+	}
+	if requiresWire3 && g.connectionWire(c) < 3 {
+		g.signalError(c, "E_VERSION")
+		return
+	}
 	if !g.acceptTyping(channel, c.userID, c.deviceID, on == 1) {
 		g.signalError(c, "E_RATE_LIMITED")
 		return
@@ -770,7 +863,7 @@ func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
 		return
 	}
 	for _, user := range audience {
-		g.DeliverUser(user, Frame{Op: OpTyping, Payload: p})
+		g.DeliverUser(user, Frame{Op: OpTyping, Payload: p, Scope: FrameScope{Channels: []id.ID{channel}}})
 	}
 	// Typing is activity (AW2, Q1): it takes the user out of the community's AFK list.
 	if on == 1 && g.opts.OnTyping != nil {
@@ -802,6 +895,15 @@ func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
 		g.signalError(c, "E_NOT_FOUND")
 		return
 	}
+	requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Channels: []id.ID{channel}})
+	if scopeErr != nil {
+		g.signalError(c, "E_UNAVAILABLE")
+		return
+	}
+	if requiresWire3 && g.connectionWire(c) < 3 {
+		g.signalError(c, "E_VERSION")
+		return
+	}
 	// The callback proves live SFU membership. Bit zero is server-owned; client bits
 	// zero and one map only to the self-mute and self-deaf fields.
 	flags := uint64(1) | (bits << 1) | (roomFlags & ((1 << 3) | (1 << 4)))
@@ -813,6 +915,6 @@ func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
 		return
 	}
 	for _, user := range audience {
-		g.DeliverUser(user, Frame{Op: OpVoiceState, Payload: p})
+		g.DeliverUser(user, Frame{Op: OpVoiceState, Payload: p, Scope: FrameScope{Channels: []id.ID{channel}}})
 	}
 }

@@ -675,6 +675,16 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 		rearm := existing != nil && existing.VoidAt != nil && existing.Origin == 0 &&
 			existing.Kind == p.Kind && sameTarget(*existing, p)
 		if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+			if err := tx.LockGroup(ctx, groupID); err != nil {
+				return err
+			}
+			lockedGroup, err := tx.GetGroup(ctx, groupID)
+			if err != nil {
+				return err
+			}
+			if lockedGroup.ClosedAt != nil || lockedGroup.EpochUnknown || lockedGroup.Epoch != row.Epoch {
+				return errCommitInvalid("epoch", "the group changed while this proposal was being prepared")
+			}
 			seq, err = nextSeq(ctx, tx, groupID)
 			if err != nil {
 				return err

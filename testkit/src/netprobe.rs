@@ -695,7 +695,10 @@ pub(crate) fn load_side(dir: &Path) -> Result<LoadedSide, TestkitError> {
             state.dm
         ))
     })?;
-    if group.binding().kind != GroupKind::Call || group.binding().target_id != dm {
+    let binding = group
+        .binding()
+        .map_err(|e| scenario(format!("call group binding: {e}")))?;
+    if binding.kind != GroupKind::Call || binding.target_id != dm {
         return Err(scenario(format!(
             "{} holds another group under DM {}; {ARM_AGAIN}",
             path.display(),

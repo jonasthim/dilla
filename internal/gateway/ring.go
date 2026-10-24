@@ -17,6 +17,7 @@ type ringEntry struct {
 	n     uint64
 	bytes []byte
 	at    time.Time
+	scope FrameScope
 }
 
 // ring is a per-connection replay buffer, bounded on count, bytes and age. It is an optimisation:
@@ -34,10 +35,10 @@ func newRing(l ringLimits, clk clock.Clock) *ring {
 	return &ring{limits: l, clk: clk}
 }
 
-func (r *ring) add(n uint64, frame []byte) {
+func (r *ring) add(n uint64, frame []byte, scope FrameScope) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries = append(r.entries, ringEntry{n: n, bytes: frame, at: r.clk.Now()})
+	r.entries = append(r.entries, ringEntry{n: n, bytes: frame, at: r.clk.Now(), scope: scope.clone()})
 	r.bytes += len(frame)
 	r.evictLocked()
 }
@@ -110,6 +111,21 @@ func (r *ring) since(lastN uint64) [][]byte {
 	for _, e := range r.entries {
 		if e.n > lastN {
 			out = append(out, e.bytes)
+		}
+	}
+	return out
+}
+
+// entriesSince returns replay bytes and their internal scopes, oldest first. Callers must release
+// the ring lock before consulting the authoritative compatibility source.
+func (r *ring) entriesSince(lastN uint64) []ringEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evictLocked()
+	out := make([]ringEntry, 0, len(r.entries))
+	for _, e := range r.entries {
+		if e.n > lastN {
+			out = append(out, ringEntry{n: e.n, bytes: e.bytes, at: e.at, scope: e.scope.clone()})
 		}
 	}
 	return out

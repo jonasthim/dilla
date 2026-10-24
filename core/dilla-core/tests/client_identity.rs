@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex};
 
 mod client_support;
 use client_support::{
-    Instance, RawPeer, Relay, enrolled_core, ingest_enrolled_pair_bodies, ingest_list_body,
-    ready_core_with_key, request,
+    INSTANCE_SIGNER_PUB, Instance, RawPeer, Relay, enrolled_core, ingest_enrolled_pair_bodies,
+    ingest_list_body, ready_core_with_key, request,
 };
 
 const INSTANCE: [u8; 16] = [0x11; 16];
@@ -42,6 +42,96 @@ const USER: [u8; 16] = [0x42; 16];
 const GROUP: [u8; 16] = [0x77; 16];
 const NOW: u64 = 1_790_000_000;
 const IDENTITY_JSON: &str = include_str!("../../../protocol/vectors/identity.json");
+
+#[test]
+fn human_instance_signer_key_is_pinned_at_enrollment_and_survives_reopen() {
+    let (mut core, connection) = core();
+    let seed = [0x71; 32];
+    let pinned = ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes();
+    let rotated = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32])
+        .verifying_key()
+        .to_bytes();
+
+    core.signup_begin(&INSTANCE).expect("signup begin");
+    assert!(core.instance_signer_key_matches(&pinned).is_err());
+    assert_eq!(
+        core.signup_complete(&USER, "alice", NOW, &[0; 32])
+            .expect_err("invalid Ed25519 key must be rejected")
+            .code,
+        "E_CORE_INPUT"
+    );
+    let identity = core.identity().expect("identity");
+    let phase = dilla_core::cbor::decode_strict(&identity, |d| {
+        d.array(6)?;
+        let phase = d.uint()?;
+        for _ in 0..5 {
+            d.skip()?;
+        }
+        Ok(phase)
+    })
+    .expect("identity phase");
+    assert_eq!(phase, 1, "invalid key leaves signup pending");
+    assert!(core.instance_signer_key_matches(&pinned).is_err());
+    core.signup_complete(&USER, "alice", NOW, &pinned)
+        .expect("complete authenticated enrollment");
+    core.instance_signer_key_matches(&pinned)
+        .expect("matching pin");
+    assert_eq!(
+        core.instance_signer_key_matches(&rotated)
+            .expect_err("rotation must fail closed")
+            .code,
+        "E_CORE_STATE"
+    );
+    drop(core);
+
+    let reopened = ClientCore::open(connection).expect("reopen");
+    reopened
+        .instance_signer_key_matches(&pinned)
+        .expect("persisted pin");
+    assert_eq!(
+        reopened
+            .instance_signer_key_matches(&rotated)
+            .expect_err("rotation must still fail closed")
+            .code,
+        "E_CORE_STATE"
+    );
+}
+
+#[test]
+fn legacy_ready_identity_without_instance_pin_fails_closed() {
+    let (mut core, connection) = core();
+    let pinned = ed25519_dalek::SigningKey::from_bytes(&[0x71; 32])
+        .verifying_key()
+        .to_bytes();
+    core.signup_begin(&INSTANCE).expect("signup begin");
+    core.signup_complete(&USER, "alice", NOW, &pinned)
+        .expect("complete");
+    drop(core);
+    connection
+        .lock()
+        .expect("sqlite lock")
+        .execute("DELETE FROM app_meta WHERE k='instance_signer_key'", [])
+        .expect("simulate an identity created before signer pins");
+
+    let mut reopened = ClientCore::open(connection).expect("open legacy identity");
+    assert_eq!(
+        reopened
+            .instance_signer_key_matches(&pinned)
+            .expect_err("legacy key must not be learned from discovery or proof")
+            .code,
+        "E_CORE_STATE"
+    );
+    assert_eq!(
+        reopened
+            .signup_complete(&USER, "alice", NOW, &pinned)
+            .expect_err("completed identity cannot be silently repinned")
+            .code,
+        "E_CORE_STATE"
+    );
+    assert!(reopened.instance_signer_key_matches(&pinned).is_err());
+}
 
 #[test]
 fn raw_peer_identity_signs_its_actual_mls_key() {
@@ -624,17 +714,17 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v5 (L-SQL-32; web3.7 TB1 adds the thread column and index) and ClientCore::open
+// app schema v12 (per-device Bot interaction groups) and ClientCore::open
 // (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v5_and_reopens_idempotently() {
+fn open_creates_app_schema_v12_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        5
+        12
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -653,10 +743,27 @@ fn open_creates_app_schema_v5_and_reopens_idempotently() {
             "app_authority",
             "app_authority_known",
             "app_authority_mentionable",
+            "app_bot_event_state",
+            "app_bot_events",
+            "app_bot_events_page",
+            "app_bot_intents",
+            "app_bot_intents_by_group",
+            "app_bot_intents_one_pending_per_group",
+            "app_bot_keypackage_intents",
+            "app_bot_keypackage_one_pending",
             "app_device_lists",
             "app_groups",
+            "app_groups_by_interaction_device",
             "app_groups_by_target",
             "app_handshake_tail",
+            "app_human_interaction_event_state",
+            "app_human_interaction_events",
+            "app_human_interaction_events_page",
+            "app_human_interaction_response_claims",
+            "app_manual_removal_evidence",
+            "app_manual_removal_evidence_pending",
+            "app_manual_warning_evidence",
+            "app_manual_warning_evidence_pending",
             "app_messages",
             "app_messages_by_msg",
             "app_messages_by_pin",
@@ -677,6 +784,10 @@ fn open_creates_app_schema_v5_and_reopens_idempotently() {
             "app_quarantine_device",
             "app_reactions",
             "app_read_state",
+            "app_removal_actor_lists",
+            "app_removal_cursor",
+            "app_removal_entries",
+            "app_removal_tombstones",
             "app_roles",
             "app_search",
             "app_search_config",
@@ -695,7 +806,7 @@ fn open_creates_app_schema_v5_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x05]);
+    assert_eq!(schema, [0x0c]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -820,19 +931,19 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'06');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'0d');",
         )
         .expect("seed");
     let e = match ClientCore::open(Arc::clone(&c)) {
         Ok(_) => panic!("a newer schema must be refused"),
         Err(e) => e,
     };
-    // C4x (web3.6): its own code, with both numbers, and nothing created in the store.
+    // C4x: its own code, with both numbers, and nothing created in the store.
     assert_eq!(
         e,
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 6, supported 5".into()
+            detail: "found 13, supported 12".into()
         }
     );
     let app_tables: i64 = c
@@ -873,7 +984,7 @@ fn a_fresh_store_is_phase_0_and_refuses_every_identity_bound_call() {
         }
     );
     assert_eq!(
-        err(core.signup_complete(&USER, "alice", NOW)).code,
+        err(core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)).code,
         "E_CORE_STATE"
     );
     assert_eq!(err(core.signup_reset()).code, "E_CORE_STATE");
@@ -1043,14 +1154,14 @@ fn signup_request_is_the_registration_body_with_a_zero_user_id_credential() {
 fn signup_complete_signs_device_list_v1_and_seals_the_state_object() {
     let (mut core, c, rk, reg) = begun();
     assert_eq!(
-        err(core.signup_complete(&[0u8; 16], "alice", NOW)),
+        err(core.signup_complete(&[0u8; 16], "alice", NOW, &INSTANCE_SIGNER_PUB)),
         ClientError {
             code: "E_CORE_INPUT",
             detail: "user_id is all zero".into()
         }
     );
     let body = core
-        .signup_complete(&USER, "alice", NOW)
+        .signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     let (version, blob, sig, prev) = decode_strict(&body, |d| {
         d.array(4)?;
@@ -1150,7 +1261,7 @@ fn signup_complete_signs_device_list_v1_and_seals_the_state_object() {
     core.device_list_published().expect("idempotent");
     assert_eq!(info(&core).published, 1);
     assert_eq!(
-        err(core.signup_complete(&USER, "alice", NOW)),
+        err(core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)),
         ClientError {
             code: "E_CORE_STATE",
             detail: "the identity is complete".into()
@@ -1195,7 +1306,8 @@ fn no_private_key_rests_outside_the_signup_record() {
         ssk_cells, 1,
         "SSK_priv rests in exactly one cell: the signup record"
     );
-    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     for (table, cell) in cells(&c) {
         for (name, secret) in [
             ("UMK_priv", &umk[..]),
@@ -1231,7 +1343,8 @@ fn the_deleted_signup_record_leaves_no_ssk_in_the_database_file() {
         "the scan sees the pending record in the file"
     );
     assert!(contains(&before, &kb), "the scan sees K_backup in the file");
-    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     drop(core);
     drop(c);
     let after = std::fs::read(&path).expect("read db");
@@ -1353,7 +1466,8 @@ fn reopening_keeps_the_phase_and_reloads_the_device_key() {
             &Signature::from_bytes(&sig),
         )
         .expect("signed with the stored DSK");
-    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     drop(core);
     let mut core = ClientCore::open(c).expect("reopen in phase 2");
     let i = info(&core);
@@ -1446,7 +1560,8 @@ fn session_sign_signs_the_81_byte_preimage_with_the_device_key() {
             detail: "purpose must be 0 or 1".into()
         }
     );
-    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     core.session_sign(&nonce, 0).expect("phase 2 signs too");
 }
 
@@ -1484,7 +1599,8 @@ fn the_session_record_is_stored_replaced_and_cleared() {
 fn key_packages_are_mls_messages_the_instance_validates() {
     let (mut core, _c, _rk, reg) = begun();
     assert_eq!(err(core.key_packages(1, false)).code, "E_CORE_NO_IDENTITY");
-    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     for bad in [0u32, 33] {
         assert_eq!(
             err(core.key_packages(bad, false)),
@@ -1612,7 +1728,10 @@ fn an_enrol_record_is_phase_3_stores_sessions_and_refuses_the_identity_calls() {
         detail: "no signup is pending".into(),
     };
     assert_eq!(err(core.signup_request("i", "u", "d", None)), no_signup);
-    assert_eq!(err(core.signup_complete(&USER, "alice", NOW)), no_signup);
+    assert_eq!(
+        err(core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)),
+        no_signup
+    );
     assert_eq!(err(core.signup_reset()), no_signup);
     for code in [
         err(core.device_list_body()).code,
@@ -1661,7 +1780,8 @@ fn an_enrol_record_beside_another_phase_or_without_its_key_is_refused() {
     assert_eq!(err(ClientCore::open(c.clone())), beside);
     // Beside a complete identity.
     let (mut core, c, _rk, _reg) = begun();
-    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    core.signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     drop(core);
     c.lock()
         .expect("lock")
@@ -1758,7 +1878,7 @@ fn signed_up() -> (ClientCore, ConnHandle, String, Registration, Vec<u8>) {
             .expect("signup_request"),
     );
     let put = core
-        .signup_complete(&USER, "alice", NOW)
+        .signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     core.device_list_published().expect("device_list_published");
     (core, c, rk_text, reg, put)
@@ -2507,6 +2627,45 @@ fn enrol_complete_adds_this_browser_to_the_list_the_root_object_vouches_for() {
         status(&a.own_device_list_update(&[0x80]).expect("empty history")),
         (2, 1)
     );
+}
+
+#[test]
+fn an_enrolled_browser_pins_only_authenticated_discovery_for_its_instance() {
+    let (a, _ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let mut b = second();
+    b.core
+        .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+        .expect("complete the browser enrolment");
+
+    assert_eq!(
+        err(b.core.instance_signer_key_matches(&INSTANCE_SIGNER_PUB)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "instance signing key is not pinned".into()
+        }
+    );
+    b.core
+        .instance_signer_key_pin(&INSTANCE, &INSTANCE_SIGNER_PUB)
+        .expect("pin after authenticated enrolled discovery");
+    b.core
+        .instance_signer_key_matches(&INSTANCE_SIGNER_PUB)
+        .expect("the stored pin matches discovery");
+
+    let mut wrong_instance = INSTANCE;
+    wrong_instance[0] ^= 1;
+    assert_eq!(
+        err(b
+            .core
+            .instance_signer_key_pin(&wrong_instance, &INSTANCE_SIGNER_PUB)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "authenticated instance discovery does not match identity".into()
+        }
+    );
+    b.core
+        .instance_signer_key_matches(&INSTANCE_SIGNER_PUB)
+        .expect("a failed discovery does not change the stored pin");
 }
 
 #[test]
@@ -3941,7 +4100,9 @@ fn own_device_list_update_drops_a_candidate_the_chain_overtook() {
     let (mut a, _ac) = core();
     let rk_text = a.signup_begin(&INSTANCE).expect("signup_begin");
     let reg = registration(&a.signup_request("i", "alice", "A", None).expect("request"));
-    let put_v1 = a.signup_complete(&USER, "alice", NOW).expect("complete");
+    let put_v1 = a
+        .signup_complete(&USER, "alice", NOW, &INSTANCE_SIGNER_PUB)
+        .expect("complete");
     let m = material_of(&a, rk_text, reg, put_v1);
     assert_eq!(
         info(&a).published,

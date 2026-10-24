@@ -21,6 +21,14 @@ case "$tool" in
     prefix=wasm-bindgen-0.2.128-x86_64-unknown-linux-musl
     binaries=(wasm-bindgen wasm-bindgen-test-runner wasm2es6js)
     ;;
+  binaryen)
+    version=133
+    archive_name=binaryen-version_133-x86_64-linux.tar.gz
+    url=https://github.com/WebAssembly/binaryen/releases/download/version_133/$archive_name
+    sha256=2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+    prefix=binaryen-version_133
+    binaries=(bin/wasm-opt)
+    ;;
   cargo-deny)
     version=0.20.2
     archive_name=cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
@@ -69,8 +77,9 @@ printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --status || {
 bin_dir=${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dilla-ci-tools
 mkdir -p "$bin_dir"
 for binary in "${binaries[@]}"; do
-  tar -xOf "$archive" "${prefix:+$prefix/}$binary" > "$tmp/$binary"
-  install -m 0755 "$tmp/$binary" "$bin_dir/$binary"
+  name=${binary##*/}
+  tar -xOf "$archive" "${prefix:+$prefix/}$binary" > "$tmp/$name"
+  install -m 0755 "$tmp/$name" "$bin_dir/$name"
 done
 if [[ -n ${GITHUB_PATH:-} ]]; then
   printf '%s\n' "$bin_dir" >> "$GITHUB_PATH"
@@ -79,6 +88,7 @@ fi
 case "$tool" in
   wasm-pack) "$bin_dir/wasm-pack" --version | grep -Fx "wasm-pack $version" ;;
   wasm-bindgen) "$bin_dir/wasm-bindgen" --version | grep -Fx "wasm-bindgen $version" ;;
+  binaryen) "$bin_dir/wasm-opt" --version | grep -Fx "wasm-opt version $version (version_$version)" ;;
   cargo-deny) "$bin_dir/cargo-deny" --version | grep -Fx "cargo-deny $version" ;;
   golangci-lint) "$bin_dir/golangci-lint" version | grep -F "version $version" ;;
   sqlc) "$bin_dir/sqlc" version | grep -Fx "v$version" ;;

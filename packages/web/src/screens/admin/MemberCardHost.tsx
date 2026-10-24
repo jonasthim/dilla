@@ -8,7 +8,7 @@ import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
 import { memberName, type MenuAction } from './members-model.ts';
 import { dmCardData, memberCardData } from './member-card.ts';
-import { BanFlow, KickFlow, type ModTarget } from './Moderation.tsx';
+import { BanFlow, KickFlow, TimeoutFlow, WarnFlow, type ModTarget } from './Moderation.tsx';
 import { MemberRolesFlow } from './MemberRolesFlow.tsx';
 
 /**
@@ -58,14 +58,18 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
   const access = useSlice(`permissions:${cid}`);
   const [kick, setKick] = useState<ModTarget | null>(null);
   const [ban, setBan] = useState<ModTarget | null>(null);
+  const [timeout, setTimeoutTarget] = useState<ModTarget | null>(null);
+  const [warn, setWarnTarget] = useState<ModTarget | null>(null);
   const [kickOpen, setKickOpen] = useState(false);
   const [banOpen, setBanOpen] = useState(false);
+  const [timeoutOpen, setTimeoutOpen] = useState(false);
+  const [warnOpen, setWarnOpen] = useState(false);
   const [rolesFor, setRolesFor] = useState<string | null>(null);
 
   // Where focus goes when a dialog closes: the trigger that opened it (the card's anchor), else the caller's fallback.
   const opener = useRef<HTMLElement | null>(null);
   const restore = useRef(false);
-  const anyOpen = kickOpen || banOpen || rolesFor !== null;
+  const anyOpen = kickOpen || banOpen || timeoutOpen || warnOpen || rolesFor !== null;
   useEffect(() => {
     if (anyOpen || !restore.current) return;
     restore.current = false;
@@ -102,19 +106,21 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
     : member === undefined ? null : memberCardData(member, { selfId, ownerId, roles: roles ?? [], access });
 
   const labelOf: Record<MenuAction, string> = {
-    message: t('members.menu.message'), compare: t('members.menu.compare'), roles: t('layout.profile.manageRoles'), kick: t('members.menu.kick'), ban: t('members.menu.ban'),
+    message: t('members.menu.message'), compare: t('members.menu.compare'), roles: t('layout.profile.manageRoles'), warn: t('mod.warn.menu'), timeout: t('mod.timeout.menu'), kick: t('members.menu.kick'), ban: t('members.menu.ban'),
   };
   const onAction = (userId: string, action: string) => {
     const row = byId.get(userId);
     if (row === undefined && !(inDm && (action === 'message' || action === 'compare'))) return;
     const target = { userId, name: row === undefined ? '' : memberName(row) };
     opener.current = card?.anchor ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    restore.current = action === 'kick' || action === 'ban' || action === 'roles';
+    restore.current = action === 'kick' || action === 'ban' || action === 'timeout' || action === 'warn' || action === 'roles';
     if (action === 'message') props.onMessage(userId);
     else if (action === 'compare') props.onCompare(userId);
     else if (action === 'roles') setRolesFor(userId);
+    else if (action === 'warn') { setWarnTarget(target); setWarnOpen(true); }
     else if (action === 'kick') { setKick(target); setKickOpen(true); }
     else if (action === 'ban') { setBan(target); setBanOpen(true); }
+    else if (action === 'timeout') { setTimeoutTarget(target); setTimeoutOpen(true); }
     onCard(null);
   };
 
@@ -136,6 +142,10 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />
       <BanFlow open={banOpen} communityId={cid} serverName={community?.name ?? ''} target={ban} announce={text => props.announce(text)}
         onClose={() => setBanOpen(false)} onDone={() => setBanOpen(false)} />
+      <TimeoutFlow open={timeoutOpen} communityId={cid} serverName={community?.name ?? ''} target={timeout} announce={text => props.announce(text)}
+        onClose={() => setTimeoutOpen(false)} onDone={() => setTimeoutOpen(false)} />
+      <WarnFlow open={warnOpen} communityId={cid} serverName={community?.name ?? ''} target={warn} announce={text => props.announce(text)}
+        onClose={() => setWarnOpen(false)} onDone={() => setWarnOpen(false)} />
       {rolesFor !== null
         ? <MemberRolesFlow communityId={cid} userId={rolesFor} announce={text => props.announce(text)} onClose={() => setRolesFor(null)} />
         : null}

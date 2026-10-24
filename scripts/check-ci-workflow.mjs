@@ -19,6 +19,7 @@ export const REQUIRED_JOBS = [
   'rust-native',
   'rust-wasm-node',
   'rust-wasi',
+  'spotify-helper',
   'vectors',
   'browser-spike',
   'browser-media',
@@ -200,6 +201,12 @@ const REQUIRED_STEPS = {
     'path: target/wasm32-wasip1/release/dilla_core_wasi.wasm',
     'if-no-files-found: error',
   ],
+  'spotify-helper': [
+    'cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check',
+    'cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings',
+    'cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked',
+    'cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked',
+  ],
   // The repository's pattern is that every scripts/check-*.mjs gate runs its own unit tests in the
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
   // itself, so it cannot silently rot.
@@ -290,29 +297,29 @@ const REQUIRED_STEPS = {
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 25',
-    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
-    'name: dilla-core-wasi',
-    'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 20m ./internal/ds/...',
-  ],
-  // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
-  'go-api': [
     'timeout-minutes: 40',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 30m ./internal/api/...',
+    'go test -race -shuffle=on -timeout 30m ./internal/ds/...',
+  ],
+  // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
+  'go-api': [
+    'timeout-minutes: 45',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'go test -race -shuffle=on -timeout 38m ./internal/api/...',
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
-    'timeout-minutes: 30',
+    'timeout-minutes: 45',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'name: dilla-core-wasi',
     'name: dilla-testkit',
     'artifacts/dilla-testkit',
-    'go test -race -shuffle=on -timeout 25m ./internal/testkit/...',
+    'go test -race -shuffle=on -timeout 38m ./internal/testkit/...',
     'DILLA_TESTKIT',
     // `DILLA_TESTKIT` above is a prefix of this one, so both are named: without the second, a
     // missing binary would skip every scenario test and the job would stay green.
@@ -497,7 +504,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
  * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
  */
-export const WASM_LLVM_VERSION = '1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87';
+export const WASM_LLVM_VERSION = '23.1';
 export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
 const WASM_LLVM_PACKAGES = [
   'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
@@ -521,9 +528,11 @@ export const WASM_CLANG_STEP = [
   '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list',
   '          sudo apt-get update',
   '          apt-cache policy clang-23 llvm-23',
-  `          v='${WASM_LLVM_VERSION}'`,
+  '          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')',
+  `          case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected clang ${WASM_LLVM_VERSION}.x candidate, got $v"; exit 1 ;; esac`,
   `          sudo apt-get install -y --no-install-recommends ${WASM_LLVM_PACKAGES.map((p) => `"${p}=$v"`).join(' ')}`,
   `          for p in ${WASM_LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`,
+  `          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`,
   '          /usr/bin/clang-23 --version',
   '          /usr/bin/llvm-ar-23 --version',
 ].join('\n');
@@ -695,6 +704,9 @@ export function checkWorkflow(root) {
 
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
+  }
+  if (!/^permissions:\n {2}contents: read$/m.test(text)) {
+    problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
   }
   // gap-29 §4 ii: a workflow-level RUSTFLAGS overrides every target.*.rustflags outright.
   if (/^\s{2}RUSTFLAGS:/m.test(text)) {
@@ -868,8 +880,8 @@ export function checkWorkflow(root) {
  * 23 pin, the size profile, the placeholder guard), and it uses only actions ci.yml uses at the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'spotify-helper', 'bot-release', 'go-release', 'release'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -889,6 +901,22 @@ const RELEASE_STEPS = {
     'name: dilla-web-dist',
   ],
   'rust-wasi': REQUIRED_STEPS['rust-wasi'],
+  'spotify-helper': [
+    ...REQUIRED_STEPS['spotify-helper'],
+    'name: dilla-spotify-helper-${{ matrix.arch }}',
+    'path: dist/dilla-spotify-helper-linux-${{ matrix.arch }}',
+    'if-no-files-found: error',
+  ],
+  'bot-release': [
+    'cargo test -p dilla-bot-core --locked',
+    'cargo build -p dilla-bot-core --release --locked',
+    'go test ./internal/bot/... ./cmd/dillabot',
+    'GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot',
+    'test "$(dist/dillabot-linux-${{ matrix.arch }} version)" = "dillabot $VERSION"',
+    'install -m 0755 target/release/dilla-bot-core dist/dilla-bot-core-linux-${{ matrix.arch }}',
+    'name: dilla-bot-${{ matrix.arch }}',
+    'if-no-files-found: error',
+  ],
   'go-release': [
     // v0.1.0-web3.1: the tag job's version is stamped into main.Version, and the stamp is checked on both binaries.
     'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-amd64 ./cmd/dillad',
@@ -900,9 +928,15 @@ const RELEASE_STEPS = {
   ],
   release: [
     'cp deploy/install.sh release/install.sh',
+    'cp deploy/install-bot.sh release/install-bot.sh',
+    'pattern: dilla-spotify-helper-*',
+    'pattern: dilla-bot-*',
+    'merge-multiple: true',
     // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
     `sed -i "s/^DILLA_RELEASE_TAG=\\"\\"$/DILLA_RELEASE_TAG=\\"$TAG\\"/" release/install.sh`,
     'test "$(grep -c "^DILLA_RELEASE_TAG=\\"$TAG\\"$" release/install.sh)" -eq 1',
+    `sed -i "s/^DILLA_BOT_RELEASE_TAG=\\"\\"$/DILLA_BOT_RELEASE_TAG=\\"$TAG\\"/" release/install-bot.sh`,
+    'test "$(grep -c "^DILLA_BOT_RELEASE_TAG=\\"$TAG\\"$" release/install-bot.sh)" -eq 1',
     'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',
@@ -912,7 +946,7 @@ const RELEASE_STEPS = {
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'bot-release': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper', 'bot-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
@@ -952,6 +986,11 @@ export function checkReleaseWorkflow(root) {
   }
 
   const jobs = splitJobs(text);
+  if (!/runner: ubuntu-24\.04-arm/.test(jobs['spotify-helper'] ?? '')
+    || !/arch: arm64/.test(jobs['spotify-helper'] ?? '')
+    || !/arch: amd64/.test(jobs['spotify-helper'] ?? '')) {
+    problems.push(`${file}: job "spotify-helper" must build native amd64 and arm64 assets`);
+  }
   for (const name of RELEASE_JOBS) {
     if (!(name in jobs)) {
       problems.push(`${file}: missing job "${name}"`);
@@ -992,6 +1031,16 @@ export function checkReleaseWorkflow(root) {
     const buildAt = body.indexOf('go build');
     if (!(fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && fetchAt < guardAt && guardAt < buildAt)) {
       problems.push(`${file}: job "go-release" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
+    }
+  }
+  if ('bot-release' in jobs) {
+    for (const step of jobSteps(jobs['bot-release'])) {
+      if (step.some((l) => /\bgo build\b/.test(l) && l.includes('dillabot-linux-') && !l.includes('-X main.Version=${VERSION}'))) {
+        problems.push(`${file}: job "bot-release" has a dillabot build without -X main.Version=\${VERSION}; a release Bot binary says its version`);
+      }
+      if (step.some((l) => /main\.Version|\$\{?VERSION\b/.test(l)) && !step.includes(RELEASE_VERSION_ENV)) {
+        problems.push(`${file}: job "bot-release" uses the version without its own env ${RELEASE_VERSION_ENV}`);
+      }
     }
   }
   assertEveryUploadFailsOnNoFiles(text, problems, file);

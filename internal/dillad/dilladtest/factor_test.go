@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // satisfyFactor clears a seeded account's owed second factor (web3.6 S1) through the repository,
@@ -29,25 +30,43 @@ func TestASeededHumanOwesASecondFactorAndABotDoesNot(t *testing.T) {
 	h := sfuHost(t, false)
 	ctx := t.Context()
 	zero := func(n int) string { return hex.EncodeToString(make([]byte, n)) }
-	req := func(name string, bot bool) SeedRequest {
-		return SeedRequest{Username: name, Display: name, Bot: bot, UMKPub: zero(32), SSKPub: zero(32),
+	req := func(name string) SeedRequest {
+		return SeedRequest{Username: name, Display: name, UMKPub: zero(32), SSKPub: zero(32),
 			SigUMKSSK: zero(64), Devices: []Device{{DeviceID: id.New().String(), DSKPub: zero(32), Credential: "01"}}}
 	}
-	out, err := SeedUsers(ctx, h.Server(), []SeedRequest{req("human", false), req("bot", true)})
+	out, err := SeedUsers(ctx, h.Server(), []SeedRequest{req("human")})
 	if err != nil {
 		t.Fatalf("SeedUsers: %v", err)
 	}
-	for i, want := range []bool{true, false} {
-		uid, err := id.Parse(out[i].UserID)
+	botID := id.New()
+	if err := h.Server().Repo().CreateUser(ctx, store.UserRow{
+		ID: botID, Username: "bot", Display: "bot", Kind: 1,
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
+		Created: h.Server().Now().Unix(),
+	}); err != nil {
+		t.Fatalf("create bot account: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		id   id.ID
+		want bool
+	}{{"human", mustID(t, out[0].UserID), true}, {"bot", botID, false}} {
+		u, err := h.Server().Repo().GetUser(ctx, tc.id)
 		if err != nil {
-			t.Fatalf("user id: %v", err)
+			t.Fatalf("GetUser(%s): %v", tc.name, err)
 		}
-		u, err := h.Server().Repo().GetUser(ctx, uid)
-		if err != nil {
-			t.Fatalf("GetUser: %v", err)
-		}
-		if u.FactorOwed != want {
-			t.Errorf("seeded %s: factor_owed = %v, want %v", u.Username, u.FactorOwed, want)
+		if u.FactorOwed != tc.want {
+			t.Errorf("seeded %s: factor_owed = %v, want %v", u.Username, u.FactorOwed, tc.want)
 		}
 	}
+}
+
+func mustID(t *testing.T, value string) id.ID {
+	t.Helper()
+	parsed, err := id.Parse(value)
+	if err != nil {
+		t.Fatalf("user id %q: %v", value, err)
+	}
+	return parsed
 }

@@ -34,6 +34,8 @@ export interface Device {
   readonly slow: { group: string; until: number; queued: boolean }[];
   /** Every onPosted report (CB2): the group hex and the confirmed row's type. */
   readonly posted: { group: string; type: number }[];
+  /** The server-confirmed application sequence passed to onPosted, when available. */
+  readonly postedSequences: bigint[];
 }
 
 /** An engine for me, started, with its gateway attached to ds's fan-out. random() always answers `random`. */
@@ -50,6 +52,7 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
   const refreshes: string[] = [];
   const slow: Device['slow'] = [];
   const posted: Device['posted'] = [];
+  const postedSequences: Device['postedSequences'] = [];
   const hooks: Device['hooks'] = { beforeSend: () => Promise.resolve(), refreshGroupTrust: () => Promise.resolve() };
   ds.attach(me.device, (f) => {
     gateway.frame(f);
@@ -76,15 +79,16 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
       discarded.push({ group: toHex(groupId), msgId: toHex(row.msgId), blobIds: row.attachments.map((a) => toHex(a.blobId)) });
     },
     onSlow: (groupId: Id, until: number, queued: boolean) => { slow.push({ group: toHex(groupId), until, queued }); },
-    onPosted: (groupId: Id, type: number) => { posted.push({ group: toHex(groupId), type }); },
+    onPosted: (groupId: Id, type: number, _row, seq) => { posted.push({ group: toHex(groupId), type }); if (seq !== undefined) postedSequences.push(seq); },
   });
   engine.start();
-  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, refreshes, hooks, slow, posted };
+  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, refreshes, hooks, slow, posted, postedSequences };
 }
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {
   return {
-    deviceId: me.device, userId: me.user, generation: 1n, keypackagesRemaining: 32, groups, heartbeatMs: 30000, maxFrameBytes: 131584,
+    deviceId: me.device, userId: me.user, generation: 1n, versions: { wire: 2n, e2ee: 1n, media: 1n },
+    keypackagesRemaining: 32, groups, heartbeatMs: 30000, maxFrameBytes: 131584,
     backoffMs: 300, backoffJitterMs: 300,
   };
 }

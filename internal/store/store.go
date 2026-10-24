@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -47,6 +48,8 @@ type Repository interface {
 	Channels    // Plan 2 task 2 (P2-D23) — 00005_channels.sql
 	Overwrites  // Plan 2 task 3 (P2-D23) — 00006_overwrites.sql
 	Bans        // Plan 2 task 4 (P2-D23) — 00007_bans.sql
+	MemberTimeouts
+	ManualWarningActions
 	// Plan 2 task 6 (P2-D23) — 00008_channel_members.sql
 	ChannelMembers
 	// Plan 2 task 8 (P2-D23) — 00009_readable.sql
@@ -56,10 +59,170 @@ type Repository interface {
 	OpsBackups
 	// Plan 2 task 16 (P2-D22) — 00011_voice.sql
 	VoiceSessions
+	RolePanels
+	ReactionRoleGrantSources
+	BotJoinRoleGrants
+	BotRuntimes
+	BotInstallations
+	BotClaims
+	BotOperations
+	BotSessionBindings
+	BotKeyPackagePublications
+	BotGroupRegistrationReceipts
+	BotSendOperations
+	BotStructuralEvents
+	BotInteractionEligibility
+	BotInteractionAdmissionReceipts
+	BotGroupRegistrationAdmissionReceipts
+	BotAutoModerationGrants
+	ModerationRemovals
+}
+
+// BotAutoModerationGrantRow stores only a digest of the opaque bearer grant and a
+// digest of the encrypted op63 document. Plaintext moderation config never enters storage.
+type BotAutoModerationGrantRow struct {
+	TokenHash, RequestHash, ConfigHash                    []byte
+	CommunityID, InstallationID, GroupID, RequestID       id.ID
+	ActorUser, ActorDevice                                id.ID
+	ExpectedRevision, RequestExpires, Expires, ConsumedAt int64
+	Receipt                                               []byte
+}
+
+type BotAutoModerationGrants interface {
+	CreateBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) error
+	GetBotAutoModerationGrant(context.Context, []byte) (BotAutoModerationGrantRow, error)
+	// Accept is atomic: one grant accepts one exact installation/request/ciphertext tuple.
+	// Exact retries return the original receipt; any changed tuple conflicts.
+	AcceptBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) (BotAutoModerationGrantRow, bool, error)
+}
+
+// BotInteractionEligibility exposes the monotonic eligibility fence for one
+// user in one community. Reads happen in a transaction and lock the row on
+// PostgreSQL so admission issuance and group registration can share a fence.
+// Database triggers advance it whenever membership, bans, or device state
+// changes. This primitive does not itself authorize interaction admission.
+type BotInteractionEligibility interface {
+	GetBotInteractionEligibilityRevision(context.Context, id.ID, id.ID) (uint64, error)
+}
+
+type BotInteractionAdmissionReceipt struct {
+	InstallationID id.ID
+	RequestID      id.ID
+	RequestHash    []byte
+	Payload        []byte
+	Signature      []byte
+	NotAfter       int64
+}
+
+type BotInteractionAdmissionReceipts interface {
+	GetBotInteractionAdmissionReceipt(context.Context, id.ID, id.ID) (BotInteractionAdmissionReceipt, error)
+	CreateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
+	UpdateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
+	// Compaction removes expired payloads immediately and forgets request hashes after
+	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
+	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
+}
+
+// BotGroupRegistrationAdmissionReceipts atomically records the accepted
+// registration consumed by one kind-3 admission request. The bool is true for
+// an exact retry; reusing a request ID for different registration data conflicts.
+type BotGroupRegistrationAdmissionReceipts interface {
+	AcceptBotGroupRegistrationAdmission(context.Context, id.ID, BotGroupRegistrationReceipt) (BotGroupRegistrationReceipt, bool, error)
+	GetBotGroupRegistrationAdmission(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
+}
+
+// BotJoinRolePolicy stores the single human-approved role a ready bot may
+// assign when a member joins. It only configures policy; assignment is a
+// separate capability and must enforce membership episode binding.
+type BotJoinRolePolicy interface {
+	SetBotJoinRolePolicy(ctx context.Context, installationID, roleID, approverID id.ID, approvedAt int64) error
+	GetBotJoinRolePolicy(ctx context.Context, installationID id.ID) (BotJoinRolePolicyRow, error)
+}
+
+// BotJoinRoleGrants binds one bot-triggered role assignment to a stable
+// membership episode. The receipt is immutable for a request and episode.
+type BotJoinRoleGrants interface {
+	GrantBotJoinRoleForEpisode(context.Context, BotJoinRoleGrantRequest) (BotJoinRoleGrantReceipt, bool, error)
+}
+
+type BotJoinRoleGrantRequest struct {
+	RequestID      id.ID
+	InstallationID id.ID
+	CommunityID    id.ID
+	UserID         id.ID
+	EpisodeID      id.ID
+}
+
+type BotJoinRoleGrantReceipt struct {
+	RequestID      id.ID
+	InstallationID id.ID
+	CommunityID    id.ID
+	UserID         id.ID
+	EpisodeID      id.ID
+	RoleID         id.ID
+}
+
+type BotJoinRolePolicyRow struct {
+	InstallationID id.ID
+	CommunityID    id.ID
+	RoleID         id.ID
+	ApprovedBy     id.ID
+	ApprovedAt     int64
+}
+
+// ModerationRemovalRow is a permanent signed deletion marker. The feed retains
+// the canonical unsigned proof and detached signature independently of message
+// and structural-event retention.
+type ModerationRemovalRow struct {
+	RequestID      id.ID
+	ActionID       id.ID
+	CommunityID    id.ID
+	GroupID        id.ID
+	TargetSequence uint64
+	Revision       uint64
+	Proof          []byte
+	Signature      []byte
+	AcceptedAt     int64
+}
+
+type ModerationRemovalPage struct {
+	Rows         []ModerationRemovalRow
+	NextRevision uint64
+}
+
+// ModerationRemovals requires Accept to run inside the same transaction as
+// the action event. It allocates a durable per-group revision and tombstones
+// the target application message before returning.
+type ModerationRemovals interface {
+	AcceptModerationRemoval(context.Context, ModerationRemovalRow) (ModerationRemovalRow, error)
+	GetModerationRemoval(context.Context, id.ID, id.ID) (ModerationRemovalRow, error)
+	GetModerationRemovalByRequest(context.Context, id.ID) (ModerationRemovalRow, error)
+	ListModerationRemovals(context.Context, id.ID, uint64, int32) (ModerationRemovalPage, error)
+}
+
+// BotStructuralEventPage is a bounded snapshot of the community event stream.
+// Floor is the greatest sequence removed by retention; a cursor below it has a gap.
+type BotStructuralEventPage struct {
+	Events       []protocol.Event
+	NextSequence uint64
+	HighWater    uint64
+	Floor        uint64
+}
+
+// BotStructuralEvents stores canonical structural events and per-installation
+// acknowledgements. Append, prune, and ack require the caller's transaction.
+type BotStructuralEvents interface {
+	AppendBotStructuralEvent(context.Context, protocol.Event) (protocol.Event, error)
+	ListBotStructuralEvents(context.Context, id.ID, uint64, int32) (BotStructuralEventPage, error)
+	PruneBotStructuralEvents(context.Context, int64) (int64, error)
+	AckBotStructuralEvents(context.Context, id.ID, id.ID, uint64) error
+	GetBotStructuralEventAck(context.Context, id.ID, id.ID) (uint64, error)
 }
 
 type Instance interface {
 	GetInstance(ctx context.Context) (InstanceRow, error)
+	// LockInstanceGeneration serializes publishers with restore while their transaction is open.
+	LockInstanceGeneration(ctx context.Context) error
 	CreateInstance(ctx context.Context, in InstanceRow) error
 	BumpGeneration(ctx context.Context) (uint64, error)
 	// SetGeneration is invariant 11's restore half (deviation B13). `dillad
@@ -76,6 +239,100 @@ type Instance interface {
 	// NOT NULL, and a repository with no clock has nothing to write there
 	// (deviation ID11).
 	PutSetting(ctx context.Context, key string, value []byte, updated int64) error
+}
+
+// KeyPackagePublicationReceipt is the compact accepted-operation record for a managed Bot. It
+// deliberately stores no upload or package bytes.
+type KeyPackagePublicationReceipt struct {
+	InstallationID id.ID
+	UserID         id.ID
+	DeviceID       id.ID
+	OperationID    id.ID
+	Generation     uint64
+	UploadSHA256   []byte
+	Count          uint64
+	AcceptedAt     int64
+}
+
+// BotKeyPackagePublications provides transaction-scoped serialization and compact receipts.
+type BotKeyPackagePublications interface {
+	LockKeyPackageDevice(context.Context, id.ID) error
+	GetBotKeyPackagePublicationReceipt(context.Context, id.ID, id.ID) (KeyPackagePublicationReceipt, error)
+	CreateBotKeyPackagePublicationReceipt(context.Context, KeyPackagePublicationReceipt) error
+	DeleteBotKeyPackagePublicationReceipts(context.Context, id.ID) error
+	GetKeyPackage(context.Context, id.ID, []byte) (KeyPackageRow, error)
+}
+
+// BotGroupRegistrationReceipts stores immutable, installation-scoped acceptance
+// proofs. Creation requires the caller's transaction so DS can commit the proof
+// atomically with the group and initial MLS state.
+type BotGroupRegistrationReceipts interface {
+	GetBotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
+	// GetBotGroupRegistrationReceiptByGroup resolves the immutable accepted registration for a
+	// globally unique MLS group ID. It is a read-only lookup for authorization against an existing
+	// group; callers must still validate the live group state and installation authority.
+	GetBotGroupRegistrationReceiptByGroup(context.Context, id.ID) (BotGroupRegistrationReceipt, error)
+	CreateBotGroupRegistrationReceipt(context.Context, BotGroupRegistrationReceipt) error
+	DeleteBotGroupRegistrationReceiptsByInstallation(context.Context, id.ID) error
+}
+
+// BotSendOperationRow is the stable, installation-scoped side effect. Attempt
+// IDs and pointers are opaque identifiers; state is BotSendOperationState.
+type BotSendOperationRow struct {
+	InstallationID  id.ID
+	OperationID     id.ID
+	UserID          id.ID
+	DeviceID        id.ID
+	CommunityID     id.ID
+	GroupID         id.ID
+	CurrentAttempt  id.ID
+	AcceptedAttempt *id.ID
+	State           uint8
+}
+
+// BotSendAttemptRow stores only metadata and the canonical receipt. It never
+// contains plaintext or provider data. Outcome is BotSendAttemptOutcome.
+type BotSendAttemptRow struct {
+	InstallationID    id.ID
+	OperationID       id.ID
+	AttemptID         id.ID
+	PredecessorID     *id.ID
+	Generation        uint64
+	Epoch             uint64
+	Class             uint8
+	CiphertextSHA256  []byte
+	FingerprintSHA256 []byte
+	Outcome           uint8
+	Receipt           []byte
+}
+
+type BotSendOperationState uint8
+
+const (
+	BotSendOperationActive BotSendOperationState = iota
+	BotSendOperationAccepted
+	BotSendOperationUncertain
+)
+
+type BotSendAttemptOutcome uint8
+
+const (
+	BotSendAttemptClosed BotSendAttemptOutcome = iota
+	BotSendAttemptAccepted
+	BotSendAttemptUnknown
+)
+
+// BotSendOperations is a narrow transaction-scoped persistence API for durable
+// send attempts. It exposes immutable inserts and guarded pointer transitions,
+// not arbitrary row updates.
+type BotSendOperations interface {
+	CreateBotSendOperationIfAbsent(context.Context, BotSendOperationRow) (BotSendOperationRow, bool, error)
+	LockBotSendOperation(context.Context, id.ID, id.ID) (BotSendOperationRow, error)
+	GetBotSendAttempt(context.Context, id.ID, id.ID, id.ID) (BotSendAttemptRow, error)
+	InsertBotSendAttempt(context.Context, BotSendAttemptRow) error
+	AdvanceBotSendAttempt(context.Context, id.ID, id.ID, id.ID, id.ID) error
+	SealBotSendOperation(context.Context, id.ID, id.ID, id.ID, BotSendOperationState) error
+	DeleteBotSendsByInstallation(context.Context, id.ID) error
 }
 
 type Accounts interface {
@@ -110,7 +367,15 @@ type Accounts interface {
 
 type Devices interface {
 	CreateDevice(ctx context.Context, d DeviceRow) error
+	// CreateBotDevice rejects any previously registered DSK and must run inside Tx.
+	// CreateDevice uses the same DSK lock and rejects reuse whenever either account is a Bot.
+	CreateBotDevice(ctx context.Context, d DeviceRow) error
 	GetDevice(ctx context.Context, deviceID id.ID) (DeviceRow, error)
+	// UpdateDeviceCredential replaces only the validated final enrollment credential.
+	UpdateDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte) error
+	// FinalizeBotDeviceCredential stores the validated final credential and stamps the Bot
+	// native device as verified at the same server time used by credential finalization.
+	FinalizeBotDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte, verifiedAt int64) error
 	ListDevicesByUser(ctx context.Context, userID id.ID) ([]DeviceRow, error)
 	TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error
 	// SetDeviceLabel names a device of userID (nil clears it); ErrNotFound unless the device is the user's.
@@ -135,6 +400,7 @@ type Devices interface {
 type Sessions interface {
 	CreateSession(ctx context.Context, s SessionRow) error
 	GetSessionByHash(ctx context.Context, tokenHash []byte, now int64) (SessionRow, error)
+	SetSessionVersions(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error
 	TouchSession(ctx context.Context, tokenHash []byte, idleExpires int64) error
 	DeleteSession(ctx context.Context, tokenHash []byte) error
 	DeleteSessionsByDevice(ctx context.Context, deviceID id.ID) (int64, error)
@@ -207,6 +473,10 @@ type Invites interface {
 type MLS interface {
 	CreateGroup(ctx context.Context, g GroupRow) error
 	GetGroup(ctx context.Context, groupID id.ID) (GroupRow, error)
+	// LockGroup serializes message acceptance against every mutation of this group's
+	// epoch, membership, freeze state and sequence. It must run inside Tx before
+	// reading policy or allocating the next sequence.
+	LockGroup(ctx context.Context, groupID id.ID) error
 	ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]GroupRow, error)
 	// ListGroupsForRetention is the same paged walk WITHOUT the `closed_at IS NULL`
 	// filter. Invariant 10 caps application ciphertext at thirty days for every
@@ -278,6 +548,7 @@ type MLS interface {
 	PutKeyPackages(ctx context.Context, deviceID id.ID, kps []KeyPackageRow) error
 	TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (KeyPackageRow, error)
 	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)
+	HasCurrentLastResortKeyPackage(ctx context.Context, deviceID id.ID, now int64) (bool, error)
 	// DeleteKeyPackage removes one package from a device's directory, consumed or not, last
 	// resort or not. Deleting a package that is not there is not an error.
 	DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error
@@ -360,6 +631,28 @@ type Structure interface {
 	Bans
 	ChannelMembers
 	VoiceSessions
+}
+
+// RolePanels stores server-validated bot-authored role panels and their emoji mappings.
+type RolePanels interface {
+	SetRolePanel(ctx context.Context, panel RolePanelRow, options []RolePanelOptionRow) error
+	GetRolePanel(ctx context.Context, channelID id.ID, messageSeq uint64) (RolePanelRow, error)
+	ListRolePanelOptions(ctx context.Context, channelID id.ID, messageSeq uint64) ([]RolePanelOptionRow, error)
+	DeleteRolePanel(ctx context.Context, channelID id.ID, messageSeq uint64) error
+}
+
+type RolePanelRow struct {
+	CommunityID     id.ID
+	ChannelID       id.ID
+	MessageSeq      uint64
+	AuthorID        id.ID
+	InstallationID  id.ID
+	SendOperationID id.ID
+}
+
+type RolePanelOptionRow struct {
+	Emoji  string
+	RoleID id.ID
 }
 
 // VoiceSessions is the part of Structure whose table is 00011_voice.sql (Plan 2 task 16,
@@ -482,11 +775,52 @@ type Communities interface {
 	DeleteRole(ctx context.Context, communityID, roleID id.ID) error
 	PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
 	DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	// AddMemberRoleGrant and RemoveMemberRoleGrant track the reason a role is held.
+	// The effective member_roles row remains while any source grant exists.
+	AddMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) error
+	RemoveMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) error
+	HasMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) (bool, error)
+	ListSelfRoleGrantUsers(ctx context.Context, communityID, roleID id.ID) ([]id.ID, error)
+	// RevokeMemberRole atomically removes the effective role and all of its sources.
+	RevokeMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	// SetSelfRolePolicy atomically replaces the approved self-assignable role list.
+	// Callers hold LockCommunity in the same transaction.
+	SetSelfRolePolicy(ctx context.Context, communityID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
+	ListSelfRolePolicy(ctx context.Context, communityID id.ID) ([]SelfRolePolicyRow, error)
+	// SetDJRolePolicy atomically replaces the installation's approved DJ role IDs.
+	// Callers hold LockCommunity in the same transaction.
+	SetDJRolePolicy(ctx context.Context, installationID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
+	ListDJRolePolicy(ctx context.Context, installationID id.ID) ([]DJRolePolicyRow, error)
 	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
 	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
 }
+
+// RoleGrantSource identifies an independent reason a member holds a role.
+type RoleGrantSource string
+
+// SelfRolePolicyRow is a manager-approved role in a community's current self-service allowlist.
+type SelfRolePolicyRow struct {
+	CommunityID id.ID
+	RoleID      id.ID
+	ApprovedBy  id.ID
+	ApprovedAt  int64
+}
+
+// DJRolePolicyRow is a manager-approved role in one installation's DJ authority allowlist.
+type DJRolePolicyRow struct {
+	InstallationID id.ID
+	RoleID         id.ID
+	ApprovedBy     id.ID
+	ApprovedAt     int64
+}
+
+const (
+	RoleGrantManual   RoleGrantSource = "manual"
+	RoleGrantSelf     RoleGrantSource = "self"
+	RoleGrantReaction RoleGrantSource = "reaction"
+)
 
 // Channels is the part of Structure whose table is 00005_channels.sql (Plan 2
 // task 2): §4.1's five channel methods plus P2-D8's two.
@@ -530,8 +864,14 @@ type Overwrites interface {
 	DeleteUserOverwrites(ctx context.Context, communityID, userID id.ID) (int64, error)
 }
 
-// Bans is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):
+// MemberTimeouts is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):
 // §4.1's three ban methods plus P2-D10's listing.
+type MemberTimeouts interface {
+	PutMemberTimeout(context.Context, MemberTimeoutRow) error
+	GetMemberTimeout(context.Context, id.ID, id.ID, int64) (MemberTimeoutRow, error)
+	DeleteMemberTimeout(context.Context, id.ID, id.ID) error
+}
+
 type Bans interface {
 	// PutBan is an upsert on (community, user): a second ban of the same user
 	// replaces the reason, the moderator, the time and the expiry.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -204,6 +205,86 @@ func TestLeavingACommunityEndsTheRightToRegisterInIt(t *testing.T) {
 	}
 	if err := src.MayRegister(ctx, member, binding(&cid, ch.ID, 0)); !errors.Is(err, ds.ErrNotEligible) {
 		t.Fatalf("a former member = %v, want ds.ErrNotEligible", err)
+	}
+}
+
+func TestManagedBotGroupRegistrationUsesTypedCommunityBinding(t *testing.T) {
+	f := newStructureFixture(t)
+	repo := f.src.Repo
+	ctx := context.Background()
+	botID, deviceID := id.New(), id.New()
+	botUser := newAPITestUser(botID, "bot", 1)
+	botUser.Kind = 1
+	if err := repo.CreateUser(ctx, botUser); err != nil {
+		t.Fatal(err)
+	}
+	device := newAPITestDevice(deviceID, botID, 1)
+	device.DSKPub = uniqueAPITestDSK(t)
+	device.Tier, device.SignerTier = 0, 0
+	if err := repo.CreateDevice(ctx, device); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: f.community, UserID: botID, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, cid := range []id.ID{f.community, f.other} {
+		if err := repo.PutRole(ctx, store.RoleRow{ID: id.New(), CommunityID: cid, Name: "@everyone", Position: 0,
+			Allow: uint64(api.PermViewChannel | api.PermConnect), Created: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := store.BotRuntimeRow{ID: id.New(), TokenHash: make([]byte, 32), Created: 1, Rotated: 1}
+	runtime.TokenHash[0] = 1
+	if err := repo.CreateBotRuntime(ctx, runtime); err != nil {
+		t.Fatal(err)
+	}
+	uid, did, rid := botID, deviceID, runtime.ID
+	verified := int64(1)
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: f.community,
+		RuntimeID: &rid, UserID: &uid, DeviceID: &did, State: store.BotInstallationJoining, Revision: 1,
+		ApprovedBy: f.member, ApprovedAt: 1, CredentialVerifiedAt: &verified, Created: 1, Updated: 1}
+	if err := repo.CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.src.MayRegister(ctx, botID, binding(&f.community, f.text, api.GroupText)); err != nil {
+		t.Fatalf("joining bot own-community typed registration: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		b    ds.Binding
+	}{
+		{name: "foreign community", b: binding(&f.other, f.otherText, api.GroupText)},
+		{name: "DM", b: binding(nil, f.dm, api.GroupText)},
+		{name: "interaction", b: binding(nil, id.New(), 3)},
+	} {
+		if err := f.src.MayRegister(ctx, botID, tc.b); !errors.Is(err, ds.ErrNotEligible) {
+			t.Errorf("%s typed registration = %v, want ds.ErrNotEligible", tc.name, err)
+		} else if strings.Contains(tc.name, "interaction") && !strings.Contains(err.Error(), "human device is authenticated against the exact MLS roster") {
+			t.Errorf("%s typed registration refusal = %q, want the roster-bound human-device proof requirement", tc.name, err)
+		}
+	}
+	installation.State = store.BotInstallationReady
+	installation.Revision++
+	installation.Updated++
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, installation.Revision-1, installation); err != nil {
+		t.Fatalf("UpdateBotInstallation ready: %v", err)
+	}
+	if err := f.src.MayRegister(ctx, botID, binding(&f.community, f.text, api.GroupText)); err != nil {
+		t.Fatalf("ready bot own-community typed registration: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		b    ds.Binding
+	}{
+		{name: "ready foreign community", b: binding(&f.other, f.otherText, api.GroupText)},
+		{name: "ready DM", b: binding(nil, f.dm, api.GroupText)},
+		{name: "ready interaction", b: binding(nil, id.New(), 3)},
+	} {
+		if err := f.src.MayRegister(ctx, botID, tc.b); !errors.Is(err, ds.ErrNotEligible) {
+			t.Errorf("%s typed registration = %v, want ds.ErrNotEligible", tc.name, err)
+		} else if strings.Contains(tc.name, "interaction") && !strings.Contains(err.Error(), "human device is authenticated against the exact MLS roster") {
+			t.Errorf("%s typed registration refusal = %q, want the roster-bound human-device proof requirement", tc.name, err)
+		}
 	}
 }
 

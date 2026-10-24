@@ -3,7 +3,7 @@ import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
   type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest, type ThreadRow,
-  type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch } from '../core-port';
+  type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch, type HumanInteractionEventPage } from '../core-port';
 import { toHex } from '../hex';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
@@ -59,6 +59,7 @@ export class FakeCore implements CorePort {
   private prior: { sealed: SealedObjects; stateList: bigint | null } | null = null;
   private readonly settingsMap = new Map<string, string>();
   private record: SessionRecord | null = null;
+  instanceSignerPub: Uint8Array | null = null;
   private paused = false;
   private closed = false;
 
@@ -178,7 +179,7 @@ export class FakeCore implements CorePort {
       new Uint8Array(64).fill(3), password, [deviceId, fakeDskPub(deviceId), 1, 1,
         encode(['fake.cred', new Uint8Array(16), deviceId])]]);
   }
-  signupComplete(userId: Id, username: string, now: bigint): Uint8Array {
+  signupComplete(userId: Id, username: string, now: bigint, instanceSignerPub: Uint8Array): Uint8Array {
     this.enter('signupComplete'); this.requirePending();
     const deviceId = this.info.deviceId;
     if (deviceId === null) throw new CoreError('E_CORE_NO_IDENTITY');
@@ -188,7 +189,21 @@ export class FakeCore implements CorePort {
     this.sealed = { root: FAKE_ROOT_SEALED, state: FAKE_STATE_SEALED, stateUploaded: false };
     this.stateList = 1n;
     this.info = { ...this.info, phase: 2, userId, username, listPublished: false };
+    this.instanceSignerPub = instanceSignerPub.slice();
     return this.listBody;
+  }
+  instanceSignerKeyMatches(observedKey: Uint8Array): void {
+    this.enter('instanceSignerKeyMatches');
+    if (this.instanceSignerPub === null) throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
+    if (!same(this.instanceSignerPub, observedKey)) throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+  }
+  instanceSignerKeyPin(instanceId: Id, observedKey: Uint8Array): void {
+    this.enter('instanceSignerKeyPin');
+    if (this.info.phase !== 2 || this.info.instanceId === null) throw new CoreError('E_CORE_STATE', 'no identity');
+    if (!same(this.info.instanceId, instanceId)) throw new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
+    if (this.instanceSignerPub !== null && !same(this.instanceSignerPub, observedKey))
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    this.instanceSignerPub = observedKey.slice();
   }
   signupReset(): void {
     this.enter('signupReset'); this.requirePending();
@@ -228,6 +243,9 @@ export class FakeCore implements CorePort {
     if (this.info.phase === 0) throw new CoreError('E_CORE_NO_IDENTITY');
     if (nonce.length !== 32 || (purpose !== 0 && purpose !== 1)) throw new CoreError('E_CORE_INPUT');
     return encode([nonce, purpose, new Uint8Array(64).fill(6), null, null]);
+  }
+  signRemoval(): Uint8Array {
+    this.enter('signRemoval'); return new Uint8Array([0x82, 0x40, 0x40]);
   }
   sessionStore(s: SessionRecord): void {
     this.enter('sessionStore');
@@ -377,12 +395,21 @@ export class FakeCore implements CorePort {
     throw new CoreError('E_CORE_STATE', 'not modelled');
   }
   groups(): GroupInfo[] { return this.notModelled('groups'); }
+  groupHealSnapshot(groupId: Id): Uint8Array { return this.notModelled('groupHealSnapshot', groupId); }
   groupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array { return this.notModelled('groupCreate', groupId, communityId, channelId, policyVersion, externalSenderPub); }
   groupRegistered(groupId: Id, nextSeq: bigint): void { return this.notModelled('groupRegistered', groupId, nextSeq); }
   groupDiscard(groupId: Id): void { return this.notModelled('groupDiscard', groupId); }
   groupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array { return this.notModelled('groupJoinExternal', g, infoBody, treeBody); }
   groupJoined(groupId: Id, seq: bigint): void { return this.notModelled('groupJoined', groupId, seq); }
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[] { return this.notModelled('welcomesApply', welcomesBody, expected); }
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[] {
+    return this.notModelled('humanInteractionWelcomeApply', welcomesBody, currentContextProof, now);
+  }
+  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
+    return this.notModelled('humanInteractionSendPrepare', requestId, communityId, groupId, requestBody, now);
+  }
+  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage { return this.notModelled('humanInteractionEventsRead', after, limit); }
+  humanInteractionEventsAck(through: bigint): void { return this.notModelled('humanInteractionEventsAck', through); }
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult { return this.notModelled('groupApply', groupId, handshakes, messages, through); }
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array { return this.notModelled('commitBuild', groupId, proposalsBody); }
   commitConfirm(groupId: Id): ApplyResult { return this.notModelled('commitConfirm', groupId); }
@@ -390,6 +417,10 @@ export class FakeCore implements CorePort {
   cursorBody(groupId: Id): Uint8Array | null { return this.notModelled('cursorBody', groupId); }
   cursorAcked(groupId: Id, lastSeq: bigint, lastEpoch: bigint): void { return this.notModelled('cursorAcked', groupId, lastSeq, lastEpoch); }
   messageDeleted(groupId: Id, seq: bigint): ApplyResult { return this.notModelled('messageDeleted', groupId, seq); }
+  removalCursor(groupId: Id): bigint { return this.notModelled('removalCursor', groupId); }
+  removalActorHistoryVersion(groupId: Id, entry: import('../core-port').RemovalFeedEntry): bigint { return this.notModelled('removalActorHistoryVersion', groupId, entry); }
+  refreshRemovalActorHistory(groupId: Id, entry: import('../core-port').RemovalFeedEntry, history: Uint8Array, headList: Uint8Array): bigint { return this.notModelled('refreshRemovalActorHistory', groupId, entry, history, headList); }
+  ingestRemoval(groupId: Id, entry: import('../core-port').RemovalFeedEntry): bigint { return this.notModelled('ingestRemoval', groupId, entry); }
   sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id { return this.notModelled('sendPrepare', groupId, request, now); }
   sendEncrypt(msgId: Id): { groupId: Id; messageBody: Uint8Array } { return this.notModelled('sendEncrypt', msgId); }
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint } { return this.notModelled('sendConfirm', msgId, response); }

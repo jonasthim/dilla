@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -444,7 +445,7 @@ func (h *groupsAPI) listen(t *testing.T, token string) func() []cbor.RawMessage 
 		t.Fatalf("first frame op %d, want hello", op)
 	}
 	identify, err := gateway.Encode(gateway.Frame{Op: gateway.OpIdentify,
-		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(1), uint64(1), uint64(1), uint64(0)}))}, 1)
+		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}))}, 1)
 	if err != nil {
 		t.Fatalf("encode identify: %v", err)
 	}
@@ -669,5 +670,57 @@ func TestThePolicysRefusalIsTheAnswer(t *testing.T) {
 	policy.answer(nil)
 	if res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64), uint64(0)}); res.Code != http.StatusOK {
 		t.Fatalf("control: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
+}
+
+func TestTimedOutMemberCannotUploadClassOneButCanDeleteOwnMessage(t *testing.T) {
+	handler, deps := newTestAPI(t)
+	cid, owner := id.New(), id.New()
+	now := deps.Clock.Now().Unix()
+	if err := deps.Repo.CreateUser(t.Context(), newAPITestUser(owner, "timeout-owner", now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateCommunity(t.Context(), store.CommunityRow{ID: cid, Owner: owner, Name: "timeout-community", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	channelID := id.New()
+	if err := deps.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: channelID, CommunityID: &cid, Kind: api.ChannelText, Mode: api.ModeE2EE, Name: "general", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.PutRole(t.Context(), store.RoleRow{ID: id.New(), CommunityID: cid, Name: "@everyone", Allow: uint64(api.PermViewChannel | api.PermSendMessages), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newGroupsAPIWithHandler(t, handler, deps, func(repo store.Repository) ds.Channels { return api.StructureChannels{Repo: repo} }, api.PostPolicy{Repo: deps.Repo})
+	var binding ds.Binding
+	if err := cborx.Unmarshal(h.fixture.binding, &binding); err != nil {
+		t.Fatal(err)
+	}
+	binding.CommunityID, binding.TargetID = &cid, channelID
+	h.fixture.binding, _ = cborx.Marshal(binding)
+	h.mustCreate(t)
+	token := h.memberToken(t)
+	members, err := deps.Repo.ListMembers(t.Context(), h.groupID)
+	if err != nil || len(members) == 0 {
+		t.Fatalf("group members = %d, %v", len(members), err)
+	}
+	user := members[0].UserID
+	if err := deps.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: user, Joined: now}); err != nil {
+		t.Fatal(err)
+	}
+	seq := h.mustUpload(t, token, 64).seq
+	until := h.clk.Now().Unix() + 600
+	if err := deps.Repo.PutMemberTimeout(t.Context(), store.MemberTimeoutRow{CommunityID: cid, UserID: user, ByUser: owner, Created: now, Expires: until}); err != nil {
+		t.Fatal(err)
+	}
+
+	epoch := h.groupEpoch(t)
+	edit := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/message", token, mustCBOR(t, []any{epoch, apiPrivateMessage(t, epoch, 64), uint64(1)}))
+	if edit.Code != http.StatusForbidden {
+		t.Fatalf("timed out class-1 upload = %d, want 403", edit.Code)
+	}
+	deleted := h.do(t, http.MethodDelete, "/v1/groups/"+h.groupID.String()+"/messages/"+strconv.FormatUint(seq, 10), token, nil)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("own DELETE route during timeout = %d, want 204: %s", deleted.Code, deleted.Body.String())
 	}
 }

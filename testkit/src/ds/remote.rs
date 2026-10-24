@@ -29,9 +29,9 @@ use super::{
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
 const SUBPROTOCOL: &str = "dilla.v1";
-/// The wire version this client identifies with (web3.8 S1, `internal/dillad.WireVersion`): every
-/// upload names its class, and the instance offers 2 alone.
-const WIRE_VERSION: u64 = 2;
+/// The current wire version this client identifies with. Human upload and media shapes remain
+/// unchanged in wire 3, which the media test host offers by default.
+const WIRE_VERSION: u64 = 3;
 /// How long a pump waits on an empty socket before it returns. Short, because `drain` is called
 /// once per scenario step and the harness runs every step against loopback.
 const PUMP_WAIT: Duration = Duration::from_millis(50);
@@ -2064,8 +2064,7 @@ impl HttpDs {
             }
         };
         // protocol/07 "Negotiation": the client takes the highest version it shares with the
-        // instance. This client speaks wire version 2 (web3.8 S1: every upload names its class)
-        // and version 1 of e2ee and media.
+        // instance. This client speaks wire version 3 and version 1 of e2ee and media.
         for (name, offered, speaks) in [
             ("wire", &wire, WIRE_VERSION),
             ("e2ee", &e2ee, 1),
@@ -3921,7 +3920,7 @@ mod tests {
                     std::thread::spawn(move || while ws.read().is_ok() {});
                     continue;
                 }
-                // The instance offers wire version 2 alone (web3.8 S1).
+                // The instance offers the current wire version alone.
                 let hello = encode(|e| {
                     e.array(4).uint(0).uint(0).null();
                     e.array(9)

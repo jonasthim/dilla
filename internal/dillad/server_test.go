@@ -232,6 +232,8 @@ func uints(t *testing.T, v any, what string) []uint64 {
 type testDevice struct {
 	ID   id.ID
 	Priv ed25519.PrivateKey
+	UMK  ed25519.PrivateKey
+	SSK  ed25519.PrivateKey
 }
 
 func newTestDevice(t *testing.T) testDevice {
@@ -240,20 +242,29 @@ func newTestDevice(t *testing.T) testDevice {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	return testDevice{ID: id.New(), Priv: priv}
+	deviceID := id.New()
+	seed := func(label string) []byte { sum := sha256.Sum256([]byte(label + deviceID.String())); return sum[:] }
+	return testDevice{ID: deviceID, Priv: priv, UMK: ed25519.NewKeyFromSeed(seed("human-umk-")), SSK: ed25519.NewKeyFromSeed(seed("human-ssk-"))}
 }
 
-// newAccountRequest is POST /v1/accounts' eight-element body (interfaces.md
-// §5.1). The identity keys are zero-filled: nothing in this file verifies them,
-// and the lengths are all CreateAccount checks.
+// newAccountRequest is a fully signed Human POST /v1/accounts fixture.
 func newAccountRequest(code, username string, dev testDevice) []any {
+	umkPub := dev.UMK.Public().(ed25519.PublicKey)
+	sskPub := dev.SSK.Public().(ed25519.PublicKey)
+	dskPub := dev.Priv.Public().(ed25519.PublicKey)
+	sigUMKSSK := ed25519.Sign(dev.UMK, append([]byte("dilla ssk v1"), sskPub...))
+	dskMessage := append([]byte("dilla dsk v1"), dev.ID[:]...)
+	dskMessage = append(dskMessage, dskPub...)
+	dskMessage = append(dskMessage, 0, 0, 0)
+	sigSSKDev := ed25519.Sign(dev.SSK, dskMessage)
+	credential, _ := cborx.Marshal([]any{uint64(1), umkPub, make([]byte, 16), dev.ID[:], uint64(0), uint64(0), uint64(0), sskPub, sigUMKSSK, sigSSKDev})
 	return []any{
 		code, username, "Jonas",
-		make([]byte, 32), make([]byte, 32), make([]byte, 64),
+		umkPub, sskPub, sigUMKSSK,
 		nil,
 		[]any{
-			dev.ID, []byte(dev.Priv.Public().(ed25519.PublicKey)),
-			uint64(0), uint64(0), []byte{1},
+			dev.ID, dskPub,
+			uint64(0), uint64(0), credential,
 		},
 	}
 }
@@ -332,8 +343,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
 	// transposed pair or an inverted enum passes a length check. wire_versions is the hello's
-	// [2] (web3.8 S1, TestTheInstanceDocumentAdvertisesWireTwo).
-	for i, want := range [][]uint64{{2}, {1}, {1}} {
+	// [3,2] with the session capability negotiation release.
+	for i, want := range [][]uint64{{3, 2}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, doc[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("%s = %v, want %v", names[i], got, want)
@@ -975,9 +986,21 @@ func entryFor(dev testDevice, tier uint64, revokedAt *uint64) gateEntry {
 // which is what the instance verifies the user's lists against; dev is the first (native) device.
 func accountWithKeys(t *testing.T, h http.Handler, code, username, password string, dev testDevice, ssk ed25519.PrivateKey) (id.ID, string) {
 	t.Helper()
+	umkPub := dev.UMK.Public().(ed25519.PublicKey)
+	sskPub := ssk.Public().(ed25519.PublicKey)
+	dskPub := pubOf(dev)
+	sigUMKSSK := ed25519.Sign(dev.UMK, append([]byte("dilla ssk v1"), sskPub...))
+	dskMessage := append([]byte("dilla dsk v1"), dev.ID[:]...)
+	dskMessage = append(dskMessage, dskPub...)
+	dskMessage = append(dskMessage, 0, 0, 0)
+	sigSSKDev := ed25519.Sign(ssk, dskMessage)
+	credential, err := cborx.Marshal([]any{uint64(1), umkPub, make([]byte, 16), dev.ID[:], uint64(0), uint64(0), uint64(0), sskPub, sigUMKSSK, sigSSKDev})
+	if err != nil {
+		t.Fatalf("encode account Human credential: %v", err)
+	}
 	rec := call(t, h, http.MethodPost, "/v1/accounts", "", []any{
-		code, username, "Test", make([]byte, 32), []byte(ssk.Public().(ed25519.PublicKey)), make([]byte, 64),
-		password, []any{dev.ID, pubOf(dev), uint64(0), uint64(0), []byte{1}},
+		code, username, "Test", umkPub, sskPub, sigUMKSSK,
+		password, []any{dev.ID, dskPub, uint64(0), uint64(0), credential},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /v1/accounts %s = %d %q", username, rec.Code, errorCode(rec))

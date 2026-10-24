@@ -203,6 +203,8 @@ fn apply_message(
             params![id.as_slice(), row.seq as i64],
         )?;
         if changed > 0 {
+            super::bot_events::suppress_source(c, id, row.seq as i64)?;
+            super::human_interaction_events::suppress_source(c, id, row.seq as i64)?;
             c.execute(
                 "DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2",
                 params![id.as_slice(), row.seq as i64],
@@ -256,6 +258,13 @@ fn apply_message(
             return Ok((true, true));
         }
         insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
+        return Ok((true, false));
+    }
+    // MLS application still happened before this storage step. A moderation tombstone only
+    // suppresses presentation and retained plaintext; it is never treated as an MLS envelope.
+    if super::removals::is_tombstoned(c, id, row.seq)? {
+        insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
+        super::search::index_fold(c, id, row.seq)?;
         return Ok((true, false));
     }
     if row.blob.is_none() {
@@ -387,6 +396,17 @@ impl ClientCore {
                                 mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
                                     && mentions_me_gated(&envelope.body, &own.user_id, &roles, &mentionable, broadcast),
                             })?;
+                            super::bot_events::record_accepted(
+                                c, &group, id, *seq, &own,
+                                &sender, *leaf, &member.signature_key, *epoch, *recv_ts,
+                                envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
+                                envelope.reply_to.as_ref().map(|v| v.as_bytes()),
+                                envelope.thread_id.as_ref().map(|v| v.as_bytes()),
+                            )?;
+                            super::human_interaction_events::record_accepted(
+                                c, &group, id, *seq, &own, &sender, *leaf, &member.signature_key,
+                                *epoch, *recv_ts, envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
+                            )?;
                             refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
                                 sender.device_id.as_bytes(), Some(&own))?;
                             c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
@@ -424,6 +444,16 @@ impl ClientCore {
         id: &[u8; 16],
         proposals_body: &[u8],
         rotate: bool,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.commit_build_inner_with_intent(id, proposals_body, rotate, None)
+    }
+
+    pub(super) fn commit_build_inner_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        proposals_body: &[u8],
+        rotate: bool,
+        intent: Option<super::bot_intents::IntentWrite>,
     ) -> Result<Vec<u8>, ClientError> {
         self.own()?;
         let proposals = wire::decode_proposals_body(proposals_body)?;
@@ -498,7 +528,12 @@ impl ClientCore {
                 out.array(bundle.welcomes.len());
                 for (device, welcome) in &bundle.welcomes { out.array(2).bytes(device.as_bytes()).bytes(&wire::tls(welcome)?); }
                 out.null();
-                Ok(out.into_vec())
+                let result = out.into_vec();
+                if let Some(intent) = intent {
+                    super::bot_intents::check_result_size(&result)?;
+                    u.with_conn(|c| super::bot_intents::persist(c, intent, id, &result))?;
+                }
+                Ok(result)
             });
             if result.is_ok() { this.keep_group(*id, group); }
             result
@@ -506,6 +541,19 @@ impl ClientCore {
     }
 
     pub fn commit_confirm(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.commit_confirm_with_intent(id, None)
+    }
+
+    pub(super) fn commit_confirm_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<Vec<u8>, ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(Vec::new());
+        }
         self.own()?;
         let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         if row.state != STATE_ACTIVE {
@@ -517,18 +565,29 @@ impl ClientCore {
         self.retry_reload(id, |this| {
             let mut group = this.take_group(id)?.ok_or_else(absent)?;
             let result = this.write(|ctx, u| {
-                if group.has_pending_commit() {
+                let had_pending_commit = group.has_pending_commit();
+                if had_pending_commit {
                     group.merge_pending_commit(ctx.provider)?;
                 }
                 let held = checked("epoch", group.epoch())?;
                 u.with_conn(|c| {
-                    c.execute(
-                        "DELETE FROM app_proposals WHERE group_id=?1",
-                        [id.as_slice()],
-                    )?;
-                    raise_floor(c, id, held)?;
-                    set_mls(c, id, held, false)
+                    // A Bot result may be confirmed after group_apply already consumed that
+                    // commit and advanced the stored group. In that case this finalizer owns no
+                    // pending MLS state, so it must not erase proposals staged afterward or
+                    // rewrite an epoch that has since advanced.
+                    if had_pending_commit || intent.is_none() {
+                        c.execute(
+                            "DELETE FROM app_proposals WHERE group_id=?1",
+                            [id.as_slice()],
+                        )?;
+                        raise_floor(c, id, held)?;
+                        set_mls(c, id, held, false)?;
+                    }
+                    Ok(())
                 })?;
+                if let Some(intent) = intent {
+                    super::bot_intents::resolve(u, intent)?;
+                }
                 Ok(wire::encode_apply_result(&wire::ApplyResult {
                     state: 2,
                     epoch: group.epoch(),
@@ -546,19 +605,41 @@ impl ClientCore {
     }
 
     pub fn commit_abort(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
+        self.commit_abort_with_intent(id, None)
+    }
+
+    pub(super) fn commit_abort_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<(), ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(());
+        }
         self.own()?;
         self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         self.retry_reload(id, |this| {
             let Some(mut group) = this.take_group(id)? else {
+                if let Some(intent) = intent {
+                    return this.write(|_, u| super::bot_intents::resolve(u, intent));
+                }
                 return Ok(());
             };
             if !group.has_pending_commit() {
                 this.keep_group(*id, group);
+                if let Some(intent) = intent {
+                    return this.write(|_, u| super::bot_intents::resolve(u, intent));
+                }
                 return Ok(());
             }
             let result = this.write(|ctx, u| {
                 group.clear_pending_commit(ctx.provider)?;
                 u.with_conn(|c| set_pending(c, id, false))?;
+                if let Some(intent) = intent {
+                    super::bot_intents::resolve(u, intent)?;
+                }
                 Ok(())
             });
             if result.is_ok() {
@@ -624,6 +705,10 @@ impl ClientCore {
         let (changed, proposals): (usize, i64) = self.write(|_, u| Ok(u.with_conn(|c| {
             let stored = stored_kind(c, id, seq)?;
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
+            if changed > 0 {
+                super::bot_events::suppress_source(c, id, seq_i)?;
+                super::human_interaction_events::suppress_source(c, id, seq_i)?;
+            }
             c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), seq_i])?;
             if changed == 1 { refold_deleted(c, id, stored)?; }
             if changed == 1 { super::search::index_fold(c,id,seq)?; }
@@ -657,6 +742,37 @@ impl ClientCore {
         messages: &[u8],
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
+        self.group_apply_scoped(id, handshakes, messages, through, None)
+    }
+
+    /// Kind-3 source apply is available only to the caller that just verified its signed
+    /// interaction admission snapshot. Generic group apply remains unable to load kind 3.
+    pub(super) fn group_apply_interaction(
+        &mut self,
+        id: &[u8; 16],
+        participant_user: &[u8; 16],
+        participant_device: &[u8; 16],
+        handshakes: &[u8],
+        messages: &[u8],
+        through: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.group_apply_scoped(
+            id,
+            handshakes,
+            messages,
+            through,
+            Some((participant_user, participant_device)),
+        )
+    }
+
+    fn group_apply_scoped(
+        &mut self,
+        id: &[u8; 16],
+        handshakes: &[u8],
+        messages: &[u8],
+        through: u64,
+        bot_interaction_roster: Option<(&[u8; 16], &[u8; 16])>,
+    ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let handshakes = wire::decode_handshake_rows(handshakes)?;
         let messages = wire::decode_message_rows(messages)?;
@@ -685,6 +801,17 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_INPUT, "through out of range"));
         }
         let r = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        let is_interaction = r.kind == super::groups::row_kind(crate::mls::GroupKind::Interaction);
+        if (is_interaction
+            && bot_interaction_roster.is_some()
+            && own.kind != crate::identity::Kind::Bot.as_u8())
+            || (is_interaction
+                && bot_interaction_roster.is_none()
+                && own.kind != crate::identity::Kind::User.as_u8())
+            || (!is_interaction && bot_interaction_roster.is_some())
+        {
+            return Err(super::mismatched());
+        }
         if r.state != STATE_ACTIVE {
             return Err(ClientError::new(
                 E_CORE_STATE,
@@ -703,7 +830,12 @@ impl ClientCore {
             }
             checked("seq", seq)?;
             let (changed, adopted, epoch_changed, stop) = self.retry_reload(id, |this| {
-                let mut group = this.take_group(id)?.ok_or_else(absent)?;
+                let loaded = if let Some((participant_user, participant_device)) = bot_interaction_roster {
+                    this.take_bot_interaction_group(id, participant_user, participant_device)?
+                } else {
+                    this.take_group(id)?
+                };
+                let mut group = loaded.ok_or_else(absent)?;
                 let mut mls_failed = false;
                 let result = this.write(|ctx, u| {
                     let mut changed = false;
@@ -860,6 +992,31 @@ impl ClientCore {
                                     .map(|r| r.envelope.encode())
                                     .transpose()?;
                                 u.with_conn(|c| {
+                                    if super::removals::is_tombstoned(c, id, m.seq)? {
+                                        if let Some(r) = application.as_ref() {
+                                            let sender_sig_key = group.member_at(r.sender_leaf).map(|member| member.signature_key);
+                                            let marker = StoredMessage {
+                                                group_id: id, seq: m.seq, epoch: r.epoch, recv_ts: m.recv_ts,
+                                                status: STATUS_DELETED, reason: "", sender_user: Some(r.sender.user_id.as_bytes()),
+                                                sender_device: r.sender.device_id.as_bytes(), sender_leaf: Some(r.sender_leaf),
+                                                sender_sig_key: sender_sig_key.as_deref(),
+                                                sender_kind: Some(r.sender.kind.as_u8()), sender_tier: Some(r.sender.tier.as_u8()),
+                                                msg_id: Some(r.envelope.msg_id.as_bytes()), ty: Some(r.envelope.kind.as_u8()),
+                                                reply_to: r.envelope.reply_to.as_ref().map(MsgId::as_bytes),
+                                                thread_id: r.envelope.thread_id.as_ref().map(MsgId::as_bytes),
+                                                body: "", envelope: None, franking_tag: &m.franking_tag, mention: false,
+                                            };
+                                            insert_message(c, &marker)?;
+                                            if r.envelope.kind.as_u8() == 0 {
+                                                c.execute("UPDATE app_messages SET body='',envelope=NULL,status=2,reason='' WHERE group_id=?1 AND reply_to=?2 AND type=1",
+                                                    params![id.as_slice(), r.envelope.msg_id.as_bytes().as_slice()])?;
+                                            }
+                                        } else {
+                                            insert_message(c, &empty_message(id, m, STATUS_DELETED, ""))?;
+                                        }
+                                        super::search::index_fold(c, id, m.seq)?;
+                                        return Ok(());
+                                    }
                                     if let Some(r) = application.as_ref() {
                                         let roles = own_roles_of(c, id)?;
                                         let mentionable = mentionable_of(c, id)?;
@@ -890,6 +1047,23 @@ impl ClientCore {
                                                 && mentions_me_gated(&r.envelope.body, &own.user_id, &roles, &mentionable, broadcast),
                                         };
                                         insert_message(c, &msg)?;
+                                        if status == STATUS_OK
+                                            && let Some(member) = sender_member.as_ref()
+                                        {
+                                            super::bot_events::record_accepted(
+                                                c, &group, id, m.seq, &own,
+                                                &r.sender, r.sender_leaf, &member.signature_key,
+                                                r.epoch, m.recv_ts, r.envelope.msg_id.as_bytes(),
+                                                r.envelope.kind.as_u8(), &r.envelope.body,
+                                                r.envelope.reply_to.as_ref().map(|v| v.as_bytes()),
+                                                r.envelope.thread_id.as_ref().map(|v| v.as_bytes()),
+                                            )?;
+                                            super::human_interaction_events::record_accepted(
+                                                c, &group, id, m.seq, &own, &r.sender, r.sender_leaf,
+                                                &member.signature_key, r.epoch, m.recv_ts,
+                                                r.envelope.msg_id.as_bytes(), r.envelope.kind.as_u8(), &r.envelope.body,
+                                            )?;
+                                        }
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;
                                     } else {
                                         let mut empty = empty_message(id, m, status, reason);

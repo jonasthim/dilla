@@ -67,6 +67,17 @@ func (n *StructureNotifier) Removed(ctx context.Context, cid, uid id.ID) {
 	}
 }
 
+// ChangedUser sends community_changed only to uid. Member timeouts are personal state: the
+// affected user's connected clients re-read the community, while other members need no update.
+func (n *StructureNotifier) ChangedUser(ctx context.Context, cid, uid id.ID) {
+	if n == nil || n.gw == nil {
+		return
+	}
+	if f, ok := n.frame(ctx, cid); ok {
+		n.gw.DeliverUser(uid, f)
+	}
+}
+
 // ChangedTo sends community_changed for cid to users, a list the caller already read: a deleted
 // community's members, listed inside the delete's transaction before the tombstone.
 func (n *StructureNotifier) ChangedTo(ctx context.Context, cid id.ID, users []id.ID) {

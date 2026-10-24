@@ -1,7 +1,10 @@
 //! Group configuration: the ciphersuite, the three GroupContext extensions, the leaf capabilities
 //! and the KeyPackage builder (protocol/01-groups.md, R11).
 
-use super::{DILLA_BINDING, DillaBinding, DillaProvider, GroupKind, MlsError, past_epoch_policy};
+use super::{
+    DILLA_BINDING, DillaBinding, DillaInteractionBinding, DillaProvider, GroupKind, MlsError,
+    past_epoch_policy,
+};
 use crate::error::ProtocolError;
 use openmls::extensions::ExternalSendersExtension;
 use openmls::prelude::*;
@@ -76,6 +79,31 @@ pub fn create_config(
         .build())
 }
 
+/// The kind-3 initial group carries the typed v2 interaction binding. Interaction groups never
+/// accept an instance external sender, so this constructor deliberately has no sender parameter.
+pub fn create_interaction_config(
+    binding: &DillaInteractionBinding,
+) -> Result<MlsGroupCreateConfig, MlsError> {
+    let exts = Extensions::try_from(vec![
+        Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+            &[DILLA_BINDING],
+            &[],
+            &[CredentialType::Basic],
+        )),
+        binding.to_extension(),
+    ])
+    .map_err(|e| MlsError::OpenMls(format!("{e:?}")))?;
+    Ok(MlsGroupCreateConfig::builder()
+        .ciphersuite(CIPHERSUITE)
+        .use_ratchet_tree_extension(false)
+        .padding_size(PADDING_SIZE)
+        .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+        .set_past_epoch_deletion_policy(past_epoch_policy(GroupKind::Interaction))
+        .with_group_context_extensions(exts)
+        .capabilities(leaf_capabilities())
+        .build())
+}
+
 pub fn join_config(kind: GroupKind) -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
         .use_ratchet_tree_extension(false)
@@ -91,17 +119,30 @@ pub fn build_key_package(
     credential: CredentialWithKey,
     last_resort: bool,
 ) -> Result<KeyPackageBundle, MlsError> {
+    build_key_package_with_expiry(provider, signer, credential, last_resort)
+        .map(|(bundle, _)| bundle)
+}
+
+/// Builds a KeyPackage and returns the expiry written into that exact package's lifetime.
+/// Native bot publication persists this value with the corresponding public body and MLS ref.
+pub fn build_key_package_with_expiry(
+    provider: &DillaProvider,
+    signer: &SignatureKeyPair,
+    credential: CredentialWithKey,
+    last_resort: bool,
+) -> Result<(KeyPackageBundle, u64), MlsError> {
+    let lifetime = Lifetime::new(KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60);
+    let expires = lifetime.not_after();
     let mut builder = KeyPackage::builder()
         .leaf_node_capabilities(leaf_capabilities())
-        // Verified in step 1: `Lifetime::new(t: u64) -> Self`, seconds
-        // (openmls-0.9.0/src/key_packages/lifetime.rs:64).
-        .key_package_lifetime(Lifetime::new(KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60));
+        .key_package_lifetime(lifetime);
     if last_resort {
         builder = builder.mark_as_last_resort();
     }
-    builder
+    let bundle = builder
         .build(CIPHERSUITE, provider, signer, credential)
-        .map_err(|e| MlsError::OpenMls(format!("{e:?}")))
+        .map_err(|e| MlsError::OpenMls(format!("{e:?}")))?;
+    Ok((bundle, expires))
 }
 
 /// A `GroupContextExtensions` proposal **replaces** the whole extension set, so a rotation has to

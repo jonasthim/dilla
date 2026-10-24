@@ -7,7 +7,7 @@ import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import {
-  GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
+  A, GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
 } from '../../test/conversation.tsx';
 import { INITIAL_UI, conversationReducer } from './Conversation.tsx';
 
@@ -139,6 +139,47 @@ describe('the toolbar (L-UI-41)', () => {
   });
 });
 
+describe('moderator message removal', () => {
+  it('shows a separate control only with loaded ManageMessages authority and confirms with the target sequence', async () => {
+    const { fake, user } = renderConversation({ items: [peerRow(P1, '7', 'theirs')] });
+    fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'unknown',
+      proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'unknown' })
+      : command.m === 'resolveManualRemoval' ? Promise.resolve({ removal: 'accepted', evidenceUpload: 'accepted' }) : Promise.resolve(null);
+    expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
+    const everyone = '01'.repeat(16);
+    const access = { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      moderateMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true };
+    fake.set(`permissions:${A}`, access);
+    fake.set(`roles:${A}`, [
+      { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: 1, deny: 0, members: 3 },
+      { id: ROLE, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: 1, deny: 0, members: 1 },
+    ]);
+    fake.set(`overwrites:${A}`, {});
+    expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
+    fake.set(`roles:${A}`, [
+      { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: 1, deny: 0, members: 3 },
+      { id: ROLE, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: 5, deny: 0, members: 1 },
+    ]);
+    const action = await screen.findByRole('button', { name: 'remove for everyone' });
+    await user.click(action);
+    const dialog = screen.getByRole('dialog', { name: 'Remove this message for everyone?' });
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+    const reason = within(dialog).getByLabelText(en['shell.moderation.reason']);
+    expect(within(dialog).getByRole('button', { name: 'Remove' })).toHaveAttribute('aria-disabled', 'true');
+    await user.type(reason, 'reviewed by moderator');
+    expect(within(dialog).getByRole('button', { name: 'Remove' })).not.toHaveAttribute('aria-disabled', 'true');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P1, seq: '7',
+      reason: 'reviewed by moderator', excerpt: 'theirs' }]);
+    expect(await screen.findByText(en['shell.moderation.removalUnknown'])).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.retryRemoval'] }));
+    expect(await screen.findByText(en['shell.moderation.evidenceSent'])).toBeInTheDocument();
+    expect(fake.callsOf('resolveManualRemoval')).toEqual([{ m: 'resolveManualRemoval', proofRequestId: '11'.repeat(16) }]);
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: en['shell.moderation.done'] }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
 describe('delete (Q19, ruling 24)', () => {
   it('deletes only after the dialog is confirmed, then hands focus to the row', async () => {
     const { fake, user } = renderConversation({ items: [ownRow(O1, '1', 'mine')] });
@@ -151,7 +192,7 @@ describe('delete (Q19, ruling 24)', () => {
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'delete' }));
     await user.click(within(screen.getByRole('dialog', { name: 'Delete this message?' })).getByRole('button', { name: 'Delete' }));
-    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1 }]);
+    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1, seq: '1' }]);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(rowOf(O1)).toHaveFocus();
   });

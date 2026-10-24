@@ -4,7 +4,7 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type ManualWarningEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -146,7 +146,7 @@ export const INSTANCE: Instance = {
   policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2),
 };
 export const READY_INFO: ReadyInfo = {
-  deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+  deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
   heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 1_000, backoffJitterMs: 500,
 };
 export const refusal = (status: number, code: string, retryAfterMs: number | null = null): DillaHttpError =>
@@ -231,6 +231,8 @@ export function world(opts: {
     dms: [] as { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[] }[],
     session: null as SessionRecord | null, listPublished: null as boolean | null,
     outbox: [] as OutboxRow[], pins: [] as PinRow[], purges: [] as PurgeRow[], roleIds: [] as Uint8Array[],
+    manualEvidence: [] as ManualRemovalEvidence[],
+    manualWarnings: [] as ManualWarningEvidence[],
     descriptors: new Map<string, AttachmentDescriptor>(), blobs: new Map<string, Uint8Array>(),
     // v0.1.0-web3.1: the servers and channels this account created, as the instance would list them after the create.
     created: [] as { id: Uint8Array; name: string }[],
@@ -248,7 +250,74 @@ export function world(opts: {
     signupReset: (): void => { state.phase = 0; state.resets += 1; },
     groups: (): GroupInfo[] => state.groups,
     groupRow: (g: Uint8Array): GroupInfo | null => state.groups.find((x) => toHex(x.groupId) === toHex(g)) ?? null,
+    removalCursor: vi.fn((_groupId: Uint8Array) => 0n),
+    removalActorHistoryVersion: vi.fn(() => 1n),
+    refreshRemovalActorHistory: vi.fn(() => 1n),
+    ingestRemoval: vi.fn((_groupId: Uint8Array, _entry: unknown) => 1n),
     timeline: (): TimelineRow[] => state.rows,
+    signRemoval: vi.fn((_requestId: Uint8Array, _groupId: Uint8Array, _seq: bigint, _expires: bigint, _now: bigint) =>
+      encode([new Uint8Array([1]), new Uint8Array(64).fill(7)])),
+    prepareManualRemovalEvidence: vi.fn((proofRequestId: Uint8Array, evidenceRequestId: Uint8Array, communityId: Uint8Array,
+      groupId: Uint8Array, channelId: Uint8Array, messageId: Uint8Array, targetSequence: bigint, reason: string, excerpt: string,
+      createdAt: bigint, expires: bigint) => {
+      const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+      state.manualEvidence.push({ proofRequestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE, communityId,
+        groupId, channelId, messageId, targetSequence, reason, excerpt, signedBody, state: 0, createdAt, expires, evidenceExpires: 0n });
+      return signedBody;
+    }),
+    manualRemovalEvidence: vi.fn(() => state.manualEvidence.filter((row) => row.state < 3)),
+    ensureManualRemovalEvidenceRequest: vi.fn((proofRequestId: Uint8Array, candidateRequestId: Uint8Array, now: bigint) => {
+      const row = state.manualEvidence.find((item) => toHex(item.proofRequestId) === toHex(proofRequestId));
+      if (row === undefined || row.state !== 2) throw new Error('missing accepted removal');
+      if (row.evidenceExpires === 0n) row.evidenceExpires = now + 30n;
+      else if (row.evidenceExpires <= now) { row.evidenceRequestId = candidateRequestId; row.evidenceExpires = now + 30n; }
+      return { requestId: row.evidenceRequestId, expires: row.evidenceExpires };
+    }),
+    markManualRemovalSubmitted: vi.fn((requestId: Uint8Array) => {
+      const row = state.manualEvidence.find((item) => toHex(item.proofRequestId) === toHex(requestId)); if (row !== undefined && row.state === 0) row.state = 1;
+    }),
+    markManualRemovalAccepted: vi.fn((requestId: Uint8Array) => {
+      const row = state.manualEvidence.find((item) => toHex(item.proofRequestId) === toHex(requestId)); if (row !== undefined && row.state < 3) row.state = 2;
+    }),
+    completeManualRemovalEvidence: vi.fn((requestId: Uint8Array) => {
+      const index = state.manualEvidence.findIndex((item) => toHex(item.proofRequestId) === toHex(requestId)); if (index >= 0) state.manualEvidence.splice(index, 1);
+    }),
+    rejectUnsubmittedManualRemoval: vi.fn((requestId: Uint8Array) => {
+      const index = state.manualEvidence.findIndex((item) => toHex(item.proofRequestId) === toHex(requestId) && item.state === 0); if (index >= 0) state.manualEvidence.splice(index, 1);
+    }),
+    rejectManualRemoval: vi.fn((requestId: Uint8Array) => {
+      const index = state.manualEvidence.findIndex((item) => toHex(item.proofRequestId) === toHex(requestId) && item.state < 2); if (index >= 0) state.manualEvidence.splice(index, 1);
+    }),
+    prepareManualWarningEvidence: vi.fn((requestId: Uint8Array, evidenceRequestId: Uint8Array, communityId: Uint8Array, targetUserId: Uint8Array, reason: string, createdAt: bigint) => {
+      state.manualWarnings.push({ requestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE, communityId, targetUserId,
+        reason, state: 0, createdAt, actionId: new Uint8Array(16), revision: 0n, acceptedAt: 0n, evidenceExpires: 0n });
+    }),
+    manualWarningEvidence: vi.fn(() => state.manualWarnings.filter(row => row.state < 2)),
+    markManualWarningAccepted: vi.fn((requestId: Uint8Array, actionId: Uint8Array, revision: bigint, acceptedAt: bigint) => {
+      const row = state.manualWarnings.find(item => toHex(item.requestId) === toHex(requestId));
+      if (row !== undefined) { row.actionId = actionId; row.revision = revision; row.acceptedAt = acceptedAt; row.state = 1; }
+    }),
+    ensureManualWarningEvidenceRequest: vi.fn((requestId: Uint8Array, candidateRequestId: Uint8Array, now: bigint) => {
+      const row = state.manualWarnings.find(item => toHex(item.requestId) === toHex(requestId));
+      if (row === undefined || row.state !== 1) throw new Error('missing accepted warning');
+      if (row.evidenceExpires === 0n) row.evidenceExpires = now + 30n;
+      else if (row.evidenceExpires <= now) { row.evidenceRequestId = candidateRequestId; row.evidenceExpires = now + 30n; }
+      return { requestId: row.evidenceRequestId, expires: row.evidenceExpires };
+    }),
+    completeManualWarningEvidence: vi.fn((requestId: Uint8Array) => {
+      const index = state.manualWarnings.findIndex(item => toHex(item.requestId) === toHex(requestId));
+      if (index >= 0) state.manualWarnings.splice(index, 1);
+    }),
+    humanInteractionSendPrepare: vi.fn((requestId: Uint8Array, _communityId: Uint8Array, _groupId: Uint8Array,
+      _requestBody: Uint8Array, _now: bigint) => requestId),
+    humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number): HumanInteractionEventPage => ({ events: [], next: 0n, highWater: 0n })),
+    humanInteractionEventsAck: vi.fn((_through: bigint) => {}),
+    sendEncrypt: vi.fn((_msgId: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), messageBody: new Uint8Array([0xa1]) })),
+    sendConfirm: vi.fn((_msgId: Uint8Array, _response: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), seq: 1n })),
+    sendRetry: vi.fn((_msgId: Uint8Array) => {}),
+    sendFail: vi.fn((_msgId: Uint8Array, _error: string) => {}),
+    instanceSignerKeyMatches: vi.fn((_key: Uint8Array): void => {}),
+    instanceSignerKeyPin: vi.fn((_instanceId: Uint8Array, _key: Uint8Array): void => {}),
     threadTimeline: vi.fn((_g: Uint8Array, root: Uint8Array, beforeSeq: bigint, limit: number) => {
       const t = state.threadRows.get(toHex(root)) ?? { root: null, rows: [] };
       return { root: t.root, rows: t.rows.filter((r) => beforeSeq === 0n || r.seq < beforeSeq).slice(0, limit) };
@@ -311,6 +380,7 @@ export function world(opts: {
     trustGeneration: vi.fn(() => 0n),
   };
   const routes = {
+    negotiateSession: vi.fn(() => Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true })),
     getInstance: vi.fn(() => Promise.resolve(INSTANCE)),
     getLimits: vi.fn(() => Promise.resolve({
       maxCiphertextBytes: 131_072, keypackagesPerDevice: 32, keypackageRefillThreshold: 8, heartbeatMs: 30_000, maxFrameBytes: 131_584,
@@ -357,12 +427,25 @@ export function world(opts: {
       calls.push('listMembers');
       return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: state.roleIds }]);
     }),
+    applyRolePanelReaction: vi.fn((_community: Uint8Array, _channel: Uint8Array, _messageSeq: bigint, _group: Uint8Array,
+      _eventSeq: bigint, _emoji: string, _enabled: boolean) => Promise.resolve()),
     getPresenceSnapshot: vi.fn((_id: Uint8Array) => Promise.resolve([{ userId: USER, status: 1 }])),
     setPresenceChoice: vi.fn((_choice: number) => Promise.resolve()),
     patchMe: vi.fn((_patch: ProfilePatch) => Promise.resolve()),
     sendPresenceActivity: vi.fn(() => Promise.resolve()),
     // wave 1 (web3.4): the admin routes. None of them pushes into `calls`, which the older suites read in order.
     getPermissions: vi.fn((_id: Uint8Array) => Promise.resolve({ bits: (1n << 30n) - 1n, top: OWNER_TOP })),
+    postModerationRemoval: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve()),
+    postMessage: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve({ raw: encode([1n]), seq: 1n })),
+    getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
+    armAutoModerationGrant: vi.fn((_group: Uint8Array, _requestId: Uint8Array, _community: Uint8Array, _revision: bigint,
+      _expires: bigint, _hash: Uint8Array, _stepUp: string) => Promise.resolve({ token: 'opaque-grant-token', expires: NOW_S + 60n })),
+    configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>
+      Promise.resolve({ id: new Uint8Array(16).fill(0x73), communityId: COMMUNITY, state: 0 as const, revision: 1n,
+        userId: null, deviceId: null, capabilities: 0, updatedAt: NOW_S })),
+    disableBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint) =>
+      Promise.resolve({ id: new Uint8Array(16).fill(0x73), communityId: COMMUNITY, state: 4 as const, revision: 2n,
+        userId: null, deviceId: null, capabilities: 0, updatedAt: NOW_S })),
     listRoles: vi.fn((_id: Uint8Array) => Promise.resolve([] as RoleRow[])),
     patchCommunity: vi.fn((_id: Uint8Array, _patch: { name: string }) => Promise.resolve(2n)),
     deleteCommunity: vi.fn((_id: Uint8Array) => Promise.resolve()),
@@ -377,6 +460,7 @@ export function world(opts: {
     deleteBan: vi.fn((_id: Uint8Array, _user: Uint8Array) => Promise.resolve()),
     listBans: vi.fn((_id: Uint8Array) => Promise.resolve([] as BanRow[])),
     listInvites: vi.fn((_id: Uint8Array) => Promise.resolve([] as InviteRow[])),
+    getMemberTimeout: vi.fn((_communityId: Uint8Array, _userId: Uint8Array): Promise<bigint | null> => Promise.resolve(null)),
     revokeInvite: vi.fn((_id: Uint8Array) => Promise.resolve()),
     // wave 2a (flow 09): roles and overwrites; like the admin routes, none of them pushes into `calls`.
     listOverwrites: vi.fn((_id: Uint8Array) => Promise.resolve([] as OverwriteRow[])),
@@ -476,8 +560,11 @@ export function world(opts: {
     deps: null as SyncDeps | null,
     builds: 0,                                   // parts.sync calls: 1 at ready, +1 for each resume() after a refused wipe call
     start: vi.fn(() => { calls.push('sync.start'); }), stop: vi.fn(() => { calls.push('sync.stop'); }),
+    stopped: vi.fn(() => false),
     setChannels: vi.fn(), setExpected: vi.fn((_groups: unknown) => {}), send: vi.fn(), retry: vi.fn(), discard: vi.fn(),
     sendRequest: vi.fn((_g: Uint8Array, _r: SendRequest): Uint8Array => new Uint8Array(16).fill(0x77)),
+    runOnGroup: vi.fn((_g: Uint8Array, send: () => Promise<unknown>) => send()),
+    pollWelcomes: vi.fn(() => Promise.resolve()),
     openChannel: vi.fn((_c: unknown) => Promise.resolve({ groupId: GROUP, state: 2 as const })),
     rejoined: vi.fn((_communityId: Uint8Array) => {}),
   };

@@ -18,6 +18,7 @@ export interface SyncInternals {
   applyHook(groupId: Id, result: ApplyResult, source: 'frame' | 'catch-up' | 'commit'): Promise<void>;
   requestCatchUp(groupId: Id): void;
   requestDrain(groupId: Id): void;
+  canSendInGroup(groupId: Id): boolean;
   requestCommit(groupId: Id, attempt: number): void;
   commitNow(groupId: Id, attempt: number): Promise<boolean>;
   activate(groupId: Id): Promise<void>;

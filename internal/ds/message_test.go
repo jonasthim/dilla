@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
@@ -227,6 +229,55 @@ func TestDeleteIsMemberOnlyThenUploaderOnlyAndKeepsTheTombstoneFields(t *testing
 	}
 	if row.Seq != out.Seq || row.Epoch == 0 || len(row.FrankingTag) != 32 || len(row.CommitmentC) != 32 {
 		t.Error("a tombstone keeps seq, epoch, uploader_device, commitment_c, franking_tag and recv_ts")
+	}
+}
+
+func TestDeleteMessagePreservesTargetRefusalsBeforeCapabilityGate(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	h.repo.markInteraction(g.id)
+	otherMember := h.addMemberLeaf(t, g, id.New())
+
+	for _, wireVersion := range []uint64{0, 2} {
+		t.Run(fmt.Sprintf("wire_%d", wireVersion), func(t *testing.T) {
+			session := g.session
+			session.WireVersion = wireVersion
+			var dsErr *ds.Error
+			err := h.ds.DeleteMessage(ctx, session, g.id, out.Seq+1)
+			if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+				t.Fatalf("delete nonexistent message = %v, want E_NOT_FOUND", err)
+			}
+			unowned := otherMember
+			unowned.WireVersion = wireVersion
+			err = h.ds.DeleteMessage(ctx, unowned, g.id, out.Seq)
+			if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_UPLOADER" {
+				t.Fatalf("delete another user's message = %v, want E_NOT_UPLOADER", err)
+			}
+			err = h.ds.DeleteMessage(ctx, session, g.id, out.Seq)
+			var upgrade *capability.UpgradeRequired
+			if !errors.As(err, &upgrade) {
+				t.Fatalf("delete authorized target = %v, want typed upgrade refusal", err)
+			}
+			row, getErr := h.repo.GetAppMessage(ctx, g.id, out.Seq)
+			if getErr != nil || row.DeletedAt != nil || row.Blob == nil {
+				t.Fatalf("wire %d refusal mutated the target message: %+v, %v", wireVersion, row, getErr)
+			}
+		})
+	}
+
+	wireThree := g.session
+	wireThree.WireVersion = 3
+	if err := h.ds.DeleteMessage(ctx, wireThree, g.id, out.Seq); err != nil {
+		t.Fatalf("wire 3 delete: %v", err)
+	}
+	row, err := h.repo.GetAppMessage(ctx, g.id, out.Seq)
+	if err != nil || row.DeletedAt == nil || row.Blob != nil {
+		t.Fatalf("wire 3 did not tombstone the target message: %+v, %v", row, err)
 	}
 }
 

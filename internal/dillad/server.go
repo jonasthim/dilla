@@ -24,6 +24,9 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/jonasthim/dilla/internal/bot/capability"
+	botidentity "github.com/jonasthim/dilla/internal/bot/identity"
+	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -183,16 +186,32 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		LandingFont:  api.LandingFont(tree),
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
+		StepUps:    api.NewStepUps(o.Clock, api.StepUpTTL),
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
 		// One upload meter for the attachment routes and PUT /v1/backups (security review F3).
 		UploadMeter: api.NewUploadMeter(o.Clock, o.Config.Blobs),
 		// The instance document's wire_versions, the gateway's hello list below (web3.8 S1).
-		WireVersions: o.WireVersions,
+		WireVersions: o.WireVersions, E2EEVersions: o.E2EEVersions, MediaVersions: o.MediaVersions,
 	}
 	// GET /v1/instance publishes the external-sender public key, derived from the seed the
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
 	// seed || public, so its second half is the public key.
 	deps.ExternalSenderPub = []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:])
+	deps.SignBotInteractionAdmission = func(payload []byte) ([]byte, error) {
+		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
+		preimage := append([]byte("dilla bot interaction admission v1\x00"), payload...)
+		return ed25519.Sign(private, preimage), nil
+	}
+	deps.SignBotInteractionContext = func(payload []byte) ([]byte, error) {
+		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
+		preimage := append([]byte("dilla bot interaction context snapshot v1\x00"), payload...)
+		return ed25519.Sign(private, preimage), nil
+	}
+	deps.SignBotCurrentInteractionContext = func(payload []byte) ([]byte, error) {
+		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
+		preimage := append([]byte("dilla bot current interaction context v1\x00"), payload...)
+		return ed25519.Sign(private, preimage), nil
+	}
 	// The pending path spends an enrolment assertion, and internal/auth cannot
 	// import internal/api, so the store is handed over through the interface.
 	sessions.Assertions = deps.Assertions
@@ -238,6 +257,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ownsBlobs = true
 	}
 	deviceLists := ds.NewDeviceLists(o.Repo, wasm)
+	deps.BotIdentity = botidentity.NewVerifier(wasm)
+	deps.BotRuntime = botruntime.New(o.Repo, o.Clock.Now)
+	deps.BotSpotifyClientID = o.Config.BotSpotify.ClientID
+	deps.BotSpotifyRedirectURL = o.Config.BotSpotify.RedirectURL
 	sessions.DeviceLists = deviceListGate{lists: deviceLists}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
@@ -246,6 +269,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// functions, so they close over `delivery`, which is assigned before New
 	// returns and therefore before any connection can reach either callback.
 	policy := policyFromConfig(o.Config)
+	botCapability := capability.New(o.Repo)
 	var delivery *ds.DS
 	var callSFU api.CallTokens
 	if o.SFU != nil {
@@ -272,8 +296,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				presence.Changed(context.Background(), user)
 			}
 		},
-		// The hello offers wire 2 alone (web3.8 S1); GET /v1/instance advertises the same list.
-		WireVersions: o.WireVersions,
+		// Discovery and hello advertise the same version lists used by HTTP negotiation.
+		WireVersions: o.WireVersions, E2EEVersions: o.E2EEVersions, MediaVersions: o.MediaVersions,
 		// A sweep that closes a device's socket because its account now owes a second factor
 		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
 		OnFactorOwed: func(device id.ID) { cutFromCalls(context.Background(), device) },
@@ -290,13 +314,15 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				callRoutes.AFKActiveInChannel(ctx, user, channel)
 			}
 		},
-		Store:             o.Repo,
-		Clock:             o.Clock,
-		Log:               o.Log,
-		Metrics:           o.Metrics,
-		Auth:              sessions,
-		TypingAudience:    api.TypingAudience(o.Repo),
-		VoiceSelfAudience: api.VoiceSelfAudience(o.Repo, callSFU),
+		Store:                  o.Repo,
+		Clock:                  o.Clock,
+		Log:                    o.Log,
+		Metrics:                o.Metrics,
+		Auth:                   sessions,
+		ScopeResolver:          gatewayScopeResolver{repo: o.Repo},
+		CommunityCompatibility: botCapability,
+		TypingAudience:         api.TypingAudience(o.Repo),
+		VoiceSelfAudience:      api.VoiceSelfAudience(o.Repo, callSFU),
 		// The self-mute and self-deafen bits a device in a live room sent, for the voice snapshot
 		// (GET /v1/channels/{id}/call, web-3 task 3).
 		VoiceSelfStored: func(call, device id.ID, bits uint64) {
@@ -333,16 +359,17 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps.Presence = presence
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
-		Store:    o.Repo,
-		Wasm:     wasm,
-		Gateway:  gw,
-		Clock:    o.Clock,
-		Log:      o.Log,
-		Metrics:  o.Metrics,
-		Keys:     keys,
-		Policy:   policy,
-		Channels: channels,
-		ACL:      acl,
+		Store:         o.Repo,
+		BotCapability: botCapability,
+		Wasm:          wasm,
+		Gateway:       gw,
+		Clock:         o.Clock,
+		Log:           o.Log,
+		Metrics:       o.Metrics,
+		Keys:          keys,
+		Policy:        policy,
+		Channels:      channels,
+		ACL:           acl,
 		// send_messages and slow mode on end-to-end encrypted posts, by the upload class (web3.7
 		// SB1, protocol/02 § Upload class).
 		PostPolicy: api.PostPolicy{Repo: o.Repo, Resolver: api.NewResolver(o.Repo)},
@@ -362,9 +389,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		},
 	})
 	if err != nil {
-		closeWasmOnError()
 		return nil, err
 	}
+	deps.CurrentBotInteractionGroupContext = delivery.CurrentBotInteractionGroupContext
+	deps.MessageDeleted = delivery.NotifyMessageDeleted
 	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
 	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms
 	// every heal window from this start. It runs BEFORE Start, so the sweeper never closes a group
@@ -424,6 +452,39 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"user", userID, "err", err)
 		}
 	}
+	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, _ bool) {
+		if installation.DeviceID == nil {
+			return
+		}
+		deviceID := *installation.DeviceID
+		if deps.CloseGateway != nil {
+			deps.CloseGateway(deviceID)
+		}
+		cutFromCalls(ctx, deviceID)
+		if err := api.RemoveRevokedDevices(ctx, o.Repo, delivery, []id.ID{deviceID}); err != nil {
+			o.Log.ErrorContext(ctx, "prompting MLS removal for disabled bot device", "device", deviceID.String(), "err", err)
+		}
+	}
+	deps.BotEnrolled = func(ctx context.Context, installation store.BotInstallationRow) {
+		if installation.UserID == nil {
+			return
+		}
+		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, installation.CommunityID, *installation.UserID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot enrollment failed",
+				"community", installation.CommunityID.String(), "user", installation.UserID.String(), "err", err)
+		}
+	}
+	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
+		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot join role grant failed",
+				"community", communityID.String(), "user", memberID.String(), "err", err)
+		}
+		if callRoutes != nil && o.SFU != nil {
+			callRoutes.RequestSync(ctx, communityID, &memberID, nil)
+		}
+		botRoleNotify.Changed(ctx, communityID)
+	}
 
 	mux := server.NewMux()
 	api.Register(mux, deps)
@@ -441,7 +502,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// exist (deviation B35).
 	// Every delivery-service route is metered per device session from [limits.rate], on the
 	// same limiter the unauthenticated routes use (its keys are class-prefixed).
-	groups := &api.Groups{DS: delivery, Limiter: limiter}
+	groups := &api.Groups{DS: delivery, Deps: deps, Limiter: limiter,
+		LoadBotInteractionPreflight: deps.LoadBotInteractionRegistrationPreflight}
 	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
 	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
 	// proposals in batches"). Groups runs the hook after the 201 is flushed, on its own goroutine
@@ -458,17 +520,31 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// DM's group is populated only with devices that hold one (Plan 2 task 6). The hook runs after
 	// the 201, as AfterRegister does, and a failure is logged; the DM's next membership change
 	// re-derives it.
-	groups.AfterKeyPackages = func(ctx context.Context, userID, _ id.ID) {
+	groups.AfterKeyPackages = func(ctx context.Context, userID, deviceID id.ID) {
 		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a KeyPackage publish failed",
 				"user", userID, "err", err)
 		}
+		if err := api.SyncEnrolledBotChannels(ctx, o.Repo, delivery, userID, deviceID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing a bot's channel groups in line after a KeyPackage publish failed",
+				"user", userID, "err", err)
+		}
 	}
-	groups.Register(mux, sessions)          // rows 1-3
-	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
-	groups.RegisterRecovery(mux, sessions)  // rows 8-9
-	groups.RegisterDirectory(mux, sessions) // rows 10, 12, 15-16
-	groups.RegisterHeal(mux, sessions)      // rows 13-14
+	groups.Register(mux, sessions)             // rows 1-3
+	groups.RegisterSequencer(mux, sessions)    // rows 4-7, 19
+	groups.RegisterRecovery(mux, sessions)     // rows 8-9
+	groups.RegisterDirectory(mux, sessions)    // rows 10, 12, 15-16
+	groups.RegisterBotDirectory(mux, sessions) // managed Bot KeyPackage publication and receipts
+	groups.RegisterHeal(mux, sessions)         // rows 13-14
+	// Plan 2: communities, channels and their members, roles, bans, community invites, DMs,
+	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
+	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
+	// paths when this process runs an SFU.
+	callRoutes, roles := mountPlanTwo(mux, planTwo{
+		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
+		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+	})
+	stopAFK = callRoutes.StopAFK
 	(&api.Messages{
 		DS:                 delivery,
 		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
@@ -479,17 +555,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				callRoutes.AFKActiveInGroup(ctx, user, group)
 			}
 		},
-	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
-
-	// Plan 2: communities, channels and their members, roles, bans, community invites, DMs,
-	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
-	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
-	// paths when this process runs an SFU.
-	callRoutes = mountPlanTwo(mux, planTwo{
-		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
-		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
-	})
-	stopAFK = callRoutes.StopAFK
+	}).WithRoles(roles).Register(mux, sessions) // rows 11, 17, 18 and the cursor
 	if o.SFU != nil {
 		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
 			closeWasmOnError()

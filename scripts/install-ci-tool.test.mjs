@@ -19,7 +19,7 @@ test('a changed publisher archive is refused before extraction', () => {
   const archive = join(dir, 'wrong.tar.gz');
   writeFileSync(archive, 'wrong archive bytes');
   try {
-    const result = spawnSync('bash', [script, 'wasm-pack', '--archive', archive], {
+    const result = spawnSync('bash', [script, 'binaryen', '--archive', archive], {
       encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: dir },
     });
     assert.notEqual(result.status, 0);

@@ -103,6 +103,18 @@ export function resolveInRoot(root, urlPath) {
   return null;
 }
 
+/** Resolve an existing request file and refuse symlinks that leave the Storybook output. */
+export async function resolveExistingInRoot(root, urlPath) {
+  const candidate = resolveInRoot(root, urlPath);
+  if (candidate === null) return null;
+  try {
+    const [realRoot, realFile] = await Promise.all([fsp.realpath(root), fsp.realpath(candidate)]);
+    return realFile.startsWith(realRoot + path.sep) ? realFile : null;
+  } catch {
+    return null;
+  }
+}
+
 function notFound(res) {
   res.writeHead(404, { 'content-length': '0' });
   res.end();
@@ -115,7 +127,7 @@ function startServer(root, port) {
       res.end();
       return;
     }
-    const file = resolveInRoot(root, req.url ?? '/');
+    const file = await resolveExistingInRoot(root, req.url ?? '/');
     if (file === null) { notFound(res); return; }
     let body;
     try {

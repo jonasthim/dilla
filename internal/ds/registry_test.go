@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
@@ -123,8 +124,12 @@ func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
 			}
 			_, err = h.ds.Register(context.Background(), req)
 
-			if len(h.channels.asked) != 1 {
-				t.Fatalf("MayRegister was asked %d times, want once", len(h.channels.asked))
+			wantCalls := 1
+			if c.refuse == nil {
+				wantCalls = 2 // early refusal check plus the transaction-fenced acceptance recheck
+			}
+			if len(h.channels.asked) != wantCalls {
+				t.Fatalf("MayRegister was asked %d times, want %d", len(h.channels.asked), wantCalls)
 			}
 			q := h.channels.asked[0]
 			if q.user != req.Session.UserID {
@@ -157,6 +162,92 @@ func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSignedCommunityRegistrationRequiresWireThreeAfterAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		wire         uint64
+		unauthorized bool
+		wantUpgrade  bool
+		wantSuccess  bool
+	}{
+		{name: "wire zero", wire: 0, wantUpgrade: true},
+		{name: "wire two", wire: 2, wantUpgrade: true},
+		{name: "wire three", wire: 3, wantSuccess: true},
+		{name: "unauthorized wire two", wire: 2, unauthorized: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			session := h.honestRegistrant(t)
+			req := registration(t, "community-one-leaf", session)
+			binding, err := ds.DecodeBindingForTest(req.Binding)
+			if err != nil {
+				t.Fatalf("decode signed community binding: %v", err)
+			}
+			if binding.CommunityID == nil || *binding.CommunityID != mustCommunityID(t) {
+				t.Fatalf("binding community = %v, want the fixture's fixed community", binding.CommunityID)
+			}
+			h.channels.modes[binding.TargetID] = [2]uint8{0, 0}
+			now := h.clk.Now().Unix()
+			if err := h.repo.CreateCommunity(context.Background(), store.CommunityRow{
+				ID: *binding.CommunityID, Owner: session.UserID, Name: "signed-registration",
+				PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now,
+			}); err != nil {
+				t.Fatalf("CreateCommunity: %v", err)
+			}
+			if err := h.repo.CreateBotInstallation(context.Background(), store.BotInstallationRow{
+				ID: id.New(), CommunityID: *binding.CommunityID, State: store.BotInstallationReady,
+				Revision: 1, ApprovedBy: session.UserID, ApprovedAt: now, Created: now, Updated: now,
+			}); err != nil {
+				t.Fatalf("CreateBotInstallation: %v", err)
+			}
+
+			req.Session.WireVersion = tc.wire
+			if tc.unauthorized {
+				h.channels.refuse = fmt.Errorf("%w: not a member", ds.ErrNotEligible)
+			}
+			_, err = h.ds.Register(context.Background(), req)
+			switch {
+			case tc.wantUpgrade:
+				var upgrade *capability.UpgradeRequired
+				if !errors.As(err, &upgrade) {
+					t.Fatalf("Register wire %d = %v, want typed upgrade refusal", tc.wire, err)
+				}
+			case tc.wantSuccess:
+				if err != nil {
+					t.Fatalf("Register wire 3: %v", err)
+				}
+				row, getErr := h.repo.GetGroup(context.Background(), req.GroupID)
+				if getErr != nil || !bytes.Equal(row.Binding, req.Binding) {
+					t.Fatalf("stored signed community group = %+v, %v", row, getErr)
+				}
+			default:
+				var dsErr *ds.Error
+				if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+					t.Fatalf("unauthorized registration = %v, want normal E_FORBIDDEN", err)
+				}
+			}
+			if !tc.wantSuccess {
+				if _, getErr := h.repo.GetGroup(context.Background(), req.GroupID); !errors.Is(getErr, store.ErrNotFound) {
+					t.Fatalf("refused registration persisted a group: %v", getErr)
+				}
+				members, listErr := h.repo.ListMembers(context.Background(), req.GroupID)
+				if listErr != nil || len(members) != 0 {
+					t.Fatalf("refused registration persisted member rows: %d, %v", len(members), listErr)
+				}
+			}
+		})
+	}
+}
+
+func mustCommunityID(t *testing.T) id.ID {
+	t.Helper()
+	community, err := id.Parse("6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a")
+	if err != nil {
+		t.Fatalf("parse fixture community id: %v", err)
+	}
+	return community
 }
 
 // Invariant 1's mode refusal comes first: a text group on a readable channel is E_MODE_READABLE

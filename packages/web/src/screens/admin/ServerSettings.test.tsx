@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { CommunityAccess, MemberSummary } from '@dilla/client-core';
+import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
+import { encode, fromHex } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
@@ -10,21 +11,44 @@ import { en } from '../../strings/index.ts';
 import { ServerSettings, type AdminTab } from './ServerSettings.tsx';
 
 const SERVER = 'a1'.repeat(16);
+const OTHER_SERVER = 'b2'.repeat(16);
 const BOB = '28'.repeat(16);
 const CAROL = '3c'.repeat(16);
 const NAME = 'Björn';
 const NFD = 'Björn';
+type FakeInstallation = { id: string; communityId: string; state: number; revision: string; userId: string | null; deviceId: string | null;
+  capabilities: number; updatedAt: string };
 
 export const FULL: CommunityAccess = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
   banMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
   banMembers: false, createInvite: false, manageRoles: false };
 
-function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null } = {}) {
+function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null;
+  selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[] | ((communityId: string) => { id: string; name: string; position: number; selfSelected: boolean }[]);
+  roles?: RoleSummary[]; channels?: ChannelSummary[]; installation?: FakeInstallation | null | ((communityId: string) => FakeInstallation | null);
+  interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown';
+  uploadHandler?: (requestId: string) => Promise<unknown> } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
+  fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (typeof over.selfRoles === 'function' ? over.selfRoles(command.communityId) : over.selfRoles ?? [])
+    : command.m === 'getBotInstallation' ? (typeof over.installation === 'function' ? over.installation(command.communityId) : over.installation ?? null)
+    : command.m === 'humanInteractionRequest' ? over.uploadHandler?.(command.requestId) ?? { requestId: command.requestId, upload: over.upload ?? 'accepted' }
+    : command.m === 'readBotInteractionResponses' ? (() => {
+      const sent = fake.callsOf('humanInteractionRequest').at(-1);
+      const sentChannel = sent?.args[0];
+      const interaction = over.interaction;
+      const responseReady = typeof interaction === 'function' ? interaction() : interaction === true;
+      return { through: '1', blocked: false, responses: responseReady && sent !== undefined && typeof sentChannel === 'string' ? [{
+        deliveryId: '1', requestId: sent.requestId, communityId: SERVER, operation: 31, channelId: null, status: 0,
+        revision: '1', data: encode([fromHex(sentChannel), 9n]), sourceSeq: '1',
+      }] : [] };
+    })()
+    : command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
   if (access !== undefined) fake.set(`permissions:${SERVER}`, access);
+  if (over.roles !== undefined) fake.set(`roles:${SERVER}`, over.roles);
+  if (over.channels !== undefined) fake.set(`channels:${SERVER}`, over.channels);
   if (over.members !== null) {
     fake.set(`members:${SERVER}`, over.members ?? [
       { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
@@ -46,17 +70,133 @@ const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame
 const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button').map(b => b.textContent);
 
 describe('ServerSettings tabs', () => {
+  it('publishes a bot-authored role panel and registers only its accepted exact message', async () => {
+    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
+    const { fake, user, announce } = setup(FULL, { tab: 'selfRoles',
+      selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      roles: [{ id: roleId, name: 'Readers', position: 2, allow: PERM.viewChannel, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }],
+      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+      interaction: true });
+    const emoji = await screen.findByRole('textbox', { name: 'Emoji for Readers' });
+    await user.clear(emoji); await user.type(emoji, '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
+    const sent = fake.callsOf('humanInteractionRequest')[0];
+    expect(sent).toMatchObject({ operation: 31, channelId: null });
+    expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ communityId: SERVER, channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
+    expect(announce).toHaveBeenCalledWith('The bot published and registered the role panel.');
+  });
+  it('rejects duplicate reaction mappings before sending or changing role policy', async () => {
+    const one = 'c3'.repeat(16); const two = 'c4'.repeat(16); const channelId = 'd4'.repeat(16);
+    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [
+      { id: one, name: 'Readers', position: 2, selfSelected: false }, { id: two, name: 'Writers', position: 3, selfSelected: false },
+    ], channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+      position: 0, slowmode: 0, announcement: false, group: 'active' }],
+    installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' } });
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '✅');
+    await user.type(screen.getByRole('textbox', { name: 'Emoji for Writers' }), '✅');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a text channel');
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(0);
+    expect(fake.callsOf('configureSelfRoles')).toHaveLength(0);
+  });
+  it.each(['pending', 'unknown'] as const)('keeps polling after an %s upload until its late accepted response', async upload => {
+    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16); let responseReady = false;
+    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+      interaction: () => responseReady, upload });
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await screen.findByText('The send result is uncertain. Retry with the same request to safely continue.');
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
+    responseReady = true;
+    await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
+    expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
+  });
+  it('shows a deterministic local send-preparation error without calling it an uncertain upload', async () => {
+    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
+    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+      uploadHandler: () => Promise.reject(refusal({ code: 'E_CORE_INPUT' })) });
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not publish the role panel (E_CORE_INPUT). Try again.');
+    expect(screen.queryByText('The send result is uncertain. Retry with the same request to safely continue.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry publishing' })).not.toBeInTheDocument();
+    expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(0);
+    expect(fake.callsOf('registerRolePanel')).toHaveLength(0);
+  });
+  it('shows a bounded error code when polling the bot response fails', async () => {
+    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
+    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' } });
+    const handle = fake.handler;
+    fake.handler = command => command.m === 'readBotInteractionResponses'
+      ? Promise.reject(refusal({ code: 'E_UNAVAILABLE' })) : handle(command);
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not publish the role panel (E_UNAVAILABLE). Try again.');
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
+  });
+  it('does not restore a delayed upload into a different community or retry it there', async () => {
+    const roleId = 'c3'.repeat(16); const channelA = 'd4'.repeat(16); const channelB = 'd5'.repeat(16);
+    let resolveUpload!: (value: { requestId: string; upload: 'pending' }) => void;
+    const { fake, user, view } = setup(FULL, { tab: 'selfRoles',
+      selfRoles: () => [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      channels: [{ id: channelA, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: communityId => ({ id: 'f6'.repeat(16), communityId, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' }),
+      uploadHandler: requestId => new Promise(resolve => { resolveUpload = value => resolve({ ...value, requestId }); }) });
+    fake.publish(`communities`, [{ id: SERVER, name: NAME, owner: ME.id }, { id: OTHER_SERVER, name: 'Other', owner: ME.id }]);
+    fake.set(`permissions:${OTHER_SERVER}`, FULL);
+    fake.set(`roles:${OTHER_SERVER}`, [{ id: roleId, name: 'Readers', position: 2, allow: PERM.viewChannel, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }]);
+    fake.set(`channels:${OTHER_SERVER}`, [{ id: channelB, communityId: OTHER_SERVER, name: 'other-general', kind: 0, mode: 0, topic: '', parentId: null,
+      position: 0, slowmode: 0, announcement: false, group: 'active' }]);
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelA);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1));
+    const oldRequestId = fake.callsOf('humanInteractionRequest')[0].requestId;
+    view.rerender(<div className="d-root"><CoreProvider client={fake}>
+      <ServerSettings communityId={OTHER_SERVER} tab="selfRoles" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
+    </CoreProvider></div>);
+    resolveUpload({ requestId: oldRequestId, upload: 'pending' });
+    await screen.findByRole('heading', { name: en['admin.bot.rolePanel.title'] });
+    expect(screen.queryByRole('button', { name: 'Retry publishing' })).not.toBeInTheDocument();
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '🖋️');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelB);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(2));
+    expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ communityId: OTHER_SERVER });
+    expect(fake.callsOf('humanInteractionRequest')[1].args[0]).toBe(channelB);
+    expect(fake.callsOf('humanInteractionRequest')[1].requestId).not.toBe(oldRequestId);
+  });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['overview', 'channels', 'roles', 'invites', 'bans', 'delete server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'channels', 'roles', 'invites', 'bans', 'self-service roles', 'delete server']);
   });
   it('shows the roles tab only with manageRoles, after channels', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });
-    expect(navNames()).toEqual(['channels', 'roles', 'leave server']);
+    expect(navNames()).toEqual(['channels', 'roles', 'self-service roles', 'leave server']);
   });
   it('shows no roles tab without manageRoles', () => {
     setup({ ...NONE, manageChannels: true });
     expect(navNames()).not.toContain('roles');
+    expect(navNames()).toContain('self-service roles');
   });
   it('mounts the roles panel for the roles tab', () => {
     setup(FULL, { tab: 'roles' });
@@ -64,11 +204,37 @@ describe('ServerSettings tabs', () => {
   });
   it('shows only the tabs a person has the permission for; the danger tab is always there', () => {
     setup({ ...NONE, manageChannels: true, banMembers: true });
-    expect(navNames()).toEqual(['channels', 'bans', 'leave server']);
+    expect(navNames()).toEqual(['channels', 'bans', 'self-service roles', 'leave server']);
   });
   it('shows overview for manageCommunity and invites for createInvite', () => {
     setup({ ...NONE, manageCommunity: true, createInvite: true });
-    expect(navNames()).toEqual(['overview', 'invites', 'leave server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'invites', 'self-service roles', 'leave server']);
+  });
+  it('shows the bot tab only to manageCommunity members while self-service roles are member-accessible', () => {
+    setup({ ...NONE, manageChannels: true });
+    expect(navNames()).not.toContain('bot');
+    expect(navNames()).toContain('self-service roles');
+  });
+  it('lets an ordinary member opt into an approved self-service role', async () => {
+    const roleId = 'c3'.repeat(16);
+    const { fake, user } = setup(NONE, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }] });
+    const checkbox = await screen.findByRole('checkbox', { name: 'Readers' });
+    await user.click(checkbox);
+    await waitFor(() => expect(fake.callsOf('selectSelfRole')).toHaveLength(1));
+    expect(fake.callsOf('selectSelfRole')[0]).toMatchObject({ communityId: SERVER, roleId, enabled: true });
+    expect(screen.getByRole('checkbox', { name: 'Readers' })).toBeChecked();
+  });
+  it('hides self-service policy choices that exceed safe bits or the manager rank', async () => {
+    const role = (id: string, name: string, position: number, allow: number): RoleSummary => ({ id, name, position, allow,
+      deny: 0, color: 0, hoist: false, mentionable: false, members: 0 });
+    setup({ ...NONE, top: 10, manageRoles: true }, { tab: 'selfRoles', roles: [
+      role('c1'.repeat(16), 'Safe', 5, PERM.viewChannel), role('c2'.repeat(16), 'Too high', 10, 0),
+      role('c3'.repeat(16), 'Unsafe', 4, PERM.manageRoles),
+    ] });
+    await screen.findByText(en['admin.bot.selfRoles.configure']);
+    expect(screen.getByRole('checkbox', { name: 'Safe' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Too high' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Unsafe' })).not.toBeInTheDocument();
   });
   it('shows no tab as forbidden while the permissions are loading', () => {
     setup({ ...NONE, loaded: false });
@@ -77,7 +243,7 @@ describe('ServerSettings tabs', () => {
   });
   it('opens the first permitted tab when the asked-for tab is not allowed', () => {
     setup(NONE, { tab: 'overview' });
-    expect(screen.getByRole('heading', { name: 'leave server', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: en['admin.bot.selfRoles.title'], level: 2 })).toBeInTheDocument();
   });
   it('asks to switch tabs through onTab', async () => {
     const { user, onTab } = setup(FULL);

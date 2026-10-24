@@ -55,5 +55,7 @@ export const perm = {
   'perm.move.hint': 'Has no effect in this version.',
   'perm.nicknames': 'manage nicknames',
   'perm.nicknames.hint': 'Has no effect in this version.',
+  'perm.moderate': 'warn and time out members',
+  'perm.moderate.hint': 'Warn members or temporarily block their messages and reactions.',
   'perm.pinsNote': 'A pin shows while the person who pinned it may pin in this channel.',
 } as const;

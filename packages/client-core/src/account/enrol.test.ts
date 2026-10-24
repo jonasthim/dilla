@@ -70,21 +70,37 @@ describe('Enrol', () => {
       'GET /v1/backups/0/0', 'GET /v1/backups/1/0', `GET ${listPath}`,
       `PUT ${listPath}`,
       `POST /v1/devices/${B_HEX}/sessions/challenge`, `POST /v1/devices/${B_HEX}/sessions`,
-      'PUT /v1/backups/1/0',
+      'GET /v1/instance', 'PUT /v1/backups/1/0',
     ]);
-    expect(server.log.map((r) => r.auth)).toEqual([null, null, null, 'tok-1', 'tok-1', 'tok-1', 'tok-1', null, null, 'tok-2']);
+    expect(server.log.map((r) => r.auth)).toEqual([null, null, null, 'tok-1', 'tok-1', 'tok-1', 'tok-1', null, null, 'tok-2', 'tok-2']);
     expect([server.tokenScope.get('tok-1'), server.tokenScope.get('tok-2')]).toEqual([1, 0]);
-    const steps = ['enrolBegin', 'enrolSessionSign', 'sessionStore', 'enrolRegistered', 'enrolComplete', 'deviceListPublished',
+    const steps = ['enrolBegin', 'enrolSessionSign', 'sessionStore', 'enrolRegistered', 'enrolComplete', 'deviceListPublished', 'instanceSignerKeyPin',
       'sessionSign', 'stateSealedUploaded'];
     expect(core.calls.filter((c) => steps.includes(c))).toEqual(['enrolBegin', 'enrolSessionSign', 'sessionStore', 'enrolRegistered',
-      'enrolComplete', 'deviceListPublished', 'sessionSign', 'sessionStore', 'stateSealedUploaded']);
+      'enrolComplete', 'deviceListPublished', 'sessionSign', 'sessionStore', 'instanceSignerKeyPin', 'stateSealedUploaded']);
+    expect(core.instanceSignerPub).toEqual(server.externalSenderPub);
     expect(core.identity()).toEqual({ phase: 2, instanceId: INSTANCE, userId, deviceId: DEVICE_B, username: 'ada', listPublished: true });
     expect(core.session()?.token).toBe('tok-2');
     expect(server.deviceLists.get(U)?.version).toBe(2n);
     expect(readFakeList(server.deviceLists.get(U)?.blob ?? new Uint8Array(0))?.entries).toEqual(A_AND_B);
-    expect(decode(server.log[9]?.body ?? new Uint8Array(0))).toEqual([core.sealedObjects().state]);
+    expect(decode(server.log[10]?.body ?? new Uint8Array(0))).toEqual([core.sealedObjects().state]);
     expect((await routes.getBackup(1))?.object).toEqual(core.sealedObjects().state);
     expect((await routes.getBackup(0))?.object).toEqual(ROOT);
+  });
+
+  it('refuses authenticated discovery that conflicts with an existing instance signer pin', async () => {
+    const a = account();
+    a.core.instanceSignerPub = new Uint8Array(32).fill(0x44);
+    const fetched = await upToKey(a);
+
+    await expect(a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada')).rejects.toMatchObject({ code: 'E_CORE_STATE' });
+    expect(a.server.paths().slice(-4)).toEqual([
+      `PUT ${a.listPath}`, `POST /v1/devices/${B_HEX}/sessions/challenge`,
+      `POST /v1/devices/${B_HEX}/sessions`, 'GET /v1/instance',
+    ]);
+    expect(a.server.count('GET', '/v1/instance')).toBe(1);
+    expect(a.server.count('PUT', '/v1/backups/1/0')).toBe(0);
+    expect(a.core.instanceSignerPub).toEqual(new Uint8Array(32).fill(0x44));
   });
 
   it('puts the assertion in the registration body only, and zero-fills its bytes afterwards', async () => {
@@ -358,9 +374,9 @@ describe('Enrol', () => {
     const fetched = await upToKey(a);
     a.server.once('PUT', a.listPath, 'lose');
     await a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada');
-    expect(lines(a.server).slice(-7)).toEqual([
+    expect(lines(a.server).slice(-8)).toEqual([
       `PUT ${a.listPath}`, `PUT ${a.listPath}`, `GET ${a.listPath}`, `GET ${a.listPath}?after=1`,
-      `POST /v1/devices/${B_HEX}/sessions/challenge`, `POST /v1/devices/${B_HEX}/sessions`, 'PUT /v1/backups/1/0',
+      `POST /v1/devices/${B_HEX}/sessions/challenge`, `POST /v1/devices/${B_HEX}/sessions`, 'GET /v1/instance', 'PUT /v1/backups/1/0',
     ]);
     expect(a.server.deviceLists.get(a.U)?.version).toBe(2n);
     expect(readFakeList(a.server.deviceLists.get(a.U)?.blob ?? new Uint8Array(0))?.entries).toEqual(A_AND_B);

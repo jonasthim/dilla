@@ -22,6 +22,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -35,6 +36,40 @@ import (
 // authDBPaths lets corruptDSKPub reach the file behind a repository, which is
 // the only way to write a row the schema's CHECK forbids.
 var authDBPaths = map[store.Repository]string{}
+
+type routeGroupFaultRepo struct {
+	store.Repository
+	groupID id.ID
+}
+
+func (r routeGroupFaultRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, error) {
+	if groupID == r.groupID {
+		return store.GroupRow{}, errors.New("private database failure detail")
+	}
+	return r.Repository.GetGroup(ctx, groupID)
+}
+
+func assertBotVersionError(t *testing.T, body []byte) {
+	t.Helper()
+	var fields []any
+	if err := cborx.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 6 || fields[0] != "E_VERSION" || fields[2] != nil {
+		t.Fatalf("version error fields = %v, want six-field E_VERSION with null retry slot", fields)
+	}
+	got, err := cborx.Marshal(fields[3:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := cborx.Marshal([][]uint64{{3}, {1}, {1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("supported versions = %x, want %x", got, want)
+	}
+}
 
 // newSessions returns a Sessions over a migrated temporary database and the
 // fake clock that drives it. The generation is 7, so a Token.Generation of 0 is
@@ -189,6 +224,460 @@ func TestPreimageIsEightyOneBytesAndMatchesTheVector(t *testing.T) {
 	}
 	if doc.SessionPreimage.Preimage != hex.EncodeToString(got) {
 		t.Fatalf("vector preimage %s != computed %s", doc.SessionPreimage.Preimage, hex.EncodeToString(got))
+	}
+}
+
+func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	owner, ownerDevice, _ := seedDevice(t, repo)
+	community := store.CommunityRow{ID: id.New(), Owner: owner, Name: "bot session",
+		PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateCommunity(ctx, community); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community.ID, UserID: owner, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	communityID := community.ID
+	voiceChannel := store.ChannelRow{ID: id.New(), CommunityID: &communityID, Kind: 1, Mode: 0, Visibility: 0,
+		Name: "voice", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateChannel(ctx, voiceChannel); err != nil {
+		t.Fatal(err)
+	}
+	callID := id.New()
+	if err := repo.PutVoiceSession(ctx, store.VoiceSessionRow{CallID: callID, ChannelID: voiceChannel.ID,
+		LivekitRoom: "bot-session-test", Started: clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	botUser := store.UserRow{ID: id.New(), Username: "bot_" + id.New().String()[:8], Kind: 1,
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: 1}
+	if err := repo.CreateUser(ctx, botUser); err != nil {
+		t.Fatal(err)
+	}
+	deviceID := id.New()
+	dskPub, dskPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: deviceID, UserID: botUser.ID, DSKPub: dskPub,
+		CredentialBlob: []byte{1}, Tier: 0, SignerTier: 0, Created: 1, LastSeen: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community.ID, UserID: botUser.ID, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := store.BotRuntimeRow{ID: id.New(), TokenHash: bytes.Repeat([]byte{0x44}, 32), Created: 1, Rotated: 1}
+	if err := repo.CreateBotRuntime(ctx, runtime); err != nil {
+		t.Fatal(err)
+	}
+	uid, did, rid := botUser.ID, deviceID, runtime.ID
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: community.ID, RuntimeID: &rid,
+		UserID: &uid, DeviceID: &did, State: store.BotInstallationEnrolling, Revision: 1,
+		ApprovedBy: owner, ApprovedAt: 1, Created: 1, Updated: 1}
+	if err := repo.CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	nonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, nonce, auth.PurposeSession))
+	tok, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: nonce, Purpose: auth.PurposeSession, Sig: sig})
+	if err != nil {
+		t.Fatalf("proof-based bot Establish: %v", err)
+	}
+	bound, err := repo.GetBotSessionBinding(ctx, auth.TokenHash(tok.Token))
+	if err != nil || bound.InstallationID != installation.ID || bound.UserID != botUser.ID || bound.DeviceID != deviceID {
+		t.Fatalf("binding = %+v, %v", bound, err)
+	}
+	got, err := s.Resolve(ctx, tok.Token)
+	if err != nil || got.Bot == nil || got.Bot.InstallationID != installation.ID || got.Bot.State != store.BotInstallationEnrolling {
+		t.Fatalf("Resolve = %+v, %v", got, err)
+	}
+	renewNonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewSig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, renewNonce, auth.PurposeRenew))
+	renewed, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: renewNonce, Purpose: auth.PurposeRenew, Sig: renewSig})
+	if err != nil {
+		t.Fatalf("proof-based bot Renew: %v", err)
+	}
+	renewBinding, err := repo.GetBotSessionBinding(ctx, auth.TokenHash(renewed.Token))
+	if err != nil || renewBinding.InstallationID != installation.ID || renewed.Scope != auth.ScopeEnrolled {
+		t.Fatalf("renewed binding = %+v, token=%+v, err=%v", renewBinding, renewed, err)
+	}
+	orphanBearer := "orphaned-seeded-bot-session"
+	orphanHash := auth.TokenHash(orphanBearer)
+	now := clk.Now().Unix()
+	if err := repo.CreateSession(ctx, store.SessionRow{TokenHash: orphanHash, DeviceID: deviceID, UserID: botUser.ID,
+		Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, orphanBearer); err == nil {
+		t.Fatal("Resolve accepted a seeded bot session without exact token-hash binding")
+	}
+	provisionalNonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisionalSig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, provisionalNonce, auth.PurposeProvisional))
+	if _, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: provisionalNonce, Purpose: auth.PurposeProvisional, Sig: provisionalSig}); err == nil {
+		t.Fatal("bot account received a provisional session")
+	}
+	loginNonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginSig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, loginNonce, auth.PurposeSession))
+	if _, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: loginNonce, Purpose: auth.PurposeSession,
+		Sig: loginSig, Login: []byte("assertion")}); err == nil {
+		t.Fatal("bot account received an assertion/login session")
+	}
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathValue string
+		wantNext                         bool
+	}{
+		{name: "negotiate while enrolling", pattern: "POST /v1/sessions/negotiate", method: http.MethodPost, wantNext: true},
+		{name: "credential finalization for same installation", pattern: "PUT /v1/bot-runtime/installations/{installation}/credential", method: http.MethodPut, pathValue: installation.ID.String(), wantNext: true},
+		{name: "credential finalization for another installation", pattern: "PUT /v1/bot-runtime/installations/{installation}/credential", method: http.MethodPut, pathValue: id.New().String(), wantNext: false},
+		{name: "account settings denied", pattern: "GET /v1/accounts/me", method: http.MethodGet, wantNext: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			if tc.pathValue != "" {
+				r.SetPathValue("installation", tc.pathValue)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.wantNext {
+				t.Fatalf("next called=%v, want %v; response=%d %s", called, tc.wantNext, w.Code, w.Body.String())
+			}
+		})
+	}
+	joiningRow, err := repo.GetBotInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedAt := clk.Now().Unix()
+	joiningRow.State = store.BotInstallationJoining
+	joiningRow.CredentialVerifiedAt = &verifiedAt
+	joiningRow.Revision++
+	joiningRow.Updated = verifiedAt
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, joiningRow.Revision-1, joiningRow); err != nil {
+		t.Fatalf("advance seeded installation to joining: %v", err)
+	}
+	foreignCommunity := store.CommunityRow{ID: id.New(), Owner: owner, Name: "foreign",
+		PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateCommunity(ctx, foreignCommunity); err != nil {
+		t.Fatal(err)
+	}
+	foreignCommunityID := foreignCommunity.ID
+	foreignChannel := store.ChannelRow{ID: id.New(), CommunityID: &foreignCommunityID, Kind: 1, Mode: 0, Visibility: 0,
+		Name: "foreign voice", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateChannel(ctx, foreignChannel); err != nil {
+		t.Fatal(err)
+	}
+	group := func(communityID *id.ID) id.ID {
+		t.Helper()
+		row := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 0, CommunityID: communityID,
+			TargetID: id.New(), Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1,
+			PolicyVersion: 1, Created: clk.Now().Unix()}
+		if err := repo.CreateGroup(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		return row.GroupID
+	}
+	ownGroup := group(&community.ID)
+	foreignGroup := group(&foreignCommunity.ID)
+	dmGroup := group(nil)
+	// A bot with no selection or persisted wire 2 must first pass the route and
+	// resource checks, then receive the protocol's exact supported-version error.
+	for _, tc := range []struct {
+		name, token, group string
+		wantCode           string
+	}{
+		{name: "wire not negotiated", token: renewed.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
+		{name: "wire two", token: tok.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
+		{name: "foreign resource visibility precedes wire refusal", token: renewed.Token, group: foreignGroup.String(), wantCode: "E_FORBIDDEN"},
+	} {
+		if tc.name == "wire two" {
+			if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 2, 1, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			mux := http.NewServeMux()
+			mux.Handle("GET /v1/groups/{id}/info", s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/groups/"+tc.group+"/info", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if called {
+				t.Fatal("handler ran before version/resource refusal")
+			}
+			var fields []any
+			if err := cborx.Unmarshal(rec.Body.Bytes(), &fields); err != nil || len(fields) == 0 || fields[0] != tc.wantCode {
+				t.Fatalf("response=%d body=%x err=%v, want %s", rec.Code, rec.Body.Bytes(), err, tc.wantCode)
+			}
+			if tc.wantCode == "E_VERSION" {
+				assertBotVersionError(t, rec.Body.Bytes())
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("version response status = %d, want 400", rec.Code)
+				}
+			} else if rec.Code != http.StatusForbidden {
+				t.Fatalf("resource refusal status = %d, want 403", rec.Code)
+			}
+		})
+	}
+	negotiationReached := false
+	negotiationMux := http.NewServeMux()
+	negotiationMux.Handle("POST /v1/sessions/negotiate", s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		negotiationReached = true
+	}), auth.ScopeEnrolled))
+	negotiationReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/sessions/negotiate", nil)
+	negotiationReq.Header.Set("Authorization", "Bearer "+renewed.Token)
+	negotiationRec := httptest.NewRecorder()
+	negotiationMux.ServeHTTP(negotiationRec, negotiationReq)
+	if !negotiationReached || negotiationRec.Code != http.StatusOK {
+		t.Fatalf("capability negotiation was refused before wire selection: reached=%v status=%d body=%x", negotiationReached, negotiationRec.Code, negotiationRec.Body.Bytes())
+	}
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve succeeds through this wrapper; the subsequent route-specific group
+	// read fails operationally and must become sanitized 503 E_UNAVAILABLE.
+	faultSessions := auth.NewSessions(routeGroupFaultRepo{Repository: repo, groupID: ownGroup}, clk,
+		config.Default().Auth.Session, id.New(), 7)
+	mux := http.NewServeMux()
+	mux.Handle("GET /v1/groups/{id}/info", faultSessions.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), auth.ScopeEnrolled))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/groups/"+ownGroup.String()+"/info", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var faultFields []any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &faultFields); err != nil || len(faultFields) < 1 || faultFields[0] != "E_UNAVAILABLE" || rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("route store failure response=%d body=%x err=%v, want 503 E_UNAVAILABLE", rec.Code, rec.Body.Bytes(), err)
+	}
+	if len(faultFields) < 2 || faultFields[1] != "authorization state unavailable" {
+		t.Fatalf("route store failure leaked or lost sanitized detail: %v", faultFields)
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathName, pathValue string
+		wantNext                                   bool
+	}{
+		{name: "joining can publish own signed device list", pattern: "PUT /v1/users/{user_id}/device-list", method: http.MethodPut, pathName: "user_id", pathValue: botUser.ID.String(), wantNext: true},
+		{name: "joining can read eligible same-community device list", pattern: "GET /v1/users/{user_id}/device-list", method: http.MethodGet, pathName: "user_id", pathValue: owner.String(), wantNext: true},
+		{name: "joining can retry credential receipt", pattern: "PUT /v1/bot-runtime/installations/{installation}/credential", method: http.MethodPut, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can request ready", pattern: "POST /v1/bot-runtime/installations/{installation}/ready", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining cannot use generic key package publication", pattern: "POST /v1/keypackages", method: http.MethodPost, wantNext: false},
+		{name: "joining can publish through its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/keypackages", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can read its publication receipt", pattern: "GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", method: http.MethodGet, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can register its first group through the scoped route", pattern: "POST /v1/bot-runtime/installations/{installation}/groups", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can request admission only for its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-admissions", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining cannot request admission for another installation", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-admissions", method: http.MethodPost, pathName: "installation", pathValue: id.New().String(), wantNext: false},
+		{name: "joining can probe a foreign registration path for indistinguishable 404", pattern: "GET /v1/bot-runtime/installations/{installation}/groups/{operation}", method: http.MethodGet, pathName: "installation", pathValue: id.New().String(), wantNext: true},
+		{name: "joining can list its device-scoped welcomes", pattern: "GET /v1/welcomes", method: http.MethodGet, wantNext: true},
+		{name: "joining can acknowledge its device-scoped welcome", pattern: "DELETE /v1/welcomes/{welcome_id}", method: http.MethodDelete, wantNext: true},
+		{name: "joining can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost, wantNext: true},
+		{name: "joining can sync own community group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: ownGroup.String(), wantNext: true},
+		{name: "joining cannot use human heal-state route", pattern: "GET /v1/groups/{id}/heal-state", method: http.MethodGet, pathName: "id", pathValue: ownGroup.String(), wantNext: false},
+		{name: "joining cannot sync foreign group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: foreignGroup.String(), wantNext: false},
+		{name: "joining cannot sync DM group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: dmGroup.String(), wantNext: false},
+		{name: "joining cannot upload application message", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost, pathName: "id", pathValue: ownGroup.String(), wantNext: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			if tc.pathName != "" {
+				r.SetPathValue(tc.pathName, tc.pathValue)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.wantNext {
+				t.Fatalf("next called=%v, want %v; response=%d %s", called, tc.wantNext, w.Code, w.Body.String())
+			}
+		})
+	}
+	readyRow, err := repo.GetBotInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyRow.State = store.BotInstallationReady
+	readyRow.Revision++
+	readyRow.Updated = clk.Now().Unix()
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, readyRow.Revision-1, readyRow); err != nil {
+		t.Fatalf("advance seeded installation to ready: %v", err)
+	}
+	interactionGroupRow := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 3, CommunityID: &community.ID,
+		TargetID: owner, Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 0,
+		PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateGroup(ctx, interactionGroupRow); err != nil {
+		t.Fatal(err)
+	}
+	registeredInteraction := store.BotGroupRegistrationReceipt{
+		InstallationID: installation.ID, OperationID: id.New(), UserID: botUser.ID, DeviceID: deviceID,
+		CommunityID: community.ID, GroupID: interactionGroupRow.GroupID, BodySHA256: bytes.Repeat([]byte{0x31}, 32),
+		Generation: 1, Epoch: 1, NextSeq: 1, AcceptedAt: clk.Now().Unix(),
+	}
+	if err := repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.CreateBotGroupRegistrationReceipt(ctx, registeredInteraction)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unregisteredInteraction := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 3, CommunityID: &community.ID,
+		TargetID: owner, Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 0,
+		PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateGroup(ctx, unregisteredInteraction); err != nil {
+		t.Fatal(err)
+	}
+	foreignInstallInteraction := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 3, CommunityID: &community.ID,
+		TargetID: owner, Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 0,
+		PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateGroup(ctx, foreignInstallInteraction); err != nil {
+		t.Fatal(err)
+	}
+	foreignInstallReceipt := registeredInteraction
+	foreignInstallReceipt.DeviceID = ownerDevice
+	foreignInstallReceipt.OperationID = id.New()
+	foreignInstallReceipt.GroupID = foreignInstallInteraction.GroupID
+	if err := repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.CreateBotGroupRegistrationReceipt(ctx, foreignInstallReceipt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, pattern, method, installation, group string
+		allow                                      bool
+	}{
+		{name: "ready bot can enter dedicated interaction info route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction messages route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction handshakes route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction heal status route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodGet, allow: true},
+		{name: "ready bot can enter dedicated interaction heal route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodPost, allow: true},
+		{name: "ready bot can enter dedicated interaction cursor route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor", method: http.MethodPost, allow: true},
+		{name: "ready bot cannot use a foreign installation path", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, installation: id.New().String()},
+		{name: "ready bot cannot use a foreign community group", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, group: foreignGroup.String()},
+		{name: "ready bot cannot use generic group messages route", pattern: "GET /v1/groups/{id}/messages", method: http.MethodGet},
+		{name: "ready bot cannot use generic group cursor route", pattern: "POST /v1/groups/{id}/cursor", method: http.MethodPost},
+		{name: "ready bot cannot use generic group heal status route", pattern: "GET /v1/groups/{id}/heal", method: http.MethodGet},
+		{name: "ready bot cannot use generic group heal route", pattern: "POST /v1/groups/{id}/heal", method: http.MethodPost},
+		{name: "ready bot cannot upload to interaction group", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost},
+		{name: "ready bot cannot commit to interaction group", pattern: "POST /v1/groups/{id}/commit", method: http.MethodPost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			installationValue, groupValue := tc.installation, tc.group
+			if installationValue == "" {
+				installationValue = installation.ID.String()
+			}
+			if groupValue == "" {
+				groupValue = interactionGroupRow.GroupID.String()
+			}
+			r.SetPathValue("installation", installationValue)
+			r.SetPathValue("group", groupValue)
+			r.SetPathValue("id", interactionGroupRow.GroupID.String())
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.allow {
+				t.Fatalf("next called=%v allow=%v response=%d %s", called, tc.allow, w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathName, pathValue string
+	}{
+		{name: "ready bot can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost},
+		{name: "ready bot can redeem its automatic moderation grant", pattern: "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String()},
+		{name: "ready bot can upload to own community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: ownGroup.String()},
+		{name: "ready bot can send to its accepted interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: interactionGroupRow.GroupID.String()},
+		{name: "ready bot can read own community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot can resolve own community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
+		{name: "ready bot can read own channel call", pattern: "GET /v1/channels/{id}/call", method: http.MethodGet, pathName: "id", pathValue: voiceChannel.ID.String()},
+		{name: "ready bot can read own channel permissions", pattern: "GET /v1/channels/{id}/permissions", method: http.MethodGet, pathName: "id", pathValue: voiceChannel.ID.String()},
+		{name: "ready bot can read own community calls", pattern: "GET /v1/communities/{id}/calls", method: http.MethodGet, pathName: "id", pathValue: community.ID.String()},
+		{name: "ready bot can end own community call", pattern: "DELETE /v1/calls/{call_id}", method: http.MethodDelete, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can decline own community call", pattern: "POST /v1/calls/{call_id}/decline", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			r.SetPathValue(tc.pathName, tc.pathValue)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if !called {
+				t.Fatalf("route refused; response=%d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathName, pathValue string
+	}{
+		{name: "ready bot cannot upload to foreign community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignGroup.String()},
+		{name: "ready bot cannot send to an unregistered interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: unregisteredInteraction.GroupID.String()},
+		{name: "ready bot cannot send to an interaction group registered to another device", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignInstallInteraction.GroupID.String()},
+		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot resolve foreign community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot read foreign channel permissions", pattern: "GET /v1/channels/{id}/permissions", method: http.MethodGet, pathName: "id", pathValue: foreignChannel.ID.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequestWithContext(context.Background(), tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+renewed.Token)
+			r.Pattern = tc.pattern
+			r.SetPathValue(tc.pathName, tc.pathValue)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called {
+				t.Fatal("foreign community route reached handler")
+			}
+		})
+	}
+	if err := repo.PutBan(ctx, store.BanRow{CommunityID: community.ID, UserID: botUser.ID, ByUser: owner, Created: clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, tok.Token); err == nil {
+		t.Fatal("Resolve accepted a session after the bot member was banned")
+	}
+	if err := repo.DeleteBan(ctx, community.ID, botUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteMember(ctx, community.ID, botUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, tok.Token); err == nil {
+		t.Fatal("Resolve accepted a session after community membership was removed")
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community.ID, UserID: botUser.ID, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RevokeBotRuntime(ctx, runtime.ID, clk.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, tok.Token); err == nil {
+		t.Fatal("Resolve accepted a session after runtime revocation")
 	}
 }
 

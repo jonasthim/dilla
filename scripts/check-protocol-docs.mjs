@@ -14,6 +14,7 @@ export const REQUIRED = {
   '07-versioning.md': ['## Versions', '## Negotiation', '## Change process'],
   '08-threat-model.md': ['## Adversaries', '## Guarantees', '## Residual trust', '## Out of scope'],
   '09-http-api.md': ['## Scope', '## Encoding', '## Identifiers', '## Sessions', '## Accounts and devices', '## Auth ceremonies', '## Instance', '## Rate limits', '## Flags'],
+  '10-community-bot.md': ['## Scope', '## Encoding', '## Application requests', '## Signed moderation removal', '## Durable structural event', '## Send receipt', '## Helper transport envelope', '## Session capability and compatibility', '## Vectors'],
 };
 
 const PLACEHOLDER = /\b(TBD|TODO|FIXME|XXX)\b|lorem ipsum|fill in later/i;

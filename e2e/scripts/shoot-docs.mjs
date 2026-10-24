@@ -37,7 +37,7 @@
 // Every name and message is fictional, and the recovery key shown belongs to an account that is
 // deleted with the host's data directory. Not part of CI: nothing runs it but a person.
 import { execFileSync, spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import net from 'node:net';
@@ -205,7 +205,7 @@ function startHost(o, dataDir) {
 function startPeer(publicUrl, controlUrl, invite) {
   const bin = process.env.DILLA_TESTKIT ?? path.join(REPO_ROOT, 'target', 'release', 'dilla-testkit');
   if (!existsSync(bin)) throw new Error(`dilla-testkit not found at ${bin}: cargo build -p dilla-testkit --release --locked, or set DILLA_TESTKIT`);
-  const child = spawn(bin, ['web-driver', '--ds', publicUrl, '--seed', String(1 + (randomBytes(3).readUIntBE(0, 3) % 0xff_fffe))], {
+  const child = spawn(bin, ['web-driver', '--ds', publicUrl, '--seed', String(randomInt(1, 0xff_ffff))], {
     env: { ...process.env, DILLA_TESTKIT_INVITE: invite, DILLA_TESTKIT_CONTROL: controlUrl }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const pending = new Map();

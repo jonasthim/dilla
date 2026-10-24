@@ -11,7 +11,7 @@ import { t } from '../../strings/index.ts';
 import { forbidden, statusIs, type Announce } from './shared.ts';
 import { memberName } from './members-model.ts';
 
-const ALL_BITS = 0xFFFFFF;
+const ALL_BITS = 0x1FFFFFF;
 
 export interface MemberRolesFlowProps {
   communityId: string;

@@ -1,0 +1,51 @@
+//go:build linux
+
+package main
+
+import (
+	"github.com/jonasthim/dilla/internal/bot/moderation"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/bot/service"
+)
+
+func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, automodGrant service.AutoModerationGrantRedeemer, automodRuntime service.AutoModerationConfigRuntime) map[protocol.Operation]service.InteractionHandlerSpec {
+	handlers := overview.Handlers()
+	for operation, handler := range announcements.Handlers() {
+		handlers[operation] = handler
+	}
+	for operation, handler := range (service.WelcomeInteractions{Authority: announcements.Authority, CommunityID: announcements.CommunityID, Native: nativeClient}).Handlers() {
+		handlers[operation] = handler
+	}
+	if nativeClient != nil {
+		config := service.AutoModerationConfigInteractions{Authority: overview.Authority, Store: moderation.NewStore(nativeClient), GrantRedeemer: automodGrant, Runtime: automodRuntime, CommunityID: overview.CommunityID}
+		for operation, handler := range config.Handlers() {
+			handlers[operation] = handler
+		}
+	}
+	if cases, ok := moderationInteractions.Handlers()[protocol.OpModerationCases]; ok {
+		handlers[protocol.OpModerationCases] = cases
+	}
+	if moderationInteractions.EvidenceReader != nil {
+		if evidence, ok := moderationInteractions.Handlers()[protocol.OpModerationEvidenceList]; ok {
+			handlers[protocol.OpModerationEvidenceList] = evidence
+		}
+	}
+	if moderationInteractions.ManualRemovalLookup != nil && moderationInteractions.ManualWarningLookup != nil && moderationInteractions.EvidenceWriter != nil {
+		if evidence, ok := moderationInteractions.Handlers()[protocol.OpModerationEvidence]; ok {
+			handlers[protocol.OpModerationEvidence] = evidence
+		}
+	}
+	if music != nil && music.Store != nil && music.Authority != nil {
+		for operation, handler := range music.Handlers() {
+			handlers[operation] = handler
+		}
+	}
+	return handlers
+}
+
+func runtimeRolePanelHandlers(capabilities uint64, handler service.RolePanelInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+	if capabilities&botRolesCapability == 0 {
+		return nil
+	}
+	return handler.Handlers()
+}

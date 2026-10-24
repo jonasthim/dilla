@@ -65,10 +65,14 @@ import (
 // group context's [credential_type, credential, signature_key] entries, which registration and
 // heal's reseed compare with the instance's own key and credential before adopting a tree. A
 // module of another version answers every request E_ABI_VERSION, and a v5 response has seven
-// elements where State expects eight: either way the request fails, nothing is adopted.
-const ABIVersion uint64 = 6
+// elements where State expects eight: either way the request fails, nothing is adopted. **7** since
+// 2026-10-21 (DILLA-BOT-04): the module adds verify_credential, backed by the core's strict
+// Ed25519 verifier. **8** since 2026-10-21 (DILLA-BOT-04 Task5): validate_key_package appends the
+// validated leaf credential bytes so managed Bot admission can compare the exact registered value.
+// **9** adds bounded authenticated roster extraction. **10** adds strict Welcome recipient-ref inspection.
+const ABIVersion uint64 = 10
 
-// RequiredExports is the 23-export ABI v6 surface (v4, v5 and v6 added no export). New refuses any module that does not carry all
+// RequiredExports is the 26-export ABI v10 surface. New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",
@@ -94,6 +98,9 @@ var RequiredExports = []string{
 	"external_propose_add",
 	"external_propose_remove",
 	"device_list_entries",
+	"verify_credential",
+	"public_group_roster_extract",
+	"welcome_key_package_refs",
 }
 
 // startFunctions is what every instance, and the control arm of the clock test,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode } from '../cbor';
+import { encodeBotResponse, encodeRemovalProof } from '../bot/protocol';
 import { Enrol } from '../account/enrol';
 import { FakeCore } from '../testing/fake-core';
 import { FakeServer, NOW_S as FAKE_NOW_S, sessionFor } from '../testing/fake-server';
@@ -15,9 +16,792 @@ import { SyncError } from '../sync/errors';
 import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
-import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
+import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('resumes accepted removal evidence after restart without posting another removal', async () => {
+    const w = world();
+    const proofRequestId = new Uint8Array(16).fill(0x71);
+    const evidenceRequestId = new Uint8Array(16).fill(0x72);
+    const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3,
+      targetId: new Uint8Array(16).fill(0x53) });
+    w.state.manualEvidence.push({ proofRequestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE,
+      communityId: COMMUNITY, groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x73),
+      targetSequence: 3n, reason: 'persisted reason', excerpt: 'persisted excerpt', signedBody, state: 2,
+      createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 0n });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request[1]).toEqual(evidenceRequestId);
+    expect(request[7]).toEqual([proofRequestId, 'persisted reason', 'persisted excerpt']);
+    expect(w.core.completeManualRemovalEvidence).toHaveBeenCalledWith(proofRequestId, 1_700_000_000n);
+  });
+
+  it('rotates an expired op61 envelope after restart while preserving proof and exact evidence', async () => {
+    const w = world({ now: () => 1_700_000_040_000 });
+    const proofRequestId = new Uint8Array(16).fill(0x77);
+    const oldEvidenceRequestId = new Uint8Array(16).fill(0x78);
+    const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3,
+      targetId: new Uint8Array(16).fill(0x53) });
+    w.state.manualEvidence.push({ proofRequestId, evidenceRequestId: oldEvidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE,
+      communityId: COMMUNITY, groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x79),
+      targetSequence: 3n, reason: 'persisted reason', excerpt: 'persisted excerpt', signedBody, state: 2,
+      createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 1_700_000_030n });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+    const [proof, candidate, now] = w.core.ensureManualRemovalEvidenceRequest.mock.calls[0];
+    expect(proof).toEqual(proofRequestId);
+    expect(now).toBe(1_700_000_040n);
+    expect(candidate).not.toEqual(oldEvidenceRequestId);
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request[1]).not.toEqual(oldEvidenceRequestId);
+    expect(request[6]).toBe(1_700_000_070n);
+    expect(request[7]).toEqual([proofRequestId, 'persisted reason', 'persisted excerpt']);
+  });
+
+  it('uses the authenticated removal feed to resolve an interrupted POST before op61 and avoids replaying the removal', async () => {
+    const w = world();
+    const proofRequestId = new Uint8Array(16).fill(0x74);
+    const evidenceRequestId = new Uint8Array(16).fill(0x75);
+    const signedBody = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+    const saved = { proofRequestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE, communityId: COMMUNITY,
+      groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x76), targetSequence: 3n,
+      reason: 'recovered reason', excerpt: 'recovered excerpt', signedBody, state: 1 as 0 | 1 | 2,
+      createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 0n };
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3,
+      targetId: new Uint8Array(16).fill(0x53) });
+    w.state.manualEvidence.push(saved);
+    const proof = encodeRemovalProof({ requestId: proofRequestId, actorUser: USER, actorDevice: DEVICE,
+      communityId: COMMUNITY, groupId: GROUP, targetSeq: 3n, expires: 1_700_000_030n });
+    const getModerationRemovals = vi.fn(() => Promise.resolve({
+      rows: [{ revision: 1n, proof, signature: new Uint8Array(64).fill(7), acceptedAt: 1_700_000_001n }], nextRevision: 1n,
+    }));
+    Object.assign(w.routes, { getModerationRemovals });
+    const signedList = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+    w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedList });
+    w.routes.getDeviceListHistory.mockResolvedValue({ raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n });
+    w.core.ingestRemoval.mockImplementation(() => { saved.state = 2; return 1n; });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(getModerationRemovals).toHaveBeenCalledWith(GROUP, 0n, 250);
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request[1]).toEqual(evidenceRequestId);
+    expect(request[7]).toEqual([proofRequestId, 'recovered reason', 'recovered excerpt']);
+  });
+
+  it('returns unknown after a transport failure and retries the exact proof for the same target', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_200, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.rows.push(strangerRow(3));
+    w.routes.postModerationRemoval.mockRejectedValue(new Error('connection closed after request'));
+    const command = { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!),
+      seq: '3', reason: 'keep exact reason', excerpt: 'keep exact excerpt' } as const;
+    w.call(10_201, command);
+    await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: { removal: 'unknown' } }));
+    const first = w.ret(10_201) as { ok: true; value: { proofRequestId: string } };
+    expect(first.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(w.state.manualEvidence).toHaveLength(1);
+    const exactBody = w.state.manualEvidence[0].signedBody;
+    w.call(10_202, command);
+    await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: true, value: { removal: 'unknown' } }));
+    expect((w.ret(10_202) as { ok: true; value: { proofRequestId: string } }).value.proofRequestId).toBe(first.value.proofRequestId);
+    expect(w.core.prepareManualRemovalEvidence).toHaveBeenCalledTimes(1);
+    expect(w.routes.postModerationRemoval).toHaveBeenCalledTimes(2);
+    expect(w.routes.postModerationRemoval.mock.calls[0][1]).toBe(exactBody);
+    expect(w.routes.postModerationRemoval.mock.calls[1][1]).toBe(exactBody);
+  });
+
+  it('checks the persisted instance signer pin on restart before entering ready', async () => {
+    const w = world();
+    await toReady(w);
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(1);
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+  });
+
+  it('refuses ready when authenticated discovery reports a rotated instance signer', async () => {
+    const w = world();
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+    expect(w.gateway.starts).toBe(0);
+  });
+
+  it('stops reconnect when authenticated discovery no longer matches the pin', async () => {
+    const w = world();
+    await toReady(w);
+    const starts = w.gateway.starts;
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalled());
+    await vi.waitFor(() => expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+    expect(w.gateway.starts).toBe(starts);
+    expect(w.gateway.stops).toBeGreaterThan(0);
+  });
+
+  it('retries a discovery outage but rechecks the pin before restarting the socket', async () => {
+    const w = world();
+    await toReady(w);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const starts = w.gateway.starts;
+      const reads = w.routes.getInstance.mock.calls.length;
+      w.routes.getInstance.mockRejectedValueOnce(new Error('offline'));
+      w.gateway.emit({ type: 'revoked' });
+      await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 1));
+      expect(w.gateway.starts).toBe(starts);
+
+      w.routes.getInstance.mockResolvedValueOnce(INSTANCE);
+      await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs);
+      await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 2));
+      expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2);
+      expect(w.gateway.starts).toBe(starts + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed on malformed authenticated instance signer data', async () => {
+    const w = world();
+    await toReady(w);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const starts = w.gateway.starts;
+      w.core.instanceSignerKeyMatches.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'weak key'); });
+      w.gateway.emit({ type: 'revoked' });
+      await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+      await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs * 2);
+      expect(w.gateway.starts).toBe(starts);
+      expect(w.gateway.stops).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checks the signer pin before every gateway ticket, including automatic reconnects', async () => {
+    const w = world();
+    await toReady(w);
+    const reads = w.routes.getInstance.mock.calls.length;
+    const tickets = w.routes.postTicket.mock.calls.length;
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+
+    await expect(w.gatewayDeps.value!.mintTicket()).rejects.toMatchObject({ code: 'E_CORE_STATE' });
+    expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 1);
+    expect(w.routes.postTicket).toHaveBeenCalledTimes(tickets);
+    expect(w.gateway.stops).toBeGreaterThan(0);
+    expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } });
+  });
+
+  it('does not mint a reconnect ticket while signer discovery is unavailable', async () => {
+    const w = world();
+    await toReady(w);
+    const tickets = w.routes.postTicket.mock.calls.length;
+    w.routes.getInstance.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(w.gatewayDeps.value!.mintTicket()).rejects.toThrow('offline');
+    expect(w.routes.postTicket).toHaveBeenCalledTimes(tickets);
+  });
+
+  it('sends a typed moderation request through the authenticated kind-3 group and returns only its id and status', async () => {
+    const w = world();
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_199, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_199)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'accepted' } }));
+    expect(w.sync.runOnGroup).toHaveBeenCalledWith(groupId, expect.any(Function));
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledWith(requestId, COMMUNITY, groupId, expect.any(Uint8Array), NOW_S);
+    expect(w.core.sendEncrypt).toHaveBeenCalledWith(requestId);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+    expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
+    const value = (w.ret(10_199) as { ok: true; value: object }).value;
+    expect(Object.keys(value).sort()).toEqual(['requestId', 'status']);
+    w.call(10_194, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_194)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'accepted' } }));
+    expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
+    w.call(10_198, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: '54'.repeat(15), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_198)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+  });
+
+  it('sends a revision-bound human interaction mutation and reports only the ciphertext upload receipt', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 1, mode: 0, visibility: 0, parentId: null,
+      name: 'voice', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_193, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL),
+      requestId: toHex(requestId), operation: 13, args: [], revision: '7' });
+    await vi.waitFor(() => expect(w.ret(10_193)).toMatchObject({ ok: true,
+      value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
+    const wire = decode(prepared[3]);
+    expect(wire).toEqual([1n, requestId, COMMUNITY, CHANNEL, 13n, 7n, NOW_S + 30n, []]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+    expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
+  });
+
+  it('fetches a late interaction Welcome before refusing a Bot request with no local group', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 1, mode: 0, visibility: 0, parentId: null,
+      name: 'voice', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.sync.pollWelcomes.mockImplementation(() => {
+      w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+      return Promise.resolve();
+    });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_195, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL),
+      requestId: toHex(requestId), operation: 10, args: [], revision: null });
+    await vi.waitFor(() => expect(w.ret(10_195)).toEqual({ t: 'ret', id: 10_195, ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }), { timeout: 1000 });
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
+  it('arms a step-up grant with only the deterministic config digest and binds op 63 to the same group and request', async () => {
+    const w=world(); await toReady(w);
+    const groupId=new Uint8Array(16).fill(0x52), requestId=new Uint8Array(16).fill(0x54);
+    w.state.groups.push({...textGroup(2),groupId,kind:3,targetId:new Uint8Array(16).fill(0x53)});
+    w.state.outbox.push({msgId:requestId,state:0,error:'',created:1n,body:'secret request',type:0,replyTo:null,attachments:[]});
+    const document=encode([1n,1n,'remove','log','warn',600000n,[]]);
+    w.call(10_190,{m:'humanInteractionRequest',communityId:toHex(COMMUNITY),channelId:null,requestId:toHex(requestId),
+      operation:63,args:['',document],revision:'7',stepUp:'one-use-step-up'});
+    await vi.waitFor(()=>expect(w.ret(10_190)).toMatchObject({ok:true,value:{upload:'accepted'}}));
+    const arm=w.routes.armAutoModerationGrant.mock.calls[0];
+    expect(arm).toMatchObject([groupId,requestId,COMMUNITY,7n,NOW_S+30n,expect.any(Uint8Array),'one-use-step-up']);
+    expect([...arm[5]]).not.toEqual([...document]);
+    const digestInput=new Uint8Array(document.length);digestInput.set(document);
+    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',digestInput.buffer));
+    expect(arm[5]).toEqual(digest);
+    const wire=decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]);
+    expect(wire).toEqual([1n,requestId,COMMUNITY,null,63n,7n,NOW_S+30n,['opaque-grant-token',document]]);
+    expect(w.sync.runOnGroup).toHaveBeenCalledWith(groupId,expect.any(Function));
+  });
+
+  it('refuses an automatic moderation mutation without step-up before grant creation or ciphertext preparation', async () => {
+    const w=world(); await toReady(w); const document=encode([1n,0n,'log','log','log',600000n,[]]);
+    w.call(10_189,{m:'humanInteractionRequest',communityId:toHex(COMMUNITY),channelId:null,requestId:'54'.repeat(16),
+      operation:63,args:['',document],revision:'7'});
+    await vi.waitFor(()=>expect(w.ret(10_189)).toMatchObject({ok:false,error:{code:'E_BAD_INPUT'}}));
+    expect(w.routes.armAutoModerationGrant).not.toHaveBeenCalled();
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    expect(w.routes.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('reuses the armed grant and stable outbox request while an automatic moderation upload is pending', async () => {
+    const w=world();await toReady(w);const groupId=new Uint8Array(16).fill(0x52),requestId=new Uint8Array(16).fill(0x54);
+    w.state.groups.push({...textGroup(2),groupId,kind:3,targetId:new Uint8Array(16).fill(0x53)});
+    w.state.outbox.push({msgId:requestId,state:1,error:'',created:1n,body:'pending',type:0,replyTo:null,attachments:[]});
+    const document=encode([1n,1n,'remove','log','warn',600000n,[]]);
+    const command={m:'humanInteractionRequest' as const,communityId:toHex(COMMUNITY),channelId:null,requestId:toHex(requestId),
+      operation:63,args:['',document] as const,revision:'7',stepUp:'one-use-step-up'};
+    w.call(10_188,command);await vi.waitFor(()=>expect(w.ret(10_188)).toMatchObject({ok:true,value:{upload:'pending'}}));
+    w.call(10_187,command);await vi.waitFor(()=>expect(w.ret(10_187)).toMatchObject({ok:true,value:{upload:'pending'}}));
+    expect(w.routes.armAutoModerationGrant).toHaveBeenCalledTimes(1);
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(2);
+    expect(w.core.sendEncrypt).not.toHaveBeenCalled();expect(w.routes.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('encodes the destination as an ID and expiry for a role-panel publish', async () => {
+    const w = world(); await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52); const requestId = new Uint8Array(16).fill(0x54);
+    const destination = new Uint8Array(16).fill(0x55); const options = encode([['✅', new Uint8Array(16).fill(0x56), 'Readers']]);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'role panel request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_191, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
+      operation: 31, args: [toHex(destination), options], revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    const wire = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]);
+    expect(wire).toEqual([1n, requestId, COMMUNITY, null, 31n, 0n, NOW_S + 30n, [destination, options]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
+  it('sends an authenticated announcement schedule mutation through the core worker', async () => {
+    const w = world(); await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const announcementId = new Uint8Array(16).fill(0x55);
+    const channelId = new Uint8Array(16).fill(0x56);
+    const schedule = encode([1n, announcementId, channelId, 'scheduled notice', 'one_off', 'UTC', '2026-10-23', 12n, 0n, 0n, 1n, 1n]);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'announcement request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_184, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
+      operation: 51, args: [null, new Uint8Array()], revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_184)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    w.call(10_186, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId),
+      operation: 51, args: [null, schedule], revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_186)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual(
+      [1n, requestId, COMMUNITY, null, 51n, 0n, NOW_S + 30n, [null, schedule]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+    w.call(10_185, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [50, 51, 52] });
+    await vi.waitFor(() => expect(w.ret(10_185)).toMatchObject({ ok: true }));
+  });
+
+  it('reads generic Bot responses and offers acknowledgement only for the requested contiguous prefix', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const channelId = new Uint8Array(16).fill(0x55);
+    const responseBody = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: 8n, data: encode([]) });
+    const musicEvent = { deliveryId: 2n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 4n,
+      epoch: 1n, receivedAt: NOW_S, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61),
+      body: responseBody, operation: 13, channelId };
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [musicEvent], next: 2n, highWater: 2n });
+    w.call(10_192, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
+    await vi.waitFor(() => expect(w.ret(10_192)).toMatchObject({ ok: true, value: { through: '2', blocked: false,
+      responses: [{ requestId: toHex(requestId), operation: 13, channelId: toHex(channelId), status: 0, revision: '8', data: encode([]) }] } }));
+    w.call(10_191, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+
+    const moderationEvent = { ...musicEvent, deliveryId: 3n, operation: 60, channelId: null };
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [moderationEvent, { ...musicEvent, deliveryId: 4n }], next: 4n, highWater: 4n });
+    w.call(10_190, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
+    await vi.waitFor(() => expect(w.ret(10_190)).toMatchObject({ ok: true, value: { through: null, blocked: true,
+      responses: [{ requestId: toHex(requestId), operation: 13 }] } }));
+    w.call(10_189, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '4' });
+    await vi.waitFor(() => expect(w.ret(10_189)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['no kind-3 group', [], COMMUNITY],
+    ['wrong community', [{ ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, communityId: new Uint8Array(16).fill(0x77) }], COMMUNITY],
+  ] as const)('refuses a moderation request for %s before preparing or uploading', async (_label, groups, community) => {
+    const w = world();
+    await toReady(w);
+    w.state.groups.push(...groups);
+    w.call(10_197, { m: 'listModerationCases', communityId: toHex(community), requestId: '54'.repeat(16), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_197)).toMatchObject({ ok: false, error: { code: 'E_CORE_STATE' } }));
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    expect(w.routes.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps an uncertain send pending on transport failure and never uploads it again on retry', async () => {
+    const w = world();
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
+    w.routes.postMessage.mockRejectedValueOnce(new Error('connection lost'));
+    const command = { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 } as const;
+    w.call(10_196, command);
+    await vi.waitFor(() => expect(w.ret(10_196)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'pending' } }));
+    w.state.outbox[0].state = 1;
+    w.call(10_195, command);
+    await vi.waitFor(() => expect(w.ret(10_195)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'pending' } }));
+    expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
+    expect(w.core.sendEncrypt).toHaveBeenCalledTimes(1);
+  });
+
+  it('freshly authorizes, decodes, and leaves moderation responses pending until the page acknowledges them', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const row = [toHex(COMMUNITY), 'b2'.repeat(16), 'c3'.repeat(16), 'd4'.repeat(16), 'e5'.repeat(16), 7n,
+      'duplicate', 'remove', 'bounded excerpt', 1_800_000_000n];
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null,
+      data: encode([1, [row], null]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 2n, groupId, communityId: COMMUNITY,
+      requestId, sourceSeq: 4n, epoch: 1n, receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE,
+      messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null }], next: 2n, highWater: 2n });
+    w.call(90, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(90)).toMatchObject({ ok: true, value: { authorized: true, through: '2', responses: [
+      { deliveryId: '2', requestId: toHex(requestId), status: 0, hasMore: false,
+        cases: [{ messageId: 'e5'.repeat(16), revision: '7', excerpt: 'bounded excerpt' }] },
+    ] } }));
+    expect(w.routes.getPermissions.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionEventsRead.mock.invocationCallOrder[0]);
+    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+    w.call(91, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    await vi.waitFor(() => expect(w.ret(91)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+    expect(w.routes.getPermissions.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not read or acknowledge moderation response bodies without a fresh audit permission', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.getPermissions.mockResolvedValue({ bits: 0n, top: 0 });
+    w.call(92, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { authorized: false, responses: [], through: null } }));
+    expect(w.core.humanInteractionEventsRead).not.toHaveBeenCalled();
+    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+  });
+
+  it('decodes op64 manual evidence rows and returns the continuation cursor', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x56);
+    const evidenceId = new Uint8Array(16).fill(0x57);
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null,
+      data: encode([1, [[evidenceId, 'warn', 'reviewed reason', '', 1_800_000_000n]], new Uint8Array([1, 2])]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 3n, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: 5n, epoch: 1n, receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE,
+      messageId: new Uint8Array(16).fill(0x61), body, operation: 64, channelId: null }], next: 3n, highWater: 3n });
+    w.call(96, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true, responses: [{
+      requestId: toHex(requestId), hasMore: true, nextCursor: '0102',
+      cases: [{ key: `manual:${toHex(evidenceId)}`, reason: 'reviewed reason', action: 'warn', excerpt: '' }],
+    }] } }));
+  });
+
+  it('sends a community-bound op64 request with the opaque continuation cursor', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x58);
+    const cursor = new Uint8Array([1, 2]);
+    const groupId = new Uint8Array(16).fill(0x52);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(97, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: '0102' });
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
+    expect(request).toEqual([1n, requestId, COMMUNITY, null, 64n, null, null, [cursor]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
+  it('retries Welcome catch-up until the late private interaction group is available', async () => {
+    const w = world();
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x59);
+    let welcomePolls = 0;
+    w.sync.pollWelcomes.mockImplementation(() => {
+      welcomePolls++;
+      if (welcomePolls === 3) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+      return Promise.resolve();
+    });
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(98, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(3);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
+  it('only acknowledges the authorized contiguous prefix before a different community event', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const row = [toHex(COMMUNITY), 'b2'.repeat(16), 'c3'.repeat(16), 'd4'.repeat(16), 'e5'.repeat(16), 7n,
+      'duplicate', 'remove', 'bounded excerpt', 1_800_000_000n];
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1, [row], null]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [
+      { deliveryId: 2n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 4n, epoch: 1n,
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null },
+      { deliveryId: 3n, groupId: GROUP, communityId: NEW_COMMUNITY, requestId, sourceSeq: 5n, epoch: 1n,
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body, operation: 60, channelId: null },
+    ], next: 3n, highWater: 3n });
+    w.call(93, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(93)).toMatchObject({ ok: true, value: { blocked: true, through: '2', responses: [{
+      cases: [{ excerpt: 'bounded excerpt' }],
+    }] } }));
+    w.call(94, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3' });
+    await vi.waitFor(() => expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+    w.call(95, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    await vi.waitFor(() => expect(w.ret(95)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+  });
+
+  it('shows this community response after another community event without consuming either event', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x54);
+    const row = [toHex(COMMUNITY), 'b2'.repeat(16), 'c3'.repeat(16), 'd4'.repeat(16), 'e5'.repeat(16), 7n,
+      'duplicate', 'remove', 'bounded excerpt', 1_800_000_000n];
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1, [row], null]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [
+      { deliveryId: 2n, groupId: GROUP, communityId: NEW_COMMUNITY, requestId, sourceSeq: 4n, epoch: 1n,
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body, operation: 60, channelId: null },
+      { deliveryId: 3n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 5n, epoch: 1n,
+        receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null },
+    ], next: 3n, highWater: 3n });
+    w.call(97, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true, value: { blocked: true, through: null, responses: [
+      { deliveryId: '3', cases: [{ excerpt: 'bounded excerpt' }] },
+    ] } }));
+    w.call(98, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3' });
+    await vi.waitFor(() => expect(w.ret(98)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+  });
+
+  it('refuses to acknowledge a previously authorized range after the server revokes audit access', async () => {
+    const w = world();
+    await toReady(w);
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [], next: 5n, highWater: 5n });
+    w.call(96, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true, through: '5' } }));
+    w.routes.getPermissions.mockResolvedValue({ bits: 0n, top: 0 });
+    w.call(97, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '5' });
+    await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
+    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+  });
+
+  it('signs a sequence confirmed in the active community timeline and preserves server moderation refusals', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_200, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    w.state.rows.push(strangerRow(3));
+    const msgId = toHex(w.state.rows[0].msgId!);
+    w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
+    await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: { removal: 'accepted', evidenceUpload: 'accepted' } }));
+    const accepted = w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } };
+    expect(accepted.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(accepted.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(w.core.prepareManualRemovalEvidence).toHaveBeenCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), COMMUNITY,
+      GROUP, CHANNEL, w.state.rows[0].msgId, 3n, 'reviewed by moderator', 'bounded excerpt', 1_700_000_000n, 1_700_000_025n, 1_700_000_000n);
+    expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
+    const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
+    const evidenceRequest = decode(prepared[3]) as unknown[];
+    expect(evidenceRequest[4]).toBe(61n);
+    expect(evidenceRequest[5]).toBe(0n);
+    expect(evidenceRequest[6]).toBe(1_700_000_030n);
+    expect(evidenceRequest[1]).toEqual(prepared[0]);
+    const removalRequest = w.core.prepareManualRemovalEvidence.mock.calls[0];
+    expect(evidenceRequest[1]).toEqual(prepared[0]);
+    expect((w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } }).value)
+      .toMatchObject({ proofRequestId: toHex(removalRequest[0]), evidenceRequestId: toHex(removalRequest[1]) });
+    expect(evidenceRequest[7]).toEqual([removalRequest[0], 'reviewed by moderator', 'bounded excerpt']);
+    expect(w.core.markManualRemovalSubmitted.mock.invocationCallOrder[0]).toBeLessThan(w.routes.postModerationRemoval.mock.invocationCallOrder[0]);
+    expect(w.routes.postModerationRemoval.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionSendPrepare.mock.invocationCallOrder[0]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(new Uint8Array(16).fill(0x52), expect.any(Uint8Array));
+
+    w.routes.postModerationRemoval.mockRejectedValue(refusal(403, 'E_FORBIDDEN'));
+    w.call(10_202, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
+    await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: true, value: { removal: 'rejected' } }));
+    expect(w.state.manualEvidence).toHaveLength(0);
+    expect(w.core.rejectManualRemoval).toHaveBeenCalledTimes(1);
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['DM channel', DM_CHANNEL, 'E_BAD_INPUT'],
+    ['mismatched sequence', CHANNEL, 'E_BAD_INPUT'],
+    ['mismatched message id', CHANNEL, 'E_BAD_INPUT'],
+  ] as const)('rejects moderator removal for a %s before signing or HTTP', async (label, channelId, code) => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_210, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_210)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    const actualMsgId = toHex(w.state.rows[0].msgId!);
+    const request = label === 'mismatched sequence' ? { channelId: toHex(channelId), msgId: actualMsgId, seq: '4' }
+      : { channelId: toHex(channelId), msgId: label === 'mismatched message id' ? 'ff'.repeat(16) : actualMsgId, seq: '3' };
+    w.call(10_211, { m: 'moderateRemoveMessage', ...request, reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
+    await vi.waitFor(() => expect(w.ret(10_211)).toMatchObject({ ok: false, error: { code } }));
+    expect(w.core.prepareManualRemovalEvidence).not.toHaveBeenCalled();
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
+  it('reports an accepted removal separately when op61 is refused, so the page can retry evidence only', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_213, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_213)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
+    w.state.rows.push(strangerRow(3));
+    w.routes.postMessage.mockRejectedValue(new DillaHttpError({ status: 403, code: 'E_FORBIDDEN', detail: '', retryAfterMs: null, extra: [] }));
+    w.call(10_214, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3',
+      reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
+    await vi.waitFor(() => expect(w.ret(10_214)).toMatchObject({ ok: true, value: { removal: 'accepted', evidenceUpload: 'rejected' } }));
+    const rejectedEvidence = w.ret(10_214) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } };
+    expect(rejectedEvidence.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(rejectedEvidence.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(w.routes.postModerationRemoval).toHaveBeenCalledTimes(1);
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
+    expect(w.core.sendFail).toHaveBeenCalledWith(expect.any(Uint8Array), 'E_FORBIDDEN');
+  });
+
+  it.each([
+    ['reason', '🧪'.repeat(257), 'excerpt'],
+    ['excerpt', 'reviewed by moderator', '🧪'.repeat(129)],
+  ])('rejects a moderator removal with a %s over the UTF-8 byte limit before signing', async (_label, reason, excerpt) => {
+    const w = world();
+    await toReady(w);
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    w.call(10_212, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3', reason, excerpt });
+    await vi.waitFor(() => expect(w.ret(10_212)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.prepareManualRemovalEvidence).not.toHaveBeenCalled();
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
+  it.each(['unloaded permissions', 'denied ManageMessages'] as const)('fails closed on %s before signing or HTTP', async (label) => {
+    const w = world();
+    w.routes.listCommunities.mockResolvedValue([{ id: COMMUNITY, name: 'friends', owner: STRANGER, policyVersion: 1n }]);
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    if (label === 'unloaded permissions') w.routes.listOverwrites.mockRejectedValue(new Error('not loaded'));
+    await toReady(w);
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    if (label === 'denied ManageMessages') {
+      w.call(10_220, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(10_220)).toMatchObject({ ok: true, value: null }));
+    }
+    w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
+    await vi.waitFor(() => expect(w.ret(10_221)).toMatchObject({ ok: false,
+      error: { code: label === 'denied ManageMessages' ? 'E_FORBIDDEN' : 'E_NOT_READY' } }));
+    expect(w.core.prepareManualRemovalEvidence).not.toHaveBeenCalled();
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
+  it('bridges self-role policy reads, configuration, and member selections', async () => {
+    const w = world();
+    const listSelfRoles = vi.fn(() => Promise.resolve([{ id: STRANGER, name: 'Readers', position: 2, selfSelected: false }]));
+    const configureSelfRoles = vi.fn(() => Promise.resolve());
+    const selectSelfRole = vi.fn(() => Promise.resolve());
+    const registerRolePanel = vi.fn(() => Promise.resolve());
+    Object.assign(w.routes, { listSelfRoles, configureSelfRoles, selectSelfRole, registerRolePanel });
+    await toReady(w);
+    const communityId = toHex(COMMUNITY);
+    const roleId = toHex(STRANGER);
+    const requestId = toHex(new Uint8Array(16).fill(0x55));
+    w.call(990, { m: 'listSelfRoles', communityId });
+    await vi.waitFor(() => expect(w.ret(990)).toMatchObject({ ok: true, value: [{ id: roleId, name: 'Readers', selfSelected: false }] }));
+    expect(listSelfRoles).toHaveBeenCalledWith(COMMUNITY);
+    w.call(991, { m: 'configureSelfRoles', communityId, requestId, roleIds: [roleId] });
+    await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true, value: null }));
+    expect(configureSelfRoles).toHaveBeenCalledWith(COMMUNITY, new Uint8Array(16).fill(0x55), [STRANGER]);
+    w.call(992, { m: 'selectSelfRole', communityId, roleId, requestId, enabled: true });
+    await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true, value: null }));
+    expect(selectSelfRole).toHaveBeenCalledWith(COMMUNITY, STRANGER, new Uint8Array(16).fill(0x55), true);
+    w.call(994, { m: 'registerRolePanel', communityId, requestId, channelId: toHex(CHANNEL), messageSeq: '9',
+      options: [{ emoji: '✅', roleId }] });
+    await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true, value: null }));
+    expect(registerRolePanel).toHaveBeenCalledWith(COMMUNITY, new Uint8Array(16).fill(0x55), CHANNEL, 9n,
+      [{ emoji: '✅', roleId: STRANGER }]);
+    w.call(995, { m: 'registerRolePanel', communityId, requestId, channelId: toHex(CHANNEL), messageSeq: '9',
+      options: [{ emoji: '✅', roleId }, { emoji: '✅', roleId: toHex(USER) }] });
+    await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(registerRolePanel).toHaveBeenCalledTimes(1);
+    w.call(993, { m: 'configureSelfRoles', communityId, requestId, roleIds: [roleId, roleId] });
+    await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+  });
+  it('bridges member timeout reads and writes with decimal Unix seconds', async () => {
+    const w = world();
+    const getMemberTimeout = vi.fn(() => Promise.resolve(1_800_000_000n));
+    const putMemberTimeout = vi.fn(() => Promise.resolve(1_800_000_000n));
+    const deleteMemberTimeout = vi.fn(() => Promise.resolve());
+    Object.assign(w.routes, { getMemberTimeout, putMemberTimeout, deleteMemberTimeout });
+    await toReady(w);
+    w.call(991, { m: 'getMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER) });
+    await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true, value: '1800000000' }));
+    expect(getMemberTimeout).toHaveBeenCalledWith(COMMUNITY, STRANGER);
+
+    const requestId = new Uint8Array(16).fill(0x55);
+    w.call(992, { m: 'setMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER),
+      requestId: toHex(requestId), expires: '1800000000' });
+    await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true, value: null }));
+    expect(putMemberTimeout).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId, 1_800_000_000n);
+
+    w.call(993, { m: 'clearMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId) });
+    await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: true, value: null }));
+    expect(deleteMemberTimeout).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId);
+  });
+
+  it('rejects malformed timeout timestamps before an HTTP route call', async () => {
+    const w = world();
+    const putMemberTimeout = vi.fn();
+    Object.assign(w.routes, { putMemberTimeout });
+    await toReady(w);
+    w.call(994, { m: 'setMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER),
+      requestId: '55'.repeat(16), expires: '01' });
+    await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(putMemberTimeout).not.toHaveBeenCalled();
+  });
+
+  it('returns the accepted manual warning action metadata', async () => {
+    const w = world();
+    const requestId = new Uint8Array(16).fill(0x55);
+    const actionId = new Uint8Array(16).fill(0x66);
+    const warnMember = vi.fn(() => Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 }));
+    Object.assign(w.routes, { warnMember });
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    warnMember.mockImplementation(() => {
+      const row = w.state.manualWarnings[0];
+      if (row !== undefined) w.state.outbox.push({ msgId: row.evidenceRequestId, state: 0, error: '', created: NOW_S,
+        body: 'sealed interaction', type: 0, replyTo: null, attachments: [] });
+      return Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 });
+    });
+    w.call(996, { m: 'warnMember', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId), reason: 'follow the rules' });
+    await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true, value: {
+      requestId: toHex(requestId), actionId: toHex(actionId), revision: '7', acceptedAt: 1_800_000_000, evidence: 'accepted',
+    } }));
+    expect(w.core.prepareManualWarningEvidence).toHaveBeenCalledWith(requestId, expect.any(Uint8Array), COMMUNITY, STRANGER, 'follow the rules', expect.any(BigInt), expect.any(BigInt));
+    expect(w.core.markManualWarningAccepted).toHaveBeenCalledWith(requestId, actionId, 7n, 1_800_000_000n);
+    expect(warnMember).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId);
+    const requestBody = w.core.humanInteractionSendPrepare.mock.calls[0]?.[3];
+    expect(requestBody).toBeInstanceOf(Uint8Array);
+    if (requestBody === undefined) throw new Error('manual warning did not prepare an interaction request');
+    const wire = decode(requestBody) as unknown[];
+    expect(wire[7]).toEqual([requestId, 'follow the rules', '']);
+  });
+
   it('returns full AFK settings through the authenticated settings route', async () => {
     const w = world();
     await toReady(w);
@@ -40,6 +824,17 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
     w.gateway.emit({ type: 'ready', info: READY_INFO });
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false }));
+  });
+  it('publishes each community_changed wakeup even when the member list itself is unchanged', async () => {
+    const w = world();
+    await toReady(w);
+    const key = `communityChanges:${toHex(COMMUNITY)}` as const;
+    expect(w.last(key) ?? 0).toBe(0);
+    const changed: GatewayEvent = { type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } };
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(w.last(key)).toBe(1));
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(w.last(key)).toBe(2));
   });
   it('a community re-read keeps the previous AFK snapshot until the new one lands (R-AFK3 a)', async () => {
     const w = world();
@@ -762,7 +1557,7 @@ it('refreshes only core-owned pending leaves and never publishes list bytes', as
   await toReady(w);
   w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 1, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
@@ -2146,7 +2941,7 @@ it('resign waits for ready backup maintenance', async () => {
   const gate = deferred<void>();
   w.account.ensureBackups.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.account.ensureBackups).toHaveBeenCalledTimes(2));
@@ -2164,7 +2959,7 @@ it('resign waits for ready keypackage refill', async () => {
   const gate = deferred<void>();
   w.routes.postKeyPackages.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 1, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.routes.postKeyPackages).toHaveBeenCalled());
@@ -2183,7 +2978,7 @@ it('resign waits for ready trust ingestion', async () => {
   const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
   w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalled());
@@ -2201,7 +2996,7 @@ it('resign waits for ready own-list maintenance', async () => {
   const gate = deferred<{ version: bigint; listed: boolean }>();
   w.account.refreshOwnDeviceList.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.account.refreshOwnDeviceList).toHaveBeenCalledTimes(2));
@@ -2219,7 +3014,7 @@ it('resign waits for ready backup repair after the own-list refresh', async () =
   const gate = deferred<boolean>();
   w.account.repairBackupState.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.account.repairBackupState).toHaveBeenCalledTimes(2));
@@ -2237,7 +3032,7 @@ it('resign waits for the ready community refresh', async () => {
   const gate = deferred<Awaited<ReturnType<typeof w.routes.listCommunities>>>();
   w.routes.listCommunities.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.routes.listCommunities).toHaveBeenCalledTimes(2));
@@ -2635,11 +3430,17 @@ describe('Controller in the ready phase', () => {
   it('a server invite lands in the server', async () => {
     const w = world({ phase: 0 });
     w.routes.getInvite.mockImplementationOnce(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
+    const ordering: string[] = [];
+    const negotiation = vi.fn(() => { ordering.push('negotiate'); return Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true }); });
+    (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
+    w.routes.joinCommunity.mockImplementationOnce(() => { ordering.push('join'); w.state.joined = true; return Promise.resolve(); });
     await toKeys(w);
     w.call(3, SUBMIT);
     await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { communityId: toHex(COMMUNITY), joinError: null } });
     expect(w.signup.submit).toHaveBeenCalledWith({ invite: 'friends-code', username: 'web', display: 'Web', password: null });
+    expect(ordering).toEqual(['negotiate', 'join']);
+    expect(negotiation).toHaveBeenCalledTimes(1);
     expect(w.routes.joinCommunity).toHaveBeenCalledWith(COMMUNITY, 'friends-code');
     expect(w.account()?.phase).toBe('ready');
     const retAt = w.posted.findIndex((m) => m.t === 'ret' && m.id === 3);
@@ -2647,6 +3448,19 @@ describe('Controller in the ready phase', () => {
     expect(listedAt).toBeGreaterThan(-1);
     expect(listedAt).toBeLessThan(retAt);
     expect(w.last<CommunitySummary[]>('communities')).toEqual([{ id: toHex(COMMUNITY), name: 'friends', owner: toHex(USER) }]);
+  });
+
+  it('joins once when an older server does not implement session negotiation', async () => {
+    const w = world({ phase: 0 });
+    w.routes.getInvite.mockImplementationOnce(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
+    const negotiation = vi.fn(() => Promise.reject(refusal(404, 'E_NOT_FOUND')));
+    (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
+    await toKeys(w);
+    w.call(3, SUBMIT);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    expect(w.ret(3)).toMatchObject({ t: 'ret', id: 3, ok: true, value: { communityId: toHex(COMMUNITY), joinError: null } });
+    expect(negotiation).toHaveBeenCalledTimes(1);
+    expect(w.routes.joinCommunity).toHaveBeenCalledTimes(1);
   });
 
   it('a refused join is not a failed signup', async () => {
@@ -5159,7 +5973,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await toReady(w);
     await openGeneral(w);
     w.call(4, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: 'better words' });
-    w.call(5, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX });
+    w.call(5, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX, seq: '5' });
     w.call(6, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: true });
     w.call(7, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: false });
     w.call(8, { m: 'pin', channelId: CH_HEX, msgId: MSG_HEX, on: true });
@@ -5168,11 +5982,11 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     for (const id of [4, 5, 6, 7, 8, 9]) expect(w.ret(id)).toEqual({ t: 'ret', id, ok: true, value: null });
     expect(w.sync.sendRequest.mock.calls.map(([g, r]) => [toHex(g), r.type, toHex(r.replyTo!), r.body, r.attachments])).toEqual([
       [toHex(GROUP), 1, MSG_HEX, 'better words', []],
-      [toHex(GROUP), 2, MSG_HEX, '', []],
       [toHex(GROUP), 3, MSG_HEX, '👍', []],
       [toHex(GROUP), 4, MSG_HEX, '👍', []],
       [toHex(GROUP), 5, MSG_HEX, '', []],
       [toHex(GROUP), 6, MSG_HEX, '', []],
+      [toHex(GROUP), 2, MSG_HEX, '', []],
     ]);
     expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
   });
@@ -5189,6 +6003,18 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     w.call(5, { m: 'send', channelId: CH_HEX, text: 'answer', replyTo: MSG_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [], threadId: null });
+  });
+
+  it('uses the uploader-only tombstone route to delete own content during an active timeout', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.routes.getMemberTimeout.mockResolvedValue(1_800_000_000n);
+    w.call(51, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX, seq: '5' });
+    await vi.waitFor(() => expect(w.ret(51)).toEqual({ t: 'ret', id: 51, ok: true, value: null }));
+    expect(w.routes.getMemberTimeout).toHaveBeenCalledWith(COMMUNITY, USER);
+    expect(w.routes.deleteGroupMessage).toHaveBeenCalledWith(GROUP, 5n);
+    expect(w.sync.sendRequest).not.toHaveBeenCalled();
   });
 
   it('a recorded purge runs after the outbox changed: the message, then each reference, then done', async () => {
@@ -5943,6 +6769,88 @@ describe('slow mode slices (CB2)', () => {
     expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: 0, queued: false });
   });
 
+});
+
+describe('pending role-panel actions', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('retries a transient accepted-action failure online with backoff, then clears the journal', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = `rolePanel.pending.${'42'.repeat(16)}`;
+    const action = {
+      communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), messageSeq: '7', groupId: toHex(GROUP), eventSeq: '9',
+      emoji: '👍', enabled: true, userId: toHex(USER), deviceId: toHex(DEVICE),
+    };
+    w.core.settingPut(key, JSON.stringify(action));
+    w.routes.applyRolePanelReaction
+      .mockRejectedValueOnce(new DillaHttpError({ status: 503, code: 'E_INTERNAL', detail: '', retryAfterMs: null, extra: [] }))
+      .mockResolvedValueOnce();
+    const retry = w.controller as unknown as { retryPendingRolePanelActions(core: CorePort, me: { userId: Uint8Array; deviceId: Uint8Array }): void };
+
+    retry.retryPendingRolePanelActions(w.core as unknown as CorePort, { userId: USER, deviceId: DEVICE });
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(499);
+    expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(2));
+    expect(w.state.settings[key]).toBeUndefined();
+  });
+
+  it('cancels a scheduled retry when the worker quiesces', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = `rolePanel.pending.${'43'.repeat(16)}`;
+    const action = {
+      communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), messageSeq: '7', groupId: toHex(GROUP), eventSeq: '9',
+      emoji: '👍', enabled: true, userId: toHex(USER), deviceId: toHex(DEVICE),
+    };
+    w.core.settingPut(key, JSON.stringify(action));
+    w.routes.applyRolePanelReaction.mockRejectedValue(new DillaHttpError({
+      status: 503, code: 'E_INTERNAL', detail: '', retryAfterMs: null, extra: [],
+    }));
+    const internal = w.controller as unknown as {
+      retryPendingRolePanelActions(core: CorePort, me: { userId: Uint8Array; deviceId: Uint8Array }): void;
+      quiesce(): void;
+    };
+
+    internal.retryPendingRolePanelActions(w.core as unknown as CorePort, { userId: USER, deviceId: DEVICE });
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+    internal.quiesce();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1);
+    expect(w.state.settings[key]).toBeDefined();
+  });
+
+  it('caps online retry attempts and preserves the journal after exhaustion', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const key = `rolePanel.pending.${'44'.repeat(16)}`;
+    const action = {
+      communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), messageSeq: '7', groupId: toHex(GROUP), eventSeq: '9',
+      emoji: '👍', enabled: true, userId: toHex(USER), deviceId: toHex(DEVICE),
+    };
+    w.core.settingPut(key, JSON.stringify(action));
+    w.routes.applyRolePanelReaction.mockRejectedValue(new DillaHttpError({
+      status: 503, code: 'E_INTERNAL', detail: '', retryAfterMs: null, extra: [],
+    }));
+    const retry = w.controller as unknown as { retryPendingRolePanelActions(core: CorePort, me: { userId: Uint8Array; deviceId: Uint8Array }): void };
+    retry.retryPendingRolePanelActions(w.core as unknown as CorePort, { userId: USER, deviceId: DEVICE });
+    await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+    for (const [index, delay] of [500, 1_000, 2_000, 4_000, 8_000].entries()) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(index + 2));
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(6);
+    expect(w.state.settings[key]).toBeDefined();
+  });
 });
 
 describe('threads (web3.7 TB2)', () => {

@@ -12,8 +12,8 @@ import { forbidden, refused, statusIs, useRun, type Announce } from './shared.ts
 
 export const ROLE_NAME_MAX_BYTES = 100;
 const UTF8 = new TextEncoder();
-/** Every one of the 24 bits (the owner's and an administrator's). */
-const ALL_BITS = 0xFFFFFF;
+/** Every one of the 25 bits (the owner's and an administrator's). */
+const ALL_BITS = 0x1FFFFFF;
 
 export interface RoleEditorFlowProps {
   communityId: string;

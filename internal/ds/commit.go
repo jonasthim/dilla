@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -92,6 +93,12 @@ func (d *DS) commitPreflight(ctx context.Context, s Session, groupID id.ID, epoc
 	}
 	if !external {
 		if _, err := d.leafOf(ctx, groupID, s.DeviceID); err != nil {
+			return store.GroupRow{}, err
+		}
+		// A stale-epoch refusal carries the winning commit and outstanding proposal refs. Those
+		// recovery bytes are part of the scoped group capability, so authorize the negotiated wire
+		// version before reading or returning any conflict metadata.
+		if err := d.requireGroupCapability(ctx, s, row); err != nil {
 			return store.GroupRow{}, err
 		}
 	}
@@ -304,6 +311,16 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		var welcomeTree, welcomeTreeHash []byte
 		mergeRan := false
 		txErr := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+			if err := tx.LockGroup(ctx, groupID); err != nil {
+				return err
+			}
+			lockedGroup, err := tx.GetGroup(ctx, groupID)
+			if err != nil {
+				return err
+			}
+			if lockedGroup.ClosedAt != nil || lockedGroup.Epoch != row.Epoch {
+				return errCommitInvalid("epoch", "the group changed while this commit was being prepared")
+			}
 			epoch, err := g.Merge(ctx, *processed.Staged)
 			if err != nil {
 				return err
@@ -721,6 +738,60 @@ func leafKeyIsRegistered(device store.DeviceRow, leafKey []byte) bool {
 	return len(leafKey) != 0 && bytes.Equal(leafKey, device.DSKPub)
 }
 
+// checkManagedBotCredential binds a managed account's MLS identity to the final credential the
+// installation verified. Human accounts retain the historical credential path unchanged.
+// requireCurrent is true at admission points; member-cache rewrites use false so disabling a Bot
+// does not block unrelated commits that preserve its already admitted leaf.
+func checkManagedBotCredential(ctx context.Context, repo store.Repository, userID id.ID, device store.DeviceRow, identity []byte, requireCurrent bool) (bool, error) {
+	user, err := repo.GetUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if user.Kind != 1 {
+		return false, nil
+	}
+	if !bytes.Equal(identity, device.CredentialBlob) {
+		return true, errors.New("the Bot leaf credential differs from the verified device credential")
+	}
+	if requireCurrent {
+		binding, bot, err := access.ForUserDevice(ctx, repo, userID, device.ID)
+		if err != nil || !bot || binding.State < store.BotInstallationJoining || binding.State > store.BotInstallationReady {
+			if err != nil {
+				return true, err
+			}
+			return true, errors.New("the Bot installation is not currently authorized to admit a leaf")
+		}
+	} else {
+		verified, err := hasVerifiedBotCredential(ctx, repo, userID, device.ID)
+		if err != nil {
+			return true, err
+		}
+		if !verified {
+			return true, errors.New("the Bot has no verified installation credential")
+		}
+	}
+	return true, nil
+}
+
+func hasVerifiedBotCredential(ctx context.Context, repo store.Repository, userID, deviceID id.ID) (bool, error) {
+	after := id.ID{}
+	for {
+		rows, err := repo.ListBotInstallationsByDevice(ctx, deviceID, after, 100)
+		if err != nil {
+			return false, err
+		}
+		for _, row := range rows {
+			if row.UserID != nil && *row.UserID == userID && row.DeviceID != nil && *row.DeviceID == deviceID && row.CredentialVerifiedAt != nil {
+				return true, nil
+			}
+		}
+		if len(rows) < 100 {
+			return false, nil
+		}
+		after = rows[len(rows)-1].ID
+	}
+}
+
 // checkAddedMember validates one Add's credential against the device list the delivery service
 // holds and the channel ACL. v is the guest the caller already holds, which the device list is
 // verified in (DeviceLists.Entries says why a second instance must not be acquired here).
@@ -748,6 +819,9 @@ func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID
 	if !leafKeyIsRegistered(device, a.SignatureKey) {
 		return errCommitInvalid("add_key_package",
 			"the added leaf's signature key is not the device's registered key")
+	}
+	if _, err := checkManagedBotCredential(ctx, d.opts.Store, userID, device, a.CredentialIdentity, true); err != nil {
+		return errCommitInvalid("add_key_package", "the Bot credential is not the current verified installation credential")
 	}
 
 	// The device-list clause. A substring search over the serialized blob is NOT membership: a
@@ -817,6 +891,9 @@ func (d *DS) checkExternalJoiner(ctx context.Context, v DeviceListVerifier, grou
 	}
 	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
 		return errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
+	}
+	if _, err := checkManagedBotCredential(ctx, d.opts.Store, userID, device, leaf.CredentialIdentity, true); err != nil {
+		return errCommitInvalid("external_joiner", "the Bot credential is not the current verified installation credential")
 	}
 	if !joining {
 		return nil
@@ -916,6 +993,9 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 				return err
 			}
 		}
+		if err := d.requireGroupCapability(ctx, s, row); err != nil {
+			return err
+		}
 		ref, detail, err := d.queueMemberProposal(ctx, g, s, groupID, row.Epoch, blob)
 		if err != nil {
 			return err
@@ -925,6 +1005,16 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 		// not be shadowed by the seq variable below.
 		senderDevice := s.DeviceID
 		txErr := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+			if err := tx.LockGroup(ctx, groupID); err != nil {
+				return err
+			}
+			lockedGroup, err := tx.GetGroup(ctx, groupID)
+			if err != nil {
+				return err
+			}
+			if lockedGroup.ClosedAt != nil || lockedGroup.EpochUnknown || lockedGroup.Epoch != row.Epoch {
+				return errCommitInvalid("epoch", "the group changed while this proposal was being prepared")
+			}
 			allocated, err := nextSeq(ctx, tx, groupID)
 			if err != nil {
 				return err

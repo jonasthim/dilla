@@ -6,7 +6,7 @@ import { DillaHttpError } from './errors';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
+import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -31,6 +31,8 @@ const HASH = fill(32, 0x10);
 const REF = fill(32, 0x11);
 const WIN = fill(48, 0x12);
 const STORED = fill(5, 0x1a);
+const ADMISSION_PAYLOAD = fill(128, 0x1b);
+const ADMISSION_SIGNATURE = fill(64, 0x1c);
 
 function octetReply(status: number, body: Uint8Array): Response {
   return new Response(body.slice(), { status, headers: { 'Content-Type': 'application/octet-stream', 'X-Dilla-Generation': '7' } });
@@ -66,6 +68,86 @@ it('bounds a history page at one MiB and leaves HTTP error details worker-local'
   const { routes, t } = setup();
   t.replies.push(octetReply(200, new Uint8Array(1_048_577)));
   await expect(routes.getDeviceListHistory(USER, 0n)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE' });
+});
+
+it('reads and writes the manager-approved self-role policy and member selection', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [[ROLE, 'Readers', 4, 0]]));
+  await expect(routes.listSelfRoles(COMMUNITY)).resolves.toEqual([{ id: ROLE, name: 'Readers', position: 4, selfSelected: false }]);
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/self-roles` });
+  t.replies.push(cborReply(200, [USER, 1]));
+  await routes.configureSelfRoles(COMMUNITY, USER, [ROLE]);
+  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/policy`, body: encode([USER, [ROLE]]) });
+  t.replies.push(noContent());
+  await routes.selectSelfRole(COMMUNITY, ROLE, USER, true);
+  expect(http.requests[2]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/${hex(ROLE)}`, body: encode([USER, 1]) });
+});
+
+it('registers only bounded unique mappings against an accepted Bot message identity', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [USER, 1]));
+  await routes.registerRolePanel(COMMUNITY, USER, CHANNEL, 9n, [{ emoji: '✅', roleId: ROLE }]);
+  expect(http.requests[0]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/role-panels`,
+    body: encode([USER, CHANNEL, 9n, [['✅', ROLE]]]), retry429: false });
+  await expect(routes.registerRolePanel(COMMUNITY, USER, CHANNEL, 0n, [{ emoji: '✅', roleId: ROLE }])).rejects.toThrow(/invalid role panel identity/u);
+  await expect(routes.registerRolePanel(COMMUNITY, USER, CHANNEL, 9n, [
+    { emoji: '✅', roleId: ROLE }, { emoji: '✅', roleId: fill(16, 0x15) },
+  ])).rejects.toThrow(/duplicate role panel mapping/u);
+});
+
+it('submits only a bounded explicit panel action after an accepted panel event', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(noContent());
+  await routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 11n, '✅', true);
+  expect(http.requests[0]).toMatchObject({ method: 'POST',
+    path: `/v1/communities/${hex(COMMUNITY)}/role-panels/${hex(CHANNEL)}/9/reaction`,
+    body: encode([GROUP, 11n, '✅', 1]), bucket: 'write', idempotent: true, retry429: false, ok: [204] });
+  await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 0n, GROUP, 11n, '✅', true)).rejects.toThrow(/invalid role panel reaction/u);
+  await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 0n, '✅', false)).rejects.toThrow(/invalid role panel reaction/u);
+});
+
+it('returns the current interaction admission proof without interpreting its signed payload', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, ADMISSION_SIGNATURE]));
+  await expect(routes.getInteractionAdmissionContext(GROUP)).resolves.toEqual({
+    payload: ADMISSION_PAYLOAD, signature: ADMISSION_SIGNATURE,
+  });
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/groups/${hex(GROUP)}/interaction-admission-context`,
+    bucket: 'read', idempotent: true, maxBodyBytes: 160 * 1024 });
+});
+
+it('rejects malformed current interaction admission proof envelopes', async () => {
+  const { routes, t } = setup();
+  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, fill(63, 0x1c)]));
+  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+});
+
+it('bounds the current interaction admission proof response to 160 KiB', async () => {
+  const { routes, t } = setup();
+  t.replies.push(bytesReply(200, fill(160 * 1024 + 1, 0)));
+  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 200 });
+});
+
+it('reads the active bot join-role setting and writes it with a request ID', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [ROLE, BOT]));
+  await expect(routes.getBotJoinRole(COMMUNITY)).resolves.toEqual({ roleId: ROLE, installationId: BOT });
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/bot-join-role` });
+  t.replies.push(cborReply(200, [USER, BOT]));
+  await expect(routes.configureBotJoinRole(COMMUNITY, USER, ROLE, BOT)).resolves.toEqual(BOT);
+  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/bot-join-role`,
+    body: encode([USER, ROLE, BOT]), idempotent: true });
+});
+
+it('reads and writes DJ roles with the ready installation fence', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [[ROLE], BOT]));
+  await expect(routes.getBotDjRoles(COMMUNITY)).resolves.toEqual({ roleIds: [ROLE], installationId: BOT });
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles` });
+  t.replies.push(cborReply(200, [USER, 1]));
+  await expect(routes.configureBotDjRoles(COMMUNITY, USER, BOT, [ROLE])).resolves.toBe(1);
+  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles`,
+    body: encode([USER, BOT, [ROLE]]), idempotent: true });
 });
 
 function member(i: number): Uint8Array {
@@ -291,6 +373,16 @@ const CASES: Case[] = [
     name: 'getGroupInfo returns the body unchanged', call: (r) => r.getGroupInfo(GROUP),
     method: 'GET', path: `/v1/groups/${hex(GROUP)}/info`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => bytesReply(200, INFO), expected: INFO,
+  },
+  {
+    name: 'getGroupHealState decodes the member status', call: (r) => r.getGroupHealState(GROUP),
+    method: 'GET', path: `/v1/groups/${hex(GROUP)}/heal-state`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [3, 14, 9, 4, 1]), expected: { epoch: 3n, nextSeq: 14n, generation: 9n, needFromSeq: 4n, needsHeal: true },
+  },
+  {
+    name: 'postGroupHeal submits snapshot and reads status', call: async (r) => { const result = await r.postGroupHeal(GROUP, BODY); return result; },
+    method: 'POST', path: `/v1/groups/${hex(GROUP)}/heal`, bucket: 'write', idempotent: false, auth: true, sent: BODY,
+    reply: () => cborReply(200, [3, 14]), expected: { epoch: 3n, nextSeq: 14n },
   },
   {
     name: 'getGroupTree returns the body unchanged', call: (r) => r.getGroupTree(GROUP),
@@ -945,6 +1037,20 @@ describe('Routes: retries and inputs', () => {
     expect(t.sleeps).toEqual([625]);
   });
 
+  it('decodes a contiguous moderation removal page and refuses gaps or cursor mismatch', async () => {
+    const { t, routes, http } = setup();
+    const proof = encode([1, fill(16, 1), fill(16, 2), fill(16, 3), fill(16, 4), GROUP, 8, 20]);
+    t.replies.push(cborReply(200, [[[5, proof, SIG, 19]], 5]));
+    await expect(routes.getModerationRemovals(GROUP, 4n)).resolves.toEqual({
+      rows: [{ revision: 5n, proof, signature: SIG, acceptedAt: 19n }], nextRevision: 5n,
+    });
+    expect(http.requests[0]).toMatchObject({ path: `/v1/groups/${hex(GROUP)}/moderation/removals?after=4&limit=${MODERATION_REMOVALS_PAGE}` });
+    t.replies.push(cborReply(200, [[[7, proof, SIG, 19]], 7]));
+    await expect(routes.getModerationRemovals(GROUP, 5n)).rejects.toThrow(/revision gap/);
+    t.replies.push(cborReply(200, [[], 9]));
+    await expect(routes.getModerationRemovals(GROUP, 5n)).rejects.toThrow(/cursor mismatch/);
+  });
+
   it('refuses bad inputs before sending', async () => {
     const { t, routes } = setup();
     // Thunks, not promises: each call starts only when its expectation is attached, so no
@@ -1373,6 +1479,28 @@ describe('Routes: server admin and moderation', () => {
     return { result, seen: t.seen[0], http };
   };
 
+  it('arms automatic moderation with the exact config digest and decodes the opaque one-use grant', async () => {
+    const token='opaque-grant-token'; const digest=new Uint8Array(32).fill(0x61); const request=fill(16,0x62);
+    const fixture=setup(); fixture.t.replies.push(cborReply(200,[token,900n]));
+    const result=await fixture.routes.armAutoModerationGrant(GROUP,request,COMMUNITY,7n,800n,digest,'step-up-once');
+    expect(result).toEqual({token,expires:900n});
+    expect(fixture.http.requests[0]).toMatchObject({method:'POST',path:`/v1/groups/${hex(GROUP)}/automod-grants/arm`,bucket:'write',idempotent:true,
+      body:encode([request,COMMUNITY,7n,800n,digest,'step-up-once'])});
+    expect(fixture.http.requests[0].body).not.toContain('plaintext config');
+  });
+
+  it('posts the opaque ClientCore-signed removal body to the group route and surfaces server refusal', async () => {
+    const body = encode([new Uint8Array([1, 2]), new Uint8Array(64).fill(0x7a)]);
+    const ok = setup();
+    ok.t.replies.push(cborReply(200, [INVITE, 1]));
+    await ok.routes.postModerationRemoval(GROUP, body);
+    expect(ok.http.requests[0]).toMatchObject({ method: 'POST', path: `/v1/groups/${hex(GROUP)}/moderation/removals`, body,
+      bucket: 'write', idempotent: true, maxBodyBytes: 128 });
+    const denied = setup();
+    denied.t.replies.push(refusal(403, 'E_FORBIDDEN'));
+    await expect(denied.routes.postModerationRemoval(GROUP, body)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+  });
+
   it('getPermissions reads [bits, top]', async () => {
     const { result, seen, http } = await one(cborReply(200, [16_777_215, TOP]), (r) => r.getPermissions(COMMUNITY));
     expect(result).toEqual({ bits: 16_777_215n, top: TOP });
@@ -1585,12 +1713,12 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, color: 0x1000000 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 0 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 2 ** 31 }),
-      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x1000000 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x2000000 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, deny: -1 }),
       () => routes.patchRole(ROLE_2, { color: -1 }),
       () => routes.patchRole(ROLE_2, { deny: 1.5 }),
       () => routes.putOverwrite(CHANNEL, 2 as 0, TARGET, { allow: 0, deny: 0 }),
-      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x1000000, deny: 0 }),
+      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x2000000, deny: 0 }),
       () => routes.deleteOverwrite(CHANNEL, 2 as 0, TARGET),
       () => routes.grantRole(new Uint8Array(15), TARGET, ROLE_2),
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ kind: 0, targetId: new Uint8Array(15), allow: 0, deny: 1 }] }),
@@ -1601,10 +1729,12 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
   it('accepts the 100-byte role name edge', async () => {
     await one(cborReply(201, [ROLE_2]), (r) => r.createRole(COMMUNITY, { ...NEW_ROLE, name: 'x'.repeat(100) }));
   });
-  it('a role row keeps only the 24 permission bits', async () => {
-    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 8, 2 ** 40, 0, 1];
+  it('accepts moderate_members on create and a role row masks only the next unknown bit', async () => {
+    const created = await one(cborReply(201, [ROLE_2]), (r) => r.createRole(COMMUNITY, { ...NEW_ROLE, allow: 1 << 24 }));
+    expect(created.seen.body).toEqual(encode(['Crew', 0x30a46c, 1, 1 << 24, 0, 1, 1]));
+    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 2 ** 24 + 8, 2 ** 40 + 2 ** 25, 0, 1];
     const { result } = await one(cborReply(200, [row]), (r) => r.listRoles(COMMUNITY));
-    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 8, deny: 0, hoist: false, mentionable: true }]);
+    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: (1 << 24) + 8, deny: 0, hoist: false, mentionable: true }]);
   });
   it('listOverwrites reads [channel_id, kind, target_id, allow, deny] rows', async () => {
     const { result, seen, http } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 0, 1], [CHANNEL, 1, TARGET, 2, 0]]), (r) => r.listOverwrites(COMMUNITY));
@@ -1615,9 +1745,9 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
     expect([seen.method, seen.url]).toEqual(['GET', `https://dilla.test/v1/communities/${hex(COMMUNITY)}/overwrites`]);
     expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['read', true]);
   });
-  it('an overwrite row keeps only the 24 permission bits, as a role row does', async () => {
-    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 8, 0x1000000 + 1]]), (r) => r.listOverwrites(COMMUNITY));
-    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: 8, deny: 1 }]);
+  it('an overwrite row keeps moderate_members and masks the next unknown bit', async () => {
+    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 2 ** 24 + 8, 2 ** 25 + 1]]), (r) => r.listOverwrites(COMMUNITY));
+    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: (1 << 24) + 8, deny: 1 }]);
   });
   it('listOverwrites refuses a kind of 2, a short row and 10 001 rows', async () => {
     const bad = async (reply: Response, code: string) => {
@@ -1648,7 +1778,7 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
     await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, kind: 2 as 0 }] }))
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
-    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x1000000 }] }))
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x2000000 }] }))
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
     expect(t.seen).toHaveLength(0);
     t.replies.push(cborReply(201, [CHANNEL, 0, 0]));
@@ -1788,5 +1918,149 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     expect(routes.moveToAFK).toBeUndefined();
     // @ts-expect-error retired in web3.9
     expect(routes.leaveAFK).toBeUndefined();
+  });
+});
+
+describe('member timeout routes', () => {
+  const REQUEST = fill(16, 0x41);
+
+  it('reads an active timeout as a bigint timestamp', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [1_800_000_000]));
+    await expect(routes.getMemberTimeout(COMMUNITY, PEER_USER)).resolves.toBe(1_800_000_000n);
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/timeout` });
+  });
+
+  it('reads an absent timeout as null', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [null]));
+    await expect(routes.getMemberTimeout(COMMUNITY, PEER_USER)).resolves.toBeNull();
+  });
+
+  it('writes the request id and absolute expiry, then decodes the expiry', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [REQUEST, 1_800_000_000]));
+    await expect(routes.putMemberTimeout(COMMUNITY, PEER_USER, REQUEST, 1_800_000_000n)).resolves.toBe(1_800_000_000n);
+    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/timeout`, body: encode([REQUEST, 1_800_000_000]) });
+  });
+
+  it('clears a timeout with its request id and expects no content', async () => {
+    const { routes, t } = setup();
+    t.replies.push(noContent());
+    await expect(routes.deleteMemberTimeout(COMMUNITY, PEER_USER, REQUEST)).resolves.toBeUndefined();
+    expect(t.seen[0]).toMatchObject({ method: 'DELETE', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/timeout`, body: encode([REQUEST]) });
+  });
+});
+
+describe('manual warning route', () => {
+  const REQUEST = fill(16, 0x41);
+  it('sends only a stable request id and returns immutable accepted action metadata', async () => {
+    const { routes, t } = setup();
+    const action = fill(16, 0x52);
+    t.replies.push(cborReply(200, [REQUEST, action, 7, 1_800_000_000]));
+    await expect(routes.warnMember(COMMUNITY, PEER_USER, REQUEST)).resolves.toEqual({
+      requestId: REQUEST, actionId: action, revision: 7, acceptedAt: 1_800_000_000,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'POST',
+      url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/warning`, body: encode([REQUEST]) });
+  });
+  it('rejects a response that changes the request id', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [fill(16, 0x45), fill(16, 0x52), 7, 1_800_000_000]));
+    await expect(routes.warnMember(COMMUNITY, PEER_USER, REQUEST)).rejects.toThrow('warning response request id mismatch');
+  });
+  it('reads the exact accepted warning receipt for Bot evidence binding', async () => {
+    const { routes, t } = setup();
+    const action = fill(16, 0x52), actorDevice = fill(16, 0x53);
+    t.replies.push(cborReply(200, [REQUEST, action, COMMUNITY, USER, actorDevice, PEER_USER, 7, 1_800_000_000]));
+    await expect(routes.acceptedManualWarning(BOT, REQUEST)).resolves.toEqual({ requestId: REQUEST, actionId: action,
+      communityId: COMMUNITY, actorUserId: USER, actorDeviceId: actorDevice, targetUserId: PEER_USER, revision: 7, acceptedAt: 1_800_000_000 });
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/bot-runtime/installations/${hex(BOT)}/moderation/warnings/${hex(REQUEST)}` });
+  });
+});
+
+describe('managed community bot installation routes', () => {
+  const installation = [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1, 1_800_000_000];
+
+  it('reads a bounded installation, treats CBOR null as absent, and preserves refusals', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, installation));
+    await expect(routes.getBotInstallation(COMMUNITY)).resolves.toMatchObject({
+      id: BOT, communityId: COMMUNITY, state: 1, revision: 3n, userId: USER, deviceId: DEVICE, capabilities: 1,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
+    t.replies.push(cborReply(200, null));
+    await expect(routes.getBotInstallation(COMMUNITY)).resolves.toBeNull();
+    t.replies.push(refusal(404, 'E_NOT_FOUND', 'not found'));
+    await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 404, detail: 'not found' });
+    t.replies.push(refusal(403, 'E_FORBIDDEN', 'denied'));
+    await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('sends exact request ID, revision, capabilities and step-up for configure', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(201, installation));
+    await routes.configureBotInstallation(COMMUNITY, USER, null, 1, 'stepup');
+    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
+    expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, null, 1, 'stepup'])));
+  });
+
+  it('refuses malformed or foreign installation rows before exposing them to settings', async () => {
+    const rows = [installation.slice(0, 7), [BOT, USER, 1, 3, USER, DEVICE, 1, 1_800_000_000],
+      [BOT, COMMUNITY, 1, 0, USER, DEVICE, 1, 1_800_000_000],
+      [BOT, COMMUNITY, 6, 3, USER, DEVICE, 1, 1_800_000_000],
+      [BOT, COMMUNITY, 1, 3, USER, DEVICE, 256, 1_800_000_000]];
+    for (const row of rows) {
+      const { routes, t } = setup();
+      t.replies.push(cborReply(200, row));
+      await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ code: /E_CBOR_/ });
+    }
+  });
+
+  it('sends revision-bound disable with its stable request ID', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, installation));
+    await routes.disableBotInstallation(COMMUNITY, USER, 3n);
+    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/disable` });
+    expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, 3n])));
+  });
+});
+
+describe('bot Spotify authorization routes', () => {
+  const ATTEMPT = fill(16, 0x29);
+  const STATE = 'a'.repeat(43);
+  const CODE = 'spotify-code';
+  const authorizeUrl = 'https://accounts.spotify.com/authorize?response_type=code&client_id=client&redirect_uri=https%3A%2F%2Fdilla.test%2Fspotify&scope=streaming%20user-read-email%20user-read-private&state=' + STATE + '&code_challenge_method=S256&code_challenge=' + 'b'.repeat(43);
+
+  it('starts an attempt, forwards state/code once, and cancels with no content', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [ATTEMPT, authorizeUrl, 1_800_000_000]));
+    await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up')).resolves.toEqual({
+      attemptId: ATTEMPT, authorizeUrl, expires: 1_800_000_000n,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts`, body: encode(['step-up']) });
+    t.replies.push(cborReply(202, [1]));
+    await expect(routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).resolves.toBeUndefined();
+    expect(t.seen[1]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts/${hex(ATTEMPT)}/callback`, body: encode([STATE, CODE]) });
+    t.replies.push(noContent());
+    await expect(routes.cancelBotSpotifyAttempt(COMMUNITY, ATTEMPT)).resolves.toBeUndefined();
+  });
+
+  it('surfaces authorization refusals and rejects malformed broker replies', async () => {
+    const refused = setup();
+    refused.t.replies.push(refusal(403, 'E_FORBIDDEN', 'step-up required'));
+    await expect(refused.routes.beginBotSpotifyAttempt(COMMUNITY, 'stale')).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    const withQuery = (mutate: (url: URL) => void): string => { const url = new URL(authorizeUrl); mutate(url); return url.toString(); };
+    const invalidUrls = ['https://evil.test/authorize', withQuery(u => { u.port = '444'; }),
+      withQuery(u => { u.searchParams.append('state', STATE); }), withQuery(u => { u.searchParams.set('client_id', ''); }),
+      withQuery(u => { u.searchParams.set('code_challenge', ''); }), withQuery(u => { u.searchParams.append('unexpected', 'x'); })];
+    for (const reply of [...invalidUrls.map(url => [ATTEMPT, url, 1_800_000_000]), [ATTEMPT, authorizeUrl], [ATTEMPT, authorizeUrl, 0]]) {
+      const { routes, t } = setup();
+      t.replies.push(cborReply(200, reply));
+      await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up')).rejects.toMatchObject({ code: /E_CBOR_/ });
+    }
+    const malformedAck = setup();
+    malformedAck.t.replies.push(cborReply(202, [2]));
+    await expect(malformedAck.routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
 });

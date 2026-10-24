@@ -23,11 +23,12 @@ import (
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
-// WireVersion is the one wire version this instance offers (web3.8 S1). Version 2 is version 1's
-// frames with every upload naming its class: web3.6 and web3.7 clients identify with 1, so a stale
-// bundle is closed 4006 and reloads instead of sending two-element uploads the delivery service
-// refuses. The gateway package keeps {1} as its own default for its unit tests.
-const WireVersion = 2
+// WireVersion is the current production wire version. LegacyWireVersion remains available for
+// existing clients that have not moved to the bot-capable protocol.
+const (
+	WireVersion       = 3
+	LegacyWireVersion = 2
+)
 
 // Options is everything New needs. Only Config is required; every other
 // collaborator is built when it is nil, because part 1b's test harness calls
@@ -85,9 +86,11 @@ type Options struct {
 	// ws:// listener, which a browser on loopback can reach (web-3 task 3).
 	LiveKitURL string
 	// WireVersions is the wire version list the gateway's hello offers and GET /v1/instance
-	// advertises (web3.8 S1); nil means {WireVersion}. `dillad serve` never sets it: the test
+	// advertises; nil defaults to [3,2]. `dillad serve` never sets it: the test
 	// host's -wire flag does, so a browser test can meet an instance that offers another version.
-	WireVersions []uint64
+	WireVersions  []uint64
+	E2EEVersions  []uint64
+	MediaVersions []uint64
 
 	// closeRepo records that New opened the repository itself, so Shutdown
 	// closes it. A caller that supplied its own keeps ownership of it: closing
@@ -116,7 +119,13 @@ func (o *Options) validate(ctx context.Context) error {
 		o.Health = obs.NewHealth(o.Clock)
 	}
 	if len(o.WireVersions) == 0 {
-		o.WireVersions = []uint64{WireVersion}
+		o.WireVersions = []uint64{WireVersion, LegacyWireVersion}
+	}
+	if len(o.E2EEVersions) == 0 {
+		o.E2EEVersions = []uint64{1}
+	}
+	if len(o.MediaVersions) == 0 {
+		o.MediaVersions = []uint64{1}
 	}
 	if o.Repo == nil {
 		repo, err := openRepositoryFromConfig(ctx, o.Config)

@@ -44,6 +44,7 @@ pub(crate) struct ValidatedLeaf {
     device_id: [u8; 16],
     umk_pub: [u8; 32],
     ssk_pub: [u8; 32],
+    credential: Vec<u8>,
     version: u64,
 }
 
@@ -183,6 +184,7 @@ fn validate_history_from(
         device_id: *cred.device_id.as_bytes(),
         umk_pub: cred.umk_pub,
         ssk_pub: cred.ssk_pub,
+        credential: cred.encode(),
         version: current.unsigned.version,
     })
 }
@@ -415,6 +417,8 @@ fn retract_matching(
         let full = rows.len() as i64 == RETRACT_PAGE;
         for (seq, own_id, reply_to) in rows {
             c.execute("UPDATE app_messages SET status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(),seq,code])?;
+            super::bot_events::suppress_source(c, group_id, seq)?;
+            super::human_interaction_events::suppress_source(c, group_id, seq)?;
             c.execute(
                 "DELETE FROM app_search_rows WHERE group_id=?1 AND seq=?2",
                 params![group_id.as_slice(), seq],
@@ -855,6 +859,39 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
     leaf_verdict(c, leaf)
         .map_err(ClientError::from)?
         .map_err(failure)
+}
+
+/// Bind a server-signed current-context list to the MLS leaf's complete identity chain and this
+/// device's existing pin/cache. The proof's signature cannot establish a user's UMK or SSK pin.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each argument is part of the authenticated MLS leaf context."
+)]
+pub(super) fn validate_interaction_leaf(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    epoch: u64,
+    tree_hash: [u8; 32],
+    leaf_index: u32,
+    credential: &CredentialIdentity,
+    dsk_pub: [u8; 32],
+    snapshot: &crate::bot::interaction_snapshot::SnapshotList,
+) -> Result<Result<(), &'static str>, StorageError> {
+    if snapshot.user.as_bytes() != credential.user_id.as_bytes()
+        || snapshot.umk != credential.umk_pub
+        || snapshot.ssk != credential.ssk_pub
+    {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    let leaf = LeafEvidence {
+        group_id: *group_id,
+        epoch,
+        tree_hash,
+        leaf_index,
+        credential: credential.clone(),
+        dsk_pub,
+    };
+    leaf_verdict(c, &leaf)
 }
 
 /// The one judgement of an authenticated leaf against its user's pin and cached signed list.
@@ -1485,6 +1522,138 @@ impl ClientCore {
         self.ingest_leaf(first, requested_user, history_body, head_list, now, true)
     }
 
+    /// Return the trusted version from which a caller may fetch actor history. This is only a
+    /// bounded fetch hint: the proof signature is verified after the returned history is checked.
+    pub fn removal_actor_history_version(
+        &self,
+        group_id: &[u8; 16],
+        entry: &super::removals::RemovalFeedEntry,
+    ) -> Result<u64, ClientError> {
+        self.own()?;
+        if group_id == &[0; 16] {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let community = super::removals::group_community(self, group_id)?;
+        let proof = crate::bot::RemovalProof::decode(&entry.proof)
+            .map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        if proof.group_id.as_bytes() != group_id
+            || proof.community_id.as_bytes() != &community
+            || entry.accepted_at == 0
+            || entry.accepted_at > i64::MAX as u64
+            || entry.accepted_at >= proof.expires
+            || proof.expires - entry.accepted_at > 30
+        {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let trusted = super::removals::trusted_actor(self, &proof.actor_user)?;
+        Ok(trusted.list.unsigned.version)
+    }
+
+    /// Refresh a previously trusted removal actor's signed list without requiring the actor to
+    /// remain in the MLS tree. The history must include the exact cached anchor and every next
+    /// list, all signed by the already UMK-anchored SSK. Never-seen actors cannot use this path.
+    pub fn refresh_removal_actor_history(
+        &mut self,
+        group_id: &[u8; 16],
+        entry: &super::removals::RemovalFeedEntry,
+        history_body: &[u8],
+        head_list: &[u8],
+    ) -> Result<u64, ClientError> {
+        self.own()?;
+        if group_id == &[0; 16] || history_body.len() > 4 * 1024 * 1024 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let community = super::removals::group_community(self, group_id)?;
+        let proof = crate::bot::RemovalProof::decode(&entry.proof)
+            .map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        if proof.group_id.as_bytes() != group_id
+            || proof.community_id.as_bytes() != &community
+            || entry.accepted_at == 0
+            || entry.accepted_at > i64::MAX as u64
+            || entry.accepted_at >= proof.expires
+            || proof.expires - entry.accepted_at > 30
+        {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let trusted = super::removals::trusted_actor(self, &proof.actor_user)?;
+        let count = Decoder::new(history_body)
+            .array_len()
+            .map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        if count == 0 {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        if count > 1024 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let rows =
+            wire::decode_history_body(history_body).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        let first = rows.first().ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
+        if first.version != trusted.list.unsigned.version
+            || first.blob != trusted.list.encode()
+            || first.ssk_signature != trusted.list.sig_ssk
+            || first.prev_hash != trusted.list.unsigned.prev_hash
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        let mut previous = trusted.list.clone();
+        for row in rows.iter().skip(1) {
+            let list = bounded_list(&row.blob)?;
+            if row.version
+                != previous
+                    .unsigned
+                    .version
+                    .checked_add(1)
+                    .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?
+                || list.unsigned.user_id != proof.actor_user
+                || list.unsigned.version != row.version
+                || list.sig_ssk != row.ssk_signature
+                || list.unsigned.prev_hash != row.prev_hash
+            {
+                return Err(failure(E_DEVICE_LIST_STALE));
+            }
+            list.accept(Some(&previous), &trusted.credential.ssk_pub)
+                .map_err(ClientError::from)?;
+            previous = list.clone();
+        }
+        let head = bounded_list(head_list)?;
+        if head.unsigned.user_id != proof.actor_user
+            || head.encode() != previous.encode()
+            || head.verify(&trusted.credential.ssk_pub).is_err()
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        super::removals::verify_entry_with_list(group_id, &community, entry, &head)?;
+        let credential = trusted.credential.encode();
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                let prior: Option<(i64, Vec<u8>)> = c
+                    .query_row(
+                        "SELECT version,list FROM app_removal_actor_lists WHERE user_id=?1",
+                        [proof.actor_user.as_bytes().as_slice()],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((version, list)) = prior
+                    && (version > head.unsigned.version as i64
+                        || (version == head.unsigned.version as i64 && list != head.encode()))
+                {
+                    return Err(StorageError::Codec(
+                        "removal actor history rollback or conflict".into(),
+                    ));
+                }
+                c.execute(
+                    "INSERT INTO app_removal_actor_lists(user_id,version,list,credential) VALUES(?1,?2,?3,?4) \
+                     ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,credential=excluded.credential \
+                     WHERE excluded.version>=app_removal_actor_lists.version",
+                    params![proof.actor_user.as_bytes().as_slice(), head.unsigned.version as i64, head.encode(), credential],
+                )?;
+                Ok(())
+            })
+            .map_err(ClientError::from)
+        })?;
+        Ok(head.unsigned.version)
+    }
+
     fn ingest_leaf(
         &mut self,
         first: LeafEvidence,
@@ -1618,7 +1787,7 @@ impl ClientCore {
                     return Ok((false, 0));
                 };
                 write_pin(c, requested_user, &pin)?;
-                c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
+                c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub,credential=excluded.credential",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice(),validated.credential])?;
                 // First sight pins without changing anything displayed; a key change or its end does.
                 let mut touched = prior.is_some() && prior != Some(pin);
                 let mut quarantined = 0u64;
@@ -1863,6 +2032,96 @@ mod tests {
     };
     use crate::ids::{DeviceId, UserId};
 
+    fn interaction_snapshot(
+        leaf: &LeafEvidence,
+        list: &DeviceList,
+    ) -> crate::bot::interaction_snapshot::SnapshotList {
+        use crate::ids::MsgId;
+        let blob = list.encode();
+        crate::bot::interaction_snapshot::SnapshotList {
+            user: MsgId::from_bytes(*leaf.credential.user_id.as_bytes()),
+            umk: leaf.credential.umk_pub,
+            ssk: leaf.credential.ssk_pub,
+            binding_signature: leaf.credential.sig_umk_ssk,
+            version: list.unsigned.version,
+            signature: list.sig_ssk,
+            prev_hash: list.unsigned.prev_hash,
+            hash: crate::identity::sha256(&blob),
+            blob,
+        }
+    }
+
+    fn interaction_trust_db(
+        leaf: &LeafEvidence,
+        list: &DeviceList,
+        with_pin: bool,
+    ) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE app_meta(k TEXT PRIMARY KEY,v BLOB);
+             CREATE TABLE app_trust_pins(user_id BLOB PRIMARY KEY,umk_pub BLOB,first_seen INTEGER,verified INTEGER,changed_umk BLOB);
+             CREATE TABLE app_device_lists(user_id BLOB PRIMARY KEY,version INTEGER,list BLOB,umk_pub BLOB,ssk_pub BLOB,credential BLOB);",
+        )
+        .expect("trust tables");
+        if with_pin {
+            write_pin(
+                &db,
+                leaf.credential.user_id.as_bytes(),
+                &Pin {
+                    umk: leaf.credential.umk_pub,
+                    first_seen: 1,
+                    verified: true,
+                    changed: None,
+                },
+            )
+            .expect("write pin");
+        }
+        db.execute(
+            "INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                leaf.credential.user_id.as_bytes().as_slice(),
+                list.unsigned.version as i64,
+                list.encode(),
+                leaf.credential.umk_pub.as_slice(),
+                leaf.credential.ssk_pub.as_slice(),
+            ],
+        )
+        .expect("cache signed list");
+        db
+    }
+
+    fn substitute_leaf_keys(leaf: &mut LeafEvidence, seed: u8) -> DeviceList {
+        let umk = UmkSigner::from_bytes(&[seed; 32]);
+        let ssk = SskSigner::from_bytes(&[seed.wrapping_add(1); 32]);
+        leaf.credential.umk_pub = umk.public();
+        leaf.credential.ssk_pub = ssk.public();
+        leaf.credential.sig_umk_ssk = umk.sign_ssk(&ssk.public());
+        leaf.credential.sig_ssk_dev = ssk.sign_device(
+            &leaf.credential.device_id,
+            &leaf.dsk_pub,
+            leaf.credential.kind,
+            leaf.credential.tier,
+            leaf.credential.signer_tier,
+        );
+        let unsigned = crate::identity::DeviceListUnsigned {
+            v: 1,
+            user_id: leaf.credential.user_id,
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![crate::identity::DeviceEntry {
+                device_id: leaf.credential.device_id,
+                dsk_pub: leaf.dsk_pub,
+                tier: leaf.credential.tier,
+                added_at: 1,
+                revoked_at: None,
+            }],
+        };
+        DeviceList {
+            sig_ssk: ssk.sign_device_list(&unsigned),
+            unsigned,
+        }
+    }
+
     fn fixture() -> (LeafEvidence, DeviceList) {
         let umk = UmkSigner::from_bytes(&[0x41; 32]);
         let ssk = SskSigner::from_bytes(&[0x42; 32]);
@@ -1913,6 +2172,67 @@ mod tests {
             dsk_pub,
         };
         (leaf, list)
+    }
+
+    #[test]
+    fn interaction_welcome_rejects_self_consistent_substituted_identity_keys() {
+        let (trusted_leaf, list) = fixture();
+        let trusted_snapshot = interaction_snapshot(&trusted_leaf, &list);
+        let db = interaction_trust_db(&trusted_leaf, &list, true);
+        let mut substituted = trusted_leaf.clone();
+        let substituted_list = substitute_leaf_keys(&mut substituted, 0x90);
+        assert_ne!(substituted.credential.umk_pub, trusted_snapshot.umk);
+        assert_ne!(substituted.credential.ssk_pub, trusted_snapshot.ssk);
+        substituted
+            .credential
+            .verify_signatures(&substituted.dsk_pub)
+            .expect("the substituted key chain is internally valid");
+
+        let mismatched_snapshot = validate_interaction_leaf(
+            &db,
+            &substituted.group_id,
+            substituted.epoch,
+            substituted.tree_hash,
+            substituted.leaf_index,
+            &substituted.credential,
+            substituted.dsk_pub,
+            &trusted_snapshot,
+        )
+        .expect("signed-list key comparison");
+        assert_eq!(mismatched_snapshot, Err(E_CREDENTIAL));
+
+        let self_consistent_snapshot = interaction_snapshot(&substituted, &substituted_list);
+        let unpinned_key = validate_interaction_leaf(
+            &db,
+            &substituted.group_id,
+            substituted.epoch,
+            substituted.tree_hash,
+            substituted.leaf_index,
+            &substituted.credential,
+            substituted.dsk_pub,
+            &self_consistent_snapshot,
+        )
+        .expect("local pin lookup");
+        assert_eq!(unpinned_key, Err(E_CREDENTIAL));
+    }
+
+    #[test]
+    fn interaction_welcome_requires_an_existing_user_pin() {
+        let (leaf, list) = fixture();
+        let snapshot = interaction_snapshot(&leaf, &list);
+        let db = interaction_trust_db(&leaf, &list, false);
+        let result = validate_interaction_leaf(
+            &db,
+            &leaf.group_id,
+            leaf.epoch,
+            leaf.tree_hash,
+            leaf.leaf_index,
+            &leaf.credential,
+            leaf.dsk_pub,
+            &snapshot,
+        )
+        .expect("trust lookup");
+        assert_eq!(result, Err(E_DEVICE_LIST_STALE));
     }
 
     #[test]

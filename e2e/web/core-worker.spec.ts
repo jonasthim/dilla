@@ -486,7 +486,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
         size: drawn.size, mime: 'image/png', name: 'drawn.png', thumb: true }]);
       const blobId = carried.attachments[0]!.blob_id;
       expect(await peer.request<{ status: number }>('blob_status', { blob_id: blobId })).toMatchObject({ status: 200 });
-      await ok(page, { m: 'deleteMessage', channelId: ch, msgId: fileMsg });
+      await ok(page, { m: 'deleteMessage', channelId: ch, msgId: fileMsg, seq: String(carried.seq) });
       for (const p of [page, b]) {
         await expect.poll(async () => (await itemOf(p, fileMsg))?.state ?? null, { timeout: WAIT }).toBe('deleted');
       }

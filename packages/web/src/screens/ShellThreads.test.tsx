@@ -7,7 +7,7 @@ import { CoreProvider } from '../core/context.tsx';
 import { FakeClient } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { PHONE_QUERY } from '../layout.ts';
-import { en, t } from '../strings/index.ts';
+import { en, formatTime, t } from '../strings/index.ts';
 import { Shell } from './Shell.tsx';
 import { ComposerArea } from './conversation/ComposerArea.tsx';
 
@@ -57,7 +57,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup(o: { phone?: boolean; base?: number; path?: string } = {}) {
+function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: string | null } = {}) {
   media(o.phone === true);
   window.history.replaceState(null, '', o.path ?? `/c/${A}/${GEN}`);
   const fake = new FakeClient();
@@ -78,6 +78,7 @@ function setup(o: { phone?: boolean; base?: number; path?: string } = {}) {
     { rootMsgId: ROOT2, rootSeq: '4', count: 1, lastTs: 9, excerpt: 'the second root' },
   ]);
   fake.set(`thread:${GEN}`, { channelId: GEN, rootMsgId: ROOT, root: rootRow(ROOT, '1', 'the first root', 2), items: [], hasEarlier: false });
+  if (o.timeout !== undefined) fake.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve(o.timeout) : Promise.resolve(null);
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
   return { fake, user, view };
@@ -449,6 +450,19 @@ describe('the shell wires slow mode into the composers', () => {
     expect(aside.querySelector('.d-composer__notice')).toBeNull();
     act(() => wait(fake));
     expect(aside.querySelector('.d-composer__notice')).toHaveTextContent(/Slow mode is on/);
+  });
+  it('passes the community timeout to both channel and thread composers', async () => {
+    const expires = Math.floor(Date.now() / 1000) + 60;
+    const { fake, user } = setup({ timeout: String(expires) });
+    const reason = `You cannot post messages in this community until ${formatTime(expires)}.`;
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    await waitFor(() => {
+      const composers = vi.mocked(ComposerArea).mock.calls.map(c => c[0]).filter(p => p.channelId === GEN);
+      expect(composers.some(p => p.threadId === undefined && p.blocked === reason)).toBe(true);
+      expect(composers.some(p => p.threadId !== undefined && p.blocked === reason)).toBe(true);
+    });
+    expect(fake.callsOf('getMemberTimeout')).toEqual([{ m: 'getMemberTimeout', communityId: A, userId: ME.id }]);
   });
 });
 

@@ -253,3 +253,5 @@ All are polite, through the shell announcer. Dialog errors are `role=alert`.
 - `serverNotify.mode.nothing='nothing'`
 - `serverNotify.mute='mute server'`
 - `serverNotify.suppressEveryone='ignore @everyone and @here'`
+- `perm.moderate='warn and time out members'`
+- `perm.moderate.hint='Warn members or temporarily block their messages and reactions.'`

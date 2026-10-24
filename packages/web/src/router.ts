@@ -18,6 +18,7 @@ export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null;
   | { name: 'dm'; channelId: string }
   /** Home with the `@` tile selected and no DM open (`/dm`). */
   | { name: 'dms' } | { name: 'activity' } | { name: 'you' }
+  | { name: 'spotifyCallback'; search: string }
   | { name: 'settings'; section: SettingsSection; from: string | null;
     /** Privacy only: the contact whose comparison opens at once (the voice pause banner's action, flow 06). */
     compare?: string };
@@ -56,6 +57,7 @@ function compareState(state: unknown): { compare?: string } {
 }
 
 export function parseRoute(pathname: string, search: string, state: unknown = null): Route {
+  if (pathname === '/settings/bot/music/spotify/callback') return { name: 'spotifyCallback', search };
   if (pathname === '/') return { name: 'root' };
   if (pathname === '/welcome') {
     const params = new URLSearchParams(search);
@@ -92,6 +94,7 @@ export function routePath(route: Route): string {
     case 'dms': return '/dm';
     case 'activity': return '/activity';
     case 'you': return '/you';
+    case 'spotifyCallback': return `/settings/bot/music/spotify/callback${route.search}`;
     case 'settings': return `/settings/${route.section}`;
   }
 }
@@ -175,6 +178,7 @@ export function tabOf(route: Route): PhoneTab {
     case 'dm': case 'dms': case 'channel': case 'root': case 'welcome': return 'home';
     case 'activity': return 'activity';
     case 'you': case 'settings': return 'you';
+    case 'spotifyCallback': return 'you';
   }
 }
 

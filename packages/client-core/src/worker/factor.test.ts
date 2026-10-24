@@ -40,6 +40,8 @@ const plain = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => (typ
 describe('the factor-setup phase (web3.6 C2)', () => {
   it('a signup owing a factor stops at factor-setup; factorSetupDone refuses while owed, then enters ready and joins', async () => {
     const w = world({ phase: 0, owed: true });
+    const negotiation = vi.fn(() => Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true }));
+    (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
     w.routes.getInvite.mockImplementation(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
     await toKeys(w);
     w.call(3, SUBMIT);
@@ -49,6 +51,7 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(factors(w)).toMatchObject({ owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
     expect(w.gateway.starts).toBe(0);
     expect(w.routes.joinCommunity).not.toHaveBeenCalled();
+    expect(negotiation).not.toHaveBeenCalled();
     expect(w.routes.postKeyPackages).not.toHaveBeenCalled();
     expect(w.account.ensureBackups).not.toHaveBeenCalled();
 
@@ -57,6 +60,7 @@ describe('the factor-setup phase (web3.6 C2)', () => {
       error: { code: 'E_FACTOR_REQUIRED', detail: '', status: 0, retryAfterMs: null } });
     expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signup' } });
     expect(w.routes.joinCommunity).not.toHaveBeenCalled();
+    expect(negotiation).not.toHaveBeenCalled();
 
     w.state.owed = false;
     w.call(5, { m: 'factorSetupDone', invite: null });
@@ -64,6 +68,8 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(w.account()).toMatchObject({ phase: 'ready', factorSetup: null });
     expect(factors(w)).toMatchObject({ owed: false, totp: { confirmedAt: 1_700_000_000 } });
     expect(w.routes.joinCommunity).toHaveBeenCalledWith(COMMUNITY, 'friends-code');
+    expect(negotiation).toHaveBeenCalledTimes(1);
+    expect(negotiation.mock.invocationCallOrder[0]).toBeLessThan(w.routes.joinCommunity.mock.invocationCallOrder[0]);
     // The KeyPackages (a V route, refused while owed) go up once the debt is paid, before the join.
     expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(1);
     expect(w.routes.postKeyPackages.mock.invocationCallOrder[0]).toBeLessThan(w.routes.joinCommunity.mock.invocationCallOrder[0]);
@@ -193,7 +199,7 @@ class Sock {
 }
 
 const HELLO = encodeFrame(Op.hello, 0, null, [[2], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
-const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 1, 1, 1, 32, []]);
+const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 2, 1, 1, 32, []]);
 
 /** A world on the real Gateway, whose tickets go through the real HttpClient to `ticket` (the n-th request, 1-based). */
 function socketWorld(ticket: (n: number) => Promise<Response>) {
@@ -264,7 +270,7 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
 
   it('the reset chain: a socket closed 4003 reconnects once, the ticket answers E_FACTOR_REQUIRED, and the hook fires', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { w, tickets } = socketWorld((n) => (n === 1 ? minted() : owedTicket()));
+    const { w, tickets } = socketWorld((n) => (n === 2 ? owedTicket() : minted()));
     w.call(1, { m: 'start' });
     await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
     const socket = Sock.all[0];
@@ -576,6 +582,7 @@ describe('C2 review: an owed account on a new browser, the double submit, the ho
 
 // S2 review M5: under instance.discovery = "session", GET /v1/instance is E, F; an owed client reads auth_methods with its
 // session. The start's read precedes any session (it names the store), so it carries no bearer.
+// Ready-phase pin continuity adds a separate authenticated discovery read.
 describe('the instance read with a session (S2 review M5)', () => {
   it('an owed client re-reads the instance with its bearer at factor-setup and publishes the methods it answers', async () => {
     const seen: (string | null)[] = [];
@@ -592,10 +599,10 @@ describe('the instance read with a session (S2 review M5)', () => {
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
     await vi.waitFor(() => expect(w.account()?.instance).toMatchObject({ totp: true, passkeys: true }));
-    expect(seen).toEqual([null, 'Bearer session-token']);
+    expect(seen).toEqual([null, 'Bearer session-token', 'Bearer session-token']);
   });
 
-  it('an account that owes nothing does not read the instance again (control)', async () => {
+  it('an account that owes nothing reads the instance only to check its signing-key pin', async () => {
     const seen: (string | null)[] = [];
     const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       seen.push(new Request(input, init).headers.get('authorization'));
@@ -603,7 +610,7 @@ describe('the instance read with a session (S2 review M5)', () => {
     }) as typeof globalThis.fetch;
     const w = world({ httpInstance: true, fetch });
     await toReady(w);
-    expect(seen).toEqual([null]);
+    expect(seen).toEqual([null, 'Bearer session-token']);
     expect(w.account()?.instance).toMatchObject({ totp: false, passkeys: false });
   });
 });

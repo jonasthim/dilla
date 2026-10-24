@@ -169,6 +169,49 @@ func TestAHealWhoseTailReplaysCleanlyIsAdopted(t *testing.T) {
 	}
 }
 
+// The member's signed GroupInfo must name the exact epoch reached by replay. Tree-hash equality
+// alone cannot stand in for this: an empty MLS commit can advance epoch without changing the tree.
+func TestAHealWhoseGroupInfoEpochDoesNotMatchReplayedStateIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	_, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()),
+		Tail:      h.commitTail(t, g, 0),
+	})
+	if !hasRule(err, "heal_epoch") {
+		t.Fatalf("mismatched GroupInfo epoch: got %v, want E_COMMIT_INVALID/heal_epoch", err)
+	}
+	if !h.epochUnknown(t, g.id) {
+		t.Fatal("a mismatched GroupInfo epoch cleared epoch_unknown")
+	}
+}
+
+func TestHealAcceptanceGuardRefusalLeavesTheRestoredGroupUnknown(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	guardCalled := false
+	_, err := h.ds.HealWithGuard(context.Background(), g.session, g.id, h.healAtEpoch(t, g, g.Epoch()),
+		func(context.Context, store.Repository, store.GroupRow) error {
+			guardCalled = true
+			return errors.New("Bot installation was disabled before heal acceptance")
+		})
+	if err == nil || err.Error() != "Bot installation was disabled before heal acceptance" {
+		t.Fatalf("HealWithGuard error = %v, want acceptance-time authorization refusal", err)
+	}
+	if !guardCalled {
+		t.Fatal("acceptance-time guard was not called")
+	}
+	if !h.epochUnknown(t, g.id) {
+		t.Fatal("refused heal cleared EpochUnknown")
+	}
+}
+
 // The rows a heal appends are what every other member's catch-up is served and what
 // E_COMMIT_CONFLICT names as a winning commit, so they carry what the replay DERIVED, never what
 // the uploading member claimed: the epoch the group actually reached, the kind the guest reported,

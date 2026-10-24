@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
@@ -70,6 +72,7 @@ jobs:
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - run: npm run test:install
+      - run: bash deploy/install_bot_test.sh
       - if: needs.changes.outputs.web != 'false'
         run: npm test
       - name: vectors are up to date
@@ -170,7 +173,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.web != 'false'
     runs-on: ubuntu-24.04
-    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses the dev box's LLVM 23.1 line:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
@@ -189,9 +192,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87'
+          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
+          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
       - run: rustup show active-toolchain
@@ -208,6 +213,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - name: wasm-bindgen-cli must equal the Cargo.lock crate version
         run: |
           want=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
@@ -254,6 +260,17 @@ jobs:
           name: dilla-testkit
           path: target/release/dilla-testkit
           if-no-files-found: error
+
+  spotify-helper:
+    needs: [changes]
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
+      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
 
   rust-wasi:
     needs: [changes]
@@ -305,7 +322,7 @@ jobs:
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses the dev box's LLVM 23.1 line:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
@@ -324,9 +341,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87'
+          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
+          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
       - run: rustup show active-toolchain
@@ -343,6 +362,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
       # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
@@ -396,9 +416,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87'
+          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
+          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -419,6 +441,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -497,9 +520,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261020011024+7a941dfb2877-1~exp1~20261020131035.87'
+          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
+          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
       - run: rustup show active-toolchain
@@ -520,6 +545,7 @@ jobs:
           cache-dependency-path: go.sum
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
@@ -837,11 +863,14 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     # The delivery service's tests drive the real wasm core over a 1,500-leaf fixture, and under the
     # race detector they are the slowest package of the module, so they have a job and a budget of
-    # their own; the go job runs everything else. Measured on a 4-core machine: 250 s (447 s before
-    # the reconcile asked its ACL once per group); the runner is roughly three times slower.
+    # their own; the go job runs everything else. Run 39994739630 reached go test's 20m package
+    # deadline with TestRegisterRefusesADuplicateGroupID in SQLite setup for 1s, so this was suite
+    # time, not a stuck migration (the job ended at 22m24s, with no assertion failure). Keep the
+    # race detector and shuffle, but give the package 30m and the job 10m for setup, reporting and
+    # cleanup.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -854,7 +883,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The delivery service's tests with the race detector
-        run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
+        run: go test -race -shuffle=on -timeout 30m ./internal/ds/...
         env:
           GORACE: halt_on_error=1
 
@@ -862,10 +891,11 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    # internal/api under the race detector takes about 620 s on a 4-core machine and ran into a
-    # 20-minute package timeout on the runner (run 39486567482), so it has a job and a budget of its
-    # own; the go job leaves it out and the checker pins both halves.
+    timeout-minutes: 45
+    # internal/api under the race detector takes about 620 s on a 4-core machine. A loaded runner
+    # exceeded the 30-minute package timeout after 905 tests and was interrupted while the final
+    # test was setting up its SQLite fixture; allow additional package time while keeping the job
+    # timeout bounded. The go job leaves this package out and the checker pins both halves.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -878,7 +908,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The API package's tests with the race detector
-        run: go test -race -shuffle=on -timeout 30m ./internal/api/...
+        run: go test -race -shuffle=on -timeout 38m ./internal/api/...
         env:
           GORACE: halt_on_error=1
 
@@ -886,11 +916,13 @@ jobs:
     needs: [changes, rust-wasi, rust-native]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     # The scenario harness drives a real instance with the Rust testkit clients:
     # it needs the wasi core from rust-wasi and the testkit binary from
     # rust-native, and it is the slowest Go suite, so it has a job and a
-    # timeout of its own.
+    # timeout of its own. A loaded runner exceeded the 25-minute package budget
+    # during a 58-second join-storm test; the harness scenario has a 10-minute
+    # per-scenario ceiling, so leave room for that scenario to finish.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -909,7 +941,7 @@ jobs:
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
       - name: The scenario harness against the real instance
-        run: go test -race -shuffle=on -timeout 25m ./internal/testkit/...
+        run: go test -race -shuffle=on -timeout 38m ./internal/testkit/...
         env:
           GORACE: halt_on_error=1
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
@@ -1053,7 +1085,7 @@ jobs:
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
     if: always()
     runs-on: ubuntu-latest
     steps:

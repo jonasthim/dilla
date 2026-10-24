@@ -206,6 +206,11 @@ fn a_staged_join_with_a_pending_leaf_posts_nothing_until_checked() {
         "the staged call group's pending leaf is listed for the refresh: {pending:?}"
     );
     assert_eq!(
+        code(alice.core.call_join_check(&VOICE)),
+        "E_CORE_NOT_FOUND",
+        "the channel ID is not the staged MLS group ID"
+    );
+    assert_eq!(
         code(alice.core.call_join_check(&CALL)),
         "E_DEVICE_LIST_STALE"
     );

@@ -117,7 +117,7 @@ func (q *Queries) DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsBy
 }
 
 const getSessionByHash = `-- name: GetSessionByHash :one
-SELECT s.token_hash, s.device_id, s.user_id, s.scope, s.tier, s.created, s.expires, s.idle_expires, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
+SELECT s.token_hash, s.device_id, s.user_id, s.scope, s.tier, s.created, s.expires, s.idle_expires, s.wire_version, s.e2ee_version, s.media_version, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = ? AND s.expires > ? AND s.idle_expires > ?
 `
 
@@ -128,15 +128,18 @@ type GetSessionByHashParams struct {
 }
 
 type GetSessionByHashRow struct {
-	TokenHash   []byte
-	DeviceID    id.ID
-	UserID      id.ID
-	Scope       int64
-	Tier        int64
-	Created     int64
-	Expires     int64
-	IdleExpires int64
-	FactorOwed  int64
+	TokenHash    []byte
+	DeviceID     id.ID
+	UserID       id.ID
+	Scope        int64
+	Tier         int64
+	Created      int64
+	Expires      int64
+	IdleExpires  int64
+	WireVersion  int64
+	E2eeVersion  int64
+	MediaVersion int64
+	FactorOwed   int64
 }
 
 // The account's factor_owed rides along on the one primary-key join, so Sessions.Resolve learns
@@ -153,6 +156,9 @@ func (q *Queries) GetSessionByHash(ctx context.Context, arg GetSessionByHashPara
 		&i.Created,
 		&i.Expires,
 		&i.IdleExpires,
+		&i.WireVersion,
+		&i.E2eeVersion,
+		&i.MediaVersion,
 		&i.FactorOwed,
 	)
 	return i, err
@@ -169,6 +175,30 @@ type PruneSessionsParams struct {
 
 func (q *Queries) PruneSessions(ctx context.Context, arg PruneSessionsParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, pruneSessions, arg.Expires, arg.IdleExpires)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setSessionVersions = `-- name: SetSessionVersions :execrows
+UPDATE sessions SET wire_version = ?, e2ee_version = ?, media_version = ? WHERE token_hash = ?
+`
+
+type SetSessionVersionsParams struct {
+	WireVersion  int64
+	E2eeVersion  int64
+	MediaVersion int64
+	TokenHash    []byte
+}
+
+func (q *Queries) SetSessionVersions(ctx context.Context, arg SetSessionVersionsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionVersions,
+		arg.WireVersion,
+		arg.E2eeVersion,
+		arg.MediaVersion,
+		arg.TokenHash,
+	)
 	if err != nil {
 		return 0, err
 	}

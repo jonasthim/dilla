@@ -7,6 +7,9 @@ freezes with "DS API v1" at the end of W5; this document does **not** freeze the
 instance document and limits, accounts, devices, sessions, invites, auth ceremonies, communities and
 content, rate limits and the `users.flags` bit layout, all of which stay editable as dillad grows.
 
+The built-in community bot's wire-3 installation, event, role, moderation and
+provider-setup endpoints are specified in [10-community-bot.md](10-community-bot.md).
+
 ## Encoding
 
 One body encoding: deterministic CBOR, fixed-position arrays, served and accepted as
@@ -23,7 +26,20 @@ identifier is `400 E_INVALID_REQUEST`; a well-formed but unknown one is `404 E_N
 
 ## Sessions
 
-Every endpoint in this document except the ones marked `—` requires a device session exactly as
+Wire-3 session capability negotiation uses authenticated
+`POST /v1/sessions/negotiate`, with request `[[wire_versions], [e2ee_versions],
+[media_versions]]` and response `[wire,e2ee,media]`. Each offered list contains
+1..8 distinct positive uints. The highest common versions are bound to this
+bearer session; a missing intersection is `400 E_VERSION` and changes nothing.
+Gateway identify/resume records its selected versions with the same binding.
+Negotiation admits enrolled humans and live installation-bound bot sessions in
+enrolling, joining or ready installation state. These bot sessions use enrolled
+device scope 0 with `10`'s additional route restrictions; negotiating versions
+does not grant installation or feature authority.
+See `10`'s Session capability and compatibility section for bot upgrade gates;
+request headers never establish negotiated capability.
+
+Every endpoint in this document except the ones marked `—` or `R` requires a device session exactly as
 `02-delivery-service.md`'s `§ Device sessions` defines: `Authorization: Bearer <token>` resolved to
 a `sessions` row by `SHA-256(token)`; no cookie and therefore no CSRF surface on `/v1`. The `Auth`
 column below uses these scopes:
@@ -35,6 +51,8 @@ column below uses these scopes:
 | `V` | `provisional` also accepted |
 | `A` | an `enrolled` session whose user holds the instance-admin flag |
 | `F` | an `enrolled` session whose account owes a second factor is also accepted |
+| `B` | an enrolled managed-bot session bound to its live installation, account and device; additional phase/capability restrictions are in `10` |
+| `R` | an operator-registered bot-runtime credential, distinct from device sessions and instance administration |
 | `—` | no session required |
 
 An account owes a second factor until it holds a confirmed TOTP secret or a passkey registered
@@ -157,6 +175,7 @@ on its revocations (`02` § Device sessions item 6).
 | `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
 | `DELETE /v1/devices/{device_id}/sessions` | E, F | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
+| `POST /v1/sessions/negotiate` | E | `[[wire_versions], [e2ee_versions], [media_versions]]` | `[wire,e2ee,media]`; highest common versions persisted on this bearer session |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
 `02-delivery-service.md`'s `§ Device sessions`; this table only locates the routes.
@@ -170,6 +189,196 @@ are removed by any enrolled session of the user. A client whose own list is unpu
 row's eviction, not a revocation.
 An assertion registration with a native `tier` or `signer_tier` is `400 E_INVALID_REQUEST`:
 assertion registration is for browser devices; `03`'s pairing ceremony is the native path.
+
+## Community bot installation
+
+These routes are the installation subset of `10-community-bot.md`. That document
+defines the tuples, phase transitions, idempotent receipts, capability approval
+and recovery semantics. Human and bot device sessions require negotiated wire 3;
+runtime credentials use the explicit wire 3 provisioning contract. An ordinary
+human bearer cannot call an `R` route, and a runtime credential grants no general
+instance-admin authority. A `B` endpoint still applies enrolled-session middleware
+before checking its managed-bot binding; it is not an exception for humans who owe
+a second factor.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
+| `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
+| `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
+| `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |
+| `GET /v1/bot-runtime/installations` | R | — | `[installations]`; at most 100, after cursor is an installation id |
+| `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation,claim_id,claim_expires]` |
+| `POST /v1/bot-runtime/installations/{installation}/enroll` | R | `[request_id,claim_id,umk_pub,ssk_pub,sig_umk_ssk,device]` | `[bot_user,bot_device,username]`; no bearer token |
+| `PUT /v1/bot-runtime/installations/{installation}/credential` | B (enrolling; completed retries in joining/ready) | `[request_id,expected_revision,credential]` | installation |
+| `POST /v1/bot-runtime/installations/{installation}/ready` | B (joining; completed retry in ready) | `[request_id,expected_revision]` | installation |
+| `POST /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | `[operation_id,expected_generation,upload_body]` | `201 [count]` |
+| `GET /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | — | `[generation,server_time,ordinary_active_count,has_current_fallback]` |
+| `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B (joining/ready) | — | `[expected_generation,upload_sha256,count]` or 404 |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]`; kind-3 adds `admission_request_id` | `201` new / `200` exact replay: registration receipt |
+| `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B (joining/ready) | — | registration receipt or 404 |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B (ready, matching live admission receipt) | — | strict CBOR boolean; true only when the receipt's exact group ID is absent |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info` | B (ready, exact current registered kind-3 interaction group) | — | `[epoch,group_info,tree_hash32,next_seq]` |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | handshake rows, same format and bounds as ordinary group sync |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | application-message rows, same format and bounds as ordinary group sync |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor` | B (ready, exact current registered kind-3 interaction group) | `[last_seq,last_epoch]` | 204; advances this Bot device's cursor monotonically |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal` | B (ready, exact current registered kind-3 interaction group, including after restore) | — | `[epoch,next_seq,generation,need_from_seq,needs_heal]`; `needs_heal` is uint 0 or 1 |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal` | B (ready, exact current registered kind-3 interaction group) | `[group_info(bstr),tail([[seq,epoch,kind,sender,blob]]),ratchet_tree(bstr\|null)]` | `[epoch,next_seq]`; proof and heal-window rules match ordinary group heal |
+| `POST /v1/bot-runtime/installations/{installation}/moderation/actions` | B (ready, warnings/timeouts capability, owning installation) | `[request_id,group_id,source_seq,action,rules,timeout_ms,expires]` | `[action_id,community_revision,expires|null]` |
+| `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B (ready, removal capability, owning installation) | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; accepted signed removal only |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B (joining/ready) | `[request_id,group_id,participant_user_id,participant_device_id]` | `[snapshot_payload,signature]`; read-only signed context v1, max 160 KiB |
+| `GET /v1/groups/{id}/interaction-admission-context` | E (enrolled human session bound to the accepted participant device) | — | `[current_context_payload,signature]`; read-only current kind-3 context v1, max 160 KiB; requires current membership and exact authenticated two-leaf group state |
+| `POST /v1/groups/{group}/automod-grants/arm` | E (human, current interaction participant, `manage_community`, fresh step-up) | `[request_id,community_id,expected_revision,request_expires,config_hash32,step_up]` | `[opaque_grant,expires_unix]`; one minute maximum; grant binds the current interaction group, participant user/device, operation 63, revision, expiry and config digest |
+| `POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` | B (ready installation) | `[opaque_grant,community_id,group_id,request_id,expected_revision,request_expires,actor_user_id,actor_device_id,config_hash32]` | `[1,receipt_id]`; exact retries return the same receipt; changed tuple or config digest is refused |
+
+Managed Bot synchronization of private kind-3 interaction groups uses only the four
+installation-scoped routes above. Each read and cursor update validates the exact
+accepted registration, current two-leaf MLS state, Ready installation, Bot session,
+participant membership/device, signed device lists and current eligibility while
+holding the group fence through the database operation. Generic group read routes
+remain limited to kinds 0 and 1; Bot interaction routes do not grant group writes.
+
+Managed Bots use this scoped publication route, with the durable retry and
+generation rules in `10`; their generic `POST /v1/keypackages` is refused. Human
+publication is unchanged. Receipts prove historical acceptance, not current
+directory availability, and remain subject to current installation authority.
+The collection GET is a read-only current inventory snapshot with server Unix
+time in seconds; it never consumes a package. Its fallback flag is uint 0 or 1.
+
+Managed Bots register groups only through the installation-scoped routes above;
+their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Existing
+non-kind-3 Bot registration keeps its three-field outer tuple; an initial kind-3
+interaction adds the nonzero admission request ID as field four. Human group
+registration and its four-field CBOR tuple remain unchanged. `registration_body`
+is a bstr of at most 65,505 bytes (the whole CBOR request is capped at 64 KiB)
+containing the exact deterministic-CBOR encoding of
+`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`; the
+server strictly decodes and validates it without reconstructing its bytes.
+`operation_id` is a nonzero bstr16 and `expected_generation` is a uint no greater
+than signed-int64 max. A fresh request is accepted only when that generation is
+current; mismatch is `409 E_INVALID_REQUEST` (`expected_generation is stale`)
+and writes nothing. New acceptance is
+`201 [operation_id,group_id,registration_sha256,accepted_generation,
+initial_epoch,next_seq]`. The hash is
+`SHA-256(ASCII("dilla bot group registration v1") || 0x00 || registration_body)`.
+`next_seq` is the exact initial registration response value (1), and
+`initial_epoch` is the registered GroupInfo epoch. The acceptance receipt and
+group row, public MLS state and initial member rows commit atomically.
+
+The durable receipt is scoped by installation and operation and binds user,
+device, community, group, body hash, acceptance generation, initial epoch and
+`next_seq`. A matching retry returns `200` with the original six-field receipt,
+even after later epochs or generation changes. Reuse with another group, body or
+expected generation is `409 E_INVALID_REQUEST`; a different operation colliding
+with a registered group is `409 E_GROUP_EXISTS`, without group metadata. Receipt
+lookup requires the current B session to match the path installation and returns
+the same receipt or `404 E_NOT_FOUND`; another installation's receipt is
+indistinguishable from absence. Receipt lookup and historical replay require a
+live installation-bound session in joining or ready state. Receipts survive
+disablement and normal backup/restore and are not deleted when an installation
+is disabled.
+
+Before native group creation, the Go coordinator durably stores the operation id
+and original `expected_generation`; retries reuse that generation, never a host
+clock or newly sampled generation. It also retains the exact canonical
+registration-body bytes returned by the native intent. After restart, the
+coordinator compares the receipt's operation, group, expected/accepted
+generation and body hash with that intent before calling
+`bot_group_registered(operation_id,group_id,next_seq)`. Absence is conclusive
+nonacceptance only when the original generation is still current, the group id
+has no registered row, and managed bots have no alternate registration path. If
+generation has changed, absence is `unknown`: pause that group and retain the
+intent for reconciliation. A retry's stale-generation refusal does not resolve
+the earlier ambiguous request. Never infer discard or create a replacement group
+from a missing receipt after restore.
+
+Managed Bot sends use the attempt and recovery contract in `10`:
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/groups/{group}/bot/messages` | B | `[operation_id,attempt_id,predecessor_attempt_id\|null,expected_generation,epoch,private_message,class]` | twelve-field send receipt |
+| `GET /v1/communities/{community}/bot/receipts/{operation}?attempt=ID` | B | — | send receipt or 404 |
+| `POST /v1/communities/{community}/bot/receipts/{operation}/resolve` | B | `[attempt_id,predecessor_attempt_id\|null,group_id,expected_generation,epoch,class,ciphertext_sha256]` | send receipt |
+
+These routes require current managed identity and group access. New acceptance
+also requires current send permission. Recovery returns historical acceptance,
+durable nonacceptance or uncertainty after restore; a missing receipt alone never
+permits another ciphertext. The existing human message upload API is unchanged.
+
+## Community bot runtime and human-facing routes
+
+These additional routes are mounted by `dillad`; the event, moderation-removal
+and role delegation semantics are specified in `10-community-bot.md`. `B`
+requires a live installation-bound managed-bot session and the route's phase,
+community and capability checks. `E` requires an enrolled human session; listed
+permission checks still apply. The Spotify OAuth callback is an authenticated
+CBOR API request, not a public redirect endpoint.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
+| `POST /v1/communities/{community}/bot/spotify/attempts` | E (community bot manager, step-up) | `[step_up_proof]` | `[attempt_id, authorization_url, expires_unix]` |
+| `POST /v1/communities/{community}/bot/spotify/attempts/{attempt}/callback` | E (manage_community, initiating session) | `[state, authorization_code]` | `202 [1]`; exact callback retries also return 202 |
+| `DELETE /v1/communities/{community}/bot/spotify/attempts/{attempt}` | E (manage_community, initiating session) | `[]` | `204` |
+| `POST /v1/bot-runtime/installations/{installation}/spotify/claim` | R (owning runtime) | — | `[attempt_id, authorization_code, pkce_verifier]` or 404 |
+| `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]`; `after` is exclusive, default limit 100, maximum 250 |
+| `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | `204` |
+| `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
+| `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B | — | `[removal_rows, next_revision]` |
+| `GET /v1/communities/{id}/self-roles` | E (community member) | — | `[[role_id, role_name, position, selected(uint)]]` |
+| `PUT /v1/communities/{id}/self-roles/policy` | E (manage_roles) | `[request_id, role_ids]` | `[request_id, accepted_count]` |
+| `PUT /v1/communities/{id}/self-roles/{role_id}` | E (community member) | `[request_id, enabled(uint 0 or 1)]` | `204` |
+| `PUT /v1/communities/{id}/role-panels` | E (manage_roles) | `[request_id, channel_id, message_seq, options]`; each option is `[emoji, role_id]` | `[request_id, option_count]` |
+| `PUT /v1/communities/{id}/bot-join-role` | E (manage_roles) | `[request_id, role_id, expected_installation_id]`; zero `role_id` clears the approval | `[request_id, installation_id]`; configuration only, no immediate role grant; 409 if the active installation changed |
+| `GET /v1/communities/{id}/bot-join-role` | E (manage_roles) | Empty | `[role_id/null, installation_id]` for a ready installation; 404 when none is ready |
+| `GET /v1/communities/{id}/music/dj-roles` | E (manage_community + manage_roles) | Empty | `[role_ids, installation_id]` for the active ready installation |
+| `PUT /v1/communities/{id}/music/dj-roles` | E (manage_community + manage_roles) | `[request_id, expected_installation_id, role_ids]` | `[request_id, accepted_count]`; role IDs must be in the community and below the actor's highest role (owner exempt); 409 if the active installation changed |
+| `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B (ready, Music capability, owning installation) | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current policy, `Cache-Control: no-store` |
+| `GET /v1/communities/{community}/bot/members/{member}/episode` | B (ready, wire v3, current installed bot/member) | Empty | `[member_id, episode_id]` for the current membership episode; 404 when the member is absent |
+| `POST /v1/communities/{community}/bot/join-role-grants` | E (ready Bot session, wire v3, roles capability) | `[request_id, member_id, episode_id]` | `[request_id, installation_id, community_id, member_id, episode_id, role_id]` immutable grant receipt; 204 when the episode is current but no join role is configured; 404 for a stale episode; repeated identical requests return the same receipt |
+| `PUT /v1/communities/{id}/role-panels` | E (current manage_roles session; ready Roles-capable Bot) | `[request_id, channel_id, accepted_message_seq, [[emoji, role_id]...]]` | `[request_id, accepted_option_count]`; requires an accepted Bot send receipt for the channel and every role must remain approved and eligible; readable rows, when present, must match the receipt |
+| `POST /v1/communities/{id}/role-panels/{channel_id}/{message_seq}/reaction` | E (current human channel member; after an accepted encrypted event) | `[group_id, event_seq, emoji, enabled(uint 0 or 1)]` | `204`; actor is the session user, and only the exact approved mapping for this registered panel may change that actor's reaction grant source |
+| `PUT /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id, expires_unix]` | `[request_id, expires_unix]` |
+| `DELETE /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id]` | `204` |
+| `GET /v1/communities/{id}/members/{user_id}/timeout` | E (member or moderate_members) | — | `[expires_unix|null]` |
+| `POST /v1/communities/{id}/members/{user_id}/warning` | E (moderate_members; actor must outrank target) | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
+| `GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}` | B (ready installation with warnings capability; owning session) | — | `[request_id, action_id, community_id, actor_user_id, actor_device_id, target_user_id, community_revision, accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
+
+The role-panel action route is an explicit authenticated self-service action. The
+client calls it only after the corresponding encrypted reaction upload has been
+accepted; the server binds `event_seq` to the current session device's accepted
+application-message row in the named open channel group. MLS plaintext remains
+opaque to the server, so the request's emoji and enabled flag are the action
+itself, not a server-verified interpretation of ciphertext. The server rechecks
+the exact registered panel, Bot send receipt, current role approval, hierarchy,
+and channel membership before adding a source; removal deletes only that
+session user's matching panel source and remains available if policy approval
+was later withdrawn.
+
+The warning route writes an immutable warning action and audit metadata. It does
+not accept or store a plaintext reason. The request ID is idempotent for the same
+actor, device, community, and target; reusing it for another action conflicts.
+The human client stages the reason in its encrypted local outbox before posting
+the action, then sends operation 61 over the installation's encrypted interaction
+group. The Bot attaches the case only when the authoritative receipt matches the
+request, actor, device, community, and target. The encrypted case expires after
+90 days; plaintext reason is never stored by the server.
+
+DJ role policy is retained when an installation is soft-disabled, but both
+routes return 404 while it is disabled or not ready. Explicitly re-enabling and
+bringing the same installation back to ready makes its saved approvals
+available again. Permanent removal uses a tombstone; a later installation has
+a new ID and starts without the prior policy.
+
+The Spotify begin route replaces any pending attempt for that installation.
+Attempts expire after ten minutes and bind the initiating enrolled session;
+the callback state and authorization code are single-use. The runtime claim
+returns the code and PKCE verifier only to the owning runtime. Never put those
+values in logs or persistent browser storage. Event acknowledgement advances
+the installation's durable cursor; a cursor below the retained floor returns
+`410 E_PRUNED`. Self-role policy is bounded to 250 role ids. A role panel must
+reference a live readable-channel message authored by the installed bot, and
+its options must be approved self-service roles.
 
 ## Invites
 
@@ -316,7 +525,7 @@ full contract.
 
 | Area | Routes |
 |---|---|
-| communities | `POST/GET /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
+| communities | `POST/GET /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `GET /v1/communities/{id}/members/{user_id}`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
 | channels | `POST/GET /v1/communities/{id}/channels`, `GET/PATCH/DELETE /v1/channels/{id}`, `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}`, `DELETE` the same, `GET /v1/channels/{id}/members`, `PUT/DELETE /v1/channels/{id}/members/{user_id}` |
 | roles | `POST /v1/communities/{id}/roles`, `PATCH/DELETE /v1/roles/{id}`, `PUT/DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}` |
 | bans | `PUT /v1/communities/{id}/bans/{user_id}`, `DELETE` the same, `GET /v1/communities/{id}/bans` |
@@ -349,6 +558,7 @@ community answers `404` to everyone.
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
 | `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint), status_msg(tstr), bio(tstr)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/members/{user_id}` | — | `[user_id(bstr16), nick(tstr), username(tstr), display(tstr)]` for a current member; `404 E_NOT_FOUND` if the target is absent. The caller must also be a current member; names are read only from that community's current membership and the user's current account row |
 | `GET /v1/communities/{id}/presence` | — | `[[user_id, status]]` for all current members; membership required; status 0 Offline, 1 Online, 2 Idle, 3 Do Not Disturb |
 | `GET /v1/communities/{id}/permissions` | — | `[bits(uint), top(uint)]`: the caller's community-wide permissions (§ Permissions; no channel overwrite applied) and the position of the caller's highest role, `0` for `@everyone` alone and `2147483648` for the owner |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
@@ -425,6 +635,7 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 |---|---|---|
 | `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)[, overwrites]]`, `overwrites` = `[[kind(uint), target_id(bstr16), allow(uint), deny(uint)]]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]`; `404 E_NOT_FOUND` when `parent_id` names a category the caller cannot view, ahead of the `400` parent rules, as for a hidden channel |
 | `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]`; `parent_id` is null when the caller cannot view the category |
+| `GET /v1/channels/{id}/permissions` | — | `bits(uint)`: the caller's effective current permissions in the channel, after role and member overwrites (§ Permissions); `404 E_NOT_FOUND` when the caller cannot view the channel |
 | `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a channel whose category the caller cannot view is listed with `parent_id` null; a category is listed only when the caller can view it; `404` for a non-member |
 | `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204`; `404 E_NOT_FOUND` when `parent_id` names a category the caller cannot view, ahead of the `400` parent rules, as for a hidden channel |
 | `DELETE /v1/channels/{id}` | — | `204` |
@@ -1513,6 +1724,12 @@ are stored in a signed 64-bit integer on Postgres. A stored bit outside this tab
 | 21 | `mute_members` | channel |
 | 22 | `move_members` | channel |
 | 23 | `manage_nicknames` | community |
+| 24 | `moderate_members` | community |
+
+`moderate_members` allows warning a member and applying or removing a text timeout. It is a
+community permission, so channel overwrites cannot grant or remove it. In a community that
+requires moderator second factors, a role grant carrying this bit requires the target to hold a
+confirmed TOTP secret or a passkey.
 
 A **community** bit is about the community, not one channel: a channel overwrite can neither grant
 nor remove it. `@everyone` is the role at position 0 and applies to every member; no other role may
@@ -1573,8 +1790,8 @@ The discovery document is an eleven-element array, in this order:
 ]
 ```
 
-`wire_versions` is the list the gateway's `hello` offers, from the same value: `[2]` in this
-version (`02` § Gateway frames, op 0). `e2ee_versions` and `media_versions` are `[1]`.
+`wire_versions` is the list the gateway's `hello` offers, from the same value: `[3,2]` in this
+version (`02` § Gateway frames, op 0; `10` § Session capability and compatibility). `e2ee_versions` and `media_versions` are `[1]`.
 
 `external_sender_key_id` and `external_sender_pub` are the key id and the Ed25519 public key of the
 instance's current external-sender signing key (`03-identity.md` § Instance keys): the entry of

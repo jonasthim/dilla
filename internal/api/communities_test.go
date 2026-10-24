@@ -14,6 +14,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -75,6 +76,122 @@ func TestCreateCommunityMakesCreatorOwnerAndMember(t *testing.T) {
 	}
 	if len(roles) != 1 || roles[0].ID != everyone || roles[0].Position != 0 || roles[0].Name != "@everyone" {
 		t.Fatalf("roles = %+v, want one @everyone at position 0", roles)
+	}
+}
+
+func TestGetCurrentCommunityMemberIsScopedToCallerMembership(t *testing.T) {
+	e := communityEnv(t)
+	_, ownerTok := e.NewUser("owner")
+	community := createCommunity(t, e, ownerTok)
+	member, _ := e.NewUser("member")
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: community, UserID: member, Nick: "Ada", Joined: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + community.String() + "/members/" + member.String()
+	status, body := e.Do(http.MethodGet, path, ownerTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET member = %d (%x), want 200", status, body)
+	}
+	var got struct {
+		_        struct{} `cbor:",toarray"`
+		UserID   id.ID
+		Nick     string
+		Username string
+		Display  string
+	}
+	mustUnmarshal(t, body, &got)
+	if got.UserID != member || got.Nick != "Ada" || got.Display == "" {
+		t.Fatalf("member profile = %+v", got)
+	}
+	outsider, outsiderTok := e.NewUser("outsider")
+	if status, _ := e.Do(http.MethodGet, path, outsiderTok, nil); status != http.StatusNotFound {
+		t.Errorf("unrelated caller GET member = %d, want 404", status)
+	}
+	missingPath := "/v1/communities/" + community.String() + "/members/" + outsider.String()
+	if status, _ := e.Do(http.MethodGet, missingPath, ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("absent member GET = %d, want 404", status)
+	}
+	otherCommunity := createCommunity(t, e, ownerTok)
+	crossOnly, _ := e.NewUser("crossonly")
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: otherCommunity, UserID: crossOnly, Nick: "Other community name", Joined: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	crossPath := "/v1/communities/" + community.String() + "/members/" + crossOnly.String()
+	if status, _ := e.Do(http.MethodGet, crossPath, ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("member from another community GET = %d, want 404", status)
+	}
+}
+
+func TestMembershipEventsUseOneEpisodeForJoinLeaveAndNewEpisodeForRejoin(t *testing.T) {
+	e := communityEnv(t)
+	owner, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	user, token := e.NewUser("member")
+	base := "/v1/communities/" + cid.String()
+
+	if status, body := e.Do(http.MethodPost, base+"/join", token, []any{nil}); status != http.StatusOK {
+		t.Fatalf("join = %d (%x)", status, body)
+	}
+	first, err := e.Repo.GetMember(t.Context(), cid, user)
+	if err != nil || first.EpisodeID.IsZero() {
+		t.Fatalf("joined member = %+v, err=%v", first, err)
+	}
+	if status, body := e.Do(http.MethodPost, base+"/join", token, []any{nil}); status != http.StatusOK {
+		t.Fatalf("idempotent join = %d (%x)", status, body)
+	}
+	if status, body := e.Do(http.MethodPost, base+"/leave", token, []any{}); status != http.StatusNoContent {
+		t.Fatalf("leave = %d (%x)", status, body)
+	}
+	if status, body := e.Do(http.MethodPost, base+"/join", token, []any{nil}); status != http.StatusOK {
+		t.Fatalf("rejoin = %d (%x)", status, body)
+	}
+	second, err := e.Repo.GetMember(t.Context(), cid, user)
+	if err != nil || second.EpisodeID.IsZero() || second.EpisodeID == first.EpisodeID {
+		t.Fatalf("rejoined member = %+v, err=%v; first episode=%s", second, err, first.EpisodeID)
+	}
+	if status, body := e.Do(http.MethodDelete, base+"/members/"+user.String(), ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("kick = %d (%x)", status, body)
+	}
+	if status, body := e.Do(http.MethodPost, base+"/join", token, []any{nil}); status != http.StatusOK {
+		t.Fatalf("join after kick = %d (%x)", status, body)
+	}
+	third, err := e.Repo.GetMember(t.Context(), cid, user)
+	if err != nil || third.EpisodeID == second.EpisodeID {
+		t.Fatalf("membership after kick = %+v, err=%v", third, err)
+	}
+	api.NewBans(e.Repo, e.DS, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	if status, body := e.Do(http.MethodPut, base+"/bans/"+user.String(), ownerTok, []any{"", nil}); status != http.StatusNoContent {
+		t.Fatalf("ban = %d (%x)", status, body)
+	}
+
+	page, err := e.Repo.ListBotStructuralEvents(t.Context(), cid, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 7 {
+		t.Fatalf("events = %+v, want creator join, then join/leave/rejoin/kick/join/ban", page.Events)
+	}
+	wantKinds := []protocol.EventKind{protocol.EventMemberJoin, protocol.EventMemberJoin, protocol.EventMemberLeave, protocol.EventMemberJoin, protocol.EventMemberLeave, protocol.EventMemberJoin, protocol.EventMemberLeave}
+	for i, event := range page.Events {
+		if event.Kind != wantKinds[i] {
+			t.Fatalf("event %d kind = %v, want %v", i, event.Kind, wantKinds[i])
+		}
+	}
+	memberEvents := []protocol.Event{page.Events[1], page.Events[2], page.Events[3], page.Events[4], page.Events[5], page.Events[6]}
+	for _, event := range memberEvents {
+		data := event.Data
+		if len(data) != 2 || data[0] != user {
+			t.Fatalf("membership event data = %#v, want [user_id, episode_id]", data)
+		}
+	}
+	joinEpisode, leaveEpisode := memberEvents[0].Data[1], memberEvents[1].Data[1]
+	rejoinEpisode, kickEpisode := memberEvents[2].Data[1], memberEvents[3].Data[1]
+	postKickEpisode, banEpisode := memberEvents[4].Data[1], memberEvents[5].Data[1]
+	if joinEpisode != leaveEpisode || rejoinEpisode == joinEpisode || rejoinEpisode != second.EpisodeID || kickEpisode != rejoinEpisode || postKickEpisode == kickEpisode || banEpisode != postKickEpisode || postKickEpisode != third.EpisodeID {
+		t.Fatalf("event episode ids = %v %v %v %v %v %v; current before ban=%s", joinEpisode, leaveEpisode, rejoinEpisode, kickEpisode, postKickEpisode, banEpisode, third.EpisodeID)
+	}
+	if page.Events[0].Data[0] != owner {
+		t.Fatalf("creator membership event = %#v", page.Events[0].Data)
 	}
 }
 

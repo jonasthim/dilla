@@ -7,8 +7,9 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg, login_arg,
-    media_epoch_out, purpose_arg, role_ids_arg,
+    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg,
+    human_interaction_request_arg, login_arg, media_epoch_out, nonzero_id_arg, purpose_arg,
+    role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -34,6 +35,17 @@ fn unhex(s: &str) -> Vec<u8> {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+#[wasm_bindgen_test]
+fn human_interaction_send_inputs_are_typed_bounded_and_nonzero() {
+    let id = [0x31; 16];
+    assert_eq!(nonzero_id_arg("request_id", &id).unwrap(), id);
+    assert!(nonzero_id_arg("request_id", &[0x31; 15]).is_err());
+    assert!(nonzero_id_arg("request_id", &[0; 16]).is_err());
+
+    assert!(human_interaction_request_arg(&[0x01; 2991]).is_ok());
+    assert!(human_interaction_request_arg(&[0x01; 2992]).is_err());
 }
 
 const VECTOR_ENVELOPE_CBOR: &str = "89015011111111111111111111111111111111035012121212121212121212121212121212501313131313131313131313131313131363e29b8f808058201616161616161616161616161616161616161616161616161616161616161616";
@@ -278,7 +290,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 11);
+    assert_eq!(BROWSER_ABI_VERSION, 13);
 }
 
 /// L-WASM-34: `call_media_epoch` hands its CBOR to JavaScript as a copy made straight from the

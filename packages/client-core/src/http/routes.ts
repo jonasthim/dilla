@@ -4,6 +4,7 @@ import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
+import { negotiateSession, type SessionCapabilities } from './negotiate-session';
 import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '../profile-text';
 export { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue };
 export type { ProfileTextProblem };
@@ -12,6 +13,7 @@ export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
 export const MESSAGES_MAX = 256;
 export const WELCOMES_PAGE = 64;
+export const MODERATION_REMOVALS_PAGE = 250;
 // A backup is capped (protocol/09: 256 B kind 0, about 1 MiB kind 1) and sits on the sign-up, sign-in and revoke
 // paths, so it gets a longer per-attempt bound than the 30 s default rather than none. Blobs stay unbounded.
 const BACKUP_TIMEOUT_MS = 120_000;
@@ -54,6 +56,10 @@ export interface MemberRow { userId: Uint8Array; username: string; display: stri
   statusMsg?: string; bio?: string; }
 export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
+export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
+export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
+/** Opaque current-interaction-context proof; only the core can verify or interpret its signed payload. */
+export interface InteractionAdmissionContextProof { payload: Uint8Array; signature: Uint8Array; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
 export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number;
@@ -102,6 +108,13 @@ export const TOPIC_MAX_BYTES = 1024;
 export const BAN_REASON_MAX_BYTES = 512;
 /** GET /v1/communities/{id}/permissions: the caller's resolved community-wide bits and rank (0..OWNER_TOP). */
 export interface PermissionsRow { bits: bigint; top: number }
+export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
+  revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
+export interface BotJoinRoleRow { roleId: Uint8Array | null; installationId: Uint8Array }
+export interface BotDjRolesRow { roleIds: Uint8Array[]; installationId: Uint8Array }
+export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
+export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
+export interface RolePanelOptionInput { emoji: string; roleId: Uint8Array }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
   hoist: boolean; mentionable: boolean }
 export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array; created: bigint; expires: bigint | null;
@@ -112,11 +125,11 @@ export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Arr
 
 // ---- wave 2a: roles and private channels (flow 09) ----
 /** The instance's own bounds (internal/api roles.go, channels.go): overwrites per community, a role name, a role colour,
- *  the 24 permission bits, and overwrites in one channel create. */
+ *  the 25 permission bits, and overwrites in one channel create. */
 export const OVERWRITES_MAX = 10_000;
 export const ROLE_NAME_MAX_BYTES = 100;
 export const ROLE_COLOR_MAX = 0xffffff;
-export const PERM_ALL = 0xffffff;
+export const PERM_ALL = 0x1ffffff;
 export const OVERWRITES_PER_CREATE_MAX = 100;
 export interface OverwriteRow { channelId: Uint8Array; kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
 export interface NewOverwrite { kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
@@ -135,6 +148,7 @@ export interface Ceremony { ceremonyId: Uint8Array; options: string }
 export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
 export interface PasskeyLogin { assertion: string; needs: 0 | 1 }
 export interface StepUpToken { token: string; expires: bigint }
+export interface GroupHealState { epoch: bigint; nextSeq: bigint; generation: bigint; needFromSeq: bigint; needsHeal: boolean }
 
 /** E8 (internal/api/gifs.go): the query, offset and id bounds, and the size caps of a preview and a full GIF. */
 export const GIF_QUERY_MAX_BYTES = 100;
@@ -292,7 +306,7 @@ function flag(v: CborValue): boolean {
   if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
   return n === 1;
 }
-/** A permission word as the instance stores it: only the 24 defined bits are kept (a 64-bit word may carry more). */
+/** A permission word as the instance stores it: only the 25 defined bits are kept (a 64-bit word may carry more). */
 function bits(v: CborValue): number {
   return Number(u64(v) & BigInt(PERM_ALL));
 }
@@ -322,6 +336,43 @@ function banRow(value: CborValue): BanRow {
   return { userId: bin(a[0], 16), reason: str(a[1]), byUser: bin(a[2], 16), created: u64(a[3]), expires: opt(a[4], u64),
     username: a.length > 5 ? str(a[5]) : '', display: a.length > 6 ? str(a[6]) : '' };
 }
+function botInstallationRow(value: CborValue, communityId: Uint8Array): BotInstallationRow {
+  const a = arr(value);
+  if (a.length !== 8) throw new CborError('E_CBOR_SHAPE', 'expected eight bot installation fields');
+  const row: BotInstallationRow = { id: bin(a[0], 16), communityId: bin(a[1], 16), state: oneOf(a[2], [0, 1, 2, 3, 4, 5] as const),
+    revision: u64(a[3]), userId: opt(a[4], v => bin(v, 16)), deviceId: opt(a[5], v => bin(v, 16)),
+    capabilities: u53(a[6]), updatedAt: u64(a[7]) };
+  if (toHex(row.communityId) !== toHex(communityId) || row.revision === 0n || row.capabilities > 255) {
+    throw new CborError('E_CBOR_RANGE', 'bot installation scope, revision or capabilities invalid');
+  }
+  return row;
+}
+function botSpotifyAttempt(value: CborValue): BotSpotifyAttempt {
+  const a = arr(value);
+  if (a.length !== 3) throw new CborError('E_CBOR_SHAPE', 'expected three Spotify attempt fields');
+  const attemptId = bin(a[0], 16);
+  const authorizeUrl = str(a[1]);
+  const expires = u64(a[2]);
+  let url: URL;
+  try { url = new URL(authorizeUrl); } catch { throw new CborError('E_CBOR_RANGE', 'invalid Spotify authorization URL'); }
+  const names = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state', 'code_challenge_method', 'code_challenge'];
+  const unique = names.every(name => url.searchParams.getAll(name).length === 1);
+  const redirect = url.searchParams.get('redirect_uri');
+  let redirectUrl: URL | null = null;
+  if (redirect !== null) { try { redirectUrl = new URL(redirect); } catch { /* rejected below */ } }
+  if (url.protocol !== 'https:' || url.hostname !== 'accounts.spotify.com' || url.port !== '' || url.pathname !== '/authorize'
+    || url.username !== '' || url.password !== '' || url.hash !== '' || !unique || [...url.searchParams.keys()].some(k => !names.includes(k))
+    || url.searchParams.get('response_type') !== 'code' || url.searchParams.get('scope') !== 'streaming user-read-email user-read-private'
+    || url.searchParams.get('code_challenge_method') !== 'S256'
+    || !(url.searchParams.get('client_id') ?? '').trim() || redirectUrl === null || redirectUrl.protocol !== 'https:'
+    || redirectUrl.hostname === '' || redirectUrl.username !== '' || redirectUrl.password !== '' || redirectUrl.hash !== ''
+    || !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get('state') ?? '')
+    || !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get('code_challenge') ?? '')) {
+    throw new CborError('E_CBOR_RANGE', 'invalid Spotify authorization URL');
+  }
+  if (expires === 0n) throw new CborError('E_CBOR_RANGE', 'invalid Spotify attempt expiry');
+  return { attemptId, authorizeUrl, expires };
+}
 function inviteRow(value: CborValue): InviteRow {
   const a = atLeast(value, 9);
   return { id: bin(a[0], 16), communityId: opt(a[1], (v) => bin(v, 16)), createdBy: opt(a[2], (v) => bin(v, 16)),
@@ -349,6 +400,11 @@ function passkeyRow(value: CborValue): PasskeyRow {
 }
 export class Routes {
   constructor(private readonly http: HttpClient) {}
+
+  /** Negotiate capabilities for the current authenticated HTTP bearer session. */
+  negotiateSession(): Promise<SessionCapabilities> {
+    return negotiateSession(this.http);
+  }
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
     options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes' | 'signal'> = {}): Promise<Uint8Array> {
@@ -520,6 +576,165 @@ export class Routes {
     if (top > OWNER_TOP) throw new CborError('E_CBOR_RANGE', 'rank above ' + String(OWNER_TOP));
     return { bits: u64(a[0]), top };
   }
+  /** POST a ClientCore-signed moderation proof; the instance rechecks permission and hierarchy atomically. */
+  async postModerationRemoval(groupId: Uint8Array, signedBody: Uint8Array): Promise<void> {
+    await this.body('POST', `/v1/groups/${id('groupId', groupId)}/moderation/removals`, 'write', true,
+      { body: signedBody, maxBodyBytes: 128 });
+  }
+  /** CBOR null means the community has no active installation; refusals remain visible. */
+  async getBotInstallation(communityId: Uint8Array): Promise<BotInstallationRow | null> {
+    const path = `/v1/communities/${id('communityId', communityId)}/bot`;
+    const row = decode(await this.body('GET', path, 'read', true));
+    return row === null ? null : botInstallationRow(row, communityId);
+  }
+  /** GET /bot-join-role returns [role id or null, active installation id]. 404 means no active bot. */
+  async getBotJoinRole(communityId: Uint8Array): Promise<BotJoinRoleRow | null> {
+    try {
+      const value = decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot-join-role`, 'read', true));
+      const a = arr(value);
+      if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected bot join-role and installation ids');
+      return { roleId: a[0] === null ? null : bin(a[0], 16), installationId: bin(a[1], 16) };
+    } catch (e) { if (e instanceof DillaHttpError && e.status === 404) return null; throw e; }
+  }
+  /** Request ID is retained across HTTP retries; a zero role ID clears the setting. */
+  async configureBotJoinRole(communityId: Uint8Array, requestId: Uint8Array, roleId: Uint8Array, installationId: Uint8Array): Promise<Uint8Array> {
+    const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot-join-role`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('roleId', roleId), inputId('installationId', installationId)]), retry429: false })));
+    if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i])) {
+      throw new CborError('E_CBOR_SHAPE', 'invalid bot join-role acknowledgement');
+    }
+    return bin(ack[1], 16);
+  }
+  /** DJ role policy belongs to the currently ready bot installation; the installation ID fences stale settings forms. */
+  async getBotDjRoles(communityId: Uint8Array): Promise<BotDjRolesRow | null> {
+    try {
+      const a = arr(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'read', true)));
+      if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected DJ role ids and installation id');
+      const roles = bounded(a[0], 250, 'DJ roles').map(value => bin(value, 16));
+      if (new Set(roles.map(toHex)).size !== roles.length) throw new CborError('E_CBOR_SHAPE', 'duplicate DJ role id');
+      return { roleIds: roles, installationId: bin(a[1], 16) };
+    } catch (e) { if (e instanceof DillaHttpError && e.status === 404) return null; throw e; }
+  }
+  async configureBotDjRoles(communityId: Uint8Array, requestId: Uint8Array, installationId: Uint8Array, roleIds: Uint8Array[]): Promise<number> {
+    if (roleIds.length > 250 || new Set(roleIds.map(toHex)).size !== roleIds.length) throw new RangeError('E_ROUTE_INPUT: invalid DJ role ids');
+    const a = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('installationId', installationId), roleIds.map(role => inputId('roleId', role))]), retry429: false })));
+    if (a.length !== 2 || !bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'invalid DJ role acknowledgement');
+    return u53(a[1]);
+  }
+  /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
+  async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {
+    const rows = bounded(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/self-roles`, 'read', true)), ROLES_MAX, 'self roles');
+    return rows.map(value => {
+      const a = arr(value);
+      if (a.length !== 4) throw new CborError('E_CBOR_SHAPE', 'expected four self-role fields');
+      const position = u53(a[2]);
+      if (position > OWNER_TOP) throw new CborError('E_CBOR_RANGE', 'self-role position out of range');
+      return { id: bin(a[0], 16), name: str(a[1]), position, selfSelected: oneOf(a[3], [0, 1] as const) === 1 };
+    });
+  }
+  async configureSelfRoles(communityId: Uint8Array, requestId: Uint8Array, roleIds: Uint8Array[]): Promise<void> {
+    if (roleIds.length > ROLES_MAX) throw new RangeError('E_ROUTE_INPUT: at most 250 roles');
+    const seen = new Set<string>();
+    for (const roleId of roleIds) { const hex = id('roleId', roleId); if (seen.has(hex)) throw new RangeError('E_ROUTE_INPUT: duplicate role'); seen.add(hex); }
+    const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/self-roles/policy`, 'write', true,
+      { body: encode([inputId('requestId', requestId), roleIds]), retry429: false })));
+    if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i]) || u53(ack[1]) !== roleIds.length) {
+      throw new CborError('E_CBOR_SHAPE', 'invalid self-role policy acknowledgement');
+    }
+  }
+  async selectSelfRole(communityId: Uint8Array, roleId: Uint8Array, requestId: Uint8Array, enabled: boolean): Promise<void> {
+    await this.http.request({ method: 'PUT', path: `/v1/communities/${id('communityId', communityId)}/self-roles/${id('roleId', roleId)}`,
+      bucket: 'write', idempotent: true, body: encode([inputId('requestId', requestId), enabled ? 1 : 0]), retry429: false,
+      ok: [204], maxBodyBytes: 0 });
+  }
+  /** Registers mappings only after the Bot-authored message has an accepted sequence. */
+  async registerRolePanel(communityId: Uint8Array, requestId: Uint8Array, channelId: Uint8Array, messageSeq: bigint,
+    options: RolePanelOptionInput[]): Promise<void> {
+    if (messageSeq < 1n || messageSeq > (1n << 63n) - 1n || options.length < 1 || options.length > 100) {
+      throw new RangeError('E_ROUTE_INPUT: invalid role panel identity or option count');
+    }
+    const emojis = new Set<string>(); const roles = new Set<string>();
+    const rows = options.map(option => {
+      const emoji = str(option.emoji);
+      const emojiBytes = new TextEncoder().encode(emoji).length;
+      if (emojiBytes < 1 || emojiBytes > 32) throw new RangeError('E_ROUTE_INPUT: invalid role panel emoji');
+      const role = id('roleId', option.roleId);
+      if (emojis.has(emoji) || roles.has(role)) throw new RangeError('E_ROUTE_INPUT: duplicate role panel mapping');
+      emojis.add(emoji); roles.add(role);
+      return [emoji, inputId('roleId', option.roleId)];
+    });
+    const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/role-panels`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('channelId', channelId), messageSeq, rows]), retry429: false })));
+    if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i]) || u53(ack[1]) !== options.length) {
+      throw new CborError('E_CBOR_SHAPE', 'invalid role panel acknowledgement');
+    }
+  }
+  /** Applies a human-authenticated role-panel action only after the matching panel event was accepted. */
+  async applyRolePanelReaction(communityId: Uint8Array, channelId: Uint8Array, messageSeq: bigint,
+    groupId: Uint8Array, eventSeq: bigint, emoji: string, enabled: boolean): Promise<void> {
+    if (messageSeq < 1n || messageSeq > (1n << 63n) - 1n || eventSeq < 1n || eventSeq > (1n << 63n) - 1n
+      || new TextEncoder().encode(emoji).length < 1 || new TextEncoder().encode(emoji).length > 32) {
+      throw new RangeError('E_ROUTE_INPUT: invalid role panel reaction');
+    }
+    await this.http.request({ method: 'POST',
+      path: `/v1/communities/${id('communityId', communityId)}/role-panels/${id('channelId', channelId)}/${messageSeq}/reaction`,
+      bucket: 'write', idempotent: true, body: encode([inputId('groupId', groupId), eventSeq, emoji, enabled ? 1 : 0]),
+      retry429: false, ok: [204], maxBodyBytes: 0 });
+  }
+  /** Request ID is retained across HTTP retries; the server binds it to actor, payload and result. */
+  async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,
+    capabilities: number, stepUp: string): Promise<BotInstallationRow> {
+    if (expectedRevision !== null && expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
+    if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > 255) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
+    if (typeof stepUp !== 'string' || stepUp.length === 0) throw new RangeError('E_ROUTE_INPUT: step-up token is required');
+    const body = encode([inputId('requestId', requestId), expectedRevision, capabilities, stepUp]);
+    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot`,
+      'write', true, { body, retry429: false })), communityId);
+  }
+  /** Arms a one-use automatic moderation grant. Config plaintext is represented only by its digest here. */
+  async armAutoModerationGrant(groupId: Uint8Array, requestId: Uint8Array, communityId: Uint8Array,
+    expectedRevision: bigint, requestExpires: bigint, configHash: Uint8Array, stepUp: string): Promise<{ token: string; expires: bigint }> {
+    if (expectedRevision < 0n || expectedRevision > (1n << 63n) - 1n || requestExpires <= 0n
+      || configHash.length !== 32 || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid automatic moderation grant tuple');
+    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/automod-grants/arm`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('communityId', communityId), expectedRevision, requestExpires, configHash, stepUp]), retry429: false });
+    const fields = arr(decode(raw), 2);
+    if (typeof fields[0] !== 'string' || fields[0].length < 1 || fields[0].length > 128) throw new CborError('E_CBOR_SHAPE', 'invalid automatic moderation grant token');
+    return { token: fields[0], expires: u64(fields[1]) };
+  }
+  async disableBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint): Promise<BotInstallationRow> {
+    if (expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
+    const body = encode([inputId('requestId', requestId), expectedRevision]);
+    return botInstallationRow(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/disable`,
+      'write', true, { body, retry429: false })), communityId);
+  }
+  async beginBotSpotifyAttempt(communityId: Uint8Array, stepUp: string): Promise<BotSpotifyAttempt> {
+    if (typeof stepUp !== 'string' || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid step-up token');
+    const path = `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts`;
+    const body = encode([stepUp]);
+    const response = await this.http.request({ method: 'POST', path, bucket: 'write', idempotent: false,
+      body, retry429: false, ok: [200], maxBodyBytes: 4096 });
+    return botSpotifyAttempt(decode(response.body));
+  }
+  async callbackBotSpotifyAttempt(communityId: Uint8Array, attemptId: Uint8Array, state: string, code: string): Promise<void> {
+    const stateBytes = UTF8.encode(state);
+    const codeBytes = UTF8.encode(code);
+    if (stateBytes.length < 1 || stateBytes.length > 256 || CONTROL.test(state)
+      || codeBytes.length < 1 || codeBytes.length > 2048 || /[\r\n\0]/u.test(code)) {
+      throw new RangeError('E_ROUTE_INPUT: invalid Spotify callback');
+    }
+    const path = `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts/${id('attemptId', attemptId)}/callback`;
+    const response = await this.http.request({ method: 'POST', path, bucket: 'write', idempotent: false,
+      body: encode([state, code]), retry429: false, ok: [202], maxBodyBytes: 256 });
+    const a = arr(decode(response.body));
+    if (a.length !== 1 || u53(a[0]) !== 1) throw new CborError('E_CBOR_SHAPE', 'invalid Spotify callback acknowledgement');
+  }
+  async cancelBotSpotifyAttempt(communityId: Uint8Array, attemptId: Uint8Array): Promise<void> {
+    await this.http.request({ method: 'DELETE',
+      path: `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts/${id('attemptId', attemptId)}`,
+      bucket: 'write', idempotent: true, ok: [204], maxBodyBytes: 0 });
+  }
   /** GET /v1/communities/{id}/roles: [[id, name, color, position, allow, deny, hoist, mentionable]], at most ROLES_MAX. */
   async listRoles(communityId: Uint8Array): Promise<RoleRow[]> {
     const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/roles`, 'read', true);
@@ -571,6 +786,40 @@ export class Routes {
   }
   async deleteBan(communityId: Uint8Array, userId: Uint8Array): Promise<void> {
     await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/bans/${id('userId', userId)}`, 'write', true);
+  }
+  /** GET /v1/communities/{id}/members/{user_id}/timeout: [expires|null], as Unix seconds. */
+  async getMemberTimeout(communityId: Uint8Array, userId: Uint8Array): Promise<bigint | null> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`, 'read', true)), 1);
+    return opt(a[0], u64);
+  }
+  /** PUT .../timeout: [request_id, expires]. The request id is stable across HTTP retries. */
+  async putMemberTimeout(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array, expires: bigint): Promise<bigint> {
+    if (expires < 0n || expires > 0xffff_ffff_ffff_ffffn) throw new RangeError('E_ROUTE_INPUT: expires must be uint64');
+    const a = atLeast(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`,
+      'write', true, { body: encode([inputId('requestId', requestId), expires]) })), 2);
+    if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'timeout response request id mismatch');
+    const answeredExpires = u64(a[1]);
+    if (answeredExpires !== expires) throw new CborError('E_CBOR_SHAPE', 'timeout response expiry mismatch');
+    return answeredExpires;
+  }
+  /** DELETE .../timeout: [request_id]; the server answers 204 No Content. */
+  async deleteMemberTimeout(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`, 'write', true,
+      { body: encode([inputId('requestId', requestId)]), ok: [204] });
+  }
+  /** POST .../warning: [request_id] → [request_id, action_id, community_revision, accepted_at]. The request carries no reason. */
+  async warnMember(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array): Promise<{ requestId: Uint8Array; actionId: Uint8Array; revision: number; acceptedAt: number }> {
+    const a = atLeast(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/warning`,
+      'write', true, { body: encode([inputId('requestId', requestId)]) })), 4);
+    if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'warning response request id mismatch');
+    return { requestId: bin(a[0], 16), actionId: bin(a[1], 16), revision: u53(a[2]), acceptedAt: u53(a[3]) };
+  }
+  /** GET authoritative accepted manual-warning receipt: [request, action, community, actor user, actor device, target, revision, acceptedAt]. */
+  async acceptedManualWarning(installationId: Uint8Array, requestId: Uint8Array): Promise<{ requestId: Uint8Array; actionId: Uint8Array; communityId: Uint8Array; actorUserId: Uint8Array; actorDeviceId: Uint8Array; targetUserId: Uint8Array; revision: number; acceptedAt: number }> {
+    const a = atLeast(decode(await this.body('GET', `/v1/bot-runtime/installations/${id('installationId', installationId)}/moderation/warnings/${id('requestId', requestId)}`, 'read', true)), 8);
+    if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'warning receipt request id mismatch');
+    return { requestId: bin(a[0], 16), actionId: bin(a[1], 16), communityId: bin(a[2], 16), actorUserId: bin(a[3], 16),
+      actorDeviceId: bin(a[4], 16), targetUserId: bin(a[5], 16), revision: u53(a[6]), acceptedAt: u53(a[7]) };
   }
   /** GET /v1/communities/{id}/bans: [[user_id, reason, by_user, created, expires|null, username, display]]; the last two
    *  are absent from an older instance and read as ''. */
@@ -637,6 +886,28 @@ export class Routes {
   async getGroupTree(groupId: Uint8Array): Promise<Uint8Array> {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/tree`, 'read', true);
   }
+  /** GET /v1/groups/{id}/heal-state: member-scoped server cursor and whether restored history needs repair. */
+  async getGroupHealState(groupId: Uint8Array): Promise<GroupHealState> {
+    const a = arr(decode(await this.body('GET', `/v1/groups/${id('groupId', groupId)}/heal-state`, 'read', true)));
+    if (a.length !== 5) throw new CborError('E_CBOR_SHAPE', 'group heal state has five elements');
+    const needsHeal = u53(a[4]);
+    if (needsHeal !== 0 && needsHeal !== 1) throw new CborError('E_CBOR_SHAPE', 'needs_heal is 0 or 1');
+    return { epoch: u64(a[0]), nextSeq: u64(a[1]), generation: u64(a[2]), needFromSeq: u64(a[3]), needsHeal: needsHeal === 1 };
+  }
+  /** POST /v1/groups/{id}/heal: sends the core's CBOR [group_info, tail, ratchet_tree] snapshot. */
+  async postGroupHeal(groupId: Uint8Array, snapshot: Uint8Array): Promise<{ epoch: bigint; nextSeq: bigint }> {
+    const a = arr(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/heal`, 'write', false, { body: snapshot })));
+    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'group heal result has two elements');
+    return { epoch: u64(a[0]), nextSeq: u64(a[1]) };
+  }
+  /** GET /v1/groups/{id}/interaction-admission-context: preserve the signed payload for core verification. */
+  async getInteractionAdmissionContext(groupId: Uint8Array, signal?: AbortSignal): Promise<InteractionAdmissionContextProof> {
+    const raw = await this.body('GET', `/v1/groups/${id('groupId', groupId)}/interaction-admission-context`, 'read', true,
+      { ok: [200], maxBodyBytes: 160 * 1024, signal });
+    const proof = arr(decode(raw));
+    if (proof.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected current interaction admission payload and signature');
+    return { payload: bin(proof[0]), signature: bin(proof[1], 64) };
+  }
   async getHandshakes(groupId: Uint8Array, from: bigint, limitValue: number): Promise<RowsPage> {
     const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}`;
     const p = page(await this.body('GET', path, 'read', true));
@@ -646,6 +917,24 @@ export class Routes {
     const path = `/v1/groups/${id('groupId', groupId)}/messages?from=${count('from', from)}&limit=${limit('limit', limitValue, MESSAGES_MAX)}`;
     const p = page(await this.body('GET', path, 'read', true));
     return { raw: p.raw, count: p.count, lastSeq: p.last };
+  }
+  async getModerationRemovals(groupId: Uint8Array, after: bigint, limitValue = MODERATION_REMOVALS_PAGE): Promise<ModerationRemovalPage> {
+    const path = `/v1/groups/${id('groupId', groupId)}/moderation/removals?after=${count('after', after)}&limit=${limit('limit', limitValue, MODERATION_REMOVALS_PAGE)}`;
+    const raw = await this.body('GET', path, 'read', true, { maxBodyBytes: 65_536 });
+    const tuple = arr(decode(raw), 2);
+    const rows = arr(tuple[0]);
+    if (rows.length > limitValue) throw new CborError('E_CBOR_SHAPE', 'too many moderation removals');
+    const nextRevision = u64(tuple[1]);
+    let expected = after;
+    const decoded = rows.map((value) => {
+      const row = arr(value, 4);
+      expected += 1n;
+      const revision = u64(row[0]);
+      if (revision !== expected) throw new CborError('E_CBOR_RANGE', 'moderation removal revision gap');
+      return { revision, proof: bin(row[1]), signature: bin(row[2], 64), acceptedAt: u64(row[3]) };
+    });
+    if (nextRevision !== expected || (rows.length === 0 && nextRevision !== after)) throw new CborError('E_CBOR_RANGE', 'moderation removal cursor mismatch');
+    return { rows: decoded, nextRevision };
   }
   async getProposals(groupId: Uint8Array): Promise<Uint8Array> {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/proposals`, 'read', true);

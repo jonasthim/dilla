@@ -16,6 +16,7 @@ use crate::ids::{DeviceId, UserId};
 use crate::mls::{CIPHERSUITE, DillaProvider, StorageError, UnitScope, build_key_package};
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use ed25519_dalek::VerifyingKey;
 use openmls::prelude::{BasicCredential, CredentialWithKey, MlsMessageOut};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
@@ -26,10 +27,19 @@ use zeroize::Zeroizing;
 
 const SESSION_DOMAIN: &[u8; 16] = b"dilla session v1";
 const AAD_ROOT: &[u8] = b"dilla root v1";
-const AAD_STATE: &[u8] = b"dilla state v1";
+pub(super) const AAD_STATE: &[u8] = b"dilla state v1";
 const ROOT_SEALED_LEN: usize = 103;
 const MAX_KEY_PACKAGES: u32 = 32;
 const MAX_TOKEN_BYTES: usize = 256;
+
+fn validate_instance_signer_key(key: &[u8; 32]) -> Result<(), ClientError> {
+    let verifying = VerifyingKey::from_bytes(key)
+        .map_err(|_| ClientError::new(E_CORE_INPUT, "invalid instance Ed25519 key"))?;
+    if verifying.is_weak() {
+        return Err(ClientError::new(E_CORE_INPUT, "weak instance Ed25519 key"));
+    }
+    Ok(())
+}
 
 /// The protocol/02 Device sessions preimage, also in `protocol/vectors/identity.json`.
 /// A `Vec` keeps its 81-byte length observable, including the final purpose byte.
@@ -50,6 +60,19 @@ pub fn session_preimage(
 
 fn malformed(key: &str) -> ClientError {
     ClientError::new(E_CORE_STORAGE, format!("app_meta {key} is malformed"))
+}
+fn ensure_no_bot_identity(u: &UnitScope<'_>) -> Result<(), ClientError> {
+    let exists = u.with_conn(|c| {
+        Ok(schema::meta_get(c, schema::BOT_PENDING)?.is_some()
+            || schema::meta_get(c, schema::BOT_BINDING)?.is_some())
+    })?;
+    if exists {
+        return Err(ClientError::new(
+            E_CORE_STATE,
+            "human signup or enrolment cannot use a bot identity",
+        ));
+    }
+    Ok(())
 }
 fn shape() -> crate::cbor::CborError {
     crate::cbor::CborError::TypeMismatch {
@@ -135,7 +158,7 @@ impl core::fmt::Debug for IdentityRecord {
     }
 }
 impl IdentityRecord {
-    fn encode(&self) -> Vec<u8> {
+    pub(super) fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::new();
         e.array(13)
             .uint(2)
@@ -339,14 +362,16 @@ pub(super) fn decode_phase(
     }
 }
 
-fn random<const N: usize>(provider: &DillaProvider) -> Result<Zeroizing<[u8; N]>, ClientError> {
+pub(super) fn random<const N: usize>(
+    provider: &DillaProvider,
+) -> Result<Zeroizing<[u8; N]>, ClientError> {
     provider
         .rand()
         .random_array::<N>()
         .map(Zeroizing::new)
         .map_err(|e| ClientError::new(E_CORE_MLS, format!("rng: {e}")))
 }
-fn seal(
+pub(super) fn seal(
     provider: &DillaProvider,
     key: &[u8; 32],
     aad: &[u8],
@@ -575,7 +600,7 @@ fn floor(r: &Recovered, stored: Option<&DeviceList>) -> Result<(), ClientError> 
 }
 
 /// The `state_list` meta value: the device list version inside the state object just sealed.
-fn state_list(version: u64) -> Vec<u8> {
+pub(super) fn state_list(version: u64) -> Vec<u8> {
     let mut e = Encoder::new();
     e.uint(version);
     e.into_vec()
@@ -714,6 +739,16 @@ impl ClientCore {
         })
     }
     pub fn signup_begin(&mut self, instance_id: &[u8; 16]) -> Result<String, ClientError> {
+        let bot_exists = self.read(|c| {
+            Ok(schema::meta_get(c, schema::BOT_PENDING)?.is_some()
+                || schema::meta_get(c, schema::BOT_BINDING)?.is_some())
+        })?;
+        if bot_exists {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "a bot identity is pending or complete",
+            ));
+        }
         match self.phase()? {
             Phase::None => {}
             Phase::Pending(_) => return Err(ClientError::new(E_CORE_STATE, "a signup is pending")),
@@ -723,6 +758,7 @@ impl ClientCore {
             }
         }
         let (signer, rk_text) = self.write(|ctx, u| {
+            ensure_no_bot_identity(u)?;
             let umk_seed = random::<32>(ctx.provider)?;
             let ssk_seed = random::<32>(ctx.provider)?;
             let rk = random::<32>(ctx.provider)?;
@@ -800,13 +836,29 @@ impl ClientCore {
         user_id: &[u8; 16],
         username: &str,
         now: u64,
+        instance_signer_pub: &[u8; 32],
     ) -> Result<Vec<u8>, ClientError> {
         if *user_id == [0; 16] {
             return Err(ClientError::new(E_CORE_INPUT, "user_id is all zero"));
         }
+        validate_instance_signer_key(instance_signer_pub)?;
         self.write(|ctx, u| {
+            ensure_no_bot_identity(u)?;
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             let rec = pending(decode_phase(identity, signup, enrol)?)?;
+            let pinned = u.with_conn(|c| schema::meta_get(c, schema::INSTANCE_SIGNER_KEY))?;
+            match pinned {
+                Some(pinned) if pinned.as_slice() != instance_signer_pub => {
+                    return Err(ClientError::new(
+                        E_CORE_STATE,
+                        "instance external-sender key changed",
+                    ));
+                }
+                Some(_) => {}
+                None => u.with_conn(|c| {
+                    schema::meta_put(c, schema::INSTANCE_SIGNER_KEY, instance_signer_pub)
+                })?,
+            }
             let cred = credential(&rec, *user_id);
             cred.verify_signatures(&rec.dsk_pub)?;
             let unsigned = DeviceListUnsigned {
@@ -854,8 +906,71 @@ impl ClientCore {
             Ok(put)
         })
     }
+
+    /// Return the human client's enrolled instance key for verification inside the core. The
+    /// public half never crosses the worker boundary; proof contents cannot establish this pin.
+    pub(crate) fn pinned_instance_signer_key(&self) -> Result<[u8; 32], ClientError> {
+        let raw = self.read(|c| schema::meta_get(c, schema::INSTANCE_SIGNER_KEY))?;
+        let raw = raw
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, "instance signing key is not pinned"))?;
+        let key: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
+        validate_instance_signer_key(&key)
+            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
+        Ok(key)
+    }
+
+    /// Continuity check for authenticated instance discovery. This method is deliberately
+    /// read-only: a changed or missing key requires explicit reconciliation.
+    pub fn instance_signer_key_matches(&self, observed_key: &[u8; 32]) -> Result<(), ClientError> {
+        validate_instance_signer_key(observed_key)?;
+        if self.pinned_instance_signer_key()?.as_slice() != observed_key {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "instance external-sender key changed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Pin the instance key discovered through this identity's authenticated enrolled session.
+    /// This is the first-write counterpart to `instance_signer_key_matches` for an enrolled browser.
+    pub fn instance_signer_key_pin(
+        &mut self,
+        instance_id: &[u8; 16],
+        observed_key: &[u8; 32],
+    ) -> Result<(), ClientError> {
+        validate_instance_signer_key(observed_key)?;
+        self.write(|_, u| {
+            ensure_no_bot_identity(u)?;
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let rec = ready(decode_phase(identity, signup, enrol)?)?;
+            if rec.instance_id != *instance_id {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "authenticated instance discovery does not match identity",
+                ));
+            }
+            let pinned = u.with_conn(|c| schema::meta_get(c, schema::INSTANCE_SIGNER_KEY))?;
+            match pinned {
+                Some(pinned) if pinned.as_slice() != observed_key => Err(ClientError::new(
+                    E_CORE_STATE,
+                    "instance external-sender key changed",
+                )),
+                Some(_) => Ok(()),
+                None => {
+                    u.with_conn(|c| {
+                        schema::meta_put(c, schema::INSTANCE_SIGNER_KEY, observed_key)
+                    })?;
+                    Ok(())
+                }
+            }
+        })
+    }
     pub fn signup_reset(&mut self) -> Result<(), ClientError> {
         self.write(|ctx, u| {
+            ensure_no_bot_identity(u)?;
             let ((identity, signup, enrol), session) =
                 u.with_conn(|c| Ok((load_phase(c)?, schema::meta_get(c, schema::SESSION)?)))?;
             let rec = pending(decode_phase(identity, signup, enrol)?)?;
@@ -1030,6 +1145,7 @@ impl ClientCore {
 
     pub fn enrol_begin(&mut self, instance_id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         let (signer, device_id, dsk_pub) = self.write(|ctx, u| {
+            ensure_no_bot_identity(u)?;
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             match decode_phase(identity, signup, enrol)? {
                 Phase::None => {}
@@ -1117,6 +1233,7 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_INPUT, "user_id is all zero"));
         }
         self.write(|_, u| {
+            ensure_no_bot_identity(u)?;
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             let Phase::Enrolling(mut rec) = decode_phase(identity, signup, enrol)? else {
                 return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));
@@ -1135,6 +1252,7 @@ impl ClientCore {
 
     pub fn enrol_reset(&mut self) -> Result<(), ClientError> {
         self.write(|ctx, u| {
+            ensure_no_bot_identity(u)?;
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             let Phase::Enrolling(rec) = decode_phase(identity, signup, enrol)? else {
                 return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));
@@ -1164,6 +1282,7 @@ impl ClientCore {
         now: u64,
     ) -> Result<Vec<u8>, ClientError> {
         self.write(|ctx, u| {
+            ensure_no_bot_identity(u)?;
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             let Phase::Enrolling(rec) = decode_phase(identity, signup, enrol)? else {
                 return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));

@@ -72,14 +72,17 @@ type DeviceListRow struct {
 }
 
 type SessionRow struct {
-	TokenHash   []byte
-	DeviceID    id.ID
-	UserID      id.ID
-	Scope       uint8
-	Tier        uint8 // copied from devices.tier at issue time (deviation ID15)
-	Created     int64
-	Expires     int64
-	IdleExpires int64
+	TokenHash    []byte
+	DeviceID     id.ID
+	UserID       id.ID
+	Scope        uint8
+	Tier         uint8 // copied from devices.tier at issue time (deviation ID15)
+	Created      int64
+	Expires      int64
+	IdleExpires  int64
+	WireVersion  uint64
+	E2EEVersion  uint64
+	MediaVersion uint64
 	// FactorOwed is the session's account's users.factor_owed, read by GetSessionByHash's join
 	// (web3.6 S1). CreateSession ignores it.
 	FactorOwed bool
@@ -395,6 +398,7 @@ type CommunityAFK struct {
 type MemberOfCommunityRow struct {
 	CommunityID id.ID
 	UserID      id.ID
+	EpisodeID   id.ID
 	Joined      int64
 	Nick        string
 }
@@ -544,4 +548,13 @@ type BackupRow struct {
 	BlobID      []byte
 	ManifestSig []byte
 	Created     int64
+}
+
+// MemberTimeoutRow mirrors community_member_timeouts.
+type MemberTimeoutRow struct {
+	CommunityID id.ID
+	UserID      id.ID
+	ByUser      id.ID
+	Created     int64
+	Expires     int64
 }

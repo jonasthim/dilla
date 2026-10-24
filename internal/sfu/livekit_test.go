@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/sfu/sfutest"
 )
 
 func testConfig() Config {
@@ -950,7 +951,7 @@ func TestTheLiveKitLogVolumeStaysBounded(t *testing.T) {
 // promhttp's default HTTPErrorOnError).
 func TestOneMetricsEndpointServesLiveKitAndDilla(t *testing.T) {
 	c := testConfig()
-	c.Port, c.UDPPort = 7924, 7926
+	c.Port, c.UDPPort = sfutest.FreePorts(t)
 	srv, err := Start(t.Context(), c)
 	if err != nil {
 		t.Fatalf("Start: %v", err)

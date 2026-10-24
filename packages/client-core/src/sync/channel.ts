@@ -1,4 +1,4 @@
-import { arr, bin, encode, u64 } from '../cbor';
+import { arr, bin, decode, encode, u64, type CborValue } from '../cbor';
 import { CoreError, type ExpectedGroup, type Id, type WelcomeOutcome } from '../core-port';
 import type { Frame } from '../gateway/frames';
 import { toHex } from '../hex';
@@ -9,13 +9,68 @@ import type { SyncInternals } from './internals';
 
 const groupKey = (g: Id): string => `g:${toHex(g)}`;
 const same = (a: Id, b: Id): boolean => toHex(a) === toHex(b);
+function reportUnexpected(s: SyncInternals, group: Id): void {
+  const hex = toHex(group);
+  if (s.unexpectedReported.has(hex)) return;
+  s.unexpectedReported.add(hex);
+  s.deps.onUnexpectedWelcome(group);
+}
+
+async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, rows: CborValue[], expected: ExpectedGroup[]): Promise<void> {
+  const expectedGroups = new Set(expected.map((item) => toHex(item.groupId)));
+  const genericRows: CborValue[] = [];
+  for (const row of rows) {
+    const fields = arr(row, 7);
+    const welcomeId = u64(fields[0]);
+    const group = bin(fields[1], 16);
+    if (expectedGroups.has(toHex(group))) {
+      genericRows.push(row);
+      continue;
+    }
+
+    let proof: { payload: Uint8Array; signature: Uint8Array };
+    try {
+      proof = await s.deps.routes.getInteractionAdmissionContext(group);
+    } catch {
+      // Ordinary unexpected Welcomes and unavailable/stale interaction proofs both stay on the
+      // existing unexpected path. Its outcome 3 preserves the row and cannot admit the group.
+      genericRows.push(row);
+      continue;
+    }
+    if (s.stopped()) return;
+
+    let outcomes: WelcomeOutcome[];
+    try {
+      const now = BigInt(Math.floor(s.deps.now() / 1000));
+      outcomes = s.deps.core.humanInteractionWelcomeApply(encode([row]), encode([proof.payload, proof.signature]), now);
+    } catch {
+      // A successful proof lookup identifies a kind-3 candidate. Any local verification or
+      // storage refusal leaves the Welcome queued for recovery; generic apply could delete it.
+      reportUnexpected(s, group);
+      continue;
+    }
+    const outcome = outcomes[0];
+    if (outcomes.length !== 1 || outcome?.welcomeId !== welcomeId || !same(outcome.groupId, group)
+      || (outcome.outcome !== 0 && outcome.outcome !== 1)) {
+      reportUnexpected(s, group);
+      continue;
+    }
+
+    try { await s.deps.routes.deleteWelcome(welcomeId); } catch { /* accepted receipt makes the next poll safe */ }
+    if (outcome.outcome === 0 && !s.stopped()) void s.queues.run(groupKey(group), () => s.activate(group)).catch(() => undefined);
+  }
+
+  if (genericRows.length > 0) {
+    const body = genericRows.length === rows.length ? raw : encode(genericRows);
+    await judgeWelcomes(s, s.deps.core.welcomesApply(body, expected));
+  }
+}
 
 export async function judgeWelcomes(s: SyncInternals, outcomes: WelcomeOutcome[]): Promise<void> {
   for (const o of outcomes) {
     if (o.outcome === 3) {
       // Once per group until the expected set changes (CORE-ENGINE-01): a kept Welcome is served on every poll.
-      const hex = toHex(o.groupId);
-      if (!s.unexpectedReported.has(hex)) { s.unexpectedReported.add(hex); s.deps.onUnexpectedWelcome(o.groupId); }
+      reportUnexpected(s, o.groupId);
       continue;
     }
     if (o.outcome === 1 && s.row(o.groupId)?.state !== 2) continue;
@@ -30,7 +85,7 @@ export async function welcomeStep(s: SyncInternals): Promise<void> {
       if (s.stopped()) return;
       const page = await s.deps.routes.getWelcomes(after);
       if (page.count === 0) return;
-      await judgeWelcomes(s, s.deps.core.welcomesApply(page.raw, s.expected()));
+      await applyWelcomeRows(s, page.raw, arr(decode(page.raw)), s.expected());
       if (page.lastId === null || page.count < 64) return;
       after = page.lastId;
     }
@@ -42,7 +97,8 @@ export async function welcomeFrame(s: SyncInternals, f: Frame): Promise<void> {
     const p = arr(f.payload, 6);
     const id = u64(p[0]); const epoch = u64(p[1]); const seq = u64(p[2]);
     const blob = bin(p[3]); const tree = bin(p[4]); const hash = bin(p[5], 32);
-    await judgeWelcomes(s, s.deps.core.welcomesApply(encode([[id, g, epoch, seq, blob, tree, hash]]), s.expected()));
+    const body = encode([[id, g, epoch, seq, blob, tree, hash]]);
+    await applyWelcomeRows(s, body, arr(decode(body)), s.expected());
   } catch (e) { if (!(e instanceof CoreError)) return; }
 }
 export async function externalJoin(s: SyncInternals, eg: ExpectedGroup, budget: { joins: number }): Promise<void> {

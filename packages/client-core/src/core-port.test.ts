@@ -68,6 +68,91 @@ it('adapts the ABI-8 trust and search exports', () => {
   expect(s.calls[5]?.args).toEqual([G]);
 });
 
+it('passes moderator-removal signing inputs directly to ClientCore and returns only its signed body', () => {
+  const signed = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+  const requestId = new Uint8Array(16).fill(0x41);
+  const s = stub({ sign_removal: (...args) => { expect(args).toEqual([requestId, G, 9n, 140n, 110n]); return signed; } });
+  expect(s.port.signRemoval(requestId, G, 9n, 140n, 110n)).toBe(signed);
+  expect(s.calls).toEqual([{ method: 'sign_removal', args: [requestId, G, 9n, 140n, 110n] }]);
+});
+
+  it('bridges the durable manual-removal evidence record and preserves its exact payload fields', () => {
+  const proof = new Uint8Array(16).fill(0x41); const evidence = new Uint8Array(16).fill(0x42);
+  const body = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+  const row = [proof, evidence, USER, DEV, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', body, 1, 100n, 130n, 160n];
+  const s = stub({
+    prepare_manual_removal_evidence: (...args) => { expect(args).toEqual([proof, evidence, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', 100n, 130n, 100n]); return body; },
+    manual_removal_evidence: () => encode([row]),
+  });
+  expect(s.port.prepareManualRemovalEvidence?.(proof, evidence, COMM, G, CHAN, MSG, 9n, 'why', 'excerpt', 100n, 130n, 100n)).toBe(body);
+  expect(s.port.manualRemovalEvidence?.()).toEqual([{ proofRequestId: proof, evidenceRequestId: evidence, actorUserId: USER,
+    actorDeviceId: DEV, communityId: COMM, groupId: G, channelId: CHAN, messageId: MSG, targetSequence: 9n,
+    reason: 'why', excerpt: 'excerpt', signedBody: body, state: 1, createdAt: 100n, expires: 130n, evidenceExpires: 160n }]);
+});
+
+it('bridges the crash-safe manual-warning outbox and accepted action receipt', () => {
+  const request = new Uint8Array(16).fill(0x31); const evidence = new Uint8Array(16).fill(0x32);
+  const target = new Uint8Array(16).fill(0x33); const action = new Uint8Array(16).fill(0x34);
+  const row = [request, evidence, USER, DEV, COMM, target, 'warning reason', 1, 100n, action, 9n, 101n, 131n];
+  const s = stub({
+    prepare_manual_warning_evidence: (...args) => { expect(args).toEqual([request, evidence, COMM, target, 'warning reason', 100n, 100n]); },
+    manual_warning_evidence: () => encode([row]),
+    mark_manual_warning_accepted: (...args) => { expect(args).toEqual([request, action, 9n, 101n]); },
+    ensure_manual_warning_evidence_request: (...args) => { expect(args).toEqual([request, evidence, 102n]); return encode([evidence, 132n]); },
+    complete_manual_warning_evidence: (...args) => { expect(args).toEqual([request, 103n]); },
+  });
+  expect(s.port.prepareManualWarningEvidence?.(request, evidence, COMM, target, 'warning reason', 100n, 100n)).toBeUndefined();
+  expect(s.port.manualWarningEvidence?.()).toEqual([{ requestId: request, evidenceRequestId: evidence, actorUserId: USER,
+    actorDeviceId: DEV, communityId: COMM, targetUserId: target, reason: 'warning reason', state: 1,
+    createdAt: 100n, actionId: action, revision: 9n, acceptedAt: 101n, evidenceExpires: 131n }]);
+  s.port.markManualWarningAccepted?.(request, action, 9n, 101n);
+  expect(s.port.ensureManualWarningEvidenceRequest?.(request, evidence, 102n)).toEqual({ requestId: evidence, expires: 132n });
+  s.port.completeManualWarningEvidence?.(request, 103n);
+});
+
+it('bridges authoritative rejection of a submitted manual-removal proof', () => {
+  const proof = new Uint8Array(16).fill(0x41);
+  const s = stub({ reject_manual_removal: (...args) => { expect(args).toEqual([proof, 123n]); } });
+  s.port.rejectManualRemoval?.(proof, 123n);
+  expect(s.calls).toEqual([{ method: 'reject_manual_removal', args: [proof, 123n] }]);
+});
+
+it('passes an opaque human interaction context proof to the dedicated Welcome export', () => {
+  const welcomes = encode([[1, G, 2, 9, new Uint8Array([1]), new Uint8Array([2]), new Uint8Array(32)]]);
+  const proof = new Uint8Array([0x81, 0x00]);
+  const result = encode([[1, G, 0, '']]);
+  const s = stub({ human_interaction_welcome_apply: (...args) => {
+    expect(args).toEqual([welcomes, proof, 100n]);
+    return result;
+  } });
+  expect(s.port.humanInteractionWelcomeApply(welcomes, proof, 100n)).toEqual([
+    { welcomeId: 1n, groupId: G, outcome: 0, reason: '' },
+  ]);
+  expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof, 100n] }]);
+});
+
+it('decodes authenticated human interaction events and passes a durable cursor', () => {
+  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 13, CHAN];
+  const page = encode([[event], 5, 7]);
+  const s = stub({ human_interaction_events_read: (...args) => { expect(args).toEqual([2n, 10n]); return page; },
+    human_interaction_events_ack: (...args) => { expect(args).toEqual([5n]); } });
+  expect(s.port.humanInteractionEventsRead(2n, 10)).toEqual({
+    events: [{ deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
+      receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2, body: 'dilla.bot/1:response',
+      operation: 13, channelId: CHAN }],
+    next: 5n, highWater: 7n,
+  });
+  s.port.humanInteractionEventsAck(5n);
+  expect(s.calls.map((call) => call.method)).toEqual(['human_interaction_events_read', 'human_interaction_events_ack']);
+});
+
+it('fails closed when the generated WASM handle predates moderator-removal signing', () => {
+  const staleHandle = { sign_removal: undefined } as unknown as CoreHandle;
+  const error = caught(() => wrapCore(staleHandle).signRemoval(new Uint8Array(16), G, 9n, 140n, 110n));
+  expect(error.code).toBe('E_CORE_STATE');
+  expect(error.message).toContain('not available in this WASM build');
+});
+
 it('reads an open send gate as null and fails closed on a code it does not know', () => {
   expect(stub({ send_block_code: () => undefined }).port.sendBlockCode(G)).toBeNull();
   for (const code of ['E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'] as const)
@@ -349,6 +434,12 @@ describe('wrapCore errors', () => {
 const DSK = new Uint8Array(32).fill(0xd5);
 
 describe('wrapCore web-2a', () => {
+  it('passes the group ID bytes to the deterministic heal snapshot export', () => {
+    const snapshot = encode([new Uint8Array([1]), [], new Uint8Array([2])]);
+    const s = stub({ group_heal_snapshot: (...args) => { expect(args).toEqual([G]); return snapshot; } });
+    expect(s.port.groupHealSnapshot(G)).toBe(snapshot);
+    expect(s.calls).toEqual([{ method: 'group_heal_snapshot', args: [G] }]);
+  });
   it('reads phase 3 in identity', () => {
     expect(stub({ identity: () => encode([3, INST, null, DEV, '', 0]) }).port.identity())
       .toEqual({ phase: 3, instanceId: INST, userId: null, deviceId: DEV, username: '', listPublished: false });

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -97,6 +98,39 @@ func TestEveryStructuralChangeTellsTheMembersOnce(t *testing.T) {
 				t.Fatalf("user %s was told of community %s, want %s", u, got, cid)
 			}
 		}
+	}
+}
+
+func TestMemberTimeoutNotifiesOnlyTheAffectedUsersLiveSessions(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	owner := mustSessionUser(t, e, ownerTok)
+	target, targetTok := e.NewUser("timeout-target")
+	joinCommunity(t, e, cid, targetTok)
+	stranger, _ := e.NewUser("timeout-stranger")
+	gw := &changedGW{seen: map[id.ID][]id.ID{}}
+	notify := api.NewStructureNotifier(gw, e.Repo, slog.New(slog.DiscardHandler))
+	api.NewMemberTimeouts(e.Repo, e.Clk).WithNotifier(notify).Register(e.Mux)
+
+	path := "/v1/communities/" + cid.String() + "/members/" + target.String() + "/timeout"
+	requestID := id.New()
+	expires := uint64(e.Clk.Now().Add(time.Minute).Unix())
+	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{requestID, expires}); status != http.StatusOK {
+		t.Fatalf("PUT timeout = %d (%x), want 200", status, body)
+	}
+	if got := gw.count(target); got != 1 {
+		t.Fatalf("target wakeups after PUT = %d, want 1", got)
+	}
+	if got := gw.count(owner); got != 0 {
+		t.Fatalf("owner wakeups after PUT = %d, want 0", got)
+	}
+	if got := gw.count(stranger); got != 0 {
+		t.Fatalf("stranger wakeups after PUT = %d, want 0", got)
+	}
+	if status, body := e.Do(http.MethodDelete, path, ownerTok, []any{id.New()}); status != http.StatusNoContent {
+		t.Fatalf("DELETE timeout = %d (%x), want 204", status, body)
+	}
+	if got := gw.count(target); got != 2 {
+		t.Fatalf("target wakeups after clear = %d, want 2 total", got)
 	}
 }
 

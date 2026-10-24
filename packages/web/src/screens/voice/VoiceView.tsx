@@ -1,9 +1,9 @@
 // The shell's voice surfaces (web-3 task 9, flow 06): the voice view of a voice channel route, the DM call strip and
 // its stage, the voice rows' nested people in the channel list (ChannelList renders them) and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
-import { SETTINGS } from '@dilla/client-core';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import type { CallState, CoreClient, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
+import { createVoiceMusicAdapter, SETTINGS } from '@dilla/client-core';
 import {
   Avatar, Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, Select, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps, type VoiceParticipantView,
@@ -14,9 +14,11 @@ import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } f
 import { outgoingText, type CallView } from './useCall.tsx';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
+import { MusicPanel } from './MusicPanel.tsx';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
+  client: CoreClient;
   call: CallView;
   slice: CallState | undefined;
   voice: Readonly<Record<string, VoiceCall>> | undefined;
@@ -448,10 +450,14 @@ function AfkPage({ v, channelId, name, people, away }: { v: VoiceContext; channe
 }
 
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
-export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
+export function VoiceView({ v, channelId, communityId, name }: { v: VoiceContext; channelId: string; communityId: string; name: string }): React.JSX.Element {
+  const music = useMemo(() => createVoiceMusicAdapter(v.client, communityId), [v.client, communityId]);
   const afk = v.afkPage?.(channelId) ?? null;
   if (afk !== null) return <AfkPage v={v} channelId={channelId} name={name} people={afk.people} away={afk.away} />;
-  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />;
+  return <div className="dw-voice-channel">
+    <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />
+    <MusicPanel channelId={channelId} adapter={music} />
+  </div>;
 }
 
 /**

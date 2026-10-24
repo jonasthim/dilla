@@ -3,7 +3,10 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 
-use dilla_core::client::{ClientCore, ClientError};
+use dilla_core::cbor::Encoder;
+use dilla_core::client::{
+    ClientCore, ClientError, ManualRemovalEvidence, ManualWarningEvidence, RemovalFeedEntry,
+};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -21,6 +24,53 @@ const E_PAUSED: &str = "E_STORE_PAUSED: the store is paused";
 const E_NOT_OPEN: &str = "E_CORE_STATE: the core is not open";
 const E_RESUMING: &str = "E_CORE_STATE: resume in progress";
 const E_BUSY: &str = "E_CORE_STATE: the core is busy";
+
+fn encode_manual_removal_evidence(rows: &[ManualRemovalEvidence]) -> Vec<u8> {
+    let mut out = Encoder::new();
+    out.array(rows.len());
+    for row in rows {
+        out.array(16)
+            .bytes(&row.proof_request_id)
+            .bytes(&row.evidence_request_id)
+            .bytes(&row.actor_user_id)
+            .bytes(&row.actor_device_id)
+            .bytes(&row.community_id)
+            .bytes(&row.group_id)
+            .bytes(&row.channel_id)
+            .bytes(&row.message_id)
+            .uint(row.target_sequence)
+            .text(&row.reason)
+            .text(&row.excerpt)
+            .bytes(&row.signed_body)
+            .uint(u64::from(row.state))
+            .uint(row.created_at)
+            .uint(row.expires)
+            .uint(row.evidence_expires);
+    }
+    out.into_vec()
+}
+
+fn encode_manual_warning_evidence(rows: &[ManualWarningEvidence]) -> Vec<u8> {
+    let mut out = Encoder::new();
+    out.array(rows.len());
+    for row in rows {
+        out.array(13)
+            .bytes(&row.request_id)
+            .bytes(&row.evidence_request_id)
+            .bytes(&row.actor_user_id)
+            .bytes(&row.actor_device_id)
+            .bytes(&row.community_id)
+            .bytes(&row.target_user_id)
+            .text(&row.reason)
+            .uint(u64::from(row.state))
+            .uint(row.created_at)
+            .bytes(&row.action_id)
+            .uint(row.revision)
+            .uint(row.accepted_at)
+            .uint(row.evidence_expires);
+    }
+    out.into_vec()
+}
 
 #[doc(hidden)]
 pub fn fixed_arg<const N: usize>(name: &'static str, bytes: &[u8]) -> Result<[u8; N], ClientError> {
@@ -73,6 +123,36 @@ pub fn role_ids_arg(bytes: &[u8]) -> Result<(), ClientError> {
             ),
         })
     }
+}
+
+/// The strict protocol/10 CBOR request is kept opaque at the WASM boundary and is validated by
+/// `ClientCore`. Its encoded request is bounded before it crosses into the core (protocol/10 §
+/// Application requests: 4000-byte encoded body, less the prefix and base64url expansion).
+#[doc(hidden)]
+pub fn human_interaction_request_arg(bytes: &[u8]) -> Result<(), ClientError> {
+    if bytes.len() <= 2991 {
+        Ok(())
+    } else {
+        Err(ClientError {
+            code: "E_CORE_INPUT",
+            detail: format!(
+                "request_body: expected at most 2991 bytes, got {}",
+                bytes.len()
+            ),
+        })
+    }
+}
+
+#[doc(hidden)]
+pub fn nonzero_id_arg(name: &'static str, bytes: &[u8]) -> Result<[u8; 16], ClientError> {
+    let id = fixed_arg::<16>(name, bytes)?;
+    if id == [0; 16] {
+        return Err(ClientError {
+            code: "E_CORE_INPUT",
+            detail: format!("{name}: id must be nonzero"),
+        });
+    }
+    Ok(id)
 }
 
 #[doc(hidden)]
@@ -302,16 +382,35 @@ impl CoreHandle {
         })
         .map(Vec::into_boxed_slice)
     }
-    /// Calls ClientCore::signup_complete; CBOR [1, blob, ssk_signature, prev_hash].
+    /// Calls ClientCore::signup_complete after authenticated instance discovery;
+    /// CBOR [1, blob, ssk_signature, prev_hash].
     pub fn signup_complete(
         &self,
         user_id: &[u8],
         username: &str,
         now: u64,
+        instance_signer_pub: &[u8],
     ) -> Result<Box<[u8]>, JsError> {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;
-        self.with_core(|c| c.signup_complete(&user_id, username, now))
+        let instance_signer_pub = js_fixed_arg::<32>("instance_signer_pub", instance_signer_pub)?;
+        self.with_core(|c| c.signup_complete(&user_id, username, now, &instance_signer_pub))
             .map(Vec::into_boxed_slice)
+    }
+    /// Checks authenticated discovery against the enrolled instance signer pin. The key remains
+    /// inside core storage; callers provide only the freshly observed public key.
+    pub fn instance_signer_key_matches(&self, observed_key: &[u8]) -> Result<(), JsError> {
+        let observed_key = js_fixed_arg::<32>("observed_key", observed_key)?;
+        self.with_core(|c| c.instance_signer_key_matches(&observed_key))
+    }
+    /// Pins authenticated discovery after an enrolled browser has published its device row.
+    pub fn instance_signer_key_pin(
+        &self,
+        instance_id: &[u8],
+        observed_key: &[u8],
+    ) -> Result<(), JsError> {
+        let instance_id = js_fixed_arg::<16>("instance_id", instance_id)?;
+        let observed_key = js_fixed_arg::<32>("observed_key", observed_key)?;
+        self.with_core(|c| c.instance_signer_key_pin(&instance_id, &observed_key))
     }
     /// Calls ClientCore::signup_reset.
     pub fn signup_reset(&self) -> Result<(), JsError> {
@@ -336,6 +435,256 @@ impl CoreHandle {
         let purpose = purpose_arg(purpose).map_err(owned_js_error)?;
         self.with_core(|c| c.session_sign(&nonce, purpose))
             .map(Vec::into_boxed_slice)
+    }
+    /// Signs a moderator removal proof using the identity held by ClientCore. Returns CBOR [proof, signature].
+    pub fn sign_removal(
+        &self,
+        request_id: &[u8],
+        group_id: &[u8],
+        target_sequence: u64,
+        expires: u64,
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.sign_removal(&request_id, &group_id, target_sequence, expires, now))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Persists all manual-removal evidence and its exact signed body before the caller POSTs it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_manual_removal_evidence(
+        &self,
+        proof_request_id: &[u8],
+        evidence_request_id: &[u8],
+        community_id: &[u8],
+        group_id: &[u8],
+        channel_id: &[u8],
+        message_id: &[u8],
+        target_sequence: u64,
+        reason: &str,
+        excerpt: &str,
+        created_at: u64,
+        expires: u64,
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let proof_request_id = js_fixed_arg::<16>("proof_request_id", proof_request_id)?;
+        let evidence_request_id = js_fixed_arg::<16>("evidence_request_id", evidence_request_id)?;
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let channel_id = js_fixed_arg::<16>("channel_id", channel_id)?;
+        let message_id = js_fixed_arg::<16>("message_id", message_id)?;
+        self.with_core(|c| {
+            c.prepare_manual_removal_evidence(
+                &proof_request_id,
+                &evidence_request_id,
+                &community_id,
+                &group_id,
+                &channel_id,
+                &message_id,
+                target_sequence,
+                reason,
+                excerpt,
+                created_at,
+                expires,
+                now,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
+    /// CBOR list of unresolved manual-removal evidence rows; the encrypted SQLite store is authoritative.
+    pub fn manual_removal_evidence(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.manual_removal_evidence())
+            .map(|rows| encode_manual_removal_evidence(&rows).into_boxed_slice())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The web ABI binds each warning evidence field independently."
+    )]
+    pub fn prepare_manual_warning_evidence(
+        &self,
+        request_id: &[u8],
+        evidence_request_id: &[u8],
+        community_id: &[u8],
+        target_user_id: &[u8],
+        reason: &str,
+        created_at: u64,
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let evidence_request_id = js_fixed_arg::<16>("evidence_request_id", evidence_request_id)?;
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let target_user_id = js_fixed_arg::<16>("target_user_id", target_user_id)?;
+        self.with_core(|c| {
+            c.prepare_manual_warning_evidence(
+                &request_id,
+                &evidence_request_id,
+                &community_id,
+                &target_user_id,
+                reason,
+                created_at,
+                now,
+            )
+        })
+    }
+
+    pub fn manual_warning_evidence(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.manual_warning_evidence())
+            .map(|rows| encode_manual_warning_evidence(&rows).into_boxed_slice())
+    }
+
+    pub fn mark_manual_warning_accepted(
+        &self,
+        request_id: &[u8],
+        action_id: &[u8],
+        revision: u64,
+        accepted_at: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let action_id = js_fixed_arg::<16>("action_id", action_id)?;
+        self.with_core(|c| {
+            c.mark_manual_warning_accepted(&request_id, &action_id, revision, accepted_at)
+        })
+    }
+
+    pub fn ensure_manual_warning_evidence_request(
+        &mut self,
+        request_id: &[u8],
+        candidate_request_id: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = fixed_arg::<16>("request_id", request_id)?;
+        let candidate_request_id = fixed_arg::<16>("candidate_request_id", candidate_request_id)?;
+        let (request, expires) = self.with_core(|c| {
+            c.ensure_manual_warning_evidence_request(&request_id, &candidate_request_id, now)
+        })?;
+        let mut out = Encoder::new();
+        out.array(2).bytes(&request).uint(expires);
+        Ok(out.into_vec().into_boxed_slice())
+    }
+
+    pub fn complete_manual_warning_evidence(
+        &self,
+        request_id: &[u8],
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.complete_manual_warning_evidence(&request_id, now))
+    }
+
+    pub fn ensure_manual_removal_evidence_request(
+        &mut self,
+        proof_request_id: &[u8],
+        candidate_request_id: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let proof_request_id = fixed_arg::<16>("proof_request_id", proof_request_id)?;
+        let candidate_request_id = fixed_arg::<16>("candidate_request_id", candidate_request_id)?;
+        let (request_id, expires) = self.with_core(|c| {
+            c.ensure_manual_removal_evidence_request(&proof_request_id, &candidate_request_id, now)
+        })?;
+        let mut out = Encoder::new();
+        out.array(2).bytes(&request_id).uint(expires);
+        Ok(out.into_vec().into_boxed_slice())
+    }
+    pub fn mark_manual_removal_submitted(&self, request_id: &[u8]) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.mark_manual_removal_submitted(&request_id))
+    }
+    pub fn mark_manual_removal_accepted(&self, request_id: &[u8]) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.mark_manual_removal_accepted(&request_id))
+    }
+    pub fn complete_manual_removal_evidence(
+        &self,
+        request_id: &[u8],
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.complete_manual_removal_evidence(&request_id, now))
+    }
+    pub fn reject_unsubmitted_manual_removal(
+        &self,
+        request_id: &[u8],
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.reject_unsubmitted_manual_removal(&request_id, now))
+    }
+
+    pub fn reject_manual_removal(&mut self, request_id: &[u8], now: u64) -> Result<(), JsError> {
+        let request_id = fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.reject_manual_removal(&request_id, now))
+    }
+    /// Bounded hint for refreshing a previously trusted moderator before ingesting a removal entry.
+    pub fn removal_actor_history_version(
+        &self,
+        group_id: &[u8],
+        revision: u64,
+        proof: &[u8],
+        signature: &[u8],
+        accepted_at: u64,
+    ) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let signature = js_fixed_arg::<64>("signature", signature)?;
+        let entry = RemovalFeedEntry {
+            revision,
+            proof: proof.to_vec(),
+            signature,
+            accepted_at,
+        };
+        self.with_core(|c| c.removal_actor_history_version(&group_id, &entry))
+    }
+    /// Extends only the existing UMK-anchored list of the moderator named by this proof.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The web ABI carries the signed removal and history context separately."
+    )]
+    pub fn refresh_removal_actor_history(
+        &self,
+        group_id: &[u8],
+        revision: u64,
+        proof: &[u8],
+        signature: &[u8],
+        accepted_at: u64,
+        history_body: &[u8],
+        head_list: &[u8],
+    ) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let signature = js_fixed_arg::<64>("signature", signature)?;
+        let entry = RemovalFeedEntry {
+            revision,
+            proof: proof.to_vec(),
+            signature,
+            accepted_at,
+        };
+        self.with_core(|c| {
+            c.refresh_removal_actor_history(&group_id, &entry, history_body, head_list)
+        })
+    }
+    /// Returns the durable removal feed cursor.
+    pub fn removal_cursor(&self, group_id: &[u8]) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.ingest_removals(&group_id, &[]))
+    }
+    /// Verifies and durably ingests one authenticated feed entry.
+    pub fn ingest_removal(
+        &self,
+        group_id: &[u8],
+        revision: u64,
+        proof: &[u8],
+        signature: &[u8],
+        accepted_at: u64,
+    ) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let signature = js_fixed_arg::<64>("signature", signature)?;
+        let entry = RemovalFeedEntry {
+            revision,
+            proof: proof.to_vec(),
+            signature,
+            accepted_at,
+        };
+        self.with_core(|c| c.ingest_removals(&group_id, &[entry]))
     }
     /// Calls ClientCore::session_store.
     pub fn session_store(
@@ -367,6 +716,12 @@ impl CoreHandle {
     /// Calls ClientCore::groups; CBOR [[group_id, kind, community_id, target_id, state, epoch, next_seq, proposals_pending, pending_commit]].
     pub fn groups(&self) -> Result<Box<[u8]>, JsError> {
         self.with_core(|c| c.groups()).map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::group_heal_snapshot; CBOR [GroupInfo bytes, empty tail, ratchet tree bytes].
+    pub fn group_heal_snapshot(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.group_heal_snapshot(&group_id))
+            .map(Vec::into_boxed_slice)
     }
     /// Calls ClientCore::group_create; CBOR [group_id, binding, group_info, ratchet_tree]; community_id null for a DM.
     pub fn group_create(
@@ -520,6 +875,19 @@ impl CoreHandle {
         self.with_core(|c| c.welcomes_apply(welcomes_body, expected))
             .map(Vec::into_boxed_slice)
     }
+    /// Calls ClientCore::human_interaction_welcome_apply with opaque context proof bytes; the core
+    /// derives the expected group binding from the verified proof before accepting the Welcome.
+    pub fn human_interaction_welcome_apply(
+        &self,
+        welcomes_body: &[u8],
+        current_context_proof: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| {
+            c.human_interaction_welcome_apply(welcomes_body, current_context_proof, now)
+        })
+        .map(Vec::into_boxed_slice)
+    }
     /// Calls ClientCore::group_apply; CBOR [state, epoch, next_seq, new_seqs, proposals_pending, flags].
     pub fn group_apply(
         &self,
@@ -585,6 +953,48 @@ impl CoreHandle {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.send_prepare(&group_id, request, now))
             .map(Vec::into_boxed_slice)
+    }
+    /// Prepare a read-only Bot interaction request for the authenticated human device.
+    /// `request_body` is strict protocol/10 deterministic CBOR, limited to 2991 bytes. The
+    /// plaintext is consumed by the core and is never returned; the result is CBOR `[request_id]`
+    /// while the encrypted send intent remains in the encrypted outbox.
+    pub fn human_interaction_send_prepare(
+        &self,
+        request_id: &[u8],
+        community_id: &[u8],
+        group_id: &[u8],
+        request_body: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = nonzero_id_arg("request_id", request_id).map_err(owned_js_error)?;
+        let community_id = nonzero_id_arg("community_id", community_id).map_err(owned_js_error)?;
+        let group_id = nonzero_id_arg("group_id", group_id).map_err(owned_js_error)?;
+        human_interaction_request_arg(request_body).map_err(owned_js_error)?;
+        self.with_core(|c| {
+            c.human_interaction_send_prepare(
+                &request_id,
+                &community_id,
+                &group_id,
+                request_body,
+                now,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
+    /// Reads durable human kind-3 responses as CBOR `[events,next,high_water]`. Each plaintext
+    /// body is returned only after the core rechecks the exact admitted Bot MLS leaf and local
+    /// moderation request against the current interaction group and trust state.
+    pub fn human_interaction_events_read(
+        &self,
+        after: u64,
+        limit: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.human_interaction_events_read(after, limit))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Durably acknowledges and clears human interaction response bodies through a delivery id.
+    pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
+        self.with_core(|c| c.human_interaction_events_ack(through))
     }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {

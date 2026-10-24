@@ -19,6 +19,30 @@ export type Command =
   // Ready only → null: GET /v1/communities again; the communities slice is published before the answer (the page looks for
   // a server whose create answer was lost, with the socket still up).
   | { m: 'refreshCommunities' }
+  | { m: 'getBotInstallation'; communityId: string }
+  // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
+  | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
+  | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
+  | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
+      args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
+  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[] }
+  | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
+  | { m: 'readHumanInteractionResponses'; communityId: string }
+  | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
+  | { m: 'getBotJoinRole'; communityId: string }
+  | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
+  | { m: 'getBotDjRoles'; communityId: string }
+  | { m: 'configureBotDjRoles'; communityId: string; requestId: string; installationId: string; roleIds: string[] }
+  | { m: 'listSelfRoles'; communityId: string }
+  | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
+  | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }
+  | { m: 'registerRolePanel'; communityId: string; requestId: string; channelId: string; messageSeq: string;
+      options: readonly { emoji: string; roleId: string }[] }
+  | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
+  | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
+  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string }
+  | { m: 'callbackBotSpotifyAttempt'; communityId: string; attemptId: string; state: string; code: string }
+  | { m: 'cancelBotSpotifyAttempt'; communityId: string; attemptId: string }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }
@@ -75,7 +99,9 @@ export type Command =
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
-  | { m: 'deleteMessage'; channelId: string; msgId: string }                              // ready → null (type 2)
+  | { m: 'deleteMessage'; channelId: string; msgId: string; seq: string }                // ready → null
+  | { m: 'moderateRemoveMessage'; channelId: string; msgId: string; seq: string; reason: string; excerpt: string } // ready → null; signed removal then op61 evidence
+  | { m: 'resolveManualRemoval'; proofRequestId: string } // ready → reconcile feed and retry the exact durable signed proof
   | { m: 'react'; channelId: string; msgId: string; emoji: string; on: boolean }          // ready → null (type 3, or 4 when off)
   | { m: 'pin'; channelId: string; msgId: string; on: boolean }                           // ready → null (type 5, or 6 when off)
   | { m: 'loadPins'; channelId: string }                                                  // ready → null; slice pins:<channel>
@@ -127,6 +153,10 @@ export type Command =
   | { m: 'kickMember'; communityId: string; userId: string }
   | { m: 'banMember'; communityId: string; userId: string; reason: string; seconds: number | null }  // 3600..3_153_600_000
   | { m: 'unbanMember'; communityId: string; userId: string }
+  | { m: 'getMemberTimeout'; communityId: string; userId: string } // → Unix-second timestamp string|null
+  | { m: 'setMemberTimeout'; communityId: string; userId: string; requestId: string; expires: string } // expires is Unix seconds
+  | { m: 'clearMemberTimeout'; communityId: string; userId: string; requestId: string }
+  | { m: 'warnMember'; communityId: string; userId: string; requestId: string; reason: string }
   | { m: 'loadBans'; communityId: string }      // slice bans:<cid>
   | { m: 'loadInvites'; communityId: string }   // slice invites:<cid>, live only
   | { m: 'revokeInvite'; communityId: string; inviteId: string }

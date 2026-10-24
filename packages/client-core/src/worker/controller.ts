@@ -13,6 +13,8 @@ import { safeName } from '../attachments/name';
 import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
+import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
+import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
@@ -23,13 +25,13 @@ import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes,
-  nameProblem, profileTextProblem, profileTextValue, type ChannelRow,
-  type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
+  BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
+  INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
+  type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
-import { PENDING_JOIN_KEY, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
+import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
 import { historyFrom, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
@@ -40,12 +42,13 @@ import {
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
+import { recoverModerationRemovals } from '../sync/removals';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController, nextPosition } from '../admin/controller';
-import { PERM } from '../admin/perm';
+import { channelBitsOf, PERM } from '../admin/perm';
 import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
@@ -194,6 +197,27 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createChannel',
   'createInvite',
   'refreshCommunities',
+  'getBotInstallation',
+  'listModerationCases',
+  'listManualModerationEvidence',
+  'humanInteractionRequest',
+  'readBotInteractionResponses',
+  'ackBotInteractionResponses',
+  'readHumanInteractionResponses',
+  'ackHumanInteractionResponses',
+  'getBotJoinRole',
+  'configureBotJoinRole',
+  'getBotDjRoles',
+  'configureBotDjRoles',
+  'listSelfRoles',
+  'configureSelfRoles',
+  'selectSelfRole',
+  'registerRolePanel',
+  'configureBotInstallation',
+  'disableBotInstallation',
+  'beginBotSpotifyAttempt',
+  'callbackBotSpotifyAttempt',
+  'cancelBotSpotifyAttempt',
   'openChannel',
   'closeChannel',
   'loadEarlier',
@@ -242,6 +266,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'openDm',
   'editMessage',
   'deleteMessage',
+  'moderateRemoveMessage',
+  'resolveManualRemoval',
   'react',
   'pin',
   'loadPins',
@@ -282,6 +308,10 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'kickMember',
   'banMember',
   'unbanMember',
+  'getMemberTimeout',
+  'setMemberTimeout',
+  'clearMemberTimeout',
+  'warnMember',
   'loadBans',
   'loadInvites',
   'revokeInvite',
@@ -312,11 +342,22 @@ function savedOf(saved: { display?: string; statusMsg?: string; bio?: string }):
 }
 
 const ID = /^[0-9a-f]{32}$/;
+const botInstallationView = (row: BotInstallationRow) => ({
+  id: toHex(row.id), communityId: toHex(row.communityId), state: row.state,
+  revision: row.revision.toString(), userId: row.userId === null ? null : toHex(row.userId),
+  deviceId: row.deviceId === null ? null : toHex(row.deviceId), capabilities: row.capabilities,
+  updatedAt: row.updatedAt.toString(),
+});
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
 const backupCode = normaliseBackupCode;
 /** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
 const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
+const ROLE_PANEL_ACTION_RETRY_BASE_MS = 500;
+const ROLE_PANEL_ACTION_RETRY_MAX_MS = 8_000;
+const ROLE_PANEL_ACTION_RETRY_LIMIT = 5;
+type PendingRolePanelAction = { communityId: string; channelId: string; messageSeq: string; groupId: string; eventSeq: string;
+  emoji: string; enabled: boolean; userId: string; deviceId: string };
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
 const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
@@ -341,8 +382,29 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
   if (at >= 0 && away[at].since >= change.since) return null;
   return [...away.filter((_, i) => i !== at), change].sort(byUserId);
 }
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
+  getBotInstallation: ['communityId'],
+  listModerationCases: ['communityId', 'requestId'],
+  listManualModerationEvidence: ['communityId', 'requestId'],
+  humanInteractionRequest: ['communityId', 'requestId'],
+  readBotInteractionResponses: ['communityId'],
+  ackBotInteractionResponses: ['communityId'],
+  readHumanInteractionResponses: ['communityId'],
+  ackHumanInteractionResponses: ['communityId'],
+  getBotJoinRole: ['communityId'],
+  configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
+  getBotDjRoles: ['communityId'],
+  configureBotDjRoles: ['communityId', 'requestId', 'installationId'],
+  listSelfRoles: ['communityId'],
+  configureSelfRoles: ['communityId', 'requestId'],
+  selectSelfRole: ['communityId', 'roleId', 'requestId'],
+  registerRolePanel: ['communityId', 'requestId', 'channelId'],
+  configureBotInstallation: ['communityId', 'requestId'],
+  disableBotInstallation: ['communityId', 'requestId'],
+  beginBotSpotifyAttempt: ['communityId'],
+  callbackBotSpotifyAttempt: ['communityId', 'attemptId'],
+  cancelBotSpotifyAttempt: ['communityId', 'attemptId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
   updateRole: ['communityId', 'roleId'],
@@ -368,6 +430,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   openDm: ['userId'],
   editMessage: ['channelId', 'msgId'],
   deleteMessage: ['channelId', 'msgId'],
+  moderateRemoveMessage: ['channelId', 'msgId'],
+  resolveManualRemoval: ['proofRequestId'],
   react: ['channelId', 'msgId'],
   pin: ['channelId', 'msgId'],
   loadPins: ['channelId'],
@@ -404,6 +468,10 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   kickMember: ['communityId', 'userId'],
   banMember: ['communityId', 'userId'],
   unbanMember: ['communityId', 'userId'],
+  getMemberTimeout: ['communityId', 'userId'],
+  setMemberTimeout: ['communityId', 'userId', 'requestId'],
+  clearMemberTimeout: ['communityId', 'userId', 'requestId'],
+  warnMember: ['communityId', 'userId', 'requestId'],
   loadBans: ['communityId'],
   loadInvites: ['communityId'],
   revokeInvite: ['communityId', 'inviteId'],
@@ -431,6 +499,27 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createChannel',
     'createInvite',
     'refreshCommunities',
+    'getBotInstallation',
+    'listModerationCases',
+    'listManualModerationEvidence',
+    'humanInteractionRequest',
+    'readBotInteractionResponses',
+    'ackBotInteractionResponses',
+    'readHumanInteractionResponses',
+    'ackHumanInteractionResponses',
+    'getBotJoinRole',
+    'configureBotJoinRole',
+    'getBotDjRoles',
+    'configureBotDjRoles',
+    'listSelfRoles',
+    'configureSelfRoles',
+    'selectSelfRole',
+    'registerRolePanel',
+    'configureBotInstallation',
+    'disableBotInstallation',
+    'beginBotSpotifyAttempt',
+    'callbackBotSpotifyAttempt',
+    'cancelBotSpotifyAttempt',
     'openChannel',
     'closeChannel',
     'loadEarlier',
@@ -467,6 +556,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'openDm',
     'editMessage',
     'deleteMessage',
+    'moderateRemoveMessage',
+    'resolveManualRemoval',
     'react',
     'pin',
     'loadPins',
@@ -510,6 +601,10 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'kickMember',
     'banMember',
     'unbanMember',
+    'getMemberTimeout',
+    'setMemberTimeout',
+    'clearMemberTimeout',
+    'warnMember',
     'loadBans',
     'loadInvites',
     'revokeInvite',
@@ -557,6 +652,7 @@ const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSa
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
   && r.every((v: unknown, i) => statsField(v) || (i === 1 && v === null));
 const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** Per-feature synchronous checks (wave 1+): each returns an E_BAD_INPUT reason or null. */
 const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
@@ -575,6 +671,16 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof value !== 'string' || !ID.test(value)) return `${field} is not 32 lowercase hex`;
   }
   if (m === 'joinCommunity' && blank(command.invite)) return 'invite is empty';
+  if (m === 'moderateRemoveMessage') {
+    const reason = command.reason; const excerpt = command.excerpt;
+    if (typeof reason !== 'string' || reason.trim().length === 0 || new TextEncoder().encode(reason).length > 1024
+      || typeof excerpt !== 'string' || new TextEncoder().encode(excerpt).length > 512) return 'manual moderation reason or excerpt is invalid';
+  }
+  if (m === 'warnMember') {
+    const reason = command.reason;
+    if (typeof reason !== 'string' || reason.trim().length === 0 || /[\u0000-\u0008\u000b\u000c\u000d\u000e-\u001f\u007f-\u009f]/.test(reason)
+      || new TextEncoder().encode(reason).length > 512) return 'manual warning reason is invalid';
+  }
   if (m === 'createCommunity') {
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, COMMUNITY_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
@@ -602,6 +708,103 @@ function invalid(command: Record<string, unknown>): string | null {
     }
     if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > INVITE_TTL_MAX_S) {
       return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
+    }
+  }
+  if (m === 'configureSelfRoles') {
+    if (!Array.isArray(command.roleIds) || command.roleIds.length > 250
+      || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
+      || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
+  }
+  if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
+  if (m === 'configureBotDjRoles' && (!Array.isArray(command.roleIds) || command.roleIds.length > 250
+    || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
+    || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
+  if (m === 'registerRolePanel') {
+    const seq = command.messageSeq;
+    if (typeof seq !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(seq) || BigInt(seq) > 0x7fff_ffff_ffff_ffffn) return 'messageSeq is invalid';
+    if (!Array.isArray(command.options) || command.options.length < 1 || command.options.length > 100) return 'role panel options are invalid';
+    const emojis = new Set<string>(); const roles = new Set<string>();
+    for (const option of command.options) {
+      if (!isRecord(option) || typeof option.emoji !== 'string' || new TextEncoder().encode(option.emoji).length < 1
+        || new TextEncoder().encode(option.emoji).length > 32 || typeof option.roleId !== 'string' || !ID.test(option.roleId)
+        || option.roleId === '0'.repeat(32) || emojis.has(option.emoji) || roles.has(option.roleId)) return 'role panel options are invalid';
+      emojis.add(option.emoji); roles.add(option.roleId);
+    }
+  }
+  if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
+  if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+  if (m === 'listManualModerationEvidence' && (command.requestId === '0'.repeat(32)
+    || command.cursor !== null && (typeof command.cursor !== 'string' || !/^(?:[0-9a-f]{2}){1,256}$/u.test(command.cursor)))) return 'manual evidence cursor is invalid';
+  if (m === 'humanInteractionRequest') {
+    const operation = command.operation;
+    if (typeof operation !== 'number' || !Number.isInteger(operation)
+      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
+    if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+    const music = operation >= 10 && operation <= 23;
+    if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
+    if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
+    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1
+      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 ? 2 : operation === 61 ? 3 : 0;
+    if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
+    if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
+    if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
+    if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';
+    if (operation === 31 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
+      || !(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2200)) return 'role panel request is invalid';
+    if (operation === 50 && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0]) || command.args[0] < 0)) return 'announcement list offset is invalid';
+    if (operation === 51 && (command.args[0] !== null && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))
+      || !(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2200)) return 'announcement schedule is invalid';
+    if (operation === 52 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
+      || typeof command.args[1] !== 'number' || !Number.isSafeInteger(command.args[1]) || command.args[1] < 1)) return 'announcement delete is invalid';
+    if (operation === 61 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
+      || typeof command.args[1] !== 'string' || new TextEncoder().encode(command.args[1]).length < 1 || new TextEncoder().encode(command.args[1]).length > 1024
+      || typeof command.args[2] !== 'string' || new TextEncoder().encode(command.args[2]).length > 512)) return 'manual moderation evidence is invalid';
+    if (operation === 63 && (typeof command.args[0] !== 'string' || !(command.args[1] instanceof Uint8Array)
+      || command.args[1].length === 0 || command.args[1].length > 2400 || typeof command.stepUp !== 'string'
+      || command.stepUp.length < 1 || command.stepUp.length > 4096)) return 'automatic moderation save is invalid';
+    if ((operation === 11 || operation === 12) && (typeof command.args[0] !== 'string' || command.args[0].trim().length === 0)) return 'music query is invalid';
+    if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
+      || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
+    if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
+    if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
+    const revision = command.revision;
+    if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
+      : revision !== null) return 'interaction revision is invalid';
+  }
+  if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
+    || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
+    || !(op === 1 || op === 2 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
+    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
+  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
+    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
+  if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
+  if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
+    const revision = command.expectedRevision;
+    if (!(m === 'configureBotInstallation' && revision === null)
+      && (typeof revision !== 'string' || !SEQ.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn)) {
+      return 'expectedRevision is not a valid revision';
+    }
+    if (m === 'configureBotInstallation') {
+      const caps = command.capabilities;
+      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
+      if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
+    }
+  }
+  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096)) {
+    return 'stepUp is invalid';
+  }
+  if (m === 'callbackBotSpotifyAttempt') {
+    if (typeof command.state !== 'string' || UTF8.encode(command.state).length < 1 || UTF8.encode(command.state).length > 256
+      || /\p{Cc}/u.test(command.state)) return 'state is invalid';
+    if (typeof command.code !== 'string' || UTF8.encode(command.code).length < 1 || UTF8.encode(command.code).length > 2048
+      || /[\r\n\0]/u.test(command.code)) return 'code is invalid';
+  }
+  if (m === 'setMemberTimeout') {
+    const expires = command.expires;
+    if (typeof expires !== 'string' || !SEQ.test(expires) || BigInt(expires) > 0xffff_ffff_ffff_ffffn) {
+      return 'expires is not a valid Unix-second timestamp';
     }
   }
   if (m === 'send') {
@@ -775,6 +978,10 @@ export class Controller {
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
+  private readonly acceptedHumanInteractionSends = new Set<string>();
+  private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
+  private readonly pendingHumanInteractionAcks = new Map<string, string>();
+  private readonly pendingBotInteractionAcks = new Map<string, string>();
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -837,6 +1044,8 @@ export class Controller {
   private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
   /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
   private readonly trays = new Map<string, Tray>();
+  private readonly pendingRolePanelActionJobs = new Set<string>();
+  private readonly pendingRolePanelActionRetries = new Map<string, number>();
   /** Channels whose pins view is open: touchGroup keeps their pins slice fresh until closePins or closeChannel. */
   private readonly pinsOpen = new Set<string>();
   /** web3.7: channel hex → the root msg id hex of its one open thread; refreshTimeline reads it again. */
@@ -1059,7 +1268,66 @@ export class Controller {
     }
     // In phase 3 a refused session is the sign-in step's own error, not a revocation.
     if (!ok && this.core?.identity().phase !== 3 && !enrolling) this.enterRevoked();
+    if (ok && this.core?.identity().phase === 2 && !enrolling) await this.checkInstanceSignerPin();
     return ok;
+  }
+
+  /** Authenticated discovery must agree with the pin established at enrollment before normal operation resumes. */
+  private async checkInstanceSignerPin(): Promise<void> {
+    const core = this.requireCore();
+    const identity = core.identity();
+    let read: Instance;
+    try { read = await this.routes.getInstance(); }
+    catch (e) {
+      if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
+      throw e;
+    }
+    if (identity.instanceId === null || toHex(read.instanceId) !== toHex(identity.instanceId)) {
+      const error = new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
+      this.failInstanceSignerPin(error);
+      throw error;
+    }
+    try {
+      core.instanceSignerKeyMatches(read.externalSenderPub);
+    } catch (e) {
+      if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
+      throw e;
+    }
+  }
+
+  private isInvalidInstancePin(error: unknown): boolean {
+    return error instanceof CborError || error instanceof CoreError && (error.code === 'E_CORE_STATE' || error.code === 'E_CORE_INPUT');
+  }
+
+  private failInstanceSignerPin(cause: unknown): void {
+    const error = cause instanceof CoreError && cause.code === 'E_CORE_STATE'
+      ? cause : new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match the pinned identity');
+    this.gateway?.stop();
+    if (!this.revoked() && !this.wiping && !this.storeCleared) {
+      this.setAccount({ phase: 'error', error: errorOf(error) });
+    }
+  }
+
+  private scheduleSocketPinRetry(gateway: Gateway | null): void {
+    this.clearReauthTimer();
+    this.reauthTimer = this.deps.setTimeout(() => {
+      this.reauthTimer = null;
+      void this.restartAfterPinCheck(gateway);
+    }, GATEWAY.reconnectCapMs);
+  }
+
+  private async restartAfterPinCheck(gateway: Gateway | null): Promise<void> {
+    if (this.revoked() || this.wiping || this.leadership === null || this.phase !== 'ready' || this.gateway !== gateway) return;
+    try {
+      if (this.core?.identity().phase === 2) await this.checkInstanceSignerPin();
+    } catch (e) {
+      if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
+      else if (!this.revoked() && !this.wiping && this.phase === 'ready' && this.gateway === gateway) {
+        this.scheduleSocketPinRetry(gateway);
+      }
+      return;
+    }
+    if (!this.revoked() && !this.wiping && this.leadership !== null && this.phase === 'ready' && this.gateway === gateway) gateway?.start();
   }
 
   handle(data: unknown): void {
@@ -1121,6 +1389,27 @@ export class Controller {
       case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce, command.parentId);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
+      case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'listModerationCases': return this.listModerationCases(command);
+      case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
+      case 'humanInteractionRequest': return this.humanInteractionRequest(command);
+      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations));
+      case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
+      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId);
+      case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
+      case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
+      case 'configureBotJoinRole': return this.configureBotJoinRole(command);
+      case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
+      case 'configureBotDjRoles': return this.configureBotDjRoles(command);
+      case 'listSelfRoles': return this.listSelfRoles(command.communityId);
+      case 'configureSelfRoles': return this.configureSelfRoles(command);
+      case 'selectSelfRole': return this.selectSelfRole(command);
+      case 'registerRolePanel': return this.registerRolePanel(command);
+      case 'configureBotInstallation': return this.configureBotInstallation(command);
+      case 'disableBotInstallation': return this.disableBotInstallation(command);
+      case 'beginBotSpotifyAttempt': return this.beginBotSpotifyAttempt(command);
+      case 'callbackBotSpotifyAttempt': return this.callbackBotSpotifyAttempt(command);
+      case 'cancelBotSpotifyAttempt': return this.cancelBotSpotifyAttempt(command);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
@@ -1172,7 +1461,9 @@ export class Controller {
       case 'afkRead': return this.afkRead(command.communityId, command.timeoutMs);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
-      case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
+      case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId, command.seq);
+      case 'moderateRemoveMessage': return this.moderateRemoveMessage(command.channelId, command.msgId, command.seq, command.reason, command.excerpt);
+      case 'resolveManualRemoval': return this.resolveManualRemoval(command.proofRequestId);
       case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
       case 'pin': return this.pin(command.channelId, command.msgId, command.on);
       case 'openThread': return this.openThread(command.channelId, command.rootMsgId);
@@ -1216,6 +1507,10 @@ export class Controller {
       case 'kickMember': return this.admin.kickMember(command.communityId, command.userId);
       case 'banMember': return this.admin.banMember(command.communityId, command.userId, command.reason, command.seconds);
       case 'unbanMember': return this.admin.unbanMember(command.communityId, command.userId);
+      case 'getMemberTimeout': return this.getMemberTimeout(command.communityId, command.userId);
+      case 'setMemberTimeout': return this.setMemberTimeout(command);
+      case 'clearMemberTimeout': return this.clearMemberTimeout(command);
+      case 'warnMember': return this.warnMember(command);
       case 'loadBans': return this.admin.loadBans(command.communityId);
       case 'loadInvites': return this.admin.loadInvites(command.communityId);
       case 'revokeInvite': return this.admin.revokeInvite(command.communityId, command.inviteId);
@@ -1229,6 +1524,456 @@ export class Controller {
       case 'setChannelPrivate': return this.rolesCtl.setChannelPrivate(command.channelId, command.private);
       case 'resign': return this.resign(command.nonce);
     }
+  }
+
+  private async getBotInstallation(communityId: string): Promise<ReturnType<typeof botInstallationView> | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotInstallation(fromHex(communityId));
+    return row === null ? null : botInstallationView(row);
+  }
+
+  private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
+    const core = this.requireCore();
+    const sync = this.requireSync();
+    const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
+      && row.communityId !== null && toHex(row.communityId) === communityHex);
+    let rows = activeGroups();
+    for (let attempt = 0; rows.length === 0 && attempt < 8; attempt++) {
+      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+      await sync.pollWelcomes();
+      rows = activeGroups();
+      if (rows.length === 0 && attempt < 7) await this.deps.sleep(500);
+    }
+    return rows;
+  }
+
+  /** Sends a revision-bound built-in Bot request. The result describes ciphertext upload only. */
+  private async humanInteractionRequest(command: Extract<Command, { m: 'humanInteractionRequest' }>, reservedExpires?: bigint): Promise<{
+    requestId: string; upload: 'accepted' | 'pending' | 'rejected' | 'unknown';
+  }> {
+    const { communityId: communityHex, channelId: channelHex, requestId: requestHex, operation } = command;
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const channelId = channelHex === null ? null : fromHex(channelHex);
+    if (channelHex !== null) {
+      const channel = this.channels.get(channelHex);
+      if (channel === undefined || channel.communityId !== communityHex || channel.row.kind !== 1) {
+        throw new Refusal('E_BAD_INPUT', 'music requests require a voice channel in this community');
+      }
+    }
+    const acceptedKey = `interaction:${operation}:${communityHex}:${requestHex}`;
+    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
+    const communityId = fromHex(communityHex);
+    const requestId = fromHex(requestHex);
+    const groupRows = await this.waitForActiveInteractionGroup(communityHex);
+    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
+      ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
+    const groupId = groupRows[0].groupId;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
+    const args: CborInput[] = command.args.map((value, index) =>
+      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
+        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0) && typeof value === 'string'
+        ? fromHex(value) : value);
+    const sync = this.requireSync();
+    return sync.runOnGroup(groupId, async () => {
+      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
+      const now = BigInt(Math.floor(this.deps.now() / 1000));
+      let requestExpires = mutation ? (reservedExpires ?? now + 30n) : null;
+      const request = { requestId, communityId, channelId, operation, revision: mutation ? BigInt(command.revision!) : null,
+        expires: requestExpires, args };
+      if (operation === 63) {
+        if (command.stepUp === undefined || requestExpires === null) throw new Refusal('E_BAD_INPUT', 'automatic moderation step-up is required');
+        const document = command.args[1];
+        if (!(document instanceof Uint8Array)) throw new Refusal('E_BAD_INPUT', 'automatic moderation document is invalid');
+        const prior = this.autoModerationGrants.get(acceptedKey);
+        let token: string;
+        if (prior !== undefined) {
+          if (toHex(prior.groupId) !== toHex(groupId) || prior.revision !== command.revision || prior.document.length !== document.length
+            || prior.document.some((byte, index) => byte !== document[index])) throw new Refusal('E_BAD_INPUT', 'request id is already bound to another automatic moderation document');
+          if (prior.requestExpires <= now) throw new Refusal('E_CONFLICT', 'automatic moderation request expired; reload and start a new save');
+          token = prior.token; requestExpires = prior.requestExpires; request.expires = requestExpires;
+        } else {
+          const digestInput = new Uint8Array(document.length); digestInput.set(document);
+          const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', digestInput.buffer));
+          const grant = await this.routes.armAutoModerationGrant(groupId, requestId, communityId, BigInt(command.revision!),
+            requestExpires, digest, command.stepUp);
+          token = grant.token;
+          this.autoModerationGrants.set(acceptedKey, { token, groupId, requestExpires, revision: command.revision!, document: document.slice() });
+          while (this.autoModerationGrants.size > 64) {
+            const oldest = this.autoModerationGrants.keys().next().value; if (oldest === undefined) break;
+            this.autoModerationGrants.delete(oldest);
+          }
+        }
+        request.args[0] = token;
+      }
+      validateBotContext(request, { community: communityId, now });
+      const requestBody = encodeBotRequestBytes(request);
+      const prepared = this.requireCore().humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
+      if (toHex(prepared) !== requestHex) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
+      const core = this.requireCore();
+      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === requestHex);
+      if (outbox === undefined) return { requestId: requestHex, upload: 'unknown' };
+      if (outbox.state === 1) return { requestId: requestHex, upload: 'pending' };
+      if (outbox.state === 2) core.sendRetry(prepared);
+      const ciphertext = core.sendEncrypt(prepared);
+      if (toHex(ciphertext.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+      let receipt: Awaited<ReturnType<Routes['postMessage']>>;
+      try {
+        receipt = await this.routes.postMessage(groupId, ciphertext.messageBody);
+      } catch (error) {
+        if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
+          core.sendFail(prepared, error.code);
+          return { requestId: requestHex, upload: 'rejected' };
+        }
+        return { requestId: requestHex, upload: 'pending' };
+      }
+      try { core.sendConfirm(prepared, receipt.raw); }
+      catch { return { requestId: requestHex, upload: 'pending' }; }
+      this.acceptedHumanInteractionSends.add(acceptedKey);
+      if (this.acceptedHumanInteractionSends.size > 128) {
+        const oldest = this.acceptedHumanInteractionSends.values().next().value;
+        if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
+      }
+      return { requestId: requestHex, upload: 'accepted' };
+    });
+  }
+
+  private readBotInteractionResponses(communityHex: string, operations: readonly number[]): {
+    responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
+      status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
+    through: string | null; blocked: boolean;
+  } {
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const allowed = new Set(operations);
+    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    const responses = page.events.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)).map(event => {
+      const response = decodeBotResponse(event.body);
+      validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
+      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
+        operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
+        status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
+        sourceSeq: String(event.sourceSeq) };
+    });
+    const firstBlocked = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !allowed.has(event.operation));
+    const ackable = firstBlocked < 0 ? page.events : page.events.slice(0, firstBlocked);
+    const throughValue = firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
+    const through = throughValue > 0n ? String(throughValue) : null;
+    if (through !== null) {
+      this.pendingBotInteractionAcks.set(`${communityHex}:${through}`, through);
+      while (this.pendingBotInteractionAcks.size > 32) {
+        const oldest = this.pendingBotInteractionAcks.keys().next().value;
+        if (oldest === undefined) break;
+        this.pendingBotInteractionAcks.delete(oldest);
+      }
+    }
+    return { responses, through, blocked: firstBlocked >= 0 };
+  }
+
+  private ackBotInteractionResponses(communityHex: string, through: string): null {
+    const key = `${communityHex}:${through}`;
+    if (!this.listed(communityHex) || this.pendingBotInteractionAcks.get(key) !== through) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
+    }
+    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    this.pendingBotInteractionAcks.delete(key);
+    return null;
+  }
+
+  /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
+   *  ciphertext stay inside the worker/core boundary; the page receives only the stable request id
+   *  and whether the upload was accepted, remains uncertain, was refused, or cannot be resolved. */
+  private listModerationCases(command: Extract<Command, { m: 'listModerationCases' }>) {
+    return this.sendModerationPage(command.communityId, command.requestId, 60, [null]);
+  }
+
+  private listManualModerationEvidence(command: Extract<Command, { m: 'listManualModerationEvidence' }>) {
+    const cursor = command.cursor === null ? null : fromHex(command.cursor);
+    return this.sendModerationPage(command.communityId, command.requestId, 64, [cursor]);
+  }
+
+  private async sendModerationPage(communityHex: string, requestHex: string, operation: 60 | 64,
+    args: (Uint8Array | null)[]): Promise<{ requestId: string; status: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const acceptedKey = `${communityHex}:${requestHex}`;
+    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, status: 'accepted' };
+    const core = this.requireCore();
+    const sync = this.requireSync();
+    const communityId = fromHex(communityHex);
+    const groupRows = await this.waitForActiveInteractionGroup(communityHex);
+    if (groupRows.length === 0) throw new Refusal('E_CORE_STATE', 'no active interaction group for this community');
+    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
+    const groupId = groupRows[0].groupId;
+    const requestId = fromHex(requestHex);
+    return sync.runOnGroup(groupId, async () => {
+      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, status: 'accepted' };
+      const now = BigInt(Math.floor(this.deps.now() / 1000));
+      const request = { requestId, communityId, channelId: null, operation, revision: null, expires: null, args };
+      // Structural encoding enforces operation 60, its sole null cursor, and read-only null
+      // revision/expiry. Context validation binds it to this community and the trusted clock.
+      validateBotContext(request, { community: communityId, now });
+      const requestBody = encodeBotRequestBytes(request);
+      const prepared = core.humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
+      if (toHex(prepared) !== requestHex) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
+
+      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === requestHex);
+      if (outbox === undefined) return { requestId: requestHex, status: 'unknown' };
+      if (outbox.state === 1) return { requestId: requestHex, status: 'pending' };
+      if (outbox.state === 2) core.sendRetry(prepared);
+
+      const ciphertext = core.sendEncrypt(prepared);
+      if (toHex(ciphertext.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+      let receipt: Awaited<ReturnType<Routes['postMessage']>>;
+      try {
+        receipt = await this.routes.postMessage(groupId, ciphertext.messageBody);
+      } catch (error) {
+        if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
+          core.sendFail(prepared, error.code);
+          return { requestId: requestHex, status: 'rejected' };
+        }
+        // A timeout or server failure does not establish whether the upload committed. The durable
+        // in-flight outbox is retained and the sync lane can resolve it after this POST has settled.
+        return { requestId: requestHex, status: 'pending' };
+      }
+      try {
+        core.sendConfirm(prepared, receipt.raw);
+      } catch {
+        // The server accepted the ciphertext, but the local receipt commit did not complete.
+        return { requestId: requestHex, status: 'pending' };
+      }
+      this.acceptedHumanInteractionSends.add(acceptedKey);
+      if (this.acceptedHumanInteractionSends.size > 128) {
+        const oldest = this.acceptedHumanInteractionSends.values().next().value;
+        if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
+      }
+      return { requestId: requestHex, status: 'accepted' };
+    });
+  }
+  private async readHumanInteractionResponses(communityHex: string): Promise<{
+    authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
+      cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
+        reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean; nextCursor: string | null }[];
+    through: string | null; blocked: boolean;
+  }> {
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const communityId = fromHex(communityHex);
+    // This is deliberately independent of the cached permissions slice. The response can contain
+    // private excerpts, so the authority decision must come from the instance on every read.
+    const permissions = await this.routes.getPermissions(communityId);
+    if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
+      return { authorized: false, responses: [], through: null, blocked: false };
+    }
+    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
+    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !isModerationRead(event.operation));
+    // The journal ack is global, so this screen may consume only the contiguous prefix for its
+    // community. Events for another server stay pending and are handled in that server's Bot tab.
+    // The journal is global and read pages are bounded. Show only this community's decoded
+    // responses even when another community occurs earlier in the page; only the contiguous
+    // current-community prefix is eligible for acknowledgement below.
+    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation));
+    const responses = visibleEvents.map(event => {
+      const response = decodeBotResponse(event.body);
+      validateBotResponseForRequest(response, communityId, event.requestId);
+      const cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
+        reason: string; action: string; excerpt: string; receivedAt: string }[] = [];
+      let hasMore = false;
+      let nextCursor: string | null = null;
+      if (response.status === 0) {
+        const data = arr(decodeCbor(response.data));
+        if (data.length !== 3 || data[0] !== 1n || !Array.isArray(data[1])
+          || (data[2] !== null && !(data[2] instanceof Uint8Array)) || data[1].length > 8) {
+          throw new Refusal('E_CORE_STATE', 'moderation response shape is invalid');
+        }
+        hasMore = data[2] !== null;
+        if (event.operation === 64 && data[2] instanceof Uint8Array) nextCursor = toHex(data[2]);
+        for (const value of data[1]) {
+          const row = arr(value);
+          if (event.operation === 64) {
+            if (row.length !== 5 || !(row[0] instanceof Uint8Array) || row[0].length !== 16 || typeof row[1] !== 'string'
+              || !['remove', 'warn'].includes(row[1]) || typeof row[2] !== 'string' || row[2].length < 1 || row[2].length > 1024
+              || typeof row[3] !== 'string' || row[3].length > 512 || typeof row[4] !== 'bigint') {
+              throw new Refusal('E_CORE_STATE', 'manual evidence response shape is invalid');
+            }
+            const evidenceId = toHex(row[0]);
+            cases.push({ key: `manual:${evidenceId}`, channelId: '0'.repeat(32), actorId: '0'.repeat(32), messageId: evidenceId,
+              revision: '1', reason: String(row[2]), action: String(row[1]), excerpt: String(row[3]), receivedAt: String(row[4]) });
+            continue;
+          }
+          if (row.length !== 10 || row.slice(0, 5).some(v => typeof v !== 'string' || !/^[0-9a-f]{32}$/u.test(v))
+            || typeof row[5] !== 'bigint' || typeof row[6] !== 'string'
+            || !['log', 'remove', 'warn', 'timeout'].includes(String(row[7])) || typeof row[8] !== 'string'
+            || typeof row[9] !== 'bigint' || row[8].length > 700) {
+            throw new Refusal('E_CORE_STATE', 'moderation case shape is invalid');
+          }
+          const rowCommunity = String(row[0]);
+          const channelId = String(row[2]);
+          const actorId = String(row[3]);
+          const messageId = String(row[4]);
+          if (rowCommunity !== communityHex) throw new Refusal('E_CORE_STATE', 'moderation case community changed');
+          cases.push({ key: `${messageId}:${String(row[5])}`, channelId, actorId, messageId,
+            revision: String(row[5]), reason: String(row[6]), action: String(row[7]),
+            excerpt: String(row[8]), receivedAt: String(row[9]) });
+        }
+      }
+      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
+    });
+    const ackableEvents = firstOtherCommunity < 0 ? page.events : page.events.slice(0, firstOtherCommunity);
+    const throughValue = firstOtherCommunity < 0 ? page.next : ackableEvents.at(-1)?.deliveryId ?? 0n;
+    const through = throughValue > 0n ? String(throughValue) : null;
+    if (through !== null) {
+      const key = `${communityHex}:${through}`;
+      this.pendingHumanInteractionAcks.set(key, through);
+      while (this.pendingHumanInteractionAcks.size > 32) {
+        const oldest = this.pendingHumanInteractionAcks.keys().next().value;
+        if (oldest === undefined) break;
+        this.pendingHumanInteractionAcks.delete(oldest);
+      }
+    }
+    return { authorized: true, responses, through, blocked: firstOtherCommunity >= 0 };
+  }
+
+  private async ackHumanInteractionResponses(communityHex: string, through: string): Promise<null> {
+    const key = `${communityHex}:${through}`;
+    if (!this.listed(communityHex) || this.pendingHumanInteractionAcks.get(key) !== through) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
+    }
+    const permissions = await this.routes.getPermissions(fromHex(communityHex));
+    if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
+      throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
+    }
+    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    this.pendingHumanInteractionAcks.delete(key);
+    return null;
+  }
+
+  private async getBotJoinRole(communityId: string): Promise<{ roleId: string | null; installationId: string } | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotJoinRole(fromHex(communityId));
+    return row === null ? null : { roleId: row.roleId === null ? null : toHex(row.roleId), installationId: toHex(row.installationId) };
+  }
+
+  private async configureBotJoinRole(command: Extract<Command, { m: 'configureBotJoinRole' }>): Promise<{ installationId: string }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const installationId = await this.routes.configureBotJoinRole(fromHex(command.communityId), fromHex(command.requestId), fromHex(command.roleId), fromHex(command.installationId));
+    return { installationId: toHex(installationId) };
+  }
+
+  private async getBotDjRoles(communityId: string): Promise<{ roleIds: string[]; installationId: string } | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotDjRoles(fromHex(communityId));
+    return row === null ? null : { roleIds: row.roleIds.map(toHex), installationId: toHex(row.installationId) };
+  }
+
+  private async configureBotDjRoles(command: Extract<Command, { m: 'configureBotDjRoles' }>): Promise<{ acceptedCount: number }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const acceptedCount = await this.routes.configureBotDjRoles(fromHex(command.communityId), fromHex(command.requestId),
+      fromHex(command.installationId), command.roleIds.map(fromHex));
+    return { acceptedCount };
+  }
+
+  private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    return (await this.routes.listSelfRoles(fromHex(communityId))).map(row => ({ id: toHex(row.id), name: row.name,
+      position: row.position, selfSelected: row.selfSelected }));
+  }
+
+  private async configureSelfRoles(command: Extract<Command, { m: 'configureSelfRoles' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.configureSelfRoles(fromHex(command.communityId), fromHex(command.requestId), command.roleIds.map(fromHex));
+    return null;
+  }
+
+  private async selectSelfRole(command: Extract<Command, { m: 'selectSelfRole' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.selectSelfRole(fromHex(command.communityId), fromHex(command.roleId), fromHex(command.requestId), command.enabled);
+    return null;
+  }
+
+  private async registerRolePanel(command: Extract<Command, { m: 'registerRolePanel' }>): Promise<null> {
+    await this.routes.registerRolePanel(fromHex(command.communityId), fromHex(command.requestId), fromHex(command.channelId),
+      BigInt(command.messageSeq), command.options.map(option => ({ emoji: option.emoji, roleId: fromHex(option.roleId) })));
+    return null;
+  }
+
+  private async getMemberTimeout(communityId: string, userId: string): Promise<string | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const expires = await this.routes.getMemberTimeout(fromHex(communityId), fromHex(userId));
+    return expires === null ? null : expires.toString();
+  }
+
+  private async setMemberTimeout(command: Extract<Command, { m: 'setMemberTimeout' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.putMemberTimeout(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId), BigInt(command.expires));
+    return null;
+  }
+
+  private async clearMemberTimeout(command: Extract<Command, { m: 'clearMemberTimeout' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.deleteMemberTimeout(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId));
+    return null;
+  }
+
+  private async warnMember(command: Extract<Command, { m: 'warnMember' }>): Promise<{ requestId: string; actionId: string; revision: string; acceptedAt: number; evidence: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const core = this.requireCore();
+    if (core.prepareManualWarningEvidence === undefined || core.markManualWarningAccepted === undefined
+      || core.manualWarningEvidence === undefined || core.ensureManualWarningEvidenceRequest === undefined
+      || core.completeManualWarningEvidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    const requestId = fromHex(command.requestId);
+    const now = BigInt(Math.floor(this.deps.now() / 1000));
+    const current = core.manualWarningEvidence().find(row => toHex(row.requestId) === command.requestId);
+    if (current !== undefined && (toHex(current.communityId) !== command.communityId || toHex(current.targetUserId) !== command.userId || current.reason !== command.reason)) {
+      throw new Refusal('E_CONFLICT', 'warning request id is already bound to another reason or member');
+    }
+    if (current === undefined) core.prepareManualWarningEvidence(requestId, crypto.getRandomValues(new Uint8Array(16)), fromHex(command.communityId),
+      fromHex(command.userId), command.reason, now, now);
+    const receipt = await this.routes.warnMember(fromHex(command.communityId), fromHex(command.userId), requestId);
+    core.markManualWarningAccepted(requestId, receipt.actionId, BigInt(receipt.revision), BigInt(receipt.acceptedAt));
+    let evidence: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
+    try {
+      const row = core.manualWarningEvidence().find(item => toHex(item.requestId) === command.requestId);
+      if (row === undefined) throw new CoreError('E_CORE_STATE', 'manual warning evidence was not staged');
+      const reserved = core.ensureManualWarningEvidenceRequest(requestId, crypto.getRandomValues(new Uint8Array(16)), BigInt(Math.floor(this.deps.now() / 1000)));
+      const sent = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: command.communityId, channelId: null,
+        requestId: toHex(reserved.requestId), operation: 61, args: [command.requestId, row.reason, ''], revision: '0' }, reserved.expires);
+      evidence = sent.upload;
+      if (evidence === 'accepted') core.completeManualWarningEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+    } catch { evidence = 'unknown'; }
+    return { requestId: toHex(receipt.requestId), actionId: toHex(receipt.actionId), revision: String(receipt.revision), acceptedAt: receipt.acceptedAt, evidence };
+  }
+
+  private async configureBotInstallation(command: Extract<Command, { m: 'configureBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.configureBotInstallation(fromHex(command.communityId), fromHex(command.requestId),
+      command.expectedRevision === null ? null : BigInt(command.expectedRevision), command.capabilities, command.stepUp);
+    return botInstallationView(row);
+  }
+
+  private async disableBotInstallation(command: Extract<Command, { m: 'disableBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.disableBotInstallation(fromHex(command.communityId), fromHex(command.requestId), BigInt(command.expectedRevision));
+    return botInstallationView(row);
+  }
+
+  private async beginBotSpotifyAttempt(command: Extract<Command, { m: 'beginBotSpotifyAttempt' }>): Promise<{
+    attemptId: string; authorizeUrl: string; expires: string;
+  }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp);
+    return { attemptId: toHex(attempt.attemptId), authorizeUrl: attempt.authorizeUrl, expires: attempt.expires.toString() };
+  }
+
+  private async callbackBotSpotifyAttempt(command: Extract<Command, { m: 'callbackBotSpotifyAttempt' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.callbackBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId), command.state, command.code);
+    return null;
+  }
+
+  private async cancelBotSpotifyAttempt(command: Extract<Command, { m: 'cancelBotSpotifyAttempt' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.cancelBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId));
+    return null;
   }
 
   // ---- slices ----
@@ -1430,6 +2175,8 @@ export class Controller {
       const ok = await session.ensure();
       if (this.revoked()) return;
       if (!ok) { this.enterRevoked(); return; }
+      await this.checkInstanceSignerPin();
+      if (this.revoked()) return;
       // (c)
       await this.parts.publishDeviceList(core, this.routes);
       if (this.revoked()) return;
@@ -1486,6 +2233,10 @@ export class Controller {
       const gateway = this.parts.gateway({
         url: this.deps.origin.replace(/^http/, 'ws') + '/gateway',
         mintTicket: async () => {
+          // Gateway retries call mintTicket directly, without passing through the
+          // controller's explicit ready/revocation paths. Revalidate the pinned
+          // instance signer before every connection attempt.
+          if (this.core?.identity().phase === 2) await this.checkInstanceSignerPin();
           const minted = await this.routes.postTicket();
           // The instance's clock at the mint (a ticket is valid TICKET_TTL_S seconds, protocol/09): the notice
           // floor compares server receive times with server time, never with this browser's clock.
@@ -1540,6 +2291,8 @@ export class Controller {
     // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
     // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
     this.calls.startSweep();
+    void this.barrier.track(this.resumeManualRemovalEvidence()).catch(() => undefined);
+    void this.barrier.track(this.resumeManualWarningEvidence()).catch(() => undefined);
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -1572,7 +2325,7 @@ export class Controller {
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
       onSlow: (g, untilMs, queued) => { this.safely(() => { this.onSlow(g, untilMs, queued); }); },
-      onPosted: (g, type) => { this.safely(() => { this.onPosted(g, type); }); },
+      onPosted: (g, type, row, seq) => { this.safely(() => { this.onPosted(g, type, row, seq); }); },
     });
     this.sync = sync;
     sync.start();
@@ -1609,6 +2362,7 @@ export class Controller {
     if (this.revoked()) return;
     this.clearReauthTimer();
     this.clearHeldReads();
+    this.clearPendingRolePanelActionRetries();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -1654,7 +2408,10 @@ export class Controller {
       if (e.frame.op === Op.voiceState) this.safely(() => { this.ownVoiceState(e.frame); });
       this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'frame' && e.frame.op === Op.communityChanged) {
-      this.safely(() => { this.scheduleCommunityReload(toHex(communityChangedOf(e.frame))); });
+      const communityId = toHex(communityChangedOf(e.frame));
+      const changeSlice = `communityChanges:${communityId}` as const;
+      this.slices.set(changeSlice, (this.slices.get(changeSlice) ?? 0) + 1);
+      this.safely(() => { this.scheduleCommunityReload(communityId); });
     } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
       this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
@@ -1682,6 +2439,7 @@ export class Controller {
     // Requirement 13 (Q27: clients refetch on ready), not awaited in the ready path.
     const me = this.me;
     if (core !== null && me !== null) {
+      this.retryPendingRolePanelActions(core, me);
       void this.barrier.track(this.ensureBackups(core));
       void this.barrier.track(this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
         .then((own) => {
@@ -1772,20 +2530,23 @@ export class Controller {
     try {
       const ok = await session.establish();
       if (this.revoked() || this.wiping) return;
-      if (ok) this.gateway?.start();
+      if (ok) {
+        if (this.core?.identity().phase === 2) await this.checkInstanceSignerPin();
+        if (this.revoked() || this.wiping) return;
+        this.gateway?.start();
+      }
       else this.enterRevoked();
     } catch (e) {
       if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2) { this.enterRevoked(); return; }
+      if (this.isInvalidInstancePin(e)) {
+        this.failInstanceSignerPin(e);
+        return;
+      }
       // Not a refusal (a network failure, a 5xx): try the socket again later; a refused ticket comes back here.
       if (this.revoked() || this.wiping) return;
       // I4: the handle is kept and cleared by resign, quiesce and enterRevoked; a timer that fires anyway starts only the
       // socket of the leadership that armed it.
-      const gateway = this.gateway;
-      this.clearReauthTimer();
-      this.reauthTimer = this.deps.setTimeout(() => {
-        this.reauthTimer = null;
-        if (!this.revoked() && !this.wiping && this.leadership !== null && this.phase === 'ready' && this.gateway === gateway) gateway?.start();
-      }, GATEWAY.reconnectCapMs);
+      this.scheduleSocketPinRetry(this.gateway);
     }
   }
 
@@ -1965,6 +2726,13 @@ export class Controller {
   /** A refused join is a result, never a failed signup (ruling 34). */
   private async joinAfterReady(communityId: Id, invite: string): Promise<{ communityId: string | null; joinError: WorkerError | null }> {
     try {
+      try {
+        await this.routes.negotiateSession();
+      } catch (e) {
+        // Older instances have no capability endpoint. Only an explicit unsupported-route response falls back;
+        // transient, authentication, and malformed negotiation failures must not race the gateway negotiation.
+        if (!(e instanceof DillaHttpError) || ![404, 405, 501].includes(e.status)) throw e;
+      }
       const joined = await this.joinPath(communityId, invite);
       return { communityId: joined.communityId, joinError: null };
     } catch (e) {
@@ -3403,6 +4171,7 @@ export class Controller {
     if (this.wiping) return;
     this.wiping = true;
     this.clearReauthTimer();
+    this.clearPendingRolePanelActionRetries();
     this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
@@ -4243,6 +5012,7 @@ export class Controller {
     // WB client m5: the new tab waits 5 s for this release (handover.ts). A join in flight (its rejoin wait lasts up to
     // 30 s) is cancelled first, so the barrier does not wait for it: its teardown sends the self-Remove.
     this.calls.cancelJoin();
+    this.clearPendingRolePanelActionRetries();
     await this.barrier.close();
     this.clearReauthTimer();
     // L-TS-56 step 9: the call is left and the rings cleared before the store is released; the leave's round trips are
@@ -4429,8 +5199,236 @@ export class Controller {
 
   private editMessage(channelId: string, msgId: string, text: string): Promise<null> { return this.fold(channelId, msgId, 1, text); }
 
-  /** The purge is not started here: the core records it when the type-2 row is confirmed (L-CORE-33, ruling 8). */
-  private deleteMessage(channelId: string, msgId: string): Promise<null> { return this.fold(channelId, msgId, 2, ''); }
+  /** A timed-out member's owner-only DELETE path stays available. The server checks the uploader and emits the same
+   * replayable tombstone to every reader; ordinary deletes remain type-2 folds. */
+  private async deleteMessage(channelId: string, msgId: string, seq: string): Promise<null> {
+    const groupId = this.activeGroup(channelId);
+    const known = this.channels.get(channelId);
+    const me = this.me;
+    if (known !== undefined && me !== null) {
+      const expires = await this.routes.getMemberTimeout(fromHex(known.communityId), me.userId);
+      if (expires !== null) {
+        if (!SEQ.test(seq)) throw new Refusal('E_BAD_INPUT', 'invalid message sequence');
+        await this.routes.deleteGroupMessage(groupId, BigInt(seq));
+        return null;
+      }
+    }
+    return this.fold(channelId, msgId, 2, '');
+  }
+
+  /** A distinct human moderation path: validate local target/group and loaded authority, then let the instance recheck. */
+  private async moderateRemoveMessage(channelId: string, msgId: string, rawSeq: string, reason: string, excerpt: string): Promise<{
+    removal: 'accepted' | 'unknown' | 'rejected'; proofRequestId: string; evidenceRequestId: string | null;
+    evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown';
+  }> {
+    const core = this.requireCore();
+    if (!SEQ.test(rawSeq)) throw new Refusal('E_BAD_INPUT', 'invalid target sequence');
+    const reasonBytes = new TextEncoder().encode(reason);
+    const excerptBytes = new TextEncoder().encode(excerpt);
+    if (reasonBytes.length === 0 || reasonBytes.length > 1024 || reason.trim().length === 0 || excerptBytes.length > 512) {
+      throw new Refusal('E_BAD_INPUT', 'moderation reason or excerpt is outside its allowed bounds');
+    }
+    const seq = BigInt(rawSeq);
+    const target = this.target(channelId);
+    if (target?.communityId === null || target === undefined) throw new Refusal('E_BAD_INPUT', 'moderation removal needs a community channel');
+    const communityId = target.communityId;
+    const groups = core.groups();
+    const groupId = this.timelineGroup(channelId, groups);
+    const group = groupId === null ? undefined : groups.find(g => toHex(g.groupId) === toHex(groupId));
+    if (group === undefined || group.kind !== 0 || group.state !== 2 || toHex(group.targetId) !== channelId ||
+        group.communityId === null || toHex(group.communityId) !== communityId) {
+      throw new Refusal('E_NOT_READY', 'the active community text group is unavailable');
+    }
+    const row = core.timeline(group.groupId, seq + 1n, 1).find(r => r.seq === seq);
+    if (row?.msgId === null || row === undefined || toHex(row.msgId) !== msgId || row.status !== 0) {
+      throw new Refusal('E_BAD_INPUT', 'target message is no longer available');
+    }
+    const access = this.slices.get(`permissions:${communityId}`);
+    const roles = this.slices.get(`roles:${communityId}`);
+    const members = this.slices.get(`members:${communityId}`);
+    const overwrites = this.slices.get(`overwrites:${communityId}`);
+    const owner = (this.slices.get('communities') ?? []).find(c => c.id === communityId)?.owner;
+    const me = this.me === null ? null : toHex(this.me.userId);
+    if (access?.loaded !== true || access.overwritesLoaded !== true || access.everyoneId === '' || roles === undefined ||
+        members === undefined || overwrites === undefined || owner === undefined || me === null) {
+      throw new Refusal('E_NOT_READY', 'current channel permissions are unavailable');
+    }
+    const bits = channelBitsOf({ owner, everyoneId: access.everyoneId, roles, members, overwrites: overwrites[channelId] ?? [] }, me);
+    if (bits === null || (bits & PERM.manageMessages) === 0) throw new Refusal('E_FORBIDDEN', 'manage messages permission required');
+    const pendingTarget = core.manualRemovalEvidence?.().find((entry) => toHex(entry.groupId) === toHex(group.groupId)
+      && toHex(entry.messageId) === msgId && entry.targetSequence === seq);
+    if (pendingTarget !== undefined) return this.resolveManualRemoval(toHex(pendingTarget.proofRequestId));
+    const requestId = crypto.getRandomValues(new Uint8Array(16));
+    const evidenceRequestId = crypto.getRandomValues(new Uint8Array(16));
+    const now = BigInt(Math.floor(this.deps.now() / 1000));
+    if (core.prepareManualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined
+      || core.rejectManualRemoval === undefined || core.manualRemovalEvidence === undefined) {
+      throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    }
+    const signed = core.prepareManualRemovalEvidence(requestId, evidenceRequestId, fromHex(communityId), group.groupId,
+      // Reserve five seconds of the server's 30-second acceptance window for client/server clock skew.
+      fromHex(channelId), fromHex(msgId), seq, reason, excerpt, now, now + 25n, now);
+    // This durable transition precedes the request. A restart can now distinguish "never submitted"
+    // from "POST may have succeeded" and only ever retries the same proof ID and signed bytes.
+    core.markManualRemovalSubmitted(requestId);
+    try {
+      await this.routes.postModerationRemoval(group.groupId, signed);
+    } catch (error) {
+      if (this.definiteManualRemovalRefusal(error)) {
+        core.rejectManualRemoval(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+        return { removal: 'rejected', proofRequestId: toHex(requestId), evidenceRequestId: null, evidenceUpload: 'rejected' };
+      }
+      return { removal: 'unknown', proofRequestId: toHex(requestId), evidenceRequestId: toHex(evidenceRequestId), evidenceUpload: 'unknown' };
+    }
+    core.markManualRemovalAccepted(requestId);
+    this.refreshTimeline(channelId, group.groupId);
+    const proofRequestId = toHex(requestId);
+    const evidenceRequestIdHex = toHex(evidenceRequestId);
+    let evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
+    try {
+      const evidence = await this.uploadManualRemovalEvidence({ proofRequestId, evidenceRequestId: evidenceRequestIdHex,
+        communityId, reason, excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
+      evidenceUpload = evidence.upload;
+      if (evidenceUpload === 'accepted') core.completeManualRemovalEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+    } catch {
+      // The removal is already accepted. Return its status separately so the page
+      // can see its evidence state; the durable outbox resumes it without another removal.
+      evidenceUpload = 'unknown';
+    }
+    return { removal: 'accepted', proofRequestId, evidenceRequestId: evidenceRequestIdHex, evidenceUpload };
+  }
+
+  private definiteManualRemovalRefusal(error: unknown): boolean {
+    // A server 4xx other than Request Timeout is an authoritative refusal; 408 and every
+    // transport/5xx error can race with persistence and therefore remain unknown.
+    return error instanceof DillaHttpError && error.status >= 400 && error.status < 500 && error.status !== 408;
+  }
+
+  private async resolveManualRemoval(proofRequestHex: string): Promise<{
+    removal: 'accepted' | 'unknown' | 'rejected'; proofRequestId: string; evidenceRequestId: string | null;
+    evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown';
+  }> {
+    const core = this.requireCore();
+    if (core.manualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined) {
+      throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    }
+    const proofRequestId = fromHex(proofRequestHex);
+    let row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
+    if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
+    if (row.state === 1) {
+      try { await recoverModerationRemovals(core, this.routes, row.groupId); } catch { /* absence or outage is not proof of rejection */ }
+      row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
+      if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
+    }
+    if (row.state < 2) {
+      const now = BigInt(Math.floor(this.deps.now() / 1000));
+      if (row.expires <= now) {
+        if (row.state === 0) core.rejectUnsubmittedManualRemoval?.(proofRequestId, now);
+        return { removal: row.state === 0 ? 'rejected' : 'unknown', proofRequestId: proofRequestHex,
+          evidenceRequestId: toHex(row.evidenceRequestId), evidenceUpload: 'unknown' };
+      }
+      try {
+        core.markManualRemovalSubmitted(proofRequestId);
+        await this.routes.postModerationRemoval(row.groupId, row.signedBody);
+        core.markManualRemovalAccepted(proofRequestId);
+      } catch (error) {
+        if (this.definiteManualRemovalRefusal(error)) {
+          core.rejectManualRemoval?.(proofRequestId, now);
+          return { removal: 'rejected', proofRequestId: proofRequestHex, evidenceRequestId: null, evidenceUpload: 'rejected' };
+        }
+        return { removal: 'unknown', proofRequestId: proofRequestHex, evidenceRequestId: toHex(row.evidenceRequestId), evidenceUpload: 'unknown' };
+      }
+      row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
+      if (row === undefined || row.state !== 2) return { removal: 'unknown', proofRequestId: proofRequestHex,
+        evidenceRequestId: toHex(row?.evidenceRequestId ?? new Uint8Array(16)), evidenceUpload: 'unknown' };
+    }
+    let evidenceUpload: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
+    try {
+      const sent = await this.uploadManualRemovalEvidence({ proofRequestId: proofRequestHex,
+        evidenceRequestId: toHex(row.evidenceRequestId), communityId: toHex(row.communityId), reason: row.reason,
+        excerpt: row.excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
+      evidenceUpload = sent.upload;
+      if (evidenceUpload === 'accepted') core.completeManualRemovalEvidence(proofRequestId, BigInt(Math.floor(this.deps.now() / 1000)));
+    } catch { evidenceUpload = 'unknown'; }
+    return { removal: 'accepted', proofRequestId: proofRequestHex, evidenceRequestId: toHex(row.evidenceRequestId), evidenceUpload };
+  }
+
+  /** Reconcile crash-interrupted removals against the verified feed, then resume their same-ID op61 evidence. */
+  private async resumeManualRemovalEvidence(): Promise<void> {
+    const core = this.core;
+    if (core?.manualRemovalEvidence === undefined || core.markManualRemovalSubmitted === undefined
+      || core.markManualRemovalAccepted === undefined || core.completeManualRemovalEvidence === undefined) return;
+    const initial = core.manualRemovalEvidence();
+    for (const saved of initial) {
+      if (this.revoked() || this.wiping || this.storeCleared) return;
+      const group = core.groups().find((row) => toHex(row.groupId) === toHex(saved.groupId));
+      if (group?.kind !== 0 || group.state !== 2 || group.communityId === null || toHex(group.communityId) !== toHex(saved.communityId)) continue;
+
+      if (saved.state === 1) {
+        // Feed ingestion promotes only an authenticated proof matching this exact actor, device,
+        // group, community and sequence. A failed lookup leaves the outcome unknown.
+        try { await recoverModerationRemovals(core, this.routes, saved.groupId); } catch { /* retry next ready */ }
+      }
+      let current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
+      if (current === undefined) continue;
+      if (current.state === 0 || current.state === 1) {
+        const now = BigInt(Math.floor(this.deps.now() / 1000));
+        if (current.expires <= now) {
+          if (current.state === 0) core.rejectUnsubmittedManualRemoval?.(current.proofRequestId, now);
+          continue; // A submitted proof stays unknown unless the verified feed resolves it.
+        }
+        try {
+          core.markManualRemovalSubmitted(current.proofRequestId);
+          await this.routes.postModerationRemoval(current.groupId, current.signedBody);
+          core.markManualRemovalAccepted(current.proofRequestId);
+        } catch { continue; } // exact replay is server-idempotent; state 1 remains an explicit unknown.
+        current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
+      }
+      if (current?.state !== 2) continue;
+      try {
+        const result = await this.uploadManualRemovalEvidence({ proofRequestId: toHex(current.proofRequestId),
+          evidenceRequestId: toHex(current.evidenceRequestId), communityId: toHex(current.communityId),
+          reason: current.reason, excerpt: current.excerpt, now: BigInt(Math.floor(this.deps.now() / 1000)) });
+        if (result.upload === 'accepted') core.completeManualRemovalEvidence(current.proofRequestId, BigInt(Math.floor(this.deps.now() / 1000)));
+      } catch { /* same durable evidence remains for the next ready */ }
+    }
+  }
+
+  private uploadManualRemovalEvidence(input: { proofRequestId: string; evidenceRequestId: string; communityId: string; reason: string; excerpt: string; now: bigint }) {
+    const core = this.requireCore();
+    if (core.ensureManualRemovalEvidenceRequest === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    const reserved = core.ensureManualRemovalEvidenceRequest(fromHex(input.proofRequestId), crypto.getRandomValues(new Uint8Array(16)), input.now);
+    return this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: input.communityId, channelId: null,
+      requestId: toHex(reserved.requestId), operation: 61, args: [input.proofRequestId, input.reason, input.excerpt], revision: '0' }, reserved.expires);
+  }
+
+  /** Replays the idempotent accepted warning and resumes its op61 case from the protected local outbox. */
+  private async resumeManualWarningEvidence(): Promise<void> {
+    const core = this.core;
+    if (core?.manualWarningEvidence === undefined || core.markManualWarningAccepted === undefined
+      || core.ensureManualWarningEvidenceRequest === undefined || core.completeManualWarningEvidence === undefined) return;
+    for (const saved of core.manualWarningEvidence()) {
+      if (this.revoked() || this.wiping || this.storeCleared) return;
+      if (!this.listed(toHex(saved.communityId))) continue;
+      try {
+        let row = saved;
+        if (row.state === 0) {
+          const receipt = await this.routes.warnMember(row.communityId, row.targetUserId, row.requestId);
+          core.markManualWarningAccepted(row.requestId, receipt.actionId, BigInt(receipt.revision), BigInt(receipt.acceptedAt));
+          row = core.manualWarningEvidence().find(item => toHex(item.requestId) === toHex(saved.requestId)) ?? row;
+        }
+        if (row.state !== 1) continue;
+        const now = BigInt(Math.floor(this.deps.now() / 1000));
+        const reserved = core.ensureManualWarningEvidenceRequest(row.requestId, crypto.getRandomValues(new Uint8Array(16)), now);
+        const result = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: toHex(row.communityId), channelId: null,
+          requestId: toHex(reserved.requestId), operation: 61,
+          args: [toHex(row.requestId), 'warn', row.reason, ''], revision: '0' }, reserved.expires);
+        if (result.upload === 'accepted') core.completeManualWarningEvidence(row.requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+      } catch { /* retain the protected outbox row for the next ready */ }
+    }
+  }
 
   /** Ruling 28: the worker does not de-duplicate reactions; the core folds them per user. */
   private react(channelId: string, msgId: string, emoji: string, on: boolean): Promise<null> {
@@ -4463,11 +5461,94 @@ export class Controller {
   }
 
   /** CB2: a confirmed own post (type 0) starts the channel's countdown of slowmode seconds; a fold never does. */
-  private onPosted(g: Id, type: number): void {
+  private onPosted(g: Id, type: number, posted?: OutboxRow, confirmedSeq?: bigint): void {
+    if ((type === 3 || type === 4) && posted?.replyTo !== null && posted?.replyTo !== undefined) {
+      const core = this.core;
+      const group = core?.groupRow(g);
+      const me = this.me;
+      if (core !== null && core !== undefined && group !== null && group !== undefined && me !== null) {
+        const channelId = toHex(group.targetId);
+        const channel = this.target(channelId);
+        if (channel?.communityId !== null && channel?.communityId !== undefined) {
+          const targetTimeline = this.slices.get(`timeline:${channelId}`);
+          const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
+          if (confirmedSeq !== undefined && target?.state === 'ok' && target.seq !== null) {
+            const key = PENDING_ROLE_PANEL_ACTION_PREFIX + toHex(posted.msgId);
+            const action: PendingRolePanelAction = {
+              communityId: channel.communityId, channelId, messageSeq: target.seq, groupId: toHex(g), eventSeq: confirmedSeq.toString(),
+              emoji: posted.body, enabled: type === 3, userId: toHex(me.userId), deviceId: toHex(me.deviceId),
+            };
+            try {
+              core.settingPut(key, JSON.stringify(action));
+              void this.barrier.track(this.submitPendingRolePanelAction(core, key, action));
+            } catch { /* Durable retry is unavailable until the next confirmed event. */ }
+          }
+        }
+      }
+    }
     if (type !== 0) return;
     const channel = this.slowChannel(g);
     if (channel === null || channel.slowmode <= 0) return;
     this.publishSlow(channel.channelId, this.deps.now() + channel.slowmode * 1000, false);
+  }
+
+  private retryPendingRolePanelActions(core: CorePort, me: { userId: Id; deviceId: Id }): void {
+    this.clearPendingRolePanelActionRetries();
+    let settings: Record<string, string>;
+    try { settings = core.settings(); } catch { return; }
+    for (const [key, value] of Object.entries(settings)) {
+      if (!key.startsWith(PENDING_ROLE_PANEL_ACTION_PREFIX)) continue;
+      let action: PendingRolePanelAction;
+      try { action = JSON.parse(value) as PendingRolePanelAction; } catch { core.settingDelete(key); continue; }
+      const valid = [action.communityId, action.channelId, action.groupId, action.userId, action.deviceId]
+        .every(value => /^[0-9a-f]{32}$/.test(value))
+        && /^\d+$/.test(action.messageSeq) && /^\d+$/.test(action.eventSeq)
+        && typeof action.emoji === 'string' && new TextEncoder().encode(action.emoji).length >= 1
+        && new TextEncoder().encode(action.emoji).length <= 32 && typeof action.enabled === 'boolean';
+      if (!valid || action.userId !== toHex(me.userId) || action.deviceId !== toHex(me.deviceId)) {
+        core.settingDelete(key);
+        continue;
+      }
+      void this.barrier.track(this.submitPendingRolePanelAction(core, key, action));
+    }
+  }
+
+  private schedulePendingRolePanelActionRetry(core: CorePort, key: string, action: PendingRolePanelAction, attempt: number): void {
+    if (attempt > ROLE_PANEL_ACTION_RETRY_LIMIT || this.phase !== 'ready' || this.connectionState.status !== 'online'
+      || this.pendingRolePanelActionRetries.has(key)) return;
+    const delay = Math.min(ROLE_PANEL_ACTION_RETRY_BASE_MS * 2 ** (attempt - 1), ROLE_PANEL_ACTION_RETRY_MAX_MS);
+    const timer = this.deps.setTimeout(() => {
+      this.pendingRolePanelActionRetries.delete(key);
+      if (this.phase !== 'ready' || this.connectionState.status !== 'online' || this.core !== core) return;
+      void this.barrier.track(this.submitPendingRolePanelAction(core, key, action, attempt));
+    }, delay);
+    this.pendingRolePanelActionRetries.set(key, timer);
+  }
+
+  private clearPendingRolePanelActionRetries(): void {
+    for (const timer of this.pendingRolePanelActionRetries.values()) this.deps.clearTimeout(timer);
+    this.pendingRolePanelActionRetries.clear();
+  }
+
+  private async submitPendingRolePanelAction(core: CorePort, key: string, action: PendingRolePanelAction, attempt = 0): Promise<void> {
+    if (this.pendingRolePanelActionJobs.has(key)) return;
+    this.pendingRolePanelActionJobs.add(key);
+    try {
+      await this.routes.applyRolePanelReaction(fromHex(action.communityId), fromHex(action.channelId), BigInt(action.messageSeq),
+        fromHex(action.groupId), BigInt(action.eventSeq), action.emoji, action.enabled);
+      core.settingDelete(key);
+      // The action endpoint is an authenticated state change; read the canonical member roles back
+      // now so this device reflects its grant even if its community_changed frame is delayed/lost.
+      try { await this.reloadMembers(action.communityId); } catch { /* the next community_changed or gateway ready refreshes it */ }
+    } catch (e) {
+      // Preserve only outcomes that may succeed on retry. A definitive refusal is terminal and must not become a later
+      // grant after policy or permissions change. Replays reuse the exact confirmed event and server source key.
+      const retryable = e instanceof DillaHttpError && (e.status === 0 || e.status === 408 || e.status === 425 || e.status === 429 || e.status >= 500);
+      if (retryable) this.schedulePendingRolePanelActionRetry(core, key, action, attempt + 1);
+      else if (e instanceof DillaHttpError) core.settingDelete(key);
+    } finally {
+      this.pendingRolePanelActionJobs.delete(key);
+    }
   }
 
   private publishSlow(channelId: string, until: number, queued: boolean): void {

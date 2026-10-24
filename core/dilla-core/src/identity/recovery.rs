@@ -92,6 +92,7 @@ pub fn recovery_key_normalise(text: &str) -> String {
 
 /// `HKDF-SHA256(salt = "", IKM = RK, info = "dilla header v1", L = 32)`
 pub fn k_header(rk: &[u8; 32]) -> [u8; 32] {
+    // HKDF writes the complete output key; zeroes are only initialization for its output buffer.
     let mut out = [0u8; 32];
     hkdf_sha256(Some(&[]), rk, INFO_HEADER, &mut out).expect("32 bytes is within the HKDF limit");
     out
@@ -99,6 +100,7 @@ pub fn k_header(rk: &[u8; 32]) -> [u8; 32] {
 
 /// `HKDF-SHA256(salt = "", IKM = RK, info = "dilla archive v1", L = 32)`
 pub fn k_backup(rk: &[u8; 32]) -> [u8; 32] {
+    // HKDF writes the complete output key; zeroes are only initialization for its output buffer.
     let mut out = [0u8; 32];
     hkdf_sha256(Some(&[]), rk, INFO_ARCHIVE, &mut out).expect("32 bytes is within the HKDF limit");
     out

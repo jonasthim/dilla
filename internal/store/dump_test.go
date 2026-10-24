@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
@@ -224,6 +226,66 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	}
 	srcDB, srcDSN := open()
 	src := postgres.New(srcDB)
+	owner := seedUser(ctx, t, src)
+	community := store.CommunityRow{ID: id.New(), Owner: owner.ID, Name: "bot backup", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: 1}
+	if err := src.CreateCommunity(ctx, community); err != nil {
+		t.Fatalf("CreateCommunity: %v", err)
+	}
+	runtimeRow := store.BotRuntimeRow{ID: id.New(), TokenHash: bytes.Repeat([]byte{0xa5}, 32), Created: 1, Rotated: 2}
+	if err := src.CreateBotRuntime(ctx, runtimeRow); err != nil {
+		t.Fatalf("CreateBotRuntime: %v", err)
+	}
+	device := store.DeviceRow{ID: id.New(), UserID: owner.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}
+	if err := src.CreateDevice(ctx, device); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	rid, uid, did := runtimeRow.ID, owner.ID, device.ID
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: community.ID, RuntimeID: &rid, UserID: &uid, DeviceID: &did, State: store.BotInstallationEnrolling, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: 1, Created: 1, Updated: 1}
+	if err := src.CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatalf("CreateBotInstallation: %v", err)
+	}
+	claim := store.BotClaimRow{InstallationID: installation.ID, RuntimeID: runtimeRow.ID, ClaimID: id.New(), RequestID: id.New(), Expires: 100}
+	if err := src.PutBotClaim(ctx, claim); err != nil {
+		t.Fatalf("PutBotClaim: %v", err)
+	}
+	operation := store.BotOperationRow{CommunityID: community.ID, RequestID: id.New(), InstallationID: installation.ID, ActorKind: 1, ActorID: runtimeRow.ID, Operation: 5, PayloadHash: make([]byte, 32), ResultCBOR: []byte{0x80}, Created: 2}
+	if err := src.CreateBotOperation(ctx, operation); err != nil {
+		t.Fatalf("CreateBotOperation: %v", err)
+	}
+	tokenHash := bytes.Repeat([]byte{0x33}, 32)
+	if err := src.CreateSession(ctx, store.SessionRow{TokenHash: tokenHash, DeviceID: device.ID, UserID: owner.ID, Scope: 0, Tier: 0, Created: 1, Expires: 100, IdleExpires: 100}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	binding := store.BotSessionBindingRow{TokenHash: tokenHash, InstallationID: installation.ID, UserID: owner.ID, DeviceID: device.ID, Created: 2}
+	if err := src.CreateBotSessionBinding(ctx, binding); err != nil {
+		t.Fatalf("CreateBotSessionBinding: %v", err)
+	}
+	publication := store.KeyPackagePublicationReceipt{InstallationID: installation.ID, UserID: owner.ID, DeviceID: device.ID, OperationID: id.New(), Generation: 2, UploadSHA256: bytes.Repeat([]byte{0x72}, 32), Count: 3, AcceptedAt: 3}
+	if err := src.Tx(ctx, func(tx store.Repository) error { return tx.CreateBotKeyPackagePublicationReceipt(ctx, publication) }); err != nil {
+		t.Fatalf("CreateBotKeyPackagePublicationReceipt: %v", err)
+	}
+	registration := store.BotGroupRegistrationReceipt{InstallationID: installation.ID, OperationID: id.New(), UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), BodySHA256: bytes.Repeat([]byte{0x63}, 32), Generation: 3, Epoch: 0, NextSeq: 1, AcceptedAt: 4}
+	admissionRequestID := id.New()
+	if err := src.Tx(ctx, func(tx store.Repository) error {
+		_, replay, err := tx.AcceptBotGroupRegistrationAdmission(ctx, admissionRequestID, registration)
+		if replay && err == nil {
+			t.Fatal("first admission acceptance reported replay")
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("AcceptBotGroupRegistrationAdmission: %v", err)
+	}
+	sendOpID, sendAttemptID := id.New(), id.New()
+	sendOp := store.BotSendOperationRow{InstallationID: installation.ID, OperationID: sendOpID, UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), CurrentAttempt: sendAttemptID, State: uint8(store.BotSendOperationActive)}
+	sendAttempt := store.BotSendAttemptRow{InstallationID: installation.ID, OperationID: sendOpID, AttemptID: sendAttemptID, Generation: 4, Epoch: 7, Class: 1, CiphertextSHA256: bytes.Repeat([]byte{0x41}, 32), FingerprintSHA256: bytes.Repeat([]byte{0x52}, 32), Outcome: uint8(store.BotSendAttemptClosed), Receipt: []byte{0x81, 0x00}}
+	if err := src.Tx(ctx, func(tx store.Repository) error {
+		if _, _, err := tx.CreateBotSendOperationIfAbsent(ctx, sendOp); err != nil {
+			return err
+		}
+		return tx.InsertBotSendAttempt(ctx, sendAttempt)
+	}); err != nil {
+		t.Fatalf("create send attempt: %v", err)
+	}
 	g := seedGroup(ctx, t, src, 1)
 	zero := uint8(0)
 	for seq, class := range map[uint64]*uint8{1: &zero, 2: nil} {
@@ -243,6 +305,49 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 		t.Fatalf("LoadPostgres: %v", err)
 	}
 	dst := postgres.New(dstDB)
+	if got, err := dst.GetBotRuntime(ctx, runtimeRow.ID); err != nil || !bytes.Equal(got.TokenHash, runtimeRow.TokenHash) {
+		t.Fatalf("restored bot runtime: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotInstallation(ctx, installation.ID); err != nil || got.UserID == nil || *got.UserID != owner.ID {
+		t.Fatalf("restored installation: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotClaim(ctx, installation.ID); err != nil || got.ClaimID != claim.ClaimID {
+		t.Fatalf("restored claim: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotOperation(ctx, community.ID, operation.RequestID); err != nil || !bytes.Equal(got.ResultCBOR, operation.ResultCBOR) {
+		t.Fatalf("restored operation receipt: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotSessionBinding(ctx, tokenHash); err != nil || got.InstallationID != installation.ID {
+		t.Fatalf("restored session binding: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, publication.OperationID); err != nil || got.Count != publication.Count || !bytes.Equal(got.UploadSHA256, publication.UploadSHA256) {
+		t.Fatalf("restored KeyPackage receipt: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotGroupRegistrationReceipt(ctx, installation.ID, registration.OperationID); err != nil || got.GroupID != registration.GroupID || got.Generation != registration.Generation || got.NextSeq != registration.NextSeq || !bytes.Equal(got.BodySHA256, registration.BodySHA256) {
+		t.Fatalf("restored group-registration receipt: %+v %v", got, err)
+	}
+	var restored store.BotGroupRegistrationReceipt
+	var replay bool
+	if err := dst.Tx(ctx, func(tx store.Repository) error {
+		var err error
+		restored, replay, err = tx.AcceptBotGroupRegistrationAdmission(ctx, admissionRequestID, registration)
+		return err
+	}); err != nil || !replay || restored.GroupID != registration.GroupID {
+		t.Fatalf("restored admission consumption: %+v replay=%v err=%v", restored, replay, err)
+	}
+	if got, err := dst.GetBotSendAttempt(ctx, installation.ID, sendOpID, sendAttemptID); err != nil || got.Generation != sendAttempt.Generation || got.Epoch != sendAttempt.Epoch || !bytes.Equal(got.Receipt, sendAttempt.Receipt) || !bytes.Equal(got.FingerprintSHA256, sendAttempt.FingerprintSHA256) {
+		t.Fatalf("restored Bot send attempt: %+v %v", got, err)
+	}
+	var failedRestore bytes.Buffer
+	if err := store.DumpPostgres(ctx, srcDSN, &failedRestore); err != nil {
+		t.Fatalf("DumpPostgres for rollback: %v", err)
+	}
+	if err := store.LoadPostgres(ctx, dstDB, &failedRestore, func(*sql.Tx) error { return errors.New("abort restore") }); err == nil {
+		t.Fatal("restore callback failure committed")
+	}
+	if got, err := dst.GetBotSendAttempt(ctx, installation.ID, sendOpID, sendAttemptID); err != nil || !bytes.Equal(got.Receipt, sendAttempt.Receipt) {
+		t.Fatalf("failed restore changed receipt: %+v %v", got, err)
+	}
 	post, err := dst.GetAppMessage(ctx, g.GroupID, 1)
 	if err != nil || post.Class == nil || *post.Class != 0 {
 		t.Fatalf("restored class-0 row: class %v, %v; want 0", post.Class, err)

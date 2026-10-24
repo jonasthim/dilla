@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -53,6 +54,24 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 	}
 	if err != nil {
 		return false, err
+	}
+	if g.CommunityID == nil {
+		bot, err := botaccess.IsBotUser(ctx, a.Repo, userID)
+		if err != nil || bot {
+			return false, err
+		}
+	} else {
+		binding, bot, err := botaccess.ForUserCommunity(ctx, a.Repo, userID, *g.CommunityID)
+		if err != nil {
+			if errors.Is(err, botaccess.ErrIneligible) {
+				return false, nil
+			}
+			return false, err
+		}
+		if bot && (binding.State != store.BotInstallationJoining && binding.State != store.BotInstallationReady ||
+			binding.CommunityID != *g.CommunityID || g.Kind != groupText && g.Kind != groupCall) {
+			return false, nil
+		}
 	}
 	if g.Kind != groupText && g.Kind != groupCall {
 		return ds.DenyUnlessMember{Store: a.Repo}.Eligible(ctx, groupID, userID)

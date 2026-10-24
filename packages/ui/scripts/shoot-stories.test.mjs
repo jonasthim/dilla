@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, VIEWPORT, selectStories, storyUrl, outFile, contentType, resolveInRoot, parseViewport, splitViewportArg, PHONE_VIEWPORT, declaredViewport, shootsAt } from './shoot-stories.mjs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { THEMES, VIEWPORT, selectStories, storyUrl, outFile, contentType, resolveInRoot, resolveExistingInRoot, parseViewport, splitViewportArg, PHONE_VIEWPORT, declaredViewport, shootsAt } from './shoot-stories.mjs';
 
 const index = {
   v: 5,
@@ -52,6 +55,22 @@ test('maps / to index.html and refuses a path that leaves the root', () => {
   assert.equal(resolveInRoot('/srv/sb', '/../etc/passwd'), null);
   assert.equal(resolveInRoot('/srv/sb', '/%2e%2e/etc/passwd'), null);
   assert.equal(resolveInRoot('/srv/sb', '/%E0%A4%A'), null);
+});
+
+test('refuses a symlink from Storybook output to a file outside the root', async () => {
+  const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'dilla-story-root-'));
+  try {
+    const root = path.join(temp, 'storybook-static');
+    await fsp.mkdir(root);
+    const outside = path.join(temp, 'outside.txt');
+    await fsp.writeFile(outside, 'outside');
+    await fsp.symlink(outside, path.join(root, 'linked.txt'));
+    await fsp.writeFile(path.join(root, 'safe.txt'), 'safe');
+    assert.equal(await resolveExistingInRoot(root, '/linked.txt'), null);
+    assert.equal(await resolveExistingInRoot(root, '/safe.txt'), path.join(root, 'safe.txt'));
+  } finally {
+    await fsp.rm(temp, { recursive: true, force: true });
+  }
 });
 
 test('the final CLI argument selects an actual 360 by 740 context', () => {

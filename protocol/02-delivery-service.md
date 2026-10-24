@@ -163,6 +163,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/devices/{device_id}/keypackage` | E | — | `[blob, last_resort(uint), kp_ref(bstr)]` | `E_NOT_FOUND`, `E_RATE_LIMITED` |
 | `GET /v1/groups/{id}/messages?from=&limit=` | E | — | `[[seq, epoch, uploader_device, blob\|null, commitment\|null, franking_tag, recv_ts, deleted(uint), class(uint\|null)]]` | `E_PRUNED` |
 | `GET /v1/groups/{id}/heal` | E | — | `[epoch, next_seq, generation, need_from_seq]` | `E_NOT_FOUND` |
+| `GET /v1/groups/{id}/heal-state` | E | — | `[epoch, next_seq, generation, need_from_seq, needs_heal(uint)]` | `E_NOT_FOUND`; `needs_heal` is 0 or 1 and reports the restored epoch-unknown marker to an enrolled current member |
 | `POST /v1/groups/{id}/heal` | E | `[group_info(bstr), tail([[seq,epoch,kind,sender,blob]]), ratchet_tree(bstr\|null)]` | `[epoch, next_seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` |
 | `GET /v1/welcomes?after=&limit=` | E or V | — | `[[welcome_id, group_id, epoch, commit_seq, blob, ratchet_tree, tree_hash]]` | — |
 | `DELETE /v1/welcomes/{welcome_id}` | E or V | — | `204` | `E_NOT_FOUND` |
@@ -256,7 +257,7 @@ does.
 
 | op | label | dir | payload |
 |---|---|---|---|
-| 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[2]`: an instance offers wire version 2 alone, the one in which every upload names its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
+| 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[3,2]`: wire 3 adds the community bot capability in `10`, while wire 2 remains supported outside bot-enabled communities. Both versions require every upload to name its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
 | 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`) |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
 | 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` — `epoch` and `last_seq` are the device's own acknowledged cursor for the group (`POST …/cursor`; `0, 0` before the first), not the group head |
@@ -269,6 +270,21 @@ does.
 | 10 | `subscribe` | C→S | `[group_ids([bstr 16])]` |
 | 11 | `unsubscribe` | C→S | `[group_ids([bstr 16])]` |
 | 12 | `commit_ack` | C→S | `[round(uint)]`, `group_id` set — the acknowledgement invariant 7 counts lost rounds against |
+
+On a successful resume, the server sends the new `resumed` frame before the
+replayed frames. If the requested durable acknowledgement is `last_n`, its range
+is `replayed_from = last_n + 1` through `replayed_to`, inclusive, and the new
+`resumed` has `n = replayed_to + 1`. An empty replay range has
+`replayed_from = replayed_to + 1`. The client treats this initial `resumed` as a
+barrier: it records the rotated token but does not acknowledge that frame's `n`
+until every preceding replay entry has been durably handled. Replay entries
+arrive in increasing, contiguous order within the announced range; live entries
+start after the barrier. A missing entry or inconsistent range requires fresh
+identification and authoritative catch-up, not an acknowledgement across the gap.
+An older `ready` or `resumed` encountered inside the replay range is a historical
+control entry: it does not replace the newly rotated token or begin another replay
+window. This ordering also permits a connection interrupted during replay to use
+the new token with its last durable acknowledgement.
 
 ### Delivery service (16–31) — `group_id` set
 
@@ -731,8 +747,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     `POST /v1/groups/{id}/heal`, uploading its member-signed GroupInfo together with its handshake
     tail (at most **64** items). The instance rebuilds its `PublicGroup` from its own restored
     state blob and replays the tail through it; it adopts the result only when its own stored epoch
-    is **≤** the uploaded GroupInfo's epoch, the tail replays cleanly, and the GroupInfo's
-    `tree_hash` equals the rebuilt tree's. When the instance holds no usable state blob for the
+    is **≤** the uploaded GroupInfo's epoch, the tail replays cleanly, the GroupInfo's epoch
+    **equals the replayed group state epoch**, and its `tree_hash` equals the rebuilt tree's.
+    Epoch equality matters even when an empty commit leaves the tree hash unchanged. When the
+    instance holds no usable state blob for the
     group, the healing member additionally uploads the ratchet tree in the same request — the one
     upload where the tree is allowed, because the instance has none — and the instance reseeds from
     it; RFC 9420 §12.4.3.3's signed `tree_hash` ties that tree to the member-signed GroupInfo, and
@@ -746,8 +764,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     instance holds — the same `kind`, `community_id` and `target_id` as the binding stored with
     the group (`rule = "reseed"`); and its `external_senders`, as the tree stands after the
     replayed tail, must pass invariant 1's rule for the group's kind (`rule = "reseed"`). The
-    reseed does not bound which devices the tree holds beyond that: the commits after the backup
-    are already inside the uploaded tree. A device that is the target
+    reseed requires the uploaded tree's epoch to equal the restored epoch. An ahead tree is refused
+    even with a nonempty tail: its missing handshake history cannot be verified and published to
+    other members from that tree alone. A device that is the target
     of an outstanding non-void DS `Remove` at the restored epoch (`409 E_REMOVE_PENDING`, as for a
     resync), or that is quarantined (`403 E_FORBIDDEN`), cannot heal. The replay does not apply invariant 4's first clause
     or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that
@@ -864,6 +883,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | HTTP | code | meaning | client action |
 |---|---|---|---|
 | 400 | `E_INVALID_REQUEST` | malformed body, malformed identifier, wrong array length | do not retry unchanged |
+| 400 | `E_REMOVAL_PROOF_EXPIRED` | a moderation-removal proof is outside its acceptance window and no receipt exists for its request ID | sign a fresh proof with the same request ID and retry; an exact prior receipt is returned before this check |
 | 400 | `E_BINDING_INVALID` | `dilla_binding` absent, wrong version, or not matching the object; or a registered group's `external_senders` not the one its kind carries (invariant 1) | do not retry |
 | 400 | `E_VERSION` | no version in common; the extra elements list what the instance supports | reconnect with a supported version, or tell the user to update |
 | 400 | `E_ENVELOPE_SHAPE` | the envelope is not a 9-element deterministic CBOR array, or a field has the wrong type or length | do not retry unchanged |

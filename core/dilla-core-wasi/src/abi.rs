@@ -304,14 +304,14 @@ mod tests {
 
     #[test]
     fn open_rejects_a_wrong_abi_version() {
-        // [7]  — one-element array whose version element is 7, not 1.
-        let req = [0x81u8, 0x07];
+        // [6] — one-element array with the previous ABI version.
+        let req = [0x81u8, 0x06];
         // `.err().unwrap()`, not `.unwrap_err()`: `Decoder` is deliberately not `Debug` (it would
         // print a request body into a panic message), and `unwrap_err` requires `T: Debug`.
         let err = open(&req, 1).err().unwrap();
         assert_eq!(err.code, E_ABI_VERSION);
         assert!(
-            err.detail.contains('7'),
+            err.detail.contains('6'),
             "detail must name the offending version: {}",
             err.detail
         );

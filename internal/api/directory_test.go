@@ -19,6 +19,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
@@ -390,14 +391,29 @@ func (h *groupsAPI) tokenForNewDevice(t *testing.T, user, device id.ID, purpose 
 	return tok.Token
 }
 
-// seedWelcome queues one Welcome for a device, with the epoch tree row 15 serves beside it. The
-// group is a synthetic one: the committed fixture's tree is 620 KiB and nothing here is asserting
-// its size.
+// seedWelcome queues one Welcome for a device, with a real DM-shaped text-group row and the epoch
+// tree row 15 serves beside it. The committed fixture's tree is 620 KiB and nothing here is
+// asserting its size.
 func (h *groupsAPI) seedWelcome(t *testing.T, device, groupID id.ID, epoch uint64, blob []byte) {
 	t.Helper()
 	ctx := context.Background()
 	sum := sha256.Sum256(blob)
 	now := h.clk.Now().Unix()
+	targetID := id.New()
+	binding, err := cborx.Marshal(ds.Binding{
+		V: 1, InstanceID: h.keys.InstanceID, TargetID: targetID,
+		Kind: 0, PolicyVersion: 1, E2EEVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("encode DM group binding: %v", err)
+	}
+	if err := h.deps.Repo.CreateGroup(ctx, store.GroupRow{
+		GroupID: groupID, Binding: binding, Kind: 0, TargetID: targetID,
+		Ciphersuite: 1, Epoch: epoch, ExternalSenderKeyID: id.New(), E2EEVersion: 1,
+		PolicyVersion: 1, Created: now,
+	}); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
 	if err := h.deps.Repo.PutWelcomePayload(ctx, store.WelcomePayloadRow{
 		BlobSHA256: sum[:], GroupID: groupID, Epoch: epoch, Blob: blob, Created: now,
 	}); err != nil {

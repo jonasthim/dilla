@@ -178,7 +178,7 @@ export const RINGS_EMPTY: RingsState = [];
 /** `loaded` is false for a server whose access has not been read (or that is gone): the page shows a loading state, not
  *  "no rights". */
 export interface CommunityAccess { top: number; owner: boolean; manageCommunity: boolean; manageChannels: boolean;
-  kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean;
+  kickMembers: boolean; banMembers: boolean; moderateMembers?: boolean; manageMessages?: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean;
   /** The id of the position-0 role (@everyone); '' until the roles are read. */
   everyoneId: string;
   /** Whether the last read of the overwrites succeeded; the `overwrites:` slice keeps its last value for display only. */
@@ -220,12 +220,14 @@ export interface AFKState {
   pendingReason?: 0 | 1 | 2;
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
+  | `communityChanges:${string}`
   | `afk:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
   | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
+  [k: `communityChanges:${string}`]: number;
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `afk:${string}`]: AFKState | null;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];

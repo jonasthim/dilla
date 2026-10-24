@@ -34,6 +34,7 @@ nouns and verbs:
   invite    create | list | revoke
   community list | show
   device    revoke
+  bot-runtime create | rotate | revoke | list
   blob      purge
   audit
 
@@ -79,6 +80,13 @@ var nounUsage = map[string]string{
   revoke  --all --id=ID | --username=NAME [--yes]   signs every device of the user out and deletes every
           session; it prints the user and asks for the username typed back unless --yes; audited
 `,
+	"bot-runtime": `usage: dillad admin bot-runtime <verb> [flags]
+
+  create  --out=PATH       create one runtime credential in a protected new file
+  rotate  --id=ID --out=PATH
+  revoke  --id=ID
+  list
+`,
 	"blob": `usage: dillad admin blob <verb> [flags]
 
   purge  --id=HEX64 --reason=TEXT   removes the bytes and every reference, and tombstones the id
@@ -103,7 +111,7 @@ func runAdmin(args []string, stdout, stderr io.Writer) error {
 	}
 	verbs := map[string]func(string, []string, io.Writer, io.Writer) error{
 		"user": adminUser, "invite": adminInvite, "community": adminCommunity,
-		"device": adminDevice, "blob": adminBlob,
+		"device": adminDevice, "blob": adminBlob, "bot-runtime": adminBotRuntime,
 	}
 	dispatch, ok := verbs[noun]
 	if !ok {

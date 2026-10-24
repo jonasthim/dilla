@@ -16,6 +16,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -370,6 +371,17 @@ func (openChannels) MayRegister(context.Context, id.ID, ds.Binding) error { retu
 func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
 	t.Helper()
 	handler, deps := newTestAPI(t)
+	return newGroupsAPIWithHandler(t, handler, deps, channels, policy...)
+}
+
+func newGroupsAPIWithRepository(t *testing.T, repo store.Repository, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
+	t.Helper()
+	handler, deps := newTestAPIWithRepository(t, repo, nil)
+	return newGroupsAPIWithHandler(t, handler, deps, channels, policy...)
+}
+
+func newGroupsAPIWithHandler(t *testing.T, handler http.Handler, deps api.Deps, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
+	t.Helper()
 	mux, ok := handler.(*server.Mux)
 	if !ok {
 		t.Fatalf("newTestAPI returned %T, want *server.Mux", handler)
@@ -388,7 +400,12 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels,
 	}
 	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
 
-	gw := gateway.New(gateway.Options{Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1, Auth: deps.Sessions})
+	botCapability := capability.New(deps.Repo)
+	gw := gateway.New(gateway.Options{
+		Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1, Auth: deps.Sessions,
+		WireVersions: []uint64{3, 2}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
+		ScopeResolver: apiGatewayScopeResolver{repo: deps.Repo}, CommunityCompatibility: botCapability,
+	})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 	var postPolicy ds.PostPolicy
 	if len(policy) > 0 {
@@ -405,7 +422,7 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels,
 	// requires to be this instance's (protocol/02 invariant 1, DS-MEMBERSHIP-01).
 	keys.ExternalSenderPriv = fixtureExternalSenderKey()
 	d, err := ds.New(ds.Options{
-		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk,
+		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk, BotCapability: botCapability,
 		Policy: ds.DefaultPolicy(), Keys: keys, Channels: channels(deps.Repo), PostPolicy: postPolicy,
 	})
 	if err != nil {
@@ -428,6 +445,7 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels,
 	// mounted from the same `*api.Groups` value, so the body cap set above is theirs too — a
 	// KeyPackage refill and a Welcome list are both far over §5.3's 64 KiB.
 	groups.RegisterDirectory(mux, deps.Sessions)
+	groups.RegisterBotDirectory(mux, deps.Sessions)
 	// Task 27's two heal routes, endpoints 13 and 14.
 	groups.RegisterHeal(mux, deps.Sessions)
 
@@ -436,6 +454,24 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels,
 		mux: mux, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
 		user: user.ID, clk: clk, wasm: wasm, keys: keys, gw: gw,
 	}
+}
+
+type apiGatewayScopeResolver struct{ repo store.Repository }
+
+func (r apiGatewayScopeResolver) GroupResource(ctx context.Context, groupID id.ID) (gateway.GroupResource, error) {
+	group, err := r.repo.GetGroup(ctx, groupID)
+	if err != nil {
+		return gateway.GroupResource{}, err
+	}
+	return gateway.GroupResource{Kind: group.Kind, CommunityID: group.CommunityID}, nil
+}
+
+func (r apiGatewayScopeResolver) ChannelCommunity(ctx context.Context, channelID id.ID) (*id.ID, error) {
+	channel, err := r.repo.GetChannel(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	return channel.CommunityID, nil
 }
 
 // createBody is the 1,500-leaf fixture as a POST /v1/groups body. Since hardening G the route

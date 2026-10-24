@@ -13,23 +13,33 @@ import (
 // DecodeBody reads at most limit bytes of deterministic CBOR into v. Every /v1
 // body is CBOR; blob uploads are the one exception and do not come through here.
 func DecodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) error {
+	body, err := ReadBody(w, r, limit)
+	if err != nil {
+		return err
+	}
+	if err := cborx.Unmarshal(body, v); err != nil {
+		return Errorf(CodeInvalidRequest, "body is not deterministic CBOR: %v", err)
+	}
+	return nil
+}
+
+// ReadBody reads a bounded application/cbor request without selecting a Go decoding shape. Routes
+// with nested protocol codecs use it to preserve strict byte-string and canonical-encoding checks.
+func ReadBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
 	ct := r.Header.Get("Content-Type")
 	if mt, _, _ := strings.Cut(ct, ";"); strings.TrimSpace(mt) != "application/cbor" {
-		return unsupportedMedia(ct)
+		return nil, unsupportedMedia(ct)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			return Errorf(CodeTooLarge, "body over %d bytes", limit)
+			return nil, Errorf(CodeTooLarge, "body over %d bytes", limit)
 		}
-		return Errorf(CodeInvalidRequest, "read body: %v", err)
+		return nil, Errorf(CodeInvalidRequest, "read body: %v", err)
 	}
-	if err := cborx.Unmarshal(body, v); err != nil {
-		return Errorf(CodeInvalidRequest, "body is not deterministic CBOR: %v", err)
-	}
-	return nil
+	return body, nil
 }
 
 // EncodeBody writes v as deterministic CBOR with the given status.

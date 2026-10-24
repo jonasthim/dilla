@@ -354,8 +354,9 @@ Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 
 `deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as
 root, with no Docker: it runs the static `dillad` binary as the two systemd services above. Every
-release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, `dilla_core_wasi.wasm` and
-`SHA256SUMS`, with the release's own tag stamped into it. So the `install.sh` of a release installs
+release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, the two architecture-matched
+`dilla-spotify-helper-linux-*` binaries, `dilla_core_wasi.wasm` and `SHA256SUMS`, with the release's
+own tag stamped into it. So the `install.sh` of a release installs
 that release, and there is no "latest". Download it from the release you want, read it, then run it
 in one of two modes. The examples use the tag `v0.1.0-web3`; take yours from the
 [releases page](https://github.com/jonasthim/dilla/releases).
@@ -379,12 +380,13 @@ What it does, in order:
 
 1. It checks every argument against what dillad accepts. It refuses to run as anyone but root, and
    refuses if `/etc/dilla/dilla.toml` or a non-empty `/var/lib/dillad` already holds an instance.
-2. It downloads `dillad-linux-<amd64|arm64>` (by `uname -m`), `dilla_core_wasi.wasm` and
-   `SHA256SUMS` from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
+2. It downloads `dillad-linux-<amd64|arm64>`, the matching `dilla-spotify-helper-linux-<amd64|arm64>`,
+   `dilla_core_wasi.wasm` and `SHA256SUMS` from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
    what is missing of `curl` and `ca-certificates`. Every downloaded file is checked with
    `sha256sum -c` before anything is installed. Any of these stops it: a mismatch, an empty
-   `SHA256SUMS`, or one without a line for either asset.
-3. It installs the binary, the core beside it and the unit, and creates the `dillad` user.
+   `SHA256SUMS`, or one without a line for an asset.
+3. It installs `dillad`, the core beside it, the Spotify helper at `/usr/local/libexec/dilla-spotify-helper`,
+   the unit, and creates the `dillad` user.
 4. It runs `dillad init --config=/etc/dilla/dilla.toml` and edits that file for the mode. In both modes it sets
    `livekit.udp_port` (`--udp-port`, 7882) and `livekit.node_ip` (`--node-ip`, when given).
    - `--behind-proxy` sets:
@@ -550,8 +552,8 @@ stdout is the bootstrap invite link and nothing else; every progress line goes t
 - **Flags.** The container flags (`--ctid`, `--hostname`, `--bridge`, `--storage`,
   `--template-storage`) stay on the host. The mode flags, `--version`, `--release-url`,
   `--udp-port`, `--node-ip` and `--insecure-skip-verify` are passed to `install.sh`.
-- **Files.** `--binary`, `--core` and `--sums` are pushed into the container first. Anything not
-  given locally is downloaded and checked inside the container.
+- **Files.** `--binary`, `--core`, `--spotify-helper` and `--sums` are pushed into the container
+  first. Anything not given locally is downloaded and checked inside the container.
 - **Failures.** If the install fails after the container was created, the helper prints the
   `pct stop`/`pct destroy` commands that remove it.
 
@@ -561,6 +563,159 @@ the relay binds the container's own address.
 
 On a container that already exists, such as one from the Proxmox community scripts, skip the helper
 and run `install.sh` inside it directly.
+
+### Dilla Bot installation
+
+The release includes `install-bot.sh` alongside `install.sh`. Run the Bot installer as root on the
+Linux host after `dillad` is installed and its instance is initialized. The installer downloads and
+checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, and
+`dilla_core_wasi.wasm`; creates the dedicated `dillabot` account; registers one protected runtime
+credential through `dillad admin bot-runtime create`; writes Bot files under `/etc/dillabot` and
+`/var/lib/dillabot`; runs `dillabot doctor`; and enables `dillabot.service`.
+Tagged release builds report their embedded tag with `dillabot version`; development builds report
+`0.0.0-dev`.
+
+Get the lowercase hexadecimal instance ID from the `instance_id` field of the server's
+`GET /v1/instance` discovery document. The server must permit discovery without a session for that
+lookup. Supply the public HTTPS origin without a trailing slash:
+
+```sh
+sudo sh install-bot.sh \
+  --base-url https://chat.example.org \
+  --instance-id 32_LOWERCASE_HEX_CHARACTERS
+```
+
+For a checkout copy rather than the tagged release script, also pass `--version TAG` (or
+`--release-url URL`). To install locally built assets, pass `--binary FILE --helper FILE --module
+FILE --sums SHA256SUMS`. The script refuses to overwrite an existing Bot account, config, service,
+credential, binaries or state. It creates an instance-scoped runtime credential; after it starts,
+use **Server Settings > Bot** to enable the Bot for a community. If setup fails after dillad created
+the runtime record, the installer prints its runtime ID; revoke that record with
+`dillad admin bot-runtime revoke --id=ID --config=/etc/dilla/dilla.toml` after inspecting the
+partial installation.
+
+To upgrade, use the tagged installer on the same host with `--upgrade`:
+
+```sh
+sudo sh install-bot.sh --upgrade --version TAG
+```
+
+The upgrade keeps `bot.toml`, the runtime credential and service state. It runs the existing local
+doctor, stops the Bot if it is active, saves a root-only cold copy of state and the previous
+binaries/unit under `/var/backups/dillabot`, installs the checked assets, runs doctor again, and
+restarts the service if it was active before. If installation, doctor or restart fails, it restores
+the previous assets and state. The retained copy contains `database.key` and must be protected as a
+secret. The upgrade path has not yet been exercised against a prior released Bot database schema.
+
+For a cold operator backup of the complete Bot files, including its config and runtime credential:
+
+```sh
+sudo install -d -m 0700 /srv/backups/dillabot
+archive="/srv/backups/dillabot/dillabot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+sudo sh -c 'set -eu
+systemctl stop dillabot
+trap "systemctl start dillabot" EXIT
+umask 077
+tar -C / -czf "$1" etc/dillabot var/lib/dillabot
+tar -tzf "$1" >/dev/null
+systemctl start dillabot
+trap - EXIT' sh "$archive"
+```
+
+Restore only with the matching Dilla server database/runtime record available, while dillabot is
+stopped. Restore as root to `/`, run the local doctor, then start the service:
+
+```sh
+sudo systemctl stop dillabot
+sudo tar --same-owner -C / -xzf /srv/backups/dillabot/BACKUP.tar.gz
+sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml
+sudo systemctl start dillabot
+```
+
+This is an operator procedure, not a coordinated Bot/dillad backup and restore acceptance run.
+`dillad backup` does not include Bot config, credential or state, so a server restore alone is not a
+complete Bot restore. Keep the Bot archive protected: it includes the credential and database key.
+
+`dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
+native identity helper, compiled WASI identity module, optional Spotify PCM helper and private
+state directory. The installer runs it as `dillabot` before enabling the unit. It does not contact
+the Dilla server or prove that an installation is reconciled; use `systemctl status dillabot` and
+`journalctl -u dillabot` for process and reconciliation diagnostics. A healthy local doctor is not
+qualification of Bot interactions or music.
+
+YouTube extraction and playback need separate host tools; the Bot installer does not install them.
+On Debian 13, install the system tools and a Node runtime, then install the hash-pinned Python pair
+from a repository checkout:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y bubblewrap curl ffmpeg python3 python3-venv xz-utils
+# Install Node 24.15.0, the version used by the recorded adapter smoke.
+case "$(uname -m)" in x86_64) node_arch=x64 ;; aarch64) node_arch=arm64 ;; *) exit 1 ;; esac
+node_version=24.15.0
+node_archive="node-v${node_version}-linux-${node_arch}.tar.xz"
+curl -fsSLO "https://nodejs.org/dist/v${node_version}/${node_archive}"
+curl -fsSLO "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt"
+grep " ${node_archive}$" SHASUMS256.txt | sha256sum -c -
+sudo install -d -o root -g root -m 0755 /usr/local/lib/nodejs
+sudo tar -xJf "$node_archive" -C /usr/local/lib/nodejs
+sudo ln -sfn "/usr/local/lib/nodejs/node-v${node_version}-linux-${node_arch}/bin/node" /usr/local/bin/node
+sudo install -d -o root -g root -m 0755 /usr/local/lib/dillabot
+sudo python3 -m venv /usr/local/lib/dillabot/.youtube-venv
+sudo /usr/local/lib/dillabot/.youtube-venv/bin/python -m pip install \
+  --require-hashes --only-binary=:all: --no-deps \
+  -r experiments/bot-providers/youtube-requirements.txt
+sudo ln -sfn /usr/local/lib/dillabot/.youtube-venv/bin/yt-dlp /usr/local/bin/yt-dlp
+sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml --youtube
+```
+
+That lock pins `yt-dlp` 2026.10.21 and its matching `yt-dlp-ejs` 0.8.0 with wheel hashes.
+`--youtube` checks that exact yt-dlp version, Node 22 or newer, Python 3.10 or newer, `bwrap`,
+`ffmpeg`, and FFmpeg's `libopus` encoder are locally available. The recorded host smoke used Node
+24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. This doctor check does not inspect the
+installed EJS package, test unprivileged namespace support, contact YouTube, or qualify playback;
+the pinned pair must be installed together from the requirements file. YouTube remains optional,
+so a missing dependency appears as a `WARN` in the normal doctor and does not block service
+installation. `--youtube` makes these checks required and returns a failure if a dependency is
+missing or outside the checked minimum/version.
+
+The earlier 2026.8.19 pin resolved a video and captured a bounded PCM sample on 2026-10-22, but a
+later integrated Bot run found yt-dlp 2025.09.26 failed and a direct test with 2026.10.21 succeeded.
+The lock now uses 2026.10.21 with EJS 0.8.0, which its upstream project metadata also specifies.
+The direct test does not establish cross-server or full provider qualification; keep YouTube music
+reported as unavailable until its intended-host acceptance is complete.
+
+The server `install.sh` also places the architecture-matched Spotify PCM helper at
+`/usr/local/libexec/dilla-spotify-helper`. Spotify OAuth settings (`spotify_client_id` and
+`spotify_redirect_url`) may be configured in `/etc/dillabot/bot.toml` without that helper; this keeps
+authorization available while Spotify PCM playback remains unavailable. To enable PCM playback,
+configure the same OAuth pair and the absolute
+`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
+remains in Dilla server settings. The child receives its short-lived access token through inherited
+file descriptor 3, while its arguments contain only the canonical track URI. This wiring and its
+synthetic subprocess tests do not qualify real Spotify playback. Do not put provider credentials in
+command arguments or logs.
+
+Per-installation state includes `database.key` and an encrypted SQLite database with possible
+WAL/journal sidecars under `/var/lib/dillabot`. Keep the key and database files together; losing the
+key makes that local state unreadable, while replacing it beside existing state is refused.
+
+For a registration whose server response is uncertain, the Bot retains the exact pending native
+group and stops automatic retries. In a development installation, stop `dillabot` before running
+the offline recovery command because the helper holds an exclusive state lock:
+
+```sh
+sudo systemctl stop dillabot
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
+sudo systemctl start dillabot
+```
+
+The first command lists only identifiers, a registration hash, and server status. The recovery
+action succeeds only when the server returns a receipt matching the stored operation, group,
+registration body hash, and generation. An absent or mismatched receipt leaves the pending state
+unchanged; do not discard it or reissue the registration by hand. This is an operator repair path,
+not a completed installation or backup workflow.
 
 ## 4. Backup and restore
 

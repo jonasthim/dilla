@@ -32,6 +32,10 @@ use std::sync::{Arc, Mutex};
 use tls_codec::{Deserialize as _, Serialize as _};
 
 pub const INSTANCE: [u8; 16] = [0x11; 16];
+pub const INSTANCE_SIGNER_PUB: [u8; 32] = [
+    0xdb, 0x99, 0x5f, 0xe2, 0x51, 0x69, 0xd1, 0x41, 0xca, 0xb9, 0xbb, 0xba, 0x92, 0xba, 0xa0, 0x1f,
+    0x9f, 0x2e, 0x1e, 0xce, 0x7d, 0xf4, 0xcb, 0x2a, 0xc0, 0x51, 0x90, 0xf3, 0x7f, 0xcc, 0x1f, 0x9d,
+];
 pub const COMMUNITY: [u8; 16] = [0x22; 16];
 pub const CHANNEL: [u8; 16] = [0x33; 16];
 pub const OTHER_CHANNEL: [u8; 16] = [0x99; 16];
@@ -802,7 +806,7 @@ pub fn ready_core(user: u8, username: &str) -> Core {
     let probe = Arc::clone(&conn);
     let mut core = ClientCore::open(conn).expect("open");
     core.signup_begin(&INSTANCE).expect("signup_begin");
-    core.signup_complete(&[user; 16], username, NOW)
+    core.signup_complete(&[user; 16], username, NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     let identity = core.identity().expect("identity");
     let (phase, device) = decode_strict(&identity, |d| {
@@ -1102,9 +1106,39 @@ pub fn ingest_add_candidate_in(
     group_id: &[u8; 16],
 ) {
     let proposals = relay.proposals_body();
+    ingest_add_candidate_body(receiver, &proposals, sender, group_id);
+}
+
+/// Ingest the authentic signed list for one distinct Add without repeatedly validating every
+/// other queued candidate in the test's large Welcome fixture.
+pub fn ingest_add_candidate_proposal(
+    receiver: &mut Core,
+    relay: &Relay,
+    proposal_index: usize,
+    sender: &Core,
+    group_id: &[u8; 16],
+) {
+    let proposal = relay.proposals.get(proposal_index).expect("proposal index");
+    let mut e = Encoder::new();
+    e.array(1)
+        .array(5)
+        .bytes(&proposal.reference)
+        .uint(proposal.kind)
+        .opt_uint(proposal.target_leaf)
+        .bytes(&proposal.blob)
+        .uint(0);
+    ingest_add_candidate_body(receiver, &e.into_vec(), sender, group_id);
+}
+
+fn ingest_add_candidate_body(
+    receiver: &mut Core,
+    proposals: &[u8],
+    sender: &Core,
+    group_id: &[u8; 16],
+) {
     let candidates = receiver
         .core
-        .proposed_adds(group_id, &proposals)
+        .proposed_adds(group_id, proposals)
         .expect("candidates");
     let index = decode_strict(&candidates, |d| {
         let n = d.array_len()?;
@@ -1145,7 +1179,7 @@ pub fn ingest_add_candidate_in(
         .core
         .device_list_ingest_add(
             group_id,
-            &proposals,
+            proposals,
             index,
             &sender.user,
             &history.into_vec(),
@@ -1548,7 +1582,7 @@ impl Relay {
             .map_err(|_| "E_INVALID_REQUEST")?;
         let (public, _) = DillaPublicGroup::from_external(&self.crypto, tree_in, verifiable)
             .map_err(|_| "E_BINDING_INVALID")?;
-        if public.binding().encode() != binding {
+        if public.binding().expect("v1 group binding").encode() != binding {
             return Err("E_BINDING_INVALID");
         }
         self.public = Some(public);
@@ -1784,6 +1818,22 @@ pub struct RawPeer {
 }
 
 impl RawPeer {
+    /// A KeyPackage for adding this real MLS device to a fixture group.
+    pub fn key_package(&self) -> Vec<u8> {
+        let package = KeyPackage::builder()
+            .leaf_node_capabilities(dilla_core::mls::leaf_capabilities())
+            .build(
+                CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential.clone(),
+            )
+            .expect("key package");
+        MlsMessageOut::from(package.key_package().clone())
+            .tls_serialize_detached()
+            .expect("serialize key package")
+    }
+
     /// A signed v1 list for fixture-only trust ingress.
     pub fn device_list_body(&self) -> Vec<u8> {
         let ssk = SskSigner::from_bytes(&[self.user[0].wrapping_add(0x40); 32]);
@@ -2227,7 +2277,7 @@ pub fn ready_core_with_key(user: u8, username: &str) -> (Core, String) {
     let probe = Arc::clone(&conn);
     let mut core = ClientCore::open(conn).expect("open");
     let rk = core.signup_begin(&INSTANCE).expect("signup_begin");
-    core.signup_complete(&[user; 16], username, NOW)
+    core.signup_complete(&[user; 16], username, NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     core.device_list_published().expect("device_list_published");
     let device = device_of(&core);

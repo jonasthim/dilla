@@ -12,7 +12,7 @@ import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, goBack, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
 import { phoneNow, readPaneWidths, rememberedTab, rememberTab, usePhoneLayout, writePaneWidths, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
-import { en, t, type StringKey } from '../strings/index.ts';
+import { en, formatTime, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
@@ -171,6 +171,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     return () => { window.removeEventListener('online', sync); window.removeEventListener('offline', sync); };
   }, []);
   const communities = useSlice('communities');
+  // Re-read the browser's advisory timeout after a community_changed wakeup, even when the member
+  // list itself is byte-for-byte unchanged.
+  const timeoutRefresh = useSlice(routeCommunity === null ? 'communityChanges:none' : `communityChanges:${routeCommunity}`);
   const dms = useSlice('dms');
   const badges = useSlice('badges');
   const settings = useSlice('settings');
@@ -226,9 +229,33 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // The channel or DM whose loadEarlier call is in flight.
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
   // The composer is controlled: the text of the channel or DM it was typed in.
-  // `typed`: the person edited this draft in this page. Only such a draft sends typing (final review M3: one restored from an
-  // update checkpoint would otherwise clear away with nobody at the keyboard).
+  // `typed`: only a draft edited in this page sends typing; a restored update checkpoint cannot clear AFK.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string; typed?: true }>({ channelId: null, text: '' });
+  const [selfTimeout, setSelfTimeout] = useState<{ communityId: string; expires: number } | null>(null);
+  const selfUserId = account?.user?.id;
+  useEffect(() => {
+    if (routeCommunity === null || selfUserId === undefined) { setSelfTimeout(null); return; }
+    let live = true;
+    let expiryTimer: number | undefined;
+    const refresh = async () => {
+      try {
+        const value = await client.call({ m: 'getMemberTimeout', communityId: routeCommunity, userId: selfUserId });
+        if (!live) return;
+        const expires = value === null ? null : Number(value);
+        if (expires === null || !Number.isSafeInteger(expires) || expires <= Math.floor(Date.now() / 1000)) {
+          setSelfTimeout(current => current?.communityId === routeCommunity ? null : current);
+          return;
+        }
+        setSelfTimeout({ communityId: routeCommunity, expires });
+        expiryTimer = window.setTimeout(() => { void refresh(); }, Math.max(0, expires * 1000 - Date.now()));
+      } catch {
+        // The server enforces the timeout. A failed advisory read must not block unrelated app actions.
+      }
+    };
+    setSelfTimeout(null);
+    void refresh();
+    return () => { live = false; if (expiryTimer !== undefined) window.clearTimeout(expiryTimer); };
+  }, [client, routeCommunity, selfUserId, timeoutRefresh]);
   // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
@@ -932,7 +959,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   }));
   const selfAway = self !== null && (afkHere?.away ?? []).some(row => row.userId === self.id);
   const voiceCtx: VoiceContext = {
-    call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
+    client, call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
@@ -951,7 +978,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
-    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
+    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} communityId={voiceChannel.communityId} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
     main = noServerState;
   } else if (community !== null && channels !== undefined && ordered.length === 0) {
@@ -1118,15 +1145,17 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     : targetId === null ? undefined : sendBlocks[targetId];
   const refused = refusedSend !== null && refusedSend.channelId === targetId && refusedSend.gate === sendBlocks ? guess(refusedSend.code) : undefined;
   const block = gate ?? refused;
-  const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed'
-    : composerBlock(group) ?? (block !== undefined ? blockReason(block, changedMembers) : null);
+  const timeoutReason = channel?.kind === 0 && selfTimeout?.communityId === communityId
+    ? t('shell.composer.timedOut', { time: formatTime(selfTimeout.expires) }) : null;
+  const blockReasonKey = composerBlock(group) ?? (block !== undefined ? blockReason(block, changedMembers) : null);
+  const reason: string | null = openError !== null ? t('shell.composer.openFailed') : timeoutReason ?? (blockReasonKey === null ? null : t(blockReasonKey));
   const composerLabel = channel !== null ? t('shell.composer.label', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composer = targetId === null || composerLabel === null || composerPlaceholder === null ? null : (
     <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
-      blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
+      blocked={reason} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
       onDraft={text => setDraft({ channelId: targetId, text, typed: true })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
@@ -1727,6 +1756,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         aside={sideNow?.view === 'thread' && channel !== null
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
+            blocked={timeoutReason}
             initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
             onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />

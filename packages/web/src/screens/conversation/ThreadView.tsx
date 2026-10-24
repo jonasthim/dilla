@@ -10,10 +10,11 @@ import { useSlice } from '../../core/use-slice.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useRoute } from '../../router.ts';
 import { t } from '../../strings/index.ts';
-import { editableText, editRoles, mentionCandidates, mentionMembers, mentionRoles, nameBook, withSenders } from '../shell-model.ts';
+import { editableText, editRoles, excerpt, mentionCandidates, mentionMembers, mentionRoles, nameBook, plainBody, withSenders } from '../shell-model.ts';
 import { AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { conversationReducer, INITIAL_UI } from './Conversation.tsx';
+import { resolveManualRemoval, sendManualRemovalEvidence, type ManualRemovalDialogState } from './manual-removal.ts';
 import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
 
 const NO_ITEMS: readonly TimelineItem[] = [];
@@ -24,6 +25,7 @@ export function ThreadView(p: {
   /** Where focus goes when the thread closes, when the shell knows better than the element focused at opening. */
   returnFocus?: () => HTMLElement | null;
   initialDraft?: string;
+  blocked?: string | null;
   onDraftChange?: (text: string) => void;
   onEditingChange?: (editing: boolean) => void;
   /** Opens a profile card for a mentioned user or a row's author (MP7); without it neither is a button. */
@@ -47,7 +49,9 @@ export function ThreadView(p: {
   useEffect(() => { draftChange.current?.(draft); }, [draft]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [emojiFor, setEmojiFor] = useState<{ msgId: string } | null>(null);
-  const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string } | null>(null);
+  const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string; seq: string } | null>(null);
+  const [moderateFor, setModerateFor] = useState<ManualRemovalDialogState | null>(null);
+  const [moderateDialogOpen, setModerateDialogOpen] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const sending = useRef(false);
@@ -96,12 +100,69 @@ export function ThreadView(p: {
   const roleMentionsFor = (body: string) => mentionRoles(editRoles(roles ?? [], broadcast, body), encodeWith);
   const report = (e: unknown) => dispatch({ type: 'trayError', text: t('shell.banner.commandError', { code: errorOf(e).code }) });
   const command = (m: Parameters<typeof client.call>[0]) => { client.call(m).catch(report); };
+  const closeModerateDialog = () => {
+    setModerateDialogOpen(false);
+    setModerateFor(state => state === null || state.phase === 'confirm' || state.evidenceUpload === 'accepted' ? null : state);
+  };
+  const removeForEveryone = async () => {
+    const state = moderateFor;
+    if (state === null || communityId === null || state.reason.trim().length === 0
+      || new TextEncoder().encode(state.reason).length > 1024) return;
+    setModerateFor({ ...state, phase: 'sending' });
+    try {
+      const result = await client.call({ m: 'moderateRemoveMessage', channelId: p.channelId, msgId: state.msgId, seq: state.seq,
+        reason: state.reason, excerpt: state.excerpt }) as {
+        removal?: unknown; proofRequestId?: unknown; evidenceRequestId?: unknown; evidenceUpload?: unknown;
+      };
+      if (result?.removal === 'unknown' && typeof result.proofRequestId === 'string') {
+        setModerateFor({ ...state, phase: 'result', removal: 'unknown', proofRequestId: result.proofRequestId,
+          evidenceRequestId: typeof result.evidenceRequestId === 'string' ? result.evidenceRequestId : null, evidenceUpload: 'unknown' });
+        rowEls.current.get(state.key)?.focus();
+        return;
+      }
+      if (result?.removal === 'rejected') {
+        setModerateFor({ ...state, phase: 'confirm', removal: null, proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+        return;
+      }
+      if (result?.removal !== 'accepted' || typeof result.proofRequestId !== 'string' || typeof result.evidenceRequestId !== 'string') {
+        throw new Error('E_REMOVAL_RESULT');
+      }
+      const evidenceUpload = result.evidenceUpload === 'accepted' || result.evidenceUpload === 'pending' || result.evidenceUpload === 'rejected'
+        ? result.evidenceUpload : 'unknown';
+      setModerateFor({ ...state, phase: 'result', proofRequestId: result.proofRequestId,
+        evidenceRequestId: result.evidenceRequestId, evidenceUpload, removal: 'accepted' });
+      rowEls.current.get(state.key)?.focus();
+    } catch (error) {
+      report(error);
+      setModerateFor({ ...state, phase: 'confirm' });
+    }
+  };
+  const retryModerationEvidence = async () => {
+    const state = moderateFor;
+    if (state === null || communityId === null || state.proofRequestId === null) return;
+    setModerateDialogOpen(true);
+    setModerateFor({ ...state, phase: 'sending' });
+    if (state.removal === 'unknown') {
+      const result = await resolveManualRemoval(client, state.proofRequestId);
+      if (result.removal === 'rejected') {
+        setModerateFor({ ...state, phase: 'confirm', removal: null, proofRequestId: null, evidenceRequestId: null, evidenceUpload: null });
+      } else setModerateFor({ ...state, phase: 'result', removal: result.removal, evidenceUpload: result.evidenceUpload });
+      return;
+    }
+    const result = await sendManualRemovalEvidence(client, communityId, state);
+    setModerateFor({ ...state, phase: 'result', removal: 'accepted', evidenceRequestId: result.requestId, evidenceUpload: result.upload });
+  };
   const onRow = (item: TimelineItem, ev: RowEvent) => {
     const msgId = item.msgId;
     if (ev.kind === 'react') { if (msgId !== null) setEmojiFor({ msgId }); }
     else if (ev.kind === 'toggle') { if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); }
     else if (ev.kind === 'edit') { if (msgId !== null) dispatch({ type: 'edit', msgId, value: editableText(item.body, book) }); }
-    else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key }); }
+    else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key, seq: ev.seq }); }
+    else if (ev.kind === 'moderateRemove') { if (msgId !== null) {
+      setModerateFor({ msgId, key: item.key, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, book)),
+        phase: 'confirm', proofRequestId: null, evidenceRequestId: null, evidenceUpload: null, removal: null });
+      setModerateDialogOpen(true);
+    } }
     else if (ev.kind === 'retry') command({ m: 'retrySend', msgId: ev.msgId });
     else if (ev.kind === 'discard') command({ m: 'discardSend', msgId: ev.msgId });
   };
@@ -166,7 +227,7 @@ export function ThreadView(p: {
     }} onKeyDown={rowKey}>
       <ThreadPane title={t('thread.title')} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
         composer={
-          <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={null}
+          <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={p.blocked ?? null}
             broadcast bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}
             book={book} draft={draft} onDraft={setDraft} ui={ui} dispatch={dispatch} onSend={send} onError={report}
             threadId={p.rootMsgId} />
@@ -186,11 +247,39 @@ export function ThreadView(p: {
       <Dialog open={deleteFor !== null} title={t('shell.delete.title')} closeLabel={t('shell.delete.cancel')}
         onClose={() => setDeleteFor(null)} footer={<Button variant="danger" onClick={() => {
           if (deleteFor === null) return;
-          command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId });
+          command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId, seq: deleteFor.seq });
           const key = deleteFor.key;
           setDeleteFor(null);
           queueMicrotask(() => rowEls.current.get(key)?.focus());
         }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
+      <Dialog open={moderateDialogOpen && moderateFor !== null} title={t('shell.moderation.removeTitle')}
+        closeLabel={moderateFor?.phase === 'sending' ? t('shell.moderation.submitting') : t('shell.delete.cancel')}
+        onClose={() => { if (moderateFor?.phase !== 'sending') closeModerateDialog(); }}
+        footer={moderateFor?.phase === 'confirm' ? <Button variant="danger" aria-disabled={moderateFor.reason.trim().length === 0
+          || new TextEncoder().encode(moderateFor.reason).length > 1024 || undefined} onClick={() => void removeForEveryone()}>
+          {t('shell.moderation.removeConfirm')}</Button>
+          : moderateFor?.phase === 'sending' ? <Button aria-disabled="true">{t('shell.moderation.submitting')}</Button>
+            : moderateFor?.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
+              : <Button variant="danger" onClick={() => void retryModerationEvidence()}>{moderateFor?.removal === 'unknown' ? t('shell.moderation.retryRemoval') : t('shell.moderation.retryEvidence')}</Button>}>
+        {moderateFor?.phase === 'confirm' ? <>
+          <p>{t('shell.moderation.removeBody')}</p>
+          <label>{t('shell.moderation.reason')}<textarea maxLength={1024} value={moderateFor.reason}
+            onChange={e => setModerateFor(state => state === null ? null : { ...state, reason: e.target.value })} /></label>
+          <p><strong>{t('shell.moderation.excerptLabel')}</strong> {moderateFor.excerpt || t('shell.moderation.emptyExcerpt')}</p>
+        </> : moderateFor?.phase === 'sending' ? <p>{t('shell.moderation.submitting')}</p>
+          : moderateFor?.evidenceUpload === 'accepted' ? <p role="status">{t('shell.moderation.evidenceSent')}</p>
+            : moderateFor?.evidenceUpload === 'pending' ? <p role="status">{t('shell.moderation.evidencePending')}</p>
+              : moderateFor?.evidenceUpload === 'rejected' ? <p role="alert">{t('shell.moderation.evidenceRejected')}</p>
+                : <p role="alert">{moderateFor?.removal === 'unknown' ? t('shell.moderation.removalUnknown') : t('shell.moderation.evidenceUnknown')}</p>}
+      </Dialog>
+      {moderateFor !== null && !moderateDialogOpen && moderateFor.phase === 'result' ? <div role="status" className="d-moderation-evidence-status">
+        <p>{moderateFor.evidenceUpload === 'accepted' ? t('shell.moderation.evidenceSent')
+          : moderateFor.evidenceUpload === 'pending' ? t('shell.moderation.evidencePending')
+            : moderateFor.evidenceUpload === 'rejected' ? t('shell.moderation.evidenceRejected')
+              : moderateFor.removal === 'unknown' ? t('shell.moderation.removalUnknown') : t('shell.moderation.evidenceUnknown')}</p>
+        {moderateFor.evidenceUpload === 'accepted' ? <Button onClick={closeModerateDialog}>{t('shell.moderation.done')}</Button>
+          : <Button onClick={() => void retryModerationEvidence()}>{moderateFor.removal === 'unknown' ? t('shell.moderation.retryRemoval') : t('shell.moderation.retryEvidence')}</Button>}
+      </div> : null}
       {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}
         onIndex={index => setLightbox(s => s ? { ...s, index } : null)} onClose={() => { lightbox.opener?.focus(); setLightbox(null); }} onError={report} /> : null}
     </div>

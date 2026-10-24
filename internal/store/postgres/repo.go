@@ -3,7 +3,9 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -111,6 +113,14 @@ func ptrInt64(v sql.NullInt64) *int64 {
 	return &n
 }
 
+// checkedInt64 rejects values that the signed database integer columns cannot represent.
+func checkedInt64(value uint64, field string) (int64, error) {
+	if value > math.MaxInt64 {
+		return 0, fmt.Errorf("store: %s exceeds int64 range", field)
+	}
+	return int64(value), nil
+}
+
 // ---------------------------------------------------------------- Instance
 
 func (r *Repo) CreateInstance(ctx context.Context, in store.InstanceRow) error {
@@ -141,6 +151,19 @@ func (r *Repo) GetInstance(ctx context.Context) (store.InstanceRow, error) {
 	}, nil
 }
 
+// LockInstanceGeneration takes the shared publication/restore fence. It must be the first
+// database row lock in both managed publication and restore transactions.
+func (r *Repo) LockInstanceGeneration(ctx context.Context) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	var generation int64
+	if err := r.tx.QueryRowContext(ctx, `SELECT generation FROM instances LIMIT 1 FOR UPDATE`).Scan(&generation); err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
 func (r *Repo) BumpGeneration(ctx context.Context) (uint64, error) {
 	gen, err := r.w.BumpGeneration(ctx)
 	if err != nil {
@@ -153,8 +176,12 @@ func (r *Repo) BumpGeneration(ctx context.Context) (uint64, error) {
 // older than the instance's own generation is a no-op rather than a step
 // backwards.
 func (r *Repo) SetGeneration(ctx context.Context, generation uint64) error {
+	generationInt, err := checkedInt64(generation, "generation")
+	if err != nil {
+		return err
+	}
 	return wrap(r.w.SetGeneration(ctx, pgdb.SetGenerationParams{
-		Generation: int64(generation),
+		Generation: generationInt,
 	}))
 }
 
@@ -280,6 +307,11 @@ func (r *Repo) ListUsers(ctx context.Context, after id.ID, limit int32) ([]store
 }
 
 func (r *Repo) SetUserDisabled(ctx context.Context, userID id.ID, at *int64) error {
+	if r.inTx {
+		if err := r.LockUserForDeviceRegistration(ctx, userID); err != nil {
+			return err
+		}
+	}
 	return wrap(r.w.SetUserDisabled(ctx, pgdb.SetUserDisabledParams{
 		DisabledAt: nullInt64(at),
 		ID:         userID,
@@ -287,6 +319,11 @@ func (r *Repo) SetUserDisabled(ctx context.Context, userID id.ID, at *int64) err
 }
 
 func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error {
+	if r.inTx {
+		if err := r.LockUserForDeviceRegistration(ctx, userID); err != nil {
+			return err
+		}
+	}
 	return wrap(r.w.TombstoneUser(ctx, pgdb.TombstoneUserParams{
 		DeletedAt: nullInt64(&at),
 		ID:        userID,
@@ -390,6 +427,42 @@ func userRow(row pgdb.Users) store.UserRow {
 // ---------------------------------------------------------------- Devices
 
 func (r *Repo) CreateDevice(ctx context.Context, d store.DeviceRow) error {
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.CreateDevice(ctx, d) })
+	}
+	return r.createDeviceLocked(ctx, d, false)
+}
+
+func (r *Repo) CreateBotDevice(ctx context.Context, d store.DeviceRow) error {
+	if !r.inTx {
+		return errors.New("store: CreateBotDevice requires a transaction")
+	}
+	return r.createDeviceLocked(ctx, d, true)
+}
+
+func (r *Repo) createDeviceLocked(ctx context.Context, d store.DeviceRow, newIsBot bool) error {
+	if !r.inTx {
+		return errors.New("store: device DSK locking requires a transaction")
+	}
+	sum := sha256.Sum256(d.DSKPub)
+	if err := r.w.LockDeviceDSK(ctx, pgdb.LockDeviceDSKParams{LockKey: int64(binary.BigEndian.Uint64(sum[:8]))}); err != nil {
+		return wrap(err)
+	}
+	kind, err := r.r.GetUserKind(ctx, pgdb.GetUserKindParams{ID: d.UserID})
+	if err != nil {
+		return wrap(err)
+	}
+	if newIsBot && kind != 1 {
+		return errors.New("store: CreateBotDevice requires a Bot account")
+	}
+	newIsBot = newIsBot || kind == 1
+	count, err := r.r.DeviceDSKConflictCount(ctx, pgdb.DeviceDSKConflictCountParams{DskPub: d.DSKPub, NewIsBot: newIsBot})
+	if err != nil {
+		return wrap(err)
+	}
+	if count != 0 {
+		return store.ErrConflict
+	}
 	return wrap(r.w.CreateDevice(ctx, pgdb.CreateDeviceParams{
 		ID:               d.ID,
 		UserID:           d.UserID,
@@ -448,6 +521,11 @@ func (r *Repo) TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) 
 }
 
 func (r *Repo) RevokeDevice(ctx context.Context, deviceID id.ID, at int64) error {
+	if r.inTx {
+		if err := r.LockKeyPackageDevice(ctx, deviceID); err != nil {
+			return err
+		}
+	}
 	return wrap(r.w.RevokeDevice(ctx, pgdb.RevokeDeviceParams{
 		RevokedAt: nullInt64(&at),
 		ID:        deviceID,
@@ -603,16 +681,32 @@ func (r *Repo) GetSessionByHash(ctx context.Context, tokenHash []byte, now int64
 		return store.SessionRow{}, wrap(err)
 	}
 	return store.SessionRow{
-		TokenHash:   row.TokenHash,
-		DeviceID:    row.DeviceID,
-		UserID:      row.UserID,
-		Scope:       uint8(row.Scope),
-		Tier:        uint8(row.Tier),
-		Created:     row.Created,
-		Expires:     row.Expires,
-		IdleExpires: row.IdleExpires,
-		FactorOwed:  row.FactorOwed == 1,
+		TokenHash:    row.TokenHash,
+		DeviceID:     row.DeviceID,
+		UserID:       row.UserID,
+		Scope:        uint8(row.Scope),
+		Tier:         uint8(row.Tier),
+		Created:      row.Created,
+		Expires:      row.Expires,
+		IdleExpires:  row.IdleExpires,
+		WireVersion:  uint64(row.WireVersion),
+		E2EEVersion:  uint64(row.E2eeVersion),
+		MediaVersion: uint64(row.MediaVersion),
+		FactorOwed:   row.FactorOwed == 1,
 	}, nil
+}
+
+func (r *Repo) SetSessionVersions(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
+	n, err := r.w.SetSessionVersions(ctx, pgdb.SetSessionVersionsParams{
+		WireVersion: int64(wire), E2eeVersion: int64(e2ee), MediaVersion: int64(media), TokenHash: tokenHash,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repo) TouchSession(ctx context.Context, tokenHash []byte, idleExpires int64) error {
@@ -1374,8 +1468,13 @@ func (r *Repo) AppendHandshake(ctx context.Context, h store.HandshakeRow) error 
 }
 
 func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.HandshakeRow, error) {
+	fromSeqInt, err := checkedInt64(fromSeq, "handshake sequence")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := r.r.ListHandshakes(ctx, pgdb.ListHandshakesParams{
-		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+		GroupID: groupID, Seq: fromSeqInt, MaxRows: int64(limit),
 	})
 	if err != nil {
 		return nil, wrap(err)
@@ -1729,6 +1828,19 @@ func (r *Repo) CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) 
 	return n, wrap(err)
 }
 
+// HasCurrentLastResortKeyPackage reports whether a live reusable fallback exists without
+// consuming it. It is used by the managed directory inventory snapshot.
+func (r *Repo) HasCurrentLastResortKeyPackage(ctx context.Context, deviceID id.ID, now int64) (bool, error) {
+	_, err := r.r.GetLastResortKeyPackage(ctx, pgdb.GetLastResortKeyPackageParams{DeviceID: deviceID, Expires: now})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, wrap(err)
+	}
+	return true, nil
+}
+
 func (r *Repo) DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error {
 	return wrap(r.w.DeleteKeyPackage(ctx, pgdb.DeleteKeyPackageParams{DeviceID: deviceID, KpRef: kpRef}))
 }
@@ -1740,6 +1852,70 @@ func (r *Repo) PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64
 	}
 	n, err := r.w.PurgeAllKeyPackages(ctx)
 	return n, wrap(err)
+}
+
+func (r *Repo) LockKeyPackageDevice(ctx context.Context, deviceID id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	// Lock the actual device row so this fence also serializes with plain UPDATE writers such as
+	// QuarantineDevice and non-transactional RevokeDevice. A repository-only advisory lock would
+	// coordinate publishers while allowing those authority changes to pass it unnoticed.
+	var locked id.ID
+	if err := r.tx.QueryRowContext(ctx, `SELECT id FROM devices WHERE id=$1 FOR UPDATE`, deviceID).Scan(&locked); err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) GetBotKeyPackagePublicationReceipt(ctx context.Context, installation, operation id.ID) (store.KeyPackagePublicationReceipt, error) {
+	queryer := interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	}(r.rawRead)
+	if r.tx != nil {
+		queryer = r.tx
+	}
+	var out store.KeyPackagePublicationReceipt
+	var generation, count int64
+	err := queryer.QueryRowContext(ctx, `SELECT installation_id,user_id,device_id,operation_id,generation,upload_sha256,package_count,accepted_at FROM bot_keypackage_publication_receipts WHERE installation_id=$1 AND operation_id=$2`, installation, operation).Scan(&out.InstallationID, &out.UserID, &out.DeviceID, &out.OperationID, &generation, &out.UploadSHA256, &count, &out.AcceptedAt)
+	if err != nil {
+		return store.KeyPackagePublicationReceipt{}, wrap(err)
+	}
+	out.Generation, out.Count = uint64(generation), uint64(count)
+	return out, nil
+}
+
+func (r *Repo) CreateBotKeyPackagePublicationReceipt(ctx context.Context, v store.KeyPackagePublicationReceipt) error {
+	if !r.inTx || len(v.UploadSHA256) != 32 || v.Count < 1 || v.Count > 33 {
+		return store.ErrConflict
+	}
+	_, err := r.tx.ExecContext(ctx, `INSERT INTO bot_keypackage_publication_receipts(installation_id,user_id,device_id,operation_id,generation,upload_sha256,package_count,accepted_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, v.InstallationID, v.UserID, v.DeviceID, v.OperationID, int64(v.Generation), v.UploadSHA256, int64(v.Count), v.AcceptedAt)
+	return wrap(err)
+}
+
+func (r *Repo) DeleteBotKeyPackagePublicationReceipts(ctx context.Context, installation id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	_, err := r.tx.ExecContext(ctx, `DELETE FROM bot_keypackage_publication_receipts WHERE installation_id=$1`, installation)
+	return wrap(err)
+}
+
+func (r *Repo) GetKeyPackage(ctx context.Context, deviceID id.ID, ref []byte) (store.KeyPackageRow, error) {
+	queryer := interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	}(r.rawRead)
+	if r.tx != nil {
+		queryer = r.tx
+	}
+	var row store.KeyPackageRow
+	var last int64
+	err := queryer.QueryRowContext(ctx, `SELECT device_id,kp_ref,blob,last_resort,expires,created,consumed_at FROM key_packages WHERE device_id=$1 AND kp_ref=$2`, deviceID, ref).Scan(&row.DeviceID, &row.KPRef, &row.Blob, &last, &row.Expires, &row.Created, &row.ConsumedAt)
+	if err != nil {
+		return store.KeyPackageRow{}, wrap(err)
+	}
+	row.LastResort = uint8(last)
+	return row, nil
 }
 
 func (r *Repo) PutWelcomePayload(ctx context.Context, w store.WelcomePayloadRow) error {
@@ -1880,8 +2056,13 @@ func (r *Repo) PutAppMessage(ctx context.Context, m store.AppMessageRow) error {
 }
 
 func (r *Repo) ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.AppMessageRow, error) {
+	fromSeqInt, err := checkedInt64(fromSeq, "app-message sequence")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := r.r.ListAppMessages(ctx, pgdb.ListAppMessagesParams{
-		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+		GroupID: groupID, Seq: fromSeqInt, MaxRows: int64(limit),
 	})
 	if err != nil {
 		return nil, wrap(err)
@@ -1894,7 +2075,12 @@ func (r *Repo) ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint6
 }
 
 func (r *Repo) GetAppMessage(ctx context.Context, groupID id.ID, seq uint64) (store.AppMessageRow, error) {
-	row, err := r.r.GetAppMessage(ctx, pgdb.GetAppMessageParams{GroupID: groupID, Seq: int64(seq)})
+	seqInt, err := checkedInt64(seq, "app-message sequence")
+	if err != nil {
+		return store.AppMessageRow{}, err
+	}
+
+	row, err := r.r.GetAppMessage(ctx, pgdb.GetAppMessageParams{GroupID: groupID, Seq: seqInt})
 	if err != nil {
 		return store.AppMessageRow{}, wrap(err)
 	}
@@ -2333,21 +2519,44 @@ func (r *Repo) LockCommunity(ctx context.Context, communityID id.ID) error {
 }
 
 func (r *Repo) PutMember(ctx context.Context, m store.MemberOfCommunityRow) error {
-	return wrap(r.w.PutMember(ctx, pgdb.PutMemberParams{
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.PutMember(ctx, m) })
+	}
+	if m.EpisodeID.IsZero() {
+		m.EpisodeID = id.New()
+	}
+	if err := wrap(r.w.PutMember(ctx, pgdb.PutMemberParams{
 		CommunityID: m.CommunityID, UserID: m.UserID, Joined: m.Joined, Nick: m.Nick,
-	}))
+	})); err != nil {
+		return err
+	}
+	_, err := r.writeQuery().ExecContext(ctx, `INSERT INTO community_member_episodes(community_id,user_id,episode_id) VALUES($1,$2,$3) ON CONFLICT(community_id,user_id) DO NOTHING`, m.CommunityID, m.UserID, m.EpisodeID)
+	return wrap(err)
+}
+
+func (r *Repo) writeQuery() interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+} {
+	if r.tx != nil {
+		return r.tx
+	}
+	return r.db
 }
 
 func (r *Repo) GetMember(ctx context.Context, communityID, userID id.ID) (store.MemberOfCommunityRow, error) {
-	row, err := r.r.GetMember(ctx, pgdb.GetMemberParams{CommunityID: communityID, UserID: userID})
+	var q interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	} = r.db
+	if r.tx != nil {
+		q = r.tx
+	}
+	var member store.MemberOfCommunityRow
+	err := q.QueryRowContext(ctx, `SELECT m.community_id,m.user_id,e.episode_id,m.joined,m.nick FROM members m JOIN community_member_episodes e USING(community_id,user_id) WHERE m.community_id=$1 AND m.user_id=$2`, communityID, userID).Scan(&member.CommunityID, &member.UserID, &member.EpisodeID, &member.Joined, &member.Nick)
 	if err != nil {
-		// wrap turns sql.ErrNoRows into store.ErrNotFound, which is what every
-		// membership gate in internal/api tests with errors.Is.
+		// wrap turns sql.ErrNoRows into store.ErrNotFound, which membership gates use.
 		return store.MemberOfCommunityRow{}, wrap(err)
 	}
-	return store.MemberOfCommunityRow{
-		CommunityID: row.CommunityID, UserID: row.UserID, Joined: row.Joined, Nick: row.Nick,
-	}, nil
+	return member, nil
 }
 
 func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) error {
@@ -2359,6 +2568,24 @@ func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) erro
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+// GetBotInteractionEligibilityRevision returns and row-locks the durable
+// revision so a later registration check in the same transaction is fenced
+// against concurrent membership, ban, and device-state changes.
+func (r *Repo) GetBotInteractionEligibilityRevision(ctx context.Context, communityID, userID id.ID) (uint64, error) {
+	if !r.inTx {
+		return 0, errors.New("store: GetBotInteractionEligibilityRevision outside a transaction")
+	}
+	var revision int64
+	err := r.tx.QueryRowContext(ctx, `SELECT revision FROM bot_interaction_eligibility_revisions WHERE community_id=$1 AND user_id=$2 FOR UPDATE`, communityID, userID).Scan(&revision)
+	if err != nil {
+		return 0, wrap(err)
+	}
+	if revision < 0 {
+		return 0, errors.New("store: negative bot interaction eligibility revision")
+	}
+	return uint64(revision), nil
 }
 
 func (r *Repo) ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
@@ -2418,17 +2645,91 @@ func (r *Repo) ListRoles(ctx context.Context, communityID id.ID) ([]store.RoleRo
 }
 
 func (r *Repo) PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
-	return wrap(r.w.PutMemberRole(ctx, pgdb.PutMemberRoleParams{
-		CommunityID: communityID, UserID: userID, RoleID: roleID,
-	}))
+	return r.AddMemberRoleGrant(ctx, communityID, userID, roleID, store.RoleGrantManual)
 }
 
 func (r *Repo) DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
-	n, err := r.w.DeleteMemberRole(ctx, pgdb.DeleteMemberRoleParams{
-		CommunityID: communityID, UserID: userID, RoleID: roleID,
-	})
+	return r.RemoveMemberRoleGrant(ctx, communityID, userID, roleID, store.RoleGrantManual)
+}
+
+func validRoleGrantSource(source store.RoleGrantSource) bool {
+	return source == store.RoleGrantManual || source == store.RoleGrantSelf || source == store.RoleGrantReaction
+}
+
+func (r *Repo) AddMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source store.RoleGrantSource) error {
+	if !validRoleGrantSource(source) {
+		return fmt.Errorf("store: invalid role grant source %q", source)
+	}
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error {
+			return tx.AddMemberRoleGrant(ctx, communityID, userID, roleID, source)
+		})
+	}
+	if _, err := r.tx.ExecContext(ctx, `INSERT INTO member_roles(community_id,user_id,role_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, communityID, userID, roleID); err != nil {
+		return wrap(err)
+	}
+	var locked int
+	if err := r.tx.QueryRowContext(ctx, `SELECT 1 FROM member_roles WHERE community_id=$1 AND user_id=$2 AND role_id=$3 FOR UPDATE`, communityID, userID, roleID).Scan(&locked); err != nil {
+		return wrap(err)
+	}
+	if _, err := r.tx.ExecContext(ctx, `INSERT INTO member_role_grant_sources(community_id,user_id,role_id,source) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, communityID, userID, roleID, string(source)); err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) RemoveMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source store.RoleGrantSource) error {
+	if !validRoleGrantSource(source) {
+		return fmt.Errorf("store: invalid role grant source %q", source)
+	}
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error {
+			return tx.RemoveMemberRoleGrant(ctx, communityID, userID, roleID, source)
+		})
+	}
+	var locked int
+	if err := r.tx.QueryRowContext(ctx, `SELECT 1 FROM member_roles WHERE community_id=$1 AND user_id=$2 AND role_id=$3 FOR UPDATE`, communityID, userID, roleID).Scan(&locked); err != nil {
+		return wrap(err)
+	}
+	res, err := r.tx.ExecContext(ctx, `DELETE FROM member_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3 AND source=$4`, communityID, userID, roleID, string(source))
 	if err != nil {
 		return wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	var remaining int64
+	if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3) + (SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3) + (SELECT COUNT(*) FROM bot_join_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3)`, communityID, userID, roleID).Scan(&remaining); err != nil {
+		return err
+	}
+	if remaining == 0 {
+		_, err = r.tx.ExecContext(ctx, `DELETE FROM member_roles WHERE community_id=$1 AND user_id=$2 AND role_id=$3`, communityID, userID, roleID)
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) RevokeMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error {
+			return tx.RevokeMemberRole(ctx, communityID, userID, roleID)
+		})
+	}
+	var locked int
+	if err := r.tx.QueryRowContext(ctx, `SELECT 1 FROM member_roles WHERE community_id=$1 AND user_id=$2 AND role_id=$3 FOR UPDATE`, communityID, userID, roleID).Scan(&locked); err != nil {
+		return wrap(err)
+	}
+	res, err := r.tx.ExecContext(ctx, `DELETE FROM member_roles WHERE community_id=$1 AND user_id=$2 AND role_id=$3`, communityID, userID, roleID)
+	if err != nil {
+		return wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		return store.ErrNotFound
@@ -2834,9 +3135,14 @@ func (r *Repo) PutReadableMessage(ctx context.Context, m store.ReadableMessageRo
 }
 
 func (r *Repo) ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]store.ReadableMessageRow, error) {
+	fromSeqInt, err := checkedInt64(fromSeq, "readable-message sequence")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := r.r.ListReadableMessages(ctx, pgdb.ListReadableMessagesParams{
 		ChannelID: channelID,
-		Seq:       int64(fromSeq),
+		Seq:       fromSeqInt,
 		MaxRows:   int64(limit),
 	})
 	if err != nil {
@@ -3302,3 +3608,37 @@ func (r *Repo) ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]st
 }
 
 var _ store.Repository = (*Repo)(nil)
+
+// PutMemberTimeout persists a member timeout.
+func (r *Repo) PutMemberTimeout(ctx context.Context, v store.MemberTimeoutRow) error {
+	_, err := r.writeQuery().ExecContext(ctx, `INSERT INTO community_member_timeouts(community_id,user_id,by_user,created,expires) VALUES($1,$2,$3,$4,$5) ON CONFLICT(community_id,user_id) DO UPDATE SET by_user=excluded.by_user,created=excluded.created,expires=excluded.expires`, v.CommunityID, v.UserID, v.ByUser, v.Created, v.Expires)
+	return wrap(err)
+}
+func (r *Repo) GetMemberTimeout(ctx context.Context, cid, uid id.ID, now int64) (store.MemberTimeoutRow, error) {
+	var q interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	} = r.db
+	if r.tx != nil {
+		q = r.tx
+	}
+	var v store.MemberTimeoutRow
+	err := q.QueryRowContext(ctx, `SELECT community_id,user_id,by_user,created,expires FROM community_member_timeouts WHERE community_id=$1 AND user_id=$2 AND expires>$3`, cid, uid, now).Scan(&v.CommunityID, &v.UserID, &v.ByUser, &v.Created, &v.Expires)
+	if err != nil {
+		return v, wrap(err)
+	}
+	return v, nil
+}
+func (r *Repo) DeleteMemberTimeout(ctx context.Context, cid, uid id.ID) error {
+	res, err := r.writeQuery().ExecContext(ctx, `DELETE FROM community_member_timeouts WHERE community_id=$1 AND user_id=$2`, cid, uid)
+	if err != nil {
+		return wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}

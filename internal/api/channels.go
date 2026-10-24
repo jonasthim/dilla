@@ -92,6 +92,7 @@ type Channels struct {
 	// calls cuts a removed group-DM participant's connected call session, and re-syncs a channel's
 	// live call after a visibility change; nil touches no call.
 	calls *Calls
+	roles *Roles
 	// notify tells the community's members, after the commit, that a channel was created,
 	// updated or deleted (op 54); nil tells nobody.
 	notify *StructureNotifier
@@ -102,6 +103,8 @@ func (c *Channels) WithCalls(calls *Calls) *Channels {
 	c.calls = calls
 	return c
 }
+
+func (c *Channels) WithRoles(roles *Roles) *Channels { c.roles = roles; return c }
 
 // WithNotifier sets where a community channel's create, update and delete is announced, and
 // returns c.
@@ -130,8 +133,28 @@ func (c *Channels) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/communities/{id}/channels", c.create)
 	mux.HandleFunc("GET /v1/communities/{id}/channels", c.list)
 	mux.HandleFunc("GET /v1/channels/{id}", c.get)
+	mux.HandleFunc("GET /v1/channels/{id}/permissions", c.permissions)
 	mux.HandleFunc("PATCH /v1/channels/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/channels/{id}", c.delete)
+}
+
+// permissions returns the caller's effective channel permissions after role
+// and member overwrites. A channel the caller cannot view remains indistinguishable
+// from an unknown channel through visible.
+func (c *Channels) permissions(w http.ResponseWriter, r *http.Request) {
+	row, s, err := c.visible(r)
+	if err != nil {
+		c.fail(w, r, "read channel permissions", err)
+		return
+	}
+	bits, err := c.res.Resolve(r.Context(), s.UserID, row)
+	if err != nil {
+		c.fail(w, r, "read channel permissions", err)
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, uint64(bits)); err != nil {
+		c.log.Error("encode channel permissions", "err", err)
+	}
 }
 
 // RegisterMembers registers the three channel-membership routes of §5.2. They are
@@ -576,6 +599,9 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		if row.Position >= AFKBuiltinPosition {
 			return reservedPosition()
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, row.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.CreateChannel(r.Context(), row); err != nil {
 			return err
 		}
@@ -879,6 +905,9 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, row.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.UpdateChannel(r.Context(), row); err != nil {
 			return notFound(err)
 		}
@@ -1070,6 +1099,7 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	now := c.clk.Now().Unix()
 	var toClose []id.ID
+	var roleAffected []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := c.lockManageable(r, tx, row); err != nil {
 			return err
@@ -1083,12 +1113,19 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		if afk.ChannelID != nil && *afk.ChannelID == row.ID {
 			return server.Errorf(server.CodeForbidden, "the AFK channel cannot be deleted")
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, row.CommunityID); err != nil {
+			return err
+		}
 		// Read the channel's open groups inside the transaction; close them after it.
 		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {
 			return err
 		}
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
+		}
+		roleAffected, err = tx.RemoveReactionRoleChannelGrants(r.Context(), *row.CommunityID, row.ID)
+		if err != nil {
+			return err
 		}
 		// A deleted category's channels stay, at the top level: the tombstone
 		// keeps its row, so ON DELETE SET NULL never fires, and a child left
@@ -1115,6 +1152,11 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "delete channel", err)
 		return
+	}
+	if c.roles != nil {
+		for _, user := range roleAffected {
+			c.roles.reactionRoleChanged(r.Context(), *row.CommunityID, user)
+		}
 	}
 	// The channel's MLS groups are closed by the delivery service, which owns
 	// mls_groups, AFTER the commit: ds.Close writes through the single-connection

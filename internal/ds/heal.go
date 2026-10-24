@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
@@ -22,6 +23,7 @@ type HealStatus struct {
 	NextSeq     uint64
 	Generation  uint64
 	NeedFromSeq uint64
+	NeedsHeal   bool
 }
 
 type HealTailItem struct {
@@ -49,25 +51,35 @@ type HealRequest struct {
 // own generation cannot walk the number backwards and revive the resume tokens an earlier restore
 // already killed.
 func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
-	if generation != 0 {
-		if err := d.opts.Store.SetGeneration(ctx, generation); err != nil {
+	deadline := d.opts.Clock.Now().Add(d.opts.Policy.HealWindow).Unix()
+	var restored store.InstanceRow
+	// Generation fencing, group invalidation, voice shutdown and package purge share one database
+	// transaction with managed publication. A publication can therefore land wholly before restore
+	// (and be purged) or wholly after it (and see the new generation), never between those steps.
+	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockInstanceGeneration(ctx); err != nil {
 			return err
 		}
-	} else if _, err := d.opts.Store.BumpGeneration(ctx); err != nil {
+		if generation != 0 {
+			if err := tx.SetGeneration(ctx, generation); err != nil {
+				return err
+			}
+		} else if _, err := tx.BumpGeneration(ctx); err != nil {
+			return err
+		}
+		if err := tx.MarkAllGroupsEpochUnknown(ctx, deadline); err != nil {
+			return err
+		}
+		if err := tx.EndAllVoiceSessions(ctx, d.now()); err != nil {
+			return err
+		}
+		if _, err := tx.PurgeKeyPackages(ctx, true); err != nil {
+			return err
+		}
+		var err error
+		restored, err = tx.GetInstance(ctx)
 		return err
-	}
-	deadline := d.opts.Clock.Now().Add(d.opts.Policy.HealWindow).Unix()
-
-	// Both bulk writes are single statements, not a per-group loop: OnRestore runs once and
-	// correctness, not latency, governs it, and a paged loop that stopped at a fixed batch would
-	// leave every group past the batch serving state the restored database no longer matches.
-	// `MarkAllGroupsEpochUnknown` and `EndAllVoiceSessions` are the shapes Plan 2 records as
-	// P2-D19 for the same invariant-11 work; part 1b uses them and adds them to `store.MLS`
-	// (deviation B13) so the two plans declare one surface instead of two.
-	if err := d.opts.Store.MarkAllGroupsEpochUnknown(ctx, deadline); err != nil {
-		return err
-	}
-	if err := d.opts.Store.EndAllVoiceSessions(ctx, d.now()); err != nil {
+	}); err != nil {
 		return err
 	}
 
@@ -76,12 +88,6 @@ func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
 	if err := d.states.closeAll(ctx); err != nil {
 		return err
 	}
-	// All non-last-resort KeyPackages are purged: whatever was published before the restore may
-	// already have been consumed by a client the backup does not know about.
-	if _, err := d.opts.Store.PurgeKeyPackages(ctx, true); err != nil {
-		return err
-	}
-
 	// "every response carries the new generation" reaches the WEBSOCKET only through this call.
 	// `gateway.Options.Generation` is read once at construction, so without it a restored instance
 	// would keep greeting clients with the old number and — worse — keep ACCEPTING resume tokens
@@ -89,11 +95,7 @@ func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
 	// client that never learned the database changed underneath it. The SQL read below is what
 	// makes the published number the one that actually landed, monotone clamp included.
 	if d.opts.Gateway != nil {
-		inst, err := d.opts.Store.GetInstance(ctx)
-		if err != nil {
-			return err
-		}
-		d.opts.Gateway.SetGeneration(inst.Generation)
+		d.opts.Gateway.SetGeneration(restored.Generation)
 	}
 	return nil
 }
@@ -158,6 +160,7 @@ func (d *DS) HealStatus(ctx context.Context, s Session, groupID id.ID) (HealStat
 		NextSeq:     row.Seq + 1,
 		Generation:  instance.Generation,
 		NeedFromSeq: row.Seq + 1,
+		NeedsHeal:   row.EpochUnknown,
 	}, nil
 }
 
@@ -178,6 +181,14 @@ func (d *DS) HealStatus(ctx context.Context, s Session, groupID id.ID) (HealStat
 // with a GroupInfo it signs itself for the result — every adoption check below only proves that
 // the member built the state it claims.
 func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) (CommitResult, error) {
+	return d.HealWithGuard(ctx, s, groupID, h, nil)
+}
+
+// HealWithGuard applies an optional acceptance-time authorization check inside the same
+// transaction that adopts the healed state. The guard runs after the restored group is fenced and
+// before any persisted heal state changes.
+func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h HealRequest,
+	guard func(context.Context, store.Repository, store.GroupRow) error) (CommitResult, error) {
 	if len(h.Tail) > maxHealTail {
 		return CommitResult{}, errInvalid("the handshake tail carries more than 64 items")
 	}
@@ -260,6 +271,15 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// A reseeded tree already contains all of its prior commits, so replay cannot recover the
+	// handshakes between the restored epoch and an ahead snapshot. The uploaded tail does not prove
+	// completeness: replay deliberately skips earlier-epoch items because they are already in the
+	// tree. Refuse every ahead reseed, even with a nonempty tail, so adoption cannot leave the
+	// instance's catch-up log behind. A same-epoch reseed remains safe and may have an empty tail.
+	if reseeded && base.Epoch > row.Epoch {
+		return CommitResult{}, errCommitInvalid("reseed",
+			"the uploaded tree is ahead of the restored epoch and its missing handshake history cannot be verified")
+	}
 	// Replay the tail. Every item the rebuilt group does not already hold is processed, checked
 	// and merged (or queued) in order; a gap or a rejection is a refusal, not a partial adoption.
 	replayed, err := d.replayHealTail(ctx, groupID, group, healBase{
@@ -268,7 +288,6 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	if err != nil {
 		return CommitResult{}, err
 	}
-
 	state, err := group.State(ctx)
 	if err != nil {
 		return CommitResult{}, err
@@ -296,9 +315,18 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		return CommitResult{}, errCommitInvalid("heal_epoch",
 			"the uploaded GroupInfo is older than the instance's own stored epoch")
 	}
+	if check.Epoch != state.Epoch {
+		return CommitResult{}, errCommitInvalid("heal_epoch",
+			"the uploaded GroupInfo epoch does not match the replayed group state")
+	}
 	if !bytes.Equal(check.TreeHash, state.TreeHash) {
 		return CommitResult{}, errCommitInvalid("tree_hash",
 			"the rebuilt tree does not match the GroupInfo's tree_hash")
+	}
+	// The authenticated GroupInfo signer and group/tree binding above establish authority before
+	// the compatibility refusal. The gate still runs before any heal state is persisted.
+	if err := d.requireGroupCapability(ctx, s, row); err != nil {
+		return CommitResult{}, err
 	}
 	// A reseeded tree is the member's upload, not the instance's own state: every leaf in it must
 	// be one an Add could have put there (finding G2b). The GroupInfo checks above only prove that
@@ -331,7 +359,31 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	var high uint64
 	var members memberView
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
-		high = row.Seq
+		if row.CommunityID != nil {
+			if err := tx.LockCommunity(ctx, *row.CommunityID); err != nil {
+				return err
+			}
+		}
+		if err := tx.LockGroup(ctx, groupID); err != nil {
+			return err
+		}
+		lockedRow, err := tx.GetGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if lockedRow.ClosedAt != nil || !lockedRow.EpochUnknown || lockedRow.Epoch != row.Epoch ||
+			(lockedRow.CommunityID == nil) != (row.CommunityID == nil) ||
+			(lockedRow.CommunityID != nil && *lockedRow.CommunityID != *row.CommunityID) {
+			return errCommitInvalid("heal_state", "the group changed while this heal was being prepared")
+		}
+		if guard != nil {
+			if err := guard(ctx, tx, lockedRow); err != nil {
+				return err
+			}
+		}
+		// Sequence-only writers may have committed while the guest replay was being
+		// prepared in another process. Continue from the fenced database high-water.
+		high = lockedRow.Seq
 		for _, r := range replayed {
 			if r.item.Seq <= row.Seq {
 				continue // already in the restored log
@@ -870,6 +922,20 @@ func (d *DS) requireRestoredMember(ctx context.Context, groupID, deviceID id.ID)
 // group. The GroupInfo checks only tie the tree to the group id; without this a reseed could move
 // a group to another target or kind. Rule "reseed".
 func checkReseededBinding(stored, uploaded []byte) error {
+	wantV2, wantV2Err := decodeReseededInteractionBinding(stored)
+	gotV2, gotV2Err := decodeReseededInteractionBinding(uploaded)
+	if wantV2Err == nil || gotV2Err == nil {
+		if wantV2Err != nil || gotV2Err != nil {
+			return errCommitInvalid("reseed", "the stored and reseeded dilla_binding versions do not match")
+		}
+		if wantV2.InstanceID != gotV2.InstanceID || wantV2.BotUserID != gotV2.BotUserID ||
+			wantV2.Kind != gotV2.Kind || wantV2.E2EEVersion != gotV2.E2EEVersion || wantV2.MediaVersion != gotV2.MediaVersion ||
+			wantV2.InstallationID != gotV2.InstallationID || wantV2.CommunityID != gotV2.CommunityID ||
+			wantV2.ParticipantUserID != gotV2.ParticipantUserID || wantV2.ParticipantDeviceID != gotV2.ParticipantDeviceID {
+			return errCommitInvalid("reseed", "the reseeded v2 dilla_binding identity or protocol versions are not the group's")
+		}
+		return nil
+	}
 	want, err := decodeBinding(stored)
 	if err != nil {
 		return errCommitInvalid("reseed", "the instance's stored binding does not decode: "+err.Error())
@@ -878,6 +944,9 @@ func checkReseededBinding(stored, uploaded []byte) error {
 	if err != nil {
 		return errCommitInvalid("reseed", "the reseeded tree's binding does not decode: "+err.Error())
 	}
+	if want.V != 1 || got.V != 1 {
+		return errCommitInvalid("reseed", "the stored and reseeded legacy dilla_binding versions must both be 1")
+	}
 	sameCommunity := (want.CommunityID == nil) == (got.CommunityID == nil) &&
 		(want.CommunityID == nil || *want.CommunityID == *got.CommunityID)
 	if got.Kind != want.Kind || got.TargetID != want.TargetID || !sameCommunity {
@@ -885,6 +954,22 @@ func checkReseededBinding(stored, uploaded []byte) error {
 			"the reseeded tree's dilla_binding (kind, community, target) is not the group's")
 	}
 	return nil
+}
+
+// decodeReseededInteractionBinding is the strict v2 shape used for Bot interaction groups. The
+// policy version intentionally is not compared: like v1, it records the policy snapshot at group
+// creation and is not part of the group's immutable identity.
+func decodeReseededInteractionBinding(raw []byte) (interactionBindingV2, error) {
+	var b interactionBindingV2
+	if err := cborx.Unmarshal(raw, &b); err != nil {
+		return interactionBindingV2{}, err
+	}
+	if b.Version != 2 || b.LegacyCommunityID != nil || b.Kind != 3 || b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 ||
+		b.InstanceID.IsZero() || b.BotUserID.IsZero() || b.InstallationID.IsZero() || b.CommunityID.IsZero() ||
+		b.ParticipantUserID.IsZero() || b.ParticipantDeviceID.IsZero() {
+		return interactionBindingV2{}, errors.New("invalid v2 interaction binding")
+	}
+	return b, nil
 }
 
 // eligibleUsers is the ACL's verdict for many users of one group: one question when the ACL

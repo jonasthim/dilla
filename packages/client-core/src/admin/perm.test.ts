@@ -18,12 +18,13 @@ const camel = (s: string): string => s.replace(/_([a-z])/g, (_, c: string) => c.
 const NAMES: Record<string, string> = { manage_community: 'manageCommunity', screen_share: 'screenShare' };
 
 describe('PERM', () => {
-  it('pins all 24 values of internal/api/perm.go', () => {
+  it('pins all 25 values of internal/api/perm.go', () => {
     expect(PERM).toEqual({
       viewChannel: 1, sendMessages: 2, manageMessages: 4, pinMessages: 8, attachFiles: 16, addReactions: 32, readHistory: 64,
       connect: 128, speak: 256, video: 512, screenShare: 1024, createInvite: 2048, kickMembers: 4096, banMembers: 8192,
       manageChannels: 16384, manageRoles: 32768, manageCommunity: 65536, viewAuditLog: 131072, mentionEveryone: 262144,
       bypassSlowmode: 524288, administrator: 1048576, muteMembers: 2097152, moveMembers: 4194304, manageNicknames: 8388608,
+      moderateMembers: 16777216,
     });
   });
   it('equals the bits map of the vector file', () => {
@@ -31,14 +32,19 @@ describe('PERM', () => {
     expect(fromFile).toEqual(PERM);
   });
   it('COMMUNITY_BITS is the seven community-scoped bits', () => {
-    expect(COMMUNITY_BITS).toBe(4096 | 8192 | 65536 | 32768 | 131072 | 1048576 | 8388608);
+    expect(COMMUNITY_BITS).toBe(4096 | 8192 | 65536 | 32768 | 131072 | 1048576 | 8388608 | 16777216);
   });
-  it('PERM_GROUPS covers all 24 keys exactly once, and PERM_BY_KEY holds 24 distinct bits', () => {
+  it('PERM_GROUPS covers all 25 keys exactly once, and PERM_BY_KEY holds 25 distinct bits', () => {
     const keys = PERM_GROUPS.flatMap((g) => g.keys);
-    expect(keys).toHaveLength(24);
+    expect(keys).toHaveLength(25);
     expect(new Set(keys)).toEqual(new Set(Object.keys(PERM_BY_KEY) as PermKey[]));
-    expect(new Set(Object.values(PERM_BY_KEY)).size).toBe(24);
+    expect(new Set(Object.values(PERM_BY_KEY)).size).toBe(25);
     expect(Object.values(PERM_BY_KEY).reduce((a, b) => a | b, 0)).toBe(PERM_ALL);
+  });
+  it('includes moderate_members in the members group and community mask', () => {
+    expect(Object.values(PERM)).toContain(1 << 24);
+    expect(PERM_GROUPS.find((g) => g.id === 'members')?.keys).toContain('moderate');
+    expect(COMMUNITY_BITS & (1 << 24)).toBe(1 << 24);
   });
 });
 

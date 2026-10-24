@@ -32,6 +32,7 @@ import {
   type SignedLists,
   type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
   type CallMediaEpoch, readCallMediaEpoch,
+  type HumanInteractionEventPage,
 } from '../../core-port';
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
@@ -989,7 +990,9 @@ export class ModelCore implements CorePort {
    *  pin_messages / mention_everyone, and the role hexes anyone may mention. */
   private readonly authority = new Map<string, { pinners: Set<string>; broadcasters: Set<string>; mentionable: Set<string> }>();
 
-  constructor(readonly me: Peer) {
+  readonly instancePinChecks: Uint8Array[] = [];
+
+  constructor(readonly me: Peer, private readonly instance?: { instanceId: Id; externalSenderPub: Uint8Array }) {
     // F3: the own pin is this device's own credential key, verified from signup on; it never takes a pending change.
     this.trustPins.set(toHex(me.user), { userId: me.user.slice(), umk: fakeDskPub(me.user), firstSeen: 0n, verified: true, changedUmk: null, blocked: null });
   }
@@ -1005,7 +1008,16 @@ export class ModelCore implements CorePort {
     this.calls.push({ m: 'close', g: '' });
   }
   identity(): IdentityInfo {
-    return { phase: 2, instanceId: null, userId: this.me.user, deviceId: this.me.device, username: 'model', listPublished: true };
+    return { phase: 2, instanceId: this.instance?.instanceId ?? null, userId: this.me.user, deviceId: this.me.device, username: 'model', listPublished: true };
+  }
+  instanceSignerKeyMatches(observedKey: Uint8Array): void {
+    this.instancePinChecks.push(observedKey.slice());
+    if (this.instance === undefined) throw coreError('E_CORE_STATE', 'not modelled');
+    if (!same(this.instance.externalSenderPub, observedKey)) throw coreError('E_CORE_STATE', 'instance external-sender key changed');
+  }
+  instanceSignerKeyPin(instanceId: Uint8Array, observedKey: Uint8Array): void {
+    if (this.instance === undefined || !same(this.instance.instanceId, instanceId)
+      || !same(this.instance.externalSenderPub, observedKey)) throw coreError('E_CORE_STATE', 'instance pin mismatch');
   }
   signupBegin(): string {
     throw coreError('E_CORE_STATE', 'not modelled');
@@ -1029,6 +1041,9 @@ export class ModelCore implements CorePort {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
   sessionSign(): Uint8Array {
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  signRemoval(): Uint8Array {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
   sessionStore(): void {
@@ -1062,6 +1077,12 @@ export class ModelCore implements CorePort {
     return [...this.gs.values()]
       .sort((a, b) => (toHex(a.groupId) < toHex(b.groupId) ? -1 : 1))
       .map((g) => this.info(g));
+  }
+  groupHealSnapshot(groupId: Id): Uint8Array {
+    this.log('groupHealSnapshot', groupId);
+    const g = this.must(groupId);
+    if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    return encode([wire.info(g.groupId, g.epoch), [], wire.tree(g.groupId, g.epoch)]);
   }
   groupRow(groupId: Id): GroupInfo | null {
     const g = this.gs.get(toHex(groupId));
@@ -1283,6 +1304,27 @@ export class ModelCore implements CorePort {
     return out;
   }
 
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, _now: bigint): WelcomeOutcome[] {
+    void welcomesBody;
+    void currentContextProof;
+    void _now;
+    this.log('humanInteractionWelcomeApply', new Uint8Array(16));
+    throw new CoreError('E_CORE_STATE', 'human interaction Welcome context is not modelled');
+  }
+
+  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
+    void requestId; void communityId; void groupId; void requestBody; void now;
+    throw new CoreError('E_CORE_STATE', 'human interaction sends are not modelled');
+  }
+  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage {
+    void after; void limit;
+    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
+  }
+  humanInteractionEventsAck(through: bigint): void {
+    void through;
+    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
+  }
+
   // --- ordered processing (L-CORE-08) ---
 
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult {
@@ -1413,6 +1455,10 @@ export class ModelCore implements CorePort {
     this.refoldDeleted(g, row);
     return this.result(g, [seq], false, false);
   }
+  removalCursor(groupId: Id): bigint { this.must(groupId); return 0n; }
+  removalActorHistoryVersion(): bigint { throw coreError('E_CORE_STATE'); }
+  refreshRemovalActorHistory(): bigint { throw coreError('E_CORE_STATE'); }
+  ingestRemoval(): bigint { throw coreError('E_CORE_STATE'); }
 
   // --- sending and reading (L-CORE-09) ---
 
@@ -2179,8 +2225,11 @@ export class ModelCore implements CorePort {
 // ---------------------------------------------------------------------------------------------
 
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
+  | 'getGroupHealState' | 'postGroupHeal'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
+  | 'getInteractionAdmissionContext'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
+  | 'getModerationRemovals'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
   | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
   | 'endCallIfAlone'
@@ -2314,6 +2363,7 @@ export class ModelDs {
   };
 
   readonly calls: DsCall[] = [];
+  readonly healNeeded = new Map<string, boolean>();
   /** `${device hex}/${group hex}` -> the last acknowledged [last_seq, last_epoch]. */
   readonly cursors = new Map<string, readonly [bigint, bigint]>();
   /** Device hexes whose external commits are refused with 403 E_FORBIDDEN. */
@@ -2820,6 +2870,19 @@ export class ModelDs {
           if (this.aclDeny.has(d)) throw httpError(404, 'E_NOT_FOUND');
           return encode([g.epoch, wire.tree(g.id, g.epoch), new Uint8Array(32)]);
         }),
+      getGroupHealState: (id) => this.call(d, 'getGroupHealState', id, null, () => {
+        const g = this.must(id);
+        if (!g.members.has(d) || this.aclDeny.has(d)) throw httpError(404, 'E_NOT_FOUND');
+        return { epoch: g.epoch, nextSeq: g.next, generation: 1n, needFromSeq: g.next, needsHeal: this.healNeeded.get(toHex(id)) ?? false };
+      }),
+      postGroupHeal: (id, snapshot) => this.call(d, 'postGroupHeal', id, null, () => {
+        const g = this.must(id);
+        if (!g.members.has(d)) throw httpError(404, 'E_NOT_FOUND');
+        const a = arr(decode(snapshot), 3);
+        if (!(a[0] instanceof Uint8Array) || !Array.isArray(a[1]) || !(a[2] instanceof Uint8Array)) throw httpError(400, 'E_INVALID_REQUEST');
+        this.healNeeded.set(toHex(id), false);
+        return { epoch: g.epoch, nextSeq: g.next };
+      }),
       getHandshakes: (id, from, limit) => this.call(d, 'getHandshakes', id, from, () => this.page(d, id, from, limit, true)),
       getMessages: (id, from, limit) =>
         this.call(d, 'getMessages', id, from, () => {
@@ -2831,6 +2894,7 @@ export class ModelDs {
           }
           return answer;
         }),
+      getModerationRemovals: (id, after) => this.call(d, 'getModerationRemovals', id, after, () => ({ rows: [], nextRevision: after })),
       getProposals: (id) =>
         this.call(d, 'getProposals', id, null, () => {
           const g = this.must(id);
@@ -2857,6 +2921,9 @@ export class ModelDs {
         }),
       postResync: (id, body) => this.call(d, 'postResync', id, null, () => this.postResync(dev, id, body)),
       getWelcomes: (after) => this.call(d, 'getWelcomes', null, after, () => this.welcomePage(d, after)),
+      getInteractionAdmissionContext: (groupId) => this.call(d, 'getInteractionAdmissionContext', groupId, null, () => {
+        throw httpError(403, 'E_FORBIDDEN');
+      }),
       deleteWelcome: (welcomeId) =>
         this.call(d, 'deleteWelcome', null, null, () => {
           const i = this.welcomes.findIndex((w) => w.dev === d && w.id === welcomeId);

@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attachment;
+pub mod bot;
 pub mod cbor;
 // The client uses the SQLite half of `mls`, unavailable on wasm32-wasip1.
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
@@ -27,8 +28,8 @@ pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const E2EE_VERSION: u64 = 1;
 /// `media_version` for call groups (protocol/07-versioning.md).
 pub const MEDIA_VERSION: u64 = 1;
-/// The HTTP `/v1` and gateway frame version (protocol/07-versioning.md).
-pub const WIRE_VERSION: u64 = 1;
+/// The current negotiated wire version; HTTP routes remain under `/v1`.
+pub const WIRE_VERSION: u64 = 3;
 /// The wasi ABI version every request carries as element 0.
 ///
 /// **2** since 2026-09-24: `public_group_process`'s response grew from 6 to 8 elements (the
@@ -58,4 +59,15 @@ pub const WIRE_VERSION: u64 = 1;
 /// this instance's key and `"instance"` credential, and a `pairing` or `interaction` group only
 /// when it carries none: a group whose extension names another key is one the instance can never
 /// propose into.
-pub const ABI_VERSION: u64 = 6;
+///
+/// **7** since 2026-10-21 (DILLA-BOT-04): the WASI module adds `verify_credential`, which decodes
+/// and strictly verifies a credential with the MLS leaf's DSK and returns only public identity
+/// fields. Browser, E2EE, media and negotiated wire versions do not change.
+///
+/// **8** since 2026-10-21 (DILLA-BOT-04 Task5): `validate_key_package`'s response grew an eighth
+/// element, the exact credential bytes validated from the KeyPackage leaf. The Go host bounds
+/// and passes those bytes to the managed Bot admission check; public wire versions do not change.
+/// **9** adds `public_group_roster_extract`, a bounded export that verifies GroupInfo/tree
+/// authentication and every member credential before returning roster descriptors.
+/// **10** adds strict MLS Welcome recipient KeyPackageRef inspection.
+pub const ABI_VERSION: u64 = 10;

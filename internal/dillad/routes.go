@@ -77,7 +77,7 @@ type planTwo struct {
 // route (api.SessionRoute), the same two layers Plan 1's delivery-service routes sit behind. Every
 // group that takes the delivery service gets the one *ds.DS, every group that takes a resolver the
 // one api.Resolver, and the readable fan-out is the gateway's.
-func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
+func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	cfg := p.o.Config
 	repo, clk, log := p.o.Repo, p.o.Clock, p.o.Log
 	res := api.NewResolver(repo)
@@ -129,15 +129,18 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	}
 	api.NewCommunities(repo, p.delivery, clk, log).
 		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).Register(m)
-	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify)
+	roles := api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).WithNotifier(notify)
+	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify).WithRoles(roles)
 	channels.Register(m)
 	channels.RegisterMembers(m)
-	api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).WithNotifier(notify).Register(m)
+	roles.Register(m)
 	api.NewBans(repo, p.delivery, clk, log).WithCalls(calls).WithNotifier(notify).Register(m)
+	api.NewMemberTimeouts(repo, clk).WithNotifier(notify).Register(m)
+	api.NewMemberWarnings(repo, clk).Register(m)
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)
 	// A readable post is activity: it takes the sender out of the community's AFK list (AW2, Q1).
-	api.NewReadable(repo, res, p.gw, p.keys, clk, log).WithAFK(calls).Register(m)
+	api.NewReadable(repo, res, p.gw, p.keys, clk, log).WithRoles(roles).WithAFK(calls).Register(m)
 	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).WithUploadMeter(p.uploads).Register(m)
 	api.NewReports(repo, p.keys, clk, log).Register(m)
 	// E8: the GIF picker. The Giphy key is a per-server setting; a server without one answers 404.
@@ -146,7 +149,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	stats.Register(m)
 	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).
 		WithDiagnostics(withCallLegs(p.diagnose, stats, cfg.TURN, p.o.Metrics)).WithCalls(calls).Register(m)
-	return calls
+	return calls, roles
 }
 
 // callsConfig is what the call routes hand a client besides the token (task 16): the signalling URL,

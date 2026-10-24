@@ -64,6 +64,9 @@ func (h *Calls) viewableCallChannel(r *http.Request) (store.ChannelRow, error) {
 	if err != nil {
 		return store.ChannelRow{}, notFound(err)
 	}
+	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+		return store.ChannelRow{}, err
+	}
 	bits, err := h.res.Resolve(r.Context(), s.UserID, ch)
 	if err != nil {
 		return store.ChannelRow{}, err
@@ -83,6 +86,15 @@ func (h *Calls) viewableCallChannel(r *http.Request) (store.ChannelRow, error) {
 func (h *Calls) channelCall(w http.ResponseWriter, r *http.Request) {
 	ch, err := h.viewableCallChannel(r)
 	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -134,6 +146,10 @@ func (h *Calls) communityCalls(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
 		server.WriteError(w, notFound(err))
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, &cid); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	channels, err := h.repo.ListChannels(r.Context(), cid)

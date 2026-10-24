@@ -9,6 +9,7 @@ import { keyFromSeed, sign } from './ed25519.ts';
 import { frameVectors } from './frames.ts';
 import { encode } from './cbor.ts';
 import { attachmentVectors } from './attachment.ts';
+import { botVectors } from './bot.ts';
 
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'protocol', 'vectors');
 const fill = (n: number, b: number) => new Uint8Array(n).fill(b);
@@ -420,6 +421,7 @@ export async function main() {
   writeFileSync(join(VECTORS_DIR, 'identity.json'), j(await identityVectors()));
   writeFileSync(join(VECTORS_DIR, 'frames.json'), j(frameVectors()));
   writeFileSync(join(VECTORS_DIR, 'attachment.json'), j(await attachmentVectors()));
+  writeFileSync(join(VECTORS_DIR, 'bot.json'), j(await botVectors()));
   console.log(`vectors written to ${VECTORS_DIR}`);
 }
 

@@ -32,7 +32,7 @@ fn cargo_config_pins_no_wasip1_runner() {
 fn version_constants_are_the_wire_values() {
     assert_eq!(dilla_core::E2EE_VERSION, 1);
     assert_eq!(dilla_core::MEDIA_VERSION, 1);
-    assert_eq!(dilla_core::WIRE_VERSION, 1);
+    assert_eq!(dilla_core::WIRE_VERSION, 3);
     // 2 since 2026-09-24: `public_group_process` grew the applied-proposal list and
     // `committer_updated`, and `validate_key_package` grows `kp_ref`. The wasi ABI is internal to
     // dillad's host, so it moves on a response-shape change while the wire versions stay at 1.
@@ -40,6 +40,10 @@ fn version_constants_are_the_wire_values() {
     // 4 since 2026-10-05: `validate_key_package` and the applied items carry the leaf's key.
     // 5 since 2026-10-05 (hardening G): `public_group_state` carries the tree's `leaf_count`.
     // 6 since 2026-10-06 (DS-MEMBERSHIP-01): `public_group_state` carries `external_senders`.
-    assert_eq!(dilla_core::ABI_VERSION, 6);
+    // 7 since 2026-10-21 (DILLA-BOT-04): WASI adds strict `verify_credential`.
+    // 8 since 2026-10-21 (DILLA-BOT-04 Task5): validated KeyPackages return the leaf credential.
+    // 9 since 2026-10-22 (DILLA-BOT): authenticated public-group roster extraction.
+    // 10 since 2026-10-22 (DILLA-BOT): strict Welcome recipient-ref inspection.
+    assert_eq!(dilla_core::ABI_VERSION, 10);
     assert_eq!(dilla_core::CORE_VERSION, "0.1.0");
 }

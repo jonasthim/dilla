@@ -17,15 +17,7 @@ import (
 func registrationBody(t *testing.T, code string) []byte {
 	t.Helper()
 	name := "user" + id.New().String()[:8]
-	body, err := cborx.Marshal([]any{
-		code, name, name,
-		make([]byte, 32), make([]byte, 32), make([]byte, 64), nil,
-		[]any{id.New(), make([]byte, 32), uint64(0), uint64(0), []byte{1}},
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return body
+	return validHumanSignupBody(t, code, name, name, nil)
 }
 
 // refusalCode decodes the first element of the CBOR error array.

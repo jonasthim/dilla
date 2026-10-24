@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,8 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
 func main() {
@@ -36,6 +40,7 @@ func main() {
 type options struct {
 	public, control, dataDir, core, logLevel, webRoot string
 	webauthnOrigin                                    string
+	botRuntimeSecret                                  string
 	productionACL                                     bool
 	sfu                                               sfuOptions
 	// wire is the one wire version the hello offers (-wire, web3.8 S1).
@@ -59,6 +64,7 @@ func parseFlags(args []string) (options, error) {
 	webRoot := fs.String("web-root", "", "a built web client directory (with its dilla-manifest.json) served at the public listener's origin instead of the embedded placeholder")
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
+	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")
 	wire := fs.Uint64("wire", dillad.WireVersion, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only)")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
@@ -84,7 +90,8 @@ func parseFlags(args []string) (options, error) {
 	}
 	return options{public: *public, control: *control, dataDir: *dataDir, core: *core,
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL, webauthnOrigin: *webauthnOrigin,
-		wire: *wire,
+		botRuntimeSecret: *botRuntimeSecret,
+		wire:             *wire,
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
@@ -144,6 +151,11 @@ func run(o options) error {
 		return err
 	}
 	defer func() { _ = host.Close(context.Background()) }()
+	if o.botRuntimeSecret != "" {
+		if err := createBotRuntimeSecret(ctx, filepath.Join(dataDir, "dilla.db"), o.botRuntimeSecret); err != nil {
+			return fmt.Errorf("create test bot runtime credential: %w", err)
+		}
+	}
 
 	publicLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.public)
 	if err != nil {
@@ -187,4 +199,56 @@ func run(o options) error {
 	_ = publicSrv.Shutdown(shutdownCtx)
 	_ = controlSrv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// createBotRuntimeSecret registers a real runtime credential through the production
+// runtime manager. It gives the browser acceptance harness a credential for its
+// separate dillabot process without manufacturing an installation row.
+func createBotRuntimeSecret(ctx context.Context, database, path string) error {
+	if !filepath.IsAbs(database) || !filepath.IsAbs(path) || path == database {
+		return errors.New("database and credential paths must be distinct absolute paths")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil { //nolint:gosec // G302: this is a directory and needs owner search permission.
+		return err
+	}
+	write, err := sqlite.OpenWrite(database)
+	if err != nil {
+		return err
+	}
+	read, err := sqlite.OpenRead(database)
+	if err != nil {
+		_ = write.Close()
+		return err
+	}
+	repo := sqlite.New(write, read)
+	defer func() { _ = repo.Close() }()
+	manager := botruntime.New(repo, nil)
+	_, err = manager.Create(ctx, func(_ id.ID, token string) error {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: local testhost CLI supplies this absolute credential path; exclusive owner-only creation prevents overwrite.
+		if err != nil {
+			return err
+		}
+		cleanup := true
+		defer func() {
+			_ = file.Close()
+			if cleanup {
+				_ = os.Remove(path)
+			}
+		}()
+		if _, err := io.WriteString(file, token+"\n"); err != nil {
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		cleanup = false
+		return nil
+	})
+	return err
 }

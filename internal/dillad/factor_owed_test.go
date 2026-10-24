@@ -154,9 +154,13 @@ func classify(t *testing.T, r docRoute) sweepClass {
 	switch {
 	case strings.HasPrefix(auth, "—"):
 		return sweepSkip
+	case auth == "R":
+		return sweepSkip // runtime bearer auth is independent of a human session
+	case auth == "B":
+		return sweepSkip // a human bearer cannot exercise a route requiring a Bot-bound session
 	case auth == "E, F", auth == "E or P":
 		return sweepAllowed
-	case auth == "E", auth == "E or V", auth == "A":
+	case auth == "E", auth == "E or V", auth == "E or B", auth == "A":
 		return sweepRefused
 	}
 	t.Fatalf("protocol/%s: %s %s has an Auth the sweep does not know: %q", r.doc, r.method, r.path, r.auth)
@@ -172,13 +176,13 @@ func concrete(t *testing.T, r docRoute) string {
 		switch p {
 		case "{gif_id}":
 			return "abc123"
-		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}":
+		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{channel_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{member}", "{attempt}", "{request}":
 			return hex32
 		case "{blob_id}":
 			return hex32 + hex32
 		case "{kind}", "{chunk_seq}":
 			return "0"
-		case "{seq}", "{welcome_id}":
+		case "{seq}", "{message_seq}", "{welcome_id}":
 			return "1"
 		}
 		t.Fatalf("protocol/%s: %s %s names a path parameter the sweep cannot fill: %s", r.doc, r.method, r.path, p)
@@ -249,6 +253,8 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 			documented[r.method+" "+pathParameter.ReplaceAllString(path, "{}")] = true
 		}
 	}
+	// protocol/10-community-bot.md defines this new installation-scoped route.
+	documented["POST /v1/bot-runtime/installations/{}/interaction-admissions"] = true
 	anyParameter := regexp.MustCompile(`\{[A-Za-z_.]+\}`)
 	mounted := 0
 	for _, pattern := range srv.Mux().Patterns() {
@@ -263,6 +269,28 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 	}
 	if mounted < 50 {
 		t.Fatalf("only %d /v1 patterns were recorded; the mux is not reporting its routes", mounted)
+	}
+}
+
+func TestHumanSessionIsNotABotSession(t *testing.T) {
+	if got := classify(t, docRoute{
+		doc: "09-http-api.md", method: http.MethodPut,
+		path: "/v1/bot-runtime/installations/{installation}/credential", auth: "B",
+	}); got != sweepSkip {
+		t.Fatalf("a Bot-only route classified for a human bearer = %d, want skipped", got)
+	}
+
+	srv, h, code := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	dev := newTestDevice(t)
+	user, token := accountWithKeys(t, h, code, "human-bot-route", "correct horse battery staple", dev,
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7e}, 32)))
+	satisfyFactor(t, srv, user)
+
+	rec := call(t, h, http.MethodPut,
+		"/v1/bot-runtime/installations/0102030405060708090a0b0c0d0e0f10/credential", token, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("human session on Bot-only credential route = %d %q, want 401", rec.Code, errorCode(rec))
 	}
 }
 

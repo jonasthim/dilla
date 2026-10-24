@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -35,6 +36,7 @@ import (
 // calls Register beside `api.Register`.
 type Groups struct {
 	DS      *ds.DS
+	Deps    Deps  // trusted read dependencies for human current interaction-context proofs
 	MaxBody int64 // §5.3's cap for this group of routes; zero means maxDSBody
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
@@ -47,6 +49,9 @@ type Groups struct {
 	// outside any transaction; a failure is the hook's to log, because the registration itself has
 	// succeeded.
 	AfterRegister func(ctx context.Context, groupID id.ID)
+	// LoadBotInteractionPreflight supplies fresh trusted context for a kind-3 registration. The
+	// handler obtains its identifiers from an authenticated MLS GroupContext before invoking it.
+	LoadBotInteractionPreflight func(context.Context, BotInteractionPreflightRequest) (ds.InteractionRegistrationPreflight, error)
 	// AfterKeyPackages, when set, runs after the delivery service stored a device's KeyPackages,
 	// the same way AfterRegister does: after the 201, on its own goroutine, under a context the
 	// request's cancellation does not reach, drained by Drain. SyncGroupMembers proposes only a
@@ -97,7 +102,11 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
 	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
+	h.registerBotInteractionGroupReads(mux, sessions)
+	h.RegisterBotRegistration(mux, sessions)
+	h.RegisterBotMessages(mux, sessions)
 	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
+	mux.Handle("GET /v1/groups/{id}/interaction-admission-context", enrolled(dsMeter(h.Limiter, dsClassRead, h.currentInteractionAdmissionContext)))
 	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
 }
 
@@ -163,6 +172,10 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	session, err := sessionOf(r)
 	if err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	if session.Bot != nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bots must use the installation-scoped group registration route"))
 		return
 	}
 	out, err := h.DS.Register(r.Context(), ds.RegisterRequest{
@@ -326,6 +339,10 @@ func (h *Groups) tree(w http.ResponseWriter, r *http.Request) {
 // directions. A non-ds error is returned unchanged, and WriteError turns it into a 500 with an
 // empty detail.
 func dsError(err error) error {
+	var upgrade *capability.UpgradeRequired
+	if errors.As(err, &upgrade) {
+		return server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+	}
 	var e *ds.Error
 	if !errors.As(err, &e) {
 		return err
@@ -348,7 +365,11 @@ func dsError(err error) error {
 		}
 		return server.RateLimited(ms)
 	default:
-		return server.Errorf(server.Code(e.Code), "%s", e.Detail)
+		converted := server.Errorf(server.Code(e.Code), "%s", e.Detail)
+		if e.Status != 0 && e.Status != converted.Status() {
+			return server.WithStatus(e.Status, converted)
+		}
+		return converted
 	}
 }
 

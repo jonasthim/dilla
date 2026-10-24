@@ -15,6 +15,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -63,6 +64,7 @@ type readableFixture struct {
 	e        *env
 	cid      id.ID
 	ownerTok string
+	roles    *api.Roles
 	fan      *recordingFanout
 	keys     *api.StaticFrankingKeys
 }
@@ -71,11 +73,12 @@ func newReadableFixture(t *testing.T) *readableFixture {
 	t.Helper()
 	e, cid, ownerTok := channelEnv(t)
 	log := slog.New(slog.DiscardHandler)
-	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	roles := api.NewRoles(e.Repo, e.Clk, "dilla.example", log)
+	roles.Register(e.Mux)
 	fan := &recordingFanout{}
 	keys := api.NewStaticFrankingKeys(api.FrankingKey{ID: id.New(), Key: bytes.Repeat([]byte{0x09}, 32)})
-	api.NewReadable(e.Repo, api.NewResolver(e.Repo), fan, keys, e.Clk, log).Register(e.Mux)
-	return &readableFixture{e: e, cid: cid, ownerTok: ownerTok, fan: fan, keys: keys}
+	api.NewReadable(e.Repo, api.NewResolver(e.Repo), fan, keys, e.Clk, log).WithRoles(roles).Register(e.Mux)
+	return &readableFixture{e: e, cid: cid, ownerTok: ownerTok, roles: roles, fan: fan, keys: keys}
 }
 
 // readableEnv is the fixture as (env, community, owner token), the shape task 9's
@@ -116,6 +119,169 @@ func envelopeOf(t *testing.T, typ uint64, body string) []byte {
 		t.Fatalf("cborx.Marshal: %v", err)
 	}
 	return b
+}
+
+func readableReactionEnvelope(t *testing.T, typ uint64, targetSeq uint64, emoji string) []byte {
+	t.Helper()
+	b, err := cborx.Marshal([]any{uint64(1), id.New(), typ, nil, seqRef(targetSeq), emoji, []any{}, []any{}, bytes.Repeat([]byte{0x06}, 32)})
+	if err != nil {
+		t.Fatalf("encode reaction envelope: %v", err)
+	}
+	return b
+}
+
+func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	role := createRole(t, e, f.cid, f.ownerTok, "panel member", 2, api.PermViewChannel)
+	if status, body := e.Do(http.MethodPut, "/v1/communities/"+f.cid.String()+"/self-roles/policy", f.ownerTok, []any{id.New(), []any{role}}); status != http.StatusOK {
+		t.Fatalf("configure self-role allowlist = %d (%x), want 200", status, body)
+	}
+	channel := readableChannel(t, e, f.cid, f.ownerTok)
+	member, memberTok := e.NewUser("panel-reactor")
+	joinCommunity(t, e, f.cid, memberTok)
+	memberSession := e.sess[memberTok]
+	memberSession.WireVersion, memberSession.E2EEVersion, memberSession.MediaVersion = 3, 1, 1
+	e.sess[memberTok] = memberSession
+	botID, deviceID, installationID := id.New(), id.New(), id.New()
+	now := e.Clk.Now().Unix()
+	if err := e.Repo.CreateUser(t.Context(), store.UserRow{ID: botID, Username: "panel-bot-" + botID.String()[:8], Display: "Panel Bot", Kind: 1, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: f.cid, UserID: botID, Joined: now}); err != nil {
+		t.Fatal(err)
+	}
+	verified := now
+	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: append([]byte{1}, make([]byte, 31)...), CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now, LastSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.CreateBotInstallation(t.Context(), store.BotInstallationRow{ID: installationID, CommunityID: f.cid, UserID: &botID, DeviceID: &deviceID, State: store.BotInstallationReady, Revision: 1, Capabilities: 1 << 2, ApprovedBy: e.sess[f.ownerTok].UserID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
+		t.Fatal(err)
+	}
+	seq, err := e.Repo.NextChannelSeq(t.Context(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID := seedTextGroup(t, e, channel, f.cid)
+	requestID, attemptID := id.New(), id.New()
+	seedAcceptedRolePanelBotSend(t, e, installationID, botID, deviceID, f.cid, groupID, requestID, attemptID, seq)
+	panelPath := "/v1/communities/" + f.cid.String() + "/role-panels"
+	if status, body := e.Do(http.MethodPut, panelPath, f.ownerTok, []any{requestID, channel, seq, []any{[]any{"🎨", role}}}); status != http.StatusOK {
+		t.Fatalf("register bot panel = %d (%x), want 200", status, body)
+	}
+	// The explicit encrypted-panel action endpoint must evaluate current channel
+	// overwrites, even though the caller remains a community member.
+	if err := e.Repo.ReplaceMembers(t.Context(), groupID, 0, []store.MemberRow{{
+		GroupID: groupID, LeafIndex: 0, UserID: member, DeviceID: e.sess[memberTok].DeviceID, SignatureKey: make([]byte, 32),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	eventClass := uint8(1)
+	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 99,
+		UploaderDevice: e.sess[memberTok].DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now, Class: &eventClass}); err != nil {
+		t.Fatal(err)
+	}
+	ordinaryClass := uint8(0)
+	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 98,
+		UploaderDevice: e.sess[memberTok].DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now, Class: &ordinaryClass}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{ChannelID: channel, TargetKind: 1, TargetID: member,
+		Deny: uint64(api.PermAddReactions)}); err != nil {
+		t.Fatal(err)
+	}
+	reactionAction := "/v1/communities/" + f.cid.String() + "/role-panels/" + channel.String() + "/" + fmt.Sprint(seq) + "/reaction"
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(98), "🎨", uint64(1)}); status != http.StatusForbidden {
+		t.Fatalf("ordinary accepted app message as panel reaction evidence = %d (%x), want 403", status, body)
+	}
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(1)}); status != http.StatusForbidden {
+		t.Fatalf("encrypted panel action after channel add_reactions denial = %d (%x), want 403", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after channel overwrite denied panel action = %v, %v; want absent", held, err)
+	}
+	if err := e.Repo.DeleteOverwrite(t.Context(), channel, 1, member); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(1)}); status != http.StatusNoContent {
+		t.Fatalf("authorized panel action for ordinary member = %d (%x), want 204", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || !slices.Contains(held, role) {
+		t.Fatalf("role after approved panel action = %v, %v; want panel role", held, err)
+	}
+	if status, body := e.Do(http.MethodPost, reactionAction, memberTok, []any{groupID, uint64(99), "🎨", uint64(0)}); status != http.StatusNoContent {
+		t.Fatalf("remove panel action for ordinary member = %d (%x), want 204", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after removing panel action = %v, %v; want absent", held, err)
+	}
+	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 3, seq, "🎭"))
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role from unmapped emoji = %v, %v; want absent", held, err)
+	}
+	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 3, seq, "🎨"))
+	held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member)
+	if err != nil || !slices.Contains(held, role) {
+		t.Fatalf("authenticated reactor role = %v, %v; want panel role", held, err)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, botID); err != nil || slices.Contains(held, role) {
+		t.Fatalf("panel author role = %v, %v; want absent", held, err)
+	}
+	if err := e.Repo.PutMemberRole(t.Context(), f.cid, member, role); err != nil {
+		t.Fatal(err)
+	}
+	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 4, seq, "🎨"))
+	held, err = e.Repo.ListMemberRoles(t.Context(), f.cid, member)
+	if err != nil || !slices.Contains(held, role) {
+		t.Fatalf("role after reaction removal = %v, %v; want manual grant retained", held, err)
+	}
+	if err := e.Repo.DeleteMemberRole(t.Context(), f.cid, member, role); err != nil {
+		t.Fatal(err)
+	}
+	lookalikeSeq, err := e.Repo.NextChannelSeq(t.Context(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: lookalikeSeq, Sender: member, Envelope: []byte{1}, Body: "Pick a role", FrankingTag: make([]byte, 32), Created: now, UploaderDevice: e.sess[memberTok].DeviceID}); err != nil {
+		t.Fatal(err)
+	}
+	postReadable(t, e, channel, memberTok, readableReactionEnvelope(t, 3, lookalikeSeq, "🎨"))
+	held, err = e.Repo.ListMemberRoles(t.Context(), f.cid, member)
+	if err != nil || slices.Contains(held, role) {
+		t.Fatalf("role from unregistered lookalike = %v, %v; want absent", held, err)
+	}
+	other, otherTok := e.NewUser("unapproved-panel-reactor")
+	otherSession := e.sess[otherTok]
+	otherSession.WireVersion, otherSession.E2EEVersion, otherSession.MediaVersion = 3, 1, 1
+	e.sess[otherTok] = otherSession
+	joinCommunity(t, e, f.cid, otherTok)
+	if status, body := e.Do(http.MethodPut, "/v1/communities/"+f.cid.String()+"/self-roles/policy", f.ownerTok, []any{id.New(), []any{}}); status != http.StatusOK {
+		t.Fatalf("remove role from allowlist = %d (%x), want 200", status, body)
+	}
+	postReadable(t, e, channel, otherTok, readableReactionEnvelope(t, 3, seq, "🎨"))
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, other); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role from removed allowlist = %v, %v; want absent", held, err)
+	}
+	if err := e.Repo.AddReactionRoleGrant(t.Context(), store.ReactionRoleGrant{CommunityID: f.cid, UserID: member, RoleID: role, ChannelID: channel, MessageSeq: seq, Reaction: "🎨"}); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the existing readable-message tombstone path separately after
+	// proving registration and reaction work from the accepted MLS receipt alone.
+	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: seq, Sender: botID, Envelope: []byte{1}, Body: "Pick a role", FrankingTag: make([]byte, 32), Created: now, UploaderDevice: deviceID}); err != nil {
+		t.Fatal(err)
+	}
+	botToken := "panel-bot-delete"
+	e.sess[botToken] = auth.Session{UserID: botID, DeviceID: deviceID, WireVersion: 3, E2EEVersion: 1, MediaVersion: 1}
+	if status, body := e.Do(http.MethodDelete, fmt.Sprintf("/v1/channels/%s/messages/%d", channel, seq), botToken, nil); status != http.StatusNoContent {
+		t.Fatalf("delete bot panel = %d (%x), want 204", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, member); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after deleting panel message = %v, %v; want absent", held, err)
+	}
+	postReadable(t, e, channel, otherTok, readableReactionEnvelope(t, 3, seq, "🎨"))
+	if held, err := e.Repo.ListMemberRoles(t.Context(), f.cid, other); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role from deleted panel message = %v, %v; want absent", held, err)
+	}
 }
 
 type postResp struct {
@@ -754,4 +920,52 @@ func TestReadStateIsMonotoneAndBounded(t *testing.T) {
 	if got := get(); got != seq {
 		t.Fatalf("read state = %d past the channel's newest seq %d", got, seq)
 	}
+}
+
+func TestReadableTimeoutBlocksEditsReactionsAndPinsButAllowsOwnDeletionAndReads(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	member, memberTok := e.NewUser("timed-out")
+	joinCommunity(t, e, f.cid, memberTok)
+	role := createRole(t, e, f.cid, f.ownerTok, "readable-moderations", 5, api.PermViewChannel|api.PermSendMessages|api.PermPinMessages|api.PermAddReactions)
+	grant(t, e, f.cid, f.ownerTok, member, role, http.StatusNoContent)
+	first := postReadable(t, e, ch, memberTok, envelope0(t, "first"))
+	second := postReadable(t, e, ch, memberTok, envelope0(t, "second"))
+	expires := e.Clk.Now().Unix() + 600
+	if err := e.Repo.PutMemberTimeout(t.Context(), store.MemberTimeoutRow{CommunityID: f.cid, UserID: member, ByUser: mustSessionUser(t, e, f.ownerTok), Created: e.Clk.Now().Unix(), Expires: expires}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/v1/channels/%s/messages/%d", ch, first)
+	if status, _ := e.Do(http.MethodPatch, path, memberTok, []any{envelopeOf(t, 1, "edit")}); status != http.StatusForbidden {
+		t.Fatalf("timed-out readable edit = %d, want 403", status)
+	}
+	for _, tc := range []struct {
+		typ  uint64
+		body string
+	}{{0, "new message"}, {1, "edit"}, {3, "reaction"}, {4, "reaction"}, {5, ""}, {6, ""}} {
+		status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", memberTok, []any{envelopeOf(t, tc.typ, tc.body)})
+		if status != http.StatusForbidden {
+			t.Fatalf("timed-out readable type %d = %d (%x), want 403", tc.typ, status, body)
+		}
+	}
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", memberTok, []any{envelopeOf(t, 2, "")}); status != http.StatusNoContent {
+		t.Fatalf("timed-out author delete alias = %d, want 204", status)
+	}
+	if status, _ := e.Do(http.MethodDelete, fmt.Sprintf("/v1/channels/%s/messages/%d", ch, second), memberTok, nil); status != http.StatusNoContent {
+		t.Fatalf("timed-out author DELETE = %d, want 204", status)
+	}
+	if status, _ := e.Do(http.MethodGet, "/v1/channels/"+ch.String()+"/messages?from=0", memberTok, nil); status != http.StatusOK {
+		t.Fatalf("timed-out read = %d, want 200", status)
+	}
+}
+
+func mustSessionUser(t *testing.T, e *env, token string) id.ID {
+	t.Helper()
+	s, ok := e.sess[token]
+	if !ok {
+		t.Fatal("session not found")
+	}
+	return s.UserID
 }

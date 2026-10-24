@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -22,14 +23,90 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/jonasthim/dilla/internal/bot/identity"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 )
+
+var (
+	testVerifierOnce sync.Once
+	testVerifier     *identity.Verifier
+	testVerifierErr  error
+)
+
+func sharedTestVerifier(t *testing.T) *identity.Verifier {
+	t.Helper()
+	testVerifierOnce.Do(func() {
+		wasm, err := os.ReadFile("../mlswasi/testdata/dilla_core_wasi.wasm")
+		if err != nil {
+			testVerifierErr = err
+			return
+		}
+		runtime, err := mlswasi.New(context.Background(), wasm, mlswasi.Options{PoolSize: 4})
+		if err != nil {
+			testVerifierErr = err
+			return
+		}
+		testVerifier = identity.NewVerifier(runtime)
+	})
+	if testVerifierErr != nil {
+		t.Fatalf("start shared WASI credential verifier: %v", testVerifierErr)
+	}
+	return testVerifier
+}
+
+type testHumanCredential struct {
+	UMKPub, SSKPub, DSKPub []byte
+	SigUMKSSK              []byte
+	Credential             []byte
+	DSKPriv, SSKPriv       []byte
+}
+
+func makeTestCredential(t *testing.T, deviceID id.ID, kind byte) testHumanCredential {
+	t.Helper()
+	seed := func(label string) []byte { sum := sha256.Sum256([]byte(label)); return sum[:] }
+	umk := ed25519.NewKeyFromSeed(seed("dilla human test umk " + deviceID.String()))
+	ssk := ed25519.NewKeyFromSeed(seed("dilla human test ssk " + deviceID.String()))
+	dsk := ed25519.NewKeyFromSeed(seed("dilla human test dsk " + deviceID.String()))
+	umkPub := umk.Public().(ed25519.PublicKey)
+	sskPub := ssk.Public().(ed25519.PublicKey)
+	dskPub := dsk.Public().(ed25519.PublicKey)
+	sigUMKSSK := ed25519.Sign(umk, append([]byte("dilla ssk v1"), sskPub...))
+	dskMessage := append([]byte("dilla dsk v1"), deviceID[:]...)
+	dskMessage = append(dskMessage, dskPub...)
+	dskMessage = append(dskMessage, kind, 0, 0)
+	sigSSKDev := ed25519.Sign(ssk, dskMessage)
+	credential, err := cborx.Marshal([]any{uint64(1), umkPub, make([]byte, 16), deviceID[:], uint64(kind), uint64(0), uint64(0), sskPub, sigUMKSSK, sigSSKDev})
+	if err != nil {
+		t.Fatalf("encode Human credential: %v", err)
+	}
+	return testHumanCredential{UMKPub: umkPub, SSKPub: sskPub, DSKPub: dskPub,
+		SigUMKSSK: sigUMKSSK, Credential: credential, DSKPriv: dsk, SSKPriv: ssk}
+}
+
+func makeTestHumanCredential(t *testing.T, deviceID id.ID) testHumanCredential {
+	t.Helper()
+	return makeTestCredential(t, deviceID, 0)
+}
+
+func validHumanSignupBody(t *testing.T, code, username, display string, password any) []byte {
+	t.Helper()
+	deviceID := id.New()
+	cred := makeTestHumanCredential(t, deviceID)
+	body, err := cborx.Marshal([]any{code, username, display, cred.UMKPub, cred.SSKPub,
+		cred.SigUMKSSK, password, []any{deviceID, cred.DSKPub, uint64(0), uint64(0), cred.Credential}})
+	if err != nil {
+		t.Fatalf("marshal valid Human signup: %v", err)
+	}
+	return body
+}
 
 // testHasher stands in for task 9's Argon2id *auth.Hasher, which does not exist
 // yet. It is NOT a mock of the thing under test: what these tests assert is that
@@ -89,6 +166,24 @@ func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps
 	}
 	repo := sqlite.New(write, read)
 	t.Cleanup(func() { repo.Close() })
+	return newTestAPIFullWithRepo(t, repo, tune, wire)
+}
+
+// newTestAPIWithRepository builds the normal API mux and dependencies over a caller-owned,
+// already-migrated repository. Lifecycle tests use it to exercise the same handlers on Postgres.
+func newTestAPIWithRepository(t *testing.T, repo store.Repository, wire func(*api.Deps)) (http.Handler, api.Deps) {
+	t.Helper()
+	return newTestAPIFullWithRepo(t, repo, nil, wire)
+}
+
+func newTestAPIFullWithRepo(t *testing.T, repo store.Repository, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
+	return newTestAPIFullWithRepoAndMount(t, repo, tune, wire, nil)
+}
+
+// newTestAPIFullWithRepoAndMount adds a narrow composition seam for integration tests whose
+// routes are mounted by the delivery-service composition root rather than api.Register.
+func newTestAPIFullWithRepoAndMount(t *testing.T, repo store.Repository, tune func(*config.Config), wire func(*api.Deps), mount func(*server.Mux, api.Deps)) (http.Handler, api.Deps) {
+	t.Helper()
 	bs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"), "fs")
 	if err != nil {
 		t.Fatalf("blob.Open: %v", err)
@@ -125,6 +220,7 @@ func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps
 		Throttle:     auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
 		Assertions:   api.NewAssertions(clk, api.AssertionTTL),
 		Blobs:        bs,
+		BotIdentity:  sharedTestVerifier(t),
 	}
 	deps.Sessions.Assertions = deps.Assertions
 	if wire != nil {
@@ -132,6 +228,9 @@ func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps
 	}
 	m := server.NewMux()
 	api.Register(m, deps)
+	if mount != nil {
+		mount(m, deps)
+	}
 	return m, deps
 }
 
@@ -168,6 +267,17 @@ func seedInviteAdmin(t *testing.T, d api.Deps, maxUses uint64, grantsAdmin uint8
 		t.Fatalf("CreateInvite: %v", err)
 	}
 	return code
+}
+
+// uniqueAPITestDSK keeps managed Bot fixtures independent of legacy all-zero
+// Human device keys. These authorization fixtures do not validate credentials.
+func uniqueAPITestDSK(t *testing.T) []byte {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return pub
 }
 
 // seedAPIDevice creates a user and one native device and returns both rows and

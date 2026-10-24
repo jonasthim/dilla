@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -187,8 +188,19 @@ type Session struct {
 	// FactorOwed is the account's users.factor_owed when the token was resolved (web3.6 S1): the
 	// account holds no second factor yet, so an enrolled session of it reaches only protocol/09's
 	// `F` and `P` routes (Middleware, MiddlewareOwedOK) and never the gateway.
-	FactorOwed bool
+	FactorOwed   bool
+	WireVersion  uint64
+	E2EEVersion  uint64
+	MediaVersion uint64
+	// Bot is non-nil only for a repository-validated session bound to a live
+	// managed installation. It is not inferred from users.kind.
+	Bot *BotSessionBinding
 }
+
+// BotSessionBinding is the managed installation context carried by an
+// authenticated bot session. Capabilities remain installation constraints;
+// API permission checks continue to use their existing vocabulary.
+type BotSessionBinding = botaccess.Binding
 
 // InPairingGroup reports whether this session may act on a group. An enrolled or admin session is
 // unrestricted; a provisional session may act only inside the one group it was paired for, and a
@@ -405,6 +417,34 @@ func (s *Sessions) NewDeviceSession(ctx context.Context, tx store.Repository, us
 	return s.mint(ctx, tx, userID, deviceID, tier, ScopeEnrolled)
 }
 
+// mintBotSession is called only after Establish has consumed a nonce and
+// verified the registered native device's purpose-0/1 signature. It creates
+// the session and exact token-hash binding in one transaction.
+func (s *Sessions) mintBotSession(ctx context.Context, userID, deviceID id.ID) (Token, error) {
+	var tok Token
+	err := s.repo.Tx(ctx, func(tx store.Repository) error {
+		binding, isBot, err := botaccess.ForUserDevice(ctx, tx, userID, deviceID)
+		if err != nil {
+			return err
+		}
+		if !isBot || binding.State != store.BotInstallationEnrolling && binding.State != store.BotInstallationJoining && binding.State != store.BotInstallationReady {
+			return server.Errorf(server.CodeForbidden, "managed bot installation is not active")
+		}
+		tok, err = s.mintSession(ctx, tx, userID, deviceID, 0, ScopeEnrolled, true)
+		if err != nil {
+			return err
+		}
+		return tx.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{
+			TokenHash: TokenHash(tok.Token), InstallationID: binding.InstallationID,
+			UserID: userID, DeviceID: deviceID, Created: s.clk.Now().Unix(),
+		})
+	})
+	if err != nil {
+		return Token{}, err
+	}
+	return tok, nil
+}
+
 func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error) {
 	unauth := server.Errorf(server.CodeUnauthenticated, "")
 	if len(r.Nonce) != nonceBytes || len(r.Sig) != ed25519.SignatureSize {
@@ -439,6 +479,15 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	user, err := s.repo.GetUser(ctx, device.UserID)
 	if err != nil {
 		return Token{}, unauth
+	}
+	if user.Kind == 1 {
+		// Bot sessions use only the ordinary device challenge and exact purpose
+		// 0/1 proof. Assertions, registration, and provisional purpose 2 never
+		// mint bot authority.
+		if len(r.Login) != 0 || r.Registration != nil || r.Purpose == PurposeProvisional || r.Purpose > PurposeRenew {
+			return Token{}, unauth
+		}
+		return s.mintBotSession(ctx, device.UserID, device.ID)
 	}
 	if user.DisabledAt != nil || user.DeletedAt != nil {
 		return Token{}, server.Errorf(server.CodeForbidden, "account disabled")
@@ -764,6 +813,17 @@ func rateWait(creations []int64, rate int, now int64) int64 {
 // the single place a session's token, lifetime and idle window are decided, so
 // the registration carve-out and the ordinary challenge path cannot drift.
 func (s *Sessions) mint(ctx context.Context, tx store.Repository, userID, deviceID id.ID, tier uint8, scope Scope) (Token, error) {
+	return s.mintSession(ctx, tx, userID, deviceID, tier, scope, false)
+}
+
+func (s *Sessions) mintSession(ctx context.Context, tx store.Repository, userID, deviceID id.ID, tier uint8, scope Scope, managedBot bool) (Token, error) {
+	user, err := tx.GetUser(ctx, userID)
+	if err != nil {
+		return Token{}, err
+	}
+	if user.Kind == 1 && !managedBot || user.Kind != 1 && managedBot {
+		return Token{}, server.Errorf(server.CodeForbidden, "managed bot sessions require an installation binding")
+	}
 	raw := make([]byte, tokenBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return Token{}, err
@@ -824,6 +884,13 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	if subtle.ConstantTimeCompare(row.TokenHash, sum) != 1 {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
+	botBinding, botBound, err := s.currentBotBinding(ctx, row, sum)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+		}
+		return Session{}, server.Unavailable(1000, "session authorization could not be checked")
+	}
 	if Scope(row.Scope) == ScopePending && s.DeviceLists != nil {
 		device, err := s.repo.GetDevice(ctx, row.DeviceID)
 		if err != nil || device.RevokedAt != nil {
@@ -863,11 +930,77 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	} else {
 		idleExpires = row.IdleExpires
 	}
-	return Session{
+	session := Session{
 		UserID: row.UserID, DeviceID: row.DeviceID, Scope: Scope(row.Scope),
 		TokenHash: row.TokenHash, Expires: row.Expires, IdleExpires: idleExpires,
-		FactorOwed: row.FactorOwed,
-	}, nil
+		FactorOwed:  row.FactorOwed,
+		WireVersion: row.WireVersion, E2EEVersion: row.E2EEVersion, MediaVersion: row.MediaVersion,
+	}
+	if botBound {
+		session.Bot = &botBinding
+	}
+	return session, nil
+}
+
+// ValidateSessionHash is the gateway's heartbeat-time revocation check for a
+// bound bot connection. It uses the stored opaque token hash and reads current
+// account/device/installation/runtime state without accepting client headers.
+func (s *Sessions) ValidateSessionHash(ctx context.Context, tokenHash []byte) error {
+	if len(tokenHash) != 32 {
+		return store.ErrNotFound
+	}
+	row, err := s.repo.GetSessionByHash(ctx, tokenHash, s.clk.Now().Unix())
+	if err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare(row.TokenHash, tokenHash) != 1 {
+		return store.ErrNotFound
+	}
+	_, bound, err := s.currentBotBinding(ctx, row, tokenHash)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) {
+			return store.ErrNotFound
+		}
+		return err
+	}
+	if !bound || Scope(row.Scope) != ScopeEnrolled {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// currentBotBinding treats the DB binding as a claim to verify, not authority:
+// every account/device/installation/runtime condition is read again per request.
+func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionRow, tokenHash []byte) (BotSessionBinding, bool, error) {
+	stored, storedErr := s.repo.GetBotSessionBinding(ctx, tokenHash)
+	if storedErr != nil && !errors.Is(storedErr, store.ErrNotFound) {
+		return BotSessionBinding{}, false, storedErr
+	}
+	binding, isBot, eligibilityErr := botaccess.ForUserDevice(ctx, s.repo, session.UserID, session.DeviceID)
+	if eligibilityErr != nil {
+		return BotSessionBinding{}, false, eligibilityErr
+	}
+	if !isBot {
+		if storedErr == nil {
+			return BotSessionBinding{}, false, botaccess.ErrIneligible
+		}
+		return BotSessionBinding{}, false, nil
+	}
+	if errors.Is(storedErr, store.ErrNotFound) || stored.InstallationID != binding.InstallationID ||
+		stored.UserID != session.UserID || stored.DeviceID != session.DeviceID ||
+		!bytes.Equal(stored.TokenHash, tokenHash) || Scope(session.Scope) != ScopeEnrolled {
+		return BotSessionBinding{}, false, botaccess.ErrIneligible
+	}
+	return binding, true, nil
+}
+
+// RecordCapabilities persists a negotiated selection against the exact bearer session hash.
+// The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
+func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
+	if len(tokenHash) != 32 || (wire != 2 && wire != 3) || e2ee != 1 || media != 1 {
+		return errors.New("auth: invalid negotiated capabilities")
+	}
+	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)
 }
 
 func (s *Sessions) RevokeDevice(ctx context.Context, deviceID id.ID) error {
@@ -954,6 +1087,25 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 			server.WriteError(w, err)
 			return
 		}
+		if sess.Bot != nil {
+			allowed, routeErr := s.botRouteAllowed(r.Context(), r, *sess.Bot, sess)
+			if routeErr != nil {
+				if errors.Is(routeErr, botaccess.ErrIneligible) || errors.Is(routeErr, store.ErrNotFound) {
+					allowed = false
+				} else {
+					server.WriteError(w, server.Unavailable(1000, "authorization state unavailable"))
+					return
+				}
+			}
+			if !allowed {
+				server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot session is not allowed on this route or resource"))
+				return
+			}
+			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion < 3 {
+				server.WriteError(w, server.Version([]uint64{3}, []uint64{1}, []uint64{1}))
+				return
+			}
+		}
 		if sess.Scope != want && sess.Scope != ScopeEnrolled {
 			server.WriteError(w, scopeRefusal(sess.Scope))
 			return
@@ -974,6 +1126,378 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 		}
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), sess)))
 	})
+}
+
+// botRouteAllowed is the explicit HTTP surface for bound bot sessions. Every
+// resource path is resolved against the current repository before it is allowed.
+func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot BotSessionBinding, session Session) (bool, error) {
+	pattern := r.Pattern
+	if pattern == "" {
+		return false, nil
+	}
+	phase := bot.State
+	joining := phase == store.BotInstallationJoining || phase == store.BotInstallationReady
+	ready := phase == store.BotInstallationReady
+	communityPath := func(name string) bool { return pathIDEquals(r, name, bot.CommunityID) }
+	groupPath := func(name string) (bool, error) {
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		groupID, ok := pathID(r, name)
+		if !ok {
+			return false, nil
+		}
+		group, err := s.repo.GetGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if group.CommunityID == nil || *group.CommunityID != bot.CommunityID || group.ClosedAt != nil {
+			return false, nil
+		}
+		return group.Kind <= 1, nil
+	}
+	interactionGroupPath := func() (bool, error) {
+		if !ready || !pathIDEquals(r, "installation", bot.InstallationID) {
+			return false, nil
+		}
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		groupID, ok := pathID(r, "group")
+		if !ok {
+			return false, nil
+		}
+		group, err := s.repo.GetGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID && group.Kind == 3 && group.ClosedAt == nil, nil
+	}
+	interactionSendGroupPath := func() (bool, error) {
+		if !ready {
+			return false, nil
+		}
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		groupID, ok := pathID(r, "group")
+		if !ok {
+			return false, nil
+		}
+		group, err := s.repo.GetGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if group.CommunityID == nil || *group.CommunityID != bot.CommunityID || group.ClosedAt != nil {
+			return false, nil
+		}
+		if group.Kind <= 1 {
+			return true, nil
+		}
+		if group.Kind != 3 {
+			return false, nil
+		}
+		receipt, err := s.repo.GetBotGroupRegistrationReceiptByGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return receipt.InstallationID == bot.InstallationID && receipt.UserID == session.UserID &&
+			receipt.DeviceID == session.DeviceID && receipt.CommunityID == bot.CommunityID && receipt.GroupID == groupID, nil
+	}
+	channelPath := func(name string) (bool, error) {
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		channelID, ok := pathID(r, name)
+		if !ok {
+			return false, nil
+		}
+		channel, err := s.repo.GetChannel(ctx, channelID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID && channel.DeletedAt == nil, nil
+	}
+	callPath := func() (bool, error) {
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		callID, ok := pathID(r, "call_id")
+		if !ok {
+			return false, nil
+		}
+		call, err := s.repo.GetVoiceSession(ctx, callID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if call.Ended != nil {
+			return false, nil
+		}
+		channel, err := s.repo.GetChannel(ctx, call.ChannelID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return channel.DeletedAt == nil && channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID, nil
+	}
+	switch pattern {
+	case "POST /v1/sessions/negotiate":
+		return phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
+	case "DELETE /v1/devices/{device_id}/sessions":
+		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "device_id", session.DeviceID), nil
+	case "PUT /v1/bot-runtime/installations/{installation}/credential":
+		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "POST /v1/bot-runtime/installations/{installation}/ready":
+		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info",
+		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes",
+		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages",
+		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor",
+		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
+		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal":
+		return interactionGroupPath()
+	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
+		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}",
+		"GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}":
+		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem":
+		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/communities/{community}/bot/actors/{actor}/authority":
+		if !ready || !communityPath("community") {
+			return false, nil
+		}
+		actorID, ok := pathID(r, "actor")
+		return ok && !actorID.IsZero(), nil
+	case "POST /v1/communities/{community}/bot/join-role-grants":
+		return ready && communityPath("community"), nil
+	case "GET /v1/communities/{community}/bot/members/{member}/episode":
+		if !ready || !communityPath("community") {
+			return false, nil
+		}
+		memberID, ok := pathID(r, "member")
+		return ok && !memberID.IsZero(), nil
+	case "POST /v1/bot-runtime/installations/{installation}/keypackages",
+		"GET /v1/bot-runtime/installations/{installation}/keypackages",
+		"GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}":
+		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "POST /v1/bot-runtime/installations/{installation}/groups",
+		"GET /v1/bot-runtime/installations/{installation}/groups/{operation}":
+		// The handler turns a foreign installation path into the protocol's indistinguishable 404.
+		// Letting the session reach it reveals no receipt and keeps the cross-installation result
+		// independent of middleware's otherwise-global 403 refusal.
+		return phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
+	case "POST /v1/bot-runtime/installations/{installation}/interaction-admissions",
+		"POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context":
+		return joining && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence":
+		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/music/dj-roles":
+		return ready && bot.Capabilities&botaccess.MusicCapability != 0 && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "PUT /v1/users/{user_id}/device-list":
+		return joining && pathIDEquals(r, "user_id", session.UserID), nil
+	case "GET /v1/users/{user_id}/device-list":
+		if !joining {
+			return false, nil
+		}
+		userID, ok := pathID(r, "user_id")
+		if !ok {
+			return false, nil
+		}
+		err := botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, userID)
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return err == nil, err
+	case "GET /v1/devices/{device_id}/keypackage":
+		if !joining {
+			return false, nil
+		}
+		deviceID, ok := pathID(r, "device_id")
+		if !ok {
+			return false, nil
+		}
+		device, err := s.repo.GetDevice(ctx, deviceID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if device.RevokedAt != nil || device.QuarantinedAt != nil {
+			return false, nil
+		}
+		err = botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, device.UserID)
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return err == nil, err
+	case "GET /v1/welcomes", "DELETE /v1/welcomes/{welcome_id}":
+		// These resources are device-scoped by the delivery service. In particular,
+		// KeyPackage publication is for session.DeviceID and Welcome acknowledgement
+		// checks that the welcome belongs to that same device.
+		if !joining {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
+	case "POST /v1/groups":
+		// The typed binding is in the request body; StructureChannels.MayRegister
+		// validates its target and current community eligibility inside the DS.
+		if !joining && !ready {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
+	case "GET /v1/groups/{id}/info", "GET /v1/groups/{id}/tree", "GET /v1/groups/{id}/handshakes",
+		"GET /v1/groups/{id}/proposals", "POST /v1/groups/{id}/commit", "POST /v1/groups/{id}/proposal",
+		"POST /v1/groups/{id}/resync", "POST /v1/groups/{id}/fork-report",
+		"GET /v1/groups/{id}/messages", "POST /v1/groups/{id}/cursor",
+		"GET /v1/groups/{id}/heal", "POST /v1/groups/{id}/heal":
+		if !joining {
+			return false, nil
+		}
+		return groupPath("id")
+	case "POST /v1/groups/{id}/message":
+		if !ready {
+			return false, nil
+		}
+		return groupPath("id")
+	case "DELETE /v1/groups/{id}/messages/{seq}":
+		if !ready {
+			return false, nil
+		}
+		return groupPath("id")
+	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members",
+		"GET /v1/communities/{id}/permissions", "GET /v1/communities/{id}/channels":
+		if !joining || !communityPath("id") {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
+	case "GET /v1/channels/{id}", "GET /v1/channels/{id}/members", "GET /v1/channels/{id}/messages",
+		"GET /v1/channels/{id}/permissions":
+		if !joining {
+			return false, nil
+		}
+		return channelPath("id")
+	case "POST /v1/channels/{id}/messages":
+		if !ready {
+			return false, nil
+		}
+		return channelPath("id")
+	case "POST /v1/channels/{id}/calls", "GET /v1/channels/{id}/call":
+		if !ready {
+			return false, nil
+		}
+		return channelPath("id")
+	case "GET /v1/communities/{id}/calls":
+		if !ready || !communityPath("id") {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
+	case "DELETE /v1/calls/{call_id}", "POST /v1/calls/{call_id}/share",
+		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline":
+		if !ready {
+			return false, nil
+		}
+		return callPath()
+	case "POST /v1/gateway/ticket":
+		if !joining {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
+	case "POST /v1/groups/{group}/bot/messages":
+		return interactionSendGroupPath()
+	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
+		"GET /v1/communities/{community}/bot/receipts/{operation}",
+		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
+		"POST /v1/groups/{group}/moderation/removals",
+		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
+		if !ready {
+			return false, nil
+		}
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		if strings.Contains(pattern, "/groups/{group}/") {
+			return groupPath("group")
+		}
+		return communityPath("community"), nil
+	default:
+		return false, nil
+	}
+}
+
+func communityPathForBot(ctx context.Context, repo store.Repository, bot BotSessionBinding) (bool, error) {
+	userID, err := mustBotUserID(ctx, repo, bot)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	binding, isBot, err := botaccess.ForUserCommunity(ctx, repo, userID, bot.CommunityID)
+	if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return isBot && binding.InstallationID == bot.InstallationID && binding.State == bot.State, nil
+}
+
+func mustBotUserID(ctx context.Context, repo store.Repository, bot BotSessionBinding) (id.ID, error) {
+	// Resolve the installation on the indexed community key; no global scan.
+	row, err := repo.GetActiveBotInstallationByCommunity(ctx, bot.CommunityID)
+	if err != nil {
+		return id.ID{}, err
+	}
+	if row.UserID == nil || row.ID != bot.InstallationID {
+		return id.ID{}, botaccess.ErrIneligible
+	}
+	return *row.UserID, nil
+}
+
+func pathID(r *http.Request, name string) (id.ID, bool) {
+	value := r.PathValue(name)
+	if value == "" {
+		return id.ID{}, false
+	}
+	got, err := id.Parse(value)
+	return got, err == nil
+}
+
+func pathIDEquals(r *http.Request, name string, want id.ID) bool {
+	value := r.PathValue(name)
+	if value == "" {
+		return false
+	}
+	got, err := id.Parse(value)
+	return err == nil && got == want
 }
 
 // FromContext returns the session a Middleware put there. Parts 1b and 2 read

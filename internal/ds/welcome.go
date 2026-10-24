@@ -22,6 +22,7 @@ import (
 	"math"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -35,12 +36,6 @@ const welcomeRetentionDays = 30
 // maxWelcomesPerPage is the cap `Welcomes` clamps a caller's `limit` to. It is also the page size
 // the fan-out walks with.
 const maxWelcomesPerPage = 64
-
-// maxWelcomeScanPages bounds the walk `Welcomes` makes past rows its two filters drop — expired
-// ones, and, for a provisional session, the ones outside its pairing group. It is the same class
-// of bound as `findWelcome`'s: a device that has that many undeliverable Welcomes queued ahead of
-// a live one has a problem no single read can fix.
-const maxWelcomeScanPages = 16
 
 // storeWelcomesTx writes one payload row per distinct blob, one welcome row per addressed device,
 // and the epoch tree the joiners need — ALL INSIDE THE COMMIT'S OWN TRANSACTION. A Welcome row
@@ -252,13 +247,12 @@ func (d *DS) Welcomes(ctx context.Context, s Session, after int64, limit int32) 
 	// ones. So the queue is walked until `limit` rows are collected or it is exhausted.
 	//
 	// The first read is the caller's own page size, which is what an unfiltered queue costs today;
-	// only once a page has been filtered does the walk take bigger strides, because every row
-	// carries its epoch's ratchet tree and reading 64 of those to serve one is not free either.
-	// The walk is bounded: a device with more than maxWelcomeScanPages pages of expired or
-	// out-of-group Welcomes ahead of a live one has a queue no single read should try to drain.
+	// once rows are filtered, the walk takes the maximum stride. It must continue until it has
+	// collected the requested number or reached the end: the response has no separate scan cursor,
+	// so stopping at a bounded scan page could strand allowed rows behind filtered Welcomes.
 	cursor := after
 	pageSize := limit
-	for range maxWelcomeScanPages {
+	for {
 		rows, err := d.opts.Store.ListWelcomes(ctx, s.DeviceID, cursor, pageSize)
 		if err != nil {
 			return nil, err
@@ -276,6 +270,22 @@ func (d *DS) Welcomes(ctx context.Context, s Session, after int64, limit int32) 
 			}
 			if provisional && row.GroupID != *s.PairingGroup {
 				continue
+			}
+			group, groupErr := d.opts.Store.GetGroup(ctx, row.GroupID)
+			if errors.Is(groupErr, store.ErrNotFound) {
+				continue
+			}
+			if groupErr != nil {
+				return nil, groupErr
+			}
+			if capabilityErr := d.requireGroupCapability(ctx, s, group); capabilityErr != nil {
+				var upgrade *capability.UpgradeRequired
+				if errors.As(capabilityErr, &upgrade) {
+					// Filter only this row. The cursor still advances across every inspected row, so
+					// unaffected DMs and communities behind it remain discoverable.
+					continue
+				}
+				return nil, capabilityErr
 			}
 			out = append(out, row)
 			if int32(len(out)) == limit { //nolint:gosec // G115: bounded by the int32 page size the slice was requested with
@@ -304,6 +314,16 @@ func (d *DS) AckWelcome(ctx context.Context, s Session, welcomeID int64) error {
 	if s.Scope == auth.ScopeProvisional && row.GroupID != *s.PairingGroup {
 		return errProvisionalOutsidePairing(
 			"a provisional session may only acknowledge its pairing group's Welcome")
+	}
+	group, err := d.opts.Store.GetGroup(ctx, row.GroupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("welcome")
+	}
+	if err != nil {
+		return err
+	}
+	if err := d.requireGroupCapability(ctx, s, group); err != nil {
+		return err
 	}
 	return d.opts.Store.DeleteWelcome(ctx, s.DeviceID, welcomeID, d.now())
 }

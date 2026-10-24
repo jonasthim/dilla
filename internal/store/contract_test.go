@@ -28,7 +28,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		methods []string
 	}{
 		{"Instance", reflect.TypeOf((*store.Instance)(nil)).Elem(), []string{
-			"BumpGeneration", "CreateInstance", "GetInstance", "GetSetting", "PutSetting",
+			"BumpGeneration", "CreateInstance", "GetInstance", "GetSetting", "LockInstanceGeneration", "PutSetting",
 			// SetGeneration is §4.1 plus one (deviation ID1, task 27): invariant 11's
 			// `dillad restore` names the generation it read out of the backup's
 			// manifest, and a blind `BumpGeneration` would silently disregard it.
@@ -43,8 +43,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ClearFactorOwedWithFactor",
 		}},
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
-			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
-			"RevokeDevice", "SetDeviceLabel", "TouchDevice",
+			"CreateDevice", "CreateBotDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
+			"RevokeDevice", "SetDeviceLabel", "TouchDevice", "UpdateDeviceCredential", "FinalizeBotDeviceCredential",
 			// dilla-web-2a task 5 (L-SQL-21): the device-list history read (L-HTTP-56) and the
 			// per-user device cap and enrolment rate (L-HTTP-54, Q04).
 			"CountLiveDevicesByUser", "ListDeviceCreationsSince", "ListDeviceListsAfter",
@@ -53,7 +53,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Sessions", reflect.TypeOf((*store.Sessions)(nil)).Elem(), []string{
 			"CountSessionsByDevice", "CreateSession", "DeleteOldestSessionForDevice",
 			"DeleteSession", "DeleteSessionsByDevice", "DeleteSessionsByUser",
-			"GetSessionByHash", "PruneSessions", "TouchSession",
+			"GetSessionByHash", "PruneSessions", "SetSessionVersions", "TouchSession",
 		}},
 		{"Auth", reflect.TypeOf((*store.Auth)(nil)).Elem(), []string{
 			"ClearLoginFailures", "ConsumeRecoveryCode", "ConsumeTOTPCounter",
@@ -79,7 +79,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// and heal. Plan 2 records the marking and the call-ending as P2-D19 for the
 			// same work, so both plans name ONE method set rather than two.
 			"ClearEpochUnknown",
-			"CloseGroup", "CountForkReporters", "CountKeyPackages",
+			"CloseGroup", "CountForkReporters", "CountKeyPackages", "HasCurrentLastResortKeyPackage",
 			"CreateGroup", "DeleteProposals", "DeleteWelcome", "EndAllVoiceSessions",
 			"GetCommitAtEpoch", "GetGroup",
 			"GroupsForDevice",
@@ -95,7 +95,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListGroupsForRetention",
 			// ListIdleCallGroups is web-3's idle call-group close (L-HTTP-105, RV-2).
 			"ListIdleCallGroups",
-			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes",
+			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes", "LockGroup",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",
 			"PutKeyPackages", "PutProposal", "PutWelcomePayload", "PutWelcomes",
@@ -131,16 +131,16 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"GetCursor", "MinCursor", "PutCursor",
 		}},
 		{"Structure", reflect.TypeOf((*store.Structure)(nil)).Elem(), []string{
-			"CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
+			"AddMemberRoleGrant", "CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
 			"DeleteChannelMember", "DeleteMember", "DeleteMemberRole", "EndVoiceSession",
-			"GetBan", "GetChannel", "GetCommunity", "ListChannelMembers", "ListChannels",
+			"GetBan", "GetChannel", "GetCommunity", "HasMemberRoleGrant", "ListChannelMembers", "ListChannels",
 			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
-			"PutRole", "PutVoiceSession", "UpdateChannel", "UpdateCommunityPolicy",
+			"PutRole", "PutVoiceSession", "RemoveMemberRoleGrant", "RevokeMemberRole", "UpdateChannel", "UpdateCommunityPolicy",
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
 			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
 			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
-			"GetMember", "GetRole", "SoftDeleteCommunity", "UpdateCommunityMeta",
+			"GetMember", "GetRole", "ListDJRolePolicy", "SetDJRolePolicy", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "SetSelfRolePolicy", "SoftDeleteCommunity", "UpdateCommunityMeta",
 			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
 			// one-statement community tombstone and per-channel sequencer.
 			"DeleteChannelsOfCommunity", "NextChannelSeq",
@@ -190,6 +190,20 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{
 			"DeleteBan", "GetBan", "ListBans", "PutBan",
 		}},
+		{"MemberTimeouts", reflect.TypeOf((*store.MemberTimeouts)(nil)).Elem(), []string{
+			"DeleteMemberTimeout", "GetMemberTimeout", "PutMemberTimeout",
+		}},
+		{"ManualWarningActions", reflect.TypeOf((*store.ManualWarningActions)(nil)).Elem(), []string{
+			"GetManualWarningAction", "PutManualWarningAction",
+		}},
+		{"RolePanels", reflect.TypeOf((*store.RolePanels)(nil)).Elem(), []string{
+			"DeleteRolePanel", "GetRolePanel", "ListRolePanelOptions", "SetRolePanel",
+		}},
+		{"ReactionRoleGrantSources", reflect.TypeOf((*store.ReactionRoleGrantSources)(nil)).Elem(), []string{
+			"AddReactionRoleGrant", "ListReactionRolePanelGrantUsers", "RemoveReactionRoleChannelGrants", "RemoveReactionRoleGrant", "RemoveReactionRolePanelGrants",
+		}},
+		{"BotJoinRoleGrants", reflect.TypeOf((*store.BotJoinRoleGrants)(nil)).Elem(), []string{"GrantBotJoinRoleForEpisode"}},
+		{"BotGroupRegistrationAdmissionReceipts", reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(), []string{"AcceptBotGroupRegistrationAdmission", "GetBotGroupRegistrationAdmission"}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
 			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
@@ -203,10 +217,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"AFKAwayExists", "AFKAwayExistsUser", "ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
-			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
-			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
+			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
+			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SetCommunityAFK", "SetCommunityOwner",
+			"ListRoles", "ListDJRolePolicy", "SetDJRolePolicy", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{
@@ -316,6 +330,9 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Overwrites)(nil)).Elem(),
 		// Plan 2 task 4: Bans joins with 00007_bans.sql.
 		reflect.TypeOf((*store.Bans)(nil)).Elem(),
+		// Task 13: member timeouts join with the server-side timeout table.
+		reflect.TypeOf((*store.MemberTimeouts)(nil)).Elem(),
+		reflect.TypeOf((*store.ManualWarningActions)(nil)).Elem(),
 		// Plan 2 task 6: ChannelMembers joins with 00008_channel_members.sql.
 		reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(),
 		// Plan 2 task 8: Readable joins with 00009_readable.sql.
@@ -325,6 +342,31 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.OpsBackups)(nil)).Elem(),
 		// Plan 2 task 16: VoiceSessions joins with 00011_voice.sql (P2-D22).
 		reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(),
+		reflect.TypeOf((*store.RolePanels)(nil)).Elem(),
+		reflect.TypeOf((*store.ReactionRoleGrantSources)(nil)).Elem(),
+		reflect.TypeOf((*store.BotJoinRoleGrants)(nil)).Elem(),
+		// Task 4B: bot runtime registrations and durable installation storage.
+		reflect.TypeOf((*store.BotRuntimes)(nil)).Elem(),
+		reflect.TypeOf((*store.BotInstallations)(nil)).Elem(),
+		reflect.TypeOf((*store.BotClaims)(nil)).Elem(),
+		reflect.TypeOf((*store.BotOperations)(nil)).Elem(),
+		reflect.TypeOf((*store.BotSessionBindings)(nil)).Elem(),
+		// Task 5B4B: managed Bot KeyPackage publication receipts.
+		reflect.TypeOf((*store.BotKeyPackagePublications)(nil)).Elem(),
+		// Task 6B1: immutable durable Bot send operations and attempts.
+		reflect.TypeOf((*store.BotSendOperations)(nil)).Elem(),
+		// Task 5: managed group registration acceptance receipts.
+		reflect.TypeOf((*store.BotGroupRegistrationReceipts)(nil)).Elem(),
+		// Task 6: durable structural events, cursors, and retention floor.
+		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
+		// Kind-3 admission groundwork: transaction-fenced participant eligibility revision.
+		reflect.TypeOf((*store.BotInteractionEligibility)(nil)).Elem(),
+		// Kind-3 admission issuance: immutable idempotent signed response receipts.
+		reflect.TypeOf((*store.BotInteractionAdmissionReceipts)(nil)).Elem(),
+		reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(),
+		reflect.TypeOf((*store.BotAutoModerationGrants)(nil)).Elem(),
+		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
+		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
@@ -360,6 +402,7 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"RoleRow":              store.RoleRow{},
 		"OverwriteRow":         store.OverwriteRow{},
 		"BanRow":               store.BanRow{},
+		"MemberTimeoutRow":     store.MemberTimeoutRow{},
 		"VoiceSessionRow":      store.VoiceSessionRow{},
 		"ReadableMessageRow":   store.ReadableMessageRow{},
 		"BlobRow":              store.BlobRow{},
@@ -370,6 +413,11 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"ReadableSearchHit":    store.ReadableSearchHit{},
 		"ParsedQuery":          store.ParsedQuery{},
 		"Term":                 store.Term{},
+		"BotRuntimeRow":        store.BotRuntimeRow{},
+		"BotInstallationRow":   store.BotInstallationRow{},
+		"BotClaimRow":          store.BotClaimRow{},
+		"BotOperationRow":      store.BotOperationRow{},
+		"BotSessionBindingRow": store.BotSessionBindingRow{},
 	}
 	for name, v := range rows {
 		if k := reflect.TypeOf(v).Kind(); k != reflect.Struct {

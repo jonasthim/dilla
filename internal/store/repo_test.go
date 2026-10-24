@@ -28,8 +28,9 @@ import (
 // — and it is worth asserting because a repository that wrote 0 there would
 // pass every round-trip test (deviation ID11).
 var (
-	rawMu  sync.Mutex
-	rawDBs = map[store.Repository]*sql.DB{}
+	rawMu       sync.Mutex
+	rawDBs      = map[store.Repository]*sql.DB{}
+	rawWriteDBs = map[store.Repository]*sql.DB{}
 )
 
 func rawDB(t *testing.T, repo store.Repository) *sql.DB {
@@ -39,6 +40,17 @@ func rawDB(t *testing.T, repo store.Repository) *sql.DB {
 	db, ok := rawDBs[repo]
 	if !ok {
 		t.Fatal("no raw handle registered for this repository")
+	}
+	return db
+}
+
+func rawWriteDB(t *testing.T, repo store.Repository) *sql.DB {
+	t.Helper()
+	rawMu.Lock()
+	defer rawMu.Unlock()
+	db, ok := rawWriteDBs[repo]
+	if !ok {
+		t.Fatal("no raw write handle registered for this repository")
 	}
 	return db
 }
@@ -101,6 +113,7 @@ func engines(t *testing.T) map[string]store.Repository {
 	out["sqlite"] = repo
 	rawMu.Lock()
 	rawDBs[repo] = read
+	rawWriteDBs[repo] = write
 	rawMu.Unlock()
 
 	dsn := os.Getenv("DILLA_TEST_PG")
@@ -124,6 +137,7 @@ func engines(t *testing.T) map[string]store.Repository {
 	out["postgres"] = pgrepo
 	rawMu.Lock()
 	rawDBs[pgrepo] = db
+	rawWriteDBs[pgrepo] = db
 	rawMu.Unlock()
 	return out
 }
@@ -265,6 +279,18 @@ func TestRepositoryConformance(t *testing.T) {
 				if _, err := repo.GetSessionByHash(ctx, hash, 20); err != nil {
 					t.Fatalf("GetSessionByHash: %v", err)
 				}
+				if err := repo.SetSessionVersions(ctx, hash, 3, 1, 1); err != nil {
+					t.Fatalf("SetSessionVersions: %v", err)
+				}
+				selected, err := repo.GetSessionByHash(ctx, hash, 20)
+				if err != nil || selected.WireVersion != 3 || selected.E2EEVersion != 1 || selected.MediaVersion != 1 {
+					t.Fatalf("session versions = [%d %d %d], %v; want [3 1 1]", selected.WireVersion, selected.E2EEVersion, selected.MediaVersion, err)
+				}
+				missing := make([]byte, 32)
+				missing[0] = 8
+				if err := repo.SetSessionVersions(ctx, missing, 2, 1, 1); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("SetSessionVersions for missing bearer = %v, want ErrNotFound", err)
+				}
 				n, err := repo.DeleteSessionsByDevice(ctx, d.ID)
 				if err != nil || n != 1 {
 					t.Fatalf("DeleteSessionsByDevice = %d, %v", n, err)
@@ -357,6 +383,36 @@ func TestRepositoryConformance(t *testing.T) {
 					t.Fatalf("schema version = %d, want %d", v, want)
 				}
 			})
+		})
+	}
+}
+
+func TestManualWarningActionReceiptRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			actor := seedUser(ctx, t, repo)
+			target := seedUser(ctx, t, repo)
+			community := store.CommunityRow{ID: id.New(), Owner: actor.ID, Name: "warning receipt", PolicyJSON: []byte("{}"), PolicyVersion: 1, Created: 1}
+			if err := repo.CreateCommunity(ctx, community); err != nil {
+				t.Fatal(err)
+			}
+			device := store.DeviceRow{ID: id.New(), UserID: actor.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: 1}
+			if err := repo.CreateDevice(ctx, device); err != nil {
+				t.Fatal(err)
+			}
+			row := store.ManualWarningActionRow{CommunityID: community.ID, RequestID: id.New(), ActionID: id.New(),
+				ActorUserID: actor.ID, ActorDeviceID: device.ID, TargetUserID: target.ID, Revision: 4, AcceptedAt: 2}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.PutManualWarningAction(ctx, row) }); err != nil {
+				t.Fatalf("PutManualWarningAction: %v", err)
+			}
+			got, err := repo.GetManualWarningAction(ctx, community.ID, row.RequestID)
+			if err != nil || got != row {
+				t.Fatalf("GetManualWarningAction = %+v, %v; want %+v", got, err, row)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.PutManualWarningAction(ctx, row) }); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate PutManualWarningAction = %v, want conflict", err)
+			}
 		})
 	}
 }

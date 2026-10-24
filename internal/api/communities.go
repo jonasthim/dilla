@@ -16,6 +16,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
@@ -89,6 +90,7 @@ func (c *Communities) Register(mux *server.Mux) {
 	mux.HandleFunc("PATCH /v1/communities/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/communities/{id}", c.delete)
 	mux.HandleFunc("GET /v1/communities/{id}/members", c.members)
+	mux.HandleFunc("GET /v1/communities/{id}/members/{user_id}", c.member)
 	mux.HandleFunc("GET /v1/communities/{id}/permissions", c.permissions)
 	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}", c.removeMember)
 	mux.HandleFunc("POST /v1/communities/{id}/join", c.join)
@@ -124,7 +126,7 @@ func (c *Communities) afkSettings(w http.ResponseWriter, r *http.Request) {
 // shape `[channel_id, timeout_seconds]` when channel_id is the built-in channel. The channel is never
 // chosen here: the timeout is written beside the pointer as it stands, under the community row lock.
 func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
-	row, _, err := c.managerOnly(r)
+	row, s, err := c.managerOnly(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -169,6 +171,9 @@ func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(body) == 2 && (named == nil || cfg.ChannelID == nil || *named != *cfg.ChannelID) {
 			return server.Errorf(server.CodeInvalidRequest, "the AFK channel is built in; send [timeout_seconds]")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
+			return err
 		}
 		return tx.SetCommunityAFK(r.Context(), row.ID, store.CommunityAFK{ChannelID: cfg.ChannelID, TimeoutSeconds: timeout})
 	}); err != nil {
@@ -277,9 +282,13 @@ func (c *Communities) create(w http.ResponseWriter, r *http.Request) {
 		if err := tx.CreateCommunity(r.Context(), communityRow); err != nil {
 			return err
 		}
+		episode := id.New()
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
-			CommunityID: out.CommunityID, UserID: s.UserID, Joined: now, Nick: nick,
+			CommunityID: out.CommunityID, UserID: s.UserID, EpisodeID: episode, Joined: now, Nick: nick,
 		}); err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberJoin, out.CommunityID, s.UserID, episode, now); err != nil {
 			return err
 		}
 		if err := tx.PutRole(r.Context(), store.RoleRow{
@@ -395,6 +404,10 @@ func (c *Communities) patch(w http.ResponseWriter, r *http.Request) {
 
 	version := row.PolicyVersion
 	if len(changed) > 0 {
+		if err := requireCommunityWire(r.Context(), c.repo, s.WireVersion, &row.ID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 		err = c.repo.Tx(r.Context(), func(tx store.Repository) error {
 			// Re-read inside the transaction: the row memberOnly returned is a
 			// snapshot from before it, and the policy version must follow the
@@ -530,9 +543,16 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		if err := c.admitByInvite(r.Context(), tx, row, s.UserID, hashes); err != nil {
 			return err
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
+			return err
+		}
+		episode := id.New()
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
-			CommunityID: cid, UserID: s.UserID, Joined: now, Nick: nick,
+			CommunityID: cid, UserID: s.UserID, EpisodeID: episode, Joined: now, Nick: nick,
 		}); err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberJoin, cid, s.UserID, episode, now); err != nil {
 			return err
 		}
 		joined = true
@@ -773,6 +793,50 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type currentMemberResp struct {
+	_        struct{} `cbor:",toarray"`
+	UserID   id.ID
+	Nick     string
+	Username string
+	Display  string
+}
+
+// member returns only a current membership. The caller must also be a current
+// community member, so absent targets and non-member callers cannot inspect a
+// user's profile across communities.
+func (c *Communities) member(w http.ResponseWriter, r *http.Request) {
+	row, _, err := c.memberOnly(r)
+	if err != nil {
+		c.fail(w, r, "get member", err)
+		return
+	}
+	uid, err := server.PathID(r, "user_id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	m, err := c.repo.GetMember(r.Context(), row.ID, uid)
+	if errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such object"))
+		return
+	}
+	if err != nil {
+		c.fail(w, r, "get member", err)
+		return
+	}
+	u, err := c.repo.GetUser(r.Context(), uid)
+	if errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "member profile temporarily unavailable"))
+		return
+	} else if err != nil {
+		c.fail(w, r, "get member", err)
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, currentMemberResp{UserID: uid, Nick: m.Nick, Username: u.Username, Display: u.Display}); err != nil {
+		c.log.Error("encode member", "err", err)
+	}
+}
+
 // ownerTop is the Top a caller who owns the community reads: above every role
 // position (2^31), so a client compares it with a target's position unchanged.
 const ownerTop uint64 = 1 << 31
@@ -828,11 +892,22 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "kick", err)
 		return
 	}
+	if err := requireCommunityWire(r.Context(), c.repo, m.session.WireVersion, &m.community); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)
 		}
 		if err := stillModerates(r.Context(), tx, m, PermKickMembers); err != nil {
+			return err
+		}
+		member, err := tx.GetMember(r.Context(), m.community, m.target)
+		if err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberLeave, m.community, m.target, member.EpisodeID, c.clk.Now().Unix()); err != nil {
 			return err
 		}
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
@@ -886,6 +961,10 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 			"the owner must transfer ownership or delete the community"))
 		return
 	}
+	if err := requireCommunityWire(r.Context(), c.repo, s.WireVersion, &row.ID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	// The membership and the user's channel_members rows for the community go in
 	// one transaction, as for a kick.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
@@ -898,6 +977,13 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 		if owner == s.UserID {
 			return server.Errorf(server.CodeForbidden,
 				"the owner must transfer ownership or delete the community")
+		}
+		member, err := tx.GetMember(r.Context(), row.ID, s.UserID)
+		if err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberLeave, row.ID, s.UserID, member.EpisodeID, c.clk.Now().Unix()); err != nil {
+			return err
 		}
 		if err := tx.DeleteMember(r.Context(), row.ID, s.UserID); err != nil {
 			return err
@@ -920,10 +1006,27 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// appendMemberEpisodeEvent writes the membership event beside the membership row change. Its
+// payload is only the opaque account id and the episode id; profile data stays out.
+func appendMemberEpisodeEvent(ctx context.Context, tx store.Repository, kind protocol.EventKind, community, user, episode id.ID, at int64) error {
+	if episode.IsZero() || at < 0 {
+		return store.ErrConflict
+	}
+	_, err := tx.AppendBotStructuralEvent(ctx, protocol.Event{
+		ID: id.New(), CommunityID: community, Timestamp: uint64(at), Kind: kind,
+		Data: []any{user, episode},
+	})
+	return err
+}
+
 func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	row, s, err := c.ownerOnly(r)
 	if err != nil {
 		c.fail(w, r, "delete community", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), c.repo, s.WireVersion, &row.ID); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	now := c.clk.Now().Unix()
@@ -1042,6 +1145,9 @@ func (c *Communities) transfer(w http.ResponseWriter, r *http.Request) {
 		// As joinGate: an account that may not join a community may not own one.
 		if u.DisabledAt != nil || u.DeletedAt != nil {
 			return server.Errorf(server.CodeInvalidRequest, "that account can no longer own a community")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
+			return err
 		}
 		if err := tx.SetCommunityOwner(r.Context(), row.ID, req.UserID); err != nil {
 			return err

@@ -50,13 +50,14 @@ var _ Fanout = (*gateway.Gateway)(nil)
 // the read position. Register mounts the handlers bare, as Channels does, and
 // each handler requires an enrolled session itself.
 type Readable struct {
-	repo store.Repository
-	res  *Resolver
-	fan  Fanout
-	keys FrankingKeys
-	clk  clock.Clock
-	log  *slog.Logger
-	afk  AFKActivity
+	repo  store.Repository
+	res   *Resolver
+	fan   Fanout
+	keys  FrankingKeys
+	clk   clock.Clock
+	log   *slog.Logger
+	roles *Roles
+	afk   AFKActivity
 }
 
 // NewReadable wires the routes. fan may be nil, which stores and answers
@@ -65,7 +66,14 @@ func NewReadable(repo store.Repository, res *Resolver, fan Fanout, keys Franking
 	return &Readable{repo: repo, res: res, fan: fan, keys: keys, clk: clk, log: log}
 }
 
-// WithAFK sets where an accepted post reports its sender's activity (AW2, Q1: a message takes the
+// WithRoles connects role-panel reaction processing and its post-commit
+// membership/call synchronization to the readable message route.
+func (h *Readable) WithRoles(roles *Roles) *Readable {
+	h.roles = roles
+	return h
+}
+
+// WithAFK sets where an accepted post reports the sender's activity (AW2, Q1: a message takes the
 // sender out of the community's AFK list) and returns h.
 func (h *Readable) WithAFK(a AFKActivity) *Readable {
 	h.afk = a
@@ -214,6 +222,12 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if env.Type != EnvEdit && env.Type != EnvDelete {
+		if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+			h.fail(w, r, "post readable message", err)
+			return
+		}
+	}
 	// protocol/04's C, from the envelope and the k_f it carries in the clear.
 	// Task 17 recomputes exactly this when it verifies a report.
 	c, err := Commitment(req.Envelope, env.KF)
@@ -225,7 +239,15 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 	keyID, key := h.keys.Current()
 	var seq uint64
 	var tag []byte
+	var roleChanged bool
 	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// The community lock serialises this write with moderator timeout changes.
+		if err := tx.LockCommunity(r.Context(), *ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		if err := requireNotTimedOut(r.Context(), tx, *ch.CommunityID, s.UserID, now); err != nil {
+			return err
+		}
 		// NextChannelSeq comes first: it is `UPDATE channels … RETURNING seq`,
 		// which serialises every post to this channel on its row (Postgres's
 		// row lock; SQLite's single writer). The slowmode read after it
@@ -249,6 +271,12 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 			// device, and a report's first equation is checked against C.
 			UploaderDevice: s.DeviceID, CommitmentC: c,
 		})
+		if err != nil {
+			return err
+		}
+		if h.roles != nil && (env.Type == EnvReactionAdd || env.Type == EnvReactionRemove) {
+			roleChanged, err = h.roles.applyRolePanelReaction(r, tx, ch, s, env)
+		}
 		return err
 	})
 	if err != nil {
@@ -256,6 +284,9 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.deliver(r.Context(), ch.ID, seq, s.UserID, req.Envelope, tag, 0, 0)
+	if roleChanged {
+		h.roles.reactionRoleChanged(afterCommit(r), *ch.CommunityID, s.UserID)
+	}
 	h.active(r.Context(), s.UserID, ch.ID)
 	if err := server.EncodeBody(w, http.StatusOK, postResponse{Seq: seq, FrankingTag: tag, RecvTS: uint64(now)}); err != nil { //nolint:gosec // G115: a unix second from the instance clock
 		h.log.Error("encode readable post", "err", err)
@@ -312,7 +343,10 @@ func (h *Readable) deliver(ctx context.Context, channelID id.ID, seq uint64, sen
 		return
 	}
 	h.fan.SetChannelMembers(channelID, users)
-	h.fan.DeliverChannel(channelID, gateway.Frame{Op: gateway.OpMessagePlain, Payload: payload, Replay: true})
+	h.fan.DeliverChannel(channelID, gateway.Frame{
+		Op: gateway.OpMessagePlain, Payload: payload, Replay: true,
+		Scope: gateway.FrameScope{Channels: []id.ID{channelID}},
+	})
 }
 
 type listItem struct {
@@ -330,8 +364,12 @@ type listItem struct {
 // [[seq, sender, envelope, franking_tag, created, edited|null, deleted|null]].
 // A deleted message is a tombstone: an empty envelope and its deleted time.
 func (h *Readable) list(w http.ResponseWriter, r *http.Request) {
-	_, ch, _, err := h.channel(r, PermReadHistory)
+	s, ch, _, err := h.channel(r, PermReadHistory)
 	if err != nil {
+		h.fail(w, r, "list readable messages", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		h.fail(w, r, "list readable messages", err)
 		return
 	}
@@ -425,8 +463,8 @@ func (h *Readable) delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // target reads the live message at seq, or answers 404.
-func (h *Readable) target(ctx context.Context, ch store.ChannelRow, seq uint64) (store.ReadableMessageRow, error) {
-	rows, err := h.repo.ListReadableMessages(ctx, ch.ID, seq, 1)
+func (h *Readable) target(ctx context.Context, repo store.Repository, ch store.ChannelRow, seq uint64) (store.ReadableMessageRow, error) {
+	rows, err := repo.ListReadableMessages(ctx, ch.ID, seq, 1)
 	if err != nil {
 		return store.ReadableMessageRow{}, err
 	}
@@ -451,26 +489,58 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 	if env.Type != EnvMessage && env.Type != EnvEdit {
 		return server.Errorf(server.CodeEnvelopeType, "an edit carries a type-0 or type-1 envelope")
 	}
-	row, err := h.target(ctx, ch, seq)
+	if ch.CommunityID == nil {
+		return server.Errorf(server.CodeForbidden, "missing permission")
+	}
+	var original store.ReadableMessageRow
+	var tag []byte
+	err := h.repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockCommunity(ctx, *ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		if err := requireNotTimedOut(ctx, tx, *ch.CommunityID, s.UserID, h.clk.Now().Unix()); err != nil {
+			return err
+		}
+		row, err := h.target(ctx, tx, ch, seq)
+		if err != nil {
+			return err
+		}
+		original = row
+		if row.Sender != s.UserID {
+			return server.Errorf(server.CodeForbidden, "only the author may edit a message")
+		}
+		if err := requireCommunityWire(ctx, tx, s.WireVersion, ch.CommunityID); err != nil {
+			return err
+		}
+		c, err := Commitment(envelope, env.KF)
+		if err != nil {
+			return err
+		}
+		now := h.clk.Now().Unix()
+		keyID, key := h.keys.Current()
+		tag = Tag(key, ch.ID, 0, seq, s.DeviceID, c, now)
+		f := store.ReadableFranking{Tag: tag, KeyID: keyID, UploaderDevice: s.DeviceID, CommitmentC: c}
+		if err := tx.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), f, now); err != nil {
+			return notFound(err)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if row.Sender != s.UserID {
-		return server.Errorf(server.CodeForbidden, "only the author may edit a message")
-	}
-	c, err := Commitment(envelope, env.KF)
-	if err != nil {
-		return err
-	}
-	now := h.clk.Now().Unix()
-	keyID, key := h.keys.Current()
-	tag := Tag(key, ch.ID, 0 /* no epoch on a readable channel */, seq, s.DeviceID, c, now)
-	f := store.ReadableFranking{Tag: tag, KeyID: keyID, UploaderDevice: s.DeviceID, CommitmentC: c}
-	if err := h.repo.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), f, now); err != nil {
-		return notFound(err)
-	}
-	h.deliver(ctx, ch.ID, seq, row.Sender, envelope, tag, 1, 0)
+	h.deliver(ctx, ch.ID, seq, original.Sender, envelope, tag, 1, 0)
 	return nil
+}
+
+func requireNotTimedOut(ctx context.Context, repo store.Repository, communityID, userID id.ID, now int64) error {
+	_, err := repo.GetMemberTimeout(ctx, communityID, userID, now)
+	if err == nil {
+		return server.Errorf(server.CodeForbidden, "member is timed out")
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // applyDelete tombstones the row: the envelope and the body are emptied, so the
@@ -479,15 +549,41 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 // anyone else, manage_messages or not, is 403 E_NOT_UPLOADER. Moderator
 // deletion needs a signed moderation event, which is follow-up card 2.
 func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.Session, seq uint64) error {
-	row, err := h.target(ctx, ch, seq)
+	row, err := h.target(ctx, h.repo, ch, seq)
 	if err != nil {
 		return err
 	}
 	if row.Sender != s.UserID {
 		return server.Errorf(server.CodeNotUploader, "only the author may delete a message")
 	}
-	if err := h.repo.DeleteReadableMessage(ctx, ch.ID, seq, h.clk.Now().Unix()); err != nil {
-		return notFound(err)
+	if err := requireCommunityWire(ctx, h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		return err
+	}
+	var affected []id.ID
+	err = h.repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockCommunity(ctx, *ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		if err := tx.DeleteReadableMessage(ctx, ch.ID, seq, h.clk.Now().Unix()); err != nil {
+			return notFound(err)
+		}
+		var err error
+		affected, err = tx.RemoveReactionRolePanelGrants(ctx, *ch.CommunityID, ch.ID, seq)
+		if err != nil {
+			return err
+		}
+		if err := tx.DeleteRolePanel(ctx, ch.ID, seq); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if h.roles != nil {
+		for _, user := range affected {
+			h.roles.reactionRoleChanged(ctx, *ch.CommunityID, user)
+		}
 	}
 	h.deliver(ctx, ch.ID, seq, row.Sender, nil, row.FrankingTag, 0, 1)
 	return nil
@@ -534,6 +630,10 @@ type searchItem struct {
 func (h *Readable) search(w http.ResponseWriter, r *http.Request) {
 	s, ch, _, err := h.channel(r, PermReadHistory)
 	if err != nil {
+		h.fail(w, r, "search readable channels", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		h.fail(w, r, "search readable channels", err)
 		return
 	}
@@ -624,6 +724,10 @@ func (h *Readable) readState(w http.ResponseWriter, r *http.Request) {
 	}
 	var req readStateRequest
 	if err := server.DecodeBody(w, r, readBody, &req); err != nil {
+		h.fail(w, r, "put read state", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		h.fail(w, r, "put read state", err)
 		return
 	}

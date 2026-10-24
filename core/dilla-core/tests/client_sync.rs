@@ -8,9 +8,13 @@
 mod client_support;
 
 use client_support::*;
+use dilla_core::bot::RemovalProof;
 use dilla_core::cbor::{Encoder, decode_strict};
-use dilla_core::client::{ClientCore, ClientError};
+use dilla_core::client::{ClientCore, ClientError, RemovalFeedEntry};
 use dilla_core::envelope::EnvelopeType;
+use dilla_core::identity::{DeviceEntry, Tier};
+use dilla_core::ids::{CommunityId, DeviceId, MsgId, UserId};
+use ed25519_dalek::Signer;
 
 /// (epoch, the devices the Welcomes are addressed to) of a POST …/commit body.
 fn commit_body(body: &[u8]) -> (u64, Vec<[u8; 16]>) {
@@ -79,6 +83,338 @@ fn cursor(core: &ClientCore) -> Option<(u64, u64)> {
 
 fn sql_seq(seq: u64) -> i64 {
     i64::try_from(seq).expect("a seq fits an INTEGER")
+}
+
+fn signed_removal(
+    actor: &mut Core,
+    group: &[u8; 16],
+    revision: u64,
+    target: u64,
+) -> RemovalFeedEntry {
+    let signed = actor
+        .core
+        .sign_removal(&[revision as u8 + 90; 16], group, target, NOW + 30, NOW)
+        .expect("sign proof");
+    let (proof, signature) = decode_strict(&signed, |d| {
+        d.array(2)?;
+        Ok((d.bytes()?.to_vec(), d.bytes_exact::<64>()?))
+    })
+    .expect("signed removal shape");
+    RemovalFeedEntry {
+        revision,
+        proof,
+        signature,
+        accepted_at: NOW + 1,
+    }
+}
+
+#[test]
+fn moderator_removal_feed_is_contiguous_replay_safe_persistent_and_applies_before_history() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
+    let own_list = b.core.device_list_body().expect("own signed list");
+    let actor_user = b.user;
+    let actor_device = b.device;
+    ingest_list_body(&mut b, &relay, actor_user, actor_device, &own_list);
+    let (msg_id, seq) = b.send(&mut relay, &GROUP, "removed before sync", NOW + 1);
+    let entry = signed_removal(&mut b, &GROUP, 1, seq);
+    b.core
+        .prepare_manual_removal_evidence(
+            &[91; 16],
+            &[92; 16],
+            &COMMUNITY,
+            &GROUP,
+            &CHANNEL,
+            &msg_id,
+            seq,
+            "manual reason",
+            "bounded excerpt",
+            NOW,
+            NOW + 30,
+            NOW,
+        )
+        .expect("durably save evidence before posting removal");
+    assert_eq!(b.core.manual_removal_evidence().unwrap()[0].state, 0);
+    assert_eq!(
+        b.core
+            .ingest_removals(&GROUP, std::slice::from_ref(&entry))
+            .expect("actor feed receipt"),
+        1
+    );
+    let accepted = b.core.manual_removal_evidence().unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(
+        accepted[0].state, 2,
+        "only the verified feed receipt releases evidence"
+    );
+    assert_eq!(accepted[0].proof_request_id, [91; 16]);
+    assert_eq!(accepted[0].target_sequence, seq);
+    assert_eq!(accepted[0].actor_user_id, b.user);
+    assert_eq!(accepted[0].actor_device_id, b.device);
+    assert_eq!(
+        a.core
+            .ingest_removals(&GROUP, std::slice::from_ref(&entry))
+            .expect("feed"),
+        1
+    );
+    assert_eq!(
+        a.core
+            .ingest_removals(&GROUP, std::slice::from_ref(&entry))
+            .expect("exact replay"),
+        1
+    );
+    let gap = signed_removal(&mut b, &GROUP, 3, seq + 1);
+    assert_eq!(code(a.core.ingest_removals(&GROUP, &[gap])), "E_CORE_INPUT");
+    let mismatch = signed_removal(&mut b, &GROUP, 1, seq + 1);
+    assert_eq!(
+        code(a.core.ingest_removals(&GROUP, &[mismatch])),
+        "E_CORE_INPUT"
+    );
+    a = a.reopen();
+    assert_eq!(
+        a.probe
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM app_removal_tombstones WHERE group_id=?1 AND seq=?2",
+                rusqlite::params![GROUP.as_slice(), sql_seq(seq)],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let row = relay
+        .messages
+        .iter()
+        .find(|m| m.seq == seq)
+        .expect("served message");
+    a.core
+        .group_apply(&GROUP, &[0x80], &encode_messages(&[row]), seq)
+        .expect("history");
+    let shown = a
+        .timeline(&GROUP)
+        .into_iter()
+        .find(|r| r.seq == seq)
+        .expect("deleted row remains as a marker");
+    assert_eq!(shown.status, 2);
+    assert!(shown.body.is_empty());
+}
+
+#[test]
+fn moderator_removal_of_an_existing_message_blanks_it_and_removes_its_search_entry() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
+    let (msg_id, seq) = b.send(&mut relay, &GROUP, "secret removable words", NOW + 1);
+    let (_, edit_seq) = b.send_request(
+        &mut relay,
+        &GROUP,
+        &request(1, Some(&msg_id), "prior private edit", &[]),
+        NOW + 2,
+    );
+    let (_, pin_seq) = b.send_request(
+        &mut relay,
+        &GROUP,
+        &request(5, Some(&msg_id), "", &[]),
+        NOW + 3,
+    );
+    let rows = relay
+        .messages
+        .iter()
+        .filter(|m| m.seq <= pin_seq)
+        .collect::<Vec<_>>();
+    a.core
+        .group_apply(&GROUP, &[0x80], &encode_messages(&rows), pin_seq)
+        .expect("history");
+    let search_before = a
+        .core
+        .search(0, Some(&CHANNEL), "private", None, 10)
+        .expect("search");
+    assert!(search_before.windows(7).any(|w| w == b"private"));
+    assert_eq!(decode_pins(&a.core.pins(&GROUP).expect("pins")).len(), 1);
+    let entry = signed_removal(&mut b, &GROUP, 1, seq);
+    assert_eq!(a.core.ingest_removals(&GROUP, &[entry]).expect("remove"), 1);
+    let shown = a
+        .timeline(&GROUP)
+        .into_iter()
+        .find(|r| r.seq == seq)
+        .expect("deleted row marker");
+    assert_eq!(shown.status, 2);
+    assert!(shown.body.is_empty());
+    let search_after = a
+        .core
+        .search(0, Some(&CHANNEL), "private", None, 10)
+        .expect("search");
+    assert!(!search_after.windows(7).any(|w| w == b"private"));
+    assert!(decode_pins(&a.core.pins(&GROUP).expect("pins")).is_empty());
+    assert_eq!(
+        a.probe
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT body,edit_body,envelope FROM app_messages WHERE group_id=?1 AND seq=?2",
+                rusqlite::params![GROUP.as_slice(), sql_seq(seq)],
+                |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?
+                )),
+            )
+            .expect("tombstoned target"),
+        (String::new(), None, None),
+    );
+    assert_eq!(
+        a.probe
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT body,envelope FROM app_messages WHERE group_id=?1 AND seq=?2",
+                rusqlite::params![GROUP.as_slice(), sql_seq(edit_seq)],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
+            )
+            .expect("prior edit"),
+        (String::new(), None),
+    );
+
+    let (_, late_seq) = b.send_request(
+        &mut relay,
+        &GROUP,
+        &request(1, Some(&msg_id), "late secret words", &[]),
+        NOW + 4,
+    );
+    let late = relay
+        .messages
+        .iter()
+        .find(|m| m.seq == late_seq)
+        .expect("late edit");
+    a.core
+        .group_apply(&GROUP, &[0x80], &encode_messages(&[late]), late_seq)
+        .expect("late edit history");
+    assert_eq!(
+        a.probe
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT body,envelope FROM app_messages WHERE group_id=?1 AND seq=?2",
+                rusqlite::params![GROUP.as_slice(), sql_seq(late_seq)],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
+            )
+            .expect("late edit row"),
+        (String::new(), None),
+    );
+    assert!(
+        !a.core
+            .search(0, Some(&CHANNEL), "late", None, 10)
+            .expect("late search")
+            .windows(4)
+            .any(|w| w == b"late")
+    );
+}
+
+#[test]
+fn removal_actor_history_refresh_accepts_a_pinned_former_member_without_a_live_leaf() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let mut b = RawPeer::new(0xb2, 0xb3);
+    b.join_external(&mut relay);
+    a.sync(&relay);
+    ingest_list_body(&mut a, &relay, b.user, b.device, &b.device_list_body());
+    let old = list_of(&b.device_list_body());
+    let added_device = [0xb7; 16];
+    let added_dsk = ed25519_dalek::SigningKey::from_bytes(&[0xc7; 32]);
+    let added = DeviceEntry {
+        device_id: DeviceId::from_bytes(added_device),
+        dsk_pub: added_dsk.verifying_key().to_bytes(),
+        tier: Tier::Native,
+        added_at: NOW,
+        revoked_at: None,
+    };
+    let mut entries = old.unsigned.entries.clone();
+    entries.push(added.clone());
+    let newer = sec_next(&old, entries, b.user[0].wrapping_add(0x40));
+    let proof = RemovalProof {
+        request_id: MsgId::from_bytes([0xd7; 16]),
+        actor_user: UserId::from_bytes(b.user),
+        actor_device: DeviceId::from_bytes(added_device),
+        community_id: CommunityId::from_bytes(COMMUNITY),
+        group_id: MsgId::from_bytes(GROUP),
+        target_seq: 1,
+        expires: NOW + 30,
+    };
+    let entry = RemovalFeedEntry {
+        revision: 1,
+        proof: proof.encode().expect("proof"),
+        signature: added_dsk
+            .sign(&proof.signature_preimage().expect("preimage"))
+            .to_bytes(),
+        accepted_at: NOW + 1,
+    };
+
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let version = a
+        .core
+        .refresh_removal_actor_history(
+            &GROUP,
+            &entry,
+            &sec_history(&[&old, &newer]),
+            &newer.encode(),
+        )
+        .expect("history remains anchored in Bob's previously trusted SSK");
+    assert_eq!(version, 2);
+    assert_eq!(
+        a.core
+            .ingest_removals(&GROUP, &[entry])
+            .expect("historical proof"),
+        1
+    );
+}
+
+#[test]
+fn removal_actor_history_never_trusts_an_actor_without_a_cached_anchor() {
+    let (_, _, a, _) = alice_and_bob_trusted();
+    let proof = RemovalProof {
+        request_id: MsgId::from_bytes([0xe7; 16]),
+        actor_user: UserId::from_bytes([0xe8; 16]),
+        actor_device: DeviceId::from_bytes([0xe9; 16]),
+        community_id: CommunityId::from_bytes(COMMUNITY),
+        group_id: MsgId::from_bytes(GROUP),
+        target_seq: 1,
+        expires: NOW + 30,
+    };
+    let entry = RemovalFeedEntry {
+        revision: 1,
+        proof: proof.encode().expect("proof"),
+        signature: [0xea; 64],
+        accepted_at: NOW + 1,
+    };
+    assert_eq!(
+        code(a.core.removal_actor_history_version(&GROUP, &entry)),
+        "E_CORE_INPUT"
+    );
+}
+
+#[test]
+fn moderator_removals_refuse_a_call_group() {
+    let (_, _relay, mut a, _) = alice_and_bob_trusted();
+    let call_group = [0x9a; 16];
+    a.probe.lock().unwrap().execute(
+        "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,1,?2,?3,2)",
+        rusqlite::params![call_group.as_slice(), COMMUNITY.as_slice(), CHANNEL.as_slice()],
+    ).expect("call group fixture");
+    assert_eq!(
+        code(a.core.ingest_removals(&call_group, &[])),
+        "E_CORE_INPUT"
+    );
+    a.probe
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE app_groups SET pending_commit=1 WHERE group_id=?1",
+            [GROUP.as_slice()],
+        )
+        .expect("pending commit fixture");
+    assert_eq!(code(a.core.ingest_removals(&GROUP, &[])), "E_CORE_STATE");
 }
 
 #[test]
@@ -1344,7 +1680,7 @@ fn settings_are_bounded_ordered_and_answer_in_every_phase() {
     );
     core.signup_begin(&INSTANCE).expect("phase 1");
     core.setting_put("c", "3").expect("phase 1");
-    core.signup_complete(&[0x42; 16], "alice", NOW)
+    core.signup_complete(&[0x42; 16], "alice", NOW, &INSTANCE_SIGNER_PUB)
         .expect("phase 2");
     core.setting_delete("a").expect("delete");
     core.setting_delete("absent").expect("absent is a no-op");

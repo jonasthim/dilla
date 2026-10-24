@@ -55,7 +55,7 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
   return groups;
 }
 
-export type MenuAction = 'message' | 'compare' | 'roles' | 'kick' | 'ban';
+export type MenuAction = 'message' | 'compare' | 'roles' | 'warn' | 'timeout' | 'kick' | 'ban';
 export interface MenuContext { selfId: string; ownerId: string; roles: readonly RoleSummary[] }
 
 /**
@@ -70,6 +70,8 @@ export function menuFor(member: MemberSummary, access: CommunityAccess | undefin
   if (access !== undefined && access.loaded) {
     if (access.manageRoles) out.push('roles');
     const may = canModerate({ me: ctx.selfId, target: member.userId, owner: ctx.ownerId, myTop: access.top, targetTop: topOf(member.roleIds, ctx.roles) });
+    if (may && access.moderateMembers) out.push('warn');
+    if (may && access.moderateMembers) out.push('timeout');
     if (may && access.kickMembers) out.push('kick');
     if (may && access.banMembers) out.push('ban');
   }

@@ -1,0 +1,351 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"math"
+
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
+)
+
+func (r *Repo) CreateBotRuntime(ctx context.Context, b store.BotRuntimeRow) error {
+	if len(b.TokenHash) != 32 {
+		return store.ErrConflict
+	}
+	return wrap(r.w.CreateBotRuntime(ctx, pgdb.CreateBotRuntimeParams{ID: b.ID, TokenHash: b.TokenHash, Created: b.Created, Rotated: b.Rotated, RevokedAt: nullInt64(b.RevokedAt)}))
+}
+
+func botRuntimeRow(b pgdb.BotRuntimes) store.BotRuntimeRow {
+	return store.BotRuntimeRow{ID: b.ID, TokenHash: b.TokenHash, Created: b.Created, Rotated: b.Rotated, RevokedAt: ptrInt64(b.RevokedAt)}
+}
+
+func (r *Repo) GetBotRuntime(ctx context.Context, id id.ID) (store.BotRuntimeRow, error) {
+	b, err := r.r.GetBotRuntime(ctx, pgdb.GetBotRuntimeParams{ID: id})
+	if err != nil {
+		return store.BotRuntimeRow{}, wrap(err)
+	}
+	return botRuntimeRow(b), nil
+}
+
+func (r *Repo) GetBotRuntimeByHash(ctx context.Context, hash []byte) (store.BotRuntimeRow, error) {
+	if len(hash) != 32 {
+		return store.BotRuntimeRow{}, store.ErrNotFound
+	}
+	b, err := r.r.GetBotRuntimeByHash(ctx, pgdb.GetBotRuntimeByHashParams{TokenHash: hash})
+	if err != nil {
+		return store.BotRuntimeRow{}, wrap(err)
+	}
+	return botRuntimeRow(b), nil
+}
+
+func (r *Repo) LockBotRuntime(ctx context.Context, runtimeID id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	_, err := r.r.LockBotRuntime(ctx, pgdb.LockBotRuntimeParams{ID: runtimeID})
+	if err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) RotateBotRuntime(ctx context.Context, runtimeID id.ID, expectedHash, hash []byte, at int64) error {
+	if len(hash) != 32 {
+		return store.ErrConflict
+	}
+	if len(expectedHash) != 32 {
+		return store.ErrConflict
+	}
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.RotateBotRuntime(ctx, runtimeID, expectedHash, hash, at) })
+	}
+	n, err := r.w.RotateBotRuntime(ctx, pgdb.RotateBotRuntimeParams{ID: runtimeID, TokenHash: hash, Rotated: at, TokenHash_2: expectedHash})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		if _, getErr := r.r.GetBotRuntime(ctx, pgdb.GetBotRuntimeParams{ID: runtimeID}); getErr != nil {
+			return wrap(getErr)
+		}
+		return store.ErrConflict
+	}
+	_, err = r.w.DeleteBotClaimsByRuntime(ctx, pgdb.DeleteBotClaimsByRuntimeParams{RuntimeID: runtimeID})
+	return wrap(err)
+}
+
+func (r *Repo) RevokeBotRuntime(ctx context.Context, runtimeID id.ID, at int64) error {
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.RevokeBotRuntime(ctx, runtimeID, at) })
+	}
+	n, err := r.w.RevokeBotRuntime(ctx, pgdb.RevokeBotRuntimeParams{ID: runtimeID, RevokedAt: nullInt64(&at)})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		if _, getErr := r.r.GetBotRuntime(ctx, pgdb.GetBotRuntimeParams{ID: runtimeID}); getErr != nil {
+			return wrap(getErr)
+		}
+		return store.ErrConflict
+	}
+	_, err = r.w.DeleteBotClaimsByRuntime(ctx, pgdb.DeleteBotClaimsByRuntimeParams{RuntimeID: runtimeID})
+	return wrap(err)
+}
+
+func (r *Repo) ListBotRuntimes(ctx context.Context, after id.ID, limit int32) ([]store.BotRuntimeRow, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, store.ErrConflict
+	}
+	rows, err := r.r.ListBotRuntimes(ctx, pgdb.ListBotRuntimesParams{ID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotRuntimeRow, len(rows))
+	for i := range rows {
+		out[i] = botRuntimeRow(rows[i])
+	}
+	return out, nil
+}
+
+func checkBotInstallation(b store.BotInstallationRow) error {
+	if b.State > store.BotInstallationError || b.Revision == 0 || b.Revision > math.MaxInt64 {
+		return store.ErrConflict
+	}
+	if b.RemovedAt != nil && b.State != store.BotInstallationDisabled {
+		return store.ErrConflict
+	}
+	if (b.UserID == nil) != (b.DeviceID == nil) {
+		return store.ErrConflict
+	}
+	return nil
+}
+
+func botInstallationRow(b pgdb.BotInstallations) store.BotInstallationRow {
+	return store.BotInstallationRow{ID: b.ID, CommunityID: b.CommunityID, RuntimeID: b.RuntimeID, UserID: b.UserID, DeviceID: b.DeviceID, RoleID: b.RoleID, State: uint8(b.State), Revision: uint64(b.Revision), Capabilities: uint8(b.Capabilities), ApprovedBy: b.ApprovedBy, ApprovedAt: b.ApprovedAt, CredentialVerifiedAt: ptrInt64(b.CredentialVerifiedAt), Created: b.Created, Updated: b.Updated, RemovedAt: ptrInt64(b.RemovedAt)}
+}
+
+func botInstallationArgs(b store.BotInstallationRow) pgdb.CreateBotInstallationParams {
+	return pgdb.CreateBotInstallationParams{ID: b.ID, CommunityID: b.CommunityID, RuntimeID: b.RuntimeID, UserID: b.UserID, DeviceID: b.DeviceID, RoleID: b.RoleID, State: int64(b.State), Revision: int64(b.Revision), Capabilities: int64(b.Capabilities), ApprovedBy: b.ApprovedBy, ApprovedAt: b.ApprovedAt, CredentialVerifiedAt: nullInt64(b.CredentialVerifiedAt), Created: b.Created, Updated: b.Updated, RemovedAt: nullInt64(b.RemovedAt)}
+}
+
+func (r *Repo) CreateBotInstallation(ctx context.Context, b store.BotInstallationRow) error {
+	if err := checkBotInstallation(b); err != nil {
+		return err
+	}
+	return wrap(r.w.CreateBotInstallation(ctx, botInstallationArgs(b)))
+}
+
+func (r *Repo) GetBotInstallation(ctx context.Context, id id.ID) (store.BotInstallationRow, error) {
+	b, err := r.r.GetBotInstallation(ctx, pgdb.GetBotInstallationParams{ID: id})
+	if err != nil {
+		return store.BotInstallationRow{}, wrap(err)
+	}
+	return botInstallationRow(b), nil
+}
+
+func (r *Repo) GetActiveBotInstallationByCommunity(ctx context.Context, community id.ID) (store.BotInstallationRow, error) {
+	b, err := r.r.GetActiveBotInstallationByCommunity(ctx, pgdb.GetActiveBotInstallationByCommunityParams{CommunityID: community})
+	if err != nil {
+		return store.BotInstallationRow{}, wrap(err)
+	}
+	return botInstallationRow(b), nil
+}
+
+func (r *Repo) ListBotInstallationsAfter(ctx context.Context, after id.ID, limit int32) ([]store.BotInstallationRow, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, store.ErrConflict
+	}
+	rows, err := r.r.ListBotInstallationsAfter(ctx, pgdb.ListBotInstallationsAfterParams{ID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotInstallationRow, len(rows))
+	for i := range rows {
+		out[i] = botInstallationRow(rows[i])
+	}
+	return out, nil
+}
+
+func (r *Repo) ListBotInstallationsForRuntime(ctx context.Context, runtimeID, after id.ID, limit int32) ([]store.BotInstallationRow, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, store.ErrConflict
+	}
+	rows, err := r.r.ListBotInstallationsForRuntime(ctx, pgdb.ListBotInstallationsForRuntimeParams{
+		ID: after, RuntimeID: &runtimeID, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotInstallationRow, len(rows))
+	for i := range rows {
+		out[i] = botInstallationRow(rows[i])
+	}
+	return out, nil
+}
+
+func (r *Repo) ListBotInstallationsByDevice(ctx context.Context, deviceID, after id.ID, limit int32) ([]store.BotInstallationRow, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, store.ErrConflict
+	}
+	rows, err := r.r.ListBotInstallationsByDevice(ctx, pgdb.ListBotInstallationsByDeviceParams{DeviceID: &deviceID, ID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotInstallationRow, len(rows))
+	for i := range rows {
+		out[i] = botInstallationRow(rows[i])
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdateBotInstallation(ctx context.Context, installationID id.ID, expected uint64, next store.BotInstallationRow) error {
+	if expected == 0 || expected >= math.MaxInt64 || next.Revision != expected+1 || next.ID != installationID {
+		return store.ErrConflict
+	}
+	if next.RemovedAt != nil && !r.inTx {
+		return store.ErrConflict
+	}
+	if err := checkBotInstallation(next); err != nil {
+		return err
+	}
+	old, err := r.GetBotInstallation(ctx, installationID)
+	if err != nil {
+		return err
+	}
+	if old.CommunityID != next.CommunityID || old.Created != next.Created || (old.RemovedAt != nil && (next.RemovedAt == nil || *old.RemovedAt != *next.RemovedAt)) {
+		return store.ErrConflict
+	}
+	params := pgdb.UpdateBotInstallationParams{RuntimeID: next.RuntimeID, UserID: next.UserID, DeviceID: next.DeviceID, RoleID: next.RoleID, State: int64(next.State), Revision: int64(next.Revision), Capabilities: int64(next.Capabilities), ApprovedBy: next.ApprovedBy, ApprovedAt: next.ApprovedAt, CredentialVerifiedAt: nullInt64(next.CredentialVerifiedAt), Updated: next.Updated, RemovedAt: nullInt64(next.RemovedAt), ID: installationID, Revision_2: int64(expected)}
+	n, err := r.w.UpdateBotInstallation(ctx, params)
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrConflict
+	}
+	if next.RemovedAt != nil {
+		if err := r.DeleteBotKeyPackagePublicationReceipts(ctx, installationID); err != nil {
+			return err
+		}
+		if err := r.DeleteBotGroupRegistrationReceiptsByInstallation(ctx, installationID); err != nil {
+			return err
+		}
+		if err := r.DeleteBotSendsByInstallation(ctx, installationID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Repo) LockBotInstallation(ctx context.Context, installationID id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	_, err := r.w.LockBotInstallation(ctx, pgdb.LockBotInstallationParams{ID: installationID})
+	if err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) LockBotCommunity(ctx context.Context, communityID id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	_, err := r.w.LockBotCommunity(ctx, pgdb.LockBotCommunityParams{ID: communityID})
+	if err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func botClaimRow(b pgdb.BotClaims) store.BotClaimRow {
+	return store.BotClaimRow{InstallationID: b.InstallationID, RuntimeID: b.RuntimeID, ClaimID: b.ClaimID, RequestID: b.RequestID, Expires: b.Expires}
+}
+func (r *Repo) GetBotClaim(ctx context.Context, installationID id.ID) (store.BotClaimRow, error) {
+	b, err := r.r.GetBotClaim(ctx, pgdb.GetBotClaimParams{InstallationID: installationID})
+	if err != nil {
+		return store.BotClaimRow{}, wrap(err)
+	}
+	return botClaimRow(b), nil
+}
+func (r *Repo) PutBotClaim(ctx context.Context, b store.BotClaimRow) error {
+	return wrap(r.w.PutBotClaim(ctx, pgdb.PutBotClaimParams{InstallationID: b.InstallationID, RuntimeID: b.RuntimeID, ClaimID: b.ClaimID, RequestID: b.RequestID, Expires: b.Expires}))
+}
+func (r *Repo) DeleteBotClaim(ctx context.Context, installationID id.ID) error {
+	n, err := r.w.DeleteBotClaim(ctx, pgdb.DeleteBotClaimParams{InstallationID: installationID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+func (r *Repo) DeleteBotClaimsByRuntime(ctx context.Context, runtimeID id.ID) (int64, error) {
+	n, err := r.w.DeleteBotClaimsByRuntime(ctx, pgdb.DeleteBotClaimsByRuntimeParams{RuntimeID: runtimeID})
+	return n, wrap(err)
+}
+
+func botOperationRow(b pgdb.BotOperations) store.BotOperationRow {
+	return store.BotOperationRow{CommunityID: b.CommunityID, RequestID: b.RequestID, InstallationID: b.InstallationID, ActorKind: uint8(b.ActorKind), ActorID: b.ActorID, ActorDevice: b.ActorDevice, Operation: uint8(b.Operation), PayloadHash: b.PayloadHash, ResultCBOR: b.ResultCbor, Created: b.Created}
+}
+func (r *Repo) CreateBotOperation(ctx context.Context, b store.BotOperationRow) error {
+	if b.ActorKind > 2 || b.Operation < 1 || b.Operation > 8 || len(b.PayloadHash) != 32 || len(b.ResultCBOR) > 8192 {
+		return store.ErrConflict
+	}
+	return wrap(r.w.CreateBotOperation(ctx, pgdb.CreateBotOperationParams{CommunityID: b.CommunityID, RequestID: b.RequestID, InstallationID: b.InstallationID, ActorKind: int64(b.ActorKind), ActorID: b.ActorID, ActorDevice: b.ActorDevice, Operation: int64(b.Operation), PayloadHash: b.PayloadHash, ResultCbor: b.ResultCBOR, Created: b.Created}))
+}
+func (r *Repo) GetBotOperation(ctx context.Context, communityID, requestID id.ID) (store.BotOperationRow, error) {
+	b, err := r.r.GetBotOperation(ctx, pgdb.GetBotOperationParams{CommunityID: communityID, RequestID: requestID})
+	if err != nil {
+		return store.BotOperationRow{}, wrap(err)
+	}
+	return botOperationRow(b), nil
+}
+
+func (r *Repo) CreateBotSessionBinding(ctx context.Context, b store.BotSessionBindingRow) error {
+	if len(b.TokenHash) != 32 {
+		return store.ErrConflict
+	}
+	return wrap(r.w.CreateBotSessionBinding(ctx, pgdb.CreateBotSessionBindingParams{TokenHash: b.TokenHash, InstallationID: b.InstallationID, UserID: b.UserID, DeviceID: b.DeviceID, Created: b.Created}))
+}
+func (r *Repo) GetBotSessionBinding(ctx context.Context, tokenHash []byte) (store.BotSessionBindingRow, error) {
+	if len(tokenHash) != 32 {
+		return store.BotSessionBindingRow{}, store.ErrNotFound
+	}
+	b, err := r.r.GetBotSessionBinding(ctx, pgdb.GetBotSessionBindingParams{TokenHash: tokenHash})
+	if err != nil {
+		return store.BotSessionBindingRow{}, wrap(err)
+	}
+	return store.BotSessionBindingRow{TokenHash: b.TokenHash, InstallationID: b.InstallationID, UserID: b.UserID, DeviceID: b.DeviceID, Created: b.Created}, nil
+}
+func (r *Repo) DeleteBotSessionBindingsByInstallation(ctx context.Context, installationID id.ID) (int64, error) {
+	n, err := r.w.DeleteBotSessionBindingsByInstallation(ctx, pgdb.DeleteBotSessionBindingsByInstallationParams{InstallationID: installationID})
+	return n, wrap(err)
+}
+
+func (r *Repo) UpdateDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte) error {
+	n, err := r.w.UpdateDeviceCredential(ctx, pgdb.UpdateDeviceCredentialParams{ID: deviceID, CredentialBlob: credential})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) FinalizeBotDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte, verifiedAt int64) error {
+	n, err := r.w.FinalizeBotDeviceCredential(ctx, pgdb.FinalizeBotDeviceCredentialParams{
+		CredentialBlob: credential, VerifiedAt: nullInt64(&verifiedAt), ID: deviceID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}

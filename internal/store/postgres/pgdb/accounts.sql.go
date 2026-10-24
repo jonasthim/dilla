@@ -139,6 +139,21 @@ func (q *Queries) GetUserByUsername(ctx context.Context, arg GetUserByUsernamePa
 	return i, err
 }
 
+const getUserKind = `-- name: GetUserKind :one
+SELECT kind FROM users WHERE id = $1
+`
+
+type GetUserKindParams struct {
+	ID id.ID
+}
+
+func (q *Queries) GetUserKind(ctx context.Context, arg GetUserKindParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getUserKind, arg.ID)
+	var kind int64
+	err := row.Scan(&kind)
+	return kind, err
+}
+
 const listUsers = `-- name: ListUsers :many
 SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE id > $1 ORDER BY id LIMIT $2::bigint
 `

@@ -13,6 +13,7 @@ import (
 type Querier interface {
 	AFKAwayExists(ctx context.Context, arg AFKAwayExistsParams) (int64, error)
 	AFKAwayExistsUser(ctx context.Context, arg AFKAwayExistsUserParams) (int64, error)
+	AcceptBotAutoModerationGrant(ctx context.Context, arg AcceptBotAutoModerationGrantParams) (int64, error)
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
@@ -45,6 +46,11 @@ type Querier interface {
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
+	CreateBotAutoModerationGrant(ctx context.Context, arg CreateBotAutoModerationGrantParams) error
+	CreateBotInstallation(ctx context.Context, arg CreateBotInstallationParams) error
+	CreateBotOperation(ctx context.Context, arg CreateBotOperationParams) error
+	CreateBotRuntime(ctx context.Context, arg CreateBotRuntimeParams) error
+	CreateBotSessionBinding(ctx context.Context, arg CreateBotSessionBindingParams) error
 	// Channels (Plan 2 task 2, 00005_channels.sql).
 	CreateChannel(ctx context.Context, arg CreateChannelParams) error
 	CreateCommunity(ctx context.Context, arg CreateCommunityParams) error
@@ -60,6 +66,9 @@ type Querier interface {
 	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
 	DeleteBlob(ctx context.Context, arg DeleteBlobParams) (int64, error)
 	DeleteBlobRef(ctx context.Context, arg DeleteBlobRefParams) error
+	DeleteBotClaim(ctx context.Context, arg DeleteBotClaimParams) (int64, error)
+	DeleteBotClaimsByRuntime(ctx context.Context, arg DeleteBotClaimsByRuntimeParams) (int64, error)
+	DeleteBotSessionBindingsByInstallation(ctx context.Context, arg DeleteBotSessionBindingsByInstallationParams) (int64, error)
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
@@ -94,6 +103,7 @@ type Querier interface {
 	DeleteWebauthnCredential(ctx context.Context, arg DeleteWebauthnCredentialParams) (int64, error)
 	DeleteWebauthnCredentialsByUser(ctx context.Context, arg DeleteWebauthnCredentialsByUserParams) error
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
+	DeviceDSKConflictCount(ctx context.Context, arg DeviceDSKConflictCountParams) (int64, error)
 	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
 	// instance no longer stores could never verify. Plan 2 task 17 moves the rest of the tuple too: the
@@ -108,6 +118,8 @@ type Querier interface {
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
+	FinalizeBotDeviceCredential(ctx context.Context, arg FinalizeBotDeviceCredentialParams) (int64, error)
+	GetActiveBotInstallationByCommunity(ctx context.Context, arg GetActiveBotInstallationByCommunityParams) (BotInstallations, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetBackup(ctx context.Context, arg GetBackupParams) (Backups, error)
 	GetBan(ctx context.Context, arg GetBanParams) (Bans, error)
@@ -116,6 +128,13 @@ type Querier interface {
 	// COUNT, not EXISTS: EXISTS is int64 on SQLite and bool on Postgres, and the two Querier
 	// interfaces must stay identical.
 	GetBlobTombstone(ctx context.Context, arg GetBlobTombstoneParams) (int64, error)
+	GetBotAutoModerationGrant(ctx context.Context, arg GetBotAutoModerationGrantParams) (AutomodStepupGrants, error)
+	GetBotClaim(ctx context.Context, arg GetBotClaimParams) (BotClaims, error)
+	GetBotInstallation(ctx context.Context, arg GetBotInstallationParams) (BotInstallations, error)
+	GetBotOperation(ctx context.Context, arg GetBotOperationParams) (BotOperations, error)
+	GetBotRuntime(ctx context.Context, arg GetBotRuntimeParams) (BotRuntimes, error)
+	GetBotRuntimeByHash(ctx context.Context, arg GetBotRuntimeByHashParams) (BotRuntimes, error)
+	GetBotSessionBinding(ctx context.Context, arg GetBotSessionBindingParams) (BotSessionBindings, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -142,6 +161,7 @@ type Querier interface {
 	GetTOTP(ctx context.Context, arg GetTOTPParams) (TotpSecrets, error)
 	GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 	GetUserByUsername(ctx context.Context, arg GetUserByUsernameParams) (Users, error)
+	GetUserKind(ctx context.Context, arg GetUserKindParams) (int64, error)
 	GetVoiceSession(ctx context.Context, arg GetVoiceSessionParams) (VoiceSessions, error)
 	GetWebauthnCredential(ctx context.Context, arg GetWebauthnCredentialParams) (WebauthnCredentials, error)
 	GetWebauthnUserByHandle(ctx context.Context, arg GetWebauthnUserByHandleParams) (id.ID, error)
@@ -183,6 +203,10 @@ type Querier interface {
 	// Plan 2 task 12: the backup's walk over every blob row, in blob_id byte order (bytea compares
 	// bytewise), resumed after the last id of the previous page. An empty after sorts first.
 	ListBlobs(ctx context.Context, arg ListBlobsParams) ([]Blobs, error)
+	ListBotInstallationsAfter(ctx context.Context, arg ListBotInstallationsAfterParams) ([]BotInstallations, error)
+	ListBotInstallationsByDevice(ctx context.Context, arg ListBotInstallationsByDeviceParams) ([]BotInstallations, error)
+	ListBotInstallationsForRuntime(ctx context.Context, arg ListBotInstallationsForRuntimeParams) ([]BotInstallations, error)
+	ListBotRuntimes(ctx context.Context, arg ListBotRuntimesParams) ([]BotRuntimes, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
@@ -242,11 +266,17 @@ type Querier interface {
 	// The per-blob lock the recording transactions take before their cross-table checks: the blobs
 	// row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
 	LockBlob(ctx context.Context, arg LockBlobParams) error
+	LockBotCommunity(ctx context.Context, arg LockBotCommunityParams) (id.ID, error)
+	LockBotInstallation(ctx context.Context, arg LockBotInstallationParams) (id.ID, error)
+	LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) (id.ID, error)
 	// The join and the ban both take this lock before they read or write the
 	// membership, so a join's ban check and its member insert cannot interleave with
 	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
 	// FOR KEY SHARE a foreign-key check on members or channels takes does not.
 	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
+	// The 64-bit transaction advisory lock is derived from the DSK bytes. Every repository device
+	// insertion takes the same lock, so lookup plus insert is atomic without a global unique index.
+	LockDeviceDSK(ctx context.Context, arg LockDeviceDSKParams) error
 	// Taken in ClearFactorOwedWithFactor's transaction before the UPDATE: the operator reset takes the
 	// same row lock first, so a reset committed before this lock is seen by the UPDATE's snapshot and
 	// one started after it waits. Without it a reset could commit between the UPDATE's snapshot and
@@ -319,6 +349,7 @@ type Querier interface {
 	PutBlobRef(ctx context.Context, arg PutBlobRefParams) error
 	// The first purge's record stands.
 	PutBlobTombstone(ctx context.Context, arg PutBlobTombstoneParams) error
+	PutBotClaim(ctx context.Context, arg PutBotClaimParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
 	// Channel members (Plan 2 task 6, 00008_channel_members.sql).
 	PutChannelMember(ctx context.Context, arg PutChannelMemberParams) error
@@ -389,8 +420,10 @@ type Querier interface {
 	RaisePrunedBelow(ctx context.Context, arg RaisePrunedBelowParams) error
 	RecordLoginAttempt(ctx context.Context, arg RecordLoginAttemptParams) error
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
+	RevokeBotRuntime(ctx context.Context, arg RevokeBotRuntimeParams) (int64, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
+	RotateBotRuntime(ctx context.Context, arg RotateBotRuntimeParams) (int64, error)
 	SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error)
 	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
@@ -404,6 +437,7 @@ type Querier interface {
 	// promise every client depends on: the generation only ever grows.
 	SetGeneration(ctx context.Context, arg SetGenerationParams) error
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
+	SetSessionVersions(ctx context.Context, arg SetSessionVersionsParams) (int64, error)
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
 	SoftDeleteCommunity(ctx context.Context, arg SoftDeleteCommunityParams) (int64, error)
 	TakeInviteSignup(ctx context.Context, arg TakeInviteSignupParams) (int64, error)
@@ -414,6 +448,7 @@ type Querier interface {
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
+	UpdateBotInstallation(ctx context.Context, arg UpdateBotInstallationParams) (int64, error)
 	// kind, community_id, seq and created are not written: a channel's kind and home
 	// are immutable, and seq moves only through NextChannelSeq.
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (int64, error)
@@ -423,6 +458,7 @@ type Querier interface {
 	// number clients already hold. Zero rows is either an unknown community or a
 	// lost race; the adapter tells the two apart.
 	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
+	UpdateDeviceCredential(ctx context.Context, arg UpdateDeviceCredentialParams) (int64, error)
 	// A NULL argument leaves that column as it is, so a write names only the fields it changes.
 	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error

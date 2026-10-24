@@ -264,7 +264,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	}
 }
 
-// wantTables is the exact set 001/002/003/004/005/006/009 declare, sorted, so that a
+// wantTables is the exact set of tables declared by the current SQLite schema, sorted, so that a
 // dropped or renamed table is caught and not just a change in the count. Task 19
 // added 004_mls.sql's twelve; task 23 added 005_messages.sql's one; Plan 2 task 1
 // added 006_structure.sql's four (communities, members, roles, member_roles); Plan 2
@@ -275,14 +275,16 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // and read_state (its FTS5 index is asserted on its own, because a virtual table is not STRICT);
 // Plan 2 task 10 added 008_blobs.sql's blobs, blob_refs, blob_tombstones and backups; Plan 2
 // task 16 added 006f_voice.sql's voice_sessions; dilla-web-3.1 added 014_invite_signups.sql's
-// invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks.
+// invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks; Task4B adds the
+// runtime, installation, claim and session-binding tables, task 5B4B adds publication receipts,
+// and Task5 adds managed group-registration receipts.
 var wantTables = []string{
-	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "automod_stepup_grants", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_event_acks", "bot_event_streams", "bot_group_registration_admission_receipts", "bot_group_registration_receipts", "bot_installations", "bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_structural_events", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "dj_role_policy", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
-	"member_roles", "members",
+	"manual_warning_actions", "member_role_grant_sources", "member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
-	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
-	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "slowmode_marks", "totp_secrets", "user_presence", "users",
+	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "moderation_removal_heads", "moderation_removals", "oidc_identities",
+	"password_credentials", "pending_joins", "reaction_role_grant_sources", "read_state", "readable_messages", "recovery_codes", "reports", "role_panel_options", "role_panels", "roles", "self_role_policy", "sessions", "slowmode_marks", "totp_secrets", "user_presence", "users",
 	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 

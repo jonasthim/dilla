@@ -49,6 +49,41 @@ func TestHealStatusServesTheEpochTheHighWaterAndTheGeneration(t *testing.T) {
 	}
 }
 
+func TestMemberHealStateDistinguishesRestoredGroupWithoutChangingLegacyStatus(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+	path := "/v1/groups/" + h.groupID.String() + "/heal-state"
+	read := func() []uint64 {
+		t.Helper()
+		res := h.do(t, http.MethodGet, path, member, nil)
+		if res.Code != http.StatusOK {
+			t.Fatalf("heal-state = %d: %s", res.Code, res.Body.String())
+		}
+		var fields []uint64
+		if err := cborx.Unmarshal(res.Body.Bytes(), &fields); err != nil || len(fields) != 5 {
+			t.Fatalf("heal-state response = %v, %v", fields, err)
+		}
+		return fields
+	}
+	if got := read(); got[4] != 0 {
+		t.Fatalf("healthy group needs_heal = %d, want 0", got[4])
+	}
+	h.restore(t)
+	if got := read(); got[4] != 1 {
+		t.Fatalf("restored group needs_heal = %d, want 1", got[4])
+	}
+	legacy := h.do(t, http.MethodGet, "/v1/groups/"+h.groupID.String()+"/heal", member, nil)
+	var old []uint64
+	if legacy.Code != http.StatusOK || cborx.Unmarshal(legacy.Body.Bytes(), &old) != nil || len(old) != 4 {
+		t.Fatalf("legacy heal status changed: status=%d body=%v", legacy.Code, old)
+	}
+	denied := h.do(t, http.MethodGet, path, h.session, nil)
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("nonmember heal-state = %d, want 404", denied.Code)
+	}
+}
+
 // A group that EXISTS is still 404 to a device that is not a member of it: every group-scoped read
 // answers a non-member E_NOT_FOUND so that group existence is not probeable, and the heal status
 // (epoch, high-water, generation) is no exception.

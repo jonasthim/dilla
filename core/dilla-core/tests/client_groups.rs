@@ -131,7 +131,26 @@ fn a_registration_that_lost_is_discarded_and_leaves_nothing() {
             &instance.public(),
         )
         .expect("create");
+    a.probe
+        .lock()
+        .expect("probe")
+        .execute(
+            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
+            rusqlite::params![GROUP.as_slice(), [0x77u8; 16].as_slice()],
+        )
+        .expect("record interaction response claim");
     a.core.group_discard(&GROUP).expect("discard");
+    let remaining: i64 = a
+        .probe
+        .lock()
+        .expect("probe")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("query discarded response claims");
+    assert_eq!(remaining, 0, "discard removes durable claims for the group");
     assert!(groups(&a.core).is_empty());
     assert_eq!(code(a.core.group_discard(&GROUP)), "E_CORE_NOT_FOUND");
 
@@ -478,7 +497,29 @@ fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_res
         )),
         "E_CORE_STATE"
     );
+    b.probe
+        .lock()
+        .expect("probe")
+        .execute(
+            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
+            rusqlite::params![GROUP.as_slice(), [0x78u8; 16].as_slice()],
+        )
+        .expect("record acknowledged interaction response claim");
     b.core.group_discard(&GROUP).expect("discard");
+    let preserved: i64 = b
+        .probe
+        .lock()
+        .expect("probe")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("read response claim after preserving history");
+    assert_eq!(
+        preserved, 1,
+        "resync discard must retain response claims with message history"
+    );
     let row = b.group(&GROUP).expect("the row stays");
     assert_eq!(row.state, 3);
     assert_eq!(
@@ -603,6 +644,30 @@ fn a_welcome_joins_against_the_expected_binding_and_reports_every_outcome() {
         assert_eq!((row.sender_kind, row.sender_tier), (Some(0), Some(0)));
         assert_eq!(row.body, "welcome aboard");
     }
+}
+
+#[test]
+fn a_human_interaction_welcome_refuses_a_forged_context_without_storing_a_group() {
+    let mut human = ready_core(0xa1, "alice");
+    let mut welcome = Encoder::new();
+    welcome
+        .array(1)
+        .array(7)
+        .uint(1)
+        .bytes(&GROUP)
+        .uint(1)
+        .uint(1)
+        .bytes(&[])
+        .bytes(&[])
+        .bytes(&[0; 32]);
+
+    let error = code(human.core.human_interaction_welcome_apply(
+        &welcome.into_vec(),
+        &[0x80],
+        1_800_000_000,
+    ));
+    assert_eq!(error, "E_BINDING");
+    assert!(groups(&human.core).is_empty());
 }
 
 #[test]

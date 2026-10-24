@@ -42,6 +42,48 @@ func TestTheSenderPartitionsItsCounters(t *testing.T) {
 	}
 }
 
+func TestReservedSenderRangesDoNotReuseMicNonces(t *testing.T) {
+	first, err := NewSenderRange(testBase, 3, 5, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewSenderRange(testBase, 3, 5, 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := []byte{0xfc, 1, 2}
+	for i, sender := range []*Sender{first, first, second, second} {
+		sealed, encryptErr := sender.Encrypt(Opus, Mic, 0, frame)
+		if encryptErr != nil {
+			t.Fatalf("frame %d: %v", i, encryptErr)
+		}
+		if got := ctrOf(t, sealed, 0) & MaxSeq; got != uint64(i) {
+			t.Fatalf("frame %d used sequence %d", i, got)
+		}
+	}
+	if _, err := first.Encrypt(Opus, Mic, 0, frame); !errors.Is(err, ErrCounterExhausted) {
+		t.Fatalf("range overflow: %v", err)
+	}
+	if _, err := second.Encrypt(Opus, Camera, 0, frame); !errors.Is(err, ErrSlotMismatch) {
+		t.Fatalf("wrong slot: %v", err)
+	}
+	if _, err := second.Encrypt(Opus, Mic, 1, frame); !errors.Is(err, ErrSlotMismatch) {
+		t.Fatalf("wrong layer: %v", err)
+	}
+	second.Rekey(testBase, 3, 6)
+	if _, err := second.Encrypt(Opus, Mic, 0, frame); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("range reused after rekey: %v", err)
+	}
+}
+
+func TestReservedSenderRejectsInvalidRange(t *testing.T) {
+	for _, r := range [][2]uint64{{0, 0}, {2, 1}, {0, MaxSeq + 2}, {MaxSeq + 1, MaxSeq + 1}} {
+		if _, err := NewSenderRange(testBase, 3, 5, r[0], r[1]); err == nil {
+			t.Fatalf("accepted range %v", r)
+		}
+	}
+}
+
 // N1: a sender made after its device committed epoch min_epoch never encrypts below it.
 func TestTheSenderRefusesEpochsBelowItsFloor(t *testing.T) {
 	if _, err := NewSender(testBase, 1, 4, 5); !errors.Is(err, ErrStaleEpoch) {

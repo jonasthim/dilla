@@ -10,6 +10,10 @@ export const REASON_MAX_BYTES = 512;
 export const BAN_LENGTHS = { hour: 3600, day: 86400, week: 604800, month: 2592000, forever: null } as const;
 export type BanLength = keyof typeof BAN_LENGTHS;
 const LENGTH_KEYS: readonly BanLength[] = ['hour', 'day', 'week', 'month', 'forever'];
+const TIMEOUT_LENGTHS = { tenMinutes: 600, hour: 3600, day: 86400, clear: null } as const;
+type TimeoutLength = keyof typeof TIMEOUT_LENGTHS;
+const TIMEOUT_KEYS: readonly TimeoutLength[] = ['tenMinutes', 'hour', 'day', 'clear'];
+const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
 
 const UTF8 = new TextEncoder();
 // Control characters other than line feeds and tabs.
@@ -141,4 +145,88 @@ export function BanFlow(props: ModFlowProps): React.JSX.Element {
         options={LENGTH_KEYS.map(k => ({ value: k, label: t(`mod.ban.duration.${k}`) }))} />
     </ConfirmDialog>
   );
+}
+
+export function TimeoutFlow(props: ModFlowProps): React.JSX.Element {
+  const client = useCore();
+  const g = useGuarded(props.open);
+  const [length, setLength] = useState<TimeoutLength>('tenMinutes');
+  const vars = { name: props.target?.name ?? '', server: props.serverName };
+  useEffect(() => { if (!props.open) setLength('tenMinutes'); }, [props.open]);
+
+  const confirm = () => {
+    const target = props.target;
+    if (target === null || g.running.current) return;
+    g.running.current = true;
+    g.setBusy(true);
+    g.setError(null);
+    const at = g.session.current;
+    const duration = TIMEOUT_LENGTHS[length];
+    const command = duration === null
+      ? { m: 'clearMemberTimeout' as const, communityId: props.communityId, userId: target.userId, requestId: requestId() }
+      : { m: 'setMemberTimeout' as const, communityId: props.communityId, userId: target.userId,
+          requestId: requestId(), expires: String(Math.floor(Date.now() / 1000) + duration) };
+    void (async () => {
+      try {
+        await client.call(command);
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
+        props.announce(t('mod.timeout.done', { name: target.name }));
+        if (g.session.current === at) props.onDone();
+      } catch (e) {
+        const err = errorOf(e);
+        const message = err.code === 'E_FORBIDDEN' ? t('mod.timeout.error.forbidden', vars)
+          : err.status === 400 && err.code === 'E_INVALID_REQUEST' ? t('mod.timeout.error.clock')
+            : t('mod.error.other', { code: err.code });
+        if (g.session.current === at) { g.setError(message); g.setAttempt(a => a + 1); g.running.current = false; g.setBusy(false); }
+      }
+    })();
+  };
+
+  return (
+    <ConfirmDialog open={props.open} title={t('mod.timeout.title', vars)} body={t('mod.timeout.body', vars)} confirmLabel={t('mod.timeout.confirm')}
+      busyLabel={t('mod.timeout.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
+      onConfirm={confirm} onClose={() => props.onClose()}>
+      <Select label={t('mod.timeout.duration')} value={length} onChange={value => setLength(value as TimeoutLength)} disabled={g.busy}
+        options={TIMEOUT_KEYS.map(key => ({ value: key, label: t(`mod.timeout.duration.${key}`) }))} />
+    </ConfirmDialog>
+  );
+}
+
+export function WarnFlow(props: ModFlowProps): React.JSX.Element {
+  const client = useCore();
+  const g = useGuarded(props.open);
+  const [reason, setReason] = useState('');
+  const request = useRef<string | null>(null);
+  const vars = { name: props.target?.name ?? '', server: props.serverName };
+  useEffect(() => { if (!props.open) { setReason(''); request.current = null; } }, [props.open]);
+  const confirm = () => {
+    const target = props.target;
+    if (target === null || g.running.current) return;
+    const problem = reasonProblem(reason);
+    if (problem !== null || reason.trim() === '') {
+      g.setError(t(problem === 'long' ? 'mod.warn.error.reasonLong' : problem === 'control' ? 'mod.warn.error.reasonControl' : 'mod.warn.error.reasonEmpty'));
+      g.setAttempt(a => a + 1); return;
+    }
+    request.current ??= requestId();
+    g.running.current = true; g.setBusy(true); g.setError(null);
+    const at = g.session.current;
+    void (async () => {
+      try {
+        const result = await client.call({ m: 'warnMember', communityId: props.communityId, userId: target.userId,
+          requestId: request.current!, reason }) as { evidence: 'accepted' | 'pending' };
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
+        props.announce(result.evidence === 'accepted' ? t('mod.warn.done', vars) : t('mod.warn.evidencePending', vars));
+        if (g.session.current === at) props.onDone();
+      } catch (e) {
+        const err = errorOf(e);
+        const message = err.code === 'E_FORBIDDEN' ? t('mod.warn.error.forbidden', vars) : t('mod.error.other', { code: err.code });
+        if (g.session.current === at) { g.setError(message); g.setAttempt(a => a + 1); g.running.current = false; g.setBusy(false); }
+      }
+    })();
+  };
+  return <ConfirmDialog open={props.open} title={t('mod.warn.title', vars)} body={t('mod.warn.body', vars)} confirmLabel={t('mod.warn.confirm')}
+    busyLabel={t('mod.warn.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
+    onConfirm={confirm} onClose={() => props.onClose()}>
+    <TextField id="mod-warn-reason" label={t('mod.warn.reason')} value={reason} onChange={value => { setReason(value); g.setError(null); }} disabled={g.busy || request.current !== null} />
+  </ConfirmDialog>;
 }

@@ -400,6 +400,9 @@ func (h *Calls) callOf(r *http.Request) (auth.Session, store.VoiceSessionRow, st
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
+	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
+	}
 	if !bits.Has(PermViewChannel) {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, server.Errorf(server.CodeNotFound, "no such object")
 	}
@@ -462,6 +465,22 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 	}
 	if !bits.Has(PermVideo) && !bits.Has(PermScreenShare) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "missing permission"))
+		return
+	}
+	if err := h.requireLeafOfCall(r.Context(), row, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := h.refuseBarred(r.Context(), h.repo, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if h.leases.penalised(row.CallID, row.LivekitRoom, s.DeviceID) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	if h.sfu == nil {
@@ -554,6 +573,10 @@ func (h *Calls) unshare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if row.Ended == nil {
+		if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 		if err := h.releaseShare(r.Context(), ch, row, s.DeviceID); err != nil {
 			server.WriteError(w, err)
 			return

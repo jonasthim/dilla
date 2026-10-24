@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
@@ -70,6 +70,8 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
 concurrency:
   group: \${{ github.workflow }}-\${{ github.ref }}
   cancel-in-progress: true
@@ -164,6 +166,13 @@ jobs:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
           if-no-files-found: error
+  spotify-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
+      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
   vectors:
     runs-on: ubuntu-latest
     steps:
@@ -369,17 +378,6 @@ jobs:
 
   go-ds:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    needs: [rust-wasi]
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
-
-  go-api:
-    runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: [rust-wasi]
     steps:
@@ -387,11 +385,22 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 30m ./internal/api/...
+      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...
+
+  go-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go test -race -shuffle=on -timeout 38m ./internal/api/...
 
   go-harness:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [rust-wasi, rust-native]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -402,7 +411,7 @@ jobs:
         with:
           name: dilla-testkit
           path: artifacts
-      - run: go test -race -shuffle=on -timeout 25m ./internal/testkit/...
+      - run: go test -race -shuffle=on -timeout 38m ./internal/testkit/...
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
           DILLA_TESTKIT_REQUIRED: '1'
@@ -633,6 +642,11 @@ test('a missing concurrency block is reported', () => {
   assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
 });
 
+test('a workflow token without read-only permissions is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('permissions:\n  contents: read\n', '')));
+  assert.ok(problems.some((p) => p.includes('permissions: contents: read')), problems.join('\n'));
+});
+
 test('a workflow-level RUSTFLAGS is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace('  CARGO_TERM_COLOR: always\n', '  CARGO_TERM_COLOR: always\n  RUSTFLAGS: -D warnings\n')));
   assert.ok(problems.some((p) => p.includes('RUSTFLAGS')), problems.join('\n'));
@@ -683,8 +697,8 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 30\n/, '$1')));
-  assert.ok(problems.some((p) => p.includes('timeout-minutes: 30')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
+  assert.ok(problems.some((p) => p.includes('timeout-minutes: 45')), problems.join('\n'));
 });
 
 test('a node job that stopped running the checker\'s own tests is reported', () => {
@@ -787,9 +801,23 @@ test('a workflow without the go-ds job is reported', () => {
 
 test('a go-ds job that stopped running internal/ds is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...\n', '')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...\n', '')),
   );
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
+});
+
+test('a go-ds job with a shorter test budget is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...', '      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...')),
+  );
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 30m')), problems.join('\n'));
+});
+
+test('a go-ds job with too little wall-clock margin is reported', () => {
+  const start = GOOD.indexOf('  go-ds:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 40', 'timeout-minutes: 25'))));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 40')), problems.join('\n'));
 });
 
 test('a workflow without the go-api job is reported', () => {
@@ -799,7 +827,7 @@ test('a workflow without the go-api job is reported', () => {
 
 test('a go-api job that stopped running internal/api is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/api/...\n', '')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 38m ./internal/api/...\n', '')),
   );
   assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('./internal/api/...')), problems.join('\n'));
 });
@@ -807,8 +835,8 @@ test('a go-api job that stopped running internal/api is reported', () => {
 test('a go-api job with a shorter budget is reported', () => {
   const start = GOOD.indexOf('  go-api:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 40', 'timeout-minutes: 30'))));
-  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 40')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 45', 'timeout-minutes: 30'))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 45')), problems.join('\n'));
 });
 
 test('a go job that stopped leaving out internal/api is reported', () => {
@@ -837,7 +865,7 @@ for (const [job, needle] of [
   ['rust-wasm-node', 'npm run typecheck -w @dilla/media'],
   ['rust-wasm-node', 'npm run test:wasm -w @dilla/media'],
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
-  ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
+  ['go-harness', 'go test -race -shuffle=on -timeout 38m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
   ['go-lint', 'golangci-lint run ./...'],
   ['go-vuln', '-scan package -tags dillapins ./internal/deps'],
@@ -1439,14 +1467,16 @@ const ENV_RULE = (job) =>
 const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
 
 test('the canonical step pins every llvm-toolchain-23 package at one version and reads each back', () => {
-  assert.ok(WASM_CLANG_STEP.includes(`          v='${WASM_LLVM_VERSION}'`));
-  assert.match(WASM_LLVM_VERSION, /^1:23\.\d+\.\d+~/);
+  assert.ok(WASM_CLANG_STEP.includes('          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')'));
+  assert.match(WASM_LLVM_VERSION, /^23\.\d+$/);
+  assert.ok(WASM_CLANG_STEP.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*)`), 'the signed apt source candidate must stay on LLVM 23.1');
   const install = WASM_CLANG_STEP.split('\n').find((l) => l.includes('apt-get install'));
   for (const p of LLVM_PACKAGES) {
     assert.ok(install.includes(` "${p}=$v"`), `${p} is not installed at the pinned version`);
   }
   assert.ok(!/\s(clang-23|llvm-23)(\s|$)/.test(install), 'an unpinned package name in the install line');
   assert.ok(WASM_CLANG_STEP.includes(`          for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
+  assert.ok(WASM_CLANG_STEP.includes(`          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`));
   assert.ok(WASM_CLANG_STEP.includes('          apt-cache policy clang-23 llvm-23'));
 });
 
@@ -1481,7 +1511,7 @@ for (const job of WASM_JOBS) {
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job pinned to another build is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1.4', '23.1.3')))));
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1', '23.2')))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job checking another key fingerprint is reported`, () => {
@@ -1602,17 +1632,45 @@ test('the real release workflow passes every rule', () => {
   assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
 });
 
+test('the release Spotify helper must be built for arm64', () => {
+  assertReported(
+    releaseProblems((t) => t.replace('runner: ubuntu-24.04-arm', 'runner: ubuntu-latest')),
+    'build native amd64 and arm64 assets',
+  );
+});
+
 test('a release workflow without the release job is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/\n {2}release:\n[\s\S]*$/, '\n')), 'missing job "release"');
 });
 
+test('a release without the native Bot build is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/\n {2}bot-release:\n[\s\S]*?\n {2}go-release:/, '\n  go-release:')), 'bot-release');
+});
+
+test('a Bot release without a stamped and checked version is reported', () => {
+  const unstamped = REAL_RELEASE.replace(' -X main.Version=${VERSION}', '');
+  assertReported(releaseProblems(() => unstamped), 'Bot binary says its version');
+});
+
+test('a release checksum that omits Bot binaries is reported', () => {
+  assertReported(
+    releaseProblems((t) => t.replace(`sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
+      'sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS')),
+    '> SHA256SUMS',
+  );
+});
+
 test('a release that no longer attaches install.sh is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install.sh');
+  assertReported(releaseProblems((t) => t.replace('release/install.sh release/install-bot.sh release/SHA256SUMS', 'release/install-bot.sh release/SHA256SUMS')), 'release/install.sh');
+});
+
+test('a release that no longer attaches install-bot.sh is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('release/install-bot.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install-bot.sh');
 });
 
 test('SHA256SUMS that leaves an asset out is reported', () => {
   assertReported(
-    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
+    releaseProblems((t) => t.replace(`sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`, 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
     '> SHA256SUMS',
   );
 });
@@ -1769,7 +1827,7 @@ test('a ci.yml build that stamps a quoted version is reported', () => {
 });
 
 test('the CLI checks release.yml too', () => {
-  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
+  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/install-bot.sh release/SHA256SUMS', 'release/install-bot.sh release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -1777,7 +1835,7 @@ test('the CLI checks release.yml too', () => {
 });
 
 test('a job that lost its change gate is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 25\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 25\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 40\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 40\n')));
   assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
 });
 

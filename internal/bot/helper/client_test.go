@@ -1,0 +1,423 @@
+//go:build linux
+
+package helper
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+func TestCallsAreSerializedAndCloseIsIdempotent(t *testing.T) {
+	c := startFixture(t, "delay")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)}); err != nil {
+				t.Errorf("Call: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestCancellationOfActiveCallReapsChildAndReturnsUncertain(t *testing.T) {
+	c := startFixture(t, "stall-after")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := c.Call(ctx, protocol.HelperStateTransaction, []any{fixtureID(1), []any{}})
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("interrupted mutation error = %v, want ErrOutcomeUnknown", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("cancelled helper call did not terminate promptly")
+	}
+	transport := c.transport.(*linuxExchange)
+	select {
+	case <-transport.done:
+	default:
+		t.Fatal("cancelled helper child was not reaped")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close after abort: %v", err)
+	}
+}
+
+func TestCleanupAfterChildAlreadyExitedUsesTrackedProcessHandle(t *testing.T) {
+	c := startFixture(t, "")
+	transport := c.transport.(*linuxExchange)
+	if err := transport.cmd.Process.Kill(); err != nil {
+		t.Fatalf("stop fixture child: %v", err)
+	}
+	select {
+	case <-transport.done:
+	case <-time.After(time.Second):
+		t.Fatal("helper child did not exit after Open")
+	}
+
+	started := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close after child exit: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cleanup after child exit took %s", elapsed)
+	}
+}
+
+func TestCallRejectsOperationOutsideFrozenRange(t *testing.T) {
+	c := startFixture(t, "")
+	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 21} {
+		if _, err := c.Call(context.Background(), operation, []any{}); !errors.Is(err, ErrInvalidOperation) {
+			t.Fatalf("operation %d error = %v, want ErrInvalidOperation", operation, err)
+		}
+	}
+}
+
+func TestCallAcceptsCallGroupJoinOperations(t *testing.T) {
+	c := startFixture(t, "")
+	for _, operation := range []protocol.HelperOperation{protocol.HelperCallJoinCheck, protocol.HelperCallGroupForget} {
+		if _, err := c.Call(context.Background(), operation, []any{fixtureID(9)}); err != nil {
+			t.Fatalf("helper operation %d: %v", operation, err)
+		}
+	}
+}
+
+func TestHelperStatusIsDefinitiveAndSanitized(t *testing.T) {
+	c := startFixture(t, "status")
+	_, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)})
+	var status *StatusError
+	if !errors.As(err, &status) || status.Status != 5 || errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("helper rejection = %#v, want definitive status 5", err)
+	}
+}
+
+func TestCancellationWhileWaitingDoesNotKillActiveRequest(t *testing.T) {
+	c := startFixture(t, "delay")
+	done := make(chan error, 1)
+	go func() { _, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)}); done <- err }()
+	time.Sleep(15 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	_, err := c.Call(ctx, protocol.HelperStateGet, []any{uint64(0)})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("queued call = %v, want context deadline", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("active call was interrupted by queued cancellation: %v", err)
+	}
+	if _, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)}); err != nil {
+		t.Fatalf("client did not remain usable: %v", err)
+	}
+}
+
+func TestOpenOwnsQueueAndCancellationAndCloseBehindItAreBounded(t *testing.T) {
+	c := newFixture(t, "stall-open", 5*time.Second)
+	openDone := make(chan error, 1)
+	openKey := make([]byte, 32)
+	openKey[0] = 1
+	go func() {
+		_, err := c.Open(context.Background(), fixtureID(1), fixtureID(2), fixtureID(3), openKey)
+		openDone <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := c.Call(ctx, protocol.HelperStateGet, []any{uint64(0)})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("call queued behind Open = %v, want deadline", err)
+	}
+	started := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close behind Open: %v", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("Close behind Open exceeded its bound")
+	}
+	if err := <-openDone; !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("stalled Open = %v, want uncertain outcome", err)
+	}
+	if openKey[0] != 0 {
+		t.Fatal("Open did not clear the consumed key")
+	}
+	select {
+	case <-c.transport.(*linuxExchange).done:
+	default:
+		t.Fatal("helper child remained after bounded Close")
+	}
+}
+
+func TestGroupApplyHasOneDeadlineAcrossAllTransferFrames(t *testing.T) {
+	c := newFixture(t, "slow-transfer", 150*time.Millisecond)
+	key := make([]byte, 32)
+	key[0] = 1
+	if _, err := c.Open(context.Background(), fixtureID(1), fixtureID(2), fixtureID(3), key); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err := c.GroupApply(context.Background(), []any{uint64(0), make([]byte, 2<<20)})
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("slow staged operation = %v, want uncertain outcome", err)
+	}
+	if time.Since(started) > 700*time.Millisecond {
+		t.Fatal("staged operation exceeded its total deadline")
+	}
+}
+
+func TestMalformedResponseClosesAndReapsHelper(t *testing.T) {
+	for _, mode := range []string{"wrong-id", "wrong-version", "wrong-status", "oversized", "truncated", "crash"} {
+		t.Run(mode, func(t *testing.T) {
+			c := startFixture(t, mode)
+			_, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)})
+			if !errors.Is(err, ErrOutcomeUnknown) {
+				t.Fatalf("fault response = %v, want uncertain outcome", err)
+			}
+			select {
+			case <-c.transport.(*linuxExchange).done:
+			default:
+				t.Fatal("protocol failure left helper child unreaped")
+			}
+			if _, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)}); !errors.Is(err, ErrClosed) {
+				t.Fatalf("call after protocol failure = %v, want closed", err)
+			}
+		})
+	}
+}
+
+func TestGroupApplyUsesStagedTransferAndChecksResultDigest(t *testing.T) {
+	input := make([]byte, 2<<20)
+	input[0], input[len(input)-1] = 7, 9
+	c := startFixture(t, "transfer")
+	got, err := c.GroupApply(context.Background(), []any{uint64(0), input})
+	if err != nil {
+		t.Fatalf("GroupApply: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("result values = %d, want 1", len(got))
+	}
+	result, ok := got[0].([]byte)
+	if !ok || len(result) != 2<<20 || result[0] != 4 || result[len(result)-1] != 6 {
+		t.Fatalf("large result does not match staged helper output")
+	}
+	c = startFixture(t, "transfer-bad-digest")
+	_, err = c.GroupApply(context.Background(), []any{uint64(0), []byte("small payload")})
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("bad result digest = %v, want uncertain outcome", err)
+	}
+	c = startFixture(t, "transfer-oversized-descriptor")
+	_, err = c.GroupApply(context.Background(), []any{uint64(0), []byte("small payload")})
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("oversized result descriptor = %v, want uncertain outcome", err)
+	}
+	c = startFixture(t, "transfer-wrong-offset")
+	_, err = c.GroupApply(context.Background(), []any{uint64(0), []byte("small payload")})
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("wrong upload offset acknowledgement = %v, want uncertain outcome", err)
+	}
+	c = startFixture(t, "transfer")
+	tooLarge := make([]byte, maxLogicalTransfer+1)
+	if _, err := c.GroupApply(context.Background(), []any{uint64(0), tooLarge}); err == nil {
+		t.Fatal("accepted input above the 32 MiB logical cap")
+	}
+	if _, err := c.Call(context.Background(), protocol.HelperStateGet, []any{uint64(0)}); err != nil {
+		t.Fatalf("oversized input reached transport and damaged client: %v", err)
+	}
+}
+
+func fixtureID(n byte) id.ID { var v id.ID; v[15] = n; return v }
+
+// TestHelperProcess is a real exec child using fd3. Its protocol work is real;
+// only the native helper implementation is replaced by a deterministic peer.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("DILLA_HELPER_FIXTURE") != "1" {
+		return
+	}
+	serveFixtureChild(os.Getenv("DILLA_HELPER_FIXTURE_MODE"))
+	os.Exit(0)
+}
+
+func startFixture(t *testing.T, mode string) *Client {
+	client := newFixture(t, mode, time.Second)
+	key := make([]byte, 32)
+	key[0] = 1
+	if _, err := client.Open(context.Background(), fixtureID(1), fixtureID(2), fixtureID(3), key); err != nil {
+		t.Fatalf("Open fixture: %v", err)
+	}
+	return client
+}
+
+func newFixture(t *testing.T, mode string, callTimeout time.Duration) *Client {
+	t.Helper()
+	client, err := Start(Options{Executable: os.Args[0], StateDir: t.TempDir(), CallTimeout: callTimeout, ShutdownTimeout: 100 * time.Millisecond, KillTimeout: time.Second,
+		launcher: func(cmd *exec.Cmd) error {
+			cmd.Env = []string{"DILLA_HELPER_FIXTURE=1", "DILLA_HELPER_FIXTURE_MODE=" + mode}
+			cmd.Args = []string{cmd.Path, "-test.run=^TestHelperProcess$"}
+			return cmd.Start()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func serveFixtureChild(mode string) {
+	f := os.NewFile(3, "fixture-socket")
+	raw, err := net.FileConn(f)
+	_ = f.Close()
+	if err != nil {
+		os.Exit(91)
+	}
+	conn := raw.(*net.UnixConn)
+	defer conn.Close()
+	var uploaded []byte
+	transferID := fixtureID(77)
+	result := make([]byte, 2<<20)
+	result[0], result[len(result)-1] = 4, 6
+	resultCBOR, _ := cborx.Marshal([]any{result})
+	for {
+		var prefix [4]byte
+		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+			return
+		}
+		n := binary.BigEndian.Uint32(prefix[:])
+		if n == 0 || n > 1<<20 {
+			return
+		}
+		body := make([]byte, n)
+		if _, err := io.ReadFull(conn, body); err != nil {
+			return
+		}
+		frame := append(append([]byte(nil), prefix[:]...), body...)
+		request, err := protocol.DecodeHelperRequestFrame(frame)
+		clear(body)
+		if err != nil {
+			return
+		}
+		if mode == "stall-open" && request.Operation == protocol.HelperOpen {
+			time.Sleep(5 * time.Second)
+			return
+		}
+		if request.Operation == protocol.HelperOpen || request.Operation == protocol.HelperShutdown {
+			writeFixtureResponse(conn, request.RequestID, 0, []any{})
+			if request.Operation == protocol.HelperShutdown {
+				return
+			}
+			continue
+		}
+		if mode == "stall" || mode == "stall-after" {
+			time.Sleep(5 * time.Second)
+			return
+		}
+		if mode == "delay" || mode == "slow-transfer" {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if mode == "wrong-id" {
+			writeFixtureResponse(conn, fixtureID(222), 0, []any{})
+			return
+		}
+		if mode == "wrong-version" {
+			body, _ := cborx.Marshal([]any{uint64(2), request.RequestID, uint64(0), []byte{0x80}})
+			writeFixtureRaw(conn, body)
+			return
+		}
+		if mode == "wrong-status" {
+			body, _ := cborx.Marshal([]any{uint64(1), request.RequestID, uint64(10), []byte{0x80}})
+			writeFixtureRaw(conn, body)
+			return
+		}
+		if mode == "oversized" {
+			var oversized [4]byte
+			binary.BigEndian.PutUint32(oversized[:], (1<<20)+1)
+			_, _ = conn.Write(oversized[:])
+			return
+		}
+		if mode == "truncated" || mode == "crash" {
+			_, _ = conn.Write([]byte{0, 0, 0, 20, 0x84, 0x01})
+			return
+		}
+		status := uint64(0)
+		if mode == "status" {
+			status = 5
+		}
+		if request.Operation == protocol.HelperGroupTransfer && (mode == "transfer" || mode == "transfer-bad-digest" || mode == "transfer-oversized-descriptor" || mode == "transfer-wrong-offset" || mode == "slow-transfer") {
+			command := request.Payload
+			if len(command) == 0 {
+				return
+			}
+			sub, _ := command[0].(uint64)
+			var payload []any
+			switch sub {
+			case 0:
+				payload = []any{transferID[:]}
+			case 1:
+				offset := command[2].(uint64)
+				chunk := command[3].([]byte)
+				if int(offset) != len(uploaded) {
+					return
+				}
+				uploaded = append(uploaded, chunk...)
+				ack := uint64(len(uploaded))
+				if mode == "transfer-wrong-offset" {
+					ack++
+				}
+				payload = []any{ack}
+			case 2:
+				digest := sha256.Sum256(resultCBOR)
+				if mode == "transfer-bad-digest" {
+					digest[0] ^= 1
+				}
+				length := uint64(len(resultCBOR))
+				if mode == "transfer-oversized-descriptor" {
+					length = uint64(maxLogicalTransfer + 1)
+				}
+				payload = []any{uint64(0), length, digest[:]}
+			case 3:
+				offset, size := command[2].(uint64), command[3].(uint64)
+				payload = []any{resultCBOR[offset : offset+size]}
+			case 4:
+				payload = []any{}
+			default:
+				return
+			}
+			writeFixtureResponse(conn, request.RequestID, 0, payload)
+			continue
+		}
+		writeFixtureResponse(conn, request.RequestID, status, []any{})
+	}
+}
+
+func writeFixtureResponse(conn net.Conn, request id.ID, status uint64, payload []any) {
+	response, err := protocol.EncodeHelperResponse(protocol.HelperResponse{RequestID: request, Status: status, Payload: payload})
+	if err == nil {
+		_, _ = conn.Write(response)
+	}
+}
+
+func writeFixtureRaw(conn net.Conn, body []byte) {
+	frame := make([]byte, 4+len(body))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(body)))
+	copy(frame[4:], body)
+	_, _ = conn.Write(frame)
+}

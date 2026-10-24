@@ -171,7 +171,16 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	ch, err := s.repo.GetChannel(r.Context(), row.ChannelID)
+	if err != nil {
+		server.WriteError(w, notFound(err))
+		return
+	}
 	if err := s.calls.refuseBarred(r.Context(), s.repo, sess.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), s.repo, sess.WireVersion, ch.CommunityID); err != nil {
 		server.WriteError(w, err)
 		return
 	}

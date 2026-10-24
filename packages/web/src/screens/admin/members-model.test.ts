@@ -61,6 +61,13 @@ describe('menuFor', () => {
     expect(menuFor(lower, access({ loaded: false }), ctx)).toEqual(['message', 'compare']);
     expect(menuFor(lower, undefined, ctx)).toEqual(['message', 'compare']);
   });
+  it('offers text timeout only with moderate_members and a lower-ranked target', () => {
+    const lower = m(CAL, 'carol', [CREW.id]);
+    expect(menuFor(lower, access({ moderateMembers: true }), ctx)).toEqual(['message', 'compare', 'warn', 'timeout', 'kick', 'ban']);
+    expect(menuFor(lower, access({ moderateMembers: false }), ctx)).toEqual(['message', 'compare', 'kick', 'ban']);
+    expect(menuFor(MEMBERS[0], access({ moderateMembers: true }), ctx)).toEqual(['message', 'compare']);
+    expect(menuFor(bob, access({ moderateMembers: true, top: 5 }), ctx)).toEqual(['message', 'compare']);
+  });
 });
 
 describe('role assignment in the menu and the group colour', () => {

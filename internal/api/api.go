@@ -15,8 +15,11 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	botidentity "github.com/jonasthim/dilla/internal/bot/identity"
+	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/server"
@@ -54,15 +57,32 @@ type Deps struct {
 	// the history itself is never served.
 	ExternalSenderPub []byte
 
+	// SignBotInteractionAdmission signs only the versioned admission payload with the
+	// current instance external-sender key. The composition root owns the secret.
+	SignBotInteractionAdmission func(payload []byte) ([]byte, error)
+
+	// SignBotInteractionContext signs a versioned context snapshot under its own
+	// domain, using the same instance key as admission proofs.
+	SignBotInteractionContext func(payload []byte) ([]byte, error)
+
+	// SignBotCurrentInteractionContext signs a human-authenticated current-group context
+	// proof under the dedicated current-interaction domain.
+	SignBotCurrentInteractionContext func(payload []byte) ([]byte, error)
+
 	// WireVersions is element 0 of GET /v1/instance: the wire versions the gateway's hello offers
-	// (web3.8 S1). The composition root passes the one list it hands the gateway, so the two
-	// cannot disagree; nil serves [1], the gateway package's own default.
-	WireVersions []uint64
+	// and is passed from the same composition options as the gateway.
+	WireVersions  []uint64
+	E2EEVersions  []uint64
+	MediaVersions []uint64
 
 	// CloseGateway closes a device's gateway connections inside the same
 	// transaction that revokes it. Nil until part 1b's gateway exists; the
 	// composition root wires it to Sessions.OnRevoke.
 	CloseGateway func(deviceID id.ID)
+
+	// MessageDeleted publishes the replayable gateway wakeup after a signed
+	// moderation removal commits its durable marker and ciphertext tombstone.
+	MessageDeleted func(groupID id.ID, sequence uint64, at int64)
 
 	// Hasher is the Argon2id password hasher. It is an interface for the same
 	// reason GatewayTickets is: the concrete *auth.Hasher is task 9's, and a
@@ -87,6 +107,8 @@ type Deps struct {
 	// StepUps holds the step-up tokens the factor-changing routes spend (protocol/09 § Second
 	// factors). Register builds one when it is nil; it is memory only, like Assertions.
 	StepUps *StepUps
+	// CurrentBotInteractionGroupContext reloads and verifies the persisted MLS roster for an op63 grant.
+	CurrentBotInteractionGroupContext func(context.Context, id.ID) (ds.CurrentBotInteractionGroupContext, error)
 
 	// enrolments remembers whether each enrolment in flight began with a valid step-up, for the
 	// confirm and finish legs' re-check under the user lock. Register builds it.
@@ -132,6 +154,26 @@ type Deps struct {
 	// session's device, so a thief exhausting its own budget or the user's upload meter cannot
 	// block the owner's device. Register builds it when it is nil.
 	StateMeter *UploadMeter
+
+	// BotIdentity verifies the public credential's native bot tuple in the real
+	// WASI runtime. Nil refuses bot enrollment and final credential publication.
+	BotIdentity *botidentity.Verifier
+	// BotRuntime authenticates operator credentials independently of human device sessions.
+	BotRuntime *botruntime.Manager
+	// BotSpotifyClientID and BotSpotifyRedirectURL are public OAuth configuration.
+	// The redirect must be the exact HTTPS URI registered with Spotify.
+	BotSpotifyClientID    string
+	BotSpotifyRedirectURL string
+	botSpotify            *botSpotifyBroker
+	// BotRevoked runs after disable/removal commits to close online transport and prompt MLS removals.
+	BotRevoked func(context.Context, store.BotInstallationRow, bool)
+	// BotEnrolled runs after a new bot identity, membership and role commit, so
+	// the composition root can bring its channel groups in line with the new member.
+	BotEnrolled func(context.Context, store.BotInstallationRow)
+	// BotJoinRoleGranted refreshes derived channel eligibility and live clients
+	// after an episode-bound automatic role grant commits or its accepted receipt
+	// is replayed. Replay repairs a crash after commit but before refresh.
+	BotJoinRoleGranted func(context.Context, id.ID, id.ID)
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -165,6 +207,9 @@ const maxCBORBody = 64 << 10
 // route that exists in the document and not in the binary is a missing line
 // here rather than a forgotten wiring in a composition root.
 func Register(m *server.Mux, d Deps) {
+	if d.botSpotify == nil {
+		d.botSpotify = newBotSpotifyBroker(d.Clock)
+	}
 	if d.UploadMeter == nil && d.Config != nil {
 		d.UploadMeter = NewUploadMeter(d.Clock, d.Config.Blobs)
 	}
@@ -179,6 +224,10 @@ func Register(m *server.Mux, d Deps) {
 	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
+	registerBotInstallations(m, d)
+	registerAutoModerationGrants(m, d)
+	registerBotStructuralEvents(m, d)
+	registerModerationRemovals(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes
 	// are the only /v1 surface a caller reaches without a bearer token, so each
@@ -260,6 +309,7 @@ func Register(m *server.Mux, d Deps) {
 	// The challenge route meters itself on its own two keys inside the handler.
 	m.Handle("POST /v1/devices/{device_id}/sessions/challenge", http.HandlerFunc(d.SessionChallenge))
 	m.Handle("POST /v1/devices/{device_id}/sessions", http.HandlerFunc(d.SessionEstablish))
+	m.Handle("POST /v1/sessions/negotiate", d.enrolled(d.NegotiateSession))
 	// The sessions DELETE is on the device write bucket like DELETE /v1/devices/{device_id}, and
 	// keeps the same ten-minute grace for another device's unlisted row (fix-wave review NEW-1).
 	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.owedOK(dsMeter(d.Limiter, dsClassWrite, d.SessionDelete)))

@@ -15,13 +15,13 @@ import { join, relative, resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { addServerVia, REPO_ROOT, attachInput, drawImage, messageRow, trayEntries,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, completeSignUp, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, homeTile, makeInviteLink, newAccount, openSettings, railItem, railNav,
-  sendText, settingsDialog, signIn, signUp, test, type Account,
+  sendText, settingsDialog, signIn, signUp, test, isExpectedInteractionAdmissionContextRefusal, type Account,
 } from './support/app';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { PROFILE_ROOT } from './support/persistent';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { chromiumMediaArgs, FIREFOX_MEDIA_PREFS, writeFixtures } from '../media/support/fixtures';
-import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { mkdirSync, rmSync } from 'node:fs';
 
 const CHECK_WEBROOT = process.env.DILLA_E2E_CHECK_WEBROOT === undefined ? null : relative(REPO_ROOT, resolve(process.env.DILLA_E2E_CHECK_WEBROOT));
@@ -45,6 +45,18 @@ const SIZES = [
 ] as const;
 type Size = (typeof SIZES)[number];
 const PHONE = { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } as const;
+
+test('the guard accepts only the expected refusal of an ordinary Welcome context probe', () => {
+  const group = '3ee4e8578f407046d67ab993704ad745';
+  const url = `http://127.0.0.1:8615/v1/groups/${group}/interaction-admission-context`;
+  const refusal = encode(['E_FORBIDDEN', 'current interaction context unavailable', null]);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url, refusal)).toBe(true);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, `${url}?other=1`, refusal)).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url.replace('/v1/groups/', '/v1/channels/'), refusal)).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url.replace('127.0.0.1', 'example.com'), refusal)).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(403, url, encode(['E_FORBIDDEN', 'missing permission', null]))).toBe(false);
+  expect(isExpectedInteractionAdmissionContextRefusal(401, url, refusal)).toBe(false);
+});
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -868,10 +880,13 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];
     const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
-    expect.soft(tabs !== undefined && controls !== undefined, 'D4 the tab bar and the controls are on screen').toBe(true);
-    if (tabs !== undefined && controls !== undefined) {
-      expect.soft(tabs.y - controls.b, `D4 the controls' bottom edge is at most 8 above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
-      expect.soft(tabs.y - controls.b, 'D4 the controls do not sink into the tab bar').toBeGreaterThanOrEqual(-TOL);
+    const music = (await boxes(cy, '.dw-voice-music:not(.dw-voice-music--full)'))[0];
+    expect.soft(tabs !== undefined && controls !== undefined && music !== undefined, 'D4 the controls, music panel and tab bar are on screen').toBe(true);
+    if (tabs !== undefined && controls !== undefined && music !== undefined) {
+      expect.soft(music.y - controls.b, `D4 the voice controls end directly above the music panel (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, panel ${music.y.toFixed(0)}..${music.b.toFixed(0)})`).toBeLessThanOrEqual(8);
+      expect.soft(music.y - controls.b, 'D4 the voice controls do not overlap the music panel').toBeGreaterThanOrEqual(-TOL);
+      expect.soft(tabs.y - music.b, `D4 the music panel ends directly above the tab bar (panel ${music.y.toFixed(0)}..${music.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
+      expect.soft(tabs.y - music.b, 'D4 the music panel does not overlap the tab bar').toBeGreaterThanOrEqual(-TOL);
     }
   } finally {
     await second.close();

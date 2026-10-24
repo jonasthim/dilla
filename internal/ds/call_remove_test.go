@@ -253,8 +253,7 @@ func TestEveryMemberSetWriterFlushesEvictionsAfterUnlocking(t *testing.T) {
 	for _, c := range []struct{ file, fn string }{
 		{"commit.go", "func (d *DS) commit("},
 		{"resync.go", "func (d *DS) Resync("},
-		{"heal.go", "func (d *DS) Heal("},
-		{"registry.go", "func (d *DS) Register("},
+		{"heal.go", "func (d *DS) HealWithGuard("},
 	} {
 		src, err := os.ReadFile(c.file)
 		if err != nil {
@@ -274,6 +273,31 @@ func TestEveryMemberSetWriterFlushesEvictionsAfterUnlocking(t *testing.T) {
 			t.Errorf("%s %s: the flush must be deferred before the lock is taken (flush at %d, lock at %d)", c.file, c.fn, flush, lock)
 		}
 	}
+	// Register delegates both human and managed-bot registration to one transaction helper. Keep
+	// the post-unlock eviction guarantee on that shared path, and ensure the public human entry
+	// point still reaches it.
+	registry, err := os.ReadFile("registry.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryText := string(registry)
+	registerStart := strings.Index(registryText, "func (d *DS) Register(")
+	helperStart := strings.Index(registryText, "func (d *DS) register(")
+	if registerStart < 0 || helperStart < 0 {
+		t.Fatal("registry.go: public Register and shared register helper must both exist")
+	}
+	registerBody := registryText[registerStart:helperStart]
+	if !strings.Contains(registerBody, "d.register(ctx, r, nil)") {
+		t.Error("registry.go Register: human registration no longer reaches the shared acceptance path")
+	}
+	helperBody := registryText[helperStart:]
+	if end := strings.Index(helperBody[1:], "\nfunc "); end > 0 {
+		helperBody = helperBody[:end+1]
+	}
+	flush, lock := strings.Index(helperBody, "defer d.flushEvictions("), strings.Index(helperBody, "d.lock(")
+	if flush < 0 || lock < 0 || flush > lock {
+		t.Errorf("registry.go register helper: the flush must be deferred before the lock is taken (flush at %d, lock at %d)", flush, lock)
+	}
 	for _, file := range []string{"commit.go", "heal.go", "registry.go"} {
 		src, err := os.ReadFile(file)
 		if err != nil {
@@ -290,6 +314,9 @@ func TestEveryMemberSetWriterFlushesEvictionsAfterUnlocking(t *testing.T) {
 			if strings.Count(args, ",") < 4 { // ctx, tx, groupID, kind, state[, joined...]
 				t.Errorf("%s: %q does not pass the group kind", file, strings.TrimSpace(line))
 			}
+		}
+		if file == "registry.go" {
+			calls += strings.Count(registryText, "d.replaceMembersTx(")
 		}
 		if calls == 0 {
 			t.Errorf("%s: no replaceMembersTx call found; the check passed vacuously", file)

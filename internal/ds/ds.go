@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -191,14 +192,17 @@ func normalisePolicy(p Policy) Policy {
 type Session = auth.Session
 
 type Options struct {
-	Store   store.Repository
-	Wasm    *mlswasi.Runtime
-	Gateway *gateway.Gateway
-	Clock   clock.Clock
-	Log     *slog.Logger
-	Metrics *obs.Metrics
-	Keys    InstanceKeys
-	Policy  Policy
+	Store store.Repository
+	// BotCapability checks the current community bot-installation state for human group
+	// admissions. New defaults it to a repository-backed policy when omitted.
+	BotCapability *capability.Policy
+	Wasm          *mlswasi.Runtime
+	Gateway       *gateway.Gateway
+	Clock         clock.Clock
+	Log           *slog.Logger
+	Metrics       *obs.Metrics
+	Keys          InstanceKeys
+	Policy        Policy
 
 	// The three injected seams interfaces.md §6.2 names. Each has a Plan-1 default, and each
 	// default is the conservative one: the rule runs, against a source that cannot yet answer.
@@ -239,9 +243,16 @@ type Options struct {
 // SB1, protocol/02 § Upload class). Upload calls it under the group lock, after the current-leaf
 // check and before the store transaction, and returns its error unchanged.
 type PostPolicy interface {
-	// Check decides an upload of class (0 a post, 1 anything else) by userID into g, under the
-	// group lock. Every upload names its class (web3.8 S1).
+	// Check decides an upload of class (0 a post, 1 anything else) by userID into g. Every upload
+	// names its class (web3.8 S1). Production implementations should also satisfy
+	// TransactionalPostPolicy so acceptance can decide policy and write the message together.
 	Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error
+}
+
+// TransactionalPostPolicy evaluates policy against the same repository transaction
+// that holds the group fence and will commit the accepted message.
+type TransactionalPostPolicy interface {
+	CheckTx(ctx context.Context, tx store.Repository, g store.GroupRow, userID id.ID, class uint8, now int64) error
 }
 
 type DS struct {
@@ -329,6 +340,9 @@ func New(o Options) (*DS, error) {
 	}
 	if o.Log == nil {
 		o.Log = slog.Default()
+	}
+	if o.BotCapability == nil {
+		o.BotCapability = capability.New(o.Store)
 	}
 	o.Policy = normalisePolicy(o.Policy)
 	if o.Channels == nil {

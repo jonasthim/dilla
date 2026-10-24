@@ -207,10 +207,20 @@ type Host struct {
 	// webhookURL is where the in-process LiveKit posts its webhooks ("" without an SFU); hook serves
 	// it and hookHandler verifies each event (both stopped with the SFU). current is the instance the
 	// events go to: an atomic, so the receiver's workers never wait on mu while Close holds it.
-	webhookURL  string
-	hook        *http.Server
-	hookHandler http.Handler
-	current     atomic.Pointer[dillad.Server]
+	webhookURL                 string
+	hook                       *http.Server
+	hookHandler                http.Handler
+	current                    atomic.Pointer[dillad.Server]
+	botSendRequests            atomic.Uint64
+	botSendAccepted            atomic.Uint64
+	botSendRefused             atomic.Uint64
+	botSendMu                  sync.Mutex
+	botSendAttempts            []BotSendAttempt
+	groupHealMu                sync.Mutex
+	groupHealAttempts          []GroupHealAttempt
+	botRuntimeMu               sync.Mutex
+	botRuntimeErrors           []BotRuntimeError
+	botInteractionHealAttempts []BotInteractionHealAttempt
 	// withhold is the set of webhook event names (a map[string]struct{}, replaced whole) the receiver
 	// drops instead of delivering: POST /debug/sfu/withhold, on the control listener only.
 	withhold   atomic.Value
@@ -667,8 +677,230 @@ func (h *Host) Server() *dillad.Server {
 // to the server that is current when it arrives.
 func (h *Host) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.Server().Handler().ServeHTTP(w, r)
+		track := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/groups/") && strings.HasSuffix(r.URL.Path, "/bot/messages")
+		trackHeal := (r.Method == http.MethodGet || r.Method == http.MethodPost) && strings.HasPrefix(r.URL.Path, "/v1/groups/") && strings.HasSuffix(r.URL.Path, "/heal")
+		trackRuntime := strings.HasPrefix(r.URL.Path, "/v1/bot-runtime/")
+		server := h.Server()
+		if !track && !trackHeal && !trackRuntime {
+			server.Handler().ServeHTTP(w, r)
+			return
+		}
+		if trackHeal {
+			wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			server.Handler().ServeHTTP(wrapped, r)
+			parts := strings.Split(r.URL.Path, "/")
+			attempt := GroupHealAttempt{Method: r.Method, Route: "/v1/groups/{group}/heal", Status: wrapped.status,
+				ErrorCode: responseErrorCode(wrapped.body.Bytes())}
+			if len(parts) == 5 {
+				if group, err := id.Parse(parts[3]); err == nil {
+					attempt.Group = group.String()
+					if row, getErr := server.Repo().GetGroup(r.Context(), group); getErr == nil {
+						attempt.Epoch = row.Epoch
+						attempt.EpochUnknown = row.EpochUnknown
+					}
+				}
+			}
+			h.groupHealMu.Lock()
+			h.groupHealAttempts = append(h.groupHealAttempts, attempt)
+			if len(h.groupHealAttempts) > 64 {
+				h.groupHealAttempts = append([]GroupHealAttempt(nil), h.groupHealAttempts[len(h.groupHealAttempts)-64:]...)
+			}
+			h.groupHealMu.Unlock()
+			return
+		}
+		if trackRuntime {
+			wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			server.Handler().ServeHTTP(wrapped, r)
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" && parts[5] == "interaction-groups" && parts[7] == "heal" {
+				attempt := BotInteractionHealAttempt{Method: r.Method,
+					Route:  "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
+					Status: wrapped.status, ErrorCode: responseErrorCode(wrapped.body.Bytes())}
+				if groupID, err := id.Parse(parts[6]); err == nil {
+					attempt.Group = groupID.String()
+					if group, err := server.Repo().GetGroup(r.Context(), groupID); err == nil {
+						attempt.Epoch = group.Epoch
+						attempt.EpochUnknown = group.EpochUnknown
+					}
+				}
+				h.botRuntimeMu.Lock()
+				h.botInteractionHealAttempts = append(h.botInteractionHealAttempts, attempt)
+				if len(h.botInteractionHealAttempts) > 64 {
+					h.botInteractionHealAttempts = append([]BotInteractionHealAttempt(nil), h.botInteractionHealAttempts[len(h.botInteractionHealAttempts)-64:]...)
+				}
+				h.botRuntimeMu.Unlock()
+			}
+			if wrapped.status >= 400 {
+				h.botRuntimeMu.Lock()
+				observation := BotRuntimeError{Method: r.Method, Path: redactedBotRuntimeRoute(r.URL.Path), Status: wrapped.status, ErrorCode: responseErrorCode(wrapped.body.Bytes())}
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/ready") && wrapped.status == http.StatusConflict {
+					observation.ErrorDetail = readinessConflictDetail(wrapped.body.Bytes())
+				}
+				if len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" && parts[5] == "interaction-groups" {
+					if groupID, err := id.Parse(parts[6]); err == nil {
+						if group, err := server.Repo().GetGroup(r.Context(), groupID); err == nil {
+							observation.GroupEpoch = group.Epoch
+							observation.GroupEpochUnknown = group.EpochUnknown
+						}
+					}
+				}
+				h.botRuntimeErrors = append(h.botRuntimeErrors, observation)
+				if len(h.botRuntimeErrors) > 64 {
+					h.botRuntimeErrors = append([]BotRuntimeError(nil), h.botRuntimeErrors[len(h.botRuntimeErrors)-64:]...)
+				}
+				h.botRuntimeMu.Unlock()
+			}
+			return
+		}
+		attempt := BotSendAttempt{Method: r.Method, Route: "/v1/groups/{group}/bot/messages"}
+		h.botSendRequests.Add(1)
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) == 6 {
+			if group, err := id.Parse(parts[3]); err == nil {
+				attempt.Group = group.String()
+			}
+		}
+		wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		server.Handler().ServeHTTP(wrapped, r)
+		attempt.Status = wrapped.status
+		attempt.ErrorCode = responseErrorCode(wrapped.body.Bytes())
+		if group, err := id.Parse(attempt.Group); err == nil {
+			if row, getErr := server.Repo().GetGroup(r.Context(), group); getErr == nil {
+				attempt.Epoch = row.Epoch
+				attempt.EpochUnknown = row.EpochUnknown
+			}
+		}
+		h.botSendMu.Lock()
+		h.botSendAttempts = append(h.botSendAttempts, attempt)
+		if len(h.botSendAttempts) > 64 {
+			h.botSendAttempts = append([]BotSendAttempt(nil), h.botSendAttempts[len(h.botSendAttempts)-64:]...)
+		}
+		h.botSendMu.Unlock()
+		if wrapped.status >= 200 && wrapped.status < 300 {
+			h.botSendAccepted.Add(1)
+		} else {
+			h.botSendRefused.Add(1)
+		}
 	})
+}
+
+func redactedBotRuntimeRoute(path string) string {
+	parts := strings.Split(path, "/")
+	if len(parts) < 5 || parts[1] != "v1" || parts[2] != "bot-runtime" || parts[3] != "installations" {
+		return path
+	}
+	parts[4] = "{installation}"
+	if len(parts) == 7 && parts[5] == "groups" {
+		parts[6] = "{operation}"
+	}
+	if len(parts) == 8 && parts[5] == "interaction-groups" {
+		parts[6] = "{group}"
+	}
+	return strings.Join(parts, "/")
+}
+
+// BotRuntimeError is a testhost-only, body-free observation of HTTP failures
+// on managed Bot runtime routes.
+type BotRuntimeError struct {
+	Method            string `json:"method"`
+	Path              string `json:"path"`
+	Status            int    `json:"status"`
+	ErrorCode         string `json:"error_code"`
+	ErrorDetail       string `json:"error_detail,omitempty"`
+	GroupEpoch        uint64 `json:"group_epoch"`
+	GroupEpochUnknown bool   `json:"group_epoch_unknown"`
+}
+
+// readinessConflictDetail exposes only fixed E_INVALID_REQUEST details from the
+// Bot /ready transition; arbitrary protocol error text is discarded.
+func readinessConflictDetail(body []byte) string {
+	var fields []any
+	if cborx.Unmarshal(body, &fields) != nil || len(fields) < 2 {
+		return ""
+	}
+	code, codeOK := fields[0].(string)
+	detail, detailOK := fields[1].(string)
+	if !codeOK || code != "E_INVALID_REQUEST" || !detailOK {
+		return ""
+	}
+	switch detail {
+	case "installation revision or state changed":
+		return "installation revision or state changed"
+	case "installation prerequisites are still pending":
+		return "installation prerequisites are still pending"
+	case "managed role is missing":
+		return "managed role is missing"
+	case "request id was used for a different readiness operation":
+		return "request id was used for a different readiness operation"
+	default:
+		return "unrecognized fixed readiness conflict"
+	}
+}
+
+// BotInteractionHealAttempt is a body-free testhost observation of the restore-only scoped Bot heal path.
+type BotInteractionHealAttempt struct {
+	Method       string `json:"method"`
+	Route        string `json:"route"`
+	Group        string `json:"group"`
+	Status       int    `json:"status"`
+	ErrorCode    string `json:"error_code"`
+	Epoch        uint64 `json:"epoch"`
+	EpochUnknown bool   `json:"epoch_unknown"`
+}
+
+// BotSendAttempt is a redacted testhost observation of a managed Bot message route.
+// It retains the route's group, status, and group state; request bytes are discarded.
+type BotSendAttempt struct {
+	Method       string `json:"method"`
+	Route        string `json:"route"`
+	Group        string `json:"group"`
+	Status       int    `json:"status"`
+	ErrorCode    string `json:"error_code"`
+	Epoch        uint64 `json:"epoch"`
+	EpochUnknown bool   `json:"epoch_unknown"`
+}
+
+// GroupHealAttempt is a testhost observation of human/native member healing.
+type GroupHealAttempt struct {
+	Method       string `json:"method"`
+	Route        string `json:"route"`
+	Group        string `json:"group"`
+	Status       int    `json:"status"`
+	ErrorCode    string `json:"error_code"`
+	Epoch        uint64 `json:"epoch"`
+	EpochUnknown bool   `json:"epoch_unknown"`
+}
+
+func responseErrorCode(body []byte) string {
+	var fields []any
+	if cborx.Unmarshal(body, &fields) != nil || len(fields) == 0 {
+		return ""
+	}
+	code, _ := fields[0].(string)
+	return code
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusRecorder) Write(body []byte) (int, error) {
+	if w.body.Len() < 4096 {
+		remaining := 4096 - w.body.Len()
+		if len(body) > remaining {
+			_, _ = w.body.Write(body[:remaining])
+		} else {
+			_, _ = w.body.Write(body)
+		}
+	}
+	return w.ResponseWriter.Write(body)
 }
 
 // Invite is the plain codes of the harness's invites, comma-separated, as DILLA_TESTKIT_INVITE

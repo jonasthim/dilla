@@ -44,7 +44,7 @@ describe('FakeCore identity', () => {
     const deviceEntry = arr(req[7] ?? null, 5);
     expect(bin(deviceEntry[0] ?? null)).toEqual(DEV_A);
     expect(decode(bin(deviceEntry[4] ?? null))).toEqual(['fake.cred', new Uint8Array(16), DEV_A]);
-    const list = core.signupComplete(USER_A, 'ada', 1_800_000_000n);
+    const list = core.signupComplete(USER_A, 'ada', 1_800_000_000n, new Uint8Array(32).fill(7));
     const body = arr(decode(list), 4);
     expect(u64(body[0] ?? null)).toBe(1n);
     expect(decode(bin(body[1] ?? null))).toEqual(['fake.list', USER_A, DEV_A, 1_800_000_000n]);
@@ -126,12 +126,17 @@ describe('FakeCore group half', () => {
         new Uint8Array([0x80]), new Uint8Array([0x80]))],
       ['groupJoined', () => core.groupJoined(GROUP, 1n)],
       ['welcomesApply', () => core.welcomesApply(new Uint8Array([0x80]), [])],
+      ['humanInteractionWelcomeApply', () => core.humanInteractionWelcomeApply(new Uint8Array([0x80]), new Uint8Array([0x80]), 1n)],
       ['commitBuild', () => core.commitBuild(GROUP, new Uint8Array([0x80]))],
       ['commitConfirm', () => core.commitConfirm(GROUP)],
       ['commitAbort', () => core.commitAbort(GROUP)],
       ['cursorBody', () => core.cursorBody(GROUP)],
       ['cursorAcked', () => core.cursorAcked(GROUP, 1n, 1n)],
       ['messageDeleted', () => core.messageDeleted(GROUP, 1n)],
+      ['removalCursor', () => core.removalCursor(GROUP)],
+      ['removalActorHistoryVersion', () => core.removalActorHistoryVersion(GROUP, { revision: 1n, proof: new Uint8Array(), signature: new Uint8Array(64), acceptedAt: 1n })],
+      ['refreshRemovalActorHistory', () => core.refreshRemovalActorHistory(GROUP, { revision: 1n, proof: new Uint8Array(), signature: new Uint8Array(64), acceptedAt: 1n }, new Uint8Array(), new Uint8Array())],
+      ['ingestRemoval', () => core.ingestRemoval(GROUP, { revision: 1n, proof: new Uint8Array(), signature: new Uint8Array(64), acceptedAt: 1n })],
       ['sendEncrypt', () => core.sendEncrypt(GROUP)],
       ['sendConfirm', () => core.sendConfirm(GROUP, new Uint8Array([0x80]))],
       ['sendRequeue', () => core.sendRequeue(GROUP)],

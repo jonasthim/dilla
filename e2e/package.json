@@ -18,6 +18,8 @@
     "test:e2e:web:webkit": "playwright test --config playwright.web.config.ts --project=webkit-web",
     "test:e2e:voice:chromium": "playwright test --config playwright.voice.config.ts --project=chromium-voice",
     "test:e2e:voice:firefox": "playwright test --config playwright.voice.config.ts --project=firefox-voice",
+    "test:e2e:music": "playwright test --config playwright.music.config.ts --project=chromium-music",
+    "test:e2e:music:firefox": "playwright test --config playwright.music.config.ts --project=firefox-music",
     "demo:web": "playwright test --config playwright.demo.config.ts",
     "docs:shots": "node scripts/shoot-docs.mjs",
     "ux:world": "node ux/world.mjs",

@@ -32,7 +32,7 @@ import {
   expect, type BrowserContext, type ConsoleMessage, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type Request,
 } from '@playwright/test';
 import {
-  ABORTED_FONT_LINE, ABORTED_JUGGLER_LINE, BY_DESIGN_RESOURCE_LINE, TEST_TIMEOUT, WAIT, addServerVia, channelRow, channelsNav, completeSignUp, copy,
+  ABORTED_FONT_LINE, ABORTED_JUGGLER_LINE, BY_DESIGN_RESOURCE_LINE, FIREFOX_FAVICON_LINE, TEST_TIMEOUT, WAIT, addServerVia, channelRow, channelsNav, completeSignUp, copy,
   expectAccessible, expectComposerReady, makeInviteLink, newAccount, openChannel, railItem, sendText, signIn, signUp, test, type Account,
 } from './support/app';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -78,9 +78,6 @@ const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));
 /** What LiveKit's client logs when the SFU removes this participant while its data channels are open: the move's cut (R4,
  *  RemoveParticipants) lands so, at random, a few times in three runs. The library's, not the app's; nothing else is let through. */
 const CUT_LINE = /^(DataChannel error on (lossy|reliable): User-Initiated Abort, reason= (\{|JSHandle@object)|publisher data channel '(LOSSY|RELIABLE|DATA_TRACK_LOSSY)' closed unexpectedly (\{|JSHandle@object))/;
-/** Firefox's own favicon loader (browser chrome, not the page) on the invite landing page, whose policy is default-src 'none'
- *  (invites.go): the browser asks for /favicon.ico and reports its own refusal. */
-const FAVICON_LINE = /^\[JavaScript Error: "Content-Security-Policy: The page.s settings blocked the loading of a resource \(img-src\) at http:\/\/127\.0\.0\.1:\d+\/favicon\.ico .*\{file: "resource:\/\/\/modules\/FaviconLoader\.sys\.mjs" line: \d+\}\]$/;
 const RESTART_LINE = /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|WebSocket connection to .* failed|NetworkError|Firefox can.t establish a connection/;
 
 function started(): StartedHost {
@@ -119,7 +116,7 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
     if (m.type() !== 'error') return;
     const text = m.text();
     if (!firefox && BY_DESIGN_RESOURCE_LINE.test(text)) return;
-    if (firefox && (ABORTED_FONT_LINE.test(text) || ABORTED_JUGGLER_LINE.test(text) || FAVICON_LINE.test(text))) return;
+    if (firefox && (ABORTED_FONT_LINE.test(text) || ABORTED_JUGGLER_LINE.test(text) || FIREFOX_FAVICON_LINE.test(text))) return;
     if (restarting && RESTART_LINE.test(text)) return;
     if (cutting && CUT_LINE.test(text)) return;
     p.errors.push(`${name}: ${text}`);

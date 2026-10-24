@@ -91,6 +91,53 @@ it('checkpoints an unsent draft before refreshing to a new UI build', async () =
   expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
 });
 
+it('shows my text timeout expiry and blocks the channel composer', async () => {
+  const expires = NOW + 600;
+  const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve(String(expires)) : Promise.resolve(null);
+  } });
+
+  const reason = `You cannot post messages in this community until ${formatTime(expires)}.`;
+  expect(fake.callsOf('getMemberTimeout')).toEqual([{ m: 'getMemberTimeout', communityId: A, userId: ME.id }]);
+  expect(await screen.findByText(reason)).toBeInTheDocument();
+  expect(composer()).toHaveAttribute('aria-disabled', 'true');
+});
+
+it('refreshes my timeout when it expires', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(NOW * 1000));
+  let reads = 0;
+  const expires = NOW + 60;
+  const { fake, view } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.handler = command => command.m === 'getMemberTimeout'
+      ? Promise.resolve(++reads === 1 ? String(expires) : null) : Promise.resolve(null);
+  } });
+  try {
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText(`You cannot post messages in this community until ${formatTime(expires)}.`)).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(fake.callsOf('getMemberTimeout')).toHaveLength(2);
+    expect(screen.queryByText(`You cannot post messages in this community until ${formatTime(expires)}.`)).not.toBeInTheDocument();
+    expect(composer()).not.toHaveAttribute('aria-disabled', 'true');
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it('reads my timeout again when the selected community changes', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.handler = () => Promise.resolve(null);
+  } });
+  await waitFor(() => expect(fake.callsOf('getMemberTimeout')).toHaveLength(1));
+  await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'Valhalla' }));
+  await waitFor(() => expect(fake.callsOf('getMemberTimeout')).toHaveLength(2));
+  expect(fake.callsOf('getMemberTimeout').map(call => call.communityId)).toEqual([A, B]);
+});
+
 it('checkpoints selected files even when the current conversation has no text draft', async () => {
   let changed!: (entry: string) => void;
   const file = new File(['attachment'], 'only-file.txt', { type: 'text/plain' });
@@ -1562,7 +1609,10 @@ describe('direct messages', () => {
     expect(screen.getByText('no direct messages yet')).toBeInTheDocument();
   });
   it('opens a DM with its own log and composer, sends into it and closes it when left', async () => {
-    const { fake, user, view } = setup(`/dm/${DM}`, { before: withDms });
+    const { fake, user, view } = setup(`/dm/${DM}`, { before: client => {
+      withDms(client);
+      client.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve(String(NOW + 600)) : Promise.resolve(null);
+    } });
     expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: DM }]);
     expect(homeTile()).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'bob' })).toHaveTextContent('bob');
@@ -1572,6 +1622,8 @@ describe('direct messages', () => {
     await expectNoAxeViolations(view.container);
     // shell.dm.composer is `message @{name}` (pre-flight row 1.10): the name is the composer's untransformed target.
     expect(document.querySelector('.d-composer__target')).toHaveTextContent('@bob');
+    expect(fake.callsOf('getMemberTimeout')).toEqual([]);
+    expect(screen.getByRole('textbox', { name: 'message @bob' })).not.toHaveAttribute('aria-disabled', 'true');
     await user.type(screen.getByRole('textbox', { name: 'message @bob' }), 'hi bob{Enter}');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: DM, text: 'hi bob' }]);
     await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'Midgard' }));

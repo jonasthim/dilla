@@ -14,6 +14,8 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/ivfreader"
+
+	"github.com/jonasthim/dilla/internal/sframe"
 )
 
 // h264Fmtp is the one H.264 registration dilla negotiates (DEV-06): packetization mode 1,
@@ -29,6 +31,18 @@ func PublishOpusOgg(room *lksdk.Room, path string, enc *FrameEncryptor) (*lksdk.
 	}
 	return publish(room, p, webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
 		enc, "opus", livekit.TrackSource_MICROPHONE)
+}
+
+// PublishLiveOpus publishes bounded live Opus packets as an encrypted microphone track named
+// "music". The sender is bound here to the protocol's Opus microphone slot so callers cannot
+// accidentally publish the stream with a camera or screen counter partition.
+func PublishLiveOpus(room *lksdk.Room, p *LiveOpusProvider, sender *sframe.Sender) (*lksdk.LocalTrackPublication, error) {
+	if room == nil || p == nil || sender == nil {
+		return nil, errors.New("media: live Opus publication requires room, provider, and sender")
+	}
+	return publishWithCompletion(room, p, webrtc.RTPCodecCapability{
+		MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
+	}, NewFrameEncryptor(sender, sframe.Opus, sframe.Mic, 0), "music", livekit.TrackSource_MICROPHONE, nil)
 }
 
 // PublishVP8IVF publishes a VP8 IVF file as source (single layer), encrypted by enc, under the name
@@ -56,6 +70,11 @@ func PublishH264(room *lksdk.Room, path string, enc *FrameEncryptor, source live
 // Encryption_CUSTOM — never AttachUserTimestamp/AttachFrameId, whose trailers LiveKit would strip.
 func publish(room *lksdk.Room, p lksdk.SampleProvider, codec webrtc.RTPCodecCapability, enc *FrameEncryptor,
 	name string, source livekit.TrackSource) (*lksdk.LocalTrackPublication, error) {
+	return publishWithCompletion(room, p, codec, enc, name, source, func() { _ = p.Close() })
+}
+
+func publishWithCompletion(room *lksdk.Room, p lksdk.SampleProvider, codec webrtc.RTPCodecCapability,
+	enc *FrameEncryptor, name string, source livekit.TrackSource, onWriteComplete func()) (*lksdk.LocalTrackPublication, error) {
 	track, err := lksdk.NewLocalTrack(codec, lksdk.WithFrameEncryptor(enc))
 	if err != nil {
 		_ = p.Close()
@@ -63,7 +82,7 @@ func publish(room *lksdk.Room, p lksdk.SampleProvider, codec webrtc.RTPCodecCapa
 	}
 	track.OnBind(func() {
 		// StartWrite fails only for a provider whose OnBind fails, which these never do.
-		_ = track.StartWrite(p, func() { _ = p.Close() })
+		_ = track.StartWrite(p, onWriteComplete)
 	})
 	pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
 		Name: name, Source: source, Encryption: livekit.Encryption_CUSTOM,

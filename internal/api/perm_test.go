@@ -193,6 +193,60 @@ func TestKickIsNotChannelScoped(t *testing.T) {
 	}
 }
 
+func TestModerateMembersIsCommunityScopedAndOwnerHasIt(t *testing.T) {
+	owner, user := id.New(), id.New()
+	const moderateMembers api.Bits = 1 << 24
+	if !api.PermAll.Has(moderateMembers) {
+		t.Fatal("owner does not hold moderate_members")
+	}
+	s := snapshot(t, owner, user, []roleSpec{
+		{name: "@everyone", position: 0, allow: api.PermViewChannel},
+		{name: "mod", position: 5, allow: moderateMembers, held: true},
+	}, []owSpec{
+		{kind: 1, userID: user, deny: moderateMembers},
+	})
+	if !s.Resolve(user).Has(moderateMembers) {
+		t.Fatal("role did not grant moderate_members community-wide")
+	}
+	if !s.ResolveChannel(user).Has(moderateMembers) {
+		t.Fatal("channel overwrite removed moderate_members")
+	}
+
+	withoutRole := snapshot(t, owner, user, []roleSpec{
+		{name: "@everyone", position: 0, allow: api.PermViewChannel},
+	}, []owSpec{{kind: 1, userID: user, allow: moderateMembers}})
+	if withoutRole.ResolveChannel(user).Has(moderateMembers) {
+		t.Fatal("channel overwrite granted moderate_members")
+	}
+}
+
+func TestBotPermissionsClampPreexistingRoleAndOverwriteModerationGrants(t *testing.T) {
+	owner, user := id.New(), id.New()
+	s := snapshot(t, owner, user, []roleSpec{
+		{name: "@everyone", position: 0, allow: api.PermAll},
+		{name: "older moderator", position: 3, allow: api.PermAll, held: true},
+	}, []owSpec{{kind: 1, userID: user, allow: api.PermAll}})
+	s.Bot = true
+	if got := s.ResolveChannel(user); got.Has(api.PermAdministrator | api.PermManageRoles | api.PermManageCommunity) {
+		t.Fatalf("bot inherited administrator/community management: %b", got)
+	}
+	for _, bit := range []api.Bits{api.PermManageMessages, api.PermKickMembers, api.PermBanMembers, api.PermModerateMembers} {
+		if s.ResolveChannel(user).Has(bit) {
+			t.Errorf("joining bot inherited unapproved moderation bit %b", bit)
+		}
+	}
+	s.BotModerator = api.PermManageMessages
+	got := s.ResolveChannel(user)
+	if !got.Has(api.PermManageMessages) {
+		t.Fatal("Ready bot with approved removal capability lacks manage_messages")
+	}
+	for _, bit := range []api.Bits{api.PermKickMembers, api.PermBanMembers, api.PermModerateMembers, api.PermAdministrator, api.PermManageRoles, api.PermManageCommunity} {
+		if got.Has(bit) {
+			t.Errorf("bot with removal only inherited unapproved bit %b", bit)
+		}
+	}
+}
+
 func TestPermissionBitsFitSigned64(t *testing.T) {
 	if api.PermAll >= 1<<62 {
 		t.Fatalf("PermAll = %#x reaches bit 62 or above; Postgres stores allow/deny in a signed BIGINT", api.PermAll)

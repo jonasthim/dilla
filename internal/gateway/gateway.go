@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -33,6 +34,13 @@ type Options struct {
 	// here closes the cycle auth -> ds -> gateway -> auth (deviation B9). *auth.Sessions satisfies
 	// it structurally.
 	Auth Authenticator
+
+	// ScopeResolver and CommunityCompatibility are the narrow authoritative readers used by
+	// wire-2 gateway admissions. They are separate from Store so codec/session tests do not need a
+	// repository-shaped dependency. Production wires the resolver to current group/channel rows
+	// and the shared bot capability policy to committed installation state.
+	ScopeResolver          ScopeResolver
+	CommunityCompatibility CommunityCompatibility
 
 	// OnFactorOwed runs for a device whose connection the liveness sweep closed because its
 	// account now owes a second factor (an operator's reset-factors, web3.6 S3), so the
@@ -176,6 +184,12 @@ type Authenticator interface {
 	Resolve(ctx context.Context, bearer string) (auth.Session, error)
 }
 
+// CapabilityRecorder is optional for legacy test doubles and older in-process integrations. A
+// production connection that selects wire 3 must have this recorder and persist before ready.
+type CapabilityRecorder interface {
+	RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error
+}
+
 // Compile-time proof of the claim deviation B9 rests on: *auth.Sessions satisfies Authenticator
 // without the gateway ever holding one. The gateway's own tests use a double, so without this the
 // first thing to find out would be task 27a's wiring.
@@ -185,8 +199,9 @@ type Authenticator interface {
 // Repository embedded neither until tasks 19 and 23 added them (deviation ID1). Task 23 closed
 // that gap, so the assertion lands here with it.
 var (
-	_ Authenticator = (*auth.Sessions)(nil)
-	_ Store         = (store.Repository)(nil)
+	_ Authenticator      = (*auth.Sessions)(nil)
+	_ CapabilityRecorder = (*auth.Sessions)(nil)
+	_ Store              = (store.Repository)(nil)
 )
 
 // OnlineDevice is one candidate for invariant 7's committer election.
@@ -283,6 +298,12 @@ func (g *Gateway) register(ctx context.Context, session auth.Session, s sink) (*
 // connection BEFORE ready is built: ready's elements 4, 5 and 6 are the echo, and a connection
 // that learned its versions after sendReady would echo three zeros.
 func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s sink, chosen [3]uint64) (*conn, error) {
+	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || chosen[0] < 3) {
+		return nil, errNotEnrolledSession
+	}
+	if err := g.recordCapabilities(ctx, session.TokenHash, chosen); err != nil {
+		return nil, err
+	}
 	token, err := newResumeToken()
 	if err != nil {
 		return nil, err
@@ -294,6 +315,7 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		deviceID:     session.DeviceID,
 		scope:        session.Scope,
 		pairingGroup: session.PairingGroup,
+		isBot:        session.Bot != nil,
 		tokenHash:    session.TokenHash,
 		resume:       token,
 		groups:       map[id.ID]struct{}{},
@@ -331,6 +353,20 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	c.currentWriter().open()
 	g.touch(ctx, c.deviceID, now)
 	return c, nil
+}
+
+func (g *Gateway) recordCapabilities(ctx context.Context, tokenHash []byte, chosen [3]uint64) error {
+	recorder, ok := g.opts.Auth.(CapabilityRecorder)
+	if !ok {
+		if chosen[0] >= 3 {
+			return errors.New("gateway: wire 3 requires session capability persistence")
+		}
+		return nil
+	}
+	if len(tokenHash) != 32 {
+		return errors.New("gateway: session capability binding is missing")
+	}
+	return recorder.RecordCapabilities(ctx, tokenHash, chosen[0], chosen[1], chosen[2])
 }
 
 // deviceToucher is the one optional store method the gateway calls: store.Repository's
@@ -480,22 +516,44 @@ func (g *Gateway) rotateResume(c *conn) error {
 // DeliverGroup fans one frame out to every connection of every member device of a group,
 // including the uploader's own (R30). The payload is encoded once by the caller.
 func (g *Gateway) DeliverGroup(groupID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	f.Scope.Groups = appendScopeID(f.Scope.Groups, groupID)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfGroup(groupID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
 
 func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfDevice(deviceID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
 
 func (g *Gateway) DeliverUser(userID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfUser(userID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
@@ -514,8 +572,16 @@ func (g *Gateway) SetChannelMembers(channelID id.ID, users []id.ID) {
 // payload is encoded once by the caller; a replayable frame is recorded in each connection's ring,
 // so a client that reconnects inside the ring window does not have to re-fetch.
 func (g *Gateway) DeliverChannel(channelID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	f.Scope.Channels = appendScopeID(f.Scope.Channels, channelID)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfChannel(channelID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
@@ -607,7 +673,15 @@ func (g *Gateway) UserConnected(userID id.ID) bool {
 }
 
 func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {
-	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), FrameScope{Groups: []id.ID{groupID}})
+	if err != nil {
+		return nil
+	}
+	minWire := uint64(0)
+	if requiresWire3 {
+		minWire = 3
+	}
+	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose, minWire)
 }
 
 // sweepLiveness closes every connection whose heartbeat is overdue (4009) and every one whose

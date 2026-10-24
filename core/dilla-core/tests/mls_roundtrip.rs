@@ -145,7 +145,7 @@ fn two_clients_create_add_join_send_and_decrypt() {
     )
     .expect("create");
     assert_eq!(alice.epoch(), 0);
-    assert_eq!(alice.binding(), &b);
+    assert_eq!(alice.binding().unwrap(), &b);
 
     let bundle = alice
         .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
@@ -158,7 +158,7 @@ fn two_clients_create_add_join_send_and_decrypt() {
     let tree = alice.export_ratchet_tree();
     let mut bob = DillaGroup::join_from_welcome(&bob_p, welcome, tree.into(), &b).expect("join");
     assert_eq!(bob.epoch(), 1);
-    assert_eq!(bob.binding(), &b);
+    assert_eq!(bob.binding().unwrap(), &b);
 
     let env = envelope("On my way. Grab the wolf capes from the chest by the portal.");
     let message = alice
@@ -934,7 +934,7 @@ fn a_member_commit_rewriting_the_group_context_extensions_is_refused_by_the_rece
         "{err:?}"
     );
     assert_eq!(
-        bob.binding(),
+        bob.binding().unwrap(),
         &b,
         "the refused commit must not have changed the binding Bob serves"
     );
@@ -1003,7 +1003,7 @@ fn a_standalone_group_context_extensions_proposal_is_refused_rather_than_queued(
         "{err:?}"
     );
     assert_eq!(
-        bob.binding(),
+        bob.binding().unwrap(),
         &b,
         "the refused proposal must not have changed the binding Bob serves"
     );
@@ -1040,7 +1040,7 @@ fn the_ds_view_tracks_the_group_from_a_group_info_and_a_tree() {
 
     assert_eq!(ds.epoch(), alice.epoch());
     assert_eq!(ds.group_id(), alice.group_id());
-    assert_eq!(ds.binding(), &b);
+    assert_eq!(ds.binding(), Some(&b));
     assert_eq!(ds.members().len(), 1);
     assert!(ds.required_capabilities().is_some());
 
@@ -1299,7 +1299,7 @@ fn the_ds_view_refuses_a_commit_rewriting_the_group_context_and_keeps_its_bindin
     let (ds, _) =
         DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
             .expect("from_external");
-    assert_eq!(ds.binding(), &b);
+    assert_eq!(ds.binding(), Some(&b));
 
     // A member rewrites `dilla_binding`. `DillaGroup` exposes no such commit, so it is driven
     // through the raw `MlsGroup` in Alice's storage - exactly what a patched client would do.
@@ -1330,10 +1330,10 @@ fn the_ds_view_refuses_a_commit_rewriting_the_group_context_and_keeps_its_bindin
 
     assert_eq!(
         ds.binding(),
-        &b,
+        Some(&b),
         "the refused commit must not have changed the binding the DS serves"
     );
-    assert_ne!(ds.binding(), &rewritten);
+    assert_ne!(ds.binding(), Some(&rewritten));
     // The same view rebuilt from the exported state derives the binding from scratch, so it is the
     // arbiter of what the DS's own state actually says.
     let reloaded = DillaPublicGroup::import_state(&ds.export_state(), &group_id).expect("import");
@@ -1463,7 +1463,7 @@ fn a_member_cannot_swap_the_external_senders_on_the_ds_or_on_a_receiver() {
             "{err:?}"
         );
     }
-    assert_eq!(bob.binding(), &b);
+    assert_eq!(bob.binding().unwrap(), &b);
 
     // The honest control: a self-update commit from the same member still processes on the DS.
     let mut alice = DillaGroup::load(&alice_p, &group_id)

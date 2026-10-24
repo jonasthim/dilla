@@ -4,11 +4,12 @@
 /** web3.6 E3: the one row the worker itself keeps in the same device-local table: the server a sign-up left at the factor
  *  step is to join, so a reload keeps it. Not a setting: isSettingKey refuses it, and pageSettings leaves it out. */
 export const PENDING_JOIN_KEY = 'signup.pendingJoin';
+export const PENDING_ROLE_PANEL_ACTION_PREFIX = 'rolePanel.pending.';
 
 /** The settings slice: every row but the worker's own. */
 export function pageSettings(rows: Record<string, string>): Record<string, string> {
-  if (!(PENDING_JOIN_KEY in rows)) return rows;
-  return Object.fromEntries(Object.entries(rows).filter(([k]) => k !== PENDING_JOIN_KEY));
+  if (!(PENDING_JOIN_KEY in rows) && !Object.keys(rows).some(k => k.startsWith(PENDING_ROLE_PANEL_ACTION_PREFIX))) return rows;
+  return Object.fromEntries(Object.entries(rows).filter(([k]) => k !== PENDING_JOIN_KEY && !k.startsWith(PENDING_ROLE_PANEL_ACTION_PREFIX)));
 }
 
 export const SETTINGS = {

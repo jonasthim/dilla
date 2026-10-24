@@ -95,31 +95,77 @@ export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; statu
 /** One `threads` row (web3.7): a thread of the group, its held root's seq and excerpt (null and '' when the root is not
  *  held), its shown reply count and the latest reply's `recvTs`. */
 export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: number; lastTs: bigint; excerpt: string; }
+export interface RemovalFeedEntry { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
+/** Protected local outbox entry for a human removal's op61 evidence. State 1 means POST outcome unknown. */
+export interface ManualRemovalEvidence {
+  proofRequestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; groupId: Id;
+  channelId: Id; messageId: Id; targetSequence: bigint; reason: string; excerpt: string; signedBody: Uint8Array;
+  state: 0 | 1 | 2; createdAt: bigint; expires: bigint; evidenceExpires: bigint;
+}
+/** Protected local outbox for a manual warning: the reason is staged before POST and tied to its accepted receipt. */
+export interface ManualWarningEvidence {
+  requestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; targetUserId: Id;
+  reason: string; state: 0 | 1; createdAt: bigint; actionId: Id; revision: bigint; acceptedAt: bigint; evidenceExpires: bigint;
+}
+export interface HumanInteractionEvent {
+  deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
+  senderUser: Id; senderDevice: Id; messageId: Id; body: string; operation: number; channelId: Id | null;
+}
+export interface HumanInteractionEventPage { events: HumanInteractionEvent[]; next: bigint; highWater: bigint; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
   signupBegin(instanceId: Id): string;
   signupRequest(invite: string, username: string, display: string, password: string | null): Uint8Array;
-  signupComplete(userId: Id, username: string, now: bigint): Uint8Array;
+  signupComplete(userId: Id, username: string, now: bigint, instanceSignerPub: Uint8Array): Uint8Array;
+  instanceSignerKeyMatches(observedKey: Uint8Array): void;
+  instanceSignerKeyPin(instanceId: Id, observedKey: Uint8Array): void;
   signupReset(): void;
   deviceListBody(): Uint8Array; deviceListPublished(): void;
   /** BACKUPS-RECOVERY-02: an unpublished candidate is dropped; the accepted list's own body becomes the candidate. */
   deviceListDrop(): void;
   sessionSign(nonce: Uint8Array, purpose: 0 | 1): Uint8Array;
+  signRemoval(requestId: Id, groupId: Id, targetSeq: bigint, expires: bigint, now: bigint): Uint8Array;
+  prepareManualRemovalEvidence?(proofRequestId: Id, evidenceRequestId: Id, communityId: Id, groupId: Id, channelId: Id,
+    messageId: Id, targetSeq: bigint, reason: string, excerpt: string, createdAt: bigint, expires: bigint, now: bigint): Uint8Array;
+  manualRemovalEvidence?(): ManualRemovalEvidence[];
+  ensureManualRemovalEvidenceRequest?(proofRequestId: Id, candidateRequestId: Id, now: bigint): { requestId: Id; expires: bigint };
+  markManualRemovalSubmitted?(requestId: Id): void;
+  markManualRemovalAccepted?(requestId: Id): void;
+  completeManualRemovalEvidence?(requestId: Id, now: bigint): void;
+  rejectUnsubmittedManualRemoval?(requestId: Id, now: bigint): void;
+  rejectManualRemoval?(requestId: Id, now: bigint): void;
+  prepareManualWarningEvidence?(requestId: Id, evidenceRequestId: Id, communityId: Id, targetUserId: Id,
+    reason: string, createdAt: bigint, now: bigint): void;
+  manualWarningEvidence?(): ManualWarningEvidence[];
+  markManualWarningAccepted?(requestId: Id, actionId: Id, revision: bigint, acceptedAt: bigint): void;
+  ensureManualWarningEvidenceRequest?(requestId: Id, candidateRequestId: Id, now: bigint): { requestId: Id; expires: bigint };
+  completeManualWarningEvidence?(requestId: Id, now: bigint): void;
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
   groups(): GroupInfo[];
+  /** Deterministic CBOR [group_info_bytes, tail_array, ratchet_tree_bytes] for repairing server history. */
+  groupHealSnapshot(groupId: Id): Uint8Array;
   groupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array;
   groupRegistered(groupId: Id, nextSeq: bigint): void;
   groupDiscard(groupId: Id): void;
   groupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array;
   groupJoined(groupId: Id, seq: bigint): void;
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[];
+  /** The core verifies this opaque signed context and derives the expected kind-3 binding itself. */
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[];
+  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
+  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
+  humanInteractionEventsAck(through: bigint): void;
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array;
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
   cursorBody(groupId: Id): Uint8Array | null; cursorAcked(groupId: Id, lastSeq: bigint, lastEpoch: bigint): void;
   messageDeleted(groupId: Id, seq: bigint): ApplyResult;
+  removalCursor(groupId: Id): bigint;
+  removalActorHistoryVersion(groupId: Id, entry: RemovalFeedEntry): bigint;
+  refreshRemovalActorHistory(groupId: Id, entry: RemovalFeedEntry, history: Uint8Array, headList: Uint8Array): bigint;
+  ingestRemoval(groupId: Id, entry: RemovalFeedEntry): bigint;
   sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id;
   sendEncrypt(msgId: Id): { groupId: Id; messageBody: Uint8Array };
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint };
@@ -233,21 +279,46 @@ export interface CoreHandle {
       identity(): Uint8Array;
       signup_begin(instance_id: Uint8Array): string;
       signup_request(invite: string, username: string, display: string, password?: string | null): Uint8Array;
-      signup_complete(user_id: Uint8Array, username: string, now: bigint): Uint8Array;
+      signup_complete(user_id: Uint8Array, username: string, now: bigint, instance_signer_pub: Uint8Array): Uint8Array;
+      instance_signer_key_matches(observed_key: Uint8Array): void;
+      instance_signer_key_pin(instance_id: Uint8Array, observed_key: Uint8Array): void;
       signup_reset(): void;
       device_list_body(): Uint8Array; device_list_published(): void; device_list_drop(): void;
       session_sign(nonce: Uint8Array, purpose: number): Uint8Array;
+      /** Present after rebuilding the WASM package from a facade that includes moderator removals. */
+      sign_removal?(request_id: Uint8Array, group_id: Uint8Array, target_sequence: bigint, expires: bigint, now: bigint): Uint8Array;
+      prepare_manual_removal_evidence?(proof_request_id: Uint8Array, evidence_request_id: Uint8Array, community_id: Uint8Array,
+        group_id: Uint8Array, channel_id: Uint8Array, message_id: Uint8Array, target_sequence: bigint, reason: string,
+        excerpt: string, created_at: bigint, expires: bigint, now: bigint): Uint8Array;
+      manual_removal_evidence?(): Uint8Array;
+      ensure_manual_removal_evidence_request?(proof_request_id: Uint8Array, candidate_request_id: Uint8Array, now: bigint): Uint8Array;
+      mark_manual_removal_submitted?(request_id: Uint8Array): void;
+      mark_manual_removal_accepted?(request_id: Uint8Array): void;
+      complete_manual_removal_evidence?(request_id: Uint8Array, now: bigint): void;
+      reject_unsubmitted_manual_removal?(request_id: Uint8Array, now: bigint): void;
+      reject_manual_removal?(request_id: Uint8Array, now: bigint): void;
+      prepare_manual_warning_evidence?(request_id: Uint8Array, evidence_request_id: Uint8Array, community_id: Uint8Array,
+        target_user_id: Uint8Array, reason: string, created_at: bigint, now: bigint): void;
+      manual_warning_evidence?(): Uint8Array;
+      mark_manual_warning_accepted?(request_id: Uint8Array, action_id: Uint8Array, revision: bigint, accepted_at: bigint): void;
+      ensure_manual_warning_evidence_request?(request_id: Uint8Array, candidate_request_id: Uint8Array, now: bigint): Uint8Array;
+      complete_manual_warning_evidence?(request_id: Uint8Array, now: bigint): void;
       session_store(token: string, expires: bigint, idle_expires: bigint): void;
       session(): Uint8Array; session_clear(): void;
       key_packages(count: number, last_resort: boolean): Uint8Array;
       sealed_objects(): Uint8Array;
       groups(): Uint8Array;
+      group_heal_snapshot?(group_id: Uint8Array): Uint8Array;
       group_create(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, external_sender_pub: Uint8Array): Uint8Array;
       group_registered(group_id: Uint8Array, next_seq: bigint): void;
       group_discard(group_id: Uint8Array): void;
       group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
       group_joined(group_id: Uint8Array, seq: bigint): void;
       welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
+      human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
+      human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
+      human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
+      human_interaction_events_ack(through: bigint): void;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
       commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
       commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -255,6 +326,10 @@ export interface CoreHandle {
       cursor_body(group_id: Uint8Array): Uint8Array;
       cursor_acked(group_id: Uint8Array, last_seq: bigint, last_epoch: bigint): void;
       message_deleted(group_id: Uint8Array, seq: bigint): Uint8Array;
+      removal_cursor(group_id: Uint8Array): bigint;
+      removal_actor_history_version(group_id: Uint8Array, revision: bigint, proof: Uint8Array, signature: Uint8Array, accepted_at: bigint): bigint;
+      refresh_removal_actor_history(group_id: Uint8Array, revision: bigint, proof: Uint8Array, signature: Uint8Array, accepted_at: bigint, history: Uint8Array, head_list: Uint8Array): bigint;
+      ingest_removal(group_id: Uint8Array, revision: bigint, proof: Uint8Array, signature: Uint8Array, accepted_at: bigint): bigint;
       send_prepare(group_id: Uint8Array, request: Uint8Array, now: bigint): Uint8Array;
       send_encrypt(msg_id: Uint8Array): Uint8Array;
       send_confirm(msg_id: Uint8Array, response: Uint8Array): Uint8Array;
@@ -463,17 +538,98 @@ export function wrapCore(handle: CoreHandle): CorePort {
     identity: () => call(() => decoded('identity', handle.identity(), readIdentity)),
     signupBegin: (instanceId) => call(() => handle.signup_begin(instanceId)),
     signupRequest: (invite, username, display, password) => call(() => handle.signup_request(invite, username, display, password)),
-    signupComplete: (userId, username, now) => call(() => handle.signup_complete(userId, username, now)),
+    signupComplete: (userId, username, now, instanceSignerPub) => call(() => handle.signup_complete(userId, username, now, instanceSignerPub)),
+    instanceSignerKeyMatches: (observedKey) => call(() => handle.instance_signer_key_matches(observedKey)),
+    instanceSignerKeyPin: (instanceId, observedKey) => call(() => handle.instance_signer_key_pin(instanceId, observedKey)),
     signupReset: () => call(() => handle.signup_reset()),
     deviceListBody: () => call(() => handle.device_list_body()),
     deviceListPublished: () => call(() => handle.device_list_published()),
     deviceListDrop: () => call(() => handle.device_list_drop()),
     sessionSign: (nonce, purpose) => call(() => handle.session_sign(nonce, purpose)),
+    signRemoval: (requestId, groupId, targetSeq, expires, now) => call(() => {
+      if (handle.sign_removal === undefined) throw new CoreError('E_CORE_STATE', 'moderation signing is not available in this WASM build');
+      return handle.sign_removal(requestId, groupId, targetSeq, expires, now);
+    }),
+    prepareManualRemovalEvidence: (proofRequestId, evidenceRequestId, communityId, groupId, channelId, messageId, targetSeq, reason, excerpt, createdAt, expires, now) => call(() => {
+      if (handle.prepare_manual_removal_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return handle.prepare_manual_removal_evidence(proofRequestId, evidenceRequestId, communityId, groupId, channelId, messageId, targetSeq, reason, excerpt, createdAt, expires, now);
+    }),
+    manualRemovalEvidence: () => call(() => {
+      if (handle.manual_removal_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('manualRemovalEvidence', handle.manual_removal_evidence(), (v) => arr(v).map((row) => {
+        const a = arr(row, 16); const state = u53(a[12] ?? null);
+        if (state > 2) throw new CoreError('E_CORE_DECODE', 'manual removal evidence state is invalid');
+        return { proofRequestId: bin(a[0] ?? null, 16), evidenceRequestId: bin(a[1] ?? null, 16),
+          actorUserId: bin(a[2] ?? null, 16), actorDeviceId: bin(a[3] ?? null, 16), communityId: bin(a[4] ?? null, 16),
+          groupId: bin(a[5] ?? null, 16), channelId: bin(a[6] ?? null, 16), messageId: bin(a[7] ?? null, 16),
+          targetSequence: u64(a[8] ?? null), reason: str(a[9] ?? null), excerpt: str(a[10] ?? null), signedBody: bin(a[11] ?? null),
+          state: state as 0 | 1 | 2, createdAt: u64(a[13] ?? null), expires: u64(a[14] ?? null), evidenceExpires: u64(a[15] ?? null) };
+      }));
+    }),
+    ensureManualRemovalEvidenceRequest: (proofRequestId, candidateRequestId, now) => call(() => {
+      if (handle.ensure_manual_removal_evidence_request === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('ensureManualRemovalEvidenceRequest', handle.ensure_manual_removal_evidence_request(proofRequestId, candidateRequestId, now), (v) => {
+        const a = arr(v, 2); return { requestId: bin(a[0] ?? null, 16), expires: u64(a[1] ?? null) };
+      });
+    }),
+    markManualRemovalSubmitted: (requestId) => call(() => {
+      if (handle.mark_manual_removal_submitted === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.mark_manual_removal_submitted(requestId);
+    }),
+    markManualRemovalAccepted: (requestId) => call(() => {
+      if (handle.mark_manual_removal_accepted === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.mark_manual_removal_accepted(requestId);
+    }),
+    completeManualRemovalEvidence: (requestId, now) => call(() => {
+      if (handle.complete_manual_removal_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.complete_manual_removal_evidence(requestId, now);
+    }),
+    rejectUnsubmittedManualRemoval: (requestId, now) => call(() => {
+      if (handle.reject_unsubmitted_manual_removal === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.reject_unsubmitted_manual_removal(requestId, now);
+    }),
+    rejectManualRemoval: (requestId, now) => call(() => {
+      if (handle.reject_manual_removal === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.reject_manual_removal(requestId, now);
+    }),
+    prepareManualWarningEvidence: (requestId, evidenceRequestId, communityId, targetUserId, reason, createdAt, now) => call(() => {
+      if (handle.prepare_manual_warning_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.prepare_manual_warning_evidence(requestId, evidenceRequestId, communityId, targetUserId, reason, createdAt, now);
+    }),
+    manualWarningEvidence: () => call(() => {
+      if (handle.manual_warning_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('manualWarningEvidence', handle.manual_warning_evidence(), (v) => arr(v).map((row) => {
+        const a = arr(row, 13); const state = u53(a[7] ?? null);
+        if (state > 1) throw new CoreError('E_CORE_DECODE', 'manual warning evidence state is invalid');
+        return { requestId: bin(a[0] ?? null, 16), evidenceRequestId: bin(a[1] ?? null, 16),
+          actorUserId: bin(a[2] ?? null, 16), actorDeviceId: bin(a[3] ?? null, 16), communityId: bin(a[4] ?? null, 16),
+          targetUserId: bin(a[5] ?? null, 16), reason: str(a[6] ?? null), state: state as 0 | 1, createdAt: u64(a[8] ?? null),
+          actionId: bin(a[9] ?? null, 16), revision: u64(a[10] ?? null), acceptedAt: u64(a[11] ?? null), evidenceExpires: u64(a[12] ?? null) };
+      }));
+    }),
+    markManualWarningAccepted: (requestId, actionId, revision, acceptedAt) => call(() => {
+      if (handle.mark_manual_warning_accepted === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.mark_manual_warning_accepted(requestId, actionId, revision, acceptedAt);
+    }),
+    ensureManualWarningEvidenceRequest: (requestId, candidateRequestId, now) => call(() => {
+      if (handle.ensure_manual_warning_evidence_request === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('ensureManualWarningEvidenceRequest', handle.ensure_manual_warning_evidence_request(requestId, candidateRequestId, now), (v) => {
+        const a = arr(v, 2); return { requestId: bin(a[0] ?? null, 16), expires: u64(a[1] ?? null) };
+      });
+    }),
+    completeManualWarningEvidence: (requestId, now) => call(() => {
+      if (handle.complete_manual_warning_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.complete_manual_warning_evidence(requestId, now);
+    }),
     sessionStore: (s) => call(() => handle.session_store(s.token, s.expires, s.idleExpires)),
     session: () => call(() => decoded('session', handle.session(), readSession)),
     sessionClear: () => call(() => handle.session_clear()),
     keyPackages: (count, lastResort) => call(() => handle.key_packages(count, lastResort)),
     groups: () => call(() => decoded('groups', handle.groups(), (v) => arr(v).map(readGroup))),
+    groupHealSnapshot: (groupId) => call(() => {
+      if (handle.group_heal_snapshot === undefined) throw new CoreError('E_CORE_STATE', 'group healing is not available in this WASM build');
+      return handle.group_heal_snapshot(groupId);
+    }),
     groupCreate: (groupId, communityId, channelId, policyVersion, externalSenderPub) => call(() => handle.group_create(groupId, communityId, channelId, policyVersion, externalSenderPub)),
     groupRegistered: (groupId, nextSeq) => call(() => handle.group_registered(groupId, nextSeq)),
     groupDiscard: (groupId) => call(() => handle.group_discard(groupId)),
@@ -481,6 +637,34 @@ export function wrapCore(handle: CoreHandle): CorePort {
     groupJoined: (groupId, seq) => call(() => handle.group_joined(groupId, seq)),
     welcomesApply: (welcomesBody, expected) => call(() => decoded('welcomesApply', handle.welcomes_apply(welcomesBody,
       encode(expected.map((e) => [e.groupId, e.communityId, e.channelId, e.policyVersion]))), (v) => arr(v).map(readWelcome))),
+    humanInteractionWelcomeApply: (welcomesBody, currentContextProof, now) => call(() => decoded(
+      'humanInteractionWelcomeApply',
+      handle.human_interaction_welcome_apply(welcomesBody, currentContextProof, now),
+      (v) => arr(v).map(readWelcome),
+    )),
+    humanInteractionSendPrepare: (requestId, communityId, groupId, requestBody, now) => call(() => decoded(
+      'humanInteractionSendPrepare',
+      handle.human_interaction_send_prepare(requestId, communityId, groupId, requestBody, now),
+      (v) => bin(field(arr(v, 1), 0), 16),
+    )),
+    humanInteractionEventsRead: (after, limit) => call(() => decoded(
+      'humanInteractionEventsRead', handle.human_interaction_events_read(after, BigInt(limit)), (v) => {
+        const page = arr(v, 3);
+        return {
+          events: arr(page[0]).map((item) => {
+            const row = arr(item, 13);
+            return {
+              deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
+              requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
+              senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
+              operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
+            };
+          }),
+          next: u64(page[1]), highWater: u64(page[2]),
+        };
+      },
+    )),
+    humanInteractionEventsAck: (through) => call(() => handle.human_interaction_events_ack(through)),
     groupApply: (groupId, handshakes, messages, through) => call(() => decoded('groupApply', handle.group_apply(groupId, handshakes, messages, through), readApply)),
     commitBuild: (groupId, proposalsBody) => call(() => handle.commit_build(groupId, proposalsBody)),
     commitConfirm: (groupId) => call(() => decoded('commitConfirm', handle.commit_confirm(groupId), readApply)),
@@ -491,6 +675,10 @@ export function wrapCore(handle: CoreHandle): CorePort {
     }),
     cursorAcked: (groupId, lastSeq, lastEpoch) => call(() => handle.cursor_acked(groupId, lastSeq, lastEpoch)),
     messageDeleted: (groupId, seq) => call(() => decoded('messageDeleted', handle.message_deleted(groupId, seq), readApply)),
+    removalCursor: (groupId) => call(() => handle.removal_cursor(groupId)),
+    removalActorHistoryVersion: (groupId, entry) => call(() => handle.removal_actor_history_version(groupId, entry.revision, entry.proof, entry.signature, entry.acceptedAt)),
+    refreshRemovalActorHistory: (groupId, entry, history, headList) => call(() => handle.refresh_removal_actor_history(groupId, entry.revision, entry.proof, entry.signature, entry.acceptedAt, history, headList)),
+    ingestRemoval: (groupId, entry) => call(() => handle.ingest_removal(groupId, entry.revision, entry.proof, entry.signature, entry.acceptedAt)),
     sendPrepare: (groupId, request, now) => call(() => decoded('sendPrepare', handle.send_prepare(groupId,
       encode([request.type, request.replyTo, request.body, request.attachments.map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name]),
         request.threadId ?? null]),

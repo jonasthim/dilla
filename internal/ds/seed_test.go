@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -32,13 +33,15 @@ func (h *dsHarness) restartCold(t *testing.T) {
 	if err := h.gw.Shutdown(ctx); err != nil {
 		t.Fatalf("gateway Shutdown: %v", err)
 	}
+	botCapability := capability.New(h.repo)
 	gw := gateway.New(gateway.Options{
 		Clock: h.clk, Store: gatewayStore{h.repo}, Generation: 1, Auth: h.auth,
 		Backoff: ds.DefaultPolicy().Backoff, BackoffJitter: ds.DefaultPolicy().BackoffJitter,
+		ScopeResolver: gatewayScopeResolver{repo: h.repo}, CommunityCompatibility: botCapability,
 	})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 	d, err := ds.New(ds.Options{
-		Store: h.repo, Wasm: h.wasm, Gateway: gw, Clock: h.clk,
+		Store: h.repo, Wasm: h.wasm, Gateway: gw, Clock: h.clk, BotCapability: botCapability,
 		Keys: testInstanceKeys(t), Policy: ds.DefaultPolicy(), Channels: h.channels, ACL: h.acl,
 	})
 	if err != nil {

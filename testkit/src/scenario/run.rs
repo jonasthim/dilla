@@ -716,7 +716,15 @@ impl Runner {
         let seed = self.seed.wrapping_add(self.clients.len() as u64 + 1);
         let mut user = [0u8; 16];
         user[..8].copy_from_slice(&seed.to_be_bytes());
-        let mut client = TestClient::new(name, UserId::from_bytes(user), tier, kind, seed)?;
+        // A remote account signup must carry the zero user id; the instance mints the human
+        // account id and the client is rebuilt around it after enrollment. The in-memory stub
+        // has no signup step, so its deterministic fixture id remains useful there.
+        let initial_user = if self.is_remote() {
+            UserId::from_bytes([0; 16])
+        } else {
+            UserId::from_bytes(user)
+        };
+        let mut client = TestClient::new(name, initial_user, tier, kind, seed)?;
         let remote_base = match self.backend.as_ref() {
             None => return Err(no_instance()),
             Some(Backend::Stub(_)) => None,

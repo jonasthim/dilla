@@ -74,6 +74,45 @@ func TestInviteAndDiscoverableChannelsAreForcedReadable(t *testing.T) {
 	}
 }
 
+func TestChannelPermissionsReturnsEffectiveVisibleBits(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 1, 0, "announcements")
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil || len(roles) == 0 {
+		t.Fatalf("ListRoles = %v, %v", roles, err)
+	}
+	if status, body := e.Do(http.MethodPut, "/v1/channels/"+ch.String()+"/overwrites/0/"+roles[0].ID.String(), ownerTok,
+		[]any{uint64(0), uint64(api.PermSendMessages)}); status != http.StatusNoContent {
+		t.Fatalf("PUT overwrite = %d (%x)", status, body)
+	}
+	_, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+	read := func(tok string) (int, uint64) {
+		t.Helper()
+		status, body := e.Do(http.MethodGet, "/v1/channels/"+ch.String()+"/permissions", tok, nil)
+		var bits uint64
+		if status == http.StatusOK {
+			mustUnmarshalBody(t, body, &bits)
+		}
+		return status, bits
+	}
+	if status, bits := read(ownerTok); status != http.StatusOK || bits != uint64(api.PermAll) {
+		t.Fatalf("owner permissions = %d, %x; want 200 and all bits", status, bits)
+	}
+	if status, bits := read(memberTok); status != http.StatusOK || api.Bits(bits).Has(api.PermSendMessages) || !api.Bits(bits).Has(api.PermViewChannel) {
+		t.Fatalf("member permissions = %d, %x; want visible without send_messages", status, bits)
+	}
+	_, outsiderTok := e.NewUser("outsider")
+	if status, _ := read(outsiderTok); status != http.StatusNotFound {
+		t.Fatalf("foreign channel permissions = %d, want 404", status)
+	}
+	missing := id.New()
+	if status, _ := e.Do(http.MethodGet, "/v1/channels/"+missing.String()+"/permissions", ownerTok, nil); status != http.StatusNotFound {
+		t.Fatalf("absent channel permissions = %d, want 404", status)
+	}
+}
+
 // I10 (fix wave): a member discovers a community's channels in band. GET
 // /v1/communities/{id}/channels lists the live channels the caller may view, by position then
 // channel id, each [channel_id, kind, mode, visibility, parent_id|null, name, topic, position,

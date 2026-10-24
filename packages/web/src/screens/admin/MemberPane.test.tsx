@@ -359,6 +359,40 @@ describe('BanFlow', () => {
   });
 });
 
+describe('TimeoutFlow', () => {
+  it('sets a bounded text timeout and offers a separate clear action', async () => {
+    const { user, fake, announce } = setup(access({ moderateMembers: true }));
+    const before = Math.floor(Date.now() / 1000);
+    await pick(user, 'bob', 'Text timeout');
+    await user.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(fake.callsOf('setMemberTimeout')).toHaveLength(1));
+    const set = fake.callsOf('setMemberTimeout')[0];
+    expect(set).toMatchObject({ m: 'setMemberTimeout', communityId: CID, userId: BOB });
+    expect(set?.requestId).toMatch(/^[0-9a-f]{32}$/);
+    expect(Number(set?.expires)).toBeGreaterThanOrEqual(before + 600);
+    expect(Number(set?.expires)).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 600);
+    expect(announce).toHaveBeenCalledWith('Text timeout updated for bob.');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await pick(user, 'bob', 'Text timeout');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Action' }), 'Clear existing timeout');
+    await user.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(fake.callsOf('clearMemberTimeout')).toHaveLength(1));
+    expect(fake.callsOf('clearMemberTimeout')[0]).toMatchObject({ communityId: CID, userId: BOB });
+  });
+  it('warns an eligible lower-ranked member with a reason and reports the case receipt', async () => {
+    const { fake, user, announce } = setup(access({ moderateMembers: true }));
+    fake.handler = command => command.m === 'warnMember'
+      ? Promise.resolve({ requestId: '12'.repeat(16), actionId: id(44), revision: '9', acceptedAt: 1_800_000_000, evidence: 'accepted' })
+      : Promise.resolve(null);
+    await pick(user, 'bob', 'Warn member');
+    await user.type(screen.getByRole('textbox', { name: 'Reason' }), 'Please follow the channel rules.');
+    await user.click(screen.getByRole('button', { name: 'Warn' }));
+    await waitFor(() => expect(fake.callsOf('warnMember')).toHaveLength(1));
+    expect(fake.callsOf('warnMember')[0]).toMatchObject({ userId: BOB, reason: 'Please follow the channel rules.' });
+    expect(announce).toHaveBeenCalledWith('Warning sent to the moderation log for bob.');
+  });
+});
+
 describe('role assignment focus', () => {
   it('returns focus when the member list reloads while the dialog closes', async () => {
     const { user, fake } = setup(access({ manageRoles: true, top: 6 }));

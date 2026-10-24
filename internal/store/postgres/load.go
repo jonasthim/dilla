@@ -20,6 +20,6 @@ func LoadDump(ctx context.Context, db *sql.DB, dump io.Reader, then func(tx stor
 			return nil
 		}
 		q := pgdb.New(tx)
-		return then(&Repo{db: db, w: q, r: q, inTx: true, rawRead: db})
+		return then(&Repo{db: db, tx: tx, w: q, r: q, inTx: true, rawRead: db})
 	})
 }

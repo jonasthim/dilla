@@ -45,6 +45,9 @@ const (
 // the structure, readable and blob tables — and a restore replays it front to
 // back.
 var DumpTables = []string{
+	// Restored before its source rows so their revision triggers run during replay.
+	// This can only advance the fence and conservatively invalidates old tickets.
+	"bot_interaction_eligibility_revisions",
 	"instances", "instance_settings", "users", "user_presence", "devices", "device_lists", "sessions",
 	"password_credentials", "totp_secrets", "recovery_codes", "webauthn_users",
 	"webauthn_credentials", "webauthn_ceremonies", "oidc_identities", "login_attempts",
@@ -62,7 +65,9 @@ var DumpTables = []string{
 	// 006_structure.sql, appended by Plan 2 task 1, parents before children: a
 	// community before its members and roles, and both of those before the
 	// member_roles rows that reference a (member, role) pair.
-	"communities", "members", "roles", "member_roles",
+	"communities", "members", "community_member_episodes", "community_member_timeouts", "manual_warning_actions", "roles", "member_roles", "member_role_grant_sources", "self_role_policy", "dj_role_policy",
+	// 031_moderation_removals.sql: permanent per-group markers reference both communities and groups.
+	"moderation_removal_heads", "moderation_removals",
 	// 006a_channels.sql, appended by Plan 2 task 2. Its parent is communities; its
 	// self-reference (parent_id) is checked at the end of the one COPY statement
 	// that replays the table, so the rows' order within it does not matter.
@@ -105,6 +110,22 @@ var DumpTables = []string{
 	// 016_message_class.sql, appended by dilla web3.7 SB1. Its parents are channels and users; a
 	// restore that dropped it would reset every end-to-end encrypted channel's slow mode.
 	"slowmode_marks",
+	// 020_bot_installations.sql: runtime before installation, then claim/operation/session children.
+	"bot_runtimes", "bot_installations", "automod_stepup_grants", "bot_join_role_policy", "bot_join_role_grant_receipts", "bot_claims", "bot_operations", "bot_session_bindings", "bot_interaction_admission_receipts",
+	// 032_role_panels.sql: panels reference both channels and installations;
+	// options reference panels and roles. Restore them only after all parents.
+	"role_panels", "role_panel_options", "reaction_role_grant_sources", "bot_join_role_grant_sources",
+	// 023_bot_keypackage_publications.sql: receipts are children of installations, users and devices.
+	"bot_keypackage_publication_receipts",
+	// 024_bot_sends.sql: logical operations before their immutable attempt children.
+	"bot_send_operations", "bot_send_attempts",
+	// 025_bot_group_registration_receipts.sql: immutable receipts scoped to an installation.
+	"bot_event_streams", "bot_structural_events",
+	"bot_group_registration_receipts",
+	// Admission consumption bindings depend on the installation and accompany
+	// the accepted registration in logical backups.
+	"bot_group_registration_admission_receipts",
+	"bot_event_acks",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

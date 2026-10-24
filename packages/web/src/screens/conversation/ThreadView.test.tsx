@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import type { ThreadState } from '@dilla/client-core';
+import { PERM, type ThreadState } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
@@ -22,7 +22,7 @@ function thread(over: Partial<ThreadState> = {}): ThreadState {
   };
 }
 
-function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
+function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; blocked?: string | null; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
   window.history.replaceState(null, '', `/c/${A}/${GEN}`);
   const fake = new FakeClient();
   fake.set('account', account());
@@ -33,7 +33,7 @@ function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraf
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}>
     <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={over.phone ?? false} onClose={onClose} announce={announce}
-      initialDraft={over.initialDraft} onDraftChange={over.onDraftChange} onOpenProfile={over.onOpenProfile} />
+      initialDraft={over.initialDraft} blocked={over.blocked} onDraftChange={over.onDraftChange} onOpenProfile={over.onOpenProfile} />
   </CoreProvider></div>);
   return { fake, user, view, onClose, announce };
 }
@@ -56,6 +56,11 @@ describe('ThreadView profile opens (MP7)', () => {
 });
 
 describe('ThreadView (web3.7)', () => {
+  it('blocks thread replies when the community timeout is active', () => {
+    setup({ blocked: 'You cannot post messages in this community until 11:20 AM.' });
+    expect(box()).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText('You cannot post messages in this community until 11:20 AM.')).toBeInTheDocument();
+  });
   it('restores a thread draft and reports later edits for update recovery', async () => {
     const onDraftChange = vi.fn();
     const { user } = setup({ initialDraft: 'before refresh', onDraftChange });
@@ -159,7 +164,51 @@ describe('ThreadView (web3.7)', () => {
     await user.click(within(toolbar(O1)).getByRole('button', { name: en['shell.message.delete'] }));
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(screen.getByRole('button', { name: en['shell.delete.confirm'] }));
-    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1 }]);
+    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1, seq: '3' }]);
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+  });
+  it('offers the separate moderator action on a peer reply and sends its timeline sequence', async () => {
+    const { fake, user } = setup();
+    fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'unknown',
+      proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'unknown' })
+      : command.m === 'resolveManualRemoval' ? Promise.resolve({ removal: 'accepted', evidenceUpload: 'pending' })
+      : command.m === 'humanInteractionRequest' ? Promise.resolve({ upload: 'accepted' }) : Promise.resolve(null);
+    const everyone = 'e0'.repeat(16);
+    const moderators = 'a0'.repeat(16);
+    const self = account().user?.id ?? 'bb'.repeat(16);
+    fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`members:${A}`, [{ userId: self, username: 'ada', display: '', kind: 0, roleIds: [moderators] }]);
+    fake.set(`roles:${A}`, [
+      { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: PERM.viewChannel, deny: 0, members: 1 },
+      { id: moderators, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: PERM.manageMessages, deny: 0, members: 1 },
+    ] as never);
+    fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
+      banMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true });
+    fake.set(`overwrites:${A}`, {});
+    const action = await waitFor(() => within(toolbar(P2)).getByRole('button', { name: en['shell.message.moderateRemove'] }));
+    await user.click(action);
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+    const dialog = screen.getByRole('dialog', { name: en['shell.moderation.removeTitle'] });
+    const reason = within(dialog).getByLabelText(en['shell.moderation.reason']);
+    expect(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] })).toHaveAttribute('aria-disabled', 'true');
+    await user.type(reason, 'reviewed by moderator');
+    expect(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] })).not.toHaveAttribute('aria-disabled', 'true');
+    await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] }));
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P2, seq: '2',
+      reason: 'reviewed by moderator', excerpt: 'first reply' }]);
+    expect(await screen.findByText(en['shell.moderation.removalUnknown'])).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.retryRemoval'] }));
+    expect(await screen.findByText(en['shell.moderation.evidencePending'])).toBeInTheDocument();
+    expect(fake.callsOf('resolveManualRemoval')).toEqual([{ m: 'resolveManualRemoval', proofRequestId: '11'.repeat(16) }]);
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: en['shell.delete.cancel'] }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText(en['shell.moderation.evidencePending'])).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: en['shell.moderation.retryEvidence'] }));
+    await waitFor(() => expect(screen.getByText(en['shell.moderation.evidenceSent'])).toBeInTheDocument());
+    expect(fake.callsOf('moderateRemoveMessage')).toHaveLength(1);
+    expect(fake.callsOf('humanInteractionRequest')).toEqual([expect.objectContaining({ operation: 61, communityId: A,
+      channelId: null, args: ['11'.repeat(16), 'reviewed by moderator', 'first reply'], revision: '0' })]);
+    expect(fake.callsOf('deleteMessage')).toEqual([]);
   });
   it('says there are no replies yet, but not while the thread is still being read', () => {
     setup({ thread: thread({ items: [] }) });

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "dilla permission resolution (09-http-api.md \u00a7 Permissions). Frozen from internal/api/perm.go (Go is the reference): community = Snapshot.Resolve(user), channel = Snapshot.ResolveChannel(user) with the case's overwrites.",
+  "description": "dilla permission resolution (09-http-api.md § Permissions). Frozen from internal/api/perm.go (Go is the reference): community = Snapshot.Resolve(user), channel = Snapshot.ResolveChannel(user) with the case's overwrites.",
   "bits": {
     "view_channel": 1,
     "send_messages": 2,
@@ -25,7 +25,8 @@
     "administrator": 1048576,
     "mute_members": 2097152,
     "move_members": 4194304,
-    "manage_nicknames": 8388608
+    "manage_nicknames": 8388608,
+    "moderate_members": 16777216
   },
   "cases": [
     {
@@ -50,8 +51,8 @@
         }
       ],
       "user": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-      "community": 16777215,
-      "channel": 16777215
+      "community": 33554431,
+      "channel": 33554431
     },
     {
       "name": "everyone_only",
@@ -200,8 +201,8 @@
         }
       ],
       "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
-      "community": 16777215,
-      "channel": 16777215
+      "community": 33554431,
+      "channel": 33554431
     },
     {
       "name": "no_view_is_nothing",
@@ -654,6 +655,88 @@
       "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
       "community": 4083,
       "channel": 4083
+    },
+    {
+      "name": "moderate_members_overwrite_cannot_remove",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 1,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 16777216,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "allow": 0,
+          "deny": 16777216
+        },
+        {
+          "kind": 1,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 0,
+          "deny": 16777216
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 16777217,
+      "channel": 16777217
+    },
+    {
+      "name": "moderate_members_overwrite_cannot_grant",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 1,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 1,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 16777216,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 1,
+      "channel": 1
+    },
+    {
+      "name": "unknown_bit_25_ignored",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 33554433,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 1,
+      "channel": 1
     }
   ]
 }

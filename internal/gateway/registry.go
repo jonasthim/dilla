@@ -170,13 +170,16 @@ func (r *registry) setBots(devices []id.ID) {
 
 // onlineIn is invariant 7's candidate list: bot devices first, then by leaf index. A device with
 // several connections appears once, with its earliest ready time.
-func (r *registry) onlineIn(g id.ID, now time.Time, idle time.Duration) []OnlineDevice {
+func (r *registry) onlineIn(g id.ID, now time.Time, idle time.Duration, minWire uint64) []OnlineDevice {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	seen := map[id.ID]OnlineDevice{}
 	for _, device := range r.members[g] {
 		for _, c := range r.byDevice[device] {
-			if !c.online(now, idle) {
+			c.mu.Lock()
+			wire := c.wire
+			c.mu.Unlock()
+			if (minWire >= 3 && wire < 3) || !c.online(now, idle) {
 				continue
 			}
 			_, isBot := r.bots[device]

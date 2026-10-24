@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "core/dilla-core",
+    "core/dilla-bot-core",
     "core/dilla-core-wasm",
     "core/dilla-core-wasi",
     "testkit",

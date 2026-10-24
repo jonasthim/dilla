@@ -2,6 +2,7 @@ package mlswasi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/fxamacker/cbor/v2"
@@ -99,6 +100,61 @@ type Member struct {
 	CredentialIdentity []byte
 }
 
+// RosterLeaf is a dilla identity descriptor extracted from one authenticated MLS leaf.
+type RosterLeaf struct {
+	UserID   []byte
+	DeviceID []byte
+	DSKPub   []byte
+	Tier     uint8
+	Kind     uint8
+}
+
+// ExtractAuthenticatedRoster imports the supplied tree and GroupInfo through OpenMLS, which
+// checks the GroupInfo signer, tree hash, and MLS leaf validity, then verifies each dilla
+// CredentialIdentity's signatures against that leaf's DSK. It returns no partial roster.
+// Limits are part of the ABI: at most 1500 leaves, 4 MiB tree and 64 KiB GroupInfo.
+func (i *Instance) ExtractAuthenticatedRoster(ctx context.Context, tree, groupInfo []byte) ([]RosterLeaf, error) {
+	if len(tree) == 0 || len(tree) > 4*1024*1024 || len(groupInfo) == 0 || len(groupInfo) > 64*1024 {
+		return nil, errors.New("mlswasi: roster input exceeds its bound")
+	}
+	elems, err := i.call(ctx, "public_group_roster_extract", tree, groupInfo)
+	if err != nil {
+		return nil, err
+	}
+	if len(elems) != 2 {
+		return nil, errors.New("mlswasi: roster response has an invalid shape")
+	}
+	rows, err := rawArray(elems[1])
+	if err != nil || len(rows) > 1500 {
+		return nil, errors.New("mlswasi: roster response exceeds its bound")
+	}
+	out := make([]RosterLeaf, 0, len(rows))
+	for _, row := range rows {
+		fields, err := rawArray(row)
+		if err != nil || len(fields) != 5 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid shape")
+		}
+		var leaf RosterLeaf
+		if leaf.UserID, err = rawBytes(fields[0]); err != nil || len(leaf.UserID) != 16 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid user id")
+		}
+		if leaf.DeviceID, err = rawBytes(fields[1]); err != nil || len(leaf.DeviceID) != 16 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid device id")
+		}
+		if leaf.DSKPub, err = rawBytes(fields[2]); err != nil || len(leaf.DSKPub) != 32 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid DSK")
+		}
+		tier, e1 := rawUint(fields[3])
+		kind, e2 := rawUint(fields[4])
+		if e1 != nil || e2 != nil || tier > 1 || kind > 1 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid tier or kind")
+		}
+		leaf.Tier, leaf.Kind = uint8(tier), uint8(kind)
+		out = append(out, leaf)
+	}
+	return out, nil
+}
+
 // GroupState is the public_group_state response.
 type GroupState struct {
 	Epoch    uint64
@@ -135,6 +191,8 @@ type KeyPackageInfo struct {
 	// SignatureKey is the KeyPackage leaf's signature key (ABI v4), the key its signatures verify
 	// under. The delivery service binds it to the publishing device's registered key.
 	SignatureKey []byte
+	// Credential is the exact leaf BasicCredential identity bytes validated from this KeyPackage (ABI v8).
+	Credential []byte
 }
 
 func rawProposalKind(raw cbor.RawMessage) (ProposalKind, error) {
@@ -473,14 +531,51 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if err := expectLen(elems, 7, "validate_key_package"); err != nil {
+	return decodeKeyPackageInfo(elems)
+}
+
+// WelcomeKeyPackageRefs strictly parses an MLS Welcome and returns every KeyPackageRef it names.
+// The caller must enforce the expected recipient count and bind each ref to a target device.
+func (i *Instance) WelcomeKeyPackageRefs(ctx context.Context, welcome []byte) ([][]byte, error) {
+	elems, err := i.call(ctx, "welcome_key_package_refs", welcome)
+	if err != nil {
+		return nil, err
+	}
+	return decodeWelcomeKeyPackageRefs(elems)
+}
+
+func decodeWelcomeKeyPackageRefs(elems []cbor.RawMessage) ([][]byte, error) {
+	if err := expectLen(elems, 2, "welcome_key_package_refs"); err != nil {
+		return nil, err
+	}
+	rows, err := rawArray(elems[1])
+	if err != nil {
+		return nil, fmt.Errorf("mlswasi: welcome_key_package_refs recipients: %w", err)
+	}
+	if len(rows) > 4096 {
+		return nil, fmt.Errorf("mlswasi: welcome_key_package_refs has %d recipients, maximum is 4096", len(rows))
+	}
+	refs := make([][]byte, 0, len(rows))
+	for index, row := range rows {
+		ref, err := rawBytesExact(row, 32, "welcome recipient KeyPackageRef")
+		if err != nil {
+			return nil, fmt.Errorf("mlswasi: welcome_key_package_refs recipient %d: %w", index, err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+func decodeKeyPackageInfo(elems []cbor.RawMessage) (KeyPackageInfo, error) {
+	if err := expectLen(elems, 8, "validate_key_package"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	var info KeyPackageInfo
-	if info.DeviceID, err = rawBytes(elems[1]); err != nil {
+	var err error
+	if info.DeviceID, err = rawBytesExact(elems[1], 16, "device_id"); err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if info.UserID, err = rawBytes(elems[2]); err != nil {
+	if info.UserID, err = rawBytesExact(elems[2], 16, "user_id"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	if info.LastResort, err = rawBool(elems[3]); err != nil {
@@ -489,13 +584,30 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if info.NotAfter, err = rawUint(elems[4]); err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if info.KPRef, err = rawBytes(elems[5]); err != nil {
+	if info.KPRef, err = rawBytesExact(elems[5], 32, "kp_ref"); err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if info.SignatureKey, err = rawBytes(elems[6]); err != nil {
+	if info.SignatureKey, err = rawBytesExact(elems[6], 32, "signature_key"); err != nil {
 		return KeyPackageInfo{}, err
+	}
+	if info.Credential, err = rawBytes(elems[7]); err != nil {
+		return KeyPackageInfo{}, err
+	}
+	if len(info.Credential) < 1 || len(info.Credential) > 8192 {
+		return KeyPackageInfo{}, fmt.Errorf("mlswasi: validate_key_package credential has %d bytes, want 1..8192", len(info.Credential))
 	}
 	return info, nil
+}
+
+func rawBytesExact(raw cbor.RawMessage, want int, field string) ([]byte, error) {
+	b, err := rawBytes(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != want {
+		return nil, fmt.Errorf("mlswasi: validate_key_package %s has %d bytes, want %d", field, len(b), want)
+	}
+	return b, nil
 }
 
 // ExternalProposeAdd signs an external Add proposal as the instance.
