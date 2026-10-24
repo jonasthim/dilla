@@ -197,7 +197,7 @@ export async function shoot({ port, outDir, prefixes, root, viewport = VIEWPORT 
 }
 
 /** Each story's parameters, read from the Storybook preview the way the test runner's getStoryContext does. */
-async function storyParameters(context, port, ids) {
+export async function storyParameters(context, port, ids) {
   const page = await context.newPage();
   try {
     await page.goto(`http://127.0.0.1:${port}/iframe.html`, { waitUntil: 'load', timeout: 60_000 });
