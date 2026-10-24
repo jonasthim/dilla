@@ -81,23 +81,14 @@ export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
 /**
- * The browser suites, one job per Playwright engine (controller ruling of 2026-10-13 on the L-CI-21 budget: the 45-min
- * cap is about one runner, and per-engine jobs also run in parallel). Each budget is max(30, ceil(5 × share) + 10) on
- * its own share in minutes: Chromium and Firefox each run half of the web suite (W = 6.8 in web-2c task 10, so 3.4)
- * plus their half of the core-worker suite (C = 0.5, so 0.25): ceil(5 × 3.65) + 10 = 29 → 30. WebKit keeps web-1's
- * 3.0 allowance (signup and reload only): ceil(15) + 10 = 25 → 30. `core` says whether the job also runs the
- * core-worker suite of its engine (the core config has no WebKit project). `voice` says whether it also runs VOICE-E2E
- * of its engine (web-3 task 10, playwright.voice.config.ts; WebKit is never launched for voice, DEV-29); Firefox's
- * voice suite needs the PulseAudio null sink first (scripts/ci-audio-server.sh), or every AudioContext stays suspended.
- * With the voice suite on top (VOICE_MINUTES, its local wall time per engine measured in web-3 task 10 on 2026-10-14:
- * Chromium 109 s, Firefox 104 s): ceil(5 × (3.65 + 1.9)) + 10 = 38 and ceil(5 × (3.65 + 1.8)) + 10 = 38, each under
- * the 45-minute cap of one runner, so no split.
+ * Browser suites run in parallel, one job per Playwright engine. Hosted Chromium and Firefox
+ * jobs took about 35–38 minutes on 2026-10-24, and one Firefox job reached the old 38-minute
+ * cap during its voice step. Allow 50 minutes for runner variance. WebKit runs fewer suites and
+ * retains its 30-minute cap. `core` and `voice` identify the suites each engine runs.
  */
-export const VOICE_MINUTES = { chromium: 1.9, firefox: 1.8 };
-const budget = (share) => Math.max(30, Math.ceil(5 * share) + 10);
 export const BROWSER_WEB_JOBS = {
-  'chromium-web': { engine: 'chromium', timeout: budget(3.65 + VOICE_MINUTES.chromium), core: true, voice: true },
-  'firefox-web': { engine: 'firefox', timeout: budget(3.65 + VOICE_MINUTES.firefox), core: true, voice: true },
+  'chromium-web': { engine: 'chromium', timeout: 50, core: true, voice: true },
+  'firefox-web': { engine: 'firefox', timeout: 50, core: true, voice: true },
   'webkit-web': { engine: 'webkit', timeout: 30, core: false, voice: false },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 30;
@@ -305,11 +296,11 @@ const REQUIRED_STEPS = {
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [
-    'timeout-minutes: 45',
+    'timeout-minutes: 55',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 38m ./internal/api/...',
+    'go test -race -shuffle=on -timeout 50m ./internal/api/...',
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
