@@ -4594,6 +4594,19 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 2, mentions: 1 } });
   });
 
+  it('keeps a new core-authenticated mention when badges were refreshed before its notice', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.groups = [textGroup(2)];
+    w.state.rows = [{ ...strangerRow(1), body: `<@${toHex(USER)}> look`, mention: true }];
+    w.state.activity = [act(GROUP, 1, 1)];
+    // A separate slice update can observe the new aggregate before the group
+    // callback builds its notice. The row's authenticated flag must still win.
+    (w.controller as unknown as { publishBadges(): void }).publishBadges();
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
+    expect(w.notices()?.items.map((n) => n.kind)).toEqual(['mention']);
+  });
+
   it("a message from this user's other device raises no notice and no badge", async () => {
     const w = world();
     await toReady(w);
