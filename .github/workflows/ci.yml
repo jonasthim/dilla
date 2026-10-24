@@ -264,7 +264,15 @@ jobs:
   spotify-helper:
     needs: [changes]
     if: needs.changes.outputs.code != 'false'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
