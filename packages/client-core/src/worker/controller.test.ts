@@ -140,6 +140,18 @@ describe('Controller', () => {
     expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
   });
 
+  it('pins authenticated discovery for an upgraded browser with no saved signer pin', async () => {
+    const w = world();
+    let pinned = false;
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      if (!pinned) throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
+    });
+    w.core.instanceSignerKeyPin.mockImplementation(() => { pinned = true; });
+    await toReady(w);
+    expect(w.account()).toMatchObject({ phase: 'ready' });
+    expect(w.core.instanceSignerKeyPin).toHaveBeenCalledWith(INSTANCE.instanceId, INSTANCE.externalSenderPub);
+  });
+
   it('refuses ready when authenticated discovery reports a rotated instance signer', async () => {
     const w = world();
     w.core.instanceSignerKeyMatches.mockImplementation(() => {
@@ -148,6 +160,20 @@ describe('Controller', () => {
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
     expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+    expect(w.core.instanceSignerKeyPin).not.toHaveBeenCalled();
+    expect(w.gateway.starts).toBe(0);
+  });
+
+  it('does not enter ready if the legacy first pin refuses authenticated discovery', async () => {
+    const w = world();
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
+    });
+    w.core.instanceSignerKeyPin.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
+    });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
     expect(w.gateway.starts).toBe(0);
   });
 
