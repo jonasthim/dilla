@@ -141,7 +141,11 @@ fn write_interaction_roster_fixture() {
         .with_group_context_extensions(extensions)
         .capabilities(Capabilities::new(
             None,
-            None,
+            Some(&[
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+                Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+                Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+            ]),
             Some(&[ExtensionType::Unknown(DILLA_BINDING_ID)]),
             None,
             Some(&[CredentialType::Basic]),
@@ -159,7 +163,11 @@ fn write_interaction_roster_fixture() {
     let kp = KeyPackage::builder()
         .leaf_node_capabilities(Capabilities::new(
             None,
-            None,
+            Some(&[
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+                Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+                Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+            ]),
             Some(&[ExtensionType::Unknown(DILLA_BINDING_ID)]),
             None,
             Some(&[CredentialType::Basic]),
@@ -203,7 +211,11 @@ fn write_interaction_roster_fixture() {
     let kp_extra = KeyPackage::builder()
         .leaf_node_capabilities(Capabilities::new(
             None,
-            None,
+            Some(&[
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+                Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+                Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+            ]),
             Some(&[ExtensionType::Unknown(DILLA_BINDING_ID)]),
             None,
             Some(&[CredentialType::Basic]),

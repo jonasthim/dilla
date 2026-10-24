@@ -24,12 +24,12 @@ pub fn blob_id(stored: &[u8]) -> [u8; 32] {
     crate::identity::sha256(stored)
 }
 
-/// aes-gcm 0.10.3's only encrypt error is a plaintext over 2^36 − 32 bytes, which no caller can
+/// aes-gcm's only encrypt error is a plaintext over 2^36 − 32 bytes, which no caller can
 /// hold in memory, so the `expect` cannot fire.
 fn seal(key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
     Aes256Gcm::new(key.into())
         .encrypt(
-            Nonce::from_slice(nonce),
+            &Nonce::from(*nonce),
             Payload {
                 msg: plaintext,
                 aad,
@@ -48,7 +48,7 @@ fn open(
         return Err(ProtocolError::BlobOpen);
     }
     Aes256Gcm::new(key.into())
-        .decrypt(Nonce::from_slice(nonce), Payload { msg: data, aad })
+        .decrypt(&Nonce::from(*nonce), Payload { msg: data, aad })
         .map_err(|_| ProtocolError::BlobOpen)
 }
 

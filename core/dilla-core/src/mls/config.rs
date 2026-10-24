@@ -57,7 +57,13 @@ pub fn group_context_extensions(
 pub fn leaf_capabilities() -> Capabilities {
     Capabilities::new(
         None,
-        None,
+        // Preserve the three suites advertised by OpenMLS 0.9.0's default list on the wire.
+        // Dilla creates groups with CIPHERSUITE; the other two remain capability declarations.
+        Some(&[
+            CIPHERSUITE,
+            Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+            Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+        ]),
         Some(&[DILLA_BINDING, ExtensionType::LastResort]),
         None,
         Some(&[CredentialType::Basic]),
@@ -246,6 +252,8 @@ mod tests {
     fn the_create_config_pins_the_wire_and_padding_policy() {
         let cfg = create_config(&binding(GroupKind::Text), None).unwrap();
         assert_eq!(cfg.ciphersuite(), CIPHERSUITE);
+        assert_eq!(leaf_capabilities().ciphersuites().len(), 3);
+        assert_eq!(leaf_capabilities().ciphersuites()[0], CIPHERSUITE.into());
         let join = cfg.join_config();
         assert_eq!(join.padding_size(), PADDING_SIZE);
         // `MlsGroupJoinConfig` has no `use_ratchet_tree_extension()` accessor in 0.9.0 (the field

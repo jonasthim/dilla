@@ -19,25 +19,20 @@ testkit = []
 
 [dependencies]
 base64 = "0.23"
-# MLS - pinned by the spec; openmls 0.9.0 rust-version = 1.91.0.
-# `=` pins, per gap-2 section 5: 0.8.1 cannot serve this plan at all (its `js` feature pulls
-# fluvio-wasm-timer, RUSTSEC-2024-0384), and every wasm32 build here depends on 0.9.0's `js`
-# feature making `web_time` resolve. The sibling crates and `tls_codec` are pinned with it because
-# their versions are what OpenMLS's own traits are typed against: a caret bump of one of them alone
-# is a different trait surface, not a patch. The lock already resolves to these exact versions, so
-# this changes no resolution.
+# MLS - the workspace patch pins all OpenMLS crates to one upstream revision with the
+# RustCrypto migration. Keep the sibling crate versions exact to match their trait surface.
+# The wasm targets still require OpenMLS's `js` feature for `web_time`.
 openmls                  = { version = "=0.9.0", default-features = false }
 openmls_traits           = "=0.6.0"
 openmls_rust_crypto      = "=0.6.0"
 openmls_basic_credential = "=0.6.0"
 tls_codec                = { version = "=0.5.0", features = ["derive", "serde", "mls"] }
-# primitives - the majors openmls_rust_crypto 0.6.0 already requires (gap-10 section 1);
-# taking "latest" would add a SECOND major of ed25519-dalek, curve25519-dalek and aes-gcm.
-ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+# Match the patched upstream OpenMLS cryptography generation.
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
 sha2          = "0.11"
 hmac          = "0.13"
 hkdf          = "0.13"
-aes-gcm       = { version = "0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
+aes-gcm       = { version = "0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # serde codec for the OpenMLS StorageProvider blobs ONLY (deviation A1-5, gap-6 section 4).
 # Never used to decode a normative dilla format: those go through crate::cbor.
 ciborium   = { version = "0.2.2", default-features = false, features = ["std"] }

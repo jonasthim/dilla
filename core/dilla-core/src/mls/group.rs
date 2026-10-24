@@ -1094,13 +1094,13 @@ impl DillaGroup {
         use openmls_traits::OpenMlsProvider as _;
         #[cfg(feature = "test-hooks")]
         SFRAME_BASE_KEY_CALLS.with(|n| n.set(n.get() + 1));
-        let raw = zeroize::Zeroizing::new(
-            self.group
-                .export_secret(provider.crypto(), crate::sframe::LABEL_BASE_KEY, &[], NK)
-                .map_err(openmls)?,
-        );
+        // OpenMLS now returns an ExportedSecret whose inner bytes are zeroized on drop.
+        let raw = self
+            .group
+            .export_secret(provider.crypto(), crate::sframe::LABEL_BASE_KEY, &[], NK)
+            .map_err(openmls)?;
         let mut out = [0u8; NK];
-        out.copy_from_slice(&raw);
+        out.copy_from_slice(raw.as_ref());
         Ok(out)
     }
 
@@ -1300,20 +1300,11 @@ mod media_tests {
             .collect()
     }
 
-    /// Review M1, a source pin: the exporter's output (`export_secret` returns a plain `Vec`) is
-    /// held in `Zeroizing`, so no copy of an epoch's `base_key` is dropped un-zeroed.
+    /// The upstream export result owns and zeroizes the secret after we copy the base key.
     #[test]
     fn the_base_key_exporter_output_is_zeroized() {
-        let src = include_str!("group.rs");
-        let start = src
-            .find("pub fn sframe_base_key(")
-            .expect("sframe_base_key");
-        let body = &src[start..];
-        let body = &body[..body.find("\n    }\n").expect("end of sframe_base_key")];
-        assert!(
-            body.contains("let raw = zeroize::Zeroizing::new("),
-            "the export_secret output is Zeroizing:\n{body}"
-        );
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<openmls::group::ExportedSecret<openmls::group::GroupExport>>();
     }
 
     #[test]

@@ -332,7 +332,7 @@ fn open_sealed(key: &[u8; 32], aad: &[u8], stored: &[u8]) -> Vec<u8> {
     assert_eq!(v, 1);
     Aes256Gcm::new_from_slice(key)
         .expect("key")
-        .decrypt(Nonce::from_slice(&nonce), Payload { msg: &ct, aad })
+        .decrypt(&Nonce::from(nonce), Payload { msg: &ct, aad })
         .expect("the stored object opens")
 }
 
@@ -1054,7 +1054,7 @@ fn signup_begin_seals_the_root_object_under_the_returned_recovery_key() {
         Aes256Gcm::new_from_slice(&k_header(&rk))
             .expect("key")
             .decrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: &ct,
                     aad: b"dilla state v1"
@@ -1067,7 +1067,7 @@ fn signup_begin_seals_the_root_object_under_the_returned_recovery_key() {
         Aes256Gcm::new_from_slice(&k_backup(&rk))
             .expect("key")
             .decrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: &ct,
                     aad: b"dilla root v1"
@@ -1974,7 +1974,7 @@ fn seal_with(key: &[u8; 32], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
     let ct = Aes256Gcm::new_from_slice(key)
         .expect("key")
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad,

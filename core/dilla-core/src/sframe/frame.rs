@@ -5,7 +5,7 @@
 //! seeded RBSP escape) that the sender, the key ring, the vectors runner and the wasm surface
 //! share.
 
-use aes_gcm::aead::{AeadInPlace, KeyInit};
+use aes_gcm::aead::{AeadInOut, KeyInit};
 use aes_gcm::{Aes128Gcm, Nonce, Tag};
 
 use super::h264::{canonicalize_h264, rbsp_escape, rbsp_unescape, trailing_zeros};
@@ -38,7 +38,7 @@ pub fn encrypt_frame(
     let cipher = Aes128Gcm::new((&key.key).into());
     let n = nonce(&key.salt, ctr);
     let tag = cipher
-        .encrypt_in_place_detached(Nonce::from_slice(&n), &aad, &mut out[body..])
+        .encrypt_inout_detached(&Nonce::from(n), &aad, (&mut out[body..]).into())
         .map_err(|_| SframeError::AuthFailed)?;
     out.extend_from_slice(&tag);
     Ok(out)
@@ -81,13 +81,9 @@ pub fn open_frame(
     out.extend_from_slice(ciphertext);
     let cipher = Aes128Gcm::new((&key.key).into());
     let n = nonce(&key.salt, ctr);
+    let tag = Tag::try_from(tag).map_err(|_| SframeError::AuthFailed)?;
     cipher
-        .decrypt_in_place_detached(
-            Nonce::from_slice(&n),
-            &aad,
-            &mut out[prefix_len..],
-            Tag::from_slice(tag),
-        )
+        .decrypt_inout_detached(&Nonce::from(n), &aad, (&mut out[prefix_len..]).into(), &tag)
         .map_err(|_| SframeError::AuthFailed)?;
     Ok((kid, ctr, out))
 }

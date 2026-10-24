@@ -30,82 +30,19 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [[bans.skip]]
-crate = "sha2"
-reason = "ed25519-dalek 2.2 needs sha2 0.10; openmls_rust_crypto needs 0.11. Collapses when openmls_rust_crypto adopts ed25519-dalek 3."
-
-[[bans.skip]]
-crate = "digest"
-reason = "sha2 0.10 pulls digest 0.10 while sha2 0.11 pulls digest 0.11. Collapses with the sha2 entry."
-
-[[bans.skip]]
-crate = "crypto-common"
-reason = "digest 0.10 and digest 0.11 each pin their own crypto-common major. Collapses with the digest entry."
-
-[[bans.skip]]
-crate = "signature"
-reason = "ed25519-dalek 2.2 pins signature 2.x while the 0.11 digest stack pins signature 3.x. Collapses when ed25519-dalek 3 ships."
-
-[[bans.skip]]
 crate = "rand_core"
-reason = "openmls_rust_crypto 0.6.0 carries both rand_core 0.6.4 (ed25519-dalek 2.2) and 0.10.1 (the 0.11 digest stack). Collapses when ed25519-dalek 3 ships."
+reason = "rand_chacha 0.3 (deterministic testkit fixtures) needs 0.6, while the upstream OpenMLS crypto provider and rand 0.10 use 0.10."
 
 [[bans.skip]]
 crate = "rand_chacha"
-reason = "rand_chacha follows rand_core's two majors. Collapses with the rand_core entry."
+reason = "testkit uses 0.3 for deterministic fixtures; upstream OpenMLS and rand 0.10 use 0.10. Collapses when the fixtures can migrate without changing vectors."
 
 [[bans.skip]]
 crate = "getrandom"
-reason = "getrandom 0.2.17 serves rand_core 0.6 and 0.4.3 serves rand_core 0.10; both are required while openmls_rust_crypto 0.6.0 is pinned. Not fixable by dilla (gap-10 section 2)."
+reason = "getrandom 0.2 serves testkit's rand_core 0.6 fixtures, while 0.4 serves rand_core 0.10. Collapses with the fixture RNG migration."
 
-# gap-10 section 2 enumerated the seven duplicates above from crates.io requirements alone, with no
-# lockfile ("no cargo tree was run"). The resolved graph - all-features, four targets, dev-deps
-# included - carries eighteen more. Every one is forced by openmls_rust_crypto 0.6.0's own tree,
-# by rusqlite 0.40.2's, or by a proc-macro stack dilla never calls; none is dilla's to collapse.
-# Each entry names the upstream condition that removes it.
-
-[[bans.skip]]
-crate = "block-buffer"
-reason = "0.10.4 belongs to the digest 0.10 stack, 0.12.1 to digest 0.11. Collapses with the digest entry."
-
-[[bans.skip]]
-crate = "cpufeatures"
-reason = "0.2.17 via aes/chacha20/curve25519-dalek 4/sha2 0.10; 0.3.1 via curve25519-dalek 5 (x-wing) and keccak. Collapses when the old-generation RustCrypto stack goes."
-
-[[bans.skip]]
-crate = "curve25519-dalek"
-reason = "4.1.3 via ed25519-dalek 2.2 and x25519-dalek 2.0.1; 5.0.0 via x25519-dalek 3.0.0 (x-wing, in hpke-rs-rust-crypto 0.7.0). Collapses when ed25519-dalek 3 ships and hpke-rs settles on one x25519-dalek."
-
-[[bans.skip]]
-crate = "x25519-dalek"
-reason = "hpke-rs-rust-crypto 0.7.0 depends on x25519-dalek 2.0.1 directly and on 3.0.0 through x-wing 0.1.0. Collapses when hpke-rs-rust-crypto unifies them."
-
-[[bans.skip]]
-crate = "hmac"
-reason = "0.12.1 via hkdf 0.12 and rfc6979 (ecdsa 0.16, i.e. p256/p384); 0.13.0 is dilla-core's and openmls_rust_crypto's. Collapses when the elliptic-curve 0.13 line adopts digest 0.11."
-
-[[bans.skip]]
-crate = "hkdf"
-reason = "0.12.4 via elliptic-curve 0.13.8 (p256/p384/k256); 0.13.0 is dilla-core's and openmls_rust_crypto's. Collapses with the hmac entry."
-
-[[bans.skip]]
-crate = "sha3"
-reason = "ml-kem 0.3.2 pins sha3 0.11 while x-wing 0.1.0 pins 0.12; both are pulled by hpke-rs-rust-crypto 0.7.0. Collapses when x-wing and ml-kem agree."
-
-[[bans.skip]]
-crate = "const-oid"
-reason = "0.9.6 via der 0.7 (elliptic-curve 0.13 stack); 0.10.2 via der 0.8 (pkcs8 0.11, ml-dsa 0.1.1). Collapses when p256/p384/k256 move to the der 0.8 generation."
-
-[[bans.skip]]
-crate = "der"
-reason = "0.7.10 under pkcs8 0.10.2 (elliptic-curve 0.13); 0.8.2 under pkcs8 0.11.0 (ml-dsa 0.1.1). Collapses with the const-oid entry."
-
-[[bans.skip]]
-crate = "pkcs8"
-reason = "0.10.2 via sec1/elliptic-curve 0.13.8; 0.11.0 via ml-dsa 0.1.1 (openmls_rust_crypto 0.6.0). Collapses with the const-oid entry."
-
-[[bans.skip]]
-crate = "spki"
-reason = "0.7.3 under pkcs8 0.10.2, 0.8.0 under pkcs8 0.11.0. Collapses with the pkcs8 entry."
+# The remaining duplicates are confined to fixture RNGs, the SQLite WASM backend,
+# and proc macros. Keep these exceptions narrow so crypto duplicates fail the check.
 
 [[bans.skip]]
 crate = "hashbrown"
@@ -135,16 +72,7 @@ reason = "follows macroific's two majors. Collapses with the macroific entry."
 crate = "sealed"
 reason = "0.6.0 under macroific_core 2.0.0 and 0.7.0 under macroific_core 3.1.0. Collapses with the macroific entry."
 
-# chacha20 is already in the committed Cargo.lock twice (0.9.1 and 0.10.2) before the testkit's
-# remote-DS client arrives, but 0.10.2 sat behind rand 0.10's `std_rng` feature, which nothing
-# enabled; tungstenite 0.30.0 takes rand 0.10 with its default features and switches it on. The
-# dependents below are `cargo tree -i chacha20@<v>` verbatim, not written from memory. Both copies
-# are MIT OR Apache-2.0 and neither is in the dilla crypto path: 0.9.1 is openmls_rust_crypto's
-# AEAD, 0.10.2 is an RNG.
-[[bans.skip]]
-crate = "chacha20"
-reason = "0.9.1 via chacha20poly1305 0.10.1 (hpke-rs-rust-crypto 0.7.0, openmls_rust_crypto 0.6.0); 0.10.2 via rand 0.10.3 (hpke-rs-crypto 0.7.0, hpke-rs-rust-crypto 0.7.0, libcrux-traits 0.0.8, tungstenite 0.30.0). Collapses when chacha20poly1305 moves to chacha20 0.10."
-
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/openmls/openmls"]

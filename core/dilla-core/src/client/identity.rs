@@ -382,7 +382,7 @@ pub(super) fn seal(
         .map_err(|_| ClientError::new(E_CORE_MLS, "seal: aead failure"))?;
     let ciphertext = aead
         .encrypt(
-            Nonce::from_slice(&*nonce),
+            &Nonce::from(*nonce),
             Payload {
                 msg: plaintext,
                 aad,
@@ -409,7 +409,7 @@ fn open_sealed(key: &[u8; 32], aad: &[u8], stored: &[u8]) -> Result<Zeroizing<Ve
     })
     .map_err(|_| Unsealed::Malformed)?;
     let aead = Aes256Gcm::new_from_slice(key).map_err(|_| Unsealed::Refused)?;
-    aead.decrypt(Nonce::from_slice(&nonce), Payload { msg: &ct, aad })
+    aead.decrypt(&Nonce::from(nonce), Payload { msg: &ct, aad })
         .map(Zeroizing::new)
         .map_err(|_| Unsealed::Refused)
 }
