@@ -7,13 +7,14 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/api"
 	dillaauth "github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
-	"github.com/livekit/protocol/auth"
-	"github.com/livekit/protocol/livekit"
 )
 
 func readyCallBot(t *testing.T, e *env, ch, group id.ID, ownerToken string) (id.ID, id.ID, string) {
@@ -139,7 +140,7 @@ func TestManagedBotCallDemotionNeverEnablesSubscribe(t *testing.T) {
 			}
 			room := stub.lastMint().Room
 			stub.setPresent(room, &livekit.ParticipantInfo{Identity: dev.String()})
-			var repo store.Repository = e.Repo
+			repo := e.Repo
 			switch failure {
 			case "device":
 				repo = failingDeviceRepo{Repository: e.Repo, dev: dev}
