@@ -103,6 +103,11 @@ func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor In
 	if err != nil || !member {
 		return false, err
 	}
+	// Community managers do not need a separate DJ-role grant, but still need
+	// to be in this current call and cannot bypass the Bot's voice permissions.
+	if resolved.Owner || resolved.Administrator {
+		return a.botCanSpeak(ctx, call.ChannelID)
+	}
 	for _, approved := range roles {
 		if _, held := roleSet[approved.RoleID]; held {
 			return a.botCanSpeak(ctx, call.ChannelID)

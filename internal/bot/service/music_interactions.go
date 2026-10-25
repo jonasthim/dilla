@@ -25,8 +25,9 @@ type MusicCallBinding struct {
 }
 
 // MusicInteractionAuthority must resolve these checks from current server
-// state. CanDJ must require both the configured DJ role and actor membership
-// in the specified voice call. CanEmergencyStop is reserved for owner/admin.
+// state. CanDJ requires current owner/admin authority or a configured DJ role,
+// plus actor membership in the specified voice call and Bot voice permissions.
+// CanEmergencyStop is reserved for owner/admin and does not require call presence.
 type MusicInteractionAuthority interface {
 	CurrentCall(context.Context, id.ID) (MusicCallBinding, error)
 	CanUse(context.Context, InteractionActor, MusicCallBinding) (bool, error)

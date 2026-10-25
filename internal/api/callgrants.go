@@ -12,6 +12,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
@@ -311,6 +312,12 @@ func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.Chan
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev) && !dropSlot && !penalised
 	keepsSlot := (bits.Has(PermVideo) || bits.Has(PermScreenShare)) && !dropSlot && !penalised
 	perm := sfu.PublishGrant(bits.Has(PermSpeak) && !penalised, bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+	perm, err = restrictBotCallGrant(ctx, d.repo, dev, perm)
+	if err != nil {
+		return false, pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
+	}
+	keepsSlot = keepsSlot && (slices.Contains(perm.CanPublishSources, livekit.TrackSource_CAMERA) ||
+		slices.Contains(perm.CanPublishSources, livekit.TrackSource_SCREEN_SHARE))
 	pctx, cancel := sfuCtx(ctx)
 	err = d.tokens.UpdatePermission(pctx, row.LivekitRoom, identity, perm)
 	cancel()
@@ -389,13 +396,18 @@ func (h *Calls) cutIdentity(ctx context.Context, d grantDeps, row store.VoiceSes
 // pushNone pushes dev the no-publish grant: the fallback of a cut or a lookup that failed. Its own
 // failure is reported; the caller records the repair either way.
 func (h *Calls) pushNone(ctx context.Context, d grantDeps, row store.VoiceSessionRow, dev id.ID) error {
+	perm, lookupErr := restrictBotCallGrant(ctx, d.repo, dev, sfu.PublishGrant(false, false, false))
+	if lookupErr != nil {
+		// An unknown account may be a bot. Never restore receive rights during a failure.
+		perm = &livekit.ParticipantPermission{}
+	}
 	pctx, cancel := sfuCtx(ctx)
-	err := d.tokens.UpdatePermission(pctx, row.LivekitRoom, dev.String(), sfu.PublishGrant(false, false, false))
+	err := d.tokens.UpdatePermission(pctx, row.LivekitRoom, dev.String(), perm)
 	cancel()
 	if err != nil && !errors.Is(err, sfu.ErrNoParticipant) {
-		return fmt.Errorf("fail-closed demotion of %s: %w", dev, err)
+		return errors.Join(lookupErr, fmt.Errorf("fail-closed demotion of %s: %w", dev, err))
 	}
-	return nil
+	return lookupErr
 }
 
 // drainPending retries at most limit pending repairs of row's call — only identity only's when only
@@ -831,4 +843,24 @@ func (h *Calls) StartRetries(every time.Duration) (stop func()) {
 			<-done
 		})
 	}
+}
+
+// restrictBotCallGrant uses authoritative account identity for every grant seam. Managed
+// bots can send microphone audio when permitted, but can never receive tracks or send video.
+// Callers must propagate lookup failures; demotion uses a fully closed fallback instead.
+func restrictBotCallGrant(ctx context.Context, repo store.Repository, dev id.ID, perm *livekit.ParticipantPermission) (*livekit.ParticipantPermission, error) {
+	device, err := repo.GetDevice(ctx, dev)
+	if err != nil {
+		return nil, err
+	}
+	bot, err := botaccess.IsBotUser(ctx, repo, device.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if !bot {
+		return perm, nil
+	}
+	grant := sfu.PublishGrant(perm.CanPublish && slices.Contains(perm.CanPublishSources, livekit.TrackSource_MICROPHONE), false, false)
+	grant.CanSubscribe = false
+	return grant, nil
 }

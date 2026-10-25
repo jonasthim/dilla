@@ -157,6 +157,16 @@ was redeemed but the state transaction then conflicted or failed, the row is
 unchanged and the same request can retry with that receipt. Reusing a grant for a
 different request tuple is refused.
 
+A successful settings write activates the evaluator, fresh action dependencies,
+revision and replay boundary before its acknowledgement. Later reconciliation
+of that revision preserves the activated evaluator and rolling observations;
+an exact successful retry also preserves them. Dependency or replay-source
+readiness failures refuse the write. Receipt timestamps have second resolution,
+so events from the activation's own receipt second remain conservatively
+replay-only; the first strictly later receipt second is eligible for live
+evaluation. Pre-activation history arriving through delayed source sync never
+becomes a new punitive action.
+
 The config service does not treat stored bot capability bits as actor authority.
 At event enforcement time, the moderation action endpoint rechecks the active
 installation's approved warning/timeout or removal capability and the actor's
@@ -858,6 +868,22 @@ role policy routes stay unavailable while the installation is disabled or
 re-enrolling. Explicitly enabling that same installation and returning it to
 ready makes the saved approvals available again. Permanent removal tombstones
 the old installation; a later installation does not inherit its policy.
+
+Music playback controls require current community owner/administrator authority
+or an approved DJ role, plus membership in the target's current voice call. The
+Bot must retain connect and speak permissions and an active, ready Music-enabled
+installation. These checks run again before a queue mutation is committed,
+including after provider lookup. Owners and administrators may additionally
+issue an emergency stop without being in the call. Instance-admin status alone
+does not grant community music control. Text-chat commands require a joined
+voice channel to select their target, including for `/stop`.
+
+Managed Bot voice access is publication-only: tokens and current SFU permission
+updates prohibit media subscription and permit only microphone-source audio
+publication when Speak is granted. Camera, screen, data and receiving other
+participants' tracks are unavailable. Admission checks reject older tokens
+that grant subscription; grant reconciliation and fallback demotion cannot
+restore that right. The music publisher also disables automatic subscriptions.
 
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |

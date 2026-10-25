@@ -300,7 +300,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 
 *Participant states:*
 - `voice.state.speaking='speaking'`, `voice.state.muted='muted'`, `voice.state.deafened='deafened'`
-- `voice.bot.canHear='can hear'` (shown with the bot tag on a bot's sub-row in the voice list, so a bot that can hear is visible before joining; added 2026-10-13, task-7 review I5)
+- `voice.bot.playbackOnly='playback only'` (shown with the bot tag on a managed bot's sub-row in the voice list; the server grants audio publication without media subscription)
 - `voice.state.notHeard='not heard yet'`, `voice.state.unverified='unverified stream'`, `voice.state.connecting='connecting'`
 - `voice.state.video='camera on'`, `voice.state.screen='sharing screen'`
 - `voice.state.noSound='no sound'` (the glyph-only state of a remote screen tile whose share carries no sound; added 2026-10-21, #37)

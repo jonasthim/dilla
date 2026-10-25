@@ -38,13 +38,17 @@ type ModerationActorAuthority interface {
 // AutoModerationRuntime evaluates authenticated, decrypted native group
 // events. Callers must pass events obtained from native.ReadGroupEvents.
 type AutoModerationRuntime struct {
-	mu        sync.RWMutex
-	configMu  sync.RWMutex
-	engine    *moderation.Engine
-	authority ModerationActorAuthority
-	sink      ModerationActionSink
-	now       func() time.Time
-	enabled   bool
+	mu                    sync.RWMutex
+	configMu              sync.RWMutex
+	engine                *moderation.Engine
+	authority             ModerationActorAuthority
+	sink                  ModerationActionSink
+	now                   func() time.Time
+	enabled               bool
+	revision              uint64
+	revisionKnown         bool
+	replayThrough         uint64
+	replayReceivedThrough uint64
 }
 
 // AutoModerationStageError exposes only a stable processing stage in its
@@ -81,25 +85,61 @@ func (r *AutoModerationRuntime) UpdateActionDependencies(authority ModerationAct
 	r.mu.Unlock()
 }
 
-// PersistConfig fences event processing while the encrypted CAS and evaluator
-// replacement complete. If persistence fails, the active evaluator is kept.
-// When this method returns successfully, no event can still finish with the
-// previous configuration.
-func (r *AutoModerationRuntime) PersistConfig(cfg moderation.Config, persist func() error) error {
-	if r == nil || persist == nil {
-		return errors.New("missing automatic moderation config update dependency")
+// AutoModerationActivation couples a policy revision with its ready action handles
+// and the conservative delivery/receipt boundary captured when it is activated.
+type AutoModerationActivation struct {
+	Config                               moderation.Config
+	Revision                             uint64
+	ReplayThrough, ReplayReceivedThrough uint64
+	Authority                            ModerationActorAuthority
+	Sink                                 ModerationActionSink
+}
+
+func (r *AutoModerationRuntime) PersistConfig(ctx context.Context, cfg moderation.Config, expectedRevision uint64, persist func() error) error {
+	_, err := r.persistConfig(ctx, AutoModerationActivation{Config: cfg, Revision: expectedRevision + 1}, persist, false)
+	return err
+}
+
+// ActivateConfig publishes dependencies, policy and replay boundaries under the
+// same fence. An exact persisted retry checks its receipt without replacing state.
+func (r *AutoModerationRuntime) ActivateConfig(ctx context.Context, activation AutoModerationActivation, persist func() error) (uint64, error) {
+	if activation.Config.Enabled && (activation.Authority == nil || activation.Sink == nil) {
+		return 0, errors.New("missing automatic moderation activation dependency")
+	}
+	return r.persistConfig(ctx, activation, persist, true)
+}
+
+func (r *AutoModerationRuntime) persistConfig(ctx context.Context, activation AutoModerationActivation, persist func() error, dependencies bool) (uint64, error) {
+	if r == nil || ctx == nil || persist == nil {
+		return 0, errors.New("missing automatic moderation config update dependency")
 	}
 	r.configMu.Lock()
 	defer r.configMu.Unlock()
 	if r.engine == nil {
-		return errors.New("missing automatic moderation runtime")
+		return 0, errors.New("missing automatic moderation runtime")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	if err := persist(); err != nil {
-		return err
+		return 0, err
 	}
-	r.engine = moderation.New(cfg)
-	r.enabled = cfg.Enabled
-	return nil
+	if r.revisionKnown && activation.Revision <= r.revision {
+		return r.replayReceivedThrough, nil
+	}
+	r.engine = moderation.New(activation.Config)
+	r.enabled = activation.Config.Enabled
+	r.revision, r.revisionKnown = activation.Revision, true
+	if dependencies {
+		// Include receipts received while the successful CAS was in flight. This
+		// cannot fail after commit and does not perform another source read.
+		activation.ReplayReceivedThrough = max(activation.ReplayReceivedThrough, uint64(r.now().UnixMilli()))
+		r.mu.Lock()
+		r.authority, r.sink = activation.Authority, activation.Sink
+		r.mu.Unlock()
+		r.replayThrough, r.replayReceivedThrough = activation.ReplayThrough, activation.ReplayReceivedThrough
+	}
+	return r.replayReceivedThrough, nil
 }
 
 // Handle evaluates one decrypted message. replay must be derived from the
@@ -115,6 +155,12 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	}
 	r.configMu.RLock()
 	defer r.configMu.RUnlock()
+	// These boundaries are read under the policy fence too: a handler that took
+	// a registry snapshot before a save must still use the acknowledged policy.
+	if event.DeliveryID <= r.replayThrough || event.ReceivedAt <= math.MaxInt64/1000 &&
+		event.ReceivedAt*1000 <= r.replayReceivedThrough {
+		replay = true
+	}
 	engine, enabled := r.engine, r.enabled
 	if engine == nil {
 		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation runtime")
