@@ -92,8 +92,8 @@ function Probe() {
   return (
     <>
       <output>{JSON.stringify(route)}</output>
-      <button type="button" onClick={() => go({ name: 'channel', communityId: C, channelId: null })}>push</button>
-      <button type="button" onClick={() => go({ name: 'welcome', invite: 'X', signin: null }, true)}>replace</button>
+      <button type="button" onClick={() => { void go({ name: 'channel', communityId: C, channelId: null }); }}>push</button>
+      <button type="button" onClick={() => { void go({ name: 'welcome', invite: 'X', signin: null }, true); }}>replace</button>
     </>
   );
 }
@@ -113,20 +113,18 @@ describe('useRoute', () => {
     await user.click(screen.getByRole('button', { name: 'replace' }));
     expect(window.location.pathname + window.location.search).toBe('/welcome?invite=X');
     expect(window.history.length).toBe(before + 1);
-    act(() => {
-      window.history.pushState(null, '', '/');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    });
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
     expect(screen.getByRole('status')).toHaveTextContent('{"name":"root"}');
   });
 
   it('publishes a replace when only history state changes', async () => {
     function StateProbe() {
       const [route, go] = useRoute();
-      return <><output>{JSON.stringify(route)}</output><button type="button" onClick={() => go({ name: 'settings', section: 'privacy', from: '/you', compare: 'ab'.repeat(16) }, true)}>compare</button></>;
+      return <><output>{JSON.stringify(route)}</output><button type="button" onClick={() => { void go({ name: 'settings', section: 'privacy', from: '/you', compare: 'ab'.repeat(16) }, true); }}>compare</button></>;
     }
     const user = userEvent.setup();
-    window.history.replaceState({ settingsFrom: '/you' }, '', '/settings/privacy');
+    replaceHistoryState({ settingsFrom: '/you' }, '', '/settings/privacy');
     render(<StateProbe />);
     await user.click(screen.getByRole('button', { name: 'compare' }));
     expect(window.location.pathname + window.location.search).toBe('/settings/privacy');
@@ -141,7 +139,7 @@ describe('guarded browser traversal', () => {
   }
 
   it('does not leave a pending traversal for an unindexed raw pop event', async () => {
-    const dispose = setNavigationGuard(async () => true);
+    const dispose = setNavigationGuard(() => Promise.resolve(true));
     act(() => { window.dispatchEvent(new PopStateEvent('popstate', { state: null })); });
     const action = vi.fn();
     await expect(requestNavigation(action)).resolves.toBe(true);
@@ -152,10 +150,10 @@ describe('guarded browser traversal', () => {
   it('restores the visible entry before confirmation and replays back after discard', async () => {
     replaceHistoryState(null, '', '/you');
     const originPath = '/you';
-    const originState = window.history.state;
+    const originState: unknown = window.history.state as unknown;
     pushHistoryState(null, '', '/activity');
     const targetPath = '/activity';
-    const targetState = window.history.state;
+    const targetState: unknown = window.history.state as unknown;
     const go = vi.spyOn(window.history, 'go').mockImplementation(delta => {
       const restore = (delta ?? 0) > 0;
       window.history.replaceState(restore ? targetState : originState, '', restore ? targetPath : originPath);
@@ -184,17 +182,17 @@ describe('guarded browser traversal', () => {
   it('keeps the current entry after confirmation is declined', async () => {
     replaceHistoryState(null, '', '/you');
     const originPath = '/you';
-    const originState = window.history.state;
+    const originState: unknown = window.history.state as unknown;
     pushHistoryState(null, '', '/activity');
     const targetPath = '/activity';
-    const targetState = window.history.state;
+    const targetState: unknown = window.history.state as unknown;
     const committed = vi.fn();
     const off = subscribeCommittedTraversal(committed);
-    const go = vi.spyOn(window.history, 'go').mockImplementation(delta => {
+    const go = vi.spyOn(window.history, 'go').mockImplementation(() => {
       window.history.replaceState(targetState, '', targetPath);
       window.dispatchEvent(new PopStateEvent('popstate', { state: targetState }));
     });
-    const dispose = setNavigationGuard(async () => false);
+    const dispose = setNavigationGuard(() => Promise.resolve(false));
     render(<CurrentRoute />);
     act(() => {
       window.history.replaceState(originState, '', originPath);
@@ -243,8 +241,8 @@ function SettingsProbe() {
   return (
     <>
       <output>{JSON.stringify(route)}</output>
-      <button type="button" onClick={() => go({ name: 'settings', section: 'devices', from: null })}>open</button>
-      <button type="button" onClick={() => go({ name: 'settings', section: 'appearance', from: 'ignored' }, true)}>section</button>
+      <button type="button" onClick={() => { void go({ name: 'settings', section: 'devices', from: null }); }}>open</button>
+      <button type="button" onClick={() => { void go({ name: 'settings', section: 'appearance', from: 'ignored' }, true); }}>section</button>
     </>
   );
 }
@@ -252,7 +250,7 @@ function SettingsProbe() {
 describe('the settings route', () => {
   it('remembers where it was opened from in one history entry', async () => {
     const user = userEvent.setup();
-    window.history.replaceState(null, '', `/c/${C}/${CH}`);
+    replaceHistoryState(null, '', `/c/${C}/${CH}`);
     render(<SettingsProbe />);
     await user.click(screen.getByRole('button', { name: 'open' }));
     const afterOpen = window.history.length;
@@ -268,10 +266,10 @@ describe('the settings route', () => {
   it('keeps the current non-settings origin when opening server settings', async () => {
     function ServerProbe() {
       const [route, go] = useRoute();
-      return <><output>{JSON.stringify(route)}</output><button type="button" onClick={() => go({ name: 'serverSettings', communityId: C, section: 'roles', from: null })}>server settings</button></>;
+      return <><output>{JSON.stringify(route)}</output><button type="button" onClick={() => { void go({ name: 'serverSettings', communityId: C, section: 'roles', from: null }); }}>server settings</button></>;
     }
     const user = userEvent.setup();
-    window.history.replaceState(null, '', `/c/${C}/${CH}`);
+    replaceHistoryState(null, '', `/c/${C}/${CH}`);
     render(<ServerProbe />);
     await user.click(screen.getByRole('button', { name: 'server settings' }));
     expect(window.location.pathname).toBe(`/c/${C}/settings/roles`);
@@ -323,9 +321,9 @@ function PhoneProbe() {
   return (
     <>
       <output>{JSON.stringify(route)}</output>
-      <button type="button" onClick={() => go({ name: 'channel', communityId: C, channelId: CH }, false, { phoneBack: true })}>push back</button>
-      <button type="button" onClick={() => go({ name: 'settings', section: 'devices', from: null }, false, { phoneBack: true })}>open settings</button>
-      <button type="button" onClick={() => go({ name: 'you' })}>plain</button>
+      <button type="button" onClick={() => { void go({ name: 'channel', communityId: C, channelId: CH }, false, { phoneBack: true }); }}>push back</button>
+      <button type="button" onClick={() => { void go({ name: 'settings', section: 'devices', from: null }, false, { phoneBack: true }); }}>open settings</button>
+      <button type="button" onClick={() => { void go({ name: 'you' }); }}>plain</button>
     </>
   );
 }
@@ -333,18 +331,18 @@ function PhoneProbe() {
 describe('navigate with phoneBack', () => {
   it('writes phoneBack into the pushed state, and only when asked', async () => {
     const user = userEvent.setup();
-    window.history.replaceState(null, '', '/you');
+    replaceHistoryState(null, '', '/you');
     render(<PhoneProbe />);
     await user.click(screen.getByRole('button', { name: 'push back' }));
     expect(window.history.state).toMatchObject({ [PHONE_BACK]: true, phoneFrom: '/you' });
-    window.history.replaceState(null, '', '/activity');
+    replaceHistoryState(null, '', '/activity');
     await user.click(screen.getByRole('button', { name: 'plain' }));
     expect(window.history.state).not.toHaveProperty(PHONE_BACK);
   });
 
   it('keeps settingsFrom beside phoneBack on a settings route', async () => {
     const user = userEvent.setup();
-    window.history.replaceState(null, '', '/you');
+    replaceHistoryState(null, '', '/you');
     render(<PhoneProbe />);
     await user.click(screen.getByRole('button', { name: 'open settings' }));
     expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: '/you', [PHONE_BACK]: true, phoneFrom: '/you' });
@@ -353,7 +351,7 @@ describe('navigate with phoneBack', () => {
 
 describe('goBack', () => {
   it('goes back in history when the entry was pushed by the app', () => {
-    window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+    replaceHistoryState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     const navigate = vi.fn();
     goBack({ name: 'channel', communityId: C, channelId: null }, navigate);
@@ -371,7 +369,7 @@ describe('goBack', () => {
 
     const pushPhoneRoute = () => {
       replaceHistoryState(null, '', '/dm');
-      const expectedState = window.history.state;
+      const expectedState: unknown = window.history.state as unknown;
       pushHistoryState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
       return expectedState;
     };
@@ -400,7 +398,7 @@ describe('goBack', () => {
       const back = backTo(routePath(expected), state);
       const navigate = vi.fn();
       goBack({ name: 'dms' }, navigate, expected);
-      window.history.replaceState(null, '', '/dm');
+      replaceHistoryState(null, '', '/dm');
       window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
       expect(navigate).not.toHaveBeenCalled();
       back.mockRestore();
@@ -417,7 +415,7 @@ describe('goBack', () => {
       replaceHistoryState(null, '', '/dm');
       pushHistoryState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
       const navigate = vi.fn();
-      const dispose = setNavigationGuard(async () => false);
+      const dispose = setNavigationGuard(() => Promise.resolve(false));
       const off = goBack({ name: 'dms' }, navigate, expected);
       await waitFor(() => expect(window.location.pathname).toBe(`/c/${C}/${CH}`));
       expect(navigate).not.toHaveBeenCalled();
@@ -427,7 +425,7 @@ describe('goBack', () => {
   });
 
   it('replaces with the fallback on a deep link', () => {
-    window.history.replaceState(null, '', `/c/${C}/${CH}`);
+    replaceHistoryState(null, '', `/c/${C}/${CH}`);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     const navigate = vi.fn();
     const fallback: Route = { name: 'channel', communityId: C, channelId: null };

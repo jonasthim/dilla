@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,13 +10,12 @@ function Draft({ busy = false, canSave = true, saveResult = true }: { busy?: boo
   const [dirty, setDirty] = useState(true);
   const [busyState, setBusy] = useState(busy);
   const [saved, setSaved] = useState(false);
-  const save = vi.fn(async () => {
+  const save = vi.fn(() => {
     if (saveResult) { setDirty(false); setSaved(true); }
-    return saveResult;
+    return Promise.resolve(saveResult);
   });
   const reset = vi.fn(() => { setDirty(false); setSaved(false); });
-  const state = useMemo<SettingsEditState>(() => ({ dirty, busy: busyState, canSave, save, reset }),
-    [dirty, busyState, canSave, saveResult]);
+  const state: SettingsEditState = { dirty, busy: busyState, canSave, save, reset };
   const managed = useSettingsEdit(state);
   const workspace = useSettingsWorkspace();
   return <>
@@ -39,7 +38,7 @@ function InlineDraft() {
   const [saved, setSaved] = useState(-1);
   const managed = useSettingsEdit({
     dirty, busy: false, canSave: dirty,
-    save: async () => { setSaved(revision); setDirty(false); return true; },
+    save: () => { setSaved(revision); setDirty(false); return Promise.resolve(true); },
     reset: () => setDirty(false),
   });
   const workspace = useSettingsWorkspace();
@@ -55,7 +54,7 @@ function InlineDraft() {
 function NestedNavigationDraft() {
   const [, navigate] = useRoute();
   const [accepted, setAccepted] = useState(false);
-  useSettingsEdit({ dirty: true, busy: false, canSave: false, save: async () => false, reset: () => undefined });
+  useSettingsEdit({ dirty: true, busy: false, canSave: false, save: () => Promise.resolve(false), reset: () => undefined });
   const workspace = useSettingsWorkspace();
   return <>
     <button type="button" onClick={() => { void requestNavigation(() => { void navigate({ name: 'activity' }); }).then(setAccepted); }}>approved outer navigation</button>
@@ -65,7 +64,7 @@ function NestedNavigationDraft() {
 }
 
 function PendingSection() {
-  useSettingsEdit({ dirty: true, busy: false, canSave: true, save: async () => true, reset: () => undefined });
+  useSettingsEdit({ dirty: true, busy: false, canSave: true, save: () => Promise.resolve(true), reset: () => undefined });
   return null;
 }
 
@@ -90,7 +89,7 @@ function PendingHarness() {
 
 function PopPromptDraft() {
   useRoute();
-  useSettingsEdit({ dirty: true, busy: false, canSave: false, save: async () => false, reset: () => undefined });
+  useSettingsEdit({ dirty: true, busy: false, canSave: false, save: () => Promise.resolve(false), reset: () => undefined });
   return <>{useSettingsWorkspace()?.confirmation}</>;
 }
 

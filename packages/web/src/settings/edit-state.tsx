@@ -50,7 +50,6 @@ function clearPendingOperation(owner: symbol): void {
   if (!pendingOperations.delete(owner)) return;
   for (const listener of pendingListeners) listener();
 }
-const flagsFor = (state: SettingsEditState): SettingsEditFlags => ({ dirty: state.dirty, busy: state.busy, canSave: state.canSave });
 const sameFlags = (a: SettingsEditFlags | null, b: SettingsEditFlags): boolean =>
   a !== null && a.dirty === b.dirty && a.busy === b.busy && a.canSave === b.canSave;
 
@@ -118,6 +117,7 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
       return new Promise(resolve => promptResolvers.current.push(resolve));
     };
     const dispose = setNavigationGuard(guard);
+    const resolvers = promptResolvers.current;
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       const state = editRef.current;
       if ((!state || (!state.dirty && !state.busy)) && pendingCountRef.current === 0) return;
@@ -128,7 +128,7 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
     return () => {
       dispose();
       window.removeEventListener('beforeunload', onBeforeUnload);
-      const pending = promptResolvers.current.splice(0);
+      const pending = resolvers.splice(0);
       for (const resolve of pending) resolve(false);
     };
   }, []);
@@ -148,20 +148,22 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
     setSaveError(false);
   }, []);
 
-  const dirtyOrBusy = Boolean(edit && (edit.dirty || edit.busy));
-  const footer = dirtyOrBusy ? (
-    <SettingsFooter status={saveError ? copy.saveFailed : copy.unsaved}>
-      <Button type="button" disabled={edit?.busy} onClick={reset}>{copy.reset}</Button>
-      <Button type="button" variant="accent" disabled={edit?.busy || !edit?.canSave} onClick={() => void save()}>{copy.save}</Button>
-    </SettingsFooter>
-  ) : null;
-  const confirmation = (
-    <ConfirmDialog open={prompt} tone="accent" title={copy.leaveTitle}
-      body={editRef.current?.busy || pendingCount > 0 ? copy.leaveBusyBody : copy.leaveBody} confirmLabel={copy.discard}
-      busyLabel={copy.discard} cancelLabel={copy.keepEditing} busy={false} error={null}
-      onConfirm={() => settlePrompt(true)} onClose={() => settlePrompt(false)} />
-  );
-  const workspace = useMemo<SettingsWorkspace>(() => ({ edit, footer, confirmation, requestNavigation, clear }), [edit, footer, confirmation, clear]);
+  const workspace = useMemo<SettingsWorkspace>(() => {
+    const dirtyOrBusy = Boolean(edit && (edit.dirty || edit.busy));
+    const footer = dirtyOrBusy ? (
+      <SettingsFooter status={saveError ? copy.saveFailed : copy.unsaved}>
+        <Button type="button" disabled={edit?.busy} onClick={reset}>{copy.reset}</Button>
+        <Button type="button" variant="accent" disabled={edit?.busy || !edit?.canSave} onClick={() => void save()}>{copy.save}</Button>
+      </SettingsFooter>
+    ) : null;
+    const confirmation = (
+      <ConfirmDialog open={prompt} tone="accent" title={copy.leaveTitle}
+        body={edit?.busy || pendingCount > 0 ? copy.leaveBusyBody : copy.leaveBody} confirmLabel={copy.discard}
+        busyLabel={copy.discard} cancelLabel={copy.keepEditing} busy={false} error={null}
+        onConfirm={() => settlePrompt(true)} onClose={() => settlePrompt(false)} />
+    );
+    return { edit, footer, confirmation, requestNavigation, clear };
+  }, [clear, edit, pendingCount, prompt, reset, save, saveError, settlePrompt]);
   return (
     <WorkspaceContext.Provider value={workspace}>
       <EditRegistrationContext.Provider value={registration}>{children}</EditRegistrationContext.Provider>

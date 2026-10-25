@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 import type { PhoneTab } from './layout.ts';
 import type { ServerSettingsSection, SettingsSection } from './settings/registry.ts';
@@ -329,21 +329,21 @@ function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; f
  * `expect`, replaces with `expect`. It returns a function that removes that listener (a caller that unmounts before the
  * traversal commits calls it).
  */
-export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void, expect?: Route): () => void {
+export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void | Promise<boolean>, expect?: Route): () => void {
   const state: unknown = history.state;
   if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) {
     let off = () => undefined as void;
     if (expect !== undefined) {
       const onCommittedTraversal = () => {
         off();
-        if (location.pathname + location.search !== routePath(expect)) go(expect, true);
+        if (location.pathname + location.search !== routePath(expect)) void go(expect, true);
       };
       off = subscribeCommittedTraversal(onCommittedTraversal);
     }
     history.back();
     return off;
   }
-  go(fallback, true);
+  void go(fallback, true);
   return () => undefined;
 }
 
@@ -382,10 +382,7 @@ export function readJoinError(state: unknown): UiError | null {
 }
 
 export function useRoute(): [Route, (r: Route, replace?: boolean, opts?: { phoneBack?: boolean; from?: string | null }) => Promise<boolean>] {
-  const path = useSyncExternalStore(subscribe, snapshot);
-  const route = useMemo(() => {
-    const mark = location.search;
-    return parseRoute(location.pathname, mark, window.history.state);
-  }, [path]);
+  useSyncExternalStore(subscribe, snapshot);
+  const route = parseRoute(location.pathname, location.search, window.history.state);
   return [route, navigate];
 }
