@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { COMMANDS, PERM, type Command } from '@dilla/client-core';
+import { COMMANDS, PERM, type ChannelSummary, type Command, type TimelineItem } from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import { builtinHandlers } from './builtin.ts';
 import type { CommandExecutionContext } from './command-types.ts';
+import type { CallView } from '../voice/useCall.tsx';
+import { timelineItem } from '../../test/fixtures.ts';
 
 const client = new FakeClient();
 const context: CommandExecutionContext = {
   requestId: 'attempt-1', binding: { communityId: '11'.repeat(16), channelId: '22'.repeat(16), bits: 0 },
   client, call: {} as never, isCurrent: () => true, getCurrentBinding: () => context.binding, getCall: () => context.call, navigate: () => undefined, openThread: () => undefined, openSearch: () => undefined,
-  items: [], selfId: '33'.repeat(16), encodeMessage: text => text, confirm: async () => true, openInvite: async () => true, openGif: () => undefined, openModerationLog: () => undefined,
+  items: [], selfId: '33'.repeat(16), encodeMessage: text => text, confirm: () => Promise.resolve(true), openInvite: () => Promise.resolve(true), openGif: () => undefined, openModerationLog: () => undefined,
 };
 
 describe('built-in command handlers', () => {
@@ -24,7 +26,7 @@ describe('built-in command handlers', () => {
   it('refuses an edit when the selected message is not mine and makes no worker call', async () => {
     client.calls.length = 0;
     const result = await builtinHandlers.edit!({ commandId: 'edit', args: { message: '55'.repeat(16), text: 'changed' } }, {
-      ...context, items: [{ msgId: '55'.repeat(16), seq: '7', senderUser: '66'.repeat(16), state: 'ok' } as never],
+      ...context, items: [timelineItem({ msgId: '55'.repeat(16), seq: '7', senderUser: '66'.repeat(16) })],
     });
     expect(result.status).toBe('failure');
     expect(client.calls).toEqual([]);
@@ -36,17 +38,17 @@ describe('built-in command handlers', () => {
     const message = '77'.repeat(16);
     const result = await builtinHandlers.reply!({ commandId: 'reply', args: { message, text: 'answer' } }, {
       ...context, binding: { ...context.binding, threadId: '88'.repeat(16) },
-      items: [{ msgId: message, seq: '8', state: 'ok' } as never],
+      items: [timelineItem({ msgId: message, seq: '8' })],
     });
     expect(result.status).toBe('success');
     expect(client.callsOf('send')).toEqual([{ m: 'send', channelId: context.binding.channelId, threadId: '88'.repeat(16), text: 'answer', replyTo: message }]);
   });
 
   it('returns uncertain when message publication rejects after the request was handed to core', async () => {
-    client.handler = async (command: Command) => { if (command.m === 'send') throw new Error('transport lost'); return null; };
+    client.handler = (command: Command) => command.m === 'send' ? Promise.reject(new Error('transport lost')) : Promise.resolve(null);
     const result = await builtinHandlers.me!({ commandId: 'me', args: { text: 'hello' } }, context);
     expect(result).toMatchObject({ status: 'uncertain', private: true });
-    client.handler = async () => null;
+    client.handler = () => Promise.resolve(null);
   });
 
   it('returns private registry help and rejects an unknown command name', async () => {
@@ -60,7 +62,7 @@ describe('built-in command handlers', () => {
 
   it('does not queue a second public message when an unknown attempt is repeated', async () => {
     const core = new FakeClient();
-    core.handler = async command => { if (command.m === 'send') throw new Error('lost response'); return null; };
+    core.handler = command => command.m === 'send' ? Promise.reject(new Error('lost response')) : Promise.resolve(null);
     const attempt = { ...context, client: core, requestId: `unknown-${crypto.randomUUID()}` };
     const invocation = { commandId: 'me', args: { text: 'hello' } };
     expect((await builtinHandlers.me!(invocation, attempt)).status).toBe('uncertain');
@@ -70,7 +72,7 @@ describe('built-in command handlers', () => {
 
   it('does not navigate after opening a DM when the original host is stale', async () => {
     const core = new FakeClient();
-    core.handler = async command => command.m === 'openDm' ? { channelId: 'bc'.repeat(16) } : null;
+    core.handler = command => command.m === 'openDm' ? Promise.resolve({ channelId: 'bc'.repeat(16) }) : Promise.resolve(null);
     const navigated: unknown[] = [];
     const stale = await builtinHandlers.dm!({ commandId: 'dm', args: { user: 'cd'.repeat(16) } }, {
       ...context, client: core, isCurrent: () => false, navigate: route => navigated.push(route),
@@ -83,7 +85,7 @@ describe('built-in command handlers', () => {
     const state = { muted: false, deafened: false };
     const toggleMute = vi.fn(() => { state.muted = !state.muted; });
     const toggleDeafen = vi.fn(() => { state.deafened = !state.deafened; state.muted = state.deafened; });
-    const live = { channelId: '55'.repeat(16), joining: false, session: { state }, selfMuted: false, selfDeafened: false, toggleMute, toggleDeafen } as any;
+    const live = { channelId: '55'.repeat(16), joining: false, session: { state }, selfMuted: false, selfDeafened: false, toggleMute, toggleDeafen } as unknown as CallView;
     const result = await builtinHandlers.deafen!({ commandId: 'deafen', args: {} }, { ...context, call: live, getCall: () => live });
     expect(result.status).toBe('success');
     expect(state).toEqual({ muted: true, deafened: true });
@@ -98,9 +100,9 @@ describe('built-in command handlers', () => {
     ['undeafen', true, true, true, false],
   ] as const)('%s applies the requested live mute and deafen state', async (id, muted, deafened, expectedMuted, expectedDeafened) => {
     const state = { muted, deafened };
-    const call: any = { channelId: '55'.repeat(16), selfMuted: muted, selfDeafened: deafened, joining: false,
+    const call = { channelId: '55'.repeat(16), selfMuted: muted, selfDeafened: deafened, joining: false,
       session: { state }, toggleMute: () => { state.muted = !state.muted; if (!state.muted) state.deafened = false; },
-      toggleDeafen: () => { state.deafened = !state.deafened; if (state.deafened) state.muted = true; } };
+      toggleDeafen: () => { state.deafened = !state.deafened; if (state.deafened) state.muted = true; } } as unknown as CallView;
     const result = await builtinHandlers[id]!({ commandId: id, args: {} }, { ...context, call, getCall: () => call });
     expect(result.status).toBe('success');
     expect(state).toEqual({ muted: expectedMuted, deafened: expectedDeafened });
@@ -109,32 +111,35 @@ describe('built-in command handlers', () => {
   it('waits for the actual voice session and reports media setup failure', async () => {
     const core = new FakeClient();
     const communityId = context.binding.communityId!, voiceId = 'aa'.repeat(16);
-    core.set(`channels:${communityId}`, [{ id: voiceId, communityId, kind: 1, mode: 0, name: 'voice' } as any]);
-    core.set('call', { channelId: voiceId, phase: 'in' } as any);
-    const live: any = { channelId: null, joining: false, session: null, notice: null, join: (id: string) => {
+    const channel: ChannelSummary = { id: voiceId, communityId, kind: 1, mode: 0, name: 'voice', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' };
+    core.set(`channels:${communityId}`, [channel]);
+    type MutableCall = { channelId: string | null; joining: boolean; session: { state: { muted: boolean; deafened: boolean } } | null; notice: { channelId: string; key: string } | null; join(id: string): void };
+    const asCallView = (call: MutableCall): CallView => call as unknown as CallView;
+    const live: MutableCall = { channelId: null, joining: false, session: null, notice: null, join: (id: string) => {
       live.channelId = id; live.joining = true;
       window.setTimeout(() => { live.session = { state: { muted: false, deafened: false } }; live.joining = false; }, 5);
     } };
     const result = await builtinHandlers.join!({ commandId: 'join', args: { channel: voiceId } }, {
-      ...context, client: core, call: live, getCall: () => live,
+      ...context, client: core, call: asCallView(live), getCall: () => asCallView(live),
     });
     expect(result).toMatchObject({ status: 'success', message: 'Joined voice.' });
 
     live.channelId = null; live.session = null; live.joining = false;
-    const failedLive: any = { ...live, join: (id: string) => {
+    const failedLive: MutableCall = { ...live, join: (id: string) => {
       failedLive.channelId = id; failedLive.joining = true;
       window.setTimeout(() => { failedLive.notice = { channelId: id, key: 'call.unsupported' }; failedLive.joining = false; failedLive.channelId = null; }, 5);
     } };
     const failed = await builtinHandlers.join!({ commandId: 'join', args: { channel: voiceId } }, {
-      ...context, client: core, call: failedLive, getCall: () => failedLive,
+      ...context, client: core, call: asCallView(failedLive), getCall: () => asCallView(failedLive),
     });
-    expect(failed).toMatchObject({ status: 'failure', message: expect.stringContaining('call.unsupported') });
+    expect(failed.status).toBe('failure');
+    expect(failed.message).toContain('call.unsupported');
   });
 });
 
 describe('builtin handler safety regressions', () => {
   const message = '99'.repeat(16);
-  const ownMessage = { msgId: message, seq: '9', state: 'ok', senderUser: context.selfId, body: 'hello', pinned: false } as any;
+  const ownMessage: TimelineItem = timelineItem({ msgId: message, seq: '9', senderUser: context.selfId, body: 'hello', pinned: false });
 
   it('allows pinning with Pin Messages and does not require Manage Messages', async () => {
     const core = new FakeClient();
@@ -163,20 +168,21 @@ describe('builtin handler safety regressions', () => {
 
   it('preserves unknown moderation removal as uncertain and includes its recovery proof id', async () => {
     const core = new FakeClient();
-    core.handler = async command => command.m === 'moderateRemoveMessage' || command.m === 'resolveManualRemoval'
-      ? { removal: 'unknown', proofRequestId: 'aa'.repeat(16), evidenceRequestId: 'bb'.repeat(16), evidenceUpload: 'unknown' } : null;
+    core.handler = command => command.m === 'moderateRemoveMessage' || command.m === 'resolveManualRemoval'
+      ? Promise.resolve({ removal: 'unknown', proofRequestId: 'aa'.repeat(16), evidenceRequestId: 'bb'.repeat(16), evidenceUpload: 'unknown' }) : Promise.resolve(null);
     const result = await builtinHandlers.delete!({ commandId: 'delete', args: { message, reason: 'review' } }, contextWithBinding({ bits: PERM.manageMessages }, {
-      client: core, items: [{ ...ownMessage, senderUser: '66'.repeat(16) } as any], confirm: async () => true,
+      client: core, items: [{ ...ownMessage, senderUser: '66'.repeat(16) }], confirm: () => Promise.resolve(true),
     }));
-    expect(result).toMatchObject({ status: 'uncertain', message: expect.stringContaining('aa'.repeat(16)) });
+    expect(result.status).toBe('uncertain');
+    expect(result.message).toContain('aa'.repeat(16));
   });
 
   it('preserves rejected moderation removal as a failure', async () => {
     const core = new FakeClient();
-    core.handler = async command => command.m === 'moderateRemoveMessage' ? { removal: 'rejected', proofRequestId: 'aa'.repeat(16) } : null;
+    core.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'rejected', proofRequestId: 'aa'.repeat(16) }) : Promise.resolve(null);
     const result = await builtinHandlers.delete!({ commandId: 'delete', args: { message, reason: 'review' } }, {
       ...context, client: core, binding: { ...context.binding, bits: PERM.manageMessages },
-      items: [{ ...ownMessage, senderUser: '66'.repeat(16) } as any], confirm: async () => true,
+      items: [{ ...ownMessage, senderUser: '66'.repeat(16) }], confirm: () => Promise.resolve(true),
     });
     expect(result.status).toBe('failure');
   });
@@ -187,8 +193,8 @@ describe('builtin handler safety regressions', () => {
     const binding = { ...context.binding, bits: PERM.manageMessages };
     const result = await builtinHandlers.delete!({ commandId: 'delete', args: { message, reason: 'review' } }, {
       ...context, client: core, binding, getCurrentBinding: () => ({ ...binding, bits: currentBits }),
-      items: [{ ...ownMessage, senderUser: '66'.repeat(16) } as any],
-      confirm: async () => { currentBits = 0; return true; },
+      items: [{ ...ownMessage, senderUser: '66'.repeat(16) }],
+      confirm: () => { currentBits = 0; return Promise.resolve(true); },
     });
     expect(result.status).toBe('failure');
     expect(core.callsOf('moderateRemoveMessage')).toEqual([]);
@@ -196,9 +202,9 @@ describe('builtin handler safety regressions', () => {
 
   it('bounds a moderator excerpt to the worker’s 512 UTF-8 byte limit', async () => {
     const core = new FakeClient();
-    core.handler = async command => command.m === 'moderateRemoveMessage' ? { removal: 'accepted', proofRequestId: 'aa'.repeat(16), evidenceRequestId: 'bb'.repeat(16), evidenceUpload: 'accepted' } : null;
+    core.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'accepted', proofRequestId: 'aa'.repeat(16), evidenceRequestId: 'bb'.repeat(16), evidenceUpload: 'accepted' }) : Promise.resolve(null);
     const result = await builtinHandlers.delete!({ commandId: 'delete', args: { message, reason: 'review' } }, contextWithBinding({ bits: PERM.manageMessages }, {
-      client: core, items: [{ ...ownMessage, senderUser: '66'.repeat(16), body: '界'.repeat(200) } as any], confirm: async () => true,
+      client: core, items: [{ ...ownMessage, senderUser: '66'.repeat(16), body: '界'.repeat(200) }], confirm: () => Promise.resolve(true),
     }));
     expect(result.status).toBe('success');
     const command = core.callsOf('moderateRemoveMessage')[0];
@@ -214,7 +220,7 @@ describe('builtin handler safety regressions', () => {
     core.set(`roles:${cid}`, [{ id: 'a'.repeat(32), name: 'higher', position: 5, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 }]);
     core.set(`members:${cid}`, [{ userId: target, username: 'target', display: '', kind: 0, roleIds: ['a'.repeat(32)] }, { userId: context.selfId!, username: 'self', display: '', kind: 0, roleIds: ['b'.repeat(32)] }]);
     core.set(`roles:${cid}`, [{ id: 'a'.repeat(32), name: 'higher', position: 5, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 }, { id: 'b'.repeat(32), name: 'lower', position: 4, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 }]);
-    const confirm = async () => true;
+    const confirm = () => Promise.resolve(true);
     const result = await builtinHandlers.kick!({ commandId: 'kick', args: { user: target } }, { ...context, client: core, confirm });
     expect(result.status).toBe('failure');
     expect(core.callsOf('kickMember')).toEqual([]);
@@ -268,7 +274,7 @@ describe('builtin handler safety regressions', () => {
 
   it('routes navigation and search through explicit production callbacks', async () => {
     const core = new FakeClient();
-    core.handler = async command => command.m === 'openDm' ? { channelId: 'bc'.repeat(16) } : null;
+    core.handler = command => command.m === 'openDm' ? Promise.resolve({ channelId: 'bc'.repeat(16) }) : Promise.resolve(null);
     const navigated: unknown[] = [];
     const searched: unknown[] = [];
     const result = await builtinHandlers.dm!({ commandId: 'dm', args: { user: 'cd'.repeat(16) } }, {
@@ -290,7 +296,7 @@ describe('builtin handler safety regressions', () => {
     expect(core.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: context.binding.channelId, name: null, topic: 'weekly plan', parent: 'keep', slowmode: null }]);
     const opened: string[] = [];
     const threaded = await builtinHandlers.thread!({ commandId: 'thread', args: { message: root } }, {
-      ...context, items: [{ msgId: root, seq: '4', state: 'ok' } as never], openThread: id => opened.push(id),
+      ...context, items: [timelineItem({ msgId: root, seq: '4' })], openThread: id => opened.push(id),
     });
     expect(threaded.status).toBe('success');
     expect(opened).toEqual([root]);
@@ -299,9 +305,9 @@ describe('builtin handler safety regressions', () => {
   it('runs a kick only after confirmation and reflects the accepted worker mutation', async () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, kick: true });
     const target = '66'.repeat(16), cid = context.binding.communityId!;
-    core.handler = async command => {
+    core.handler = command => {
       if (command.m === 'kickMember') core.set(`members:${cid}`, core.get(`members:${cid}`)!.filter(row => row.userId !== target));
-      return null;
+      return Promise.resolve(null);
     };
     const result = await builtinHandlers.kick!({ commandId: 'kick', args: { user: target } }, { ...context, client: core });
     expect(result.status).toBe('success');
@@ -312,7 +318,7 @@ describe('builtin handler safety regressions', () => {
   it('rechecks moderation permission after confirmation and makes no call if it changed', async () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, kick: true });
     const cid = context.binding.communityId!, target = '66'.repeat(16);
-    const confirm = async () => { core.set(`permissions:${cid}`, { ...core.get(`permissions:${cid}`)!, kickMembers: false }); return true; };
+    const confirm = () => { core.set(`permissions:${cid}`, { ...core.get(`permissions:${cid}`)!, kickMembers: false }); return Promise.resolve(true); };
     const result = await builtinHandlers.kick!({ commandId: 'kick', args: { user: target } }, { ...context, client: core, confirm });
     expect(result.status).toBe('failure');
     expect(core.callsOf('kickMember')).toEqual([]);
@@ -320,7 +326,7 @@ describe('builtin handler safety regressions', () => {
 
   it('rejects ban reasons containing control characters before confirmation or mutation', async () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, ban: true });
-    const confirm = async () => { throw new Error('confirmation should not open'); };
+    const confirm = () => Promise.reject(new Error('confirmation should not open'));
     const result = await builtinHandlers.ban!({ commandId: 'ban', args: { user: '66'.repeat(16), reason: 'bad\u0001reason' } }, { ...context, client: core, confirm });
     expect(result.status).toBe('failure');
     expect(core.callsOf('banMember')).toEqual([]);
@@ -348,8 +354,8 @@ describe('builtin handler safety regressions', () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, kick: true, ban: true, timeout: true });
     const cid = context.binding.communityId!;
     core.set(`bans:${cid}`, [{ userId: '66'.repeat(16), name: 'target', reason: '', byUser: context.selfId!, created: 1, expires: null }]);
-    core.handler = async command => command.m === 'getMemberTimeout' ? '2000000000' : null;
-    const result = await builtinHandlers[id]!({ commandId: id, args: { ...args } }, { ...context, client: core, confirm: async () => false });
+    core.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve('2000000000') : Promise.resolve(null);
+    const result = await builtinHandlers[id]!({ commandId: id, args: { ...args } }, { ...context, client: core, confirm: () => Promise.resolve(false) });
     expect(result).toMatchObject({ status: 'failure', message: 'Cancelled.' });
     expect(core.calls.some(call => call.m === method)).toBe(false);
   });
@@ -358,9 +364,9 @@ describe('builtin handler safety regressions', () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, ban: true });
     const cid = context.binding.communityId!, target = '66'.repeat(16);
     core.set(`bans:${cid}`, [{ userId: target, name: 'target', reason: '', byUser: context.selfId!, created: 1, expires: null }]);
-    core.handler = async command => {
+    core.handler = command => {
       if (command.m === 'unbanMember') core.set(`bans:${cid}`, []);
-      return null;
+      return Promise.resolve(null);
     };
     const result = await builtinHandlers.unban!({ commandId: 'unban', args: { user: target } }, { ...context, client: core });
     expect(result.status).toBe('success');
@@ -374,7 +380,7 @@ describe('builtin handler safety regressions', () => {
     const cid = context.binding.communityId!, target = '66'.repeat(16), roleId = 'aa'.repeat(16);
     core.set(`roles:${cid}`, [...core.get(`roles:${cid}`)!, { id: roleId, name: 'Helper', position: 2, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }]);
     core.set(`members:${cid}`, core.get(`members:${cid}`)!.map(row => row.userId === target ? { ...row, roleIds: [roleId] } : row));
-    const result = await builtinHandlers['role remove']!({ commandId: 'role remove', args: { user: target, role: roleId } }, { ...context, client: core, confirm: async () => false });
+    const result = await builtinHandlers['role remove']!({ commandId: 'role remove', args: { user: target, role: roleId } }, { ...context, client: core, confirm: () => Promise.resolve(false) });
     expect(result.status).toBe('failure');
     expect(core.callsOf('revokeRole')).toEqual([]);
   });
@@ -396,9 +402,9 @@ describe('builtin handler safety regressions', () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, manageRoles: true });
     const cid = context.binding.communityId!, target = '66'.repeat(16), roleId = 'aa'.repeat(16);
     core.set(`roles:${cid}`, [...core.get(`roles:${cid}`)!, { id: roleId, name: 'Helper', position: 2, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }]);
-    core.handler = async command => {
+    core.handler = command => {
       if (command.m === 'grantRole') core.set(`members:${cid}`, core.get(`members:${cid}`)!.map(row => row.userId === target ? { ...row, roleIds: [...row.roleIds, roleId] } : row));
-      return null;
+      return Promise.resolve(null);
     };
     const result = await builtinHandlers['role add']!({ commandId: 'role add', args: { user: target, role: roleId } }, { ...context, client: core });
     expect(result.status).toBe('success');
@@ -412,11 +418,11 @@ describe('builtin handler safety regressions', () => {
     core.set(`roles:${cid}`, [...core.get(`roles:${cid}`)!, { id: roleId, name: 'Helper', position: 2, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 }]);
     core.set(`members:${cid}`, core.get(`members:${cid}`)!.map(row => row.userId === target ? { ...row, roleIds: [roleId] } : row));
     let confirmed = 0;
-    core.handler = async command => {
+    core.handler = command => {
       if (command.m === 'revokeRole') core.set(`members:${cid}`, core.get(`members:${cid}`)!.map(row => row.userId === target ? { ...row, roleIds: [] } : row));
-      return null;
+      return Promise.resolve(null);
     };
-    const outcome = await builtinHandlers['role remove']!({ commandId: 'role remove', args: { user: target, role: roleId } }, { ...context, client: core, confirm: async () => { confirmed++; return true; } });
+    const outcome = await builtinHandlers['role remove']!({ commandId: 'role remove', args: { user: target, role: roleId } }, { ...context, client: core, confirm: () => { confirmed++; return Promise.resolve(true); } });
     expect(outcome).toMatchObject({ status: 'success', message: 'Helper removed from target.' });
     expect(confirmed).toBe(1);
     expect(core.callsOf('revokeRole')).toEqual([{ m: 'revokeRole', communityId: cid, userId: target, roleId }]);
@@ -426,7 +432,7 @@ describe('builtin handler safety regressions', () => {
   it('lists and grants only roles returned by the self-role service', async () => {
     const core = new FakeClient();
     const cid = context.binding.communityId!, roleId = 'ef'.repeat(16);
-    core.handler = async command => command.m === 'listSelfRoles' ? [{ id: roleId, name: 'Reader', selfSelected: false }] : null;
+    core.handler = command => command.m === 'listSelfRoles' ? Promise.resolve([{ id: roleId, name: 'Reader', selfSelected: false }]) : Promise.resolve(null);
     const listed = await builtinHandlers['selfrole list']!({ commandId: 'selfrole list', args: {} }, { ...context, client: core });
     const added = await builtinHandlers['selfrole add']!({ commandId: 'selfrole add', args: { role: roleId } }, { ...context, client: core });
     expect(listed.message).toContain('Reader');
@@ -437,7 +443,7 @@ describe('builtin handler safety regressions', () => {
   it('removes only a currently selected self-role using the stable role ID and attempt ID', async () => {
     const core = new FakeClient();
     const cid = context.binding.communityId!, roleId = 'ef'.repeat(16);
-    core.handler = async command => command.m === 'listSelfRoles' ? [{ id: roleId, name: 'Reader', selfSelected: true }] : null;
+    core.handler = command => command.m === 'listSelfRoles' ? Promise.resolve([{ id: roleId, name: 'Reader', selfSelected: true }]) : Promise.resolve(null);
     const outcome = await builtinHandlers['selfrole remove']!({ commandId: 'selfrole remove', args: { role: roleId } }, { ...context, client: core });
     expect(outcome).toMatchObject({ status: 'success', message: 'Reader removed.' });
     expect(core.callsOf('selectSelfRole')).toEqual([{ m: 'selectSelfRole', communityId: cid, roleId, requestId: context.requestId, enabled: false }]);
@@ -446,7 +452,7 @@ describe('builtin handler safety regressions', () => {
   it('clears an existing timeout with the confirmed stable user ID', async () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, timeout: true });
     const target = '66'.repeat(16), cid = context.binding.communityId!;
-    core.handler = async command => command.m === 'getMemberTimeout' ? '2000000000' : null;
+    core.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve('2000000000') : Promise.resolve(null);
     const outcome = await builtinHandlers.untimeout!({ commandId: 'untimeout', args: { user: target } }, { ...context, client: core });
     expect(outcome.status).toBe('success');
     expect(core.callsOf('getMemberTimeout')).toEqual([{ m: 'getMemberTimeout', communityId: cid, userId: target }]);
@@ -455,13 +461,14 @@ describe('builtin handler safety regressions', () => {
 
   it('leaves the live voice call and reports the outcome', async () => {
     const leave = vi.fn();
-    const outcome = await builtinHandlers.leave!({ commandId: 'leave', args: {} }, { ...context, getCall: () => ({ channelId: '55'.repeat(16), leave } as never) });
+    const call = { channelId: '55'.repeat(16), leave } as unknown as CallView;
+    const outcome = await builtinHandlers.leave!({ commandId: 'leave', args: {} }, { ...context, getCall: () => call });
     expect(outcome).toMatchObject({ status: 'success', message: 'Left voice.' });
     expect(leave).toHaveBeenCalledOnce();
   });
 
   it('opens invite and moderation history through the focused host callbacks', async () => {
-    const openInvite = vi.fn(async () => true), openModerationLog = vi.fn();
+    const openInvite = vi.fn(() => Promise.resolve(true)), openModerationLog = vi.fn();
     const invite = await builtinHandlers.invite!({ commandId: 'invite', args: {} }, contextWithBinding({ bits: PERM.createInvite }, { openInvite }));
     const modlog = await builtinHandlers.modlog!({ commandId: 'modlog', args: {} }, contextWithBinding({ bits: PERM.viewAuditLog }, { openModerationLog }));
     expect(invite).toMatchObject({ status: 'success', message: 'Invite created and shown privately.' });

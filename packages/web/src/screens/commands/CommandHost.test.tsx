@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
@@ -111,7 +111,7 @@ describe('CommandHost', () => {
     core.set(`permissions:${cid}`, { loaded: true, top: 4, owner: false, manageCommunity: false, kickMembers: false, banMembers: true, moderateMembers: false,
       manageMessages: false, manageRoles: false, manageChannels: false, createInvite: false, everyoneId: 'aa'.repeat(16), overwritesLoaded: true });
     core.set(`bans:${cid}`, [{ userId: bannedId, name: 'banned target', reason: '', byUser: self, created: 1, expires: null }]);
-    core.handler = async command => command.m === 'listSelfRoles' ? [{ id: roleId, name: 'Allowed role', selfSelected: false }] : null;
+    core.handler = command => command.m === 'listSelfRoles' ? Promise.resolve([{ id: roleId, name: 'Allowed role', selfSelected: false }]) : Promise.resolve(null);
     const user = userEvent.setup();
     const view = render(<CoreProvider client={core}><CommandHost communityId={cid} channelId={channel} bits={1 << 13}
       items={[]} selfId={self} draft="/unban" onDraft={() => undefined} onSendLiteral={() => undefined}
@@ -137,8 +137,8 @@ describe('CommandHost', () => {
     const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
     function Harness() {
       const [mounted, setMounted] = useState(true);
-      const handlers: CommandProviderHandlers = { me: async (_invocation, context) => {
-        ids.push(context.requestId); return { status: 'uncertain' as const, private: true, message: 'uncertain' };
+      const handlers: CommandProviderHandlers = { me: (_invocation, context) => {
+        ids.push(context.requestId); return Promise.resolve({ status: 'uncertain' as const, private: true, message: 'uncertain' });
       } };
       return <CommandProvider handlers={handlers}>
         <button onClick={() => setMounted(value => !value)}>toggle host</button>
@@ -161,8 +161,8 @@ describe('CommandHost', () => {
   it('allocates a fresh request ID for a second intentional successful execution', async () => {
     const ids: string[] = [];
     const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
-    const handlers: CommandProviderHandlers = { me: async (_invocation, context) => {
-      ids.push(context.requestId); return { status: 'success' as const, private: true, message: 'done' };
+    const handlers: CommandProviderHandlers = { me: (_invocation, context) => {
+      ids.push(context.requestId); return Promise.resolve({ status: 'success' as const, private: true, message: 'done' });
     } };
     render(<CoreProvider client={new FakeClient()}><CommandProvider handlers={handlers}>
       <CommandHost communityId={null} channelId={channelId} items={[]} selfId={null} draft="/me hello" onDraft={() => undefined}
@@ -184,5 +184,29 @@ describe('CommandHost', () => {
     await user.click(screen.getByRole('button', { name: /send as text/i }));
     expect(literals).toEqual(['/not-a-command']);
     expect(fake.calls).toEqual([]);
+  });
+
+  it('does not navigate when a pending DM command is canceled before openDm resolves', async () => {
+    const fake = new FakeClient();
+    const communityId = '55'.repeat(16), channelId = '44'.repeat(16), selfId = '66'.repeat(16), bob = '77'.repeat(16);
+    fake.set(`members:${communityId}`, [{ userId: bob, username: 'bob', display: '', kind: 0, roleIds: [] }]);
+    let resolveDm!: (value: unknown) => void;
+    fake.handler = command => command.m === 'openDm'
+      ? new Promise(resolve => { resolveDm = resolve; })
+      : Promise.resolve(null);
+    const navigate = vi.fn();
+    const runtime = { navigate, call: {} as never, openThread: () => undefined, openSearch: () => undefined };
+    const user = userEvent.setup();
+    render(<CoreProvider client={fake}><CommandProvider runtime={runtime}>
+      <CommandHost communityId={communityId} channelId={channelId} bits={0x1ffffff} items={[]} selfId={selfId}
+        draft="/dm" onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+    </CommandProvider></CoreProvider>);
+    await user.type(await screen.findByRole('combobox', { name: 'user' }), 'bob');
+    await user.click(await screen.findByRole('option', { name: 'bob' }));
+    await user.click(screen.getByRole('button', { name: /run/i }));
+    await waitFor(() => expect(fake.callsOf('openDm')).toHaveLength(1));
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    await act(() => { resolveDm({ channelId: '88'.repeat(16) }); return Promise.resolve(); });
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

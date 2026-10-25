@@ -174,7 +174,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   return <>
     <CommandHost communityId={route.name === 'channel' ? route.communityId : null} channelId={p.channelId}
       {...(p.threadId !== undefined ? { threadId: p.threadId } : {})} {...(bits !== null ? { bits } : {})}
-      items={p.items} selfId={selfId} draft={p.draft} onDraft={p.onDraft}
+      items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
       encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
       onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={setCommandMode} slashSubmission={slashSubmission} />
     {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery} dispatch={a => { p.dispatch(a); }}

@@ -1,16 +1,18 @@
-import { canModerate, COMMANDS, commandById, PERM, resolveCommunity, topOf, type CommandContext as Binding, type CommandInvocation, type CommandResult, type TimelineItem } from '@dilla/client-core';
+import { canModerate, COMMANDS, commandById, PERM, resolveCommunity, topOf, type CommandContext as Binding, type CommandInvocation, type CommandResult, type RoleSummary, type TimelineItem } from '@dilla/client-core';
 import type { CoreClient } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandHandler, CommandProviderHandlers } from './command-types.ts';
 import { excerpt } from '../shell-model.ts';
 import { resolveManualRemoval, sendManualRemovalEvidence } from '../conversation/manual-removal.ts';
+import type { EvidenceUpload } from '../conversation/manual-removal.ts';
 
 const result = (status: CommandResult['status'], message: string, isPrivate = true): CommandResult => ({ status, message, private: isPrivate });
 const success = (message: string, isPrivate = true) => result('success', message, isPrivate);
 const failure = (message: string) => result('failure', message);
 const definitiveMutationCodes = new Set(['E_BAD_INPUT', 'E_FORBIDDEN', 'E_NOT_FOUND', 'E_UNAUTHORIZED', 'E_CONFLICT', 'E_RATE_LIMITED', 'E_BOT_PERMISSION', 'E_BOT_BAD_INPUT']);
 function mutationError(error: unknown): CommandResult {
-  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : '';
-  if (definitiveMutationCodes.has(code) || (typeof error === 'object' && error !== null && 'status' in error && Number((error as { status: unknown }).status) >= 400 && Number((error as { status: unknown }).status) < 500))
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+  const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 0;
+  if (definitiveMutationCodes.has(code) || (status >= 400 && status < 500))
     return failure(code ? `Command was refused (${code}).` : 'Command was refused.');
   return result('uncertain', code ? `The command result is uncertain (${code}). Check the current server state before retrying.` : 'The command result is uncertain. Check the current server state before retrying.');
 }
@@ -39,7 +41,7 @@ async function publish(context: CommandExecutionContext, text: string, replyTo?:
     const msgId = typeof response === 'object' && response !== null && 'msgId' in response ? (response as { msgId?: unknown }).msgId : null;
     return success(typeof msgId === 'string' ? `Sent. Message ${msgId} is in the conversation outbox.` : 'Sent.', false);
   } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : '';
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
     if (['E_BAD_INPUT', 'E_FORBIDDEN', 'E_NOT_FOUND', 'E_ENVELOPE_LIMIT', 'E_NOT_READY', 'E_TRAY_NOT_READY', 'E_OFFLINE'].includes(code)) return failure(`Message was not sent (${code}).`);
     uncertainPublications.delete(attemptKey); uncertainPublications.add(attemptKey);
     while (uncertainPublications.size > 128) uncertainPublications.delete(uncertainPublications.values().next().value!);
@@ -57,7 +59,7 @@ const handler = (fn: (invocation: CommandInvocation, context: CommandExecutionCo
 };
 
 const entries: Record<string, CommandHandler> = {
-  help: handler(async invocation => {
+  help: handler(invocation => {
     if (invocation.args.command) {
       const text = helpText(invocation.args.command);
       return text === null ? failure(`Unknown command: ${invocation.args.command}.`) : success(text);
@@ -146,16 +148,16 @@ const entries: Record<string, CommandHandler> = {
   }),
   pin: handler(async (invocation, context) => pinMessage(invocation, context, true)),
   unpin: handler(async (invocation, context) => pinMessage(invocation, context, false)),
-  leave: handler(async (_invocation, context) => {
+  leave: handler((_invocation, context) => {
     const call = context.getCall();
     if (call.channelId === null) return failure('You are not in a voice call.');
     call.leave();
     return success('Left voice.');
   }),
-  mute: handler(async (_invocation, context) => { const view = context.getCall(); return setVoice(context, true, view.session?.state.deafened ?? view.selfDeafened); }),
-  unmute: handler(async (_invocation, context) => { const view = context.getCall(); return setVoice(context, false, view.session?.state.deafened ?? view.selfDeafened); }),
-  deafen: handler(async (_invocation, context) => setVoice(context, true, true)),
-  undeafen: handler(async (_invocation, context) => { const view = context.getCall(); return setVoice(context, view.session?.state.muted ?? view.selfMuted, false); }),
+  mute: handler((_invocation, context) => { const view = context.getCall(); return setVoice(context, true, view.session?.state.deafened ?? view.selfDeafened); }),
+  unmute: handler((_invocation, context) => { const view = context.getCall(); return setVoice(context, false, view.session?.state.deafened ?? view.selfDeafened); }),
+  deafen: handler((_invocation, context) => setVoice(context, true, true)),
+  undeafen: handler((_invocation, context) => { const view = context.getCall(); return setVoice(context, view.session?.state.muted ?? view.selfMuted, false); }),
   kick: handler(async (invocation, context) => {
     const communityId = requireCommunity(context);
     const member = moderationTarget(context, invocation.args.user, 'kick');
@@ -322,7 +324,7 @@ async function removeOtherMessage(context: CommandExecutionContext, item: Timeli
     if (resolved.removal !== 'accepted') return result('uncertain', `Message removal is unresolved. Recovery proof: ${proofRequestId}.`, true);
     let evidenceUpload = resolved.evidenceUpload;
     if (evidenceUpload !== 'accepted' && typeof outcome.evidenceRequestId === 'string') {
-      const retry = await sendManualRemovalEvidence(context.client, communityId, { key: item.key, msgId: item.msgId, seq: item.seq!, reason, excerpt: safeExcerpt,
+      const retry = await sendManualRemovalEvidence(context.client, communityId, { key: item.key, msgId: item.msgId, seq: item.seq, reason, excerpt: safeExcerpt,
         phase: 'result', proofRequestId, evidenceRequestId: outcome.evidenceRequestId, evidenceUpload, removal: 'accepted' });
       evidenceUpload = retry.upload;
     }
@@ -330,8 +332,8 @@ async function removeOtherMessage(context: CommandExecutionContext, item: Timeli
     return success('Message removed and moderation evidence recorded.', false);
   }
   if (outcome.removal !== 'accepted' || proofRequestId === null) return result('uncertain', 'Message removal outcome is malformed or unknown.', true);
-  let evidenceUpload = outcome.evidenceUpload === 'accepted' || outcome.evidenceUpload === 'pending' || outcome.evidenceUpload === 'rejected' || outcome.evidenceUpload === 'unknown'
-    ? outcome.evidenceUpload as 'accepted' | 'pending' | 'rejected' | 'unknown' : 'unknown';
+  let evidenceUpload: EvidenceUpload = outcome.evidenceUpload === 'accepted' || outcome.evidenceUpload === 'pending' || outcome.evidenceUpload === 'rejected' || outcome.evidenceUpload === 'unknown'
+    ? outcome.evidenceUpload : 'unknown';
   if (evidenceUpload !== 'accepted' && typeof outcome.evidenceRequestId === 'string') {
     const retry = await sendManualRemovalEvidence(context.client, communityId, { key: item.key, msgId: item.msgId, seq: item.seq, reason, excerpt: safeExcerpt,
       phase: 'result', proofRequestId, evidenceRequestId: outcome.evidenceRequestId, evidenceUpload, removal: 'accepted' });
@@ -347,7 +349,7 @@ function assignableRole(context: CommandExecutionContext, userId: string, roleId
   return eligibleAssignableRole(context.client, communityId, context.selfId, userId, roleId, add ? 'add' : 'remove');
 }
 
-export function eligibleAssignableRole(client: CoreClient, communityId: string, selfId: string, userId: string, roleId: string, mode: 'add' | 'remove' = 'add'): { role: NonNullable<ReturnType<typeof memberRole>>; member: { userId: string; name: string } } | undefined {
+export function eligibleAssignableRole(client: CoreClient, communityId: string, selfId: string, userId: string, roleId: string, mode: 'add' | 'remove' = 'add'): { role: RoleSummary; member: { userId: string; name: string } } | undefined {
   const access = client.get(`permissions:${communityId}`);
   const community = client.get('communities')?.find(row => row.id === communityId);
   const roles = client.get(`roles:${communityId}`);
@@ -362,9 +364,6 @@ export function eligibleAssignableRole(client: CoreClient, communityId: string, 
   const mine = access.owner ? 0x1ffffff : resolveCommunity({ owner: community.owner, everyoneId: access.everyoneId, roles, held: self.roleIds }, selfId);
   if (!access.owner && (role.allow & ~mine & 0x1ffffff) !== 0) return undefined;
   return { role, member: { userId: target.userId, name: target.display || target.username } };
-}
-function memberRole(context: CommandExecutionContext, communityId: string, roleId: string) {
-  return context.client.get(`roles:${communityId}`)?.find(row => row.id === roleId);
 }
 
 function durationSeconds(value: string): number | null {

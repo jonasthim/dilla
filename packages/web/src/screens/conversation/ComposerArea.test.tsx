@@ -44,6 +44,13 @@ describe('mentions in the composer (L-TS-37)', () => {
     await user.click(screen.getByRole('button', { name: /send as text/i }));
     await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: '/secret-command' }]));
   });
+  it('reopens command mode after a canceled slash draft is edited to a new slash command', async () => {
+    const { user } = renderConversation();
+    fireEvent.change(box(), { target: { value: '/me first' } });
+    await user.click(await screen.findByRole('button', { name: /cancel/i }));
+    fireEvent.change(box(), { target: { value: '/search second' } });
+    expect(await screen.findByRole('combobox', { name: 'query' })).toHaveValue('second');
+  });
   it('opens a fresh @ query at the same position after Escape and deletion', async () => {
     const { user } = renderConversation();
     await user.type(box(), '@b');

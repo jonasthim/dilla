@@ -37,7 +37,7 @@ describe('CommandComposer', () => {
   it('routes a fully typed slash command and its argument from the picker into execution', async () => {
     const user = userEvent.setup();
     let executed: unknown;
-    renderComposer({ initialText: '/', onExecute: async invocation => { executed = invocation; return { status: 'success', private: false }; } });
+    renderComposer({ initialText: '/', onExecute: invocation => { executed = invocation; return Promise.resolve({ status: 'success', private: false }); } });
     const picker = screen.getByRole('combobox', { name: 'Command' });
     await user.type(picker, 'me waves hello');
     await user.keyboard('{Enter}');

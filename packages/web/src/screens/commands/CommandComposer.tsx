@@ -28,7 +28,7 @@ const isEntity = (option: CommandOption): boolean => ENTITY_KINDS.has(option.kin
 const quote = (value: string): string => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 
 export function CommandComposer(props: CommandComposerProps): React.JSX.Element | null {
-  const { initialText, onCancel, onSendLiteral } = props;
+  const { initialText, onCancel, onSendLiteral, onDraftChange } = props;
   const parsed = useMemo(() => parseCommand(initialText), [initialText]);
   const original = useRef(initialText);
   const started = useRef(false);
@@ -92,9 +92,10 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
     for (const [name, generation] of suggestionsGeneration.current) suggestionsGeneration.current.set(name, generation + 1);
     contextNow.current = '';
   }, []);
+  const getDraft = useCallback(() => buildDraft(original.current, dirty.current, selectedCommand, pickerQuery, fields), [selectedCommand, pickerQuery, fields]);
   useEffect(() => {
-    if (dirty.current) props.onDraftChange?.(getDraft());
-  }, [props.onDraftChange, pickerQuery, fields, selectedCommand, optionalVisible]);
+    if (dirty.current) onDraftChange?.(getDraft());
+  }, [onDraftChange, getDraft, optionalVisible]);
   const sendLiteralOnce = useCallback((text: string) => {
     if (literalSent.current) return;
     literalSent.current = true;
@@ -171,8 +172,6 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
       });
     }
   }, [contextKey, suggest, selectedCommand, suggestionQuery]);
-
-  const getDraft = (): string => buildDraft(original.current, dirty.current, selectedCommand, pickerQuery, fields);
 
   if (parsed.type === 'literal') {
     if (!initialText.startsWith('//')) return null;

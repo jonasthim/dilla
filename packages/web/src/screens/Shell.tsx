@@ -1735,7 +1735,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
   const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} /> : adminPage;
   return (
-    <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate, openThread, openSearch: openCommandSearch }} handlers={props.commandHandlers} suggest={props.commandSuggest}>
+    <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate: route => { void navigate(route); }, openThread, openSearch: openCommandSearch }} handlers={props.commandHandlers} suggest={props.commandSuggest}>
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
