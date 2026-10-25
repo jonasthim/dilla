@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
 import { encode, fromHex } from '@dilla/client-core';
@@ -25,13 +25,14 @@ const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: 
   banMembers: false, createInvite: false, manageRoles: false };
 
 function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab | null; members?: MemberSummary[] | null;
+  missingCommunity?: boolean;
   selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[] | ((communityId: string) => { id: string; name: string; position: number; selfSelected: boolean }[]);
   roles?: RoleSummary[]; channels?: ChannelSummary[]; installation?: FakeInstallation | null | ((communityId: string) => FakeInstallation | null);
   interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown';
   uploadHandler?: (requestId: string) => Promise<unknown> } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
-  fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
+  fake.set('communities', over.missingCommunity ? [] : [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
   fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (typeof over.selfRoles === 'function' ? over.selfRoles(command.communityId) : over.selfRoles ?? [])
     : command.m === 'getBotInstallation' ? (typeof over.installation === 'function' ? over.installation(command.communityId) : over.installation ?? null)
     : command.m === 'humanInteractionRequest' ? over.uploadHandler?.(command.requestId) ?? { requestId: command.requestId, upload: over.upload ?? 'accepted' }
@@ -57,6 +58,7 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
     ]);
   }
   fake.set(`presence:${SERVER}`, { [ME.id]: 'online', [BOB]: 'online', [CAROL]: 'online' });
+  fake.set('removals', []);
   const onClose = vi.fn();
   const onTab = vi.fn();
   const announce = vi.fn();
@@ -107,7 +109,8 @@ describe('ServerSettings tabs', () => {
     const sent = fake.callsOf('humanInteractionRequest')[0];
     expect(sent).toMatchObject({ operation: 31, channelId: null });
     expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ communityId: SERVER, channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
-    expect(announce).toHaveBeenCalledWith('The bot published and registered the role panel.');
+    expect(document.querySelector('.d-settings-frame .d-sr-only[role="status"]')).toHaveTextContent('The bot published and registered the role panel.');
+    expect(announce).not.toHaveBeenCalledWith('The bot published and registered the role panel.');
   });
   it('rejects duplicate reaction mappings before sending or changing role policy', async () => {
     const one = 'c3'.repeat(16); const two = 'c4'.repeat(16); const channelId = 'd4'.repeat(16);
@@ -273,6 +276,26 @@ describe('ServerSettings tabs', () => {
     expect(screen.getByRole('status')).toHaveTextContent(en['workspace.permissionChanged']);
     expect(announce).not.toHaveBeenCalledWith(en['workspace.permissionChanged']);
   });
+  it('clears a draft immediately when the permission snapshot becomes unloaded', async () => {
+    const { fake, user } = setup(FULL);
+    await user.type(screen.getByRole('textbox', { name: en['admin.overview.name'] }), ' draft');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+    act(() => fake.set(`permissions:${SERVER}`, { ...FULL, loaded: false }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(screen.queryByRole('textbox', { name: en['admin.overview.name'] })).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent(en['workspace.permissionChanged']);
+  });
+  it('closes a direct-linked workspace when its loaded community list excludes the server', async () => {
+    const { onClose } = setup(FULL, { missingCommunity: true });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(document.querySelector('dialog.d-settings-frame')).not.toHaveAttribute('open');
+  });
+  it('closes and clears when a removal notice arrives before the community list changes', async () => {
+    const { fake, onClose } = setup(FULL);
+    act(() => fake.set('removals', [{ id: 1, communityId: SERVER, name: NAME }]));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(document.querySelector('dialog.d-settings-frame')).not.toHaveAttribute('open');
+  });
   it('opens the first permitted tab when the asked-for tab is not allowed', () => {
     setup(NONE, { tab: 'overview' });
     expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument();
@@ -352,6 +375,8 @@ describe('the overview section', () => {
     await waitFor(() => expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, timeoutSeconds: 900 }]));
     expect(fake.callsOf('setAFK')[0]).not.toHaveProperty('channelId');
     expect(fake.callsOf('renameCommunity')).toHaveLength(0);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
   });
   it('keeps a clean overview out of the save flow', async () => {
     const { fake } = setup({ ...NONE, manageCommunity: true });
@@ -486,7 +511,8 @@ describe('the danger section', () => {
     await user.type(within(dialog).getByRole('textbox', { name: en['admin.transfer.confirmName'] }), NFD);
     await user.click(confirm);
     await waitFor(() => expect(fake.callsOf('transferOwnership')).toEqual([{ m: 'transferOwnership', communityId: SERVER, userId: CAROL }]));
-    await waitFor(() => expect(announce).toHaveBeenCalledWith(`carol now owns ${NAME}.`));
+    expect(document.querySelector('.d-settings-frame .d-sr-only[role="status"]')).toHaveTextContent(`carol now owns ${NAME}.`);
+    expect(announce).not.toHaveBeenCalledWith(`carol now owns ${NAME}.`);
   });
   it('says a member who left (404) is gone', async () => {
     const { fake, user } = setup(FULL, { tab: 'danger' });
@@ -510,10 +536,9 @@ describe('fix round 1: loading, closing, minors', () => {
     setup({ ...NONE, loaded: false });
     expect(screen.getByText(en['admin.loading'])).toBeInTheDocument();
   });
-  it('keeps no status region of its own: the announcer it was given says it', () => {
+  it('keeps its live status region inside the active modal', () => {
     setup(FULL);
-    // The frame's one footer (SettingsFooter, R17) keeps its own polite status line; the body keeps none.
-    expect(document.querySelector('.d-settings-frame__body [role="status"]')).toBeNull();
+    expect(document.querySelector('.d-settings-frame [role="status"]')).not.toBeNull();
   });
   it.each([
     ['leave', NONE, 'leave server', 'Leave', en['admin.leave.confirm'], `You left ${NAME}.`],

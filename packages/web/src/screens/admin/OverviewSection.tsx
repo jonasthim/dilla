@@ -15,10 +15,8 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   const [name, setName] = useState(serverName);
   const [nameBase, setNameBase] = useState(serverName);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [partial, setPartial] = useState(false);
   const [afkFailure, setAfkFailure] = useState(false);
-  const action = useRun();
-  const { busy, error: actionError, run, reset: resetAction } = action;
+  const { busy, error: actionError, run, reset: resetAction } = useRun();
   const afk = useSlice(`afk:${communityId}`);
   const channels = useSlice(`channels:${communityId}`);
   const [afkTimeout, setAFKTimeout] = useState(300);
@@ -57,7 +55,7 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
         return false;
       }
     }
-    setLocalError(null); setPartial(false); setAfkFailure(false);
+    setLocalError(null); setAfkFailure(false);
     const savingName = name.trim();
     const shouldRename = nameChanged;
     const shouldSaveTimeout = timeoutChanged;
@@ -71,7 +69,6 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
       if (shouldSaveTimeout) await client.call({ m: 'setAFK', communityId, timeoutSeconds: afkTimeout });
     }, e => {
       if (renamed) {
-        setPartial(true);
         setAfkFailure(true);
         announce(t('workspace.overview.partial'));
         return t('admin.afk.error', { code: e.code });
@@ -83,7 +80,12 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
             : refused(e) ? t('admin.overview.error.refused')
               : t('admin.overview.error.other', { code: e.code });
     });
-    if (ok) { setNameBase(savingName); afkEdited.current = false; setAfkFailure(false); }
+    if (ok) {
+      setNameBase(savingName);
+      setAFKBase(afkTimeout);
+      afkEdited.current = false;
+      setAfkFailure(false);
+    }
     return ok;
   }, [busy, run, afkTimeout, announce, client, communityId, dirty, name, nameChanged, timeoutChanged]);
   const reset = useCallback(() => {
@@ -91,7 +93,7 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
     setName(nameBase);
     if (afkBase !== null) setAFKTimeout(afkBase);
     afkEdited.current = false;
-    setLocalError(null); setPartial(false); setAfkFailure(false); resetAction();
+    setLocalError(null); setAfkFailure(false); resetAction();
   }, [busy, resetAction, afkBase, nameBase]);
   const state = useMemo<SettingsEditState>(() => ({ dirty, busy, canSave: dirty, save, reset }), [dirty, busy, save, reset]);
   useSettingsEdit(state);
@@ -104,16 +106,16 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
     <SettingsRow id={`${base}-name-row`} label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
       <div className="dw-overview-field">
         <TextField id={fieldId} label={t('admin.overview.name')} value={name}
-          onChange={value => { setName(value); setLocalError(null); setPartial(false); setAfkFailure(false); resetAction(); }}
+          onChange={value => { setName(value); setLocalError(null); setAfkFailure(false); resetAction(); }}
           error={afkFailure ? undefined : error ?? undefined} required autoComplete="off" spellCheck={false} disabled={busy} />
       </div>
     </SettingsRow>
     <SettingsRow id={`${base}-afk-row`} label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: afkName })}>
       <Select label={t('afk.timeout.label')} value={String(afkTimeout)} disabled={afkBase === null || busy}
         options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t(`afk.timeout.${n * 60}` as StringKey) }))}
-        onChange={value => { afkEdited.current = true; setAFKTimeout(Number(value)); setPartial(false); setAfkFailure(false); resetAction(); }} />
+        onChange={value => { afkEdited.current = true; setAFKTimeout(Number(value)); setAfkFailure(false); resetAction(); }} />
       {afkLoadError ? <p role="alert">{t('admin.afk.loadError')}</p> : null}
-      {partial ? <p role="alert">{t('workspace.overview.partial')}</p> : afkFailure && error ? <p role="alert">{error}</p> : null}
+      {afkFailure && error ? <p role="alert">{error}</p> : null}
     </SettingsRow>
   </section>;
 }
