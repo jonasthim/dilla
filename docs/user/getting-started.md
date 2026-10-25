@@ -167,7 +167,7 @@ are disconnected and listed as away in AFK. Phones are not disconnected."). Choo
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 
-![Server settings → overview: the server name and the "inactive timeout" set to 5 minutes](screenshots/afk-settings-desktop.png)
+![Server settings → Overview with server name and inactive timeout](screenshots/fullscreen-settings-overview-desktop.png)
 
 The field says why when saving did not work: "Someone else changed the server at the same time. Check the name and save
 again." means you should look at the name that is there now and save again.
@@ -541,7 +541,7 @@ The factor guards signing in on a **new** browser, not message content.
 
 ### Settings → Sign-in
 
-![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/settings-signin.png)
+![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-mesh.png)
 
 Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
 Browsers that are already set up, like this one, do not ask again." The rows are:
@@ -1061,7 +1061,7 @@ are using. "not yet in the device list" marks a device that signed in with your 
 added; "removed" marks one that was removed. **refresh** reads the list again.
 
 ![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
-remove this browser" and "forget this browser"](screenshots/settings-devices.png)
+remove this browser" and "forget this browser"](screenshots/fullscreen-settings-devices-desktop-mesh.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1127,7 +1127,7 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 "all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge. "Servers" sets
 the same for a whole server ([Notifications for a server](#notifications-for-a-server)).
 
-![Notification permission before opt-in](screenshots/settings-notifications.png)
+![Notification permission before opt-in](screenshots/fullscreen-settings-notifications-desktop-mesh.png)
 
 ## 9. Saying more
 
@@ -1316,7 +1316,7 @@ Other people's changes show in your member list the next time it is read, which 
 
 ### Contacts and safety numbers
 
-![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/trust-privacy-desktop.png)
+![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/fullscreen-settings-privacy-desktop-mesh.png)
 
 Before this browser shows a message, it checks that the device which sent it is on its owner's signed device list.
 The first key it sees for a person is kept as that person's key. **Settings → privacy** lists the people you share
@@ -1352,7 +1352,7 @@ the new number." and approves nothing.
 A number needs a conversation you share: for someone you share none with, Privacy says "Open a conversation with
 this person to compare numbers." and shows no number.
 
-![Settings → Privacy at 360 pixels wide](screenshots/trust-privacy-phone.png)
+![Settings → Privacy at 390 pixels wide](screenshots/fullscreen-settings-privacy-phone.png)
 
 ### When a contact's identity changes
 
@@ -1410,7 +1410,7 @@ There are no single-key shortcuts.
 
 ### Diagnostics
 
-![Settings → Diagnostics](screenshots/settings-diagnostics-desktop.png)
+![Settings → Diagnostics](screenshots/fullscreen-settings-diagnostics-desktop-mesh.png)
 
 **Settings → diagnostics** shows the connection (online, connecting or offline), the instance's generation, the
 instance's name and the number of your devices. A wide screen has no status bar, so these facts live here, and the line
@@ -1421,7 +1421,7 @@ them into a report.
 `E_MEDIA_MISROUTE` among them means a person's audio in a call was briefly lost in Firefox and was reconnected
 automatically: you heard them again about four seconds after they joined or came back.
 
-![Diagnostics at 360 pixels wide](screenshots/settings-diagnostics-phone.png)
+![Diagnostics at 390 pixels wide](screenshots/fullscreen-settings-diagnostics-phone.png)
 
 ### Typing
 

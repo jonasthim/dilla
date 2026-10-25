@@ -333,7 +333,7 @@ describe('ServerSettings tabs', () => {
   });
   it('closes through onClose', async () => {
     const { user, onClose } = setup(FULL);
-    await user.click(screen.getByRole('button', { name: en['admin.cancel'] }));
+    await user.click(screen.getByRole('button', { name: en['settings.close'] }));
     expect(onClose).toHaveBeenCalled();
   });
   it('has no axe violations', async () => {

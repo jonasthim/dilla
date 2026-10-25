@@ -60,6 +60,7 @@ describe('R9 (web half): app.css reads the same phone query and has the containe
 
 describe('the phone shell follows the visual viewport (web3.7.2)', () => {
   const base = readFileSync(join(here, '..', '..', 'ui', 'src', 'styles', 'base.css'), 'utf8');
+  const settings = readFileSync(join(here, '..', '..', 'ui', 'src', 'SettingsFrame', 'SettingsFrame.css'), 'utf8');
   const app = readFileSync(join(here, 'app.css'), 'utf8');
   const rule = (css: string, selector: string) => css.split('\n').find(l => l.trimStart().startsWith(selector)) ?? '';
 
@@ -68,9 +69,10 @@ describe('the phone shell follows the visual viewport (web3.7.2)', () => {
     expect(shell).toContain('position: fixed');
     expect(shell).toContain('top: var(--d-vvtop, 0px)');
   });
-  it('moves the ring and the modeless Settings frame with it', () => {
+  it('moves the ring and the fullscreen modal Settings frame with it', () => {
     expect(rule(base, '.d-app-shell .d-app-shell__ring')).toContain('var(--d-vvtop, 0px)');
-    expect(rule(base, '.d-settings-frame.d-settings-frame[data-modeless]')).toContain('var(--d-vvtop, 0px)');
+    expect(rule(settings, '.d-settings-frame.d-settings-frame[data-layout="phone"]')).toContain('var(--d-vvtop, 0px)');
+    expect(base).not.toContain('.d-settings-frame.d-settings-frame[data-modeless]');
   });
   it('moves the search palette and the other-tab overlay with it', () => {
     expect(rule(app, '.dw-search {')).toContain('var(--d-vvtop, 0px)');

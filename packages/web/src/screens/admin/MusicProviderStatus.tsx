@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { decodeMusicProviderStatus, toHex, type MusicProviderStatusSnapshot } from '@dilla/client-core';
+import { decodeMusicProviderCapability, decodeMusicProviderStatus, toHex, type MusicProviderStatusSnapshot } from '@dilla/client-core';
 import { Button } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
@@ -39,6 +39,8 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     const oauthDeadline = spotifyReturnDeadline(communityId);
     const deadline = oauthDeadline ?? Date.now() + 30_000;
     let requestId = newRequestId();
+    // Ask an operation understood by older bots before sending the new status operation.
+    let operation: 0 | 24 = 0;
     const later = (work: () => Promise<void>) => {
       if (!canRead()) return;
       if (Date.now() >= deadline) { setPhase('unavailable'); return; }
@@ -47,14 +49,19 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     const poll = async (): Promise<void> => {
       if (!canRead()) return;
       try {
-        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [24] }) as Page;
+        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [operation] }) as Page;
         if (!canRead()) return;
-        const response = page.responses.find(row => row.requestId === requestId && row.communityId === communityId && row.operation === 24);
-        // The worker grants an acknowledgement only for an operation-filtered contiguous prefix.
-        if (page.through !== null) await client.call({ m: 'ackBotInteractionResponses', communityId, through: page.through });
-        if (!canRead()) return;
+        const response = page.responses.find(row => row.requestId === requestId && row.communityId === communityId && row.operation === operation);
+        // The worker owns disposable observation acknowledgements, including after this page unmounts.
         if (!response) { later(poll); return; }
         if (response.status !== 0) { setPhase('unavailable'); return; }
+        if (operation === 0) {
+          if (!decodeMusicProviderCapability(response.data)) { setPhase('unavailable'); return; }
+          operation = 24;
+          requestId = newRequestId();
+          await send();
+          return;
+        }
         const observed = decodeMusicProviderStatus(response.data);
         if (toHex(observed.installationId) !== installationId || observed.observedAt > BigInt(Math.floor(Date.now() / 1000) + 5)) throw new Error('invalid observation');
         setSnapshot(observed); setNow(Date.now()); setPhase('known');
@@ -66,7 +73,7 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     const send = async (): Promise<void> => {
       if (!canRead()) return;
       try {
-        const sent = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId, operation: 24, args: [], revision: null }) as { upload: string };
+        const sent = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId, operation, args: [], revision: null }) as { upload: string };
         if (!canRead()) return;
         if (sent?.upload === 'rejected') { setPhase('unavailable'); return; }
         await poll();

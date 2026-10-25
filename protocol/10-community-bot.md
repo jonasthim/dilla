@@ -58,6 +58,16 @@ Operation, arguments, channel requirement, mutation:
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 
+Before requesting operation 24, clients negotiate through operation 0. Its legacy
+response is `[1, actor_id, effective_permission_bits, owner, administrator]`.
+Runtimes that register the provider-status handler return
+`[2, actor_id, effective_permission_bits, owner, administrator, [24]]` instead.
+Both responses are bounded to 128 bytes; actor IDs are nonzero bstr16, permissions
+are uint64, flags are uint0..1, and the capability list contains at most 32 unique
+uint8 operation codes. A legacy, malformed, or unavailable response does not
+authorize sending operation 24. Older runtimes therefore remain usable without
+receiving an unknown operation that could block their interaction delivery.
+
 Operation 24 returns `[version=1, installation_id, observed_at, spotify_account,
 spotify_account_reason, spotify_playback, spotify_playback_reason,
 youtube_playback, youtube_playback_reason]`. `installation_id` is bstr16 and
@@ -70,6 +80,14 @@ state_directory_unavailable`, `8 dependencies_missing`, `9 unsupported_bot`, and
 `10 unavailable`. The response contains no account identifiers, paths, provider
 errors, tokens, or OAuth codes. The handler checks the actor's current
 `manage_community` authority and recomputes the response on an exact replay.
+
+Client workers own disposable observation responses for operations 0 and 24.
+Before an authorized journal read, they cache and acknowledge only a contiguous
+leading observation prefix, never a mutation or another feature's response.
+The in-memory cache holds at most 64 cloned responses for 60 seconds and clears
+with the session. Reads retain their ordinary live authorization checks. This lets
+later readers drain observations after the originating settings page closes,
+without losing another feature's response or treating cached data as fresh evidence.
 
 Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
 

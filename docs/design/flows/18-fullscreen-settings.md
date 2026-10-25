@@ -107,7 +107,12 @@ received; waiting for the bot and returns to Music for a fresh observation.
 Reads poll once per second up to 30 seconds, with an OAuth reconciliation window up
 to 60 seconds. Observations older than 60 seconds are stale with their timestamp.
 Unsupported/offline bots show unavailable and Refresh while configuration stays usable.
-Operation-filtered acknowledgements cannot consume other features' responses.
+An operation-0 capability response must advertise operation 24 before it is sent;
+legacy bots receive no unknown status operation. The worker owns disposable
+capability/status responses, caching at most 64 for 60 seconds and draining only
+a leading observation prefix during authorized journal reads. Leaving Music cannot
+leave its observations blocking later readers, and other features retain ownership
+of their responses.
 
 Real Spotify playback acceptance is separate from automated status-contract tests.
 

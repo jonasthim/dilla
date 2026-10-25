@@ -163,7 +163,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   }, [active, access?.loaded, access?.owner, communityId, shown?.name, account?.user?.id, onMessage, onCompare, announceInWorkspace]);
 
   return <>
-    <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={close}
+    <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('settings.close')} onClose={close}
       identity={shown ? <span>{shown.name}</span> : undefined}
       nav={phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p>
         : <SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
