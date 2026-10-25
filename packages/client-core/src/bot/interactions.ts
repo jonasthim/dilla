@@ -283,6 +283,8 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   const executeRequest = async (input: BotInteractionRequest, requestId: string, fingerprint: string,
     generation: number, scope: BotInteractionScope): Promise<BotInteractionResult> => {
     if (!ID.test(requestId)) throw new Error('Invalid Bot interaction request id.');
+    let uploadAccepted = false;
+    try {
     const send = client.call({ m: 'humanInteractionRequest', communityId,
       channelId: input.channelId ?? null, requestId, operation: input.operation, args: input.args,
       revision: input.revision ?? null }) as Promise<{ requestId: string; upload: string }>;
@@ -297,6 +299,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     if (sent.requestId !== requestId) throw new BotInteractionUncertainError(requestId, 'The worker returned a different request id.');
     if (sent.upload === 'rejected') throw new BotInteractionRejectedError(requestId);
     if (sent.upload !== 'accepted') throw new BotInteractionUncertainError(requestId, 'The Bot interaction upload is still unresolved.');
+    uploadAccepted = true;
     if (generation !== scopeGeneration) throw new BotInteractionUncertainError(requestId, 'The Bot installation or account changed while the request was pending.');
     const identity = requestFingerprints.get(requestId);
     if (identity === undefined || identity.fingerprint !== fingerprint) {
@@ -325,7 +328,23 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
       if (remaining > 0) await new Promise<void>(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL_MS, remaining)));
     }
     throw new BotInteractionUncertainError(requestId, 'Timed out waiting for the Bot interaction response.');
+    } catch (error) {
+      if (error instanceof BotInteractionUncertainError || error instanceof BotInteractionRejectedError
+        || error instanceof BotInteractionBindingMismatchError || error instanceof BotInteractionIdentityConflictError
+        || error instanceof BotInteractionUnverifiableRequestError) throw error;
+      if (!uploadAccepted && isKnownNoEffectWorkerRejection(error)) throw new BotInteractionRejectedError(requestId);
+      const detail = error instanceof Error ? error.message : 'The worker interaction transport failed after dispatch.';
+      throw new BotInteractionUncertainError(requestId, `The Bot interaction may have been accepted, but its result could not be confirmed: ${detail}`);
+    }
   };
+
+  function isKnownNoEffectWorkerRejection(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = 'code' in error ? String(error.code) : '';
+    if (['E_FORBIDDEN', 'E_NOT_FOUND', 'E_CONFLICT', 'E_BAD_INPUT', 'E_BOT_PERMISSION', 'E_BOT_BAD_INPUT'].includes(code)) return true;
+    const status = 'status' in error ? Number(error.status) : NaN;
+    return Number.isInteger(status) && status >= 400 && status < 500;
+  }
 
   const request = (input: BotInteractionRequest): Promise<BotInteractionResult> => {
     const requestId = input.requestId ?? [...crypto.getRandomValues(new Uint8Array(16))]

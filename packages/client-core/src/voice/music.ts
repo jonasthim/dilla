@@ -1,6 +1,6 @@
 import type { CoreClient } from '../bridge';
 import { decode, type CborValue } from '../cbor';
-import { BotInteractionBindingMismatchError, BotInteractionRejectedError, createBotInteractionClient, type BotInteractionScope } from '../bot/interactions';
+import { BotInteractionBindingMismatchError, BotInteractionRejectedError, createBotInteractionClient, type BotInteractionResult, type BotInteractionScope } from '../bot/interactions';
 
 export interface VoiceMusicTrack {
   id: string;
@@ -132,7 +132,9 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       throw new Error('The music attempt id is already bound to another operation.');
     }
     if (record === undefined && attempt !== undefined) {
-      const prior = await interactions.read(attempt.requestId, operation);
+      let prior: BotInteractionResult | null;
+      try { prior = await interactions.read(attempt.requestId, operation); }
+      catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (prior !== null) {
         if (prior.status === 5) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The Bot reported an ambiguous persisted outcome.'));
         if (prior.status !== 0) throw responseError(prior.status, operation === 12 && isSpotifyInput(args[0]));
@@ -172,7 +174,9 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     }
     let result: InteractionResponse;
     if (attempt !== undefined && record.sent) {
-      const reconciled = await interactions.read(attempt.requestId, operation);
+      let reconciled: BotInteractionResult | null;
+      try { reconciled = await interactions.read(attempt.requestId, operation); }
+      catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (reconciled === null) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('No durable result is available yet.'));
       if (!sameInteractionScope(reconciled.scope, record.scope)) {
         try { await refresh(channelId); } catch { /* a new read still uses the live installation scope */ }
@@ -187,6 +191,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
         result = { requestId: resultValue.requestId, channelId, operation, status: resultValue.status, revision: resultValue.revision, data: resultValue.data };
       } catch (error) {
         if (attempt !== undefined && (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)) attempts.delete(attempt.requestId);
+        if (error instanceof Error && 'requestId' in error) throw error;
+        if (attempt !== undefined) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
         throw error;
       }
     }

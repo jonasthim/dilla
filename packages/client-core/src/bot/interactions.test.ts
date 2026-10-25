@@ -193,6 +193,61 @@ it('turns pending and rejected uploads into typed errors carrying the stable req
   expect(rejected.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
 });
 
+it.each(['response read', 'acknowledgement'] as const)('turns raw %s failures after upload acceptance into uncertain outcomes and allows same-id reconciliation', async stage => {
+  let responseReads = 0; let ackCalls = 0; let failed = false;
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') return { requestId: REQUEST, upload: 'accepted' };
+    if (command.m === 'readBotInteractionResponses') {
+      responseReads++;
+      if (stage === 'response read' && !failed) { failed = true; throw Object.assign(new Error('read connection lost'), { status: 403 }); }
+      return { responses: [response()], through: stage === 'acknowledgement' && ackCalls === 0 ? 'b'.repeat(32) : null };
+    }
+    if (command.m === 'ackBotInteractionResponses') {
+      ackCalls++;
+      if (stage === 'acknowledgement' && ackCalls === 1) throw Object.assign(new Error('ack connection lost'), { status: 403 });
+      return null;
+    }
+    return null;
+  });
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  await expect(api.request({ requestId: REQUEST, operation: 70, args: ['immutable'] }))
+    .rejects.toMatchObject({ name: 'BotInteractionUncertainError', requestId: REQUEST });
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+  await expect(api.read(REQUEST, 70)).resolves.toMatchObject({ status: 0, requestId: REQUEST });
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+  expect(responseReads).toBeGreaterThanOrEqual(2);
+});
+
+it('treats a raw upload response failure after dispatch as uncertain and reconciles without resending', async () => {
+  let sends = 0; let loseUploadResponse = true;
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') {
+      sends++;
+      if (loseUploadResponse) { loseUploadResponse = false; throw new Error('upload response connection lost'); }
+      return { requestId: REQUEST, upload: 'accepted' };
+    }
+    if (command.m === 'readBotInteractionResponses') return { responses: [response()], through: null };
+    return null;
+  });
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  await expect(api.request({ requestId: REQUEST, operation: 70, args: ['effect'] }))
+    .rejects.toMatchObject({ name: 'BotInteractionUncertainError', requestId: REQUEST });
+  await expect(api.read(REQUEST, 70)).resolves.toMatchObject({ status: 0, requestId: REQUEST });
+  expect(sends).toBe(1);
+});
+
+it('does not wrap pre-dispatch authorization errors as mutation uncertainty', async () => {
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') throw new Error('authorization lookup failed');
+    return null;
+  });
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args: [] }))
+    .rejects.toThrow('authorization lookup failed');
+  expect(f.calls.some(call => call.m === 'humanInteractionRequest')).toBe(false);
+});
+
 it('snapshots caller-owned bytes before awaiting installation authorization', async () => {
   let statusReads = 0;
   let finishStatus: ((value: unknown) => void) | undefined;

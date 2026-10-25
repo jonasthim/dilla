@@ -77,6 +77,21 @@ function accountScopeKey(client: CoreClient, communityId: string, requestId: str
   const account = client.get('account');
   return `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}:${communityId}:${requestId}`;
 }
+const musicCommandAttempts = new WeakMap<CoreClient, Map<string, true>>();
+function musicCommandAttemptStore(client: CoreClient): Map<string, true> {
+  let store = musicCommandAttempts.get(client); if (store === undefined) { store = new Map(); musicCommandAttempts.set(client, store); }
+  return store;
+}
+function hasMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): boolean {
+  return musicCommandAttemptStore(client).has(accountScopeKey(client, communityId, requestId));
+}
+function markMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): void {
+  const store = musicCommandAttemptStore(client); const key = accountScopeKey(client, communityId, requestId);
+  store.set(key, true); while (store.size > 128) store.delete(store.keys().next().value!);
+}
+function clearMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): void {
+  musicCommandAttemptStore(client).delete(accountScopeKey(client, communityId, requestId));
+}
 async function runAnnouncementMutation(client: CoreClient, communityId: string, parentId: string, stage: string, operation: 51 | 52,
   args: readonly (string | number | Uint8Array | null)[], revision: string, scope: BotInteractionScope): Promise<BotInteractionResult> {
   const store = announcementAttemptStore(client); const key = accountScopeKey(client, communityId, parentId);
@@ -95,11 +110,16 @@ async function runAnnouncementMutation(client: CoreClient, communityId: string, 
   }
   const api = createBotInteractionClient(client, communityId);
   if (attempt.sent) {
-    const prior = await api.read(attempt.requestId, operation);
+    let prior: BotInteractionResult | null;
+    try { prior = await api.read(attempt.requestId, operation); }
+    catch (error) { throw new BotInteractionUncertainError(attempt.requestId, `Could not reconcile the prior schedule mutation: ${error instanceof Error ? error.message : 'read failed'}`); }
     if (prior === null) throw new BotInteractionUncertainError(attempt.requestId, 'The prior announcement result is still pending. Reconcile this same request before editing the schedule again.');
     return prior;
   }
-  const persisted = await api.read(attempt.requestId, operation);
+  let persisted: BotInteractionResult | null;
+  try { persisted = await api.read(attempt.requestId, operation); }
+  catch (error) { throw new BotInteractionUncertainError(attempt.requestId,
+    `Could not reconcile the prior schedule request ID: ${error instanceof Error ? error.message : 'read failed'}`); }
   if (persisted !== null) { attempt.sent = true; return persisted; }
   attempt.sent = true;
   try {
@@ -188,20 +208,43 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
   const musicHandler = useCallback(async (invocation: CommandInvocation, context: CommandExecutionContext): Promise<CommandResult> => {
     const cid = context.binding.communityId;
     if (cid === null || cid !== communityId) return fail('Music commands need an active community voice call.');
+    const pendingAttempt = hasMusicCommandAttempt(client, cid, context.requestId);
+    if (!context.isCurrent()) return pendingAttempt ? uncertain('This music attempt is still pending; return to its original command context to reconcile it.')
+      : fail('The command context is no longer active.');
     const channelId = requireCommunity(context, cid);
-    if (channelId === null) return fail('Join a voice channel in this community before using music commands.');
+    if (channelId === null) return pendingAttempt ? uncertain('This music attempt is still pending. Rejoin its community voice call before reconciling it.')
+      : fail('Join a voice channel in this community before using music commands.');
     try {
-      const { adapter } = await freshMusicState(context, cid, channelId);
-      if (!context.isCurrent()) return uncertain('The conversation changed while music state was loading.');
+      let adapter: ReturnType<typeof createVoiceMusicAdapter>;
+      try { ({ adapter } = await freshMusicState(context, cid, channelId)); }
+      catch (error) {
+        if (pendingAttempt) return uncertain(`This music attempt is still pending, but the Bot player is unavailable for reconciliation (${error instanceof Error ? error.message : 'unknown error'}).`);
+        throw error;
+      }
+      if (!context.isCurrent()) return pendingAttempt ? uncertain('This music attempt is still pending, but the conversation changed while music state was loading.')
+        : fail('The conversation changed while music state was loading.');
       const fresh = adapter.state(channelId);
-      if (fresh.status !== 'available') return fail('The Bot music player is unavailable.');
+      if (fresh.status !== 'available') return pendingAttempt ? uncertain('This music attempt is still pending; the Bot player is currently unavailable.')
+        : fail('The Bot music player is unavailable.');
       if (['queue', 'nowplaying', 'music', 'music help'].includes(invocation.commandId)) return musicReadSummary(invocation.commandId, invocation, context, fresh);
-      if (!fresh.permissions.control) return fail('A DJ, owner, or administrator must control music in this voice channel.');
-      if (!voiceStillCurrent(context, cid, channelId)) return fail('The voice call changed before the command ran.');
+      if (!fresh.permissions.control) return pendingAttempt ? uncertain('This music attempt is still pending; ask a DJ, owner, or administrator to restore control before reconciling it.')
+        : fail('A DJ, owner, or administrator must control music in this voice channel.');
+      if (!voiceStillCurrent(context, cid, channelId)) return pendingAttempt ? uncertain('This music attempt is still pending; return to its original active call to reconcile it.')
+        : fail('The voice call changed before the command ran.');
       const attempt = (stage: string) => ({ requestId: childId(context.requestId, `music:${stage}`) });
-      const applyControl = async (action: Promise<void>) => {
-        await action;
-        return voiceStillCurrent(context, cid, channelId);
+      const runMutation = async (action: () => void | Promise<void>) => {
+        markMusicCommandAttempt(client, cid, context.requestId);
+        try { await action(); }
+        catch (error) {
+          if (resultError(error).status !== 'uncertain') clearMusicCommandAttempt(client, cid, context.requestId);
+          throw error;
+        }
+      };
+      const applyControl = async (action: () => void | Promise<void>) => {
+        await runMutation(action);
+        if (!voiceStillCurrent(context, cid, channelId)) return false;
+        clearMusicCommandAttempt(client, cid, context.requestId);
+        return true;
       };
       switch (invocation.commandId) {
         case 'play': {
@@ -217,82 +260,100 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             if (first === undefined) return fail('No YouTube tracks matched that search.');
             selected = first.input;
           }
-          await adapter.enqueue(channelId, selected, attempt('enqueue'));
+          await runMutation(() => adapter.enqueue(channelId, selected, attempt('enqueue')));
           if (!context.isCurrent() || requireCommunity(context, cid) !== channelId)
-            return ok('The track was added, but playback was not resumed because the voice call changed.');
+            { clearMusicCommandAttempt(client, cid, context.requestId); return ok('The track was added, but playback was not resumed because the voice call changed.'); }
           const afterEnqueue = adapter.state(channelId);
           if (afterEnqueue.status === 'available' && afterEnqueue.paused) {
-            try { await adapter.pause(channelId, false, attempt('resume')); }
-            catch (error) { return ok(`Added ${selected}; playback did not resume (${error instanceof Error ? error.message : 'unknown result'}). The track is already in the queue.`); }
+            try { await runMutation(() => adapter.pause(channelId, false, attempt('resume'))); }
+            catch (error) {
+              if (resultError(error).status === 'uncertain') return resultError(error);
+              clearMusicCommandAttempt(client, cid, context.requestId);
+              return ok(`Added ${selected}; playback did not resume (${error instanceof Error ? error.message : 'unknown result'}). The track is already in the queue.`);
+            }
           }
+          clearMusicCommandAttempt(client, cid, context.requestId);
           return ok('Track added to the music queue.');
         }
-        case 'pause': return await applyControl(Promise.resolve(adapter.pause(channelId, true, attempt('pause'))))
+        case 'pause': return await applyControl(() => adapter.pause(channelId, true, attempt('pause')))
           ? ok('Music paused.') : uncertain('Music was updated, but the active voice call changed before completion.');
-        case 'resume': return await applyControl(Promise.resolve(adapter.pause(channelId, false, attempt('resume'))))
+        case 'resume': return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
           ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
-        case 'skip': return await applyControl(Promise.resolve(adapter.skip(channelId, attempt('skip'))))
+        case 'skip': return await applyControl(() => adapter.skip(channelId, attempt('skip')))
           ? ok('Skipped the current track.') : uncertain('Music was updated, but the active voice call changed before completion.');
-        case 'stop': return await applyControl(Promise.resolve(adapter.stop(channelId, attempt('stop'))))
+        case 'stop': return await applyControl(() => adapter.stop(channelId, attempt('stop')))
           ? ok('Music stopped.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'seek': {
           const ms = parsePosition(invocation.args.position ?? '', fresh.track?.durationMs ?? Number.MAX_SAFE_INTEGER);
           if (ms === null) return fail('Use seconds, mm:ss, or hh:mm:ss within the current track.');
-          return await applyControl(Promise.resolve(adapter.seek(channelId, ms, attempt('seek'))))
+          return await applyControl(() => adapter.seek(channelId, ms, attempt('seek')))
             ? ok('Playback position updated.') : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'volume': {
           const volume = Number(invocation.args.level);
           if (!Number.isInteger(volume) || volume < 0 || volume > 100) return fail('Volume must be from 0 to 100.');
-          return await applyControl(Promise.resolve(adapter.setVolume(channelId, volume, attempt('volume'))))
+          return await applyControl(() => adapter.setVolume(channelId, volume, attempt('volume')))
             ? ok(`Volume set to ${volume}%.`) : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'shuffle': {
           const enabled = invocation.args.mode === 'on';
-          return await applyControl(Promise.resolve(adapter.setShuffle(channelId, enabled, attempt(`shuffle:${enabled ? 'on' : 'off'}`))))
+          return await applyControl(() => adapter.setShuffle(channelId, enabled, attempt(`shuffle:${enabled ? 'on' : 'off'}`)))
             ? ok(`Shuffle ${enabled ? 'enabled' : 'disabled'}.`) : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'repeat': {
           const mode = invocation.args.mode;
           if (mode !== 'off' && mode !== 'one' && mode !== 'all') return fail('Repeat mode must be off, one, or all.');
-          return await applyControl(Promise.resolve(adapter.setRepeat(channelId, mode, attempt(`repeat:${mode}`))))
+          return await applyControl(() => adapter.setRepeat(channelId, mode, attempt(`repeat:${mode}`)))
             ? ok(`Repeat set to ${mode}.`) : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'queue remove': {
           const id = invocation.args.item ?? '';
-          return await applyControl(Promise.resolve(adapter.remove(channelId, id, attempt(`queue:remove:${id}`))))
+          return await applyControl(() => adapter.remove(channelId, id, attempt(`queue:remove:${id}`)))
             ? ok('Removed the track from the queue.') : uncertain('The queue was updated, but the active voice call changed before completion.');
         }
         case 'queue move': {
           const id = invocation.args.item ?? '';
           const position = Number(invocation.args.position);
           if (!Number.isInteger(position) || position < 1) return fail('Choose a position within the current queue.');
-          return await applyControl(Promise.resolve(adapter.move(channelId, id, position - 1, attempt(`queue:move:${id}:${position}`))))
+          return await applyControl(() => adapter.move(channelId, id, position - 1, attempt(`queue:move:${id}:${position}`)))
             ? ok(`Moved the track to position ${position}.`) : uncertain('The queue was updated, but the active voice call changed before completion.');
         }
-        case 'queue clear': return await applyControl(Promise.resolve(adapter.clearQueue(channelId, attempt('queue:clear'))))
+        case 'queue clear': return await applyControl(() => adapter.clearQueue(channelId, attempt('queue:clear')))
           ? ok('Music queue cleared.') : uncertain('The queue was cleared, but the active voice call changed before completion.');
         default: return fail('Unsupported music command.');
       }
-    } catch (error) { return resultError(error); }
-  }, [communityId]);
+    } catch (error) {
+      const result = resultError(error);
+      if (result.status === 'uncertain') markMusicCommandAttempt(client, cid, context.requestId);
+      else clearMusicCommandAttempt(client, cid, context.requestId);
+      return result;
+    }
+  }, [client, communityId]);
 
   const announcementHandler = useCallback(async (invocation: CommandInvocation, context: CommandExecutionContext): Promise<CommandResult> => {
     const cid = context.binding.communityId;
     if (cid === null || cid !== communityId) return fail('Announcements are available only in this community.');
+    const attemptKey = accountScopeKey(client, cid, context.requestId);
+    const pendingAttempt = announcementAttemptStore(client).get(attemptKey);
+    if (!validateCurrent(context, cid, 'manageCommunity')) return pendingAttempt?.sent === true
+      ? uncertain('This schedule attempt is still pending. Restore Manage Community permission in its original community to reconcile it.')
+      : fail('Manage Community permission is required.');
     try {
-      if (!validateCurrent(context, cid, 'manageCommunity')) return fail('Manage Community permission is required.');
       const api = createBotInteractionClient(client, cid);
       const scopeResult = await api.request({ requestId: childId(context.requestId, 'announcement:scope'), operation: 50, args: [0] });
-      if (!context.isCurrent() || !validateCurrent(context, cid, 'manageCommunity')) return fail('The community or permission changed before the announcement request.');
-      if (scopeResult.status !== 0) return fail(scopeResult.status === 2 ? 'Manage Community permission is required.' : 'Announcements are unavailable.');
+      if (!context.isCurrent() || !validateCurrent(context, cid, 'manageCommunity')) return pendingAttempt?.sent === true
+        ? uncertain('This schedule attempt is still pending. Restore its command context and permission to reconcile it.')
+        : fail('The community or permission changed before the announcement request.');
+      if (scopeResult.status !== 0) return pendingAttempt?.sent === true
+        ? uncertain('A prior schedule mutation is still pending; restore community access and reconcile its original request.')
+        : fail(scopeResult.status === 2 ? 'Manage Community permission is required.' : 'Announcements are unavailable.');
       const scope = scopeResult.scope;
-      const attemptKey = accountScopeKey(client, cid, context.requestId);
-      const pending = announcementAttemptStore(client).get(attemptKey);
+      const pending = pendingAttempt;
       if (pending !== undefined) {
         const reconciled = await runAnnouncementMutation(client, cid, context.requestId, pending.operation === 52 ? 'delete' : 'save', pending.operation,
           pending.args, pending.revision, scope);
         if (reconciled.status === 0) {
+          if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The schedule result is available, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
           if (!sameInteractionScope(reconciled.scope, pending.scope)) return uncertain('The original schedule attempt is bound to a previous Bot installation. Reconcile that result before starting another edit.');
           if (!confirmedAnnouncementMutation(reconciled, pending.revision)) return uncertain('The Bot accepted the schedule change, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(attemptKey);
@@ -318,6 +379,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const storeKey = accountScopeKey(client, cid, context.requestId);
         const result = await runAnnouncementMutation(client, cid, context.requestId, 'delete', 52, [fromHex(row.id), row.revision], listed.revision, scope);
         if (result.status === 0) {
+          if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The deletion was accepted, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
           if (!sameInteractionScope(result.scope, scope)) return uncertain('The deletion was accepted, but the Bot installation changed before its result could be confirmed.');
           if (!confirmedAnnouncementMutation(result, listed.revision)) return uncertain('The Bot accepted deletion, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(storeKey); return ok('Scheduled announcement deleted.');
@@ -343,6 +405,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       const saved = await runAnnouncementMutation(client, cid, context.requestId, 'save', 51,
         [existing === undefined ? null : fromHex(existing.id), encoded], listed.revision, scope);
       if (saved.status === 0) {
+        if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The schedule was accepted, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
         if (!sameInteractionScope(saved.scope, scope)) return uncertain('The schedule save was accepted, but the Bot installation changed before its result could be confirmed.');
         if (!confirmedAnnouncementMutation(saved, listed.revision)) return uncertain('The Bot accepted the schedule, but its revision receipt was malformed. Refresh the list before retrying.');
         announcementAttemptStore(client).delete(storeKey);
@@ -352,16 +415,24 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       announcementAttemptStore(client).delete(storeKey);
       return saved.status === 4 ? fail('The schedule changed before saving. Refresh the announcement list and try again.')
         : fail(saved.status === 2 ? 'Manage Community permission is required.' : 'The announcement could not be saved.');
-    } catch (error) { return resultError(error); }
+    } catch (error) {
+      const result = resultError(error);
+      const currentAttempt = announcementAttemptStore(client).get(attemptKey);
+      return currentAttempt?.sent === true && result.status === 'uncertain'
+        ? uncertain('This schedule mutation may have been sent. Retry this same request to reconcile it; do not start a new attempt.')
+        : result;
+    }
   }, [client, communityId, openDialog]);
 
   const rolePanelHandler = useCallback(async (_invocation: CommandInvocation, context: CommandExecutionContext): Promise<CommandResult> => {
     const cid = context.binding.communityId;
     if (cid === null || cid !== communityId) return fail('Role panels are available only in this community.');
-    if (!validateCurrent(context, cid, 'manageRoles')) return fail('Manage Roles permission is required.');
     const accountScope = `${client.get('account')?.instance?.id ?? ''}:${client.get('account')?.user?.id ?? ''}`;
     const roleAttemptKey = `${accountScope}:${cid}:${context.requestId}`;
     let pending = rolePanelAttempts(client).get(roleAttemptKey);
+    if (!validateCurrent(context, cid, 'manageRoles')) return pending?.sent === true || pending?.published === true
+      ? uncertain('This role panel attempt is still pending. Restore Manage Roles permission in its original community to reconcile publication or registration.')
+      : fail('Manage Roles permission is required.');
     try {
       if (pending === undefined) {
         const api = createBotInteractionClient(client, cid);
@@ -392,10 +463,14 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const api = createBotInteractionClient(client, cid);
         let published;
         if (pending.sent) {
-          published = await api.read(pending.publishId, 31);
+          try { published = await api.read(pending.publishId, 31); }
+          catch (error) { throw new BotInteractionUncertainError(pending.publishId,
+            `Could not reconcile the prior role panel publication: ${error instanceof Error ? error.message : 'read failed'}`); }
           if (published === null) return uncertain('The role panel publication may still be pending. Retry to reconcile the same request; it will not publish a second panel.');
         } else {
-          published = await api.read(pending.publishId, 31);
+          try { published = await api.read(pending.publishId, 31); }
+          catch (error) { throw new BotInteractionUncertainError(pending.publishId,
+            `Could not reconcile the prior role panel request ID: ${error instanceof Error ? error.message : 'read failed'}`); }
           if (published !== null) {
             pending.sent = true;
             pending.published = true;
@@ -439,9 +514,14 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         return uncertain('The panel registration was sent, but the current command context or permission changed before confirmation. Retry to reconcile this same registration ID.');
       rolePanelAttempts(client).delete(roleAttemptKey);
       return ok('Role panel published and registered.');
-    } catch (error) { return pending?.published === true || pending?.accepted !== null && pending?.accepted !== undefined
-      ? uncertain('The panel message was accepted, but local registration is not confirmed. Retry this command to finish registration without publishing again.')
-      : resultError(error); }
+    } catch (error) {
+      const result = resultError(error);
+      if (pending?.sent === true && result.status === 'uncertain')
+        return uncertain('This role panel publication or registration may already have been sent. Retry this same request to reconcile it; do not start another publication.');
+      return pending?.published === true || pending?.accepted !== null && pending?.accepted !== undefined
+        ? uncertain('The panel message was accepted, but local registration is not confirmed. Retry this command to finish registration without publishing again.')
+        : result;
+    }
   }, [client, communityId, openDialog]);
 
   const handlers = useMemo<CommandProviderHandlers>(() => ({

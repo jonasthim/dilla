@@ -211,10 +211,12 @@ function fakeUtilityCore(options: {
   status?: () => unknown;
   response?: (operation: number, requestId: string, command: Record<string, unknown>) => { status?: number; revision?: string | null; data: Uint8Array };
   upload?: (command: Record<string, unknown>) => string;
+  failReadAfterUpload?: number[];
   enforceRequestIdentity?: boolean;
 }) {
   const calls: Record<string, unknown>[] = [];
   const identities = new Map<string, string>();
+  const sentOperations = new Set<number>();
   const client = {
     get: (name: string) => name === 'account' ? { phase: 'ready', user: { id: USER, username: 'member' }, deviceId: hex(5) }
       : name === 'communities' ? [{ id: COMMUNITY }] : name === `permissions:${COMMUNITY}` ? { loaded: true } : undefined,
@@ -223,6 +225,7 @@ function fakeUtilityCore(options: {
       calls.push(command);
       if (command.m === 'getBotCommandStatus') return options.status?.() ?? statusRow();
       if (command.m === 'humanInteractionRequest') {
+        sentOperations.add(Number(command.operation));
         if (options.enforceRequestIdentity) {
           const requestId = String(command.requestId);
           const fingerprint = JSON.stringify([command.operation, command.channelId, command.args, command.revision]);
@@ -235,6 +238,10 @@ function fakeUtilityCore(options: {
       if (command.m === 'readBotInteractionResponses') {
         const operation = (command.operations as number[])[0];
         const requestId = (command.requestIds as string[])[0];
+        if (options.failReadAfterUpload?.includes(operation) && sentOperations.has(operation)) {
+          options.failReadAfterUpload = options.failReadAfterUpload.filter(value => value !== operation);
+          throw new Error(`response read failed after upload for ${operation}`);
+        }
         const result = options.response?.(operation, requestId, command) ?? { data: capabilityData(), revision: null };
         return { responses: [{ deliveryId: '1', requestId, operation, status: result.status ?? 0, revision: result.revision ?? null, data: result.data }], through: hex(4) };
       }
@@ -359,6 +366,19 @@ describe('createBotUtilities facade', () => {
         expect(error.cause).toBeInstanceOf(BotInteractionUncertainError);
       }
     }
+    expect(f.calls.filter(call => call.m === 'humanInteractionRequest' && call.operation === 73)).toHaveLength(1);
+  });
+
+  it('retains a utility mutation ID after a raw response-read error and reconciles through read()', async () => {
+    const f = fakeUtilityCore({ failReadAfterUpload: [73], response: operation => ({
+      data: operation === 3 ? capabilityData() : pollSummaryForId(hex(1), hex(2), null, [0n], 2n),
+      revision: operation === 3 ? null : '2',
+    }) });
+    const api = createBotUtilities(f.client, COMMUNITY);
+    await expect(api.pollVote({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), choices: [0], revision: '1' }))
+      .rejects.toMatchObject({ constructor: BotUtilitiesUncertainMutationError, requestId: REQUEST_ID, operation: 73 });
+    expect(f.calls.filter(call => call.m === 'humanInteractionRequest' && call.operation === 73)).toHaveLength(1);
+    await expect(api.read(REQUEST_ID, 73)).resolves.toMatchObject({ status: 0, requestId: REQUEST_ID });
     expect(f.calls.filter(call => call.m === 'humanInteractionRequest' && call.operation === 73)).toHaveLength(1);
   });
 

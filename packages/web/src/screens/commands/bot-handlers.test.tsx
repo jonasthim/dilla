@@ -19,8 +19,8 @@ function musicSnapshot(revision: number, paused: boolean, queue: { id: string; p
 }
 function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean; invalidRefreshAfterEnqueue?: boolean; seededQueue?: boolean; seedSchedule?: boolean;
   malformedAnnouncementReceipt?: boolean; ambiguousOperations?: number[]; unknownUploads?: number[]; disabledSchedule?: boolean; invalidMusicReceipt?: boolean;
-  djControl?: boolean } = {}) {
-  let musicRevision = 1; let paused = true; let badSnapshotOnce = false; let positionMs = 0; let volume = 70; let shuffle = false; let repeat = 0; let installRevision = '9';
+  djControl?: boolean; readFailureOperations?: number[] } = {}) {
+  let musicRevision = 1; let paused = true; let badSnapshotOnce = false; let positionMs = 0; let volume = 70; let shuffle = false; let repeat = 0; let installRevision = '9'; let botState = 3;
   let currentTrack: { id: string; provider: string; canonical: string; title: string; artist: string } | null = { id: CURRENT_ITEM, provider: 'youtube', canonical: 'mnopqrstuvw', title: 'Current track', artist: 'Listener' };
   let queue: { id: string; provider: string; canonical: string; title: string; artist: string }[] = options.seededQueue
     ? [{ id: ITEM, provider: 'youtube', canonical: 'abcdefghijk', title: 'Queued track', artist: 'Listener' },
@@ -30,17 +30,19 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
   let failRegistrationOnce = options.failRegistrationOnce === true;
   const registeredPanels = new Map<string, Wire>();
   const requests: Wire[] = []; const responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null; status: number; revision: string | null; data: Uint8Array }[] = [];
+  const dispatchedOperations = new Set<number>();
   let delivery = 0;
   const client = {
     // eslint-disable-next-line @typescript-eslint/require-await -- models CoreClient.call while resolving each worker command.
     call: vi.fn(async (command: Wire): Promise<unknown> => {
-      if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: installRevision };
+      if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: botState, revision: installRevision };
       if (command.m === 'listSelfRoles') return [{ id: '88'.repeat(16), name: 'Reader' }];
       if (command.m === 'registerRolePanel') { requests.push(command); if (failRegistrationOnce) { failRegistrationOnce = false; throw new Error('temporary registration failure'); }
         registeredPanels.set(String(command.requestId), command); return null; }
       if (command.m === 'humanInteractionRequest') {
         requests.push(command);
         const operation = command.operation as number; const id = command.requestId as string;
+        dispatchedOperations.add(operation);
         let status = 0; let revision: string | null = null; let data: Uint8Array = encode([]);
         if ([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].includes(operation)) {
           if (options.djControl === false) status = 2;
@@ -70,11 +72,11 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
         if (operation === 50) { revision = String(announcementRevision); data = encode([1n, 0n, BigInt(schedules.length), schedules as never]); }
         if (operation === 51) {
           const value = decode((command.args as unknown[])[1] as Uint8Array) as unknown[];
-          if ((command.args as unknown[])[0] === null) schedules.push(value);
+          if ((command.args as unknown[])[0] === null) schedules.push(value.slice(1));
           else { const id = value[1] as Uint8Array; const index = schedules.findIndex(row => row[0] instanceof Uint8Array && Array.from(row[0]).join(',') === Array.from(id).join(',')); if (index >= 0) schedules[index] = value.slice(1); }
           announcementRevision++; revision = String(announcementRevision);
         }
-        if (operation === 52) { announcementRevision++; revision = String(announcementRevision); }
+        if (operation === 52) { const id = (command.args as unknown[])[0] as Uint8Array; const index = schedules.findIndex(row => row[0] instanceof Uint8Array && Array.from(row[0]).join(',') === Array.from(id).join(',')); if (index >= 0) schedules.splice(index, 1); announcementRevision++; revision = String(announcementRevision); }
         if (operation === 31) data = encode([fromHex(TEXT), 99n]);
         if (operation === 51 && options.malformedAnnouncementReceipt) data = Uint8Array.of(0xff);
         if (operation === 13 && options.invalidMusicReceipt) data = Uint8Array.of(0xff);
@@ -85,6 +87,9 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
       }
       if (command.m === 'readBotInteractionResponses') {
         const operations = command.operations as number[]; const requestIds = command.requestIds as string[];
+        const readFailures = options.readFailureOperations ?? [];
+        const failedOperation = readFailures.find(operation => operations.includes(operation) && dispatchedOperations.has(operation));
+        if (failedOperation !== undefined) { options.readFailureOperations = readFailures.filter(operation => operation !== failedOperation); throw new Error(`response read failed for ${failedOperation}`); }
         return { responses: responses.filter(row => operations.includes(row.operation) && requestIds.includes(row.requestId)), through: null, blocked: false };
       }
       if (command.m === 'ackBotInteractionResponses') return null;
@@ -97,7 +102,7 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
     subscribe: () => () => undefined, onCallKeys: () => () => undefined, dispose: () => undefined,
   } as unknown as CoreClient;
   return { client, requests, schedules, registeredPanels, get musicState() { return { queue, currentTrack, paused, positionMs, volume, shuffle, repeat }; },
-    setInstallRevision(value: string) { installRevision = value; }, reorderQueue() { queue = [...queue].reverse(); musicRevision++; } };
+    setInstallRevision(value: string) { installRevision = value; }, setBotState(value: number) { botState = value; }, reorderQueue() { queue = [...queue].reverse(); musicRevision++; } };
 }
 function commandContext(client: CoreClient, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
   const binding: Binding = { communityId: COMMUNITY, channelId: TEXT, bits: PERM.manageCommunity | PERM.manageRoles };
@@ -197,6 +202,46 @@ describe('Bot slash command provider', () => {
     const context = commandContext(f.client); const invocation = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
     expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'uncertain' });
     expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'uncertain' });
+    expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
+    expect(f.musicState.queue).toHaveLength(1);
+  });
+
+  it('preserves an uncertain enqueue across DJ and call loss, then reconciles with the same parent ID', async () => {
+    const options = { unknownUploads: [12], djControl: true }; const f = fixture(options); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    options.djControl = false;
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    options.djControl = true;
+    context.getCall = () => ({ channelId: VOICE, session: null } as never);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    context.getCall = () => ({ channelId: VOICE, session: {} } as never);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
+    expect(f.musicState.queue).toHaveLength(1);
+  });
+
+  it('preserves an uncertain enqueue across Bot provider downtime and recovers on the same parent ID', async () => {
+    const f = fixture({ unknownUploads: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    f.setBotState(4);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    f.setBotState(3);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
+    expect(f.musicState.queue).toHaveLength(1);
+  });
+
+  it('keeps the enqueue uncertain when the worker response read fails after upload acceptance', async () => {
+    const f = fixture({ readFailureOperations: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    expect(f.musicState.queue).toHaveLength(1);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'success' });
     expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
     expect(f.musicState.queue).toHaveLength(1);
   });
@@ -326,6 +371,10 @@ describe('Bot slash command provider', () => {
     expect(result).toMatchObject({ status: 'success', private: true, message: 'Scheduled announcement deleted.' });
     const deletion = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 52)!;
     expect(deletion).toMatchObject({ revision: '1', args: [fromHex('99'.repeat(16)), 1] });
+    expect(f.schedules).toHaveLength(0);
+    const listed = await capture.value!.handlers['announcement list']!({ commandId: 'announcement list', args: {} },
+      commandContext(f.client, { requestId: 'ad'.repeat(16) }));
+    expect(listed).toMatchObject({ status: 'success', message: 'No scheduled announcements.' });
   });
 
   it('opens a focused role panel editor and uses separate publication and registration IDs', async () => {
@@ -353,6 +402,9 @@ describe('Bot slash command provider', () => {
     await user.type(screen.getByLabelText('Reaction for Reader'), '📚');
     await user.click(screen.getByRole('button', { name: 'Publish panel' }));
     expect(await first).toMatchObject({ status: 'uncertain', private: true });
+    context.getCurrentBinding = () => ({ ...context.binding, bits: 0 });
+    expect(await capture.value!.handlers['rolepanel create']!({ commandId: 'rolepanel create', args: {} }, context)).toMatchObject({ status: 'uncertain' });
+    context.getCurrentBinding = () => context.binding;
     const retry = await capture.value!.handlers['rolepanel create']!({ commandId: 'rolepanel create', args: {} }, context);
     expect(retry).toMatchObject({ status: 'success', private: true });
     expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 31)).toHaveLength(1);
@@ -394,6 +446,10 @@ describe('Bot slash command provider', () => {
     const save = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 51)!;
     expect(save.args).toHaveLength(2); expect(save.revision).toBe('1');
     expect((decode((save.args as unknown[])[1] as Uint8Array) as unknown[])[3]).toBe('Meet at noon');
+    const listed = await capture.value!.handlers['announcement list']!({ commandId: 'announcement list', args: {} },
+      commandContext(f.client, { requestId: 'ae'.repeat(16) }));
+    expect(listed).toMatchObject({ status: 'success' });
+    expect(listed.message).toContain('Meet at noon');
   });
 
   it('keeps the original announcement request and body when an accepted save has a malformed receipt', async () => {
@@ -423,5 +479,45 @@ describe('Bot slash command provider', () => {
     expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'uncertain' });
     expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
     expect(f.schedules).toHaveLength(1);
+  });
+
+  it('keeps an accepted announcement attempt uncertain across Manage Community loss and retries the same ID', async () => {
+    const f = fixture({ readFailureOperations: [51] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    const user = userEvent.setup(); mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'announcement create', args: { text: 'Stable schedule' } };
+    const pending = capture.value!.handlers['announcement create']!(invoke, context);
+    await screen.findByRole('dialog', { name: 'Schedule an announcement' }); await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await pending).toMatchObject({ status: 'uncertain' });
+    context.getCurrentBinding = () => ({ ...context.binding, bits: 0 });
+    expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    context.getCurrentBinding = () => context.binding;
+    expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
+    expect(f.schedules).toHaveLength(1);
+  });
+
+  it('reconciles announcement response-read failure without publishing another schedule', async () => {
+    const f = fixture({ readFailureOperations: [51] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    const user = userEvent.setup(); mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'announcement create', args: { text: 'Read recovery' } };
+    const pending = capture.value!.handlers['announcement create']!(invoke, context);
+    await screen.findByRole('dialog', { name: 'Schedule an announcement' }); await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await pending).toMatchObject({ status: 'uncertain' });
+    expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
+    expect(f.schedules).toHaveLength(1);
+  });
+
+  it('reconciles role panel response-read failure without publishing twice', async () => {
+    const f = fixture({ readFailureOperations: [31] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    const user = userEvent.setup(); mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'rolepanel create', args: {} };
+    const pending = capture.value!.handlers['rolepanel create']!(invoke, context);
+    await user.click(await screen.findByRole('checkbox', { name: 'Reader' })); await user.type(screen.getByLabelText('Reaction for Reader'), '📚');
+    await user.click(screen.getByRole('button', { name: 'Publish panel' }));
+    expect(await pending).toMatchObject({ status: 'uncertain' });
+    expect(await capture.value!.handlers['rolepanel create']!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 31)).toHaveLength(1);
+    expect(f.requests.filter(row => row.m === 'registerRolePanel')).toHaveLength(1);
   });
 });
