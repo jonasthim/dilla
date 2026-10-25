@@ -296,12 +296,15 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: ch.ID, Kind: g.Kind})
 		if e != nil {
-			// A locally held group may no longer include this device in the server's
-			// current roster. Member-only source reads then answer 404 for either a
-			// text or call group. Keep other groups and readiness reconciliation
-			// moving; a later pass retries if membership returns.
+			// A locally held group can outlive its server membership. Ordinary
+			// member-only reads answer 404; the managed-session gate answers 403
+			// for a closed call group. Calls are optional, so neither refusal may
+			// block the installation's text/interaction reconciliation. Do not
+			// apply or acknowledge denied sources; retry on the next pass, with
+			// fresh call admission still required before music can publish.
 			var apiErr *client.APIError
-			if errors.As(e, &apiErr) && apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
+			if errors.As(e, &apiErr) && (apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" ||
+				g.Kind == 1 && apiErr.Status == 403 && apiErr.Code == "E_FORBIDDEN") {
 				continue
 			}
 			phase := MembershipPhaseTextSourceSync

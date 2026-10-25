@@ -63,6 +63,23 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const page = owner.page;
   const djPage = dj.page;
   const djTwoPage = djTwo.page;
+  const sandboxOrigin = new URL(process.env.DILLA_TEST_HOST!).origin;
+  let djAuthorization = '';
+  djPage.on('request', request => {
+    if (!request.url().startsWith(`${sandboxOrigin}/`)) return;
+    const authorization = request.headers()['authorization'];
+    if (authorization?.startsWith('Bearer ')) djAuthorization = authorization;
+  });
+  const currentCallGroup = async (channel: string): Promise<string> => {
+    expect(djAuthorization !== '', 'DJ has an authenticated sandbox session').toBe(true);
+    const response = await djPage.request.get(`${sandboxOrigin}/v1/channels/${channel}/call`, {
+      headers: { authorization: djAuthorization, accept: 'application/cbor' },
+    });
+    expect(response.ok()).toBe(true);
+    const group = arr(decode(new Uint8Array(await response.body())))[0];
+    expect(group).toBeInstanceOf(Uint8Array);
+    return Buffer.from(group as Uint8Array).toString('hex');
+  };
   const invite = process.env.DILLA_TESTKIT_INVITE?.split(',')[0];
   if (!invite) throw new Error('global setup did not export the test instance invite');
   const control = process.env.DILLA_TESTKIT_CONTROL;
@@ -297,6 +314,20 @@ test('two communities run isolated YouTube playback with independent Bot identit
   await command(djPage, SERVER, '/stop', /Music stopped/);
   await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
   await expect.poll(() => audibleLevel(djTwoPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+  // End A's old call completely and create a new call group for the same
+  // channel. A retained Bot group must not block playback in its replacement.
+  const callChannel = (await callSlice(djPage))?.channelId;
+  expect(callChannel).toBeTruthy();
+  const oldGroup = await currentCallGroup(callChannel!);
+  // Stop intentionally retains the Bot's authorized room. End this sandbox call
+  // through the current human leaf's public API, rather than assuming it is alone.
+  const ended = await djPage.request.delete(`${sandboxOrigin}/v1/calls/${callChannel}`, {
+    headers: { authorization: djAuthorization },
+  });
+  expect(ended.status()).toBe(204);
+  await expect.poll(() => snapshotDevices(djPage, callChannel!), { timeout: WAIT }).toEqual([]);
+  await joinVoice(djPage, SERVER, 'general');
+  expect(await currentCallGroup(callChannel!)).not.toBe(oldGroup);
   await command(djPage, SERVER, '/resume', /Music resumed/);
   await expect.poll(() => audibleLevel(djPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
 

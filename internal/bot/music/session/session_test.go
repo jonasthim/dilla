@@ -374,3 +374,41 @@ func TestQueueStarterOnlyExplicitPlaybackResetsConnection(t *testing.T) {
 		t.Fatal("failed reset acquired fresh resources")
 	}
 }
+
+func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		explicit              bool
+		second                error
+		wantCalls, wantResets int
+	}{
+		{"explicit replacement", true, ErrInvalid, 2, 2},
+		{"automatic advancement", false, ErrInvalid, 1, 0},
+		{"repeated binding failure is terminal", true, livekit.ErrBinding, 2, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, resets := 0, 0
+			starter := QueueStarter{ResetConnection: func() error { resets++; return nil }, OptionsFor: func(context.Context, music.Track) (Options, error) {
+				calls++
+				if calls == 1 {
+					return Options{}, livekit.ErrBinding
+				}
+				return Options{}, tc.second
+			}}
+			track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"}
+			var err error
+			if tc.explicit {
+				_, err = starter.StartExplicit(context.Background(), track)
+			} else {
+				_, err = starter.Start(context.Background(), track)
+			}
+			wantErr := tc.second
+			if !tc.explicit {
+				wantErr = livekit.ErrBinding
+			}
+			if !errors.Is(err, wantErr) || calls != tc.wantCalls || resets != tc.wantResets {
+				t.Fatalf("err=%v options=%d resets=%d", err, calls, resets)
+			}
+		})
+	}
+}

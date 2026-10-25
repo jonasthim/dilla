@@ -50,10 +50,13 @@ type EncoderConfig struct {
 }
 type RuntimeEncoder struct{ Config EncoderConfig }
 
-const spotifyPCMRate = 44100
+const youtubePCMRate = 44100
 
 func (e RuntimeEncoder) Start(ctx context.Context, pcm io.ReadCloser) (Encoder, error) {
-	format := musicruntime.PCMFormat{SampleRate: spotifyPCMRate, Channels: 2}
+	format := musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
+	if source, ok := pcm.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
+		format = source.PCMFormat()
+	}
 	if e.Config.start != nil {
 		return e.Config.start(ctx, pcm, format, e.Config.Capacity, e.Config.Options)
 	}

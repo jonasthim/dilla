@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -134,6 +135,10 @@ reconcile_interval = "30s"
 		good   bool
 	}{
 		{``, true},
+		{`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"
+`, true},
+		{`spotify_helper_executable = "dilla-spotify-helper"
+`, false},
 		{`spotify_client_id = "public-client"
 spotify_redirect_url = "https://dilla.example/settings/bot/music/spotify/callback"
 `, true},
@@ -159,7 +164,7 @@ spotify_helper_executable = "dilla-spotify-helper"
 		if (err == nil) != tc.good {
 			t.Fatalf("load config with suffix %q: %v", tc.suffix, err)
 		}
-		if tc.good && tc.suffix != "" && cfg.SpotifyClientID != "public-client" {
+		if tc.good && strings.Contains(tc.suffix, "spotify_client_id") && cfg.SpotifyClientID != "public-client" {
 			t.Fatal("valid Spotify client ID was not loaded")
 		}
 	}

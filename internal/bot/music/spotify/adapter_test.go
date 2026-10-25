@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-func TestPCMFrameMatchesLibrespot44100Stereo20Milliseconds(t *testing.T) {
-	const want = 44100 * 2 * 2 / 50
+func TestPCMFrameMatchesHelper48000Stereo20Milliseconds(t *testing.T) {
+	const want = 48000 * 2 * 2 / 50
 	if PCMBytesPerFrame != want {
-		t.Fatalf("PCM frame bytes = %d, want %d for 44.1 kHz stereo 20 ms", PCMBytesPerFrame, want)
+		t.Fatalf("PCM frame bytes = %d, want %d for 48 kHz stereo 20 ms", PCMBytesPerFrame, want)
 	}
 }
 
@@ -64,6 +64,9 @@ func TestStartFailsOnSanitizedHelperError(t *testing.T) {
 	_, err = a.Start(t.Context(), "spotify:track:0123456789012345678901")
 	if err == nil || strings.Contains(err.Error(), "private-token") {
 		t.Fatalf("Start error = %v", err)
+	}
+	if !errors.Is(err, ErrPlaybackFailed) || !strings.Contains(err.Error(), "authorization/provider_unavailable") {
+		t.Fatalf("missing safe helper failure classification: %v", err)
 	}
 }
 
@@ -248,10 +251,11 @@ func fakeProtocolHelper(t *testing.T, withPCM bool, exitAfterPCM ...bool) (strin
 	if err := os.WriteFile(filepath.Join(dir, "status"), status, 0600); err != nil {
 		t.Fatal(err)
 	}
-	pcm := make([]byte, 9+PCMBytesPerFrame)
-	copy(pcm, "DPCM")
-	pcm[4] = 1
-	binary.BigEndian.PutUint32(pcm[5:9], PCMBytesPerFrame)
+	// The Rust helper verifies this same fixture against its real writer.
+	pcm, err := os.ReadFile("../../../../crates/dilla-spotify-helper/testdata/pcm-v1.frame")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "pcm"), pcm, 0600); err != nil {
 		t.Fatal(err)
 	}
