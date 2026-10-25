@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -76,6 +77,16 @@ func receiptKey(actor, request id.ID) []byte {
 }
 func (s *Store) get(ctx context.Context, k []byte) (native.StateValue, error) {
 	return s.state.StateGet(ctx, stateArea, k)
+}
+func (s *Store) transact(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	revisions, err := s.state.StateTransaction(ctx, tx, changes)
+	if err != nil {
+		var status *helper.StatusError
+		if errors.As(err, &status) && status.Status == 4 {
+			return nil, ErrConflict
+		}
+	}
+	return revisions, err
 }
 func idValue(x any) (id.ID, bool) {
 	switch v := x.(type) {
@@ -238,6 +249,12 @@ func (s *Store) replay(ctx context.Context, actor, request id.ID, fp [32]byte) (
 	}
 	return r.result, true, nil
 }
+func (s *Store) ReplayCreate(ctx context.Context, request, actor id.ID, fp [32]byte) (Reminder, bool, error) {
+	if s == nil || s.state == nil || request.IsZero() || actor.IsZero() {
+		return Reminder{}, false, ErrInvalid
+	}
+	return s.replay(ctx, actor, request, fp)
+}
 func (s *Store) Create(ctx context.Context, request, actor id.ID, fp [32]byte, r Reminder, due time.Time) (Reminder, error) {
 	if s == nil || s.state == nil || s.community.IsZero() || s.installation.IsZero() || request.IsZero() || actor.IsZero() {
 		return Reminder{}, ErrInvalid
@@ -295,41 +312,41 @@ func (s *Store) Create(ctx context.Context, request, actor id.ID, fp [32]byte, r
 	if e != nil {
 		return Reminder{}, e
 	}
-	_, e = s.state.StateTransaction(ctx, request, []native.StateChange{{Area: 8, Key: reminderKey(request), ExpectedRevision: 0, Value: rb}, {Area: 8, Key: userKey(actor), ExpectedRevision: uv.Revision, Value: ub}, {Area: 8, Key: receiptKey(actor, request), ExpectedRevision: rv.Revision, Value: rec}})
+	_, e = s.transact(ctx, request, []native.StateChange{{Area: 8, Key: reminderKey(request), ExpectedRevision: 0, Value: rb}, {Area: 8, Key: userKey(actor), ExpectedRevision: uv.Revision, Value: ub}, {Area: 8, Key: receiptKey(actor, request), ExpectedRevision: rv.Revision, Value: rec}})
 	if e != nil {
 		return Reminder{}, e
 	}
 	return r, nil
 }
-func (s *Store) Get(ctx context.Context, reminder, actor id.ID) (Reminder, error) {
+func (s *Store) record(ctx context.Context, reminder, actor id.ID) (Reminder, native.StateValue, error) {
 	if s == nil || s.state == nil {
-		return Reminder{}, ErrInvalid
+		return Reminder{}, native.StateValue{}, ErrInvalid
 	}
-	v, e := s.get(ctx, reminderKey(reminder))
-	if e != nil {
-		return Reminder{}, e
+	v, err := s.get(ctx, reminderKey(reminder))
+	if err != nil {
+		return Reminder{}, v, err
 	}
 	if v.Revision == 0 || v.Tombstone {
-		return Reminder{}, ErrNotFound
+		return Reminder{}, v, ErrNotFound
 	}
-	r, e := decodeReminder(v.Value)
-	if e != nil {
-		return r, e
+	r, err := decodeReminder(v.Value)
+	if err != nil {
+		return Reminder{}, v, err
 	}
 	if r.OwnerID != actor || r.CommunityID != s.community || r.InstallationID != s.installation {
-		return Reminder{}, ErrNotFound
+		return Reminder{}, v, ErrNotFound
 	}
-	return r, nil
+	return r, v, nil
+}
+func (s *Store) Get(ctx context.Context, reminder, actor id.ID) (Reminder, error) {
+	r, _, err := s.record(ctx, reminder, actor)
+	return r, err
 }
 func (s *Store) mutate(ctx context.Context, pid, actor, request id.ID, fp [32]byte, expected uint64, now time.Time, target uint64) (Reminder, error) {
 	if old, ok, e := s.replay(ctx, actor, request, fp); ok {
 		return old, e
 	}
-	r, e := s.Get(ctx, pid, actor)
-	if e != nil {
-		return Reminder{}, e
-	}
-	v, e := s.get(ctx, reminderKey(pid))
+	r, v, e := s.record(ctx, pid, actor)
 	if e != nil {
 		return Reminder{}, e
 	}
@@ -384,7 +401,7 @@ func (s *Store) mutate(ctx context.Context, pid, actor, request id.ID, fp [32]by
 	if len(changes) > maxTx {
 		return Reminder{}, ErrInvalid
 	}
-	_, e = s.state.StateTransaction(ctx, request, changes)
+	_, e = s.transact(ctx, request, changes)
 	return r, e
 }
 func (s *Store) Cancel(ctx context.Context, pid, actor, request id.ID, fp [32]byte, expected uint64, now time.Time) (Reminder, error) {
@@ -505,7 +522,7 @@ func (s *Store) Tick(ctx context.Context) error {
 				}
 				changes = append(changes, native.StateChange{Area: 8, Key: entry.Key, ExpectedRevision: entry.Revision, Value: b})
 				if len(changes) == maxTx {
-					if _, e = s.state.StateTransaction(ctx, id.New(), changes); e != nil {
+					if _, e = s.transact(ctx, id.New(), changes); e != nil {
 						return e
 					}
 					changes = changes[:0]
@@ -513,7 +530,7 @@ func (s *Store) Tick(ctx context.Context) error {
 			}
 		}
 		if len(changes) > 0 {
-			if _, e = s.state.StateTransaction(ctx, id.New(), changes); e != nil {
+			if _, e = s.transact(ctx, id.New(), changes); e != nil {
 				return e
 			}
 		}

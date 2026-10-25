@@ -13,15 +13,22 @@ import (
 )
 
 type durableState struct {
-	mu   sync.Mutex
-	rows map[string]native.StateEntry
+	mu      sync.Mutex
+	rows    map[string]native.StateEntry
+	getHook func(context.Context, []byte, native.StateValue)
 }
+type pauseGetKey struct{}
 
-func (s *durableState) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
+func (s *durableState) StateGet(ctx context.Context, _ uint64, key []byte) (native.StateValue, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	e := s.rows[string(key)]
-	return native.StateValue{Revision: e.Revision, Value: e.Value, Tombstone: e.Tombstone}, nil
+	v := native.StateValue{Revision: e.Revision, Value: append([]byte(nil), e.Value...), Tombstone: e.Tombstone}
+	hook := s.getHook
+	s.mu.Unlock()
+	if hook != nil {
+		hook(ctx, append([]byte(nil), key...), v)
+	}
+	return v, nil
 }
 func (s *durableState) StateScan(_ context.Context, _ uint64, after []byte, limit uint64) (native.StatePage, error) {
 	s.mu.Lock()
@@ -238,5 +245,90 @@ func TestConcurrentDueDismissalsCommitOnce(t *testing.T) {
 	got, e := s.Get(ctx, r.ID, tid(4))
 	if e != nil || got.State != StateDismissed {
 		t.Fatalf("final reminder=%+v err=%v", got, e)
+	}
+}
+
+func TestStaleReminderSnapshotCannotCommitAfterConcurrentTick(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   string
+	}{{"cancel", "cancel"}, {"dismiss", "dismiss"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := &durableState{}
+			now := time.Unix(1000, 0)
+			due := now.Add(time.Minute)
+			s := NewStore(db, native.Binding{Community: tid(1), Installation: tid(2)}, func() time.Time { return due })
+			r, e := s.Create(ctx, tid(8), tid(4), [32]byte{1}, Reminder{Text: "race", Timezone: "UTC"}, due)
+			if e != nil {
+				t.Fatal(e)
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			db.getHook = func(c context.Context, key []byte, _ native.StateValue) {
+				if c.Value(pauseGetKey{}) == true && string(key) == string(reminderKey(r.ID)) {
+					once.Do(func() { close(entered); <-release })
+				}
+			}
+			result := make(chan error, 1)
+			go func() {
+				pause := context.WithValue(ctx, pauseGetKey{}, true)
+				var err error
+				if tc.op == "cancel" {
+					_, err = s.Cancel(pause, r.ID, tid(4), tid(9), [32]byte{9}, 1, now)
+				} else {
+					_, err = s.Dismiss(pause, r.ID, tid(4), tid(9), [32]byte{9}, 1, due)
+				}
+				result <- err
+			}()
+			<-entered
+			if e = s.Tick(ctx); e != nil {
+				t.Fatal(e)
+			}
+			close(release)
+			if e = <-result; !errors.Is(e, ErrConflict) {
+				t.Fatalf("stale mutation error=%v", e)
+			}
+			got, e := s.Get(ctx, r.ID, tid(4))
+			if e != nil || got.State != StateDue || got.Revision != 2 {
+				t.Fatalf("post-race row=%+v err=%v", got, e)
+			}
+		})
+	}
+}
+func TestTwoDismissalsUsingSameSnapshotHaveOneWinner(t *testing.T) {
+	ctx := context.Background()
+	db := &durableState{}
+	now := time.Unix(1000, 0)
+	due := now.Add(time.Minute)
+	s := NewStore(db, native.Binding{Community: tid(1), Installation: tid(2)})
+	r, e := s.Create(ctx, tid(8), tid(4), [32]byte{1}, Reminder{Text: "race", Timezone: "UTC"}, due)
+	if e != nil {
+		t.Fatal(e)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	db.getHook = func(c context.Context, key []byte, _ native.StateValue) {
+		if c.Value(pauseGetKey{}) == true && string(key) == string(reminderKey(r.ID)) {
+			once.Do(func() { close(entered); <-release })
+		}
+	}
+	first := make(chan error, 1)
+	go func() {
+		pause := context.WithValue(ctx, pauseGetKey{}, true)
+		_, err := s.Dismiss(pause, r.ID, tid(4), tid(9), [32]byte{9}, 1, due)
+		first <- err
+	}()
+	<-entered
+	if _, e = s.Dismiss(ctx, r.ID, tid(4), tid(10), [32]byte{10}, 1, due); e != nil {
+		t.Fatal(e)
+	}
+	close(release)
+	if e = <-first; !errors.Is(e, ErrConflict) {
+		t.Fatalf("stale dismissal error=%v", e)
+	}
+	got, e := s.Get(ctx, r.ID, tid(4))
+	if e != nil || got.State != StateDismissed || got.Revision != 2 {
+		t.Fatalf("final row=%+v err=%v", got, e)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	_ "time/tzdata"
 	"unicode/utf8"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/reminders"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -65,6 +66,10 @@ func reminderFingerprint(r protocol.Request) ([32]byte, bool) {
 	return sha256.Sum256([]byte(s)), true
 }
 func reminderStatus(e error) uint64 {
+	var nativeStatus *helper.StatusError
+	if errors.As(e, &nativeStatus) && nativeStatus.Status == 4 {
+		return interactionStatusConflict
+	}
 	switch {
 	case errors.Is(e, reminders.ErrForbidden):
 		return interactionStatusForbidden
@@ -111,6 +116,17 @@ func (h ReminderInteractions) checkSource(ctx context.Context, actor id.ID, r re
 	}
 	return a.ReminderSource(ctx, actor, *r.SourceChannel)
 }
+func (h ReminderInteractions) withVisibleSource(ctx context.Context, actor id.ID, r reminders.Reminder) reminders.Reminder {
+	if r.SourceChannel == nil {
+		return r
+	}
+	allowed, err := h.checkSource(ctx, actor, r)
+	if err != nil || !allowed {
+		r.SourceChannel = nil
+		r.SourceThread = nil
+	}
+	return r
+}
 func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {
 	if !h.valid(r, protocol.OpReminderCreate, true) || len(r.Args) != 1 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -125,6 +141,11 @@ func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor
 	fp, ok := reminderFingerprint(r)
 	if !ok {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	if saved, found, replayErr := h.Store.ReplayCreate(ctx, r.RequestID, actor.User, fp); replayErr != nil {
+		return InteractionResult{Status: reminderStatus(replayErr)}, nil
+	} else if found {
+		return reminderCreateResult(h.withVisibleSource(ctx, actor.User, saved))
 	}
 	raw, ok := r.Args[0].([]byte)
 	if !ok || len(raw) < 1 || len(raw) > 2200 {
@@ -202,9 +223,12 @@ func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor
 	if e != nil {
 		return InteractionResult{Status: reminderStatus(e)}, nil
 	}
-	data, e := reminderData([]any{uint64(1), reminderSummary(out)})
-	if e != nil {
-		return InteractionResult{}, e
+	return reminderCreateResult(out)
+}
+func reminderCreateResult(out reminders.Reminder) (InteractionResult, error) {
+	data, err := reminderData([]any{uint64(1), reminderSummary(out)})
+	if err != nil {
+		return InteractionResult{}, err
 	}
 	rev := out.Revision
 	return InteractionResult{Revision: &rev, Data: data}, nil
@@ -250,13 +274,7 @@ func (h ReminderInteractions) readPage(ctx context.Context, actor InteractionAct
 	}
 	summaries := make([]any, len(rows))
 	for i, row := range rows {
-		allowed, e := h.checkSource(ctx, actor.User, row)
-		if e != nil {
-			return InteractionResult{}, e
-		}
-		if !allowed {
-			return InteractionResult{Status: interactionStatusForbidden}, nil
-		}
+		row = h.withVisibleSource(ctx, actor.User, row)
 		summaries[i] = reminderSummary(row)
 	}
 	for count := len(summaries); count >= 0; count-- {
@@ -294,17 +312,6 @@ func (h ReminderInteractions) mutation(ctx context.Context, actor InteractionAct
 	if !ok {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	before, e := h.Store.Get(ctx, pid, actor.User)
-	if e != nil {
-		return InteractionResult{Status: reminderStatus(e)}, nil
-	}
-	allowed, e := h.checkSource(ctx, actor.User, before)
-	if e != nil {
-		return InteractionResult{}, e
-	}
-	if !allowed {
-		return InteractionResult{Status: interactionStatusForbidden}, nil
-	}
 	fp, ok := reminderFingerprint(r)
 	if !ok {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -319,6 +326,7 @@ func (h ReminderInteractions) mutation(ctx context.Context, actor InteractionAct
 	if e != nil {
 		return InteractionResult{Status: reminderStatus(e)}, nil
 	}
+	out = h.withVisibleSource(ctx, actor.User, out)
 	data, e := reminderData([]any{uint64(1), reminderSummary(out)})
 	if e != nil {
 		return InteractionResult{}, e
