@@ -18,6 +18,15 @@ import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
+function interactionLease(w: World, id: number): string {
+  const result = w.ret(id);
+  if (result?.t !== 'ret' || !result.ok || typeof result.value !== 'object' || result.value === null
+    || !('through' in result.value)) throw new Error('expected a successful response with an ACK lease');
+  const lease = result.value.through;
+  if (typeof lease !== 'string' || !/^[0-9a-f]{32}$/u.test(lease)) throw new Error('expected a 32-byte hexadecimal ACK lease');
+  return lease;
+}
+
 describe('Controller', () => {
   it('resumes accepted removal evidence after restart without posting another removal', async () => {
     const w = world();
@@ -407,9 +416,9 @@ describe('Controller', () => {
       body: responseBody, operation: 13, channelId };
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [musicEvent], next: 2n, highWater: 2n });
     w.call(10_192, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
-    await vi.waitFor(() => expect(w.ret(10_192)).toMatchObject({ ok: true, value: { through: expect.stringMatching(/^[0-9a-f]{32}$/u), blocked: false,
+    await vi.waitFor(() => expect(w.ret(10_192)).toMatchObject({ ok: true, value: { blocked: false,
       responses: [{ requestId: toHex(requestId), operation: 13, channelId: toHex(channelId), status: 0, revision: '8', data: encode([]) }] } }));
-    const leaseA = (w.ret(10_192) as { ok: true; value: { through: string } }).value.through;
+    const leaseA = interactionLease(w, 10_192);
     w.call(10_191, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: leaseA });
     await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: null }));
     expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([2n]);
@@ -417,8 +426,9 @@ describe('Controller', () => {
     const moderationEvent = { ...musicEvent, deliveryId: 3n, operation: 60, channelId: null };
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [moderationEvent, { ...musicEvent, deliveryId: 4n }], next: 4n, highWater: 4n });
     w.call(10_190, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
-    await vi.waitFor(() => expect(w.ret(10_190)).toMatchObject({ ok: true, value: { through: expect.stringMatching(/^[0-9a-f]{32}$/u), blocked: false,
+    await vi.waitFor(() => expect(w.ret(10_190)).toMatchObject({ ok: true, value: { blocked: false,
       responses: [{ requestId: toHex(requestId), operation: 13 }] } }));
+    interactionLease(w, 10_190);
     w.call(10_189, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '4'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(10_189)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
     expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledTimes(1);
@@ -451,7 +461,7 @@ describe('Controller', () => {
 
   it('reads member-safe Bot command status without requiring management settings authority', async () => {
     const w = world(); await toReady(w);
-    w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 9n } as never);
+    w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 9n });
     w.call(10_176, { m: 'getBotCommandStatus', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(10_176)).toMatchObject({ ok: true, value: {
       installationId: '73'.repeat(16), botUserId: toHex(USER), state: 3, revision: '9',
@@ -474,9 +484,8 @@ describe('Controller', () => {
       requestIds: [toHex(capabilityRequest), toHex(statusRequest)] });
     await vi.waitFor(() => expect(w.ret(10_174)).toMatchObject({ ok: true, value: {
       responses: [{ operation: 0, requestId: toHex(capabilityRequest), channelId: null }, { operation: 24, requestId: toHex(statusRequest), channelId: null }],
-      through: expect.stringMatching(/^[0-9a-f]{32}$/u),
     } }));
-    const lease = (w.ret(10_174) as { ok: true; value: { through: string } }).value.through;
+    const lease = interactionLease(w, 10_174);
     w.call(10_173, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(10_173)).toMatchObject({ ok: true, value: null }));
     expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([1n, 2n]);
@@ -490,8 +499,8 @@ describe('Controller', () => {
       requestId, sourceSeq: 9n, epoch: 1n, receivedAt: 1n, senderUser: USER, senderDevice: DEVICE,
       messageId: requestId, body, operation: 3, channelId: null }], next: 9n, highWater: 9n });
     w.call(10_177, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [3], requestIds: [toHex(requestId)] });
-    await vi.waitFor(() => expect(w.ret(10_177)).toMatchObject({ ok: true, value: { through: expect.stringMatching(/^[0-9a-f]{32}$/u) } }));
-    const lease = (w.ret(10_177) as { ok: true; value: { through: string } }).value.through;
+    await vi.waitFor(() => expect(w.ret(10_177)).toMatchObject({ ok: true, value: {} }));
+    const lease = interactionLease(w, 10_177);
     (w.controller as unknown as { forgetAccount: () => void }).forgetAccount();
     w.call(10_178, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(10_178)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
@@ -560,11 +569,11 @@ describe('Controller', () => {
       ? { events: noise, next: 100n, highWater: 102n }
       : { events: [event(101n, requestA), event(102n, requestB)], next: 102n, highWater: 102n });
     w.call(10_182, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13], requestIds: [toHex(requestA)] });
-    await vi.waitFor(() => expect(w.ret(10_182)).toMatchObject({ ok: true, value: { through: expect.stringMatching(/^[0-9a-f]{32}$/u), responses: [{ deliveryId: '101', requestId: toHex(requestA) }] } }));
-    const leaseA = (w.ret(10_182) as { ok: true; value: { through: string } }).value.through;
+    await vi.waitFor(() => expect(w.ret(10_182)).toMatchObject({ ok: true, value: { responses: [{ deliveryId: '101', requestId: toHex(requestA) }] } }));
+    const leaseA = interactionLease(w, 10_182);
     w.call(10_183, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13], requestIds: [toHex(requestB)] });
-    await vi.waitFor(() => expect(w.ret(10_183)).toMatchObject({ ok: true, value: { through: expect.stringMatching(/^[0-9a-f]{32}$/u), responses: [{ deliveryId: '102', requestId: toHex(requestB) }] } }));
-    const leaseB = (w.ret(10_183) as { ok: true; value: { through: string } }).value.through;
+    await vi.waitFor(() => expect(w.ret(10_183)).toMatchObject({ ok: true, value: { responses: [{ deliveryId: '102', requestId: toHex(requestB) }] } }));
+    const leaseB = interactionLease(w, 10_183);
     expect(w.core.humanInteractionEventsRead.mock.calls.filter(([after]) => after === 100n)).toHaveLength(2);
     w.call(10_184, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: leaseA });
     w.call(10_185, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: leaseB });
@@ -616,13 +625,13 @@ describe('Controller', () => {
       requestId, sourceSeq: 4n, epoch: 1n, receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE,
       messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null }], next: 2n, highWater: 2n });
     w.call(90, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY), requestIds: [toHex(requestId)] });
-    await vi.waitFor(() => expect(w.ret(90)).toMatchObject({ ok: true, value: { authorized: true, through: expect.stringMatching(/^[0-9a-f]{32}$/u), responses: [
+    await vi.waitFor(() => expect(w.ret(90)).toMatchObject({ ok: true, value: { authorized: true, responses: [
       { deliveryId: '2', requestId: toHex(requestId), status: 0, hasMore: false,
         cases: [{ messageId: 'e5'.repeat(16), revision: '7', excerpt: 'bounded excerpt' }] },
     ] } }));
     expect(w.routes.getPermissions.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionEventsRead.mock.invocationCallOrder[0]);
     expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
-    const lease = (w.ret(90) as { ok: true; value: { through: string } }).value.through;
+    const lease = interactionLease(w, 90);
     w.call(91, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(91)).toMatchObject({ ok: true, value: null }));
     expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([2n]);
@@ -709,10 +718,10 @@ describe('Controller', () => {
         receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body, operation: 60, channelId: null },
     ], next: 3n, highWater: 3n });
     w.call(93, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY), requestIds: [toHex(requestId)] });
-    await vi.waitFor(() => expect(w.ret(93)).toMatchObject({ ok: true, value: { blocked: false, through: expect.stringMatching(/^[0-9a-f]{32}$/u), responses: [{
+    await vi.waitFor(() => expect(w.ret(93)).toMatchObject({ ok: true, value: { blocked: false, responses: [{
       cases: [{ excerpt: 'bounded excerpt' }],
     }] } }));
-    const lease = (w.ret(93) as { ok: true; value: { through: string } }).value.through;
+    const lease = interactionLease(w, 93);
     w.call(94, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
     expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
@@ -735,9 +744,10 @@ describe('Controller', () => {
         receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null },
     ], next: 3n, highWater: 3n });
     w.call(97, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY), requestIds: [toHex(requestId)] });
-    await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true, value: { blocked: false, through: expect.stringMatching(/^[0-9a-f]{32}$/u), responses: [
+    await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true, value: { blocked: false, responses: [
       { deliveryId: '3', cases: [{ excerpt: 'bounded excerpt' }] },
     ] } }));
+    interactionLease(w, 97);
     w.call(98, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(98)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
     expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
@@ -752,8 +762,8 @@ describe('Controller', () => {
       requestId, sourceSeq: 1n, epoch: 1n, receivedAt: 1n,
       senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x67), body, operation: 60, channelId: null }], next: 5n, highWater: 5n });
     w.call(96, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true, through: expect.stringMatching(/^[0-9a-f]{32}$/u) } }));
-    const lease = (w.ret(96) as { ok: true; value: { through: string } }).value.through;
+    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true } }));
+    const lease = interactionLease(w, 96);
     w.routes.getPermissions.mockResolvedValue({ bits: 0n, top: 0 });
     w.call(97, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));

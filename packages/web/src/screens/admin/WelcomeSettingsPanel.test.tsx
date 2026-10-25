@@ -45,10 +45,10 @@ describe('welcome settings panel', () => {
 
   it('treats the ACK lease as opaque when delivery ids have advanced', async () => {
     let requestId: string | null = null;
-    const ack = vi.fn(async () => null);
+    const ack = vi.fn(() => Promise.resolve(null));
     const gateway: WelcomeSettingsGateway = {
-      request: async input => { requestId = input.requestId; return { requestId, upload: 'accepted' }; },
-      read: async () => ({ responses: requestId === null ? [] : [{ deliveryId: '101', sourceSeq: '101', communityId: COMMUNITY,
+      request: input => { const id = input.requestId; requestId = id; return Promise.resolve({ requestId: id, upload: 'accepted' }); },
+      read: () => Promise.resolve({ responses: requestId === null ? [] : [{ deliveryId: '101', sourceSeq: '101', communityId: COMMUNITY,
         channelId: null, requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) }],
         through: requestId === null ? null : '1', blocked: false }),
       ack,

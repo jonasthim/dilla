@@ -387,7 +387,7 @@ it('refuses read-then-request reuse when the actual worker has an id-only accept
   await expect(call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId,
     operation: 71, args: ['75'.repeat(16)], revision: null })).resolves.toMatchObject({ upload: 'accepted' });
   w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0xaa),
-    botUserId: USER, state: 3, revision: 1n } as never);
+    botUserId: USER, state: 3, revision: 1n });
   w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 9n, groupId,
     communityId: WORKER_COMMUNITY, requestId: rid, sourceSeq: 9n, epoch: 1n, receivedAt: 1n,
     senderUser: USER, senderDevice: DEVICE, messageId: rid,
@@ -427,7 +427,7 @@ it('blocks request while an actual-worker read is awaiting its first authorizati
   await expect(call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId,
     operation: 71, args: ['75'.repeat(16)], revision: null })).resolves.toMatchObject({ upload: 'accepted' });
   w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0xaa),
-    botUserId: USER, state: 3, revision: 1n } as never);
+    botUserId: USER, state: 3, revision: 1n });
   w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 9n, groupId,
     communityId: WORKER_COMMUNITY, requestId: rid, sourceSeq: 9n, epoch: 1n, receivedAt: 1n,
     senderUser: USER, senderDevice: DEVICE, messageId: rid,
