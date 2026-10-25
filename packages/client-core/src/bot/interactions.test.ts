@@ -264,6 +264,59 @@ it('refuses read-then-request reuse when the actual worker has an id-only accept
   expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
 });
 
+it('blocks request while an actual-worker read is awaiting its first authorization lookup', async () => {
+  const w = world();
+  await toReady(w);
+  const rid = new Uint8Array(16).fill(0x71);
+  const requestId = toHex(rid);
+  const communityId = toHex(WORKER_COMMUNITY);
+  const groupId = new Uint8Array(16).fill(0x52);
+  w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: USER });
+  w.core.humanInteractionSendPrepare.mockImplementation(id => {
+    w.state.outbox.push({ msgId: id, state: 0, error: '', created: 1n, body: 'original persisted body',
+      type: 0, replyTo: null, attachments: [] });
+    return id;
+  });
+  let callId = 93000;
+  const call = async (command: unknown): Promise<unknown> => {
+    const id = callId++;
+    w.call(id, command);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    const result = w.ret(id) as unknown as { ok: boolean; error: unknown; value: unknown };
+    if (!result.ok) throw Object.assign(new Error('worker call failed'), result.error as object);
+    return result.value;
+  };
+  await expect(call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId,
+    operation: 71, args: ['75'.repeat(16)], revision: null })).resolves.toMatchObject({ upload: 'accepted' });
+  w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0xaa),
+    botUserId: USER, state: 3, revision: 1n } as never);
+  w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 9n, groupId,
+    communityId: WORKER_COMMUNITY, requestId: rid, sourceSeq: 9n, epoch: 1n, receivedAt: 1n,
+    senderUser: USER, senderDevice: DEVICE, messageId: rid,
+    body: encodeBotResponse({ requestId: rid, communityId: WORKER_COMMUNITY, status: 0,
+      revision: null, data: encode([]) }), operation: 71, channelId: null }], next: 9n, highWater: 9n });
+  let releaseReadAuthorization: ((value: unknown) => void) | undefined;
+  let readAuthorizationPending = false;
+  const adapterCall = (command: { m?: string; [key: string]: unknown }): Promise<unknown> => {
+    if (command.m === 'getBotCommandStatus' && !readAuthorizationPending) {
+      readAuthorizationPending = true;
+      return new Promise(resolve => { releaseReadAuthorization = resolve; });
+    }
+    return call(command);
+  };
+  const client = { get: (name: string) => w.last(name), subscribe: () => () => undefined,
+    call: adapterCall } as unknown as CoreClient;
+  const api = createBotInteractionClient(client, communityId);
+  const pendingRead = api.read(requestId, 71);
+  await vi.waitFor(() => expect(releaseReadAuthorization).toBeTypeOf('function'));
+  await expect(api.request({ requestId, operation: 71, args: ['76'.repeat(16)], revision: null }))
+    .rejects.toBeInstanceOf(BotInteractionUnverifiableRequestError);
+  releaseReadAuthorization?.({ installationId: 'aa'.repeat(16), botUserId: toHex(USER), state: 3, revision: '1' });
+  await expect(pendingRead).resolves.toMatchObject({ status: 0 });
+  expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
+  expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
+});
+
 it('times out with a typed uncertain result and never resends with a new id', async () => {
   vi.useFakeTimers();
   const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' }

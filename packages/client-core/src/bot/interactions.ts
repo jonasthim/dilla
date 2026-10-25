@@ -89,6 +89,9 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   // A shared read task includes the final authorization recheck. Store only that fully checked
   // promise so no coalesced waiter can observe the inner, not-yet-scoped response.
   const reads = new Map<string, Promise<BotInteractionResult | null>>();
+  // Track each public read call from entry, including its initial authorization lookup. A set per
+  // key makes cleanup owner-safe when concurrent reads overlap or a scope reset detaches old work.
+  const activeReadOwners = new Map<string, Set<symbol>>();
   const requests = new Map<string, Promise<BotInteractionResult>>();
   const keyOf = (requestId: string, operation: number): string => `${requestId}:${operation}`;
   const resultCopy = (row: BotInteractionResult): BotInteractionResult => ({ ...row, data: row.data.slice(), scope: Object.freeze({ ...row.scope }) });
@@ -98,7 +101,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   let scopeGeneration = 0;
   const clearScopedResults = (): void => {
     scopeGeneration++;
-    results.clear(); uncertain.clear(); reads.clear(); requests.clear(); requestFingerprints.clear();
+    results.clear(); uncertain.clear(); reads.clear(); activeReadOwners.clear(); requests.clear(); requestFingerprints.clear();
   };
   const updateAccountScope = (): void => {
     const nextAccount = client.get?.('account')?.user?.id ?? null;
@@ -241,25 +244,40 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   };
 
   const read = async (requestId: string, operation: number): Promise<BotInteractionResult | null> => {
-    const initial = await ensureInstallationScope();
-    const generation = initial.generation;
     const key = keyOf(requestId, operation);
-    const cached = results.get(key);
-    if (cached !== undefined) return resultCopy(cached);
-    const pending = reads.get(key);
-    if (pending !== undefined) return pending.then(row => row === null ? null : resultCopy(row));
-    const task = (async (): Promise<BotInteractionResult | null> => {
-      const result = await readOnce(requestId, operation, generation);
-      if (result === null) return null;
-      const final = await ensureInstallationScope();
-      if (final.generation !== generation) return null;
-      const scoped = { ...result, scope: final.scope };
-      rememberResult(key, scoped);
-      return scoped;
-    })();
-    reads.set(key, task);
-    try { const result = await task; return result === null ? null : resultCopy(result); }
-    finally { if (reads.get(key) === task) reads.delete(key); }
+    const owner = Symbol();
+    const owners = activeReadOwners.get(key) ?? new Set<symbol>();
+    owners.add(owner);
+    activeReadOwners.set(key, owners);
+    try {
+      const initial = await ensureInstallationScope();
+      const generation = initial.generation;
+      const cached = results.get(key);
+      if (cached !== undefined) return resultCopy(cached);
+      const pending = reads.get(key);
+      if (pending !== undefined) {
+        const result = await pending;
+        return result === null ? null : resultCopy(result);
+      }
+      const task = (async (): Promise<BotInteractionResult | null> => {
+        const result = await readOnce(requestId, operation, generation);
+        if (result === null) return null;
+        const final = await ensureInstallationScope();
+        if (final.generation !== generation) return null;
+        const scoped = { ...result, scope: final.scope };
+        rememberResult(key, scoped);
+        return scoped;
+      })();
+      reads.set(key, task);
+      try { const result = await task; return result === null ? null : resultCopy(result); }
+      finally { if (reads.get(key) === task) reads.delete(key); }
+    } finally {
+      const currentOwners = activeReadOwners.get(key);
+      if (currentOwners === owners) {
+        owners.delete(owner);
+        if (owners.size === 0) activeReadOwners.delete(key);
+      }
+    }
   };
 
   const executeRequest = async (input: BotInteractionRequest, requestId: string, fingerprint: string,
@@ -330,7 +348,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
       // which immutable request body the worker previously accepted for this id. The worker's
       // accepted-upload shortcut is id-only, so never turn that receipt into proof that this
       // caller's body produced the cached response.
-      if (!requestFingerprints.has(requestId) && (results.has(key) || reads.has(key))) {
+      if (!requestFingerprints.has(requestId) && (results.has(key) || reads.has(key) || activeReadOwners.has(key))) {
         throw new BotInteractionUnverifiableRequestError(requestId);
       }
       rememberFingerprint(requestId, fingerprint);
