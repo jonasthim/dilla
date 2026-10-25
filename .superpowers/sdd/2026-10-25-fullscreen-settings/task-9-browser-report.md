@@ -20,6 +20,8 @@ Against the stable post-61 phone-index build, the affected viewport/settings mat
 
 The 11/8/11 runs preceded the latest strengthening of layout touch-target and Close-rectangle checks. The source typecheck passed after those changes; the final focused matrix should rerun on the next stable build.
 
+After the final Close-label build, the strengthened `layout grammar holds` test passed 1/1 in each engine (Chromium, Firefox, WebKit). It checks the user and server settings index/section touch targets at all six tested sizes, the server Close button rectangle, Back to index, and Close back to the originating route.
+
 Focused Chromium Bot and moderation verification passed all four Bot-runtime tests and manual moderation evidence retrieval. The announcement scheduler's two browser tests also passed in an earlier run (49 seconds and 5 minutes). Automatic moderation remains unverified: its page reaches the Automoderation section, but a settings read can remain on “Waiting for the bot response…” before any worker upload or response polling. The trace and HAR do not show a POST to `/groups/*/message` after the click; the host stays healthy. Bot_pages is investigating this separately. Do not interpret the page as a successful read or save.
 
 `npm run typecheck:e2e`, `node --check e2e/scripts/shoot-docs.mjs`, and `git diff --check -- e2e` pass.
@@ -36,4 +38,4 @@ Actual 200% browser zoom and a physical mobile keyboard were not exercised. The 
 
 ## Final CI
 
-The strengthened touch-target and server Close-rectangle checks have typechecked but have not yet been rerun in a browser after the final Close-label build; full CI should exercise them. The complete browser suite is still required in CI after the fixture commit. Focused tests are not a substitute for that matrix. The outstanding Automoderation operation 62 pre-upload hang must be tracked separately from fixture navigation and screenshot acceptance.
+The complete browser suite is still required in CI after the fixture commit. Focused tests are not a substitute for that matrix. The outstanding Automoderation operation 62 pre-upload hang must be tracked separately from fixture navigation and screenshot acceptance; a post-provider-prefix-fix retry with bounded worker RPC diagnostics is still pending.
