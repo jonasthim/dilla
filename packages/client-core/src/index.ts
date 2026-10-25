@@ -29,3 +29,5 @@ export type { PermKey, PermRole, PermOverwrite, PermMember, PermInput } from './
 export type { PendingLeaf, TrustRecord, SearchScope, SearchCursor, SearchHit } from './core-port';
 export { negotiateSession } from './http/negotiate-session';
 export type { SessionCapabilities } from './http/negotiate-session';
+export { COMMANDS, commandById, parseCommand, searchCommands, validateCommandArgs } from './commands/registry';
+export type { ArgumentIssue, CommandArgumentKind, CommandContext, CommandDefinition, CommandInvocation, CommandOption, CommandParseResult, CommandResult, CommandValidation } from './commands/registry';
