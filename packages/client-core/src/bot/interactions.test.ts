@@ -137,6 +137,33 @@ it('does not return a pending response if account scope changes while reading', 
     .rejects.toMatchObject({ name: 'BotInteractionUncertainError', requestId: REQUEST });
 });
 
+it('withholds a response from every coalesced reader when installation scope changes before resolution', async () => {
+  let statusReads = 0;
+  let responseReads = 0;
+  let resolveResponse: ((value: unknown) => void) | undefined;
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return {
+      installationId: ++statusReads <= 2 ? INSTALLATION : 'bb'.repeat(16), botUserId: null, state: 3, revision: '1',
+    };
+    if (command.m === 'readBotInteractionResponses') {
+      responseReads++;
+      return new Promise(resolve => { resolveResponse = resolve; });
+    }
+    if (command.m === 'ackBotInteractionResponses') return null;
+    throw new Error(`unexpected command ${command.m}`);
+  });
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  const first = api.read(REQUEST, 70);
+  const second = api.read(REQUEST, 70);
+  await vi.waitFor(() => expect(responseReads).toBe(1));
+  resolveResponse?.({ responses: [response()], through: 'b'.repeat(32) });
+  const [a, b] = await Promise.all([first, second]);
+  expect(a).toBeNull();
+  expect(b).toBeNull();
+  expect(statusReads).toBe(3);
+  expect(responseReads).toBe(1);
+});
+
 it('rejects an in-flight status lookup after the account device/store scope changes', async () => {
   let deviceId = '44'.repeat(16);
   let finishStatus: ((value: unknown) => void) | undefined;

@@ -53,6 +53,8 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   if (existing !== undefined) return existing;
   const results = new Map<string, BotInteractionResult>();
   const uncertain = new Map<string, BotInteractionUncertainError | BotInteractionRejectedError>();
+  // A shared read task includes the final authorization recheck. Store only that fully checked
+  // promise so no coalesced waiter can observe the inner, not-yet-scoped response.
   const reads = new Map<string, Promise<BotInteractionResult | null>>();
   const requests = new Map<string, Promise<BotInteractionResult>>();
   const keyOf = (requestId: string, operation: number): string => `${requestId}:${operation}`;
@@ -151,7 +153,6 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     if (page.through !== null) await client.call({ m: 'ackBotInteractionResponses', communityId, through: page.through });
     if (generation !== scopeGeneration) return null;
     const result = { requestId: row.requestId, status: row.status, revision: row.revision, data: row.data.slice() };
-    rememberResult(key, result);
     return resultCopy(result);
   };
 
@@ -162,13 +163,14 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     if (cached !== undefined) return resultCopy(cached);
     const pending = reads.get(key);
     if (pending !== undefined) return pending.then(row => row === null ? null : resultCopy(row));
-    const task = readOnce(requestId, operation, generation);
-    reads.set(key, task);
-    try {
-      const result = await task;
+    const task = (async (): Promise<BotInteractionResult | null> => {
+      const result = await readOnce(requestId, operation, generation);
       if (result !== null && await ensureInstallationScope() !== generation) return null;
+      if (result !== null) rememberResult(key, result);
       return result;
-    }
+    })();
+    reads.set(key, task);
+    try { const result = await task; return result === null ? null : resultCopy(result); }
     finally { if (reads.get(key) === task) reads.delete(key); }
   };
 
@@ -201,6 +203,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
         }
         try { assertRequestScope(generation); }
         catch { throw new BotInteractionUncertainError(requestId, 'The Bot interaction account or community access changed while the request was pending.'); }
+        rememberResult(keyOf(requestId, input.operation), result);
         return result;
       }
       const remaining = deadline - Date.now();
