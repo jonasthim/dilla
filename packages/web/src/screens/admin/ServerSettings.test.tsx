@@ -24,7 +24,7 @@ export const FULL: CommunityAccess = { top: 100, owner: true, manageCommunity: t
 const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
   banMembers: false, createInvite: false, manageRoles: false };
 
-function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null;
+function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab | null; members?: MemberSummary[] | null;
   selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[] | ((communityId: string) => { id: string; name: string; position: number; selfSelected: boolean }[]);
   roles?: RoleSummary[]; channels?: ChannelSummary[]; installation?: FakeInstallation | null | ((communityId: string) => FakeInstallation | null);
   interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown';
@@ -56,12 +56,13 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
       { userId: CAROL, username: 'carol', display: '', kind: 0, roleIds: [] },
     ]);
   }
+  fake.set(`presence:${SERVER}`, { [ME.id]: 'online', [BOB]: 'online', [CAROL]: 'online' });
   const onClose = vi.fn();
   const onTab = vi.fn();
   const announce = vi.fn();
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}>
-    <ServerSettings communityId={SERVER} tab={over.tab ?? 'overview'} onTab={onTab} onClose={onClose} announce={announce} />
+    <ServerSettings communityId={SERVER} tab={over.tab === undefined ? 'overview' : over.tab} onTab={onTab} onClose={onClose} announce={announce} />
   </CoreProvider></div>);
   return { fake, user, view, onClose, onTab, announce };
 }
@@ -70,6 +71,25 @@ const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame
 const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button').map(b => b.textContent);
 
 describe('ServerSettings tabs', () => {
+  it('uses registry visibility for ordinary members and keeps the audit-log gate separate', () => {
+    setup({ ...NONE, loaded: true, viewAuditLog: false });
+    expect(navNames()).toContain('Members');
+    expect(navNames()).toContain('Self-assignable roles');
+    expect(navNames()).not.toContain('Moderation log');
+  });
+  it('mounts the member workspace for ordinary members without manager actions', async () => {
+    const { user } = setup(NONE, { tab: 'members' });
+    expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Bob B/ }));
+    const profile = screen.getByRole('dialog', { name: 'Bob B' });
+    const actions = within(profile).queryAllByRole('button').filter(button => button.classList.contains('d-profile-card__action')).map(button => button.textContent);
+    expect(actions).toEqual(['message', 'compare safety numbers']);
+  });
+  it('shows moderation log from its own audit permission', () => {
+    setup({ ...NONE, viewAuditLog: true });
+    expect(navNames()).toContain('Moderation log');
+    expect(navNames()).not.toContain('Bot');
+  });
   it('publishes a bot-authored role panel and registers only its accepted exact message', async () => {
     const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
     const { fake, user, announce } = setup(FULL, { tab: 'selfRoles',
@@ -187,16 +207,16 @@ describe('ServerSettings tabs', () => {
   });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['overview', 'bot', 'channels', 'roles', 'invites', 'bans', 'self-service roles', 'delete server']);
+    expect(navNames()).toEqual(['Overview', 'Channels', 'GIFs', 'Members', 'Roles', 'Invites', 'Self-assignable roles', 'Bot', 'Welcome messages', 'Join roles', 'Music', 'Automoderation', 'Bans', 'Ownership / Leave']);
   });
   it('shows the roles tab only with manageRoles, after channels', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });
-    expect(navNames()).toEqual(['channels', 'roles', 'self-service roles', 'leave server']);
+    expect(navNames()).toEqual(['Channels', 'Members', 'Roles', 'Self-assignable roles', 'Ownership / Leave']);
   });
   it('shows no roles tab without manageRoles', () => {
     setup({ ...NONE, manageChannels: true });
-    expect(navNames()).not.toContain('roles');
-    expect(navNames()).toContain('self-service roles');
+    expect(navNames()).not.toContain('Roles');
+    expect(navNames()).toContain('Self-assignable roles');
   });
   it('mounts the roles panel for the roles tab', () => {
     setup(FULL, { tab: 'roles' });
@@ -204,16 +224,19 @@ describe('ServerSettings tabs', () => {
   });
   it('shows only the tabs a person has the permission for; the danger tab is always there', () => {
     setup({ ...NONE, manageChannels: true, banMembers: true });
-    expect(navNames()).toEqual(['channels', 'bans', 'self-service roles', 'leave server']);
+    expect(navNames()).toEqual(['Channels', 'Members', 'Self-assignable roles', 'Bans', 'Ownership / Leave']);
   });
-  it('shows overview for manageCommunity and invites for createInvite', () => {
+  it('shows overview for manageCommunity and invites for createInvite while audit log stays separately gated', () => {
     setup({ ...NONE, manageCommunity: true, createInvite: true });
-    expect(navNames()).toEqual(['overview', 'bot', 'invites', 'self-service roles', 'leave server']);
+    expect(navNames()).toContain('Overview');
+    expect(navNames()).toContain('GIFs');
+    expect(navNames()).toContain('Invites');
+    expect(navNames()).not.toContain('Moderation log');
   });
   it('shows the bot tab only to manageCommunity members while self-service roles are member-accessible', () => {
     setup({ ...NONE, manageChannels: true });
-    expect(navNames()).not.toContain('bot');
-    expect(navNames()).toContain('self-service roles');
+    expect(navNames()).not.toContain('Bot');
+    expect(navNames()).toContain('Self-assignable roles');
   });
   it('lets an ordinary member opt into an approved self-service role', async () => {
     const roleId = 'c3'.repeat(16);
@@ -241,13 +264,33 @@ describe('ServerSettings tabs', () => {
     expect(navNames()).toEqual([]);
     expect(screen.getByRole('dialog', { name: en['admin.title'] })).toBeInTheDocument();
   });
+  it('clears a revoked section and moves to an allowed workspace with an explanation', async () => {
+    const { fake, announce } = setup(FULL, { tab: 'channels' });
+    expect(screen.getByRole('heading', { name: 'Channels', level: 2 })).toBeInTheDocument();
+    fake.set(`permissions:${SERVER}`, { ...NONE, manageRoles: false });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument());
+    expect(navNames()).not.toContain('Channels');
+    expect(screen.getByRole('status')).toHaveTextContent(en['workspace.permissionChanged']);
+    expect(announce).not.toHaveBeenCalledWith(en['workspace.permissionChanged']);
+  });
   it('opens the first permitted tab when the asked-for tab is not allowed', () => {
     setup(NONE, { tab: 'overview' });
-    expect(screen.getByRole('heading', { name: en['admin.bot.selfRoles.title'], level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument();
+  });
+  it('opens the first allowed section for a desktop null route', () => {
+    setup(NONE, { tab: null });
+    expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument();
+  });
+  it('keeps GIF settings in their own section', () => {
+    const overview = setup(FULL);
+    expect(overview.view.container.querySelector('.dw-gifs-settings')).toBeNull();
+    overview.view.unmount();
+    const { view } = setup(FULL, { tab: 'gifs' });
+    expect(view.container.querySelector('.d-settings-frame__body h2')).toHaveTextContent('GIFs');
   });
   it('asks to switch tabs through onTab', async () => {
     const { user, onTab } = setup(FULL);
-    await user.click(screen.getByRole('button', { name: 'bans' }));
+    await user.click(screen.getByRole('button', { name: 'Bans' }));
     expect(onTab).toHaveBeenCalledWith('bans');
   });
   it('closes through onClose', async () => {
@@ -262,13 +305,28 @@ describe('ServerSettings tabs', () => {
 });
 
 describe('the overview section', () => {
+  it('keeps only the AFK timeout dirty after a rename succeeds and the timeout fails', async () => {
+    const { fake, user } = setup(FULL);
+    fake.handler = command => command.m === 'getAFKSettings' ? Promise.resolve({ channelId: null, timeoutSeconds: 300 })
+      : command.m === 'setAFK' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null);
+    const name = screen.getByRole('textbox', { name: en['admin.overview.name'] });
+    await user.clear(name); await user.type(name, 'Midgard');
+    await user.selectOptions(screen.getByRole('combobox', { name: en['afk.timeout.label'] }), '900');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(en['workspace.overview.partial'])).toBeInTheDocument();
+    expect(fake.callsOf('renameCommunity')).toHaveLength(1);
+    expect(fake.callsOf('setAFK')).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(fake.callsOf('setAFK')).toHaveLength(2));
+    expect(fake.callsOf('renameCommunity')).toHaveLength(1);
+  });
   const field = () => screen.getByRole('textbox', { name: en['admin.overview.name'] });
   const rename = async (user: ReturnType<typeof userEvent.setup>, to: string) => {
     await user.clear(field());
     if (to !== '') await user.type(field(), to);
-    await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
   };
-  it('has one timeout row with the five labels, no destination select and one save button', async () => {
+  it('has one timeout row with the five labels and no separate save button', async () => {
     const { fake } = setup({ ...NONE, manageCommunity: true });
     fake.handler = command => Promise.resolve(command.m === 'getAFKSettings' ? { channelId: 'fe'.repeat(16), timeoutSeconds: 900 } : null);
     fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, pending: false });
@@ -278,9 +336,9 @@ describe('the overview section', () => {
       .toEqual(['1 minute', '5 minutes', '15 minutes', '30 minutes', '1 hour']);
     expect(screen.getAllByRole('combobox')).toHaveLength(1);
     expect(screen.queryByRole('combobox', { name: en['admin.afk.channel'] })).toBeNull();
-    expect(screen.getAllByRole('button', { name: en['admin.overview.save'] })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
     expect(screen.queryByRole('button', { name: en['admin.afk.save'] })).toBeNull();
-    expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(1);
+    expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(0);
     expect((timeout.closest('.d-settings-row') as HTMLElement).querySelector('.d-settings-row__label')).toHaveTextContent(en['afk.timeout.label']);
   });
   it('saves the changed timeout with the name in one press, without a channel', async () => {
@@ -290,17 +348,17 @@ describe('the overview section', () => {
     const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
     await waitFor(() => expect(timeout).toHaveValue('300'));
     await user.selectOptions(timeout, '900');
-    await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, timeoutSeconds: 900 }]));
     expect(fake.callsOf('setAFK')[0]).not.toHaveProperty('channelId');
-    expect(fake.callsOf('renameCommunity')).toHaveLength(1);
+    expect(fake.callsOf('renameCommunity')).toHaveLength(0);
   });
-  it('sends no setAFK when the timeout is unchanged (control)', async () => {
-    const { fake, user } = setup({ ...NONE, manageCommunity: true });
+  it('keeps a clean overview out of the save flow', async () => {
+    const { fake } = setup({ ...NONE, manageCommunity: true });
     const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
     await waitFor(() => expect(timeout).toBeEnabled());
-    await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
-    await waitFor(() => expect(fake.callsOf('renameCommunity')).toHaveLength(1));
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(fake.callsOf('renameCommunity')).toEqual([]);
     expect(fake.callsOf('setAFK')).toEqual([]);
   });
   it('says the hint with the AFK channel’s current name', async () => {
@@ -311,23 +369,21 @@ describe('the overview section', () => {
     fake.publish(`afk:${SERVER}`, { channelId: afkId, timeoutSeconds: 300, pending: false });
     expect(await screen.findByText(en['afk.timeout.hint'].replace('{channel}', 'AFK'))).toBeInTheDocument();
   });
-  // R17, I5: the name is a settings row, and the save button lives in the frame's one footer, not in the body.
-  it('draws the name as a settings row and saves from the frame footer', () => {
-    setup(FULL);
+  // The shared Save action appears only for a dirty draft and lives in the frame footer.
+  it('draws the name as a settings row and saves from the frame footer', async () => {
+    const { user } = setup(FULL);
     const row = field().closest('.d-settings-row') as HTMLElement;
     expect(row.querySelector('.d-settings-row__label')).toHaveTextContent(en['admin.overview.name']);
-    const save = screen.getByRole('button', { name: en['admin.overview.save'] });
+    await user.type(field(), ' new');
+    const save = screen.getByRole('button', { name: 'Save' });
     expect(save.closest('.d-settings-frame__footer')).not.toBeNull();
     expect(save.closest('.d-settings-frame__body')).toBeNull();
     expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(1);
   });
-  // I-3: the frame footer's polite status is the one voice of "saved"; the shell announcer is not called with it as well.
-  it('renames the server with the trimmed name and says it once, in the footer status', async () => {
+  it('renames the server with the trimmed name and clears the shared dirty footer', async () => {
     const { fake, user, announce } = setup(FULL);
     await rename(user, '  Midgard ');
-    const status = document.querySelector('.d-settings-footer__status') as HTMLElement;
-    await waitFor(() => expect(status).toHaveTextContent(en['admin.overview.saved']));
-    expect(status).toHaveAttribute('aria-live', 'polite');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
     expect(announce).not.toHaveBeenCalledWith(en['admin.overview.saved']);
     expect(fake.callsOf('renameCommunity')).toEqual([{ m: 'renameCommunity', communityId: SERVER, name: 'Midgard' }]);
   });

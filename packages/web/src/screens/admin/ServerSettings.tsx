@@ -1,9 +1,11 @@
-// Flow 08 (v0.1.0-web3.4): the Server settings dialog. A SettingsFrame whose tabs follow the viewer's permissions in
-// `permissions:<cid>`; every gate here is advisory, the instance answers each request again.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { SettingsFrame, SettingsNav } from '@dilla/ui';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { SettingsFrame } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { usePhoneLayout } from '../../layout.ts';
+import { SettingsEditProvider, useSettingsWorkspace } from '../../settings/edit-state.tsx';
+import { SettingsNavigation } from '../../settings/SettingsNavigation.tsx';
+import { availableSettings, type ServerSettingsSection, type SettingsAccess } from '../../settings/registry.ts';
+import { useSettingsFocus } from '../../settings/use-settings-focus.ts';
 import { t } from '../../strings/index.ts';
 import { BansSection } from './BansSection.tsx';
 import { ChannelsSection } from './ChannelsSection.tsx';
@@ -13,92 +15,117 @@ import { RolesSection } from './RolesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
 import { BotSection } from './BotSection.tsx';
 import { SelfRolesSection } from './SelfRolesSection.tsx';
-import { FooterSlot, type Announce } from './shared.ts';
+import { GifsSettings } from './GifsSettings.tsx';
+import { MembersSection } from './MembersSection.tsx';
 
-export type AdminTab =
-  | 'overview'
-  | 'bot'
-  | 'selfRoles'
-  | 'channels'
-  | 'roles'
-  | 'invites'
-  | 'bans'
-  | 'danger';
+/** Kept for the shell's existing admin actions while routes move to ServerSettingsSection. */
+export type AdminTab = ServerSettingsSection;
 
 export interface ServerSettingsProps {
   communityId: string;
-  /** The tab asked for. One the viewer may not use falls back to the first they may. */
-  tab: AdminTab;
-  onTab: (tab: AdminTab) => void;
+  tab: ServerSettingsSection | null;
+  onTab: (tab: ServerSettingsSection | null) => void;
   onClose: () => void;
-  /** The shell's polite announcer (its status region outlives this dialog, which closes after leave and delete). */
-  announce: Announce;
+  announce: (message: string) => void;
+  activity?: ReactNode;
+  onMessage?: (userId: string) => void;
+  onCompare?: (userId: string) => void;
 }
 
-/**
- * The dialog for one server, mounted by whoever opens it. Until the permissions are read (`loaded` false) it shows no tab
- * rather than hiding tabs as forbidden. Overview needs manageCommunity, channels manageChannels, invites createInvite and
- * bans banMembers; the danger tab (leave, or for the owner delete and hand over) is always there. A server that leaves the
- * list while this is open (kicked, deleted) closes it.
- */
-export function ServerSettings({ communityId, tab, onTab, onClose, announce }: ServerSettingsProps): React.JSX.Element | null {
+export function ServerSettings(props: ServerSettingsProps): React.JSX.Element {
+  return <SettingsEditProvider><ServerSettingsWorkspace {...props} /></SettingsEditProvider>;
+}
+
+function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, activity, onMessage = () => undefined, onCompare = () => undefined }: ServerSettingsProps): React.JSX.Element {
   const phone = usePhoneLayout();
   const community = useSlice('communities')?.find(c => c.id === communityId);
-  const access = useSlice(`permissions:${communityId}`);
-  // The last community seen: leave and delete drop the server from the list before their command resolves, and the dialog
-  // keeps showing it until it has been told to close, so the close path restores focus and the message is still announced.
+  const rawAccess = useSlice(`permissions:${communityId}`);
+  const access: SettingsAccess | undefined = rawAccess;
+  const account = useSlice('account');
+  const allowed = useMemo(() => availableSettings('server', access), [access]);
+  const active = phone && tab === null ? null
+    : (allowed.find(entry => entry.id === tab)?.id as ServerSettingsSection | undefined)
+      ?? (tab === null || access?.loaded === true ? (allowed[0]?.id as ServerSettingsSection | undefined) ?? null : null);
+  const [closed, setClosed] = useState(false);
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [permissionNotice, setPermissionNotice] = useState('');
+  const workspace = useSettingsWorkspace();
+  const told = useRef(false);
+  const previousActive = useRef<ServerSettingsSection | null>(null);
+  const announcedLossFor = useRef<ServerSettingsSection | null>(null);
   const known = useRef(community);
   if (community !== undefined) known.current = community;
   const shown = community ?? known.current;
-  const [closed, setClosed] = useState(false);
-  const [footerEl, setFooterEl] = useState<HTMLElement | null>(null);
-  const told = useRef(false);
+  const gone = community === undefined && known.current !== undefined;
   const finish = () => {
     if (told.current) return;
     told.current = true;
+    workspace?.clear();
     setClosed(true);
     onClose();
   };
-  const gone = community === undefined && known.current !== undefined;
-  useEffect(() => { if (gone) finish(); });
 
-  const loaded = access?.loaded === true;
-  const tabs: { id: AdminTab; label: string }[] = [];
-  if (access !== undefined && loaded) {
-    if (access.manageCommunity) tabs.push({ id: 'overview', label: t('admin.nav.overview') });
-    if (access.manageCommunity) tabs.push({ id: 'bot', label: t('admin.nav.bot') });
-    if (access.manageChannels) tabs.push({ id: 'channels', label: t('admin.nav.channels') });
-    if (access.manageRoles) tabs.push({ id: 'roles', label: t('roles.tab') });
-    if (access.createInvite) tabs.push({ id: 'invites', label: t('admin.nav.invites') });
-    if (access.banMembers) tabs.push({ id: 'bans', label: t('admin.nav.bans') });
-    tabs.push({ id: 'selfRoles', label: t('admin.nav.selfRoles') });
-    tabs.push({ id: 'danger', label: t(access.owner ? 'admin.nav.delete' : 'admin.nav.leave') });
-  }
-  const active = tabs.find(x => x.id === tab)?.id ?? tabs[0]?.id ?? null;
-
-  const previous = useRef(active);
-  useLayoutEffect(() => {
-    if (previous.current !== null && active !== null && previous.current !== active) {
-      document.querySelector<HTMLElement>('.d-settings-frame__body h2')?.focus();
+  useEffect(() => { if (gone) finish(); }, [gone]); // leave/delete drop the server before the request resolves
+  useEffect(() => {
+    if (access?.loaded !== true) return;
+    const lost = previousActive.current !== null && !allowed.some(entry => entry.id === previousActive.current);
+    const requestedAllowed = tab === null || allowed.some(entry => entry.id === tab);
+    const newRequestedLoss = tab !== null && !requestedAllowed && announcedLossFor.current !== tab;
+    if (lost || newRequestedLoss) {
+      workspace?.clear();
     }
-    previous.current = active;
-  }, [active]);
+    if (newRequestedLoss && tab !== null) {
+      setPermissionNotice(t('workspace.permissionChanged'));
+      announcedLossFor.current = tab;
+      if (active !== null) onTab(active);
+    } else if (tab === null || allowed.some(entry => entry.id === tab)) {
+      announcedLossFor.current = null;
+    }
+    previousActive.current = active;
+  }, [access?.loaded, allowed, active, onTab, tab, workspace]);
 
-  if (shown === undefined) return null;
-  const common = { communityId, serverName: shown.name, announce };
-  return (
-    <SettingsFrame modal={!phone} open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={onClose}
-      nav={<SettingsNav label={t('admin.nav')} items={tabs} activeId={active ?? ''} onSelect={id => onTab(id as AdminTab)} />}
-      footer={active === 'overview' ? <div ref={setFooterEl} /> : undefined}>
-      {!loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
-      {active === 'overview' ? <FooterSlot.Provider value={footerEl}><OverviewSection {...common} /></FooterSlot.Provider> : null}
-      {active === 'bot' ? <BotSection {...common} /> : null}
-      {active === 'selfRoles' ? <SelfRolesSection {...common} /> : null}
-      {active === 'channels' ? <ChannelsSection {...common} /> : null}
-      {active === 'roles' ? <RolesSection {...common} /> : null}
-      {active === 'invites' ? <InvitesSection {...common} /> : null}
-      {active === 'bans' ? <BansSection {...common} /> : null}
-      {active === 'danger' ? <DangerSection {...common} owner={access?.owner === true} onGone={finish} /> : null}
+  const select = (section: ServerSettingsSection | null, nextAnchor: string | null = null) => {
+    setAnchor(nextAnchor);
+    if (section === tab) return;
+    onTab(section);
+  };
+  const close = onClose;
+
+  const contentRef = useSettingsFocus(active, anchor);
+  const entry = allowed.find(item => item.id === active);
+  const footer = workspace?.footer ?? null;
+  const sectionTitle = entry ? t(entry.labelKey) : undefined;
+  const common = { communityId, serverName: shown?.name ?? '', announce };
+  const content = useMemo(() => {
+    if (!access?.loaded || active === null || shown === undefined) return null;
+    switch (active) {
+      case 'overview': return <OverviewSection {...common} />;
+      case 'channels': return <ChannelsSection {...common} />;
+      case 'gifs': return <section className="dw-settings-section"><h2 tabIndex={-1}>{t('workspace.gifs')}</h2><GifsSettings communityId={communityId} announce={announce} /></section>;
+      case 'members': return <MembersSection communityId={communityId} selfId={account?.user?.id ?? ''} onMessage={onMessage} onCompare={onCompare} announce={announce} />;
+      case 'roles': return <RolesSection {...common} />;
+      case 'invites': return <InvitesSection {...common} />;
+      case 'selfRoles': return <SelfRolesSection {...common} />;
+      case 'bot': return <BotSection {...common} />;
+      case 'welcome': case 'joinRoles': case 'music': case 'automoderation': case 'moderationLog': return null;
+      case 'bans': return <BansSection {...common} />;
+      case 'danger': return <DangerSection {...common} owner={access.owner === true} onGone={finish} />;
+      default: return null;
+    }
+  // These components own their draft state. Recreate the selected section only when its identity changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, access?.loaded, access?.owner, communityId, shown?.name, account?.user?.id, onMessage, onCompare, announce]);
+
+  return <>
+    <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={close}
+      identity={shown ? <span>{shown.name}</span> : undefined}
+      nav={<SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
+      footer={footer} phonePage={phone && tab === null ? 'index' : 'section'} sectionTitle={sectionTitle}
+      backLabel={t('workspace.back')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide} activity={activity}>
+      {!access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
+      {permissionNotice ? <p role="status" aria-live="polite">{permissionNotice}</p> : null}
+      {content}
+      {workspace?.confirmation}
     </SettingsFrame>
-  );
+  </>;
 }
