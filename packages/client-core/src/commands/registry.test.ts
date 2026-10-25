@@ -57,6 +57,24 @@ describe('command registry', () => {
     expect(parseCommand('/warn user:user-1 reaso:spam')).toMatchObject({ type: 'invalid' });
     expect(parseCommand('/warn user:user-1 reason:spam')).toMatchObject({ type: 'invocation' });
     expect(parseCommand('/warn user:user-1 reason:"see https://example.test/a:b at 09:30"')).toMatchObject({ type: 'invocation' });
+    expect(parseCommand('/warn user-1 "note: spam"')).toMatchObject({
+      type: 'invocation', invocation: { commandId: 'warn', args: { user: 'user-1', reason: 'note: spam' } },
+    });
+    expect(parseCommand('/remind 1h "call: Åsa"')).toMatchObject({
+      type: 'invocation', invocation: { commandId: 'remind', args: { when: '1h', text: 'call: Åsa' } },
+    });
+    expect(parseCommand('/me "say \\"hi\\" and C:\\\\music"')).toMatchObject({
+      type: 'invocation', invocation: { args: { text: 'say "hi" and C:\\music' } },
+    });
+  });
+
+  it('labels built-in and bot-backed commands for the picker', () => {
+    for (const id of ['play', 'queue remove', 'music', 'announcement create', 'selfrole add', 'rolepanel create', 'poll vote', 'remind', 'modlog']) {
+      expect(commandById(id)?.provider).toBe('bot');
+    }
+    for (const id of ['warn', 'kick', 'ban', 'delete', 'reply', 'join']) {
+      expect(commandById(id)?.provider).toBe('builtin');
+    }
   });
 
   it('validates reminder durations and ISO local date-times without resolving timezone rules', () => {

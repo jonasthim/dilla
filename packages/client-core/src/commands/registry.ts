@@ -3,6 +3,7 @@
 export type CommandArgumentKind =
   | 'text' | 'user' | 'channel' | 'role' | 'message' | 'queue-item' | 'poll'
   | 'announcement' | 'reminder' | 'choice' | 'number' | 'duration' | 'time';
+export type CommandProvider = 'builtin' | 'bot';
 
 export interface CommandOption {
   name: string;
@@ -21,6 +22,7 @@ export interface CommandDefinition {
   id: string;
   description: string;
   scope: 'any' | 'community';
+  provider: CommandProvider;
   handler: string;
   permissionBit?: number;
   options: readonly CommandOption[];
@@ -130,11 +132,21 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'reminders dismiss', description: 'Dismiss a due reminder', options: [entity('reminder', 'reminder')] },
 ];
 
+const botCommandIds = new Set([
+  'play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
+  'queue remove', 'queue move', 'queue clear', 'music', 'music help', 'modlog', 'rolepanel create',
+  'announcement list', 'announcement create', 'announcement edit', 'announcement delete',
+  'poll create', 'poll vote', 'poll results', 'poll close',
+  'remind', 'reminders list', 'reminders cancel', 'reminders dismiss',
+  'selfrole list', 'selfrole add', 'selfrole remove',
+]);
+
 function materialize(seed: (typeof seeds)[number]): CommandDefinition {
   return {
     id: seed.id,
     description: seed.description,
     scope: seed.scope ?? 'community',
+    provider: botCommandIds.has(seed.id) ? 'bot' : 'builtin',
     handler: seed.id.replaceAll(' ', '.'),
     ...(seed.permissionBit === undefined ? {} : { permissionBit: seed.permissionBit }),
     options: (seed.options ?? []).map((option) => ({ ...option, description: option.description ?? `${option.name} argument` })),
@@ -256,7 +268,7 @@ export type CommandParseResult =
   | { type: 'invocation'; text: string; invocation: CommandInvocation }
   | { type: 'invalid'; text: string; issues: ArgumentIssue[] };
 
-interface Token { value: string; start: number }
+interface Token { value: string; start: number; hasUnquotedColon: boolean }
 function tokenize(source: string): Token[] | null {
   const tokens: Token[] = [];
   let value = '';
@@ -264,6 +276,7 @@ function tokenize(source: string): Token[] | null {
   let escaped = false;
   let start = 0;
   let active = false;
+  let hasUnquotedColon = false;
   for (let i = 0; i < source.length; i++) {
     const char = source[i]!;
     if (!active && /\s/u.test(char)) continue;
@@ -275,11 +288,12 @@ function tokenize(source: string): Token[] | null {
       continue;
     }
     if (char === '"' || char === "'") { quote = char; continue; }
-    if (/\s/u.test(char)) { tokens.push({ value, start }); value = ''; active = false; continue; }
+    if (/\s/u.test(char)) { tokens.push({ value, start, hasUnquotedColon }); value = ''; active = false; hasUnquotedColon = false; continue; }
+    if (char === ':') hasUnquotedColon = true;
     value += char;
   }
   if (escaped || quote) return null;
-  if (active) tokens.push({ value, start });
+  if (active) tokens.push({ value, start, hasUnquotedColon });
   return tokens;
 }
 
@@ -323,8 +337,8 @@ export function parseCommand(input: string): CommandParseResult {
   const freeTextOnly = command.options.length === 1 && command.options[0]?.freeText === true;
   for (const token of tokens.slice(commandWordCount)) {
     const colon = token.value.indexOf(':');
-    const named = colon >= 0 && command.options.some((option) => option.name === token.value.slice(0, colon).toLowerCase());
-    const optionShaped = /^[a-z][a-z0-9_-]*:/i.test(token.value) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(token.value);
+    const named = token.hasUnquotedColon && colon >= 0 && command.options.some((option) => option.name === token.value.slice(0, colon).toLowerCase());
+    const optionShaped = token.hasUnquotedColon && /^[a-z][a-z0-9_-]*:/i.test(token.value) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(token.value);
     if (named) {
       const name = token.value.slice(0, colon).toLowerCase();
       const value = token.value.slice(colon + 1);

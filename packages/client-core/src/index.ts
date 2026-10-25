@@ -30,4 +30,4 @@ export type { PendingLeaf, TrustRecord, SearchScope, SearchCursor, SearchHit } f
 export { negotiateSession } from './http/negotiate-session';
 export type { SessionCapabilities } from './http/negotiate-session';
 export { COMMANDS, availableCommands, commandAvailability, commandById, parseCommand, searchCommands, validateCommandArgs } from './commands/registry';
-export type { ArgumentIssue, CommandArgumentKind, CommandAvailability, CommandContext, CommandDefinition, CommandInvocation, CommandOption, CommandParseResult, CommandResult, CommandValidation } from './commands/registry';
+export type { ArgumentIssue, CommandArgumentKind, CommandAvailability, CommandContext, CommandDefinition, CommandInvocation, CommandOption, CommandParseResult, CommandProvider, CommandResult, CommandValidation } from './commands/registry';
