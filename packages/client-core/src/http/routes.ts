@@ -587,6 +587,16 @@ export class Routes {
     const row = decode(await this.body('GET', path, 'read', true));
     return row === null ? null : botInstallationRow(row, communityId);
   }
+  async patchBotProfile(communityId: Uint8Array, display: string): Promise<string> {
+    const normalized = checkedProfile('display', display, DISPLAY_MAX_CHARS);
+    if (!normalized) throw new RangeError('E_ROUTE_INPUT: bot display name is required');
+    const raw = await this.body('PATCH', `/v1/communities/${id('communityId', communityId)}/bot/profile`, 'write', true,
+      { body: encode([normalized]), retry429: false });
+    const fields = arr(decode(raw), 1);
+    const saved = str(fields[0]);
+    if (saved === '' || profileTextProblem(saved, DISPLAY_MAX_CHARS) !== null) throw new CborError('E_CBOR_SHAPE', 'invalid bot display name');
+    return saved;
+  }
   /** GET /bot-join-role returns [role id or null, active installation id]. 404 means no active bot. */
   async getBotJoinRole(communityId: Uint8Array): Promise<BotJoinRoleRow | null> {
     try {

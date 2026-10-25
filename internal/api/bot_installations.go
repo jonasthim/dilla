@@ -106,6 +106,7 @@ func appendBotInstallationEvent(ctx context.Context, tx store.Repository, row st
 func registerBotInstallations(m *server.Mux, d Deps) {
 	botSession := BotSessionRoute(d.Sessions, d.Limiter)
 	m.Handle("GET /v1/communities/{community}/bot", botSession("GET /v1/communities/{community}/bot", http.HandlerFunc(d.GetBotInstallation)))
+	m.Handle("PATCH /v1/communities/{community}/bot/profile", botSession("PATCH /v1/communities/{community}/bot/profile", http.HandlerFunc(d.PatchBotProfile)))
 	m.Handle("PUT /v1/communities/{community}/bot", botSession("PUT /v1/communities/{community}/bot", http.HandlerFunc(d.ConfigureBotInstallation)))
 	m.Handle("POST /v1/communities/{community}/bot/disable", botSession("POST /v1/communities/{community}/bot/disable", http.HandlerFunc(d.DisableBotInstallation)))
 	m.Handle("DELETE /v1/communities/{community}/bot", botSession("DELETE /v1/communities/{community}/bot", http.HandlerFunc(d.RemoveBotInstallation)))
