@@ -3,6 +3,7 @@ package polls
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -421,5 +422,53 @@ func TestNativeStatusConflictNormalizesAtStoreBoundary(t *testing.T) {
 	p := Poll{ID: pid(2), CommunityID: pid(1), ChannelID: pid(3), CreatorID: pid(4), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
 	if _, e := s.Create(ctx, p.ID, [32]byte{1}, p, now); !errors.Is(e, ErrConflict) {
 		t.Fatalf("helper status4 error=%v", e)
+	}
+}
+
+type selectivePollPublisher struct {
+	failID id.ID
+	calls  []id.ID
+}
+
+func (p *selectivePollPublisher) PublishPoll(_ context.Context, poll Poll) error {
+	p.calls = append(p.calls, poll.ID)
+	if poll.ID == p.failID {
+		return errors.New("injected publication outage")
+	}
+	return nil
+}
+
+func TestReconcileExpiresAllDuePollsAfterPublicationFailure(t *testing.T) {
+	ctx := context.Background()
+	state := newTestState()
+	store := NewStore(state, pid(1))
+	created := time.Unix(1000, 0)
+	for _, pollID := range []id.ID{pid(2), pid(3)} {
+		poll := Poll{ID: pollID, CommunityID: pid(1), ChannelID: pid(4), CreatorID: pid(5), Question: "Lunch?", Answers: []string{"Soup", "Salad"}, CreatedAt: 1000, DueAt: 1100}
+		if _, err := store.Create(ctx, poll.ID, [32]byte{pollID[15]}, poll, created); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publisher := &selectivePollPublisher{failID: pid(2)}
+	err := store.Reconcile(ctx, time.Unix(2000, 0), publisher)
+	if err == nil || !strings.Contains(err.Error(), "injected publication outage") {
+		t.Fatalf("publication failure was not reported: %v", err)
+	}
+	for _, pollID := range []id.ID{pid(2), pid(3)} {
+		got, getErr := store.Get(ctx, pollID)
+		if getErr != nil || !got.Closed {
+			t.Fatalf("poll %x was not closed after catch-up: poll=%+v err=%v", pollID, got, getErr)
+		}
+	}
+	if len(publisher.calls) != 2 || publisher.calls[0] != pid(2) || publisher.calls[1] != pid(3) {
+		t.Fatalf("reconcile did not continue publishing later records: %v", publisher.calls)
+	}
+	quota, quotaErr := store.get(ctx, quotaKey(pid(1)))
+	if quotaErr != nil {
+		t.Fatal(quotaErr)
+	}
+	open, decodeErr := decodeIDs(quota.Value)
+	if decodeErr != nil || len(open) != 0 {
+		t.Fatalf("expired poll quota not released: open=%v err=%v", open, decodeErr)
 	}
 }

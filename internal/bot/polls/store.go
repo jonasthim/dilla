@@ -817,53 +817,58 @@ func (s *Store) Reconcile(ctx context.Context, now time.Time, publisher Publishe
 	if s == nil || s.state == nil || publisher == nil {
 		return ErrInvalid
 	}
+	var reconcileErrors []error
 	after := []byte(pollPrefix)
 	for {
 		page, e := s.state.StateScan(ctx, stateArea, after, 100)
 		if e != nil {
-			return e
+			return errors.Join(append(reconcileErrors, e)...)
 		}
 		if len(page.Entries) == 0 {
-			return nil
+			return errors.Join(reconcileErrors...)
 		}
 		for _, entry := range page.Entries {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(reconcileErrors, err)...)
+			}
 			after = entry.Key
 			key := string(entry.Key)
 			if !strings.HasPrefix(key, pollPrefix) || strings.Contains(key[len(pollPrefix):], "/") {
-				return nil
+				return errors.Join(reconcileErrors...)
 			}
 			if entry.Tombstone {
 				continue
 			}
 			p, e := decodePoll(entry.Value)
 			if e != nil {
-				return e
+				reconcileErrors = append(reconcileErrors, fmt.Errorf("decode poll state: %w", e))
+				continue
 			}
 			if p.CommunityID != s.community {
 				continue
 			}
 			if !p.Published {
 				if e = publisher.PublishPoll(ctx, p); e != nil {
-					return e
+					reconcileErrors = append(reconcileErrors, fmt.Errorf("publish poll %s: %w", idhex(p.ID), e))
+				} else if e = s.MarkPublished(ctx, p.ID); e != nil {
+					reconcileErrors = append(reconcileErrors, fmt.Errorf("mark poll %s published: %w", idhex(p.ID), e))
+				} else {
+					p.Published = true
 				}
-				if e = s.MarkPublished(ctx, p.ID); e != nil {
-					return e
-				}
-				p.Published = true
 			}
 			if !p.Closed && uint64(now.Unix()) >= p.DueAt {
 				request := id.New()
 				fp := sha256.Sum256(append(p.ID[:], byte(p.Revision)))
 				if _, e = s.Close(ctx, p.ID, p.CreatorID, request, fp, p.Revision, now, false); e != nil && !errors.Is(e, ErrConflict) {
-					return e
+					reconcileErrors = append(reconcileErrors, fmt.Errorf("expire poll %s: %w", idhex(p.ID), e))
 				}
 				if e = s.releaseQuota(ctx, p.ID); e != nil {
-					return e
+					reconcileErrors = append(reconcileErrors, fmt.Errorf("release poll quota %s: %w", idhex(p.ID), e))
 				}
 			}
 		}
 		if len(page.Entries) < 100 {
-			return nil
+			return errors.Join(reconcileErrors...)
 		}
 	}
 }

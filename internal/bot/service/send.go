@@ -89,6 +89,16 @@ func (s *SendCoordinator) Send(ctx context.Context, session *client.Session, in 
 	return s.send(ctx, session, in)
 }
 
+// SendAuthorized resumes the same durable send attempt as Send, while checking
+// caller supplied authorization after receipt recovery and before any new
+// ciphertext is prepared or uploaded.
+func (s *SendCoordinator) SendAuthorized(ctx context.Context, session *client.Session, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
+	if session == nil || preflight == nil {
+		return protocol.SendReceipt{}, errors.New("missing authorized send prerequisite")
+	}
+	return s.sendWithPreflight(ctx, session, in, preflight)
+}
+
 func (s *SendCoordinator) send(ctx context.Context, session sendSession, in SendInput) (protocol.SendReceipt, error) {
 	return s.sendWithPreflight(ctx, session, in, nil)
 }

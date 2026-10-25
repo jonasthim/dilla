@@ -712,10 +712,18 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							}
 							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
 							var scheduler *announcements.Scheduler
+							var utilities *utilityRuntime
 							var scheduleErr error
 							scheduler, scheduleErr = service.NewAnnouncementScheduler(nativeClient, result.Session, api)
 							if scheduleErr != nil {
 								interactionErr = errors.Join(interactionErr, scheduleErr)
+							}
+							if interactionErr == nil {
+								var utilitySetupErr error
+								utilities, utilitySetupErr = newUtilityRuntime(nativeClient, result.Session, api, installation.CommunityID, installation.ID, time.Now)
+								if utilitySetupErr != nil {
+									logger.Warn("bot utility handlers unavailable", "installation_id", installation.ID.String(), "error", utilitySetupErr.Error())
+								}
 							}
 							if interactionErr == nil {
 								var coordinator *service.SendCoordinator
@@ -753,12 +761,18 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														}),
 														musicProviderStatus,
 													)
+													for operation, handler := range utilities.handlers() {
+														handlers[operation] = handler
+													}
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,
 														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
 													}) {
 														handlers[operation] = handler
+													}
+													if result.Installation.BotUser != nil {
+														addCapabilityDiscoveryHandler(handlers, result.Session, installation.CommunityID, installation.ID, *result.Installation.BotUser, uint8(result.Installation.Capabilities))
 													}
 													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
 														handlers, func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
@@ -818,11 +832,19 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								reconcileStage = "scheduled_services"
 								scheduleErr = scheduler.RunDue(ctx)
 							}
+							var utilityErr error
+							if utilities != nil {
+								reconcileStage = "utility_services"
+								utilityErr = utilities.maintain(ctx)
+								if utilityErr != nil {
+									logger.Error("bot utility maintenance paused", "installation_id", installation.ID.String(), "error", utilityErr.Error())
+								}
+							}
 							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, nil, time.Now)
 							if caseErr == nil {
 								caseErr = maintainModerationEvidence(ctx, logger, installation.ID, caseSink)
 							}
-							ensureErr = errors.Join(ensureErr, scheduleErr, caseErr)
+							ensureErr = errors.Join(ensureErr, scheduleErr, utilityErr, caseErr)
 						}
 					}
 				}
