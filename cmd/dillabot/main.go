@@ -89,11 +89,11 @@ func loadConfig(path string) (config, error) {
 			parseErr != nil || redirect.Scheme != "https" || redirect.Host == "" || redirect.User != nil || redirect.Fragment != "" || len(c.SpotifyRedirectURL) > 2048 {
 			errs = append(errs, errors.New("spotify_client_id and spotify_redirect_url must form a valid HTTPS OAuth pair"))
 		}
-		if c.SpotifyHelperExecutable != "" && !filepath.IsAbs(c.SpotifyHelperExecutable) {
-			errs = append(errs, errors.New("spotify_helper_executable must be an absolute path"))
-		}
-	} else if c.SpotifyHelperExecutable != "" {
-		errs = append(errs, errors.New("spotify_helper_executable requires Spotify OAuth configuration"))
+	}
+	// OAuth may be configured in community Bot settings rather than this file.
+	// The installed PCM executable is an independent local deployment setting.
+	if c.SpotifyHelperExecutable != "" && !filepath.IsAbs(c.SpotifyHelperExecutable) {
+		errs = append(errs, errors.New("spotify_helper_executable must be an absolute path"))
 	}
 	c.InstanceID, err = id.Parse(c.InstanceIDText)
 	if err != nil || c.InstanceID.IsZero() {
