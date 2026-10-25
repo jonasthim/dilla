@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
-  FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
+  FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, composerBox, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
   openChannel, reactionChip, rowAction, sendText, signIn, signUp, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -124,7 +124,7 @@ test('a bot enabled through server settings reaches ready through the native run
   }
 });
 
-test('music chat commands receive public bot replies through the native runtime', async ({ page, instanceName, browser, guard }) => {
+test('literal music command text never executes through the native runtime', async ({ page, instanceName, browser, guard }) => {
   let host: StartedHost | null = null;
   let secondContext: import('@playwright/test').BrowserContext | null = null;
   try {
@@ -180,13 +180,13 @@ test('music chat commands receive public bot replies through the native runtime'
     await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
     await openChannel(secondPage, SERVER, 'general');
     await openChannel(page, SERVER, 'general');
-    await sendText(page, 'general', '/music');
-    const help = messageRow(page, 'general', 'Music commands: /play');
-    await expect(help).toHaveAttribute('data-state', 'ok');
-    await expect(help.locator('[data-kind=bot]')).toHaveText('bot');
-    await expect(messageRow(secondPage, 'general', 'Music commands: /play')).toHaveAttribute('data-state', 'ok');
-    await sendText(page, 'general', '/play northern lights');
-    await expect(messageRow(page, 'general', 'Join a voice channel before using music commands.')).toHaveAttribute('data-state', 'ok');
+    for (const text of ['/music', '/play northern lights']) {
+      await composerBox(page, 'general').fill(`/${text}`);
+      await page.getByRole('button', { name: 'Send as text', exact: true }).click();
+      await expect(messageRow(page, 'general', text)).toHaveAttribute('data-state', 'ok');
+    }
+    await expect(page.locator('[data-kind=bot]')).toHaveCount(0);
+    await expect(secondPage.locator('[data-kind=bot]')).toHaveCount(0);
 
   } finally {
     await secondContext?.close();

@@ -10,7 +10,6 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -222,74 +221,5 @@ func TestAutoModerationEventStateKeepsStartupBoundaryAndResetsOnConfigRevision(t
 	}
 	if third == first || thirdBoundary != 14 || thirdReceivedBoundary < firstReceivedBoundary || source.calls != 2 {
 		t.Fatalf("new revision did not start a fresh replay boundary: same=%v delivery=%d receipt=%d reads=%d", third == first, thirdBoundary, thirdReceivedBoundary, source.calls)
-	}
-}
-
-type routedModerationFunc func(context.Context, native.GroupEvent, bool, []string) (moderation.Decision, error)
-
-func (f routedModerationFunc) Handle(ctx context.Context, e native.GroupEvent, replay bool, mentions []string) (moderation.Decision, error) {
-	return f(ctx, e, replay, mentions)
-}
-func TestMusicRouterDoesNotExecuteRejectedCommandOnModerationRetry(t *testing.T) {
-	command, event, ops, _ := commandFixture(t, "/play blocked song")
-	inspector := groupEventInspectorFunc(func(context.Context, id.ID) (native.GroupInfo, error) {
-		return native.GroupInfo{ID: event.Group, Kind: 0}, nil
-	})
-	calls := 0
-	moderationHandler := routedModerationFunc(func(context.Context, native.GroupEvent, bool, []string) (moderation.Decision, error) {
-		calls++
-		if calls == 1 {
-			return moderation.Decision{Action: moderation.ActionRemove}, errors.New("removal transient failure")
-		}
-		return moderation.Decision{Action: moderation.ActionLog, DuplicateDelivery: true}, nil
-	})
-	router := newGroupEventRouter(inspector, nil, moderationHandler, 0, 0, command)
-	if err := router.HandleGroupEvent(t.Context(), event); err == nil {
-		t.Fatal("removal failure not retained")
-	}
-	if err := router.HandleGroupEvent(t.Context(), event); err != nil {
-		t.Fatal(err)
-	}
-	if len(*ops) != 0 {
-		t.Fatal("moderation-rejected command executed on retry")
-	}
-	// A rules reload can reset evaluator deduplication. Durable rejection must survive it.
-	reset := routedModerationFunc(func(context.Context, native.GroupEvent, bool, []string) (moderation.Decision, error) {
-		return moderation.Decision{Action: moderation.ActionLog}, nil
-	})
-	router = newGroupEventRouter(inspector, nil, reset, 0, 0, command)
-	if err := router.HandleGroupEvent(t.Context(), event); err != nil {
-		t.Fatal(err)
-	}
-	if len(*ops) != 0 {
-		t.Fatal("rules reload resurrected a rejected command")
-	}
-
-}
-func TestMusicRouterResumesPermittedReplyOnModerationDuplicate(t *testing.T) {
-	command, event, ops, replies := commandFixture(t, "/skip")
-	sender := command.send
-	command.send = func(context.Context, native.GroupEvent, musicCommandRecord, string) (protocol.SendOutcome, error) {
-		return protocol.ReceiptUnknownAfterRestore, errors.New("reply upload failed")
-	}
-	inspector := groupEventInspectorFunc(func(context.Context, id.ID) (native.GroupInfo, error) {
-		return native.GroupInfo{ID: event.Group, Kind: 0}, nil
-	})
-	calls := 0
-	moderationHandler := routedModerationFunc(func(context.Context, native.GroupEvent, bool, []string) (moderation.Decision, error) {
-		calls++
-		return moderation.Decision{Action: moderation.ActionLog, DuplicateDelivery: calls > 1}, nil
-	})
-	router := newGroupEventRouter(inspector, nil, moderationHandler, 0, 0, command)
-	if err := router.HandleGroupEvent(t.Context(), event); err == nil {
-		t.Fatal("failed reply was acknowledged")
-	}
-	before := len(*ops)
-	command.send = sender
-	if err := router.HandleGroupEvent(t.Context(), event); err != nil {
-		t.Fatal(err)
-	}
-	if len(*ops) != before || len(*replies) != 1 {
-		t.Fatal("permitted command did not resume its reply without duplicate action")
 	}
 }

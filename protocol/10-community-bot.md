@@ -93,13 +93,16 @@ state_directory_unavailable`, `8 dependencies_missing`, `9 unsupported_bot`, and
 errors, tokens, or OAuth codes. The handler checks the actor's current
 `manage_community` authority and recomputes the response on an exact replay.
 
-Client workers own disposable observation responses for operations 0 and 24.
-Before an authorized journal read, they cache and acknowledge only a contiguous
-leading observation prefix, never a mutation or another feature's response.
-The in-memory cache holds at most 64 cloned responses for 60 seconds and clears
-with the session. Reads retain their ordinary live authorization checks. This lets
-later readers drain observations after the originating settings page closes,
-without losing another feature's response or treating cached data as fresh evidence.
+The client interaction journal retains responses until the owning feature has
+persisted them. A read names the exact request IDs and operation codes it expects;
+only matching responses for the requested community are returned. Other journal
+events, including another feature's responses, remain available to their owners.
+Each read returns an opaque, read-bound ACK lease for the selected delivery IDs.
+The client acknowledges only after saving the exact response, and the lease cannot
+be used as a delivery cursor or to acknowledge an unselected prefix. Leases expire
+when their read context is forgotten. A stale or mismatched lease is rejected.
+Reads keep their normal live authorization checks; a cached response is not new
+evidence of current permissions or provider state.
 
 Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
 
@@ -919,8 +922,8 @@ Bot must retain connect and speak permissions and an active, ready Music-enabled
 installation. These checks run again before a queue mutation is committed,
 including after provider lookup. Owners and administrators may additionally
 issue an emergency stop without being in the call. Instance-admin status alone
-does not grant community music control. Text-chat commands require a joined
-voice channel to select their target, including for `/stop`.
+does not grant community music control. Structured music commands target the
+caller's joined voice channel, including an emergency stop.
 
 Managed Bot voice access is publication-only: tokens and current SFU permission
 updates prohibit media subscription and permit only microphone-source audio

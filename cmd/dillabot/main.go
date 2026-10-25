@@ -779,7 +779,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 											if interactionErr == nil {
 												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
-												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicChatCommands(installation.CommunityID, nativeClient, result.Session, api, coordinator, musicInteractions, gateways.startedAt))
+												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicReplyRecovery(installation.CommunityID, nativeClient, result.Session, api, coordinator))
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if musicInteractions != nil && (retainedNative || musicOwnedNative) {
 													gateways.SetTextPoller(installation.ID, func(pollCtx context.Context) error {

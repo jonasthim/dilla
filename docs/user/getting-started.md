@@ -1561,9 +1561,8 @@ or successful playback. Spotify and YouTube playback setup separately report
 observations older than a minute are stale. An older or offline bot may leave status
 unavailable while configuration and linking remain usable.
 
-Playback uses text-chat commands: join a voice channel, then use `/play`, `/pause`,
-`/resume`, `/skip`, `/queue`, or `/stop` in a text channel. See [Music](music.md)
-for command syntax and DJ-role requirements.
+Playback uses music commands from the command picker. Join a voice channel first.
+See [Music](music.md) for setup and DJ-role requirements.
 
 Participant volume and screen-share volume remain beside the participant/share.
 Channel collapse and conversation-search scope remain in their contextual controls.
