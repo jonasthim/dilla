@@ -15,13 +15,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
 )
 
 const (
 	MaxStatusLine = 256
-	// Librespot's 44.1 kHz stereo s16le output: 882 samples per channel
-	// every 20 ms, four bytes per stereo sample pair.
-	PCMBytesPerFrame = 3528
+	// The helper resamples librespot to 48 kHz stereo s16le: 960 samples
+	// per channel every 20 ms, four bytes per stereo sample pair.
+	PCMBytesPerFrame = 3840
 	maxCredential    = 64 * 1024
 	startupTimeout   = 40 * time.Second
 	operationTimeout = 2 * time.Second
@@ -168,7 +170,12 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	statusFrames, pcmFrames, processDone := (<-chan Status)(p.statuses), (<-chan []byte)(p.frames), p.done
 	for !ready || !receivedPCM {
 		if statusFrames == nil && pcmFrames == nil {
-			return nil, ErrPlaybackFailed
+			select {
+			case err := <-p.readErr:
+				return nil, safePlaybackError(err)
+			default:
+				return nil, ErrPlaybackFailed
+			}
 		}
 		select {
 		case status, ok := <-statusFrames:
@@ -197,9 +204,9 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 				p.pending = frame
 				receivedPCM = true
 			}
-		case <-p.readErr:
+		case err := <-p.readErr:
 			p.killAndWait()
-			return nil, ErrPlaybackFailed
+			return nil, safePlaybackError(err)
 		case <-processDone:
 			processDone = nil
 		case <-ctx.Done():
@@ -212,6 +219,14 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	}
 	p.startPCMWatchdog()
 	return p, nil
+}
+
+// Only errors built from validated helper enums may carry extra diagnostic detail.
+func safePlaybackError(err error) error {
+	if errors.Is(err, ErrPlaybackFailed) {
+		return err
+	}
+	return ErrPlaybackFailed
 }
 
 type Playback struct {
@@ -236,6 +251,11 @@ type Playback struct {
 	pipeReaders  sync.WaitGroup
 	discard      chan struct{}
 	discardOnce  sync.Once
+}
+
+// PCMFormat describes the helper output, after its 44.1-to-48 kHz conversion.
+func (*Playback) PCMFormat() musicruntime.PCMFormat {
+	return musicruntime.PCMFormat{SampleRate: 48000, Channels: 2}
 }
 
 // Wait only after both StdoutPipe and StderrPipe readers have consumed EOF.
@@ -409,7 +429,7 @@ func (p *Playback) readStatuses(r io.Reader) {
 		}
 		if !st.OK {
 			select {
-			case p.readErr <- ErrPlaybackFailed:
+			case p.readErr <- fmt.Errorf("%w: %s/%s", ErrPlaybackFailed, st.Phase, *st.Code):
 			default:
 			}
 			return
