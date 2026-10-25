@@ -65,22 +65,22 @@ const choice = (name: string, choices: readonly string[], required = true): Opti
 
 const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community'; permissionBit?: number; options?: OptionSeed[] }> = [
   { id: 'help', description: 'Show command help', scope: 'any', options: [o('command', 'text', false)] },
-  { id: 'me', description: 'Send an action message', options: [text()] },
-  { id: 'shrug', description: 'Send a shrug', options: [text('text', false)] },
-  { id: 'tableflip', description: 'Flip a table', options: [text('text', false)] },
-  { id: 'unflip', description: 'Put a table back', options: [text('text', false)] },
-  { id: 'code', description: 'Send a code block', options: [o('language', 'text'), text()] },
+  { id: 'me', description: 'Send an action message', scope: 'any', options: [text()] },
+  { id: 'shrug', description: 'Send a shrug', scope: 'any', options: [text('text', false)] },
+  { id: 'tableflip', description: 'Flip a table', scope: 'any', options: [text('text', false)] },
+  { id: 'unflip', description: 'Put a table back', scope: 'any', options: [text('text', false)] },
+  { id: 'code', description: 'Send a code block', scope: 'any', options: [o('language', 'text'), text()] },
   { id: 'giphy', description: 'Find a GIF', options: [text('query', false)] },
   { id: 'dm', description: 'Open a direct message', scope: 'any', options: [entity('user', 'user')] },
   { id: 'invite', description: 'Create a community invite', permissionBit: 1 << 11 },
-  { id: 'search', description: 'Search messages', options: [text('query'), o('scope', 'text', false)] },
+  { id: 'search', description: 'Search messages', scope: 'any', options: [text('query'), o('scope', 'text', false)] },
   { id: 'topic', description: 'Set the channel topic', permissionBit: 1 << 14, options: [text()] },
   { id: 'thread', description: 'Start a thread from a message', options: [entity('message', 'message')] },
-  { id: 'reply', description: 'Reply to a message', options: [entity('message', 'message'), text()] },
-  { id: 'edit', description: 'Edit a message', options: [entity('message', 'message'), text()] },
-  { id: 'delete', description: 'Delete a message', permissionBit: 1 << 2, options: [entity('message', 'message'), text('reason', false)] },
-  { id: 'pin', description: 'Pin a message', permissionBit: 1 << 3, options: [entity('message', 'message')] },
-  { id: 'unpin', description: 'Unpin a message', permissionBit: 1 << 3, options: [entity('message', 'message')] },
+  { id: 'reply', description: 'Reply to a message', scope: 'any', options: [entity('message', 'message'), text()] },
+  { id: 'edit', description: 'Edit a message', scope: 'any', options: [entity('message', 'message'), text()] },
+  { id: 'delete', description: 'Delete a message', scope: 'any', options: [entity('message', 'message'), text('reason', false)] },
+  { id: 'pin', description: 'Pin a message', scope: 'any', permissionBit: 1 << 3, options: [entity('message', 'message')] },
+  { id: 'unpin', description: 'Unpin a message', scope: 'any', permissionBit: 1 << 3, options: [entity('message', 'message')] },
   { id: 'join', description: 'Join a voice channel', options: [entity('voice-channel', 'channel')] },
   { id: 'leave', description: 'Leave voice', scope: 'any' },
   { id: 'mute', description: 'Mute your microphone', scope: 'any' },
@@ -101,6 +101,7 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'queue remove', description: 'Remove a queued track', options: [entity('item', 'queue-item')] },
   { id: 'queue move', description: 'Move a queued track', options: [entity('item', 'queue-item'), o('position', 'number', true, { min: 1 })] },
   { id: 'queue clear', description: 'Clear the music queue' },
+  { id: 'music', description: 'Show music command help' },
   { id: 'music help', description: 'Show music command help' },
   { id: 'kick', description: 'Remove a member from the community', permissionBit: 1 << 12, options: [entity('user', 'user')] },
   { id: 'ban', description: 'Ban a member', permissionBit: 1 << 13, options: [entity('user', 'user'), o('duration', 'duration', false), text('reason', false)] },
@@ -108,7 +109,7 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'timeout', description: 'Temporarily restrict a member', permissionBit: 1 << 24, options: [entity('user', 'user'), o('duration', 'duration')] },
   { id: 'untimeout', description: 'Remove a member timeout', permissionBit: 1 << 24, options: [entity('user', 'user')] },
   { id: 'warn', description: 'Warn a member', permissionBit: 1 << 24, options: [entity('user', 'user'), text('reason')] },
-  { id: 'modlog', description: 'Show moderation history', permissionBit: 1 << 17, options: [entity('user', 'user', false)] },
+  { id: 'modlog', description: 'Show moderation history', permissionBit: 1 << 17 },
   { id: 'role add', description: 'Add a role to a member', permissionBit: 1 << 15, options: [entity('user', 'user'), entity('role', 'role')] },
   { id: 'role remove', description: 'Remove a role from a member', permissionBit: 1 << 15, options: [entity('user', 'user'), entity('role', 'role')] },
   { id: 'selfrole list', description: 'List self-assignable roles' },
@@ -116,17 +117,17 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'selfrole remove', description: 'Remove one of your self-assignable roles', options: [entity('role', 'role')] },
   { id: 'rolepanel create', description: 'Create a role panel', permissionBit: 1 << 15 },
   { id: 'announcement list', description: 'List announcements' },
-  { id: 'announcement create', description: 'Create an announcement', permissionBit: 1 << 16, options: [text()] },
+  { id: 'announcement create', description: 'Create an announcement', permissionBit: 1 << 16, options: [text('text', false)] },
   { id: 'announcement edit', description: 'Edit an announcement', permissionBit: 1 << 16, options: [entity('announcement', 'announcement'), text()] },
   { id: 'announcement delete', description: 'Delete an announcement', permissionBit: 1 << 16, options: [entity('announcement', 'announcement')] },
-  { id: 'poll create', description: 'Create a poll', options: [text('question'), text('answers'), choice('multiple', ['on', 'off'], false), o('duration', 'duration', false)] },
-  { id: 'poll vote', description: 'Vote in a poll', options: [entity('poll', 'poll'), entity('choice', 'choice')] },
+  { id: 'poll create', description: 'Create a poll', options: [text('question', false), text('answers', false), choice('multiple', ['on', 'off'], false), o('duration', 'duration', false)] },
+  { id: 'poll vote', description: 'Vote in a poll', options: [entity('poll', 'poll'), entity('choice', 'choice', false)] },
   { id: 'poll results', description: 'Show poll results', options: [entity('poll', 'poll')] },
-  { id: 'poll close', description: 'Close a poll', permissionBit: 1 << 2, options: [entity('poll', 'poll')] },
-  { id: 'remind', description: 'Create a personal reminder', scope: 'any', options: [o('when', 'time'), text()] },
-  { id: 'reminders list', description: 'List your reminders', scope: 'any' },
-  { id: 'reminders cancel', description: 'Cancel a reminder', scope: 'any', options: [entity('reminder', 'reminder')] },
-  { id: 'reminders dismiss', description: 'Dismiss a due reminder', scope: 'any', options: [entity('reminder', 'reminder')] },
+  { id: 'poll close', description: 'Close a poll', options: [entity('poll', 'poll')] },
+  { id: 'remind', description: 'Create a personal reminder', options: [o('when', 'time'), text()] },
+  { id: 'reminders list', description: 'List your reminders' },
+  { id: 'reminders cancel', description: 'Cancel a reminder', options: [entity('reminder', 'reminder')] },
+  { id: 'reminders dismiss', description: 'Dismiss a due reminder', options: [entity('reminder', 'reminder')] },
 ];
 
 function materialize(seed: (typeof seeds)[number]): CommandDefinition {
@@ -144,11 +145,38 @@ export const COMMANDS: readonly CommandDefinition[] = Object.freeze(seeds.map(ma
 const byId = new Map(COMMANDS.map((command) => [command.id, command]));
 export const commandById = (id: string): CommandDefinition | undefined => byId.get(id);
 
+export interface CommandAvailability {
+  available: boolean;
+  reason?: 'community-required' | 'permission-unknown' | 'permission-denied';
+}
+
+/** Fail closed when a community permission is not yet available in the current context. */
+export function commandAvailability(commandOrId: string | CommandDefinition, context: CommandContext): CommandAvailability {
+  const command = typeof commandOrId === 'string' ? commandById(commandOrId) : commandOrId;
+  if (!command) return { available: false, reason: 'permission-denied' };
+  if (command.scope === 'community' && context.communityId === null) return { available: false, reason: 'community-required' };
+  if (command.permissionBit !== undefined) {
+    // Community permission bits do not apply in DMs; the handler still checks target ownership.
+    if (command.scope === 'any' && context.communityId === null) return { available: true };
+    if (context.bits === undefined) return { available: false, reason: 'permission-unknown' };
+    if ((context.bits & command.permissionBit) !== command.permissionBit) return { available: false, reason: 'permission-denied' };
+  }
+  return { available: true };
+}
+
+export function availableCommands(context: CommandContext, query = ''): CommandDefinition[] {
+  return rankCommands(COMMANDS.filter((command) => commandAvailability(command, context).available), query, 25);
+}
+
 /** Search names and descriptions; ties preserve catalog order. */
 export function searchCommands(query: string, limit = 25): CommandDefinition[] {
+  return rankCommands(COMMANDS, query, limit);
+}
+
+function rankCommands(commands: readonly CommandDefinition[], query: string, limit: number): CommandDefinition[] {
   const needle = query.trim().toLowerCase();
   if (limit <= 0) return [];
-  const ranked = COMMANDS.map((command, index) => {
+  const ranked = commands.map((command, index) => {
     const id = command.id.toLowerCase();
     const description = command.description.toLowerCase();
     const rank = needle === '' ? 3 : id === needle ? 0 : id.startsWith(needle) ? 1 : id.includes(needle) || description.includes(needle) ? 2 : 4;
@@ -180,8 +208,8 @@ export function validateCommandArgs(command: CommandDefinition, input: Record<st
       }
     } else if (option.kind === 'duration' && !isDuration(value)) {
       issues.push(issue('invalid', name, `${name} must be a duration such as 10m or 2h`));
-    } else if (option.kind === 'time' && value.trim().length < 2) {
-      issues.push(issue('invalid', name, `${name} must identify a time`));
+    } else if (option.kind === 'time' && (command.id === 'remind' && name === 'when' ? !isReminderWhen(value) : !isTimeValue(value))) {
+      issues.push(issue('invalid', name, `${name} must be a duration or ISO local date and time${command.id === 'remind' ? ' (from 1 minute to 365 days for durations)' : ''}`));
     }
   }
   for (const option of command.options) {
@@ -192,6 +220,33 @@ export function validateCommandArgs(command: CommandDefinition, input: Record<st
 
 function isDuration(value: string): boolean {
   return /^(?:\d+(?:\.\d+)?(?:ms|s|m|h|d|w))+$/.test(value.trim());
+}
+
+function durationMillis(value: string): number | null {
+  const parts = [...value.trim().matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h|d|w)/g)];
+  if (parts.length === 0 || parts.map((part) => part[0]).join('') !== value.trim()) return null;
+  const scale: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  return parts.reduce((sum, part) => sum + Number(part[1]) * scale[part[2]!], 0);
+}
+
+function isIsoLocalDateTime(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|([+-])(\d{2}):(\d{2}))?$/.exec(value.trim());
+  if (!match) return false;
+  const [, y, mo, d, h, mi, s, , oh, om] = match;
+  const year = Number(y), month = Number(mo), day = Number(d);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth || Number(h) > 23 || Number(mi) > 59 || Number(s ?? 0) > 59) return false;
+  if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false;
+  return true;
+}
+
+function isReminderWhen(value: string): boolean {
+  const millis = durationMillis(value);
+  return (millis !== null && millis >= 60_000 && millis <= 365 * 86_400_000) || isIsoLocalDateTime(value);
+}
+
+function isTimeValue(value: string): boolean {
+  return isDuration(value) || /^\d+(?::\d{1,2}){1,2}$/.test(value.trim()) || isIsoLocalDateTime(value);
 }
 
 export type CommandParseResult =
@@ -265,9 +320,11 @@ export function parseCommand(input: string): CommandParseResult {
   const args: Record<string, string> = {};
   const issues: ArgumentIssue[] = [];
   const positional: string[] = [];
+  const freeTextOnly = command.options.length === 1 && command.options[0]?.freeText === true;
   for (const token of tokens.slice(commandWordCount)) {
     const colon = token.value.indexOf(':');
     const named = colon >= 0 && command.options.some((option) => option.name === token.value.slice(0, colon).toLowerCase());
+    const optionShaped = /^[a-z][a-z0-9_-]*:/i.test(token.value) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(token.value);
     if (named) {
       const name = token.value.slice(0, colon).toLowerCase();
       const value = token.value.slice(colon + 1);
@@ -275,6 +332,9 @@ export function parseCommand(input: string): CommandParseResult {
       if (name in args) { issues.push(issue('duplicate', name, `Argument supplied more than once: ${name}`)); continue; }
       if (!value) { issues.push(issue('empty', name, `${name} cannot be empty`)); continue; }
       args[name] = value;
+    } else if (optionShaped && !freeTextOnly) {
+      const name = token.value.slice(0, colon).toLowerCase();
+      issues.push(issue('unexpected', name, `Unknown named argument: ${name}`));
     } else positional.push(token.value);
   }
   let pos = 0;

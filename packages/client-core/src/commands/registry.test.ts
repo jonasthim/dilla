@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   COMMANDS,
+  commandAvailability,
   commandById,
   parseCommand,
   searchCommands,
@@ -16,7 +17,7 @@ describe('command registry', () => {
       'queue remove', 'queue move', 'queue clear', 'kick', 'timeout', 'role add',
       'selfrole list', 'announcement create', 'poll vote', 'remind', 'reminders dismiss',
     ]) expect(commandById(id)).toBeDefined();
-    expect(ids).toHaveLength(63);
+    expect(ids).toHaveLength(64);
   });
 
   it('validates required and optional arguments across schema kinds', () => {
@@ -27,6 +28,10 @@ describe('command registry', () => {
     expect(validateCommandArgs(commandById('volume')!, { level: '101' })).toMatchObject({ valid: false });
     expect(validateCommandArgs(commandById('queue move')!, { item: 'track-id', position: '2' })).toMatchObject({ valid: true });
     expect(validateCommandArgs(commandById('remind')!, { when: '1h', text: 'stretch' })).toMatchObject({ valid: true });
+    expect(validateCommandArgs(commandById('poll vote')!, { poll: 'poll-1' })).toMatchObject({ valid: true });
+    expect(validateCommandArgs(commandById('poll create')!, { question: 'Lunch?', answers: 'Soup, salad' })).toMatchObject({ valid: true });
+    expect(validateCommandArgs(commandById('announcement create')!, {}).valid).toBe(true);
+    expect(commandById('modlog')?.options).toHaveLength(0);
   });
 
   it('accepts selected entity ids without trying to resolve display names', () => {
@@ -46,9 +51,49 @@ describe('command registry', () => {
       type: 'invocation', invocation: { commandId: 'play', args: { 'query-or-url': 'jazz 東京' } },
     });
     expect(parseCommand('/play https://example.test/a:b')).toMatchObject({ type: 'invocation' });
-    expect(parseCommand('/remind when:"tomorrow 09:00" text:"call Åsa"')).toMatchObject({
-      type: 'invocation', invocation: { commandId: 'remind', args: { when: 'tomorrow 09:00', text: 'call Åsa' } },
+    expect(parseCommand('/remind when:"2026-10-26T09:00" text:"call Åsa"')).toMatchObject({
+      type: 'invocation', invocation: { commandId: 'remind', args: { when: '2026-10-26T09:00', text: 'call Åsa' } },
     });
+    expect(parseCommand('/warn user:user-1 reaso:spam')).toMatchObject({ type: 'invalid' });
+    expect(parseCommand('/warn user:user-1 reason:spam')).toMatchObject({ type: 'invocation' });
+    expect(parseCommand('/warn user:user-1 reason:"see https://example.test/a:b at 09:30"')).toMatchObject({ type: 'invocation' });
+  });
+
+  it('validates reminder durations and ISO local date-times without resolving timezone rules', () => {
+    const remind = commandById('remind')!;
+    expect(validateCommandArgs(remind, { when: 'banana', text: 'call' }).valid).toBe(false);
+    expect(validateCommandArgs(remind, { when: '30s', text: 'call' }).valid).toBe(false);
+    expect(validateCommandArgs(remind, { when: '366d', text: 'call' }).valid).toBe(false);
+    expect(validateCommandArgs(remind, { when: '1m', text: 'call' }).valid).toBe(true);
+    expect(validateCommandArgs(remind, { when: '2026-10-26T09:30', text: 'call' }).valid).toBe(true);
+    expect(validateCommandArgs(remind, { when: '2026-10-26T09:30+02:00', text: 'call' }).valid).toBe(true);
+    expect(validateCommandArgs(remind, { when: '2026-02-30T09:30', text: 'call' }).valid).toBe(false);
+    expect(parseCommand('/remind when:banana text:call')).toMatchObject({ type: 'incomplete' });
+  });
+
+  it('filters commands by scope and fails closed when a required bit is unknown', () => {
+    const dm = { communityId: null, channelId: 'dm-1' } as const;
+    const member = { communityId: 'community-1', channelId: 'channel-1', bits: 0 } as const;
+    const moderator = { ...member, bits: 1 << 12 };
+    for (const id of ['me', 'code', 'search', 'reply', 'edit', 'pin', 'unpin']) {
+      expect(commandAvailability(id, dm).available).toBe(true);
+    }
+    expect(commandAvailability('giphy', dm).reason).toBe('community-required');
+    expect(commandAvailability('reminders list', dm).reason).toBe('community-required');
+    expect(commandAvailability('pin', { communityId: member.communityId, channelId: member.channelId }).reason).toBe('permission-unknown');
+    expect(commandAvailability('pin', member).reason).toBe('permission-denied');
+    expect(commandAvailability('pin', { ...member, bits: 1 << 3 }).available).toBe(true);
+    expect(commandAvailability('kick', { communityId: member.communityId, channelId: member.channelId }).reason).toBe('permission-unknown');
+    expect(commandAvailability('kick', { ...member, bits: undefined }).reason).toBe('permission-unknown');
+    expect(commandAvailability('kick', { ...member, bits: 0 }).reason).toBe('permission-denied');
+    expect(commandAvailability('kick', moderator).available).toBe(true);
+    expect(commandById('delete')?.permissionBit).toBeUndefined();
+    expect(commandById('poll close')?.permissionBit).toBeUndefined();
+  });
+
+  it('supports canonical /music help and the music help alias', () => {
+    expect(parseCommand('/music')).toMatchObject({ type: 'invocation', invocation: { commandId: 'music' } });
+    expect(parseCommand('/music help')).toMatchObject({ type: 'invocation', invocation: { commandId: 'music help' } });
   });
 
   it('distinguishes groups, incomplete and unknown commands', () => {

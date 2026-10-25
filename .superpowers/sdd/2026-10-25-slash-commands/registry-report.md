@@ -21,3 +21,13 @@ The targeted tests cover catalog uniqueness and representative complete catalog 
 
 - Poll answer parsing and reminder timezone/DST interpretation remain higher-level UI/handler responsibilities; this registry validates only the supplied strings and basic duration/number/choice forms.
 - Human entity-name ambiguity is intentionally not handled here; the composer must resolve and submit stable IDs.
+
+## Review round 1
+
+Addressed the registry review findings in the follow-up commit: typo-shaped unknown named fields now fail while URL and numeric time literals remain valid free text; reminder `when` accepts only 1 minute–365 day durations or valid ISO local date-times with optional numeric offset; and `commandAvailability` / `availableCommands` enforce scope and fail closed when a required permission bit is unknown. Message-local formatting, search, reply/edit, delete, and pin commands are available in DMs; community pin actions require the pin bit. GIF and reminders require a community. `delete` and `poll close` leave target/creator authorization to the handler.
+
+Also added `/music` as the approved help path while preserving `/music help`, made poll and announcement creation arguments optional prefills, made poll vote selection optional, and removed the unused modlog user filter.
+
+- Focused Vitest — passed, 11 tests.
+- Client-core typecheck — still blocked only by `src/core-wasm-conformance.ts:4-5` (`true` not assignable to `never`); no registry diagnostics.
+- `git diff --check` — passed.
