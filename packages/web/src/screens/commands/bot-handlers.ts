@@ -77,17 +77,21 @@ function accountScopeKey(client: CoreClient, communityId: string, requestId: str
   const account = client.get('account');
   return `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}:${communityId}:${requestId}`;
 }
-const musicCommandAttempts = new WeakMap<CoreClient, Map<string, true>>();
-function musicCommandAttemptStore(client: CoreClient): Map<string, true> {
+const musicCommandAttempts = new WeakMap<CoreClient, Map<string, string>>();
+function musicCommandAttemptStore(client: CoreClient): Map<string, string> {
   let store = musicCommandAttempts.get(client); if (store === undefined) { store = new Map(); musicCommandAttempts.set(client, store); }
   return store;
 }
 function hasMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): boolean {
   return musicCommandAttemptStore(client).has(accountScopeKey(client, communityId, requestId));
 }
-function markMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): void {
+function musicCommandAttemptTarget(client: CoreClient, communityId: string, requestId: string): string | undefined {
+  return musicCommandAttemptStore(client).get(accountScopeKey(client, communityId, requestId));
+}
+function markMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string, channelId: string): void {
   const store = musicCommandAttemptStore(client); const key = accountScopeKey(client, communityId, requestId);
-  store.set(key, true); while (store.size > 128) store.delete(store.keys().next().value!);
+  if (!store.has(key)) store.set(key, channelId);
+  while (store.size > 128) store.delete(store.keys().next().value!);
 }
 function clearMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): void {
   musicCommandAttemptStore(client).delete(accountScopeKey(client, communityId, requestId));
@@ -214,6 +218,9 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
     const channelId = requireCommunity(context, cid);
     if (channelId === null) return pendingAttempt ? uncertain('This music attempt is still pending. Rejoin its community voice call before reconciling it.')
       : fail('Join a voice channel in this community before using music commands.');
+    const originalChannelId = musicCommandAttemptTarget(client, cid, context.requestId);
+    if (originalChannelId !== undefined && channelId !== originalChannelId)
+      return uncertain('This music attempt is still pending in its original voice channel. Return to that call to reconcile it; the attempt cannot be retargeted.');
     try {
       let adapter: ReturnType<typeof createVoiceMusicAdapter>;
       try { ({ adapter } = await freshMusicState(context, cid, channelId)); }
@@ -233,7 +240,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         : fail('The voice call changed before the command ran.');
       const attempt = (stage: string) => ({ requestId: childId(context.requestId, `music:${stage}`) });
       const runMutation = async (action: () => void | Promise<void>) => {
-        markMusicCommandAttempt(client, cid, context.requestId);
+        markMusicCommandAttempt(client, cid, context.requestId, channelId);
         try { await action(); }
         catch (error) {
           if (resultError(error).status !== 'uncertain') clearMusicCommandAttempt(client, cid, context.requestId);
@@ -324,7 +331,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       }
     } catch (error) {
       const result = resultError(error);
-      if (result.status === 'uncertain') markMusicCommandAttempt(client, cid, context.requestId);
+      if (result.status === 'uncertain') markMusicCommandAttempt(client, cid, context.requestId, originalChannelId ?? channelId);
       else clearMusicCommandAttempt(client, cid, context.requestId);
       return result;
     }
@@ -339,15 +346,18 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       ? uncertain('This schedule attempt is still pending. Restore Manage Community permission in its original community to reconcile it.')
       : fail('Manage Community permission is required.');
     try {
-      const api = createBotInteractionClient(client, cid);
-      const scopeResult = await api.request({ requestId: childId(context.requestId, 'announcement:scope'), operation: 50, args: [0] });
-      if (!context.isCurrent() || !validateCurrent(context, cid, 'manageCommunity')) return pendingAttempt?.sent === true
-        ? uncertain('This schedule attempt is still pending. Restore its command context and permission to reconcile it.')
-        : fail('The community or permission changed before the announcement request.');
-      if (scopeResult.status !== 0) return pendingAttempt?.sent === true
-        ? uncertain('A prior schedule mutation is still pending; restore community access and reconcile its original request.')
-        : fail(scopeResult.status === 2 ? 'Manage Community permission is required.' : 'Announcements are unavailable.');
-      const scope = scopeResult.scope;
+      let scope: BotInteractionScope;
+      if (pendingAttempt?.sent === true) {
+        // Reconciliation reads the immutable original request under its captured installation scope.
+        // A fresh scope preflight could fail independently and must not block or retire that attempt.
+        scope = pendingAttempt.scope;
+      } else {
+        const api = createBotInteractionClient(client, cid);
+        const scopeResult = await api.request({ requestId: childId(context.requestId, 'announcement:scope'), operation: 50, args: [0] });
+        if (!context.isCurrent() || !validateCurrent(context, cid, 'manageCommunity')) return fail('The community or permission changed before the announcement request.');
+        if (scopeResult.status !== 0) return fail(scopeResult.status === 2 ? 'Manage Community permission is required.' : 'Announcements are unavailable.');
+        scope = scopeResult.scope;
+      }
       const pending = pendingAttempt;
       if (pending !== undefined) {
         const reconciled = await runAnnouncementMutation(client, cid, context.requestId, pending.operation === 52 ? 'delete' : 'save', pending.operation,
@@ -418,8 +428,8 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
     } catch (error) {
       const result = resultError(error);
       const currentAttempt = announcementAttemptStore(client).get(attemptKey);
-      return currentAttempt?.sent === true && result.status === 'uncertain'
-        ? uncertain('This schedule mutation may have been sent. Retry this same request to reconcile it; do not start a new attempt.')
+      return currentAttempt?.sent === true
+        ? uncertain('This schedule mutation may have been sent. Its original request and body remain reserved; retry this same request to reconcile it.')
         : result;
     }
   }, [client, communityId, openDialog]);

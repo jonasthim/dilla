@@ -6,7 +6,7 @@ import { decode, encode, fromHex, PERM, type CoreClient, type CommandContext as 
 import type { CommandExecutionContext } from './command-types.ts';
 import { useBotCommandProvider } from './bot-handlers.ts';
 
-const COMMUNITY = '11'.repeat(16); const TEXT = '22'.repeat(16); const VOICE = '33'.repeat(16); const USER = '44'.repeat(16);
+const COMMUNITY = '11'.repeat(16); const TEXT = '22'.repeat(16); const VOICE = '33'.repeat(16); const OTHER_VOICE = '34'.repeat(16); const USER = '44'.repeat(16);
 const INSTALLATION = '55'.repeat(16); const ITEM = '66'.repeat(16); const OTHER_ITEM = '67'.repeat(16); const CURRENT_ITEM = '65'.repeat(16); const PARENT = '77'.repeat(16);
 type Wire = Record<string, unknown>;
 function musicSnapshot(revision: number, paused: boolean, queue: { id: string; provider: string; canonical: string; title: string; artist: string }[] = [],
@@ -25,6 +25,7 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
   let queue: { id: string; provider: string; canonical: string; title: string; artist: string }[] = options.seededQueue
     ? [{ id: ITEM, provider: 'youtube', canonical: 'abcdefghijk', title: 'Queued track', artist: 'Listener' },
       { id: OTHER_ITEM, provider: 'youtube', canonical: 'zyxwvutsrqp', title: 'Second track', artist: 'Listener' }] : [];
+  let joinedVoice = VOICE;
   let announcementRevision = 1; const schedules: unknown[][] = options.seedSchedule
     ? [[fromHex('99'.repeat(16)), fromHex(TEXT), 'Launch plan', 'one_off', 'Europe/Stockholm', '2099-01-01', 12n, 0n, 0n, options.disabledSchedule ? 0n : 1n, 1n]] : [];
   let failRegistrationOnce = options.failRegistrationOnce === true;
@@ -97,12 +98,14 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
     }),
     get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: USER }, deviceId: 'aa'.repeat(16), instance: { id: 'bb'.repeat(16) } }
       : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { loaded: true, manageCommunity: true, manageRoles: true }
-        : key === `channels:${COMMUNITY}` ? [{ id: TEXT, communityId: COMMUNITY, kind: 0, name: 'announcements' }, { id: VOICE, communityId: COMMUNITY, kind: 1, name: 'voice' }]
-          : key === 'call' ? { channelId: VOICE } : undefined,
+      : key === `channels:${COMMUNITY}` ? [{ id: TEXT, communityId: COMMUNITY, kind: 0, name: 'announcements' }, { id: VOICE, communityId: COMMUNITY, kind: 1, name: 'voice' },
+        { id: OTHER_VOICE, communityId: COMMUNITY, kind: 1, name: 'other voice' }]
+          : key === 'call' ? { channelId: joinedVoice } : undefined,
     subscribe: () => () => undefined, onCallKeys: () => () => undefined, dispose: () => undefined,
   } as unknown as CoreClient;
   return { client, requests, schedules, registeredPanels, get musicState() { return { queue, currentTrack, paused, positionMs, volume, shuffle, repeat }; },
-    setInstallRevision(value: string) { installRevision = value; }, setBotState(value: number) { botState = value; }, reorderQueue() { queue = [...queue].reverse(); musicRevision++; } };
+    setInstallRevision(value: string) { installRevision = value; }, setBotState(value: number) { botState = value; }, setJoinedVoice(value: string) { joinedVoice = value; },
+    getJoinedVoice() { return joinedVoice; }, reorderQueue() { queue = [...queue].reverse(); musicRevision++; } };
 }
 function commandContext(client: CoreClient, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
   const binding: Binding = { communityId: COMMUNITY, channelId: TEXT, bits: PERM.manageCommunity | PERM.manageRoles };
@@ -209,7 +212,8 @@ describe('Bot slash command provider', () => {
   it('preserves an uncertain enqueue across DJ and call loss, then reconciles with the same parent ID', async () => {
     const options = { unknownUploads: [12], djControl: true }; const f = fixture(options); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
-    const context = commandContext(f.client); const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
+    const context = commandContext(f.client);
+    const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
     options.djControl = false;
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
@@ -231,6 +235,21 @@ describe('Bot slash command provider', () => {
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
     f.setBotState(3);
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
+    expect(f.musicState.queue).toHaveLength(1);
+  });
+
+  it('keeps an unknown enqueue bound to its original voice channel while the user joins another channel', async () => {
+    const f = fixture({ unknownUploads: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client, { getCall: () => ({ channelId: f.getJoinedVoice(), session: {} } as never) });
+    const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain', private: true });
+    f.setJoinedVoice(OTHER_VOICE);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain', private: true });
+    expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
+    f.setJoinedVoice(VOICE);
+    expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'success', private: true });
     expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
     expect(f.musicState.queue).toHaveLength(1);
   });
@@ -504,6 +523,23 @@ describe('Bot slash command provider', () => {
     await screen.findByRole('dialog', { name: 'Schedule an announcement' }); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await pending).toMatchObject({ status: 'uncertain' });
     expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
+    expect(f.schedules).toHaveLength(1);
+  });
+
+  it('keeps a pending announcement uncertain when the Bot becomes unavailable before scope preflight', async () => {
+    const f = fixture({ readFailureOperations: [51] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    const user = userEvent.setup(); mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invoke = { commandId: 'announcement create', args: { text: 'Scope recovery' } };
+    const pending = capture.value!.handlers['announcement create']!(invoke, context);
+    await screen.findByRole('dialog', { name: 'Schedule an announcement' }); await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await pending).toMatchObject({ status: 'uncertain', private: true });
+    f.setBotState(4);
+    expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'uncertain', private: true });
+    expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
+    f.setBotState(3);
+    const recovered = await capture.value!.handlers['announcement create']!(invoke, context);
+    expect(recovered).toMatchObject({ status: 'success', private: true });
     expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
     expect(f.schedules).toHaveLength(1);
   });
