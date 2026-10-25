@@ -977,7 +977,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
-    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} communityId={voiceChannel.communityId} name={voiceChannel.name} />;
+    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
     main = noServerState;
   } else if (community !== null && channels !== undefined && ordered.length === 0) {

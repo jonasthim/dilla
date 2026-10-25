@@ -23,6 +23,7 @@ type automaticModerationEventHandler interface {
 type groupEventRouter struct {
 	inspector             interactionEventInspection
 	interactions          service.GroupEventHandler
+	musicCommands         service.GroupEventHandler
 	automoderation        automaticModerationEventHandler
 	replayThrough         uint64
 	replayReceivedThrough uint64
@@ -30,8 +31,12 @@ type groupEventRouter struct {
 
 var moderationMentionPattern = regexp.MustCompile(`<@([0-9a-f]{32})>`)
 
-func newGroupEventRouter(inspector interactionEventInspection, interactions service.GroupEventHandler, automoderation automaticModerationEventHandler, replayThrough, replayReceivedThrough uint64) service.GroupEventHandler {
-	return groupEventRouter{inspector: inspector, interactions: interactions, automoderation: automoderation, replayThrough: replayThrough, replayReceivedThrough: replayReceivedThrough}
+func newGroupEventRouter(inspector interactionEventInspection, interactions service.GroupEventHandler, automoderation automaticModerationEventHandler, replayThrough, replayReceivedThrough uint64, commands ...service.GroupEventHandler) service.GroupEventHandler {
+	var musicCommands service.GroupEventHandler
+	if len(commands) > 0 {
+		musicCommands = commands[0]
+	}
+	return groupEventRouter{inspector: inspector, interactions: interactions, musicCommands: musicCommands, automoderation: automoderation, replayThrough: replayThrough, replayReceivedThrough: replayReceivedThrough}
 }
 
 func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
@@ -54,6 +59,9 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 			return nil
 		}
 		if h.automoderation == nil {
+			if h.musicCommands != nil {
+				return h.routeMusicCommand(ctx, event, true)
+			}
 			return nil
 		}
 		mentions := moderationMentionIDs(event.Body)
@@ -68,7 +76,7 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 		}
 		replay := event.DeliveryID <= h.replayThrough || event.ReceivedAt > 0 && (receivedAtTooLarge || receivedAtMS <= h.replayReceivedThrough) ||
 			event.ReceivedAt > 0 && receivedAtMS > uint64(now)
-		_, err := h.automoderation.Handle(ctx, event, replay, mentions)
+		decision, err := h.automoderation.Handle(ctx, event, replay, mentions)
 		var stageErr service.AutoModerationStageError
 		if errors.As(err, &stageErr) {
 			sourceAgeSeconds := int64(0)
@@ -81,6 +89,16 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 			}
 			slog.Warn("automatic moderation event handling failed", "stage", stageErr.Stage,
 				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds)
+		}
+		if h.musicCommands != nil && (decision.Action == moderation.ActionRemove || decision.Action == moderation.ActionTimeout || decision.EnforcementRefused) {
+			// Record rejected command eligibility before a transient enforcement retry
+			// or a later rules change can turn that same delivery into a log-only result.
+			return errors.Join(err, h.routeMusicCommand(ctx, event, false))
+		}
+
+		if err == nil && h.musicCommands != nil {
+			allowNew := !decision.DuplicateDelivery && !decision.EnforcementRefused && decision.Action != moderation.ActionRemove && decision.Action != moderation.ActionTimeout
+			return h.routeMusicCommand(ctx, event, allowNew)
 		}
 		return err
 	case 3: // Managed kind-3 interaction behavior retains its existing durable sender path.
@@ -113,4 +131,16 @@ func moderationMentionIDs(body *string) []string {
 		}
 	}
 	return mentions
+}
+
+func (h groupEventRouter) routeMusicCommand(ctx context.Context, event native.GroupEvent, allowNew bool) error {
+	if resumable, ok := h.musicCommands.(interface {
+		HandleModeratedGroupEvent(context.Context, native.GroupEvent, bool) error
+	}); ok {
+		return resumable.HandleModeratedGroupEvent(ctx, event, allowNew)
+	}
+	if allowNew && h.musicCommands != nil {
+		return h.musicCommands.HandleGroupEvent(ctx, event)
+	}
+	return nil
 }

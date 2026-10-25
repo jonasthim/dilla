@@ -232,3 +232,108 @@ func TestQueueStarterRejectsProviderMismatchBeforePlayback(t *testing.T) {
 		t.Fatalf("mismatched provider was accepted: called=%v err=%v", called, err)
 	}
 }
+
+type publisherStartFunc func(context.Context, client.Call, id.ID, livekit.EpochSource, Encoder) (Publisher, error)
+
+func (f publisherStartFunc) Start(ctx context.Context, c client.Call, g id.ID, e livekit.EpochSource, enc Encoder) (Publisher, error) {
+	return f(ctx, c, g, e, enc)
+}
+
+func TestQueueStarterRechecksMembershipAfterServerDisconnect(t *testing.T) {
+	calls := 0
+	var encoders []*encoderStub
+	pub := &pubStub{done: make(chan struct{})}
+	starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) {
+		calls++
+		enc := &encoderStub{done: make(chan struct{})}
+		encoders = append(encoders, enc)
+		o := options(&pcmStart{lease: &leaseStub{}}, enc, pub, &leaseStub{})
+		o.Provider = music.ProviderYouTube
+		o.Acquire = nil
+		o.PCM = plainPCMStart{source: &pcmStub{}}
+		o.Call.GroupID = o.Group
+		attempt := calls
+		o.Publisher = publisherStartFunc(func(context.Context, client.Call, id.ID, livekit.EpochSource, Encoder) (Publisher, error) {
+			if attempt == 1 {
+				return nil, context.Canceled
+			}
+			if attempt == 2 {
+				return nil, livekit.ErrRoomConnection
+			}
+			return pub, nil
+		})
+		return o, nil
+	}}
+	playback, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "video"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer playback.Close()
+	if calls != 3 || encoders[0].closed.Load() != 1 || encoders[1].closed.Load() != 1 {
+		t.Fatalf("fresh options=%d first encoder cleanup=%d", calls, encoders[0].closed.Load())
+	}
+}
+
+func TestQueueStarterDoesNotRetryCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) {
+		calls++
+		cancel()
+		return Options{}, context.Canceled
+	}}
+	if _, err := starter.Start(ctx, music.Track{Provider: music.ProviderYouTube, CanonicalID: "video"}); !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("error=%v calls=%d", err, calls)
+	}
+}
+
+func TestQueueStarterBoundsDisconnectRetriesAndKeepsBindingRefusalsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure error
+		want    int
+	}{{"server disconnect", context.Canceled, 3}, {"epoch changed", livekit.ErrEpochChanged, 3}, {"room connection", livekit.ErrRoomConnection, 3}, {"binding refusal", livekit.ErrBinding, 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) { calls++; return Options{}, tc.failure }}
+			_, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "video"})
+			if !errors.Is(err, tc.failure) || calls != tc.want {
+				t.Fatalf("error=%v calls=%d want=%d", err, calls, tc.want)
+			}
+		})
+	}
+}
+
+func TestQueueStarterReleasesSpotifyLeaseBeforeRetry(t *testing.T) {
+	var leases []*leaseStub
+	var encoders []*encoderStub
+	pub := &pubStub{done: make(chan struct{})}
+	starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) {
+		if len(leases) > 0 && (leases[len(leases)-1].released.Load() != 1 || encoders[len(encoders)-1].closed.Load() != 1) {
+			t.Fatal("retry began before cleanup")
+		}
+		lease := &leaseStub{}
+		leases = append(leases, lease)
+		enc := &encoderStub{done: make(chan struct{})}
+		encoders = append(encoders, enc)
+		o := options(&pcmStart{lease: lease}, enc, pub, lease)
+		o.Call.GroupID = o.Group
+		attempt := len(leases)
+		o.Publisher = publisherStartFunc(func(context.Context, client.Call, id.ID, livekit.EpochSource, Encoder) (Publisher, error) {
+			if attempt == 1 {
+				return nil, livekit.ErrEpochChanged
+			}
+			return pub, nil
+		})
+		return o, nil
+	}}
+	playback, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "track"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = playback.Close()
+	if len(leases) != 2 || leases[1].released.Load() != 1 || encoders[1].closed.Load() != 1 {
+		t.Fatal("retry resources not released exactly once")
+	}
+}

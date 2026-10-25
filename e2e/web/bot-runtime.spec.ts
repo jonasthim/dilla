@@ -2,12 +2,13 @@ import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
   FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
-  openChannel, reactionChip, rowAction, signIn, signUp, test,
+  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
-const HOST: HostConfig = { port: 8491, control: 8492, webRoot: 'packages/web/dist', botRuntime: true };
+const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? 8491);
+const HOST: HostConfig = { port: BOT_RUNTIME_PORT, control: BOT_RUNTIME_PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const ROLE_PANEL_PORT = Number(process.env.DILLA_E2E_ROLE_PANEL_PORT ?? HOST.port);
 const ROLE_PANEL_HOST: HostConfig = { ...HOST, port: ROLE_PANEL_PORT, control: ROLE_PANEL_PORT + 1, advanceClockWithWall: true };
 const SERVER = 'Runtime Bot Acceptance';
@@ -123,6 +124,76 @@ test('a bot enabled through server settings reaches ready through the native run
   }
 });
 
+test('music chat commands receive public bot replies through the native runtime', async ({ page, instanceName, browser, guard }) => {
+  let host: StartedHost | null = null;
+  let secondContext: import('@playwright/test').BrowserContext | null = null;
+  try {
+    host = await startTestHost({ ...HOST, advanceClockWithWall: true });
+    const account = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
+    await addServerVia(page, 'create');
+    const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+    await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
+    await page.keyboard.press('Enter');
+
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await expect(settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible();
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    await expect(settings.getByText(copy('admin.bot.none'), { exact: true })).toBeVisible();
+    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.music'), exact: true }).check();
+    await expect(settings.getByRole('checkbox', { name: copy('admin.bot.capability.roles'), exact: true })).toBeEnabled();
+    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
+    await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(account.password);
+    await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
+
+    const runtimeCredentialFile = host.runtimeCredentialFile;
+    if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
+    await expect.poll(async () => {
+      const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
+      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+        headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
+      });
+      if (!response.ok) return `HTTP ${response.status}`;
+      const rows = arr(decode(new Uint8Array(await response.arrayBuffer())));
+      return rows.length === 1 ? arr(rows[0])[2] : `count ${rows.length}`;
+    }, { timeout: 90_000, intervals: [1_000, 2_000] }).toBe(3n);
+
+    await expect.poll(async () => {
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+      const refreshed = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+      await refreshed.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+        .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+      return refreshed.locator('.dw-bot-settings').getByRole('status').innerText();
+    }, { timeout: 90_000, intervals: [1_000, 2_000, 3_000] }).toBe(copy('admin.bot.status.ready'));
+    await page.keyboard.press('Escape');
+    await openChannel(page, SERVER, 'general');
+
+    const inviteLink = await makeInviteLink(page, SERVER);
+    secondContext = await browser.newContext({ baseURL: host.url });
+    await guard.attach(secondContext);
+    const secondPage = await secondContext.newPage();
+    await secondPage.goto(new URL(inviteLink).pathname);
+    await secondPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
+    await openChannel(secondPage, SERVER, 'general');
+    await openChannel(page, SERVER, 'general');
+    await sendText(page, 'general', '/music');
+    const help = messageRow(page, 'general', 'Music commands: /play');
+    await expect(help).toHaveAttribute('data-state', 'ok');
+    await expect(help.locator('[data-kind=bot]')).toHaveText('bot');
+    await expect(messageRow(secondPage, 'general', 'Music commands: /play')).toHaveAttribute('data-state', 'ok');
+    await sendText(page, 'general', '/play northern lights');
+    await expect(messageRow(page, 'general', 'Join a voice channel before using music commands.')).toHaveAttribute('data-state', 'ok');
+
+  } finally {
+    await secondContext?.close();
+    await host?.stop();
+  }
+});
+
 test('device 1 recovers its exact encrypted Bot response after Bot and browser restart; device 2 uses its own group', async ({ page, instanceName, relaunch, browser, guard }) => {
   let host: StartedHost | null = null;
   let secondContext: import('@playwright/test').BrowserContext | null = null;
@@ -146,6 +217,11 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
     await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    // Establish this device's private group before taking its issuer offline.
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
+    await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
     await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
 

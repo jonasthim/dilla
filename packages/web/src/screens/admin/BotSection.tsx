@@ -612,6 +612,9 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
         </SettingsRow>
+        <SettingsRow id={`${base}-music-commands-row`} label={t('admin.bot.music.commands')}>
+          <p>{t('admin.bot.music.chatHelp')}</p>
+        </SettingsRow>
         <MusicProviderStatus communityId={communityId} installationId={currentInstallation?.id ?? null} />
       </section> : null}
       {page === 'welcome' ? <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}

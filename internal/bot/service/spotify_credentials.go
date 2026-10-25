@@ -410,7 +410,7 @@ func (s *SpotifyCredentials) validateAccount(state *spotifyCredentialState) erro
 }
 
 func (s *SpotifyCredentials) key() []byte {
-	return []byte(fmt.Sprintf("dilla.bot.spotify.v1/%x/%x/%x", s.binding.Instance, s.binding.Community, s.binding.Installation))
+	return []byte(fmt.Sprintf("dilla.bot.spotify.v1/%s/%s/%s", s.binding.Instance, s.binding.Community, s.binding.Installation))
 }
 func validSpotifySecret(v string) bool {
 	return v != "" && len(v) <= 8192 && !strings.ContainsAny(v, "\r\n\x00")

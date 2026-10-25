@@ -515,6 +515,7 @@ describe('the server bot settings', () => {
     expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
     expect(screen.getByRole('heading', { name: en['workspace.providers.title'] })).toBeInTheDocument();
     expect(screen.getByText(en['workspace.providers.youtubeSetup'])).toBeInTheDocument();
+    expect(screen.getByText(/Join a voice channel, then type \/play/)).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
     expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'getBotDjRoles', 'getBotSpotifyConfig',
       'humanInteractionRequest', 'readBotInteractionResponses', 'stepUp', 'beginBotSpotifyAttempt']);

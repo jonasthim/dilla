@@ -406,27 +406,53 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 	logger.Info("bot service healthy", "instance_id", discovery.InstanceID.String(), "generation", discovery.Generation, "discovery", "ok")
 	musicRegistry := newMusicQueueRegistry()
+	defer func() {
+		if err := musicRegistry.Close(); err != nil {
+			logger.Error("bot music queue shutdown incomplete", "error", err.Error())
+		}
+	}()
 	autoModerationState := newAutoModerationEventState()
+	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
+	defer gateways.Close()
 	for {
-		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, logger); err != nil && !errors.Is(err, context.Canceled) {
+		started := time.Now()
+		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, logger); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("bot identity reconciliation degraded", "error", err.Error())
 		} else if err == nil {
 			logger.Info("bot identity reconciliation healthy")
 		}
+
 		timer := time.NewTimer(cfg.ReconcileInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			if err := musicRegistry.Close(); err != nil {
-				logger.Error("bot music queue shutdown incomplete", "error", err.Error())
+		waiting := true
+		for waiting {
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-gateways.Wake():
+				// A gateway notification refreshes text sources only. Full reconciliation
+				// includes proof POSTs for every private group and stays on its own interval.
+				if delay := 5*time.Second - time.Since(started); delay > 0 {
+					throttle := time.NewTimer(delay)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						throttle.Stop()
+						return nil
+					case <-throttle.C:
+					}
+				}
+				gateways.PollText(ctx)
+				started = time.Now()
+			case <-timer.C:
+				waiting = false
 			}
-			return nil
-		case <-timer.C:
 		}
+
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, logger *slog.Logger) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, logger *slog.Logger) error {
 	spotifyGuard, err := service.NewSpotifyAccountGuard(cfg.StateDir)
 	if err != nil {
 		return errors.New("spotify account guard unavailable")
@@ -437,12 +463,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	}
 	activeInstallations := make([]id.ID, 0, len(installations))
 	for _, installation := range installations {
-		activeInstallations = append(activeInstallations, installation.ID)
+		if installation.State < 4 {
+			activeInstallations = append(activeInstallations, installation.ID)
+		}
 	}
 	if err := musicRegistry.RetainOnly(activeInstallations); err != nil {
 		logger.Error("stale bot music runtime cleanup incomplete", "error", err.Error())
 	}
 	autoModerationState.RetainOnly(activeInstallations)
+	gateways.RetainOnly(activeInstallations)
 	var eligible, succeeded int
 	for _, installation := range installations {
 		if err := ctx.Err(); err != nil {
@@ -454,6 +483,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		eligible++
+		gateways.SetTextPoller(installation.ID, nil)
 		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
 		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
 			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
@@ -490,6 +520,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		ready := false
 		membershipReady := false
 		if ensureErr == nil {
+			if result.Installation.BotDevice != nil && result.Installation.BotUser != nil && result.Session != nil {
+				if err := gateways.Ensure(installation.ID, *result.Installation.BotDevice, *result.Installation.BotUser, result.Session.BearerToken()); err != nil {
+					logger.Warn("bot gateway startup unavailable", "installation_id", installation.ID.String())
+				}
+			}
 			reconcileStage = "interaction_restore"
 			if result.Session == nil {
 				ensureErr = errors.New("identity lifecycle returned no scoped device session")
@@ -528,6 +563,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 						if ensureErr == nil && ready {
 							reconcileStage = "structural_events_and_registration"
 							membershipReady = true
+							if groups, err := nativeClient.Groups(ctx); err == nil {
+								var notifications []id.ID
+								for _, group := range groups {
+									if group.State == 2 && (group.Kind == 0 || group.Kind == 3) {
+										notifications = append(notifications, group.ID)
+									}
+								}
+								gateways.SubscribeGroups(ctx, installation.ID, notifications)
+							}
 							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
 							if pollerErr != nil {
 								ensureErr = pollerErr
@@ -720,8 +764,25 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 											if interactionErr == nil {
 												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
-												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough, replayReceivedThrough)
+												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough, replayReceivedThrough, newMusicChatCommands(installation.CommunityID, nativeClient, result.Session, api, coordinator, musicInteractions, gateways.startedAt))
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
+												if musicInteractions != nil && (retainedNative || musicOwnedNative) {
+													gateways.SetTextPoller(installation.ID, func(pollCtx context.Context) error {
+														if _, err := membership.ReconcileOnce(pollCtx, result.Session); err != nil {
+															return err
+														}
+														trust, err := service.NewSourceTrust(nativeClient)
+														if err != nil {
+															return err
+														}
+														if _, err = trust.TrustPendingLeaves(pollCtx, result.Session); err != nil {
+															return err
+														}
+														_, err = eventRuntime.Drain(pollCtx)
+														return err
+													})
+												}
+
 												var eventResult service.GroupEventPollResult
 												eventResult, interactionErr = eventRuntime.Drain(ctx)
 												if interactionErr == nil && eventResult.More {
@@ -778,8 +839,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				linkErr = credentials.Link(ctx)
 			}
 			if linkErr != nil && !errors.Is(linkErr, service.ErrSpotifyNoPending) {
-				logger.Error("bot Spotify account link needs attention", "installation_id", installation.ID.String(), "error", linkErr.Error())
-				ensureErr = errors.Join(ensureErr, linkErr)
+				logger.Warn("bot Spotify account link needs attention", "installation_id", installation.ID.String(), "error", linkErr.Error())
 			}
 		}
 		var closeErr error

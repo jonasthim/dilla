@@ -323,7 +323,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.spotifyConfigFailed='Could not load the Spotify application setting.'`
 - `admin.bot.music.spotifyLink='Link Spotify account'`
 - `admin.bot.music.spotifyLinking='Starting Spotify authorization…'`
-- `admin.bot.music.callbackDelivered='Authorization delivered; connection pending. Playback is not ready yet.'`
+- `admin.bot.music.callbackDelivered='Authorization delivered to the bot. Return to the server, join a voice channel, and use /play with a Spotify link. The bot will report the result in text chat.'`
 - `admin.bot.music.callbackDenied='Spotify authorization was declined. No account was linked.'`
 - `admin.bot.music.callbackExpired='This Spotify authorization attempt expired. Start again from server settings.'`
 - `admin.bot.music.callbackInvalid='This Spotify callback does not match an active authorization attempt.'`
@@ -335,9 +335,8 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.callbackCancelling='Cancelling authorization…'`
 - `admin.bot.music.callbackCancelled='Spotify authorization was cancelled.'`
 - `admin.bot.music.callbackCancelError='Could not cancel this Spotify authorization attempt.'`
-- `admin.bot.music.youtube='YouTube'`
-- `admin.bot.music.providerUnknown='Provider status unavailable'`
-- `admin.bot.music.youtubeHelp='The server does not currently report whether YouTube playback is configured or ready.'`
+- `admin.bot.music.commands='Music commands'`
+- `admin.bot.music.chatHelp='Join a voice channel, then type /play <song or YouTube/Spotify URL> in text chat. Use /pause, /resume, /skip, /queue, and /stop to control music. The bot replies in that text channel. Playback controls require a configured DJ role.'`
 - `admin.bot.moderationLog.title='Moderation log'`
 - `admin.bot.moderationLog.load='Load manual evidence'`
 - `admin.bot.moderationLog.loadAutomatic='Load automatic cases'`

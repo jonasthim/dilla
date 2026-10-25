@@ -4,8 +4,9 @@ import {
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 
+const hostPort = Number(process.env.DILLA_E2E_AUTOMOD_PORT ?? 8511);
 const HOST: HostConfig = {
-  port: 8511, control: 8512, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
+  port: hostPort, control: hostPort + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
 };
 const SERVER = 'Automatic Moderation Acceptance';
 const OWNER = 'Ada';

@@ -937,13 +937,11 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];
     const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
-    const music = (await boxes(cy, '.dw-voice-music:not(.dw-voice-music--full)'))[0];
-    expect.soft(tabs !== undefined && controls !== undefined && music !== undefined, 'D4 the controls, music panel and tab bar are on screen').toBe(true);
-    if (tabs !== undefined && controls !== undefined && music !== undefined) {
-      expect.soft(music.y - controls.b, `D4 the voice controls end directly above the music panel (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, panel ${music.y.toFixed(0)}..${music.b.toFixed(0)})`).toBeLessThanOrEqual(8);
-      expect.soft(music.y - controls.b, 'D4 the voice controls do not overlap the music panel').toBeGreaterThanOrEqual(-TOL);
-      expect.soft(tabs.y - music.b, `D4 the music panel ends directly above the tab bar (panel ${music.y.toFixed(0)}..${music.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
-      expect.soft(tabs.y - music.b, 'D4 the music panel does not overlap the tab bar').toBeGreaterThanOrEqual(-TOL);
+    expect.soft(tabs !== undefined && controls !== undefined, 'D4 the voice controls and tab bar are on screen').toBe(true);
+    await expect(cy.locator('.dw-voice-music')).toHaveCount(0);
+    if (tabs !== undefined && controls !== undefined) {
+      expect.soft(tabs.y - controls.b, `D4 the voice controls end directly above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
+      expect.soft(tabs.y - controls.b, 'D4 the voice controls do not overlap the tab bar').toBeGreaterThanOrEqual(-TOL);
     }
   } finally {
     await second.close();

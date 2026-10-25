@@ -42,6 +42,8 @@ keep the footer above the keyboard. No additional settings breakpoint is used.
 Participant volume, screen-share volume, channel collapse and conversation-search
 scope remain contextual controls. This reorganization does not move device-local
 preferences into account/server storage or add personal provider accounts.
+Playback controls use the existing [music chat commands](../../user/music.md);
+the Music settings section explains those commands alongside configuration/status.
 
 ## Navigation and access
 
