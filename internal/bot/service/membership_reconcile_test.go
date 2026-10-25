@@ -116,6 +116,7 @@ type membershipFakeSession struct {
 	channelsCalls          int
 	groupInfo              client.GroupInfo
 	groupInfoErr           error
+	groupInfoCalls         int
 	groupPageErr           error
 	groupPageCalls         int
 	removeOnSecond         bool
@@ -167,6 +168,7 @@ func (s *membershipFakeSession) AcknowledgeWelcome(_ context.Context, w uint64) 
 	return s.ackErr
 }
 func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
+	s.groupInfoCalls++
 	if s.groupInfo.NextSequence != 0 {
 		return s.groupInfo, s.groupInfoErr
 	}
@@ -505,6 +507,9 @@ func TestUnavailableCallSourceDoesNotBlockInstallationReconciliation(t *testing.
 					if result.GroupsSynced != 0 {
 						t.Fatal("denied source was counted as synchronized")
 					}
+				}
+				if s.groupInfoCalls != 2 || source == "page" && s.groupPageCalls != 2 {
+					t.Fatal("denied source was not retried on the next pass")
 				}
 				if n.genericApplyCalls != 0 || n.genericAckCalls != 0 {
 					t.Fatal("denied call altered native source progress")
