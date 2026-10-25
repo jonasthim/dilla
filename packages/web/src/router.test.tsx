@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { baseRoute, goBack, parseRoute, PHONE_BACK, pushHistoryState, replaceHistoryState, requestNavigation, routeOf, routePath, SETTINGS_FROM, setNavigationGuard, tabOf, useRoute, type Route } from './router.ts';
+import { baseRoute, goBack, parseRoute, PHONE_BACK, pushHistoryState, replaceHistoryState, requestNavigation, routeOf, routePath, SETTINGS_FROM, setNavigationGuard, subscribeCommittedTraversal, tabOf, useRoute, type Route } from './router.ts';
 
 const C = '0123456789abcdef'.repeat(2);
 const CH = 'fedcba9876543210'.repeat(2);
@@ -179,6 +179,8 @@ describe('guarded browser traversal', () => {
     pushHistoryState(null, '', '/activity');
     const targetPath = '/activity';
     const targetState = window.history.state;
+    const committed = vi.fn();
+    const off = subscribeCommittedTraversal(committed);
     const go = vi.spyOn(window.history, 'go').mockImplementation(delta => {
       window.history.replaceState(targetState, '', targetPath);
       window.dispatchEvent(new PopStateEvent('popstate', { state: targetState }));
@@ -192,8 +194,38 @@ describe('guarded browser traversal', () => {
     await waitFor(() => expect(go).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(window.location.pathname).toBe(targetPath));
     expect(screen.getByRole('status')).toHaveTextContent('activity');
+    expect(committed).not.toHaveBeenCalled();
+    off();
     dispose();
     go.mockRestore();
+  });
+
+  it('assigns the next push the adjacent position after Back discards the forward branch', async () => {
+    replaceHistoryState(null, '', '/start');
+    pushHistoryState(null, '', '/a');
+    const aIndex = (window.history.state as Record<string, number>).dillaHistoryIndex;
+    pushHistoryState(null, '', '/b');
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/a'));
+    pushHistoryState(null, '', '/c');
+    const cIndex = (window.history.state as Record<string, number>).dillaHistoryIndex;
+    expect(cIndex).toBe(aIndex + 1);
+
+    let resolveGuard!: (allow: boolean) => void;
+    let guardStarted!: () => void;
+    const started = new Promise<void>(resolve => { guardStarted = resolve; });
+    const dispose = setNavigationGuard(() => { guardStarted(); return new Promise(resolve => { resolveGuard = resolve; }); });
+    const committed = vi.fn();
+    const off = subscribeCommittedTraversal(committed);
+    window.history.back();
+    await started;
+    await waitFor(() => expect(window.location.pathname).toBe('/c'));
+    expect(committed).not.toHaveBeenCalled();
+    resolveGuard(true);
+    await waitFor(() => expect(window.location.pathname).toBe('/a'));
+    expect(committed).toHaveBeenCalledTimes(1);
+    off();
+    dispose();
   });
 });
 
@@ -213,15 +245,15 @@ describe('the settings route', () => {
     const user = userEvent.setup();
     window.history.replaceState(null, '', `/c/${C}/${CH}`);
     render(<SettingsProbe />);
-    const before = window.history.length;
     await user.click(screen.getByRole('button', { name: 'open' }));
+    const afterOpen = window.history.length;
     expect(window.location.pathname).toBe('/settings/devices');
     expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
     expect(screen.getByRole('status')).toHaveTextContent(`{"name":"settings","section":"devices","from":"/c/${C}/${CH}"}`);
     await user.click(screen.getByRole('button', { name: 'section' }));
     expect(window.location.pathname).toBe('/settings/appearance');
     expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
-    expect(window.history.length).toBe(before + 1);
+    expect(window.history.length).toBe(afterOpen);
   });
 
   it('keeps the current non-settings origin when opening server settings', async () => {
@@ -323,15 +355,21 @@ describe('goBack', () => {
 
   describe('with an expected route (N5: the system forward button)', () => {
     const expected: Route = { name: 'channel', communityId: C, channelId: null };
-    /** history.back() that lands on `path` and fires the popstate the browser would. */
-    const backTo = (path: string) => vi.spyOn(window.history, 'back').mockImplementation(() => {
-      window.history.replaceState(null, '', path);
-      window.dispatchEvent(new PopStateEvent('popstate'));
+    const backTo = (path: string, state: unknown) => vi.spyOn(window.history, 'back').mockImplementation(() => {
+      window.history.replaceState(state, '', path);
+      window.dispatchEvent(new PopStateEvent('popstate', { state }));
     });
 
+    const pushPhoneRoute = () => {
+      replaceHistoryState(null, '', '/dm');
+      const expectedState = window.history.state;
+      pushHistoryState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+      return expectedState;
+    };
+
     it('goes to the expected route when back landed somewhere else (a forward entry)', () => {
-      window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
-      const back = backTo('/dm');
+      const state = pushPhoneRoute();
+      const back = backTo('/dm', state);
       const navigate = vi.fn();
       goBack({ name: 'dms' }, navigate, expected);
       expect(navigate).toHaveBeenCalledTimes(1);
@@ -340,8 +378,8 @@ describe('goBack', () => {
     });
 
     it('does nothing more when back landed on the expected route (control)', () => {
-      window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
-      const back = backTo(routePath(expected));
+      const state = pushPhoneRoute();
+      const back = backTo(routePath(expected), state);
       const navigate = vi.fn();
       goBack({ name: 'dms' }, navigate, expected);
       expect(navigate).not.toHaveBeenCalled();
@@ -349,24 +387,33 @@ describe('goBack', () => {
     });
 
     it('listens once: a later popstate is not corrected', () => {
-      window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
-      const back = backTo(routePath(expected));
+      const state = pushPhoneRoute();
+      const back = backTo(routePath(expected), state);
       const navigate = vi.fn();
       goBack({ name: 'dms' }, navigate, expected);
       window.history.replaceState(null, '', '/dm');
-      window.dispatchEvent(new PopStateEvent('popstate'));
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
       expect(navigate).not.toHaveBeenCalled();
       back.mockRestore();
     });
 
     it('adds no listener on the deep-link path', () => {
-      window.history.replaceState(null, '', `/c/${C}/${CH}`);
-      const add = vi.spyOn(window, 'addEventListener');
+      replaceHistoryState(null, '', `/c/${C}/${CH}`);
       const navigate = vi.fn();
       goBack(expected, navigate, expected);
-      expect(add).not.toHaveBeenCalledWith('popstate', expect.anything(), expect.anything());
       expect(navigate).toHaveBeenCalledWith(expected, true);
-      add.mockRestore();
+    });
+
+    it('does not correct an attempted Back until the traversal guard accepts it', async () => {
+      replaceHistoryState(null, '', '/dm');
+      pushHistoryState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+      const navigate = vi.fn();
+      const dispose = setNavigationGuard(async () => false);
+      const off = goBack({ name: 'dms' }, navigate, expected);
+      await waitFor(() => expect(window.location.pathname).toBe(`/c/${C}/${CH}`));
+      expect(navigate).not.toHaveBeenCalled();
+      off();
+      dispose();
     });
   });
 

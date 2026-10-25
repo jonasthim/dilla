@@ -33,11 +33,41 @@ function ManagedDraft(props: React.ComponentProps<typeof Draft>) {
   return <SettingsEditProvider><Draft {...props} /></SettingsEditProvider>;
 }
 
+function InlineDraft() {
+  const [revision, setRevision] = useState(0);
+  const [dirty, setDirty] = useState(true);
+  const [saved, setSaved] = useState(-1);
+  const managed = useSettingsEdit({
+    dirty, busy: false, canSave: dirty,
+    save: async () => { setSaved(revision); setDirty(false); return true; },
+    reset: () => setDirty(false),
+  });
+  const workspace = useSettingsWorkspace();
+  return <>
+    <output data-testid="inline-managed">{String(managed)}</output>
+    <output data-testid="inline-saved">{saved}</output>
+    <button type="button" onClick={() => setRevision(value => value + 1)}>change revision</button>
+    {workspace?.footer}
+    {workspace?.confirmation}
+  </>;
+}
+
 describe('useSettingsEdit', () => {
   it('keeps standalone forms unmanaged', () => {
     render(<Draft />);
     expect(screen.getByTestId('managed')).toHaveTextContent('false');
     expect(screen.queryByRole('button', { name: copy.save })).not.toBeInTheDocument();
+  });
+
+  it('accepts inline state objects and uses the latest operation closures without rerendering forever', async () => {
+    const user = userEvent.setup();
+    render(<SettingsEditProvider><InlineDraft /></SettingsEditProvider>);
+    expect(await screen.findByRole('button', { name: copy.save })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'change revision' }));
+    await user.click(screen.getByRole('button', { name: 'change revision' }));
+    await user.click(screen.getByRole('button', { name: copy.save }));
+    expect(await screen.findByTestId('inline-saved')).toHaveTextContent('2');
+    await waitFor(() => expect(screen.queryByRole('button', { name: copy.save })).not.toBeInTheDocument());
   });
 
   it('shows shared Save and Reset controls, retaining dirty state after a refused save', async () => {

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button, ConfirmDialog, SettingsFooter } from '@dilla/ui';
 import { requestNavigation, setNavigationGuard } from '../router.ts';
 import { settingsEditing as copy } from '../strings/settingsEditing.ts';
@@ -11,62 +11,92 @@ export interface SettingsEditState {
   reset(): void;
 }
 
+export interface SettingsEditFlags {
+  dirty: boolean;
+  busy: boolean;
+  canSave: boolean;
+}
+
 export interface SettingsWorkspace {
-  edit: SettingsEditState | null;
+  /** Primitive snapshot only; callbacks and full draft state stay in refs so inline state objects cannot rerender-loop. */
+  edit: SettingsEditFlags | null;
   footer: ReactNode;
   confirmation: ReactNode;
   requestNavigation: typeof requestNavigation;
   clear(): void;
 }
 
+interface Registration {
+  attach(owner: symbol, state: SettingsEditState): void;
+  publish(owner: symbol, flags: SettingsEditFlags): void;
+  detach(owner: symbol): void;
+}
+
 const WorkspaceContext = createContext<SettingsWorkspace | null>(null);
-const EditRegistrationContext = createContext<(state: SettingsEditState | null) => void>(() => undefined);
+const EditRegistrationContext = createContext<Registration | null>(null);
+const flagsFor = (state: SettingsEditState): SettingsEditFlags => ({ dirty: state.dirty, busy: state.busy, canSave: state.canSave });
+const sameFlags = (a: SettingsEditFlags | null, b: SettingsEditFlags): boolean =>
+  a !== null && a.dirty === b.dirty && a.busy === b.busy && a.canSave === b.canSave;
 
 /** Owns the shared footer, unsaved-change prompt and browser departure guard for one settings workspace. */
 export function SettingsEditProvider({ children }: { children: ReactNode }) {
-  const [edit, setEdit] = useState<SettingsEditState | null>(null);
-  const editRef = useRef<SettingsEditState | null>(edit);
-  editRef.current = edit;
-  const [prompt, setPrompt] = useState<{ resolve: (allowed: boolean) => void } | null>(null);
-  const promptRef = useRef(prompt);
-  promptRef.current = prompt;
+  const [edit, setEdit] = useState<SettingsEditFlags | null>(null);
+  const editRef = useRef<SettingsEditState | null>(null);
+  const ownerRef = useRef<symbol | null>(null);
+  const clearedOwnerRef = useRef<symbol | null>(null);
+  const [prompt, setPrompt] = useState(false);
+  const promptResolvers = useRef<Array<(allowed: boolean) => void>>([]);
   const [saveError, setSaveError] = useState(false);
 
-  const register = useCallback((state: SettingsEditState | null) => {
-    editRef.current = state;
-    setEdit(state);
-    if (state === null) setSaveError(false);
+  const registration = useMemo<Registration>(() => ({
+    attach(owner, state) {
+      ownerRef.current = owner;
+      if (clearedOwnerRef.current === owner) {
+        if (state.dirty || state.busy) { editRef.current = null; return; }
+        clearedOwnerRef.current = null;
+      }
+      editRef.current = state;
+    },
+    publish(owner, flags) {
+      if (ownerRef.current !== owner || editRef.current === null || clearedOwnerRef.current === owner) return;
+      setEdit(current => sameFlags(current, flags) ? current : flags);
+    },
+    detach(owner) {
+      if (ownerRef.current !== owner) return;
+      ownerRef.current = null;
+      editRef.current = null;
+      clearedOwnerRef.current = null;
+      setEdit(null);
+      setSaveError(false);
+    },
+  }), []);
+
+  const settlePrompt = useCallback((allowed: boolean) => {
+    setPrompt(false);
+    const pending = promptResolvers.current.splice(0);
+    if (allowed) {
+      editRef.current?.reset();
+      setSaveError(false);
+    }
+    for (const resolve of pending) resolve(allowed);
   }, []);
 
   const clear = useCallback(() => {
-    const state = editRef.current;
-    state?.reset();
+    const owner = ownerRef.current;
+    editRef.current?.reset();
+    if (owner !== null) clearedOwnerRef.current = owner;
     editRef.current = null;
     setEdit(null);
     setSaveError(false);
-    promptRef.current?.resolve(false);
-    promptRef.current = null;
-    setPrompt(null);
-  }, []);
+    settlePrompt(false);
+  }, [settlePrompt]);
 
   useEffect(() => {
     const guard = async (): Promise<boolean> => {
       const state = editRef.current;
       if (!state || (!state.dirty && !state.busy)) return true;
-      if (promptRef.current) {
-        return new Promise(resolve => {
-          const prior = promptRef.current;
-          if (prior) {
-            const original = prior.resolve;
-            prior.resolve = allowed => { original(allowed); resolve(allowed); };
-          }
-        });
-      }
-      return new Promise<boolean>(resolve => {
-        const pending = { resolve };
-        promptRef.current = pending;
-        setPrompt(pending);
-      });
+      setPrompt(true);
+      return new Promise(resolve => promptResolvers.current.push(resolve));
     };
     const dispose = setNavigationGuard(guard);
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -82,17 +112,6 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const finishPrompt = useCallback((allowed: boolean) => {
-    const pending = promptRef.current;
-    promptRef.current = null;
-    setPrompt(null);
-    if (allowed) {
-      editRef.current?.reset();
-      setSaveError(false);
-    }
-    pending?.resolve(allowed);
-  }, []);
-
   const save = useCallback(async () => {
     const state = editRef.current;
     if (!state || state.busy || !state.canSave) return;
@@ -102,8 +121,9 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
     setSaveError(!saved);
   }, []);
   const reset = useCallback(() => {
-    if (editRef.current?.busy) return;
-    editRef.current?.reset();
+    const state = editRef.current;
+    if (state?.busy) return;
+    state?.reset();
     setSaveError(false);
   }, []);
 
@@ -115,24 +135,34 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
     </SettingsFooter>
   ) : null;
   const confirmation = (
-    <ConfirmDialog open={prompt !== null} tone="accent" title={copy.leaveTitle}
-      body={edit?.busy ? copy.leaveBusyBody : copy.leaveBody} confirmLabel={copy.discard}
+    <ConfirmDialog open={prompt} tone="accent" title={copy.leaveTitle}
+      body={editRef.current?.busy ? copy.leaveBusyBody : copy.leaveBody} confirmLabel={copy.discard}
       busyLabel={copy.discard} cancelLabel={copy.keepEditing} busy={false} error={null}
-      onConfirm={() => finishPrompt(true)} onClose={() => finishPrompt(false)} />
+      onConfirm={() => settlePrompt(true)} onClose={() => settlePrompt(false)} />
   );
   const workspace = useMemo<SettingsWorkspace>(() => ({ edit, footer, confirmation, requestNavigation, clear }), [edit, footer, confirmation, clear]);
   return (
     <WorkspaceContext.Provider value={workspace}>
-      <EditRegistrationContext.Provider value={register}>{children}</EditRegistrationContext.Provider>
+      <EditRegistrationContext.Provider value={registration}>{children}</EditRegistrationContext.Provider>
     </WorkspaceContext.Provider>
   );
 }
 
 /** Register this section's state with the nearest workspace; returns false for standalone settings forms. */
 export function useSettingsEdit(state: SettingsEditState): boolean {
-  const register = useContext(EditRegistrationContext);
-  useEffect(() => { register(state); return () => register(null); }, [register, state]);
-  return useContext(WorkspaceContext) !== null;
+  const registration = useContext(EditRegistrationContext);
+  const managed = useContext(WorkspaceContext) !== null;
+  const owner = useRef(Symbol('settings-edit-owner')).current;
+  const dirty = state.dirty;
+  const busy = state.busy;
+  const canSave = state.canSave;
+  // Update operation closures during render without putting a fresh object into context state.
+  registration?.attach(owner, state);
+  useLayoutEffect(() => {
+    registration?.publish(owner, { dirty, busy, canSave });
+  }, [registration, owner, dirty, busy, canSave]);
+  useLayoutEffect(() => () => registration?.detach(owner), [registration, owner]);
+  return managed;
 }
 
 /** Shared workspace surfaces and helpers. Returns null outside a SettingsEditProvider. */

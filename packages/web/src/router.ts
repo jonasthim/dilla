@@ -140,6 +140,7 @@ export function baseRoute(route: Route): Route {
 }
 
 const listeners = new Set<() => void>();
+const committedTraversalListeners = new Set<() => void>();
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
@@ -147,6 +148,13 @@ function subscribe(listener: () => void): () => void {
 let routeRevision = 0;
 const snapshot = () => `${location.pathname}${location.search}#${routeRevision}`;
 function notifyRoute(): void { routeRevision++; for (const listener of listeners) listener(); }
+function notifyCommittedTraversal(): void { for (const listener of committedTraversalListeners) listener(); }
+
+/** Subscribe to browser traversals after the guard accepts and the browser lands on the destination entry. */
+export function subscribeCommittedTraversal(listener: () => void): () => void {
+  committedTraversalListeners.add(listener);
+  return () => { committedTraversalListeners.delete(listener); };
+}
 
 /** App history writes that do not change the URL (for example phone sheets) must keep the entry index. */
 export function replaceHistoryState(state: unknown, title = '', url?: string | URL): void {
@@ -156,7 +164,8 @@ export function replaceHistoryState(state: unknown, title = '', url?: string | U
 }
 /** Push an indexed app history entry, including same-URL presentation state. */
 export function pushHistoryState(state: unknown, title = '', url?: string | URL): void {
-  currentHistoryIndex = nextHistoryIndex++;
+  currentHistoryIndex = nextHistoryIndex;
+  nextHistoryIndex = currentHistoryIndex + 1;
   if (url === undefined) history.pushState(stateWithIndex(state, currentHistoryIndex), title);
   else history.pushState(stateWithIndex(state, currentHistoryIndex), title, url);
   notifyRoute();
@@ -184,14 +193,17 @@ export function setNavigationGuard(guard: (() => Promise<boolean>) | null): () =
 }
 
 /** Ask permission before running a non-router departure action. Returns false if the user keeps editing. */
-export async function requestNavigation(action: () => void): Promise<boolean> {
-  if (pendingTraversal || navigationRequestPending) return false;
+export function requestNavigation(action: () => void): Promise<boolean> {
+  if (pendingTraversal || navigationRequestPending) return Promise.resolve(false);
+  if (!navigationGuard) {
+    action();
+    return Promise.resolve(true);
+  }
   navigationRequestPending = true;
-  try {
-    const allowed = await runGuard();
+  return runGuard().then(allowed => {
     if (allowed) action();
     return allowed;
-  } finally { navigationRequestPending = false; }
+  }).finally(() => { navigationRequestPending = false; });
 }
 
 function onPopState(event: PopStateEvent): void {
@@ -200,7 +212,7 @@ function onPopState(event: PopStateEvent): void {
     internalPopExpected = null;
     currentHistoryIndex = target;
     const pending = pendingTraversal;
-    if (!pending) { notifyRoute(); return; }
+    if (!pending) { nextHistoryIndex = target + 1; notifyRoute(); return; }
     if (pending.phase === 'restore') {
       pending.phase = 'confirm';
       void runGuard().then(allowed => {
@@ -211,6 +223,7 @@ function onPopState(event: PopStateEvent): void {
           history.go(pending.delta);
         } else {
           pendingTraversal = null;
+          nextHistoryIndex = pending.origin + 1;
           notifyRoute();
         }
       });
@@ -218,7 +231,9 @@ function onPopState(event: PopStateEvent): void {
     }
     if (pending.phase === 'replay') {
       pendingTraversal = null;
+      nextHistoryIndex = target + 1;
       notifyRoute();
+      notifyCommittedTraversal();
       return;
     }
   }
@@ -238,7 +253,7 @@ function onPopState(event: PopStateEvent): void {
   if (target === null) { notifyRoute(); return; }
   const delta = target - currentHistoryIndex;
   if (delta === 0) { notifyRoute(); return; }
-  if (!navigationGuard) { currentHistoryIndex = target; notifyRoute(); return; }
+  if (!navigationGuard) { currentHistoryIndex = target; nextHistoryIndex = target + 1; notifyRoute(); notifyCommittedTraversal(); return; }
   const pending: PendingTraversal = { delta, origin: currentHistoryIndex, phase: 'restore' };
   pendingTraversal = pending;
   // popstate cannot be cancelled: reverse to the current indexed entry before opening async confirmation.
@@ -265,9 +280,9 @@ function writeRoute(route: Route, replace = false, opts?: { phoneBack?: boolean;
   else pushHistoryState(state, '', path);
 }
 
-function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): void {
-  if (!replace && routePath(route) === location.pathname + location.search && route.name !== 'settings' && route.name !== 'serverSettings') return;
-  void requestNavigation(() => writeRoute(route, replace, opts));
+function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): Promise<boolean> {
+  if (!replace && routePath(route) === location.pathname + location.search && route.name !== 'settings' && route.name !== 'serverSettings') return Promise.resolve(true);
+  return requestNavigation(() => writeRoute(route, replace, opts));
 }
 
 /**
@@ -275,17 +290,20 @@ function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; f
  * link, a reload into the view) the tab's list route, replacing the entry, so back never leaves the app.
  *
  * With `expect` (N5), the entry back lands on may not be the one the caller means: after the system forward button the
- * entry below is a forward one. A one-shot popstate listener checks where back landed and, when that is not `expect`,
- * replaces with `expect`. It returns a function that removes that listener (a caller that unmounts before the pop calls it).
+ * entry below is a forward one. A one-shot committed-traversal listener checks where back landed and, when that is not
+ * `expect`, replaces with `expect`. It returns a function that removes that listener (a caller that unmounts before the
+ * traversal commits calls it).
  */
 export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void, expect?: Route): () => void {
   const state: unknown = history.state;
   if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) {
     let off = () => undefined as void;
     if (expect !== undefined) {
-      const onPop = () => { if (location.pathname + location.search !== routePath(expect)) go(expect, true); };
-      window.addEventListener('popstate', onPop, { once: true });
-      off = () => window.removeEventListener('popstate', onPop);
+      const onCommittedTraversal = () => {
+        off();
+        if (location.pathname + location.search !== routePath(expect)) go(expect, true);
+      };
+      off = subscribeCommittedTraversal(onCommittedTraversal);
     }
     history.back();
     return off;
@@ -328,7 +346,7 @@ export function readJoinError(state: unknown): UiError | null {
   return errorOf(joinError);
 }
 
-export function useRoute(): [Route, (r: Route, replace?: boolean, opts?: { phoneBack?: boolean; from?: string | null }) => void] {
+export function useRoute(): [Route, (r: Route, replace?: boolean, opts?: { phoneBack?: boolean; from?: string | null }) => Promise<boolean>] {
   const path = useSyncExternalStore(subscribe, snapshot);
   const route = useMemo(() => {
     const mark = location.search;
