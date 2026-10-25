@@ -181,7 +181,13 @@ fn reopen_encrypted_test_store(core: Core, path: &Path, key_hex: &str) -> Core {
         device,
     } = core;
     drop(core);
-    drop(probe);
+    let connection = Arc::try_unwrap(probe)
+        .unwrap_or_else(|_| panic!("full encrypted-store close requires sole connection ownership"))
+        .into_inner()
+        .expect("unpoison database connection mutex");
+    connection
+        .close()
+        .unwrap_or_else(|(_, error)| panic!("close encrypted test database: {error}"));
     let connection = open_encrypted_test_connection(path, key_hex);
     let probe = Arc::clone(&connection);
     let core = ClientCore::open(connection).expect("reopen native core from encrypted database");
@@ -955,6 +961,7 @@ fn authenticated_response_roundtrip(operation: u64) {
         .expect("encrypt Bot response")
         .tls_serialize_detached()
         .expect("serialize Bot response");
+    drop(provider);
     let response_row = client_support::MsgRow {
         seq: 3,
         epoch: 1,
