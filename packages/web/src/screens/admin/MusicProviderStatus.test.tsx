@@ -4,9 +4,10 @@ import { encode, encodeMusicProviderStatus, fromHex } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
+import { noteSpotifyReturn } from '../../settings/spotify-return.ts';
 
 const cid = '11'.repeat(16); const installationId = '22'.repeat(16);
-function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array) {
+function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, linked = true) {
   const fake = new FakeClient();
   fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
   let requestId = '';
@@ -16,7 +17,7 @@ function setup(status = 0, wrongInstallation = false, age = 0, empty = false, le
     if (command.m === 'readBotInteractionResponses') return { responses: empty ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', revision: null,
       data: operation === 0 ? capabilityData ?? encode(legacy ? [1, fromHex('44'.repeat(16)), 0, 1, 0] : [2, fromHex('44'.repeat(16)), 0, 1, 0, [24]])
         : encodeMusicProviderStatus({ version: 1, installationId: fromHex(wrongInstallation ? '33'.repeat(16) : installationId), observedAt: BigInt(Math.floor(Date.now() / 1000) - age),
-        spotifyAccount: 'linked', spotifyAccountReason: 'none', spotifyPlayback: 'missing_requirements', spotifyPlaybackReason: 'helper_missing',
+        spotifyAccount: linked ? 'linked' : 'not_linked', spotifyAccountReason: linked ? 'none' : 'missing_credentials', spotifyPlayback: 'missing_requirements', spotifyPlaybackReason: 'helper_missing',
         youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) }], through: null, blocked: true };
     return null;
   })());
@@ -76,6 +77,22 @@ describe('music provider status', () => {
     const reads = fake.callsOf('readBotInteractionResponses').length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(reads);
+  });
+  it('reconciles an OAuth return for at most sixty seconds without treating delivery as Linked', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    noteSpotifyReturn(cid);
+    const { fake } = setup(0, false, 0, false, false, undefined, false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(screen.getByText('Not linked')).toBeVisible();
+    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(fake.callsOf('humanInteractionRequest').filter(call => call.operation === 0)).toHaveLength(1);
+    expect(fake.callsOf('humanInteractionRequest').filter(call => call.operation === 24).length).toBeGreaterThan(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    const requests = fake.callsOf('humanInteractionRequest').length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(requests);
+    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
   });
 
 });
