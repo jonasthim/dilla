@@ -13,7 +13,7 @@ import { DangerSection } from './DangerSection.tsx';
 import { InvitesSection } from './InvitesSection.tsx';
 import { RolesSection } from './RolesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
-import { BotSection } from './BotSection.tsx';
+import { BotSettingsProvider, BotPage, WelcomePage, JoinRolesPage, MusicPage, AutomoderationPage, ModerationLogPage } from './BotSettingsPages.tsx';
 import { SelfRolesSection } from './SelfRolesSection.tsx';
 import { GifsSettings } from './GifsSettings.tsx';
 import { MembersSection } from './MembersSection.tsx';
@@ -33,7 +33,7 @@ export interface ServerSettingsProps {
 }
 
 export function ServerSettings(props: ServerSettingsProps): React.JSX.Element {
-  return <SettingsEditProvider><ServerSettingsWorkspace {...props} /></SettingsEditProvider>;
+  return <SettingsEditProvider><BotSettingsProvider communityId={props.communityId}><ServerSettingsWorkspace {...props} /></BotSettingsProvider></SettingsEditProvider>;
 }
 
 function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, activity, onMessage = () => undefined, onCompare = () => undefined }: ServerSettingsProps): React.JSX.Element {
@@ -147,8 +147,12 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
       case 'roles': return <RolesSection {...common} />;
       case 'invites': return <InvitesSection {...common} />;
       case 'selfRoles': return <SelfRolesSection {...common} />;
-      case 'bot': return <BotSection {...common} />;
-      case 'welcome': case 'joinRoles': case 'music': case 'automoderation': case 'moderationLog': return null;
+      case 'bot': return <BotPage {...common} />;
+      case 'welcome': return <WelcomePage {...common} />;
+      case 'joinRoles': return <JoinRolesPage {...common} />;
+      case 'music': return <MusicPage {...common} />;
+      case 'automoderation': return <AutomoderationPage {...common} />;
+      case 'moderationLog': return <ModerationLogPage {...common} />;
       case 'bans': return <BansSection {...common} />;
       case 'danger': return <DangerSection {...common} owner={access.owner === true} onGone={finish} />;
       default: return null;
@@ -162,11 +166,11 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
       identity={shown ? <span>{shown.name}</span> : undefined}
       nav={<SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
       footer={footer} phonePage={phone && tab === null ? 'index' : 'section'} sectionTitle={sectionTitle}
-      backLabel={t('workspace.back')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide} activity={activity}>
+      backLabel={t('workspace.back')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide} overlays={workspace?.confirmation} activity={activity}>
       {!access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p>
       {content}
-      {workspace?.confirmation}
+
     </SettingsFrame>
   </>;
 }

@@ -94,8 +94,8 @@ describe('SettingsNav', () => {
     else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
   });
 
-  it('has no serious axe violations', async () => {
-    const { container } = render(<div className="d-root"><SettingsNav {...props()} /></div>);
+  it('grouped navigation has no serious axe violations', async () => {
+    const { container } = render(<div className="d-root"><SettingsNav {...props({ items: ITEMS.map(item => ({ ...item, group: 'Account' })) })} /></div>);
     await expectNoAxeViolations(container);
   });
 });

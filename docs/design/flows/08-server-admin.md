@@ -19,7 +19,7 @@
 | ban: busy | the confirm says its busy label and is disabled | `mod.ban.busy` | none |
 | ban: done | the dialog closes; focus returns to the opener | `mod.ban.done` | `mod.ban.done` through the shell announcer |
 | ban: refused | the dialog stays open with the error | `mod.ban.error.forbidden`, `mod.ban.error.reasonLong`, `mod.ban.error.reasonControl`, `mod.ban.error.clock`, `mod.error.other` | the error (`role="alert"`) |
-| settings tabs by permission | tabs for overview (manage server), channels (manage channels), invites (create invite) and bans (ban members) show only with that permission; the danger tabs are always shown | `admin.open`, `admin.title`, `admin.nav`, `admin.nav.overview`, `admin.nav.channels`, `admin.nav.invites`, `admin.nav.bans`, `admin.nav.delete`, `admin.nav.leave`, `admin.nav.transfer`, `admin.cancel` | dialog title |
+| settings sections by permission | tabs for overview (manage server), channels (manage channels), invites (create invite) and bans (ban members) show only with that permission; the danger tabs are always shown | `admin.open`, `admin.title`, `admin.nav`, `admin.nav.overview`, `admin.nav.channels`, `admin.nav.invites`, `admin.nav.bans`, `admin.nav.delete`, `admin.nav.leave`, `admin.nav.transfer`, `admin.cancel` | dialog title |
 | overview: idle | the server name field with its hint | `admin.overview.title`, `admin.overview.name`, `admin.overview.hint`, `admin.overview.save` | none |
 | overview: busy | the save says its busy label | `admin.overview.saving` | none |
 | overview: saved | the saved note | `admin.overview.saved` | `admin.overview.saved` in the status region |
@@ -425,3 +425,22 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `mod.warn.error.reasonEmpty='Enter a reason for this warning.'`
 - `mod.warn.error.reasonLong='That reason is too long. A reason is up to 512 characters (fewer for some letters).'`
 - `mod.warn.error.reasonControl='A reason cannot hold control characters other than line breaks and tabs.'`
+
+
+## Unified fullscreen workspace
+
+Server settings now live at `/c/:communityId/settings/:section`, with a root index
+on phones and the first permitted section on desktop. The registry is the single
+source for navigation, search and allowed section selection. Members and personal
+self-assignable roles are available to ordinary members; actions retain their own
+permission and hierarchy checks. Audit-log permission is distinct from server
+management. Loading never exposes privileged content. Losing access clears the
+inaccessible draft and chooses an allowed section. The moderation journal remains
+separate from bot configuration responses.
+
+GIF configuration is its own section. Bot installation, Welcome messages, Join
+roles, Music, Automoderation and Moderation log each have their own section. See
+[fullscreen settings](18-fullscreen-settings.md) for the coverage inventory and
+partial-save, pending-operation and provider-status contracts.
+
+- `admin.bot.welcomeSettings.retry='Retry the same welcome settings request'`

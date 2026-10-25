@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '@dilla/client-core';
 import { Banner, Button, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
@@ -76,7 +76,7 @@ export function Profile(): React.JSX.Element {
   const text = (p: ProfileTextProblem | null) => (p === null ? undefined : t(PROBLEM[p]));
   const dirty = Object.keys(changed).length > 0;
 
-  const save = useCallback(async (): Promise<boolean> => {
+  const save = async (): Promise<boolean> => {
     if (pending || !dirty || invalid) return false;
     if (edited.display && next.display === '') { setDisplayError(true); return false; }
     setPending(true);
@@ -91,12 +91,9 @@ export function Profile(): React.JSX.Element {
       setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : code === 'E_RATE_LIMITED' ? 'wait' : 'save');
       return false;
     } finally { setPending(false); }
-  }, [pending, dirty, invalid, edited.display, next.display, client, changed.display, changed.statusMsg, changed.bio,
-    baseline.display, baseline.statusMsg, baseline.bio, fields.display, fields.statusMsg, fields.bio]);
-  const reset = useCallback(() => { setFields(baseline); setFailed(null); setDone(false); setDisplayError(false); }, [baseline.display, baseline.statusMsg, baseline.bio]);
-  const state = useMemo(() => ({ dirty, busy: pending, canSave: dirty && !pending && !invalid,
-    save, reset }), [dirty, pending, invalid, save, reset]);
-  const managed = useSettingsEdit(state);
+  };
+  const reset = () => { setFields(baseline); setFailed(null); setDone(false); setDisplayError(false); };
+  const managed = useSettingsEdit({ dirty, busy: pending, canSave: dirty && !pending && !invalid, save, reset });
 
   const submit = (event: FormEvent) => { event.preventDefault(); if (!managed) void save(); };
 

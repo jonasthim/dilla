@@ -30,7 +30,7 @@ export function SettingsNav({ label, items, activeId, onSelect }: SettingsNavPro
           const showGroup = item.group !== undefined && item.group !== previousGroup;
           previousGroup = item.group;
           return [
-            showGroup ? <li key={`heading-${item.id}`} className="d-settings-nav__group-entry" role="presentation"><h2 className="d-settings-nav__group">{item.group}</h2></li> : null,
+            showGroup ? <li key={`heading-${item.id}`} className="d-settings-nav__group-entry"><h2 className="d-settings-nav__group">{item.group}</h2></li> : null,
             <li key={item.id} className="d-settings-nav__entry">
               <button type="button" className="d-settings-nav__item" aria-current={item.id === activeId ? 'page' : undefined} onClick={() => onSelect(item.id)}>
                 {glyphs ? <span className="d-settings-nav__glyph">{item.icon ? <Icon name={item.icon} size={16} /> : null}</span> : null}

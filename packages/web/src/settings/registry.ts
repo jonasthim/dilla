@@ -47,7 +47,12 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
     anchor('profile-status', 'profile.status.label', 'presence', 'message'),
     anchor('profile-bio', 'profile.bio.label', 'biography', 'about'),
   ]),
-  user('signin', 'workspace.group.account', ['password', 'authentication', 'totp', 'passkey', 'recovery', 'security', 'two factor']),
+  user('signin', 'workspace.group.account', ['password', 'authentication', 'totp', 'passkey', 'recovery', 'security', 'two factor'], [
+    anchor('signin-password', 'factorSettings.password', 'change', 'password'),
+    anchor('signin-totp', 'factorSettings.totp', 'authenticator', 'two factor'),
+    anchor('signin-passkeys', 'factorSettings.passkeys', 'security key', 'webauthn'),
+    anchor('signin-codes', 'factorSettings.codes', 'backup', 'recovery'),
+  ]),
   user('devices', 'workspace.group.account', ['rename', 'revoke', 'recovery key', 'sign out', 'forget', 'sessions']),
   user('appearance', 'workspace.group.preferences', ['theme', 'dark', 'light', 'contrast', 'density', 'motion'], [
     anchor('appearance-theme', 'appearance.theme.label', 'dark', 'light', 'system', 'contrast'),
@@ -58,7 +63,9 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
     anchor('notify-permission', 'notify.permission.label', 'browser', 'permission'),
     anchor('notify-default-row', 'notify.default.label', 'default', 'mentions'),
   ]),
-  user('voice', 'workspace.group.preferences', ['microphone', 'input', 'output', 'speaker', 'permission', 'push to talk', 'ptt', 'noise', 'test']),
+  user('voice', 'workspace.group.preferences', ['microphone', 'input', 'output', 'speaker', 'permission', 'push to talk', 'ptt', 'noise', 'test'], [
+    anchor('voice-test', 'settings.voice.test', 'microphone', 'input', 'test'),
+  ]),
   user('keyboard', 'workspace.group.preferences', ['shortcut', 'binding', 'keys', 'push to talk']),
   user('privacy', 'workspace.group.support', ['contact', 'verification', 'safety number', 'changed key', 'compare']),
   user('diagnostics', 'workspace.group.support', ['connection', 'instance', 'device', 'error', 'copy', 'debug']),
@@ -72,7 +79,9 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
   server('bot', 'workspace.group.automation', can('manageCommunity'), ['installation', 'enable', 'disable', 'display name', 'capabilities']),
   server('welcome', 'workspace.group.automation', can('manageCommunity'), ['greeting', 'destination', 'preview', 'join message']),
   server('joinRoles', 'workspace.group.automation', a => can('manageCommunity')(a) && can('manageRoles')(a), ['automatic', 'new member', 'join role']),
-  server('music', 'workspace.group.automation', can('manageCommunity'), ['dj roles', 'spotify', 'youtube', 'provider', 'link', 'client id', 'playback']),
+  server('music', 'workspace.group.automation', can('manageCommunity'), ['dj roles', 'spotify', 'youtube', 'provider', 'link', 'client id', 'playback'], [
+    anchor('music-providers', 'workspace.providers.title', 'spotify', 'youtube', 'linked', 'playback'),
+  ]),
   server('automoderation', 'workspace.group.moderation', can('manageCommunity'), ['automatic', 'rules', 'actions', 'exemptions', 'filter']),
   server('moderationLog', 'workspace.group.moderation', can('viewAuditLog'), ['audit', 'cases', 'evidence', 'manual'], [], true),
   server('bans', 'workspace.group.moderation', can('banMembers'), ['unban', 'banned'], [], true),
@@ -100,5 +109,5 @@ export function searchSettings(scope: SettingsScope, query: string, access?: Set
       matches.push({ section, label, breadcrumb, anchor: entry.id, rank: lower === normalized ? 0 : lower.startsWith(normalized) ? 1 : 2 });
     }
   }
-  return matches.sort((a, b) => a.rank - b.rank).map(({ rank: _rank, ...result }) => result);
+  return matches.sort((a, b) => a.rank - b.rank).map(({ section, label, breadcrumb, anchor }) => ({ section, label, breadcrumb, anchor }));
 }

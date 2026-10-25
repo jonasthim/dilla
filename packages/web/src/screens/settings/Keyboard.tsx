@@ -15,6 +15,6 @@ export function Keyboard(): React.JSX.Element {
       { action: t('keyboard.muteAction'), keys: [t('keyboard.mute')] },
       { action: t('keyboard.deafenAction'), keys: [t('keyboard.deafen')] },
     ]} />
-    <p><button type="button" className="d-link" onClick={() => navigate({ name: 'settings', section: 'voice', from: null }, true)}>{t('settings.nav.voice')}</button></p>
+    <p><button type="button" className="d-link" onClick={() => void navigate({ name: 'settings', section: 'voice', from: null }, true)}>{t('settings.nav.voice')}</button></p>
   </section>;
 }

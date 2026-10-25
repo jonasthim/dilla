@@ -1,4 +1,5 @@
 export const settingsWorkspace = {
+  'workspace.username': '@{username}',
   'workspace.group.account': 'Account',
   'workspace.group.preferences': 'Preferences',
   'workspace.group.support': 'Privacy & support',

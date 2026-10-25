@@ -26,6 +26,8 @@ export interface SettingsFrameProps {
   wide?: boolean;
   /** Persistent call controls displayed inside the modal workspace. */
   activity?: ReactNode;
+  /** Nested dialogs remain available when the phone index hides section content. */
+  overlays?: ReactNode;
 }
 
 function visibleFocusFallback(): HTMLElement | null {
@@ -44,7 +46,7 @@ function visibleFocusFallback(): HTMLElement | null {
 /** A native modal workspace for settings; browser modal behavior keeps the mounted app inert. */
 export function SettingsFrame({
   open, title, closeLabel, onClose, nav, children, footer, identity, search,
-  phonePage = 'section', sectionTitle, backLabel = 'Back', onBack, contentRef, wide, activity,
+  phonePage = 'section', sectionTitle, backLabel = 'Back', onBack, contentRef, wide, activity, overlays,
 }: SettingsFrameProps) {
   const phone = usePhoneLayout();
   const ref = useRef<HTMLDialogElement>(null);
@@ -90,7 +92,10 @@ export function SettingsFrame({
       if (el?.open) {
         el.close();
         const target = opener.current?.isConnected ? opener.current : visibleFocusFallback();
-        target?.focus();
+        if (target) {
+          if (!target.hasAttribute('tabindex') && !(target instanceof HTMLButtonElement || target instanceof HTMLInputElement || target instanceof HTMLAnchorElement)) target.tabIndex = -1;
+          target.focus();
+        }
       }
     };
   }, []);
@@ -126,6 +131,7 @@ export function SettingsFrame({
             </div>
             {!phoneIndex && footer ? <div className="d-settings-frame__footer">{footer}</div> : null}
           </div>
+          {overlays}
         </div>
       ) : null}
     </dialog>

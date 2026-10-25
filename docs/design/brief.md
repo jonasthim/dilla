@@ -127,7 +127,7 @@ messages, and a pill composer with attach, emoji and send; a resizable member li
 / Offline) that swaps for a 380px thread panel; an optional 32px top bar (mono D-tile + DILLA +
 blinking caret, `server · node · status`, a live clock, keybind hints ⌘K / `/` / `?`) and a 26px
 bottom bar (node, peers, lamport, latency, voice codec with a 12-bar meter, version). Command
-palette on ⌘K, search palette on `/`, settings modal 960×640 with a 220px nav.
+palette on ⌘K, search palette on `/`. Settings fills the viewport as a native modal workspace: a 15rem grouped sidebar and independently scrolling content, centered together within 80rem. Ordinary forms use at most 48rem, lists 64rem; padding is 2rem on spacious screens and 1rem on constrained screens. There is no floating perimeter, backdrop dismissal, rounded outer border or modal shadow. The persistent Close control shows an Escape hint.
 
 Both optional bars are `white-space: nowrap; overflow: hidden`, so at 200 % zoom, at a raised
 browser text size, or in a narrow window they clip chunks off the right edge instead of wrapping

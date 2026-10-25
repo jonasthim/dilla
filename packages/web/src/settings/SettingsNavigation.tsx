@@ -8,7 +8,7 @@ export interface SettingsNavigationProps {
   scope: SettingsScope;
   access?: SettingsAccess;
   activeId: string;
-  onSelect(id: SettingsEntry['id'], anchor?: string | null): void;
+  onSelect: (id: SettingsEntry['id'], anchor?: string | null) => void;
 }
 /** Search reads only this registry. It never loads a section or any account values. */
 export function SettingsNavigation({ scope, access, activeId, onSelect }: SettingsNavigationProps) {
@@ -22,17 +22,18 @@ export function SettingsNavigation({ scope, access, activeId, onSelect }: Settin
     setQuery('');
   };
   return <>
-    <div className="dw-settings-search" onKeyDown={event => {
-      if (event.key === 'Escape') {
-        event.stopPropagation(); event.preventDefault();
-        if (query) setQuery('');
-        else if (event.target instanceof HTMLElement) event.target.blur();
-      }
-    }}>
+    <div className="dw-settings-search">
       <label htmlFor={id}>{t('workspace.search')}</label>
       <input id={id} type="search" value={query} autoComplete="off" spellCheck={false}
         onChange={event => setQuery(event.currentTarget.value)} onKeyDown={event => {
-          if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === 'Escape') {
+            event.stopPropagation(); event.preventDefault();
+            if (query) setQuery('');
+            else event.currentTarget.blur();
+            return;
+          }
+          if (event.key !== 'Enter') return;
           event.preventDefault();
           const first = results[0];
           if (first) activate(first.section.id, first.anchor);

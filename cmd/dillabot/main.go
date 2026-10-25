@@ -601,7 +601,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							var spotifyCatalogResolver service.SpotifyMusicTrackResolver
 							if result.Installation.Capabilities&botMusicCapability != 0 {
 								statusReader, statusErr := service.NewSpotifyCredentialStatusReader(runtime, nativeClient, spotifyGuard)
-								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session, statusReader, cfg)
+								statusConfig := cfg
+								statusConfig.SpotifyClientID, statusConfig.SpotifyRedirectURL = spotifyClientID, spotifyRedirectURL
+								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session, statusReader, statusConfig)
 								if statusErr != nil {
 									logger.Info("bot provider status will report Spotify credentials as unavailable", "installation_id", installation.ID.String())
 								}

@@ -26,7 +26,10 @@ func TestSpotifyPlaybackSetupReportsHelperAndStatePrerequisitesSeparately(t *tes
 	if state, reason := spotifyPlaybackSetup(config{SpotifyHelperExecutable: helper, StateDir: filepath.Join(dir, "missing")}); state != service.ProviderMissingRequirements || reason != service.ProviderReasonStateDirectoryUnavailable {
 		t.Fatalf("missing state directory = %d/%d", state, reason)
 	}
-	if state, reason := spotifyPlaybackSetup(config{SpotifyHelperExecutable: helper, StateDir: stateDir}); state != service.ProviderConfigured || reason != service.ProviderReasonNone {
+	if state, reason := spotifyPlaybackSetup(config{SpotifyHelperExecutable: helper, StateDir: stateDir}); state != service.ProviderMissingRequirements || reason != service.ProviderReasonDependenciesMissing {
+		t.Fatalf("missing OAuth application = %d/%d", state, reason)
+	}
+	if state, reason := spotifyPlaybackSetup(config{SpotifyHelperExecutable: helper, StateDir: stateDir, SpotifyClientID: "app-client", SpotifyRedirectURL: "https://dilla.test/settings/bot/music/spotify/callback"}); state != service.ProviderConfigured || reason != service.ProviderReasonNone {
 		t.Fatalf("configured helper = %d/%d", state, reason)
 	}
 }

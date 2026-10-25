@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -31,6 +32,9 @@ func newMusicProviderStatusInteractions(installation, community id.ID, authority
 				snapshot.SpotifyAccount, snapshot.SpotifyAccountReason = credentials.InspectStatus(ctx)
 			}
 			snapshot.SpotifyPlayback, snapshot.SpotifyPlaybackReason = spotifyPlaybackSetup(cfg)
+			if credentials == nil && snapshot.SpotifyPlayback == service.ProviderConfigured {
+				snapshot.SpotifyPlayback, snapshot.SpotifyPlaybackReason = service.ProviderSetupUnknown, service.ProviderReasonUnavailable
+			}
 			snapshot.YouTubePlayback, snapshot.YouTubePlaybackReason = youtubePlaybackSetup()
 			return snapshot
 		},
@@ -50,6 +54,9 @@ func spotifyPlaybackSetup(cfg config) (service.ProviderSetup, service.ProviderRe
 	}
 	if validatePrivateStateDir(cfg.StateDir) != nil {
 		return service.ProviderMissingRequirements, service.ProviderReasonStateDirectoryUnavailable
+	}
+	if strings.TrimSpace(cfg.SpotifyClientID) == "" || strings.ContainsAny(cfg.SpotifyClientID, "\r\n\x00") || !strings.HasPrefix(cfg.SpotifyRedirectURL, "https://") {
+		return service.ProviderMissingRequirements, service.ProviderReasonDependenciesMissing
 	}
 	return service.ProviderConfigured, service.ProviderReasonNone
 }

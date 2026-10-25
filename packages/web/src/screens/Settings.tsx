@@ -108,12 +108,12 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
     setAnchor(targetAnchor);
     if (id !== 'privacy') setComparison(null);
     const next = { name: 'settings', section: id as SettingsSection, from } as const;
-    if (phoneNow()) navigate(next, false, { phoneBack: phoneIndex });
-    else navigate(next, true);
+    if (phoneNow()) void navigate(next, false, { phoneBack: phoneIndex });
+    else void navigate(next, true);
   };
   const close = () => {
     setComparison(null);
-    navigate(from === null ? { name: 'root' } : routeOf(from), true);
+    void navigate(from === null ? { name: 'root' } : routeOf(from), true);
   };
   const back = () => {
     const index = { name: 'settings', section: null, from } as const;
@@ -121,7 +121,7 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
   };
   const identity = account?.user ? <div className="dw-settings-identity">
     <strong>{account.user.display || account.user.username}</strong>
-    <span>@{account.user.username}</span>
+    <span>{t('workspace.username', { username: account.user.username })}</span>
   </div> : null;
   const nav = <SettingsNavigation scope="user" activeId={activeSection} onSelect={select} />;
   const signOut = <div className="dw-settings-signout"><SignOutAction /></div>;
@@ -140,9 +140,9 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
     nav={signOut} identity={identity} search={nav} phonePage={phoneIndex ? 'index' : 'section'}
     sectionTitle={t(`workspace.${activeSection}`)} backLabel={t('workspace.back')} onBack={back}
     contentRef={contentRef} wide={activeSection === 'devices' || activeSection === 'privacy' || activeSection === 'diagnostics'}
-    activity={activity} footer={workspace?.footer}>
+    overlays={workspace?.confirmation} activity={activity} footer={workspace?.footer}>
     {sectionContent}
-    {workspace?.confirmation}
+
     <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}
       state={comparison === null ? 'first-seen' : compareState(comparison.record)} approvedUmk={comparison?.umk ?? null}
       qrUserId={comparison?.record.userId} groups={comparison?.number?.split(' ') ?? []}

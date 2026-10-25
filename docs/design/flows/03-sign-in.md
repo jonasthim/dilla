@@ -662,15 +662,17 @@ and judged by the instance, which answers the same way for every wrong pair.
 
 ## Settings → Devices, and the revoke and sign-out ceremonies
 
-Settings is a modal `<dialog>` over the shell (`SettingsFrame`), reached at `/settings/devices` from the
-rail's last button (`shell.rail.settings`). Its `<h1>` is `settings.title` and takes focus when the frame
-opens; its navigation (`settings.nav.label`) is one tab stop over three buttons with roving focus
-(`ArrowUp`/`ArrowDown`, `Home`/`End`), the current one `aria-current="page"`; the close button is
-`settings.close`; `Escape` closes the frame and returns to the route the person came from and to the
-rail's settings button. `Escape` inside one of the dialogs below closes only that dialog. On opening the
-Devices section the page sends `refreshDevices`.
+Settings is a fullscreen native modal `<dialog>` over the mounted shell (`SettingsFrame`).
+The user panel opens `/settings`: Profile on desktop, a grouped index on phones.
+`/settings/devices` remains a direct link to Devices. Account identity precedes search;
+roving navigation uses ArrowUp/ArrowDown and Home/End. A section change focuses its
+heading; a search result focuses its named setting. Close and Escape return to the
+originating screen through the draft guard. Nested authentication and confirmation
+dialogs consume Escape first. Opening Devices sends `refreshDevices`.
 
-At 1280 the frame is 960 × 640 with a 220px navigation (brief "Layout"):
+The viewport is filled; a 15rem navigation column and content are centered within
+80rem. The following Devices content sketch illustrates rows, not frame geometry.
+See [fullscreen settings](18-fullscreen-settings.md) for navigation and saving.
 
 ```
 +----------------------------------------------------------------------------------------------+

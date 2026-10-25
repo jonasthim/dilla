@@ -902,7 +902,7 @@ On a phone, tap a message to show what you can do with it (**react**, **reply** 
 
 Sheets (the member list, a thread, a pin list) open over the screen too, above the tabs, and the phone's back button
 closes the sheet first. Tapping a tab closes the sheet and opens that tab. Escape closes a sheet with a keyboard.
-Settings, and a server's settings, are pages above the tabs as well; **back** or a tab leaves them.
+User and server settings fill the window and hide the tabs. Choose a section from the grouped settings index; **Back to settings** returns to that index, and **Close settings** returns to the screen you came from. An ongoing voice session continues, with incoming-call controls and **Return to call** inside settings.
 
 ### The call bar
 
@@ -1099,8 +1099,7 @@ goes to this list. There is nothing to compare for your own account: the warning
 If you changed your account's identity key from another device, a device still on the old key must sign in again
 (section 6).
 
-Settings works at phone width and at high zoom: the sections stack above their content and the whole panel
-scrolls as one column.
+Settings uses a grouped index on phones and at narrow layouts. Selecting a section opens its page, with **Back to settings** above it. On desktop, the sidebar and content scroll independently. Save/Reset stays reachable above the software keyboard.
 
 ## 8. Badges, direct messages and notifications
 
@@ -1260,7 +1259,7 @@ with the message. When a message with files is deleted, its files are deleted fr
 
 ### GIFs
 
-When the server's managers have entered a Giphy key (server settings → overview, "GIFs (Giphy)"), a **gif** button
+When the server's managers have entered a Giphy key (server settings → GIFs, "GIFs (Giphy)"), a **gif** button
 (named "add a gif") sits next to **attach files** in that server's channels. It opens a small picker above the message
 field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
 press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
@@ -1275,7 +1274,7 @@ field; press Enter to send it, with or without text, or **remove** it. Nothing i
 
 Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
 
-For a server manager: in server settings → overview, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
+For a server manager: in server settings → GIFs, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
 developers.giphy.com). Type it, press **save**, and it shows as dots from then on: the key is never shown again, only
 **replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
 
@@ -1536,3 +1535,31 @@ LiveKit on 7888 and 7890, and writes
 
 Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when
 `TMPDIR` is a long path, run it with `TMPDIR=/tmp`.
+
+
+## Fullscreen settings and drafts
+
+Open the gear beside your account on desktop, or **You → Open settings** on a phone.
+Search within settings by setting name or a related word such as microphone, password
+or Spotify. Search only lists sections you are allowed to use; it does not search
+member names, account data or configuration values.
+
+Theme, density, reduced motion, notifications, voice preferences and personal roles
+apply immediately. Configuration forms use **Save** and **Reset**. If you leave a
+changed form, choose **Keep editing** or **Discard changes**. Reset uses the latest
+confirmed values. If part of a server save fails, only the failed part remains to
+save. A pending bot request can continue after you leave; acceptance is not a
+confirmation that the bot has applied it.
+
+Server settings group server configuration, people, automation and moderation.
+Music contains DJ roles, Spotify application configuration and linking, and provider
+status. **Authorization received; waiting for the bot** means the authorization
+was delivered. **Linked** appears only when the bot reports valid stored credentials
+for this installation. It does not confirm Spotify Premium, current token acceptance
+or successful playback. Spotify and YouTube playback setup separately report
+**Configured**, **Missing requirements** or **Unknown**. Refresh reads the runtime;
+observations older than a minute are stale. An older or offline bot may leave status
+unavailable while configuration and linking remain usable.
+
+Participant volume and screen-share volume remain beside the participant/share.
+Channel collapse and conversation-search scope remain in their contextual controls.

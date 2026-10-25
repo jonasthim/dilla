@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, CommunityAccess, MemberSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -234,7 +234,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
       fake.publish('removals', [{ id: 1, communityId: A, name: 'Midgard' }]);
     });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(window.location.pathname).toMatch(new RegExp(`^/c/${B}`));
+    await waitFor(() => expect(window.location.pathname).toMatch(new RegExp(`^/c/${B}`)));
     const notice = screen.getByText('You are no longer in Midgard.');
     await user.click(within(notice.parentElement as HTMLElement).getByRole('button', { name: 'dismiss' }));
     expect(screen.queryByText('You are no longer in Midgard.')).toBeNull();

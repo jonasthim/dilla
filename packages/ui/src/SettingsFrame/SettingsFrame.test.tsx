@@ -50,6 +50,12 @@ describe('SettingsFrame', () => {
     expect(within(dialog).queryByRole('heading', { level: 2, name: 'Devices' })).toBeNull();
   });
 
+  it('keeps workspace confirmations accessible on the phone index', () => {
+    render(<PhoneLayoutProvider value><SettingsFrame {...props({ phonePage: 'index', overlays: <Dialog open title="Leave settings?" onClose={() => {}}><button type="button">Keep editing</button></Dialog> })} /></PhoneLayoutProvider>);
+    expect(screen.getByRole('dialog', { name: 'Leave settings?' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toBeVisible();
+  });
+
   it('shows Back and the section on a phone section page, with no section index', () => {
     const onBack = vi.fn();
     render(<PhoneLayoutProvider value><SettingsFrame {...props({ phonePage: 'section', sectionTitle: 'Devices', onBack })} /></PhoneLayoutProvider>);
@@ -326,7 +332,8 @@ describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
     expect(css).toMatch(/grid-template-columns: 15rem minmax\(0, 1fr\)/);
     expect(css).toContain('width: min(100%, 48rem)');
     expect(css).toContain('width: min(100%, 64rem)');
-    expect(css).toContain('min\(80rem');
+    expect(css).toMatch(/\.d-settings-frame \{[^}]*width: 100vw;[^}]*height: 100dvh;/);
+    expect(css).toMatch(/\.d-settings-frame__panel \{[^}]*max-width: 80rem;/);
   });
 });
 
