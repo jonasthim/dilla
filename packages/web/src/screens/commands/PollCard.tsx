@@ -36,6 +36,10 @@ function requestId(): string {
   return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
 }
 function countLabel(value: bigint): string { return value.toString(); }
+function definiteMutationError(cause: unknown, attempt: PollAttempt, operation: 73 | 74): boolean {
+  return cause instanceof BotUtilitiesStatusError && cause.operation === operation && cause.requestId === attempt.id
+    && (cause.status === 2 || cause.status === 3 || cause.status === 4);
+}
 
 export interface PollCardProps {
   client: CoreClient; communityId: string | null; channelId: string; threadId: string | null; body: string;
@@ -130,11 +134,15 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const live = () => isSameOwner() && sourceAccessibleRef.current && accessScopeRef.current === accessScope && scopeRef.current === scopeKey
     && installationRef.current === installationId;
   const reconcile = async (prior: PollAttempt, operation: 73 | 74): Promise<'accepted' | 'conflict' | 'unknown' | 'stale'> => {
+    let accepted = false;
     try {
+      // read() binds its response to the requested operation; also require this attempt's ID.
       const response = await utilities.read(prior.id, operation);
       if (!live()) return 'stale';
-      if (response?.status === 4) return 'conflict';
-      if (response?.status !== 0) return 'unknown';
+      if (response?.requestId !== prior.id) return 'unknown';
+      if (response.status === 2 || response.status === 3 || response.status === 4) return 'conflict';
+      if (response.status !== 0) return 'unknown';
+      accepted = true;
       const caps = await utilities.capabilities();
       if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) return 'stale';
       const latest = await utilities.pollGet(poll.id, { channelId: props.channelId, threadId: props.threadId });
@@ -142,7 +150,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       setRecord({ client: props.client, scope: scopeKey, poll: latest }); setVerifiedScope(scopeKey);
       setSelected(latest.myChoices ?? []);
       return 'accepted';
-    } catch { return 'unknown'; }
+    } catch (cause) { return accepted ? 'accepted' : definiteMutationError(cause, prior, operation) ? 'conflict' : 'unknown'; }
   };
   const submit = async (choices: number[]) => {
     if (busy || (attempt !== null && (attempt.kind !== 'vote' || attempt.choices.join(',') !== choices.join(',')))) return;
@@ -150,16 +158,20 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     if (pending.scope !== scopeKey || pending.kind !== 'vote') return;
     const immutable = { ...pending, choices: [...pending.choices] };
     rememberAttempt(immutable); setBusy(true); setError('');
+    let started = false; let accepted = false;
     try {
       const caps = await utilities.capabilities();
       if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) { await refresh(); return; }
+      started = true;
       const updated = await utilities.pollVote({ requestId: immutable.id, pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: immutable.revision, choices: immutable.choices });
+      accepted = true;
       const after = await utilities.capabilities();
       if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
       setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); rememberAttempt(null);
     } catch (cause) {
       if (!live()) return;
-      if (cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3 || cause.status === 4)) { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
+      if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
+      else if (definiteMutationError(cause, immutable, 73)) { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(immutable, 73);
         if (recovered === 'accepted') rememberAttempt(null);
@@ -173,13 +185,17 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     const pending = attempt ?? { id: requestId(), kind: 'close' as const, choices: [], revision: poll.revision.toString(), scope: scopeKey };
     if (pending.scope !== scopeKey || pending.kind !== 'close') return;
     rememberAttempt(pending); setBusy(true); setError('');
+    let started = false; let accepted = false;
     try { const caps = await utilities.capabilities(); if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) { await refresh(); return; }
+      started = true;
       const updated = await utilities.pollClose({ requestId: pending.id, pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: pending.revision });
+      accepted = true;
       const after = await utilities.capabilities(); if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
       setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); }
     catch (cause) {
       if (!live()) return;
-      if (cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3 || cause.status === 4)) { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+      if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
+      else if (definiteMutationError(cause, pending, 74)) { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(pending, 74);
         if (recovered === 'accepted') rememberAttempt(null);

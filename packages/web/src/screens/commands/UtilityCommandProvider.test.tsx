@@ -43,7 +43,7 @@ function utilityFixture() {
       if (operation === 73 && !(failOperation === operation && !failApplies)) { const choices = decode(args[1] as Uint8Array) as bigint[]; const next = row.revision + 1n;
         row = { ...row, revision: next, myChoices: choices.map(Number), counts: row.answers.map((_, index) => BigInt(choices.includes(BigInt(index)) ? 1 : 0)) };
         data = wire([1n, pollWire(row)]); revision = next.toString(); }
-      if (operation === 74) { row = { ...row, closed: true, revision: row.revision + 1n }; data = wire([1n, pollWire(row)]); revision = row.revision.toString(); }
+      if (operation === 74 && !(failOperation === operation && !failApplies)) { row = { ...row, closed: true, revision: row.revision + 1n }; data = wire([1n, pollWire(row)]); revision = row.revision.toString(); }
       if (operation === 75) data = wire([1n, [asBytes(USER)], null]);
       if (operation === 80) { const payload = decode(args[0] as Uint8Array) as unknown[];
         reminder = [asBytes(id), payload[3], BigInt(Math.floor(Date.now() / 1000)) + BigInt(payload[2] as bigint), payload[4], payload[5], payload[6], 0n, 1n]; data = wire([1n, reminder]); revision = '1'; }
@@ -394,4 +394,133 @@ describe('poll card binding', () => {
     const retryContext = commandContext(f.client, requestId, { binding, getCurrentBinding: () => binding, items: [message] });
     expect(f.poll.threadId).toBe(rootId); expect(await mounted.captured.value!.handlers['poll create']!(invocation, retryContext)).toMatchObject({ status: 'success' }); mounted.unmount();
   });
+});
+
+describe('utility outcome and privacy regressions', () => {
+  it.each([73, 74] as const)('keeps operation %s uncertain across unrelated typed capability statuses', async operation => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let rejectedStatus: number | null = null; let refresh!: () => void;
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      capabilities: () => rejectedStatus === null ? real.capabilities() : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)) });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
+    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    const original = f.requests.find(row => row.operation === operation)!.requestId;
+    for (const status of [2, 3, 4]) {
+      rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' }));
+      await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
+      rejectedStatus = null; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
+      expect(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' })).toBeEnabled();
+      if (operation === 73) expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+    }
+    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' }));
+    expect(f.requests.filter(row => row.operation === operation).every(row => row.requestId === original)).toBe(true); view.unmount();
+  });
+  it.each(['reminders list', 'reminders cancel', 'reminders dismiss', 'partial list'] as const)('%s validates a superseded snapshot after community revocation', async action => {
+    const commandId = action === 'partial list' ? 'reminders list' : action;
+    const f = utilityFixture(); const other = 'ce'.repeat(16); const revokedId = 'cf'.repeat(16); let hold = false; let held = false; let release!: (value: { items: ReminderSummary[]; nextCursor: null }) => void; let currentReads = 0;
+    f.client.set('communities', [{ id: other, name: 'Revoked', owner: USER }, { id: COMMUNITY, name: 'Current', owner: USER }]);
+    const reminder = (id: string, text: string): ReminderSummary => ({ id, text, dueUnixSeconds: 1_800_000_001n, timezone: 'UTC', sourceChannelId: null, sourceThreadId: null, state: 'scheduled', revision: 1n });
+    const mutations: string[] = [];
+    vi.spyOn(ClientCore, 'createBotUtilities').mockImplementation((_client, id) => ({ capabilities: () => Promise.resolve({ version: 1, installationId: INSTALLATION, botUserId: BOT, supportedOperations: [3, 81, 82, 83] }),
+      reminderList: () => {
+        if (id === other && hold && action === 'partial list') return Promise.reject(new Error('incomplete scan'));
+        if (id === COMMUNITY) { currentReads++; if (hold && !held) { held = true; return new Promise(resolve => { release = resolve; }); } }
+        return Promise.resolve({ items: [reminder(id === other ? revokedId : 'cd'.repeat(16), id === other ? 'Revoked private reminder' : 'Current private reminder')], nextCursor: null });
+      }, reminderCancel: () => { mutations.push(id); return Promise.resolve(reminder(revokedId, 'Revoked private reminder')); },
+      reminderDismiss: () => { mutations.push(id); return Promise.resolve(reminder(revokedId, 'Revoked private reminder')); } } as unknown as BotUtilities));
+    const mounted = mount(f.client); await waitFor(() => expect(currentReads).toBe(1)); hold = true;
+    let result: CommandResult | undefined;
+    act(() => { void mounted.captured.value!.handlers[commandId]!({ commandId, args: { reminder: revokedId } }, commandContext(f.client, 'cc'.repeat(16))).then(value => { result = value; }); });
+    await waitFor(() => expect(held).toBe(true));
+    act(() => { f.client.set('communities', [{ id: COMMUNITY, name: 'Current', owner: USER }]); });
+    // Observe the replacement scan in a separate event before releasing the old scan.
+    await waitFor(() => expect(currentReads).toBeGreaterThanOrEqual(3));
+    act(() => { release({ items: [reminder('cd'.repeat(16), 'Current private reminder')], nextCursor: null }); });
+    await waitFor(() => expect(result).toBeDefined());
+    if (action === 'reminders list') { expect(result).toMatchObject({ status: 'success' }); expect(result?.message).toContain('Current private reminder'); }
+    else expect(result).toMatchObject({ status: 'failure' });
+    expect(result?.message).not.toContain('Revoked private reminder'); expect(mutations).toEqual([]); mounted.unmount();
+  });
+
+  it.each([73, 74] as const)('does not release operation %s for a terminal status with another request ID', async operation => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      read: () => Promise.reject(new ClientCore.BotUtilitiesStatusError(operation, 4, 'e1'.repeat(16), null)) });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
+    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    expect(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' })).toBeEnabled(); view.unmount();
+  });
+  it.each([73, 74] as const)('releases a fresh operation %s when its preflight proves nothing was dispatched', async operation => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let reject = false;
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, capabilities: () => {
+      if (reject) { reject = false; return Promise.reject(new ClientCore.BotUtilitiesStatusError(3, 3, 'e1'.repeat(16), null)); }
+      return real.capabilities();
+    } });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); reject = true;
+    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+    expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument(); expect(f.requests.some(row => row.operation === operation)).toBe(false); view.unmount();
+  });
+  it('keeps an accepted vote definitive when its following capability check fails', async () => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let reject = false;
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      capabilities: () => { if (reject) { reject = false; return Promise.reject(new ClientCore.BotUtilitiesStatusError(3, 3, 'e1'.repeat(16), null)); } return real.capabilities(); },
+      pollVote: async input => { const result = await real.pollVote(input); reject = true; return result; } });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled()); expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+    await user.click(screen.getAllByRole('checkbox')[1]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await waitFor(() => expect(f.poll.myChoices).toEqual([0, 1])); expect(new Set(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).size).toBe(2); view.unmount();
+  });
+  it.each(['disabled', 'reinstalled', 'device'] as const)('revalidates %s before returning an earlier community reminder page', async change => {
+    const f = utilityFixture(); const other = 'ce'.repeat(16); let hold = false; let held = false; let changed = false; let release!: (value: { items: ReminderSummary[]; nextCursor: null }) => void; let reads = 0;
+    f.client.set('communities', [{ id: other, name: 'Earlier', owner: USER }, { id: COMMUNITY, name: 'Current', owner: USER }]);
+    const reminder = (id: string, text: string): ReminderSummary => ({ id, text, dueUnixSeconds: 1_800_000_001n, timezone: 'UTC', sourceChannelId: null, sourceThreadId: null, state: 'scheduled', revision: 1n });
+    vi.spyOn(ClientCore, 'createBotUtilities').mockImplementation((_client, id) => ({ capabilities: () => {
+      if (changed && id === other && change === 'disabled') return Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError(81));
+      return Promise.resolve({ version: 1, installationId: changed && id === other && change === 'reinstalled' ? 'e2'.repeat(16) : INSTALLATION, botUserId: BOT, supportedOperations: [3, 81] });
+    }, reminderList: () => {
+      if (id === COMMUNITY) { reads++; if (hold && !held) { held = true; return new Promise(resolve => { release = resolve; }); } }
+      return Promise.resolve({ items: [reminder(id === other ? 'cf'.repeat(16) : 'cd'.repeat(16), id === other ? 'Earlier private reminder' : 'Current private reminder')], nextCursor: null });
+    } } as unknown as BotUtilities));
+    const mounted = mount(f.client); await waitFor(() => expect(reads).toBe(1)); hold = true; let result: CommandResult | undefined;
+    act(() => { void mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'cc'.repeat(16))).then(value => { result = value; }); });
+    await waitFor(() => expect(held).toBe(true)); changed = true;
+    if (change === 'device') act(() => { f.client.set('account', { ...f.client.get('account')!, deviceId: 'ef'.repeat(16) }); });
+    act(() => { release({ items: [reminder('cd'.repeat(16), 'Current private reminder')], nextCursor: null }); });
+    await waitFor(() => expect(result).toBeDefined()); expect(result?.message).not.toContain('Earlier private reminder');
+    if (change === 'device') expect(result).toMatchObject({ status: 'failure' });
+    else { expect(result).toMatchObject({ status: 'success' }); expect(result?.message).toContain('Current private reminder'); }
+    mounted.unmount();
+  });
+
+  it.each([73, 74] as const)('releases operation %s only for its original terminal mutation status', async operation => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); const ids: string[] = []; let status: number | null = 2;
+    const reject = (input: { requestId: string }) => { ids.push(input.requestId); return Promise.reject(new ClientCore.BotUtilitiesStatusError(operation, status!, input.requestId, null)); };
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      pollVote: input => status === null ? real.pollVote(input) : reject(input), pollClose: input => status === null ? real.pollClose(input) : reject(input) });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' });
+    for (const terminal of [2, 3, 4]) {
+      status = terminal; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+      await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+      expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    }
+    status = null; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await waitFor(() => expect(f.requests.some(row => row.operation === operation)).toBe(true));
+    expect(new Set(ids).size).toBe(3); expect(ids).not.toContain(f.requests.find(row => row.operation === operation)!.requestId); view.unmount();
+  });
+
 });
