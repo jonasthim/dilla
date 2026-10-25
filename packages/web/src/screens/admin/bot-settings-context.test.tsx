@@ -15,7 +15,7 @@ function Fixture() {
   }}>Start</button><p>{result}</p></>;
 }
 afterEach(() => vi.useRealTimers());
-it('polls on a timer and waits for runtime acknowledgement even when waiting begins in the start event', async () => {
+it.each([false, true])('polls and acknowledges its owned prefix even with later responses blocked=%s', async blocked => {
   vi.useFakeTimers();
   const client = new FakeClient();
   client.set(`permissions:${communityId}`, { loaded: true, manageCommunity: true, manageRoles: false, manageChannels: false,
@@ -23,7 +23,7 @@ it('polls on a timer and waits for runtime acknowledgement even when waiting beg
   let response = false; let rejectAck = true;
   client.handler = command => {
     if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-    if (command.m === 'readBotInteractionResponses') return Promise.resolve(response ? { through: '1', blocked: false, responses: [{
+    if (command.m === 'readBotInteractionResponses') return Promise.resolve(response ? { through: '1', blocked, responses: [{
       deliveryId: '1', requestId: client.callsOf('humanInteractionRequest')[0].requestId, communityId, operation: 2,
       channelId: null, revision: '1', status: 0, data: new Uint8Array(),
     }] } : { through: null, blocked: false, responses: [] });

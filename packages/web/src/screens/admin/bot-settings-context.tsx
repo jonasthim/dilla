@@ -160,7 +160,9 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
             next[item.scope] = { ...next[item.scope], error: null };
           return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
         });
-        if (page.blocked || page.through === null) continue;
+        // A later response may belong to another feature while the worker still grants
+        // this leading prefix. Consume the granted prefix so that later reader can advance.
+        if (page.through === null) continue;
         const delivered = page.responses.filter(row => BigInt(row.deliveryId) <= BigInt(page.through!));
         // Operation numbers are owned by the Bot settings feature. The worker's
         // ack is prefix based, so historical responses for the same operation
