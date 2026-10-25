@@ -27,7 +27,8 @@ func runInteractionRecoveryCommand(args []string, stdout, stderr io.Writer) int 
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "/etc/dilla/bot.toml", "path to the bot service TOML config")
 	recoverText := flags.String("recover", "", "resolve one group by ID after its exact server receipt is confirmed")
-	installationText := flags.String("installation", "", "installation ID that owns the group selected with --recover")
+	readmitText := flags.String("readmit", "", "submit an exact staged group again with fresh admission after a lost registration response")
+	installationText := flags.String("installation", "", "installation ID that owns the group selected with --recover or --readmit")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		if err == nil {
 			fmt.Fprintln(stderr, "dillabot interaction-recovery: unexpected argument")
@@ -43,31 +44,39 @@ func runInteractionRecoveryCommand(args []string, stdout, stderr io.Writer) int 
 	defer cancel()
 	var recoverGroup *id.ID
 	var recoverInstallation *id.ID
-	if *recoverText != "" {
-		group, parseErr := id.Parse(*recoverText)
+	if *recoverText != "" && *readmitText != "" {
+		fmt.Fprintln(stderr, "dillabot interaction-recovery: --recover and --readmit are mutually exclusive")
+		return 2
+	}
+	selected := *recoverText
+	if *readmitText != "" {
+		selected = *readmitText
+	}
+	if selected != "" {
+		group, parseErr := id.Parse(selected)
 		if parseErr != nil || group.IsZero() {
-			fmt.Fprintln(stderr, "dillabot interaction-recovery: recover must be a non-zero lowercase 32-character group ID")
+			fmt.Fprintln(stderr, "dillabot interaction-recovery: group must be a non-zero lowercase 32-character ID")
 			return 2
 		}
 		recoverGroup = &group
 		installation, installErr := id.Parse(*installationText)
 		if installErr != nil || installation.IsZero() {
-			fmt.Fprintln(stderr, "dillabot interaction-recovery: --recover requires a non-zero lowercase --installation ID")
+			fmt.Fprintln(stderr, "dillabot interaction-recovery: --recover and --readmit require a non-zero lowercase --installation ID")
 			return 2
 		}
 		recoverInstallation = &installation
 	} else if *installationText != "" {
-		fmt.Fprintln(stderr, "dillabot interaction-recovery: --installation requires --recover")
+		fmt.Fprintln(stderr, "dillabot interaction-recovery: --installation requires --recover or --readmit")
 		return 2
 	}
-	if err := interactionRecoveryCommandRunner(ctx, cfg, stdout, recoverGroup, recoverInstallation); err != nil {
+	if err := interactionRecoveryCommandRunner(ctx, cfg, stdout, recoverGroup, recoverInstallation, *readmitText != ""); err != nil {
 		fmt.Fprintf(stderr, "dillabot interaction-recovery: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
-func runInteractionRecovery(ctx context.Context, cfg config, stdout io.Writer, recoverGroup, recoverInstallation *id.ID) error {
+func runInteractionRecovery(ctx context.Context, cfg config, stdout io.Writer, recoverGroup, recoverInstallation *id.ID, readmit bool) error {
 	credential, err := readCredential(cfg.RuntimeCredentialFile)
 	if err != nil {
 		return fmt.Errorf("runtime credential unavailable")
@@ -132,7 +141,13 @@ func runInteractionRecovery(ctx context.Context, cfg config, stdout io.Writer, r
 				if row.Group != *recoverGroup {
 					continue
 				}
-				result, recoveryErr := coordinator.RecoverInteractionRegistration(ctx, *recoverGroup)
+				var result service.InteractionRegistrationResult
+				var recoveryErr error
+				if readmit {
+					result, recoveryErr = coordinator.ReadmitInteractionRegistration(ctx, *recoverGroup)
+				} else {
+					result, recoveryErr = coordinator.RecoverInteractionRegistration(ctx, *recoverGroup)
+				}
 				if recoveryErr != nil {
 					_ = nativeClient.Close()
 					return fmt.Errorf("group %s recovery refused: %w", *recoverGroup, recoveryErr)

@@ -49,6 +49,19 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
+  it('lets a community manager save the managed bot display name in settings', async () => {
+    const botId = 'c3'.repeat(16);
+    const { fake, user, announce } = setup({ ...ROW, state: 3, userId: botId });
+    fake.publish(`members:${SERVER}`, [{ userId: botId, username: 'dillabot', display: 'Dilla Bot', kind: 1, roleIds: [] }]);
+    fake.handler = command => command.m === 'patchBotProfile' ? Promise.resolve('Music Bot') : Promise.resolve(null);
+    const field = await screen.findByRole('textbox', { name: 'Bot display name' });
+    await waitFor(() => expect(field).toHaveValue('Dilla Bot'));
+    fireEvent.change(field, { target: { value: 'Music Bot' } });
+    expect(field).toHaveValue('Music Bot');
+    await user.click(screen.getByRole('button', { name: 'Save bot name' }));
+    await waitFor(() => expect(fake.callsOf('patchBotProfile')).toEqual([{ m: 'patchBotProfile', communityId: SERVER, display: 'Music Bot' }]));
+    expect(announce).toHaveBeenCalledWith('Bot name saved.');
+  });
   it('discards an op 62 upload response after the Server Settings community changes', async () => {
     const fake=new FakeClient(); let release!: (value:{requestId:string;upload:string})=>void;
     fake.handler=command=>command.m==='humanInteractionRequest'?new Promise(resolve=>{release=resolve;}):Promise.resolve(null);
@@ -482,6 +495,7 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
+    await user.type(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] }), 'client');
     await user.click(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] }));
     expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
@@ -492,11 +506,11 @@ describe('the server bot settings', () => {
     expect(stored).toContain('dd'.repeat(16));
     expect(stored).toContain('csrf-only');
     expect(stored).not.toContain('oauth-code');
-    expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up' })]);
+    expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
     expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
     expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: /spotify/i })).not.toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'getBotDjRoles', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
+    expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'getBotDjRoles', 'getBotSpotifyConfig', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
   it('saves one approved join-role setting with a request ID and explains future-join assignment', async () => {

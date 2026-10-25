@@ -686,10 +686,10 @@ The direct test does not establish cross-server or full provider qualification; 
 reported as unavailable until its intended-host acceptance is complete.
 
 The server `install.sh` also places the architecture-matched Spotify PCM helper at
-`/usr/local/libexec/dilla-spotify-helper`. Spotify OAuth settings (`spotify_client_id` and
-`spotify_redirect_url`) may be configured in `/etc/dillabot/bot.toml` without that helper; this keeps
-authorization available while Spotify PCM playback remains unavailable. To enable PCM playback,
-configure the same OAuth pair and the absolute
+`/usr/local/libexec/dilla-spotify-helper`. Enter the public Spotify application client ID in
+community Bot settings and register the callback URL shown there in the Spotify application
+dashboard. Linking works without the PCM helper; playback remains unavailable until it is
+installed and configured. To enable PCM playback, configure the absolute
 `spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
 remains in Dilla server settings. The helper uses librespot's native TLS backend and needs the
 OpenSSL 3 runtime libraries (`libssl.so.3` and `libcrypto.so.3`). On Debian 13, install
@@ -711,14 +711,19 @@ the offline recovery command because the helper holds an exclusive state lock:
 sudo systemctl stop dillabot
 sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml
 sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
+# If the exact receipt is absent, retry the same staged group with fresh admission:
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --readmit GROUP_ID
 sudo systemctl start dillabot
 ```
 
 The first command lists only identifiers, a registration hash, and server status. The recovery
-action succeeds only when the server returns a receipt matching the stored operation, group,
-registration body hash, and generation. An absent or mismatched receipt leaves the pending state
-unchanged; do not discard it or reissue the registration by hand. This is an operator repair path,
-not a completed installation or backup workflow.
+`--recover` succeeds only when the server returns a receipt matching the stored operation, group,
+registration body hash, and generation. If the receipt is absent, `--readmit` obtains a fresh
+admission and signed context, verifies the staged local MLS group, and submits the original
+operation ID, group ID, and registration body. A changed identity, policy, generation, roster, or
+missing KeyPackage refuses the retry. Keep the bot stopped during both commands and restart it
+even if a retry fails. Do not discard the staged group or reissue a registration by hand. This is
+an operator repair path, not a completed installation or backup workflow.
 
 ## 4. Backup and restore
 

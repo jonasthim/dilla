@@ -2005,6 +2005,13 @@ describe('managed community bot installation routes', () => {
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, null, 1, 'stepup'])));
   });
 
+  it('updates a managed bot display name with the normalized value', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, ['Music Bot']));
+    await expect(routes.patchBotProfile(COMMUNITY, '  Music Bot  ')).resolves.toBe('Music Bot');
+    expect(t.seen[0]).toMatchObject({ method: 'PATCH', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/profile`, body: encode(['Music Bot']) });
+  });
+
   it('refuses malformed or foreign installation rows before exposing them to settings', async () => {
     const rows = [installation.slice(0, 7), [BOT, USER, 1, 3, USER, DEVICE, 1, 1_800_000_000],
       [BOT, COMMUNITY, 1, 0, USER, DEVICE, 1, 1_800_000_000],
@@ -2035,10 +2042,10 @@ describe('bot Spotify authorization routes', () => {
   it('starts an attempt, forwards state/code once, and cancels with no content', async () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(200, [ATTEMPT, authorizeUrl, 1_800_000_000]));
-    await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up')).resolves.toEqual({
+    await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up', 'client')).resolves.toEqual({
       attemptId: ATTEMPT, authorizeUrl, expires: 1_800_000_000n,
     });
-    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts`, body: encode(['step-up']) });
+    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts`, body: encode(['step-up', 'client']) });
     t.replies.push(cborReply(202, [1]));
     await expect(routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).resolves.toBeUndefined();
     expect(t.seen[1]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts/${hex(ATTEMPT)}/callback`, body: encode([STATE, CODE]) });
@@ -2049,7 +2056,7 @@ describe('bot Spotify authorization routes', () => {
   it('surfaces authorization refusals and rejects malformed broker replies', async () => {
     const refused = setup();
     refused.t.replies.push(refusal(403, 'E_FORBIDDEN', 'step-up required'));
-    await expect(refused.routes.beginBotSpotifyAttempt(COMMUNITY, 'stale')).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    await expect(refused.routes.beginBotSpotifyAttempt(COMMUNITY, 'stale', 'client')).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
     const withQuery = (mutate: (url: URL) => void): string => { const url = new URL(authorizeUrl); mutate(url); return url.toString(); };
     const invalidUrls = ['https://evil.test/authorize', withQuery(u => { u.port = '444'; }),
       withQuery(u => { u.searchParams.append('state', STATE); }), withQuery(u => { u.searchParams.set('client_id', ''); }),
@@ -2057,7 +2064,7 @@ describe('bot Spotify authorization routes', () => {
     for (const reply of [...invalidUrls.map(url => [ATTEMPT, url, 1_800_000_000]), [ATTEMPT, authorizeUrl], [ATTEMPT, authorizeUrl, 0]]) {
       const { routes, t } = setup();
       t.replies.push(cborReply(200, reply));
-      await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up')).rejects.toMatchObject({ code: /E_CBOR_/ });
+      await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up', 'client')).rejects.toMatchObject({ code: /E_CBOR_/ });
     }
     const malformedAck = setup();
     malformedAck.t.replies.push(cborReply(202, [2]));

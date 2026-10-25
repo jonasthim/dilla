@@ -5,6 +5,15 @@ import { COMMUNITY, world, toReady } from './world';
 const REQUEST = new Uint8Array(16).fill(0x74);
 
 describe('managed bot installation worker commands', () => {
+  it('saves a community bot name through the authorized route', async () => {
+    const w = world();
+    const patch = vi.fn(() => Promise.resolve('Music Bot'));
+    Object.assign(w.routes, { patchBotProfile: patch });
+    await toReady(w);
+    w.call(7, { m: 'patchBotProfile', communityId: toHex(COMMUNITY), display: 'Music Bot' });
+    await vi.waitFor(() => expect(w.ret(7)).toMatchObject({ t: 'ret', ok: true, value: 'Music Bot' }));
+    expect(patch).toHaveBeenCalledWith(COMMUNITY, 'Music Bot');
+  });
   it('preserves the stable request ID and revision through configure and disable', async () => {
     const w = world();
     await toReady(w);
