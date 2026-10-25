@@ -32,7 +32,9 @@ import { profile } from './profile.ts';
 import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 import { settingsWorkspace } from './settingsWorkspace.ts';
+import { botCommand } from './botCommand.ts';
 export const en = {
+  ...botCommand,
   ...settingsWorkspace,
   ...gif,
   ...storeNewer,

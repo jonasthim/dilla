@@ -24,11 +24,13 @@ function fixture() {
   const client = {
     call: vi.fn((command: Record<string, unknown>) => {
       commands.push(command);
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ upload: 'accepted' });
+      if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
+      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
       if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: events.splice(0), through: null, blocked: false });
       return Promise.resolve(null);
     }),
-    get: () => undefined,
+    get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: 'cd'.repeat(16) }, deviceId: 'ef'.repeat(16), instance: { id: '12'.repeat(16) } }
+      : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { viewChannel: true } : undefined,
     subscribe: () => () => undefined,
     onCallKeys: () => () => undefined,
     dispose: () => undefined,
@@ -50,6 +52,7 @@ describe('authenticated voice music adapter', () => {
       const f = fixture();
       f.client.call = vi.fn((command: Record<string, unknown>) => {
         f.commands.push(command);
+        if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
         if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('private group not ready'));
         return Promise.resolve({ responses: [], through: null, blocked: false });
       });
@@ -110,6 +113,34 @@ describe('authenticated voice music adapter', () => {
     const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
     f.answer(reads[1], 0, '2', snapshot(2n, false));
     await expect(enqueue).resolves.toBeUndefined();
+    unsubscribe();
+  });
+
+  it('uses the command attempt ID for one enqueue mutation and clears the queue with operation 23', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+
+    const attemptId = '12'.repeat(16);
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://www.youtube.com/watch?v=abcdefghijk', { requestId: attemptId });
+    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
+    expect(f.getRequest(12).requestId).toBe(attemptId);
+    f.answer(f.getRequest(12), 0, '2', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
+    let reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[1], 0, '2', snapshot(2n, false));
+    await enqueue;
+
+    const clear = f.adapter.clearQueue(CHANNEL, { requestId: '34'.repeat(16) });
+    await vi.waitFor(() => expect(f.getRequest(23)).toBeDefined());
+    expect(f.getRequest(23)).toMatchObject({ requestId: '34'.repeat(16), args: [], revision: '2' });
+    f.answer(f.getRequest(23), 0, '3', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
+    reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[2], 0, '3', snapshot(3n, false));
+    await clear;
     unsubscribe();
   });
 
