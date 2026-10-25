@@ -1190,7 +1190,7 @@ async function main(argv) {
       await mira.setViewportSize(DESKTOP);
 
       const adaPage = pages.ada;
-      await adaPage.setViewportSize(DESKTOP);
+      await adaPage.setViewportSize({ width: 1440, height: 900 });
       await railServer(adaPage, SERVER).click();
       await byText(adaPage, 'button', 'admin.open').click();
       const serverSettings = adaPage.getByRole('dialog', { name: t('admin.title'), exact: true });

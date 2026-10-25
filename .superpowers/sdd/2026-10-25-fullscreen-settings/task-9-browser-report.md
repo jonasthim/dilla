@@ -30,7 +30,7 @@ The opt-in `shoot-docs.mjs --fullscreen-settings-out` capture runs against the r
 
 The Music capture accurately shows the current test server's missing-Bot prerequisite and unknown provider status; no playback or Spotify connection is claimed. The callback URL wraps within its control area. The Notifications capture uses a scripted `Notification.permission = "default"` browser state and does not represent an operating-system permission prompt.
 
-The Music view was measured on the final Close-label build at 1280×800: settings dialog `scrollTop=0`, panel `scrollTop=0`, body `scrollTop=0`, dialog bounds `(0,0)–(1280,800)`, close bar y=0–48, and close button x=1094–1264/y=9.5–37.5 (fully visible). The screenshot runner now sets the server account to 1440×900 before captures. The four server images (Overview, Members, Music, and Automoderation) are held for that 1440×900 refresh; the user-settings captures are final.
+The Music view was measured on the final Close-label build at 1440×900: settings dialog `scrollTop=0`, panel `scrollTop=0`, body `scrollTop=0`, dialog bounds `(0,0)–(1440,900)`, close bar y=0–48, and close button x=1174–1344/y=9.5–37.5 (fully visible). The four final server images (Overview, Members, Music, and Automoderation) are 1440×900 captures. The user-settings captures are also final.
 
 Actual 200% browser zoom and a physical mobile keyboard were not exercised. The 720×450 viewport is the tested short-height/keyboard-height case.
 
