@@ -43,17 +43,22 @@ type sourceLifecycle interface {
 	Close() error
 }
 
-// Session owns a LiveKit connection and the bounded music encoder session.
-// It ends when the parent context is cancelled, its lifetime expires, the
-// encoder ends, or the call's MLS epoch changes.
+// Session owns one LiveKit track publication and its bounded music encoder
+// session. A standalone session also owns its room; a pooled session leaves
+// the authorized room connected when the track completes.
 type Session struct {
-	room   publisherRoom
-	source sourceLifecycle
-	cancel context.CancelFunc
-	done   chan struct{}
-	mu     sync.RWMutex
-	err    error
-	once   sync.Once
+	room       publisherRoom
+	source     sourceLifecycle
+	cancel     context.CancelFunc
+	done       chan struct{}
+	unpublish  func() error
+	stopParent func() bool
+	pool       *Pool
+	generation uint64
+	sender     *sframe.Sender
+	mu         sync.RWMutex
+	err        error
+	once       sync.Once
 }
 
 // Start validates the call/group binding, obtains the current MLS sender,
@@ -218,14 +223,26 @@ func epochStillBound(current, initial native.CallMediaEpoch) error {
 }
 
 func (s *Session) finish(err error) {
+	var unpublishErr error
 	s.once.Do(func() {
 		s.mu.Lock()
 		s.err = err
 		s.mu.Unlock()
 		s.cancel()
-		s.room.Disconnect()
+		if s.stopParent != nil {
+			s.stopParent()
+		}
+		if s.unpublish != nil {
+			unpublishErr = s.unpublish()
+		}
+		if s.room != nil {
+			s.room.Disconnect()
+		}
 		_ = s.source.Close()
 	})
+	if unpublishErr != nil && s.pool != nil {
+		s.pool.markDead(s.generation, errors.New("music livekit: track unpublication failed"))
+	}
 }
 
 // Done closes after room and encoder cleanup have completed.
