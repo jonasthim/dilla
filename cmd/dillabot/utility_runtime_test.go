@@ -15,6 +15,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/polls"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
@@ -397,12 +398,19 @@ func TestPollPublisherRecoversAcceptedEvidenceAfterDestinationLoss(t *testing.T)
 
 type utilityIntegrationNative struct {
 	*utilityStateFake
-	groups   map[id.ID]native.GroupInfo
-	requests [][]byte
-	prepared map[string]native.PreparedSend
+	groups                  map[id.ID]native.GroupInfo
+	interaction             native.InteractionGroupDescriptor
+	requests                [][]byte
+	prepared                map[string]native.PreparedSend
+	interactionListCalls    int
+	interactionInspectCalls int
+	interactionPrepareCalls int
 }
 
 func (n *utilityIntegrationNative) InspectGroup(_ context.Context, group id.ID) (native.GroupInfo, error) {
+	if group == n.interaction.Group {
+		return native.GroupInfo{}, &helper.StatusError{Status: 2}
+	}
 	g, ok := n.groups[group]
 	if !ok {
 		return native.GroupInfo{}, errors.New("unknown test group")
@@ -410,10 +418,16 @@ func (n *utilityIntegrationNative) InspectGroup(_ context.Context, group id.ID) 
 	return g, nil
 }
 func (n *utilityIntegrationNative) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
-	return nil, nil
+	n.interactionListCalls++
+	return []native.InteractionGroupDescriptor{n.interaction}, nil
 }
-func (n *utilityIntegrationNative) InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error) {
-	return native.InteractionGroupInspectResult{}, errors.New("unused interaction group")
+func (n *utilityIntegrationNative) InspectInteractionGroup(_ context.Context, expected native.InteractionGroupExpected, snapshot []byte) (native.InteractionGroupInspectResult, error) {
+	n.interactionInspectCalls++
+	b := n.interaction.Binding
+	if len(snapshot) == 0 || expected.Group != n.interaction.Group || expected.Instance != b.Instance || expected.Installation != b.Installation || expected.Community != b.Community || expected.BotUser != b.BotUser || expected.BotDevice != n.interaction.BotDevice || expected.ParticipantUser != b.ParticipantUser || expected.ParticipantDevice != b.ParticipantDevice || expected.PolicyVersion != b.PolicyVersion {
+		return native.InteractionGroupInspectResult{}, errors.New("interaction inspection binding mismatch")
+	}
+	return native.InteractionGroupInspectResult{Binding: b, BotDevice: n.interaction.BotDevice, Epoch: n.interaction.Epoch, State: n.interaction.State, NextSequence: 1}, nil
 }
 func (n *utilityIntegrationNative) PrepareSend(_ context.Context, operation, attempt, group id.ID, request []byte, _, _ uint64) (native.PreparedSend, error) {
 	n.requests = append(n.requests, append([]byte(nil), request...))
@@ -426,8 +440,31 @@ func (n *utilityIntegrationNative) PrepareSend(_ context.Context, operation, att
 	n.prepared[key] = prepared
 	return prepared, nil
 }
-func (n *utilityIntegrationNative) PrepareInteractionSend(context.Context, native.InteractionGroupExpected, []byte, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error) {
-	return native.PreparedSend{}, errors.New("unused private group send")
+func (n *utilityIntegrationNative) PrepareInteractionSend(_ context.Context, expected native.InteractionGroupExpected, snapshot []byte, operation, attempt id.ID, request []byte, originalNow, generation uint64) (native.PreparedSend, error) {
+	n.interactionPrepareCalls++
+	b := n.interaction.Binding
+	if len(snapshot) == 0 || expected.Group != n.interaction.Group || expected.ParticipantUser != b.ParticipantUser || expected.ParticipantDevice != b.ParticipantDevice || operation.IsZero() || attempt.IsZero() || len(request) == 0 || originalNow == 0 || generation == 0 {
+		return native.PreparedSend{}, errors.New("private send binding mismatch")
+	}
+	return n.prepare(operation, attempt, expected.Group)
+}
+
+func (n *utilityIntegrationNative) prepare(operation, attempt, group id.ID) (native.PreparedSend, error) {
+	key := fmt.Sprintf("%x/%x", operation[:], attempt[:])
+	if prior, ok := n.prepared[key]; ok {
+		return prior, nil
+	}
+	g, ok := n.groups[group]
+	if !ok && group == n.interaction.Group {
+		g = native.GroupInfo{ID: group, Epoch: n.interaction.Epoch}
+		ok = true
+	}
+	if !ok {
+		return native.PreparedSend{}, errors.New("unknown prepared group")
+	}
+	prepared := native.PreparedSend{MessageID: utilityID(byte(len(n.requests) + 20)), Epoch: g.Epoch, Class: 0, Ciphertext: []byte(fmt.Sprintf("cipher-%d", len(n.requests)))}
+	n.prepared[key] = prepared
+	return prepared, nil
 }
 
 type utilityIntegrationSession struct {
@@ -437,6 +474,9 @@ type utilityIntegrationSession struct {
 	bits, channelBits     uint64
 	receipts              map[id.ID]protocol.SendReceipt
 	uploads               []client.BotMessageUpload
+	uploadGroups          []id.ID
+	admissionCalls        int
+	snapshotCalls         int
 }
 
 func (s *utilityIntegrationSession) BotActorAuthority(_ context.Context, community, actor id.ID) (client.ActorAuthority, bool, error) {
@@ -477,7 +517,30 @@ func (s *utilityIntegrationSession) PostBotMessage(_ context.Context, community,
 	receipt := protocol.SendReceipt{OperationID: upload.OperationID, AttemptID: upload.AttemptID, PredecessorAttemptID: upload.PredecessorAttemptID, CommunityID: community, GroupID: group, ExpectedGeneration: upload.ExpectedGeneration, CiphertextHash: hash[:], Class: upload.Class, Outcome: protocol.ReceiptAccepted, Epoch: upload.Epoch, SendResponse: &protocol.OriginalSendResponse{Sequence: uint64(len(s.uploads) + 1), FrankingTag: make([]byte, 32), ReceiveTimestamp: 2000, Body: reply}}
 	s.receipts[upload.AttemptID] = receipt
 	s.uploads = append(s.uploads, upload)
+	s.uploadGroups = append(s.uploadGroups, group)
 	return receipt, nil
+}
+func (s *utilityIntegrationSession) IssueBotInteractionAdmission(_ context.Context, installation, request, group, participant, device id.ID) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active || installation != utilityID(3) || request.IsZero() || group != utilityID(10) || participant != utilityID(6) || device != utilityID(9) {
+		return nil, errors.New("invalid private admission request")
+	}
+	s.admissionCalls++
+	return []byte{1}, nil
+}
+func (s *utilityIntegrationSession) BotInteractionContextSnapshot(_ context.Context, installation, request, group, participant, device id.ID) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active || installation != utilityID(3) || request.IsZero() || group != utilityID(10) || participant != utilityID(6) || device != utilityID(9) {
+		return nil, errors.New("invalid private snapshot request")
+	}
+	s.snapshotCalls++
+	payload, err := cborx.Marshal([]any{uint64(1), request, uint64(2000), uint64(0), uint64(0), uint64(2000), uint64(1), uint64(1), uint64(1), uint64(0), uint64(0), uint64(0), uint64(0), []any{utilityID(1), utilityID(3), utilityID(2), utilityID(8), utilityID(14), utilityID(6), utilityID(9), utilityID(10)}, []any{}, uint64(0)})
+	if err != nil {
+		return nil, err
+	}
+	return cborx.Marshal([]any{payload, make([]byte, 64)})
 }
 func (s *utilityIntegrationSession) ResolveBotMessage(ctx context.Context, community, operation id.ID, resolution client.BotMessageResolution) (protocol.SendReceipt, error) {
 	return protocol.SendReceipt{}, errors.New("unexpected resolve")
@@ -485,9 +548,14 @@ func (s *utilityIntegrationSession) ResolveBotMessage(ctx context.Context, commu
 
 type utilityIntegrationSnapshot struct {
 	expected native.InteractionGroupExpected
+	calls    int
 }
 
-func (s utilityIntegrationSnapshot) InteractionSnapshot(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+func (s *utilityIntegrationSnapshot) InteractionSnapshot(_ context.Context, event native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+	s.calls++
+	if event.Group != s.expected.Group || event.Channel != s.expected.ParticipantUser || event.SenderUser != s.expected.ParticipantUser || event.SenderDevice != s.expected.ParticipantDevice {
+		return native.InteractionGroupExpected{}, nil, errors.New("interaction event does not match participant binding")
+	}
 	return s.expected, []byte{1}, nil
 }
 
@@ -526,11 +594,14 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1000, 0).UTC()
 	community, installation, bot, actor, device := utilityID(2), utilityID(3), utilityID(8), utilityID(6), utilityID(9)
-	dmGroup, dmChannel, pollGroup, pollChannel := utilityID(10), utilityID(11), utilityID(12), utilityID(13)
+	dmGroup, pollGroup, pollChannel := utilityID(10), utilityID(12), utilityID(13)
+	dmChannel := actor
 	state := newUtilityStateFake()
 	session := &utilityIntegrationSession{community: community, member: true, active: true, channelBits: utilityPollSendPermission, receipts: map[id.ID]protocol.SendReceipt{}}
 	com := community
-	nativeBoundary := &utilityIntegrationNative{utilityStateFake: state, groups: map[id.ID]native.GroupInfo{dmGroup: {ID: dmGroup, Kind: 0, Community: &com, Target: dmChannel, State: 2, Epoch: 1, NextSequence: 1}, pollGroup: {ID: pollGroup, Kind: 0, Community: &com, Target: pollChannel, State: 2, Epoch: 1, NextSequence: 1}}, prepared: map[string]native.PreparedSend{}}
+	privateBinding := native.InteractionGroupBinding{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, ParticipantUser: actor, ParticipantDevice: device, PolicyVersion: 1, E2EEVersion: 1}
+	privateDescriptor := native.InteractionGroupDescriptor{Group: dmGroup, BotDevice: utilityID(14), Binding: privateBinding, Epoch: 1, State: 2}
+	nativeBoundary := &utilityIntegrationNative{utilityStateFake: state, groups: map[id.ID]native.GroupInfo{pollGroup: {ID: pollGroup, Kind: 0, Community: &com, Target: pollChannel, State: 2, Epoch: 1, NextSequence: 1}}, interaction: privateDescriptor, prepared: map[string]native.PreparedSend{}}
 	discovery := utilityDiscoveryFake{instance: state.binding.Instance, generation: 9}
 	coordinator, err := service.NewSendCoordinatorWithAdapters(nativeBoundary, discovery)
 	if err != nil {
@@ -546,7 +617,8 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 		return service.InteractionResult{}, nil
 	}}
 	expected := native.InteractionGroupExpected{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, BotDevice: utilityID(14), ParticipantUser: actor, ParticipantDevice: device, Group: dmGroup, PolicyVersion: 1}
-	dispatcher, err := newRuntimeUtilityDispatcher(nativeBoundary, base, utilities, session, community, installation, bot, 1, func() uint64 { return uint64(now.Unix()) }, utilityIntegrationSnapshot{expected})
+	snapshotProvider := &utilityIntegrationSnapshot{expected: expected}
+	dispatcher, err := newRuntimeUtilityDispatcher(nativeBoundary, base, utilities, session, community, installation, bot, 1, func() uint64 { return uint64(now.Unix()) }, snapshotProvider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +639,7 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	session.mu.Lock()
 	session.owner = true
 	session.mu.Unlock()
-	managerCap := dispatcherResponse(t, dispatcher, integrationEvent(t, protocol.Request{RequestID: utilityID(21), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 2, community, dmGroup, dmChannel, actor, device))
+	managerCap := integrationReply(t, dispatcher, outbox, discovery, integrationEvent(t, protocol.Request{RequestID: utilityID(21), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 2, community, dmGroup, dmChannel, actor, device), now)
 	if err := cborx.Unmarshal(managerCap.Data, &capabilityData); err != nil {
 		t.Fatal(err)
 	}
@@ -585,25 +657,27 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	if createResponse.Status != 0 {
 		t.Fatalf("poll create status=%d", createResponse.Status)
 	}
-	if len(session.uploads) != 3 {
-		t.Fatalf("expected poll publication plus two private replies, uploads=%d", len(session.uploads))
+	if len(session.uploads) != 4 {
+		t.Fatalf("expected poll publication plus three private replies, uploads=%d", len(session.uploads))
+	}
+	if session.uploadGroups[0] != dmGroup || session.uploadGroups[1] != dmGroup || session.uploadGroups[2] != pollGroup || session.uploadGroups[3] != dmGroup {
+		t.Fatalf("private/public uploads used wrong groups: %v", session.uploadGroups)
+	}
+	if nativeBoundary.interactionInspectCalls < 3 || snapshotProvider.calls < 3 || nativeBoundary.interactionListCalls < 3 || session.admissionCalls != 3 || session.snapshotCalls != 3 || nativeBoundary.interactionPrepareCalls != 3 {
+		t.Fatalf("private branches were not all exercised: inspect=%d dispatch snapshots=%d descriptors=%d admissions=%d send snapshots=%d private prepares=%d", nativeBoundary.interactionInspectCalls, snapshotProvider.calls, nativeBoundary.interactionListCalls, session.admissionCalls, session.snapshotCalls, nativeBoundary.interactionPrepareCalls)
 	}
 	var publicSend []any
-	if err := cborx.Unmarshal(nativeBoundary.requests[1], &publicSend); err != nil {
+	if err := cborx.Unmarshal(nativeBoundary.requests[0], &publicSend); err != nil {
 		t.Fatal(err)
 	}
 	if publicSend[2].(string) == "" || publicSend[4] != nil {
 		t.Fatalf("poll publication payload=%v", publicSend)
 	}
-	var privateSend []any
-	if err := cborx.Unmarshal(nativeBoundary.requests[2], &privateSend); err != nil {
-		t.Fatal(err)
+	privateRecord, found, err := outbox.Lookup(ctx, createEvent)
+	if err != nil || !found {
+		t.Fatalf("private response outbox missing: found=%v err=%v", found, err)
 	}
-	privateBody, ok := privateSend[2].(string)
-	if !ok {
-		t.Fatal("private reply body missing")
-	}
-	if _, err := protocol.DecodeResponse(privateBody); err != nil {
+	if _, err := protocol.DecodeResponse(string(privateRecord.Body)); err != nil {
 		t.Fatalf("private reply was not protocol response: %v", err)
 	}
 	reminderPayload, _ := cborx.Marshal([]any{uint64(1), uint64(0), uint64(60), "stretch", "UTC", nil, nil})
@@ -617,7 +691,7 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	if err := utilities.maintain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dueResponse := dispatcherResponse(t, dispatcher, integrationEvent(t, dueReq, 5, community, dmGroup, dmChannel, actor, device))
+	dueResponse := integrationReply(t, dispatcher, outbox, discovery, integrationEvent(t, dueReq, 5, community, dmGroup, dmChannel, actor, device), now)
 	var dueData []any
 	if err := cborx.Unmarshal(dueResponse.Data, &dueData); err != nil {
 		t.Fatal(err)
@@ -656,16 +730,38 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	if len(session.uploads) != publicPostsBefore {
 		t.Fatalf("accepted recovery duplicated sends: before=%d after=%d", publicPostsBefore, len(session.uploads))
 	}
-	revokedCap := dispatcherResponse(t, dispatcher, integrationEvent(t, protocol.Request{RequestID: utilityID(26), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 7, community, dmGroup, dmChannel, actor, device))
+	revokedCap := integrationReply(t, dispatcher, outbox, discovery, integrationEvent(t, protocol.Request{RequestID: utilityID(26), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 7, community, dmGroup, dmChannel, actor, device), now)
 	if revokedCap.Status != 2 {
 		t.Fatalf("revoked member op3 status=%d", revokedCap.Status)
 	}
 	session.mu.Lock()
 	session.active = false
 	session.mu.Unlock()
-	disabledCap := dispatcherResponse(t, dispatcher, integrationEvent(t, protocol.Request{RequestID: utilityID(27), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 8, community, dmGroup, dmChannel, actor, device))
-	if disabledCap.Status != 2 {
-		t.Fatalf("disabled installation op3 status=%d", disabledCap.Status)
+	disabledEvent := integrationEvent(t, protocol.Request{RequestID: utilityID(27), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 8, community, dmGroup, dmChannel, actor, device)
+	disabledBody, err := dispatcher.Dispatch(ctx, disabledEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledCap, err := protocol.DecodeResponse(disabledBody)
+	if err != nil || disabledCap.Status != 2 {
+		t.Fatalf("disabled installation op3 status=%d err=%v", disabledCap.Status, err)
+	}
+	if _, err := outbox.Send(ctx, disabledEvent, []byte(disabledBody), id.New(), id.New(), uint64(now.Unix()), discovery.generation); err == nil || !strings.Contains(err.Error(), "installation disabled") {
+		t.Fatalf("disabled installation private send error=%v", err)
+	}
+	privatePosts, publicPosts := 0, 0
+	for _, group := range session.uploadGroups {
+		switch group {
+		case dmGroup:
+			privatePosts++
+		case pollGroup:
+			publicPosts++
+		default:
+			t.Fatalf("response uploaded outside its private interaction group and poll channel: %s", group)
+		}
+	}
+	if privatePosts != 7 || publicPosts != 2 || len(session.uploads) != 9 {
+		t.Fatalf("unexpected final upload routing: private=%d public=%d total=%d groups=%v", privatePosts, publicPosts, len(session.uploads), session.uploadGroups)
 	}
 }
 
