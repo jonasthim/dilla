@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createElement, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button, Dialog } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
@@ -93,7 +93,7 @@ function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { ki
   }
   const liveError = question.trim() === '' || Array.from(question).length > 300 || lines.length < 2 || lines.length > 10
     || lines.some(value => value === '' || Array.from(value).length > 100) || new Set(lines).size !== lines.length || !(duration in DURATIONS)
-    ? copy('poll.validation') : aggregateError ? 'Poll answers exceed the 1800 byte limit. Shorten them before publishing.' : '';
+    ? copy('poll.validation') : aggregateError ? copy('poll.aggregateValidation') : '';
   const submit = () => {
     if (liveError !== '') { setError(liveError); return; }
     dialog.onSubmit({ question: question.trim(), answers: lines, multi, duration: DURATIONS[duration] });
@@ -106,7 +106,7 @@ function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { ki
     }} data-autofocus /></label>
     <p>{copy('poll.charCount', { current: Array.from(question).length, limit: 300 })}</p>
     <label>{copy('poll.answers')}<textarea value={answers} onChange={event => setAnswers(event.currentTarget.value)} /></label><p>{copy('poll.answerHelp')}</p>
-    <p>{copy('poll.byteCount', { current: bytes ?? new TextEncoder().encode(question + lines.join('')).length, limit: 1800 })}{aggregateError ? <span role="alert">Poll answers exceed the 1800 byte limit.</span> : null}</p>
+    <p>{copy('poll.byteCount', { current: bytes ?? new TextEncoder().encode(question + lines.join('')).length, limit: 1800 })}{aggregateError ? <span role="alert">{copy('poll.aggregateLimit')}</span> : null}</p>
     <label><input type="checkbox" checked={multi} onChange={event => setMulti(event.currentTarget.checked)} />{copy('poll.multiple')}</label>
     <label>{copy('poll.duration')}<select value={duration} onChange={event => setDuration(event.currentTarget.value)}>
       {Object.keys(DURATIONS).map(value => <option key={value} value={value}>{value}</option>)}</select></label>
@@ -114,6 +114,7 @@ function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { ki
   </Dialog>;
 }
 function ReminderCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { kind: 'reminder' }> }): React.JSX.Element {
+  const foldGroupId = useId();
   const [when, setWhen] = useState(dialog.when); const [text, setText] = useState(dialog.text); const [timezone, setTimezone] = useState(dialog.timezone);
   const [chosen, setChosen] = useState<number | null>(dialog.chosen ?? null); const [error, setError] = useState(''); const [now, setNow] = useState(() => new Date());
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 15_000); return () => window.clearInterval(timer); }, []);
@@ -126,13 +127,13 @@ function ReminderCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, 
   };
   return <Dialog open title={copy('reminder.createTitle')} closeLabel={t('dialog.close')} onClose={() => dialog.onCancel()}
     footer={<><Button onClick={() => dialog.onCancel()}>{t('chperm.cancel')}</Button><Button variant="accent" onClick={submit}>{t('botCommand.save')}</Button></>}>
-    <label>{copy('reminder.when')}<input value={when} onChange={event => { setWhen(event.currentTarget.value); setChosen(null); }} data-autofocus placeholder="in 2h or 2026-10-26 09:00" /></label>
+    <label>{copy('reminder.when')}<input value={when} onChange={event => { setWhen(event.currentTarget.value); setChosen(null); }} data-autofocus placeholder={copy('reminder.whenPlaceholder')} /></label>
     <label>{copy('reminder.timezone')}<input value={timezone} onChange={event => { setTimezone(event.currentTarget.value); setChosen(null); }} /></label>
     <label>{copy('reminder.text')}<textarea value={text} onChange={event => setText(event.currentTarget.value)} /></label><p>{copy('reminder.byteCount', { current: textBytes, limit: 1500 })}</p>
     {resolved.kind === 'valid' ? <p aria-live="polite">{copy('reminder.preview', { preview: resolved.preview })}</p> : null}
     {parsed.kind === 'ambiguous' ? <fieldset><legend>{copy('reminder.ambiguous')}</legend>{parsed.candidates.map((candidate, index) => <label key={candidate.unixSeconds}>
-      <input type="radio" name="reminder-fold" checked={chosen === candidate.unixSeconds} onChange={() => setChosen(candidate.unixSeconds)} />
-      {copy(index === 0 ? 'reminder.earlier' : 'reminder.later', { offset: candidate.offsetLabel })} · {candidate.preview}</label>)}</fieldset> : null}
+      <input type="radio" name={foldGroupId} checked={chosen === candidate.unixSeconds} onChange={() => setChosen(candidate.unixSeconds)} />
+      {copy('reminder.timeChoice', { choice: copy(index === 0 ? 'reminder.earlier' : 'reminder.later', { offset: candidate.offsetLabel }), preview: candidate.preview })}</label>)}</fieldset> : null}
     {error ? <p role="alert">{error}</p> : null}
   </Dialog>;
 }
@@ -615,7 +616,7 @@ function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: Remi
 }
 function ReminderRow(props: { row: ReminderInboxEntry; busy: boolean; canSource: boolean; onSource(): void; onCancel(): void; onDismiss(): void }): React.JSX.Element {
   const item = props.row.reminder;
-  return <li className="dw-reminder-card"><p>{item.text}</p><p>{new Date(Number(item.dueUnixSeconds) * 1000).toLocaleString()} · {item.timezone}</p>
+  return <li className="dw-reminder-card"><p>{item.text}</p><p>{copy('reminder.dueWithZone', { time: new Date(Number(item.dueUnixSeconds) * 1000).toLocaleString(), timezone: item.timezone })}</p>
     {item.sourceChannelId !== null ? props.canSource ? <Button variant="ghost" onClick={() => props.onSource()}>{copy('reminder.source')}</Button> : <span>{copy('reminder.sourceUnavailable')}</span> : null}
     {item.state === 'scheduled' || item.state === 'due' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onCancel()}>{copy('reminder.cancel')}</Button> : null}
     {item.state === 'due' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onDismiss()}>{copy('reminder.dismiss')}</Button> : null}

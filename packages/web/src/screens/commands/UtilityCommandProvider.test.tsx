@@ -397,6 +397,82 @@ describe('poll card binding', () => {
 });
 
 describe('utility outcome and privacy regressions', () => {
+  const badReceipts = ([73, 74] as const).flatMap(operation =>
+    (['malformed', 'poll', 'channel', 'thread', 'revision', 'schema', 'state'] as const).map(defect => ({ operation, defect })));
+  it.each(badReceipts)('retains operation $operation after a $defect accepted receipt and failed recovery', async ({ operation, defect }) => {
+    const f = utilityFixture(); const base = f.client.handler; const attemptedIds: string[] = []; let corrupt = true; let uncertain = false; let failRead = false; let failedRead = false; let refresh!: () => void;
+    const canonical = pollSummary({ revision: 2n, myChoices: operation === 73 ? [0] : [], counts: [1n, 0n], closed: operation === 74 });
+    const bad = { ...canonical, ...(defect === 'poll' ? { id: 'ab'.repeat(16) } : {}), ...(defect === 'channel' ? { channelId: 'ac'.repeat(16) } : {}),
+      ...(defect === 'thread' ? { threadId: 'ad'.repeat(16) } : {}), ...(defect === 'revision' ? { revision: 3n } : {}),
+      ...(defect === 'state' ? operation === 73 ? { myChoices: [] } : { closed: false } : {}) };
+    f.client.handler = async command => {
+      const value = await base(command);
+      if (command.m !== 'readBotInteractionResponses') return value;
+      const page = value as { responses: typeof f.responses };
+      return { ...page, responses: page.responses.map(row => row.operation !== operation ? row : { ...row, status: 0, revision: '2',
+        data: corrupt ? defect === 'malformed' ? wire([]) : wire([defect === 'schema' ? 2n : 1n, pollWire(bad)]) : wire([1n, pollWire(canonical)]) }) };
+    };
+    const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    const observe = async (run: () => Promise<PollSummary>) => { try { return await run(); } catch (cause) { uncertain = cause instanceof ClientCore.BotUtilitiesUncertainMutationError; throw cause; } };
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      capabilities: () => { if (failRead && defect !== 'malformed') { failRead = false; failedRead = true; return Promise.reject(new Error('capability unavailable')); } return real.capabilities(); },
+      pollGet: (...args) => { if (failRead && defect === 'malformed') { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollGet(...args); },
+      pollVote: input => { attemptedIds.push(input.requestId); return observe(() => real.pollVote(input)); },
+      pollClose: input => { attemptedIds.push(input.requestId); return observe(() => real.pollClose(input)); },
+      read: async (id, op) => { const result = await real.read(id, op); if (op === operation && corrupt) failRead = true; return result; } });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
+    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await waitFor(() => expect(uncertain && failedRead).toBe(true));
+    const originalId = f.requests.find(row => row.operation === operation)!.requestId;
+    act(() => { refresh(); });
+    const retry = await screen.findByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' });
+    expect(retry).toBeEnabled(); expect(screen.getAllByRole('checkbox')[0]).toBeDisabled();
+    if (operation === 73) expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+    corrupt = false; await user.click(retry);
+    // The transport retains its original undecodable receipt even after the wire recovers.
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(attemptedIds).toEqual([originalId, originalId]);
+    expect(screen.getAllByRole('checkbox')[0]).toBeDisabled();
+    view.unmount();
+  });
+
+  it.each([73, 74] as const)('settles a validated operation %s receipt despite an unavailable refresh', async operation => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let failRead = false; let failedRead = false; let refresh!: () => void;
+    const accepted = async (input: { requestId: string }, run: () => Promise<PollSummary>) => { await run(); throw new ClientCore.BotUtilitiesUncertainMutationError(operation, 0, input.requestId, new Error('lost outcome')); };
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      capabilities: () => { if (failRead && operation === 73) { failRead = false; failedRead = true; return Promise.reject(new Error('capability unavailable')); } return real.capabilities(); },
+      pollGet: (...args) => { if (failRead && operation === 74) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollGet(...args); },
+      pollVote: input => accepted(input, () => real.pollVote(input)), pollClose: input => accepted(input, () => real.pollClose(input)),
+      read: async (id, op) => { const result = await real.read(id, op); if (op === operation) failRead = true; return result; } });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' });
+    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await waitFor(() => expect(failedRead).toBe(true));
+    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+    expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    act(() => { refresh(); });
+    if (operation === 74) await screen.findByText('Poll closed');
+    else await waitFor(() => expect(screen.getByRole('button', { name: '1 · Soup' })).toBeInTheDocument());
+    expect(f.requests.filter(row => row.operation === operation)).toHaveLength(1); view.unmount();
+  });
+  it('keeps a typed accepted close definitive when the following capability check fails', async () => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let failCaps = false;
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+      capabilities: () => { if (failCaps) { failCaps = false; return Promise.reject(new Error('capability unavailable')); } return real.capabilities(); },
+      pollClose: async input => { const result = await real.pollClose(input); failCaps = true; return result; } });
+    const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getByRole('button', { name: 'Close poll' }));
+    await screen.findByText('Poll closed'); expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    expect(f.requests.filter(row => row.operation === 74)).toHaveLength(1); view.unmount();
+  });
   it.each([73, 74] as const)('keeps operation %s uncertain across unrelated typed capability statuses', async operation => {
     const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let rejectedStatus: number | null = null; let refresh!: () => void;
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);

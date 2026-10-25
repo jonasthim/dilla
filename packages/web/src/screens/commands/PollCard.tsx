@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, type CoreClient, type PollSummary } from '@dilla/client-core';
+import { BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
 import { Button } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
 import './UtilityCards.css';
@@ -142,6 +142,10 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       if (response?.requestId !== prior.id) return 'unknown';
       if (response.status === 2 || response.status === 3 || response.status === 4) return 'conflict';
       if (response.status !== 0) return 'unknown';
+      // A raw status-0 receipt is proof only after the adapter's payload checks.
+      const expected = { pollId: props.pollId, channelId: props.channelId, threadId: props.threadId, responseRevision: response.revision };
+      if (operation === 73) decodePollVote(response.data, { ...expected, choices: prior.choices });
+      else decodePollClose(response.data, expected);
       accepted = true;
       const caps = await utilities.capabilities();
       if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) return 'stale';

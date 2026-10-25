@@ -12,7 +12,7 @@ export { createVoiceMusicAdapter, voiceMusicAdapter } from './voice/music';
 export { VoiceMusicError, VoiceMusicAcceptedUnconfirmedError } from './voice/music';
 export { createBotInteractionClient, BotInteractionUncertainError, BotInteractionRejectedError, BotInteractionBindingMismatchError } from './bot/interactions';
 export type { BotInteractionClient, BotInteractionRequest, BotInteractionResult, BotInteractionScope } from './bot/interactions';
-export { createBotUtilities, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';
+export { createBotUtilities, decodePollVote, decodePollClose, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';
 export type { BotUtilities, PollSummary, ReminderSummary, ReminderState, UtilityBinding, UtilityCapabilities, PollPage, ReminderPage, PollVotersPage } from './bot/utilities';
 export { parseReminderTime, resolveReminderTimeCandidate } from './bot/utility-time';
 export type { ReminderTimeResult, ReminderTimeCandidate } from './bot/utility-time';
