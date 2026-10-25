@@ -92,10 +92,10 @@ export const Notifications: Story = { render: () => <Frame section="notification
 export const Narrow: Story = {
   render: () => <div style={{ ['--d-settings-w' as string]: '22.5rem', ['--d-settings-h' as string]: '46.25rem' }}><Frame section="devices" /></div>,
 };
-// A11Y-DESIGN-01: 320 × 256, the viewport of 1280 × 1024 at 400 % zoom (WCAG 1.4.10). The stacked panel scrolls as one
-// column; .storybook/test-runner.ts scrolls it and checks that the last control comes into view.
+// A11Y-DESIGN-01: at 200% zoom, a 1280 × 800 desktop viewport has a 640 × 400 CSS viewport. The existing narrow-frame
+// breakpoint applies there, so the fullscreen frame stacks and the panel scrolls as one column.
 export const ZoomedIn: Story = {
-  render: () => <div style={{ ['--d-settings-w' as string]: '20rem', ['--d-settings-h' as string]: '16rem' }}><Frame section="devices" /></div>,
+  render: () => <Frame section="devices" />,
 };
 
 const FOOTER = <SettingsFooter status="Unsaved changes"><Button variant="ghost" onClick={noop}>reset</Button><Button variant="accent" onClick={noop}>save</Button></SettingsFooter>;

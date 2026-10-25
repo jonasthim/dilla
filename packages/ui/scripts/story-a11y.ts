@@ -126,9 +126,33 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         await page.emulateMedia({ media: 'screen' });
       }
     }
-    // A11Y-DESIGN-01: at 320 × 256 the stacked settings frame scrolls as one column, so its last control can be reached.
+    // A11Y-DESIGN-01: desktop settings keep the sidebar and body as independent scroll regions. At 200% zoom,
+    // the effective 640 × 400 CSS viewport enters the existing narrow-frame breakpoint and the stacked panel scrolls.
     if (context.id === 'settings-settingsframe--zoomed-in') {
-      const r = await page.evaluate(() => {
+      const desktop = await page.evaluate(() => {
+        const frame = document.querySelector('.d-settings-frame');
+        const panel = document.querySelector('.d-settings-frame__panel');
+        const body = document.querySelector('.d-settings-frame__body');
+        const side = document.querySelector('.d-settings-frame__side');
+        if (!frame || !panel || !body || !side) return null;
+        const rect = frame.getBoundingClientRect();
+        const styles = getComputedStyle(panel);
+        return {
+          width: Math.round(rect.width), height: Math.round(rect.height), x: Math.round(rect.x), y: Math.round(rect.y),
+          columns: styles.gridTemplateColumns.trim().split(/\s+/).length,
+          sideOverflow: getComputedStyle(side).overflowY, bodyOverflow: getComputedStyle(body).overflowY,
+          horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
+            || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
+        };
+      });
+      if (!desktop || desktop.width !== 1280 || desktop.height !== 800 || desktop.x !== 0 || desktop.y !== 0
+        || desktop.columns < 2 || desktop.sideOverflow !== 'auto' || desktop.bodyOverflow !== 'auto' || desktop.horizontalOverflow) {
+        throw new Error(`${context.title} / ${context.name}: desktop settings geometry or independent scrolling is incorrect (${JSON.stringify(desktop)})`);
+      }
+
+      // A 1280 × 800 physical display at 200% browser zoom exposes a 640 × 400 CSS viewport.
+      await page.setViewportSize({ width: 640, height: 400 });
+      const zoomed = await page.evaluate(() => {
         const frame = document.querySelector('.d-settings-frame');
         const panel = document.querySelector('.d-settings-frame__panel');
         const body = document.querySelector('.d-settings-frame__body');
@@ -140,13 +164,17 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const p = panel.getBoundingClientRect();
         const b = last.getBoundingClientRect();
         return {
-          width: Math.round(size.width), height: Math.round(size.height), panelScrolls: panel.scrollHeight > panel.clientHeight,
+          width: Math.round(size.width), height: Math.round(size.height), x: Math.round(size.x), y: Math.round(size.y),
+          panelScrolls: panel.scrollHeight > panel.clientHeight,
           bodyScrolls: body.scrollHeight > body.clientHeight + 1, sideScrolls: side.scrollHeight > side.clientHeight + 1,
           lastInView: b.top >= p.top - 1 && b.bottom <= p.bottom + 1,
+          horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
+            || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
         };
       });
-      if (!r || r.width !== 320 || r.height !== 256 || !r.panelScrolls || r.bodyScrolls || r.sideScrolls || !r.lastInView) {
-        throw new Error(`${context.title} / ${context.name}: the stacked frame does not scroll as one column (${JSON.stringify(r)})`);
+      if (!zoomed || zoomed.width !== 640 || zoomed.height !== 400 || zoomed.x !== 0 || zoomed.y !== 0
+        || !zoomed.panelScrolls || zoomed.bodyScrolls || zoomed.sideScrolls || !zoomed.lastInView || zoomed.horizontalOverflow) {
+        throw new Error(`${context.title} / ${context.name}: the fullscreen settings frame is not reachable at 200% zoom (${JSON.stringify(zoomed)})`);
       }
     }
     if (context.id.startsWith('ceremony-onboardingframe--')) {
