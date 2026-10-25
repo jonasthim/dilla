@@ -1,7 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { CoreClient } from '../bridge';
 import { createBotInteractionClient, BotInteractionBindingMismatchError, BotInteractionIdentityConflictError,
-  BotInteractionRejectedError, BotInteractionUncertainError } from './interactions';
+  BotInteractionRejectedError, BotInteractionUncertainError, BotInteractionUnverifiableRequestError } from './interactions';
+import { world, toReady, COMMUNITY as WORKER_COMMUNITY, USER, DEVICE, textGroup } from '../worker/world';
+import { toHex } from '../hex';
+import { encodeBotResponse } from './protocol';
+import { encode } from '../cbor';
 
 const COMMUNITY = '11'.repeat(16);
 const REQUEST = '22'.repeat(16);
@@ -215,8 +219,49 @@ it('does not treat a read-only result as a known request body fingerprint', asyn
   const api = createBotInteractionClient(f.client, COMMUNITY);
   expect((await api.read(REQUEST, 70))?.status).toBe(0);
   await expect(api.request({ requestId: REQUEST, operation: 70, args: ['unverified original body'] }))
-    .rejects.toBeInstanceOf(BotInteractionRejectedError);
-  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+    .rejects.toBeInstanceOf(BotInteractionUnverifiableRequestError);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(0);
+});
+
+it('refuses read-then-request reuse when the actual worker has an id-only accepted receipt', async () => {
+  const w = world();
+  await toReady(w);
+  const rid = new Uint8Array(16).fill(0x71);
+  const requestId = toHex(rid);
+  const communityId = toHex(WORKER_COMMUNITY);
+  const groupId = new Uint8Array(16).fill(0x52);
+  w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: USER });
+  w.core.humanInteractionSendPrepare.mockImplementation(id => {
+    w.state.outbox.push({ msgId: id, state: 0, error: '', created: 1n, body: 'original persisted body',
+      type: 0, replyTo: null, attachments: [] });
+    return id;
+  });
+  let callId = 92000;
+  const call = async (command: unknown): Promise<unknown> => {
+    const id = callId++;
+    w.call(id, command);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    const result = w.ret(id) as unknown as { ok: boolean; error: unknown; value: unknown };
+    if (!result.ok) throw Object.assign(new Error('worker call failed'), result.error as object);
+    return result.value;
+  };
+  // Seed the actual Controller shortcut through a legacy/direct operation with body A.
+  await expect(call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId,
+    operation: 71, args: ['75'.repeat(16)], revision: null })).resolves.toMatchObject({ upload: 'accepted' });
+  w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0xaa),
+    botUserId: USER, state: 3, revision: 1n } as never);
+  w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 9n, groupId,
+    communityId: WORKER_COMMUNITY, requestId: rid, sourceSeq: 9n, epoch: 1n, receivedAt: 1n,
+    senderUser: USER, senderDevice: DEVICE, messageId: rid,
+    body: encodeBotResponse({ requestId: rid, communityId: WORKER_COMMUNITY, status: 0,
+      revision: null, data: encode([]) }), operation: 71, channelId: null }], next: 9n, highWater: 9n });
+  const client = { get: (name: string) => w.last(name), subscribe: () => () => undefined, call } as unknown as CoreClient;
+  const api = createBotInteractionClient(client, communityId);
+  await expect(api.read(requestId, 71)).resolves.toMatchObject({ status: 0 });
+  await expect(api.request({ requestId, operation: 71, args: ['76'.repeat(16)], revision: null }))
+    .rejects.toBeInstanceOf(BotInteractionUnverifiableRequestError);
+  expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
+  expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
 });
 
 it('times out with a typed uncertain result and never resends with a new id', async () => {

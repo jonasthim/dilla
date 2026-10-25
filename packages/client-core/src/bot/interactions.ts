@@ -57,6 +57,13 @@ export class BotInteractionIdentityConflictError extends Error {
   }
 }
 
+export class BotInteractionUnverifiableRequestError extends Error {
+  constructor(readonly requestId: string) {
+    super('The Bot interaction request id already has a reconciled response, but its original request body is unknown. Use read() to reconcile it.');
+    this.name = 'BotInteractionUnverifiableRequestError';
+  }
+}
+
 export interface BotInteractionClient {
   request(input: BotInteractionRequest): Promise<BotInteractionResult>;
   read(requestId: string, operation: number): Promise<BotInteractionResult | null>;
@@ -318,6 +325,13 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
       const { generation, scope } = initial;
       if (snapshot.expectedScope !== undefined && !sameScope(scope, snapshot.expectedScope)) {
         throw new BotInteractionBindingMismatchError();
+      }
+      // A read-only reconciliation can recover the response after reload, but it cannot establish
+      // which immutable request body the worker previously accepted for this id. The worker's
+      // accepted-upload shortcut is id-only, so never turn that receipt into proof that this
+      // caller's body produced the cached response.
+      if (!requestFingerprints.has(requestId) && (results.has(key) || reads.has(key))) {
+        throw new BotInteractionUnverifiableRequestError(requestId);
       }
       rememberFingerprint(requestId, fingerprint);
       const identity = requestFingerprints.get(requestId);
