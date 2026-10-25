@@ -483,11 +483,11 @@ func validatePollSelection(v any) error {
 
 func validateUtilityPayload(v any, poll bool) error {
 	b, ok := v.([]byte)
-	max := 2200
+	maxBytes := 2200
 	if poll {
-		max = 1800
+		maxBytes = 1800
 	}
-	if !ok || len(b) == 0 || len(b) > max || !validArray(b) {
+	if !ok || len(b) == 0 || len(b) > maxBytes || !validArray(b) {
 		return invalid()
 	}
 	var fields []any

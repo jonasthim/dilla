@@ -153,7 +153,7 @@ func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor
 	}
 	var a []any
 	if cborx.Unmarshal(raw, &a) != nil || len(a) != 7 || a[0] != uint64(1) {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	kind, ok := a[1].(uint64)
 	if !ok || kind > 1 {
@@ -172,7 +172,7 @@ func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	if _, e = time.LoadLocation(zone); e != nil {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	var channel, thread *id.ID
 	if a[5] != nil {

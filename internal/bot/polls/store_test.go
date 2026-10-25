@@ -21,6 +21,15 @@ type testState struct {
 }
 
 func newTestState() *testState { return &testState{rows: map[string]native.StateEntry{}} }
+
+func TestUnixSecondsRejectsPreEpochValues(t *testing.T) {
+	if got, ok := unixSeconds(time.Unix(-1, 0)); ok || got != 0 {
+		t.Fatalf("pre-epoch Unix time converted to %d, ok=%v", got, ok)
+	}
+	if got, ok := unixSeconds(time.Unix(1, 0)); !ok || got != 1 {
+		t.Fatalf("positive Unix time converted to %d, ok=%v", got, ok)
+	}
+}
 func (s *testState) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

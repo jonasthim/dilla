@@ -19,6 +19,15 @@ type durableState struct {
 }
 type pauseGetKey struct{}
 
+func TestUnixSecondsRejectsPreEpochValues(t *testing.T) {
+	if got, ok := unixSeconds(time.Unix(-1, 0)); ok || got != 0 {
+		t.Fatalf("pre-epoch Unix time converted to %d, ok=%v", got, ok)
+	}
+	if got, ok := unixSeconds(time.Unix(1, 0)); !ok || got != 1 {
+		t.Fatalf("positive Unix time converted to %d, ok=%v", got, ok)
+	}
+}
+
 func (s *durableState) StateGet(ctx context.Context, _ uint64, key []byte) (native.StateValue, error) {
 	s.mu.Lock()
 	e := s.rows[string(key)]

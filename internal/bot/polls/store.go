@@ -101,6 +101,14 @@ func boolU(v bool) uint64 {
 	}
 	return 0
 }
+
+func unixSeconds(now time.Time) (uint64, bool) {
+	seconds := now.Unix()
+	if seconds < 0 {
+		return 0, false
+	}
+	return uint64(seconds), true
+}
 func decodePoll(b []byte) (Poll, error) {
 	var a []any
 	if e := cborx.Unmarshal(b, &a); e != nil || len(a) != 15 {
@@ -281,7 +289,11 @@ func (s *Store) Create(ctx context.Context, request id.ID, fp [32]byte, p Poll, 
 	}
 	p.Revision = 1
 	p.Counts = make([]uint64, len(p.Answers))
-	p.CreatedAt = uint64(now.Unix())
+	createdAt, ok := unixSeconds(now)
+	if !ok {
+		return Poll{}, ErrInvalid
+	}
+	p.CreatedAt = createdAt
 	if p.DueAt <= p.CreatedAt || p.DueAt-p.CreatedAt > 604800 {
 		return Poll{}, ErrInvalid
 	}
@@ -308,7 +320,7 @@ func (s *Store) Create(ctx context.Context, request id.ID, fp [32]byte, p Poll, 
 			}
 			return Poll{}, getErr
 		}
-		if !existing.Closed && uint64(now.Unix()) < existing.DueAt {
+		if nowSeconds, ok := unixSeconds(now); !existing.Closed && (!ok || nowSeconds < existing.DueAt) {
 			active = append(active, existingID)
 		}
 	}
@@ -455,7 +467,7 @@ func (s *Store) mutation(ctx context.Context, pid, actor, request id.ID, fp [32]
 func (s *Store) Vote(ctx context.Context, pid, actor, request id.ID, fp [32]byte, choices []uint64, expected uint64, now time.Time) (Outcome, error) {
 	var voteSnapshot native.StateValue
 	out, e := s.mutation(ctx, pid, actor, request, fp, expected, now, func(p Poll) (Poll, []uint64, error) {
-		if p.Closed || uint64(now.Unix()) >= p.DueAt {
+		if nowSeconds, ok := unixSeconds(now); p.Closed || ok && nowSeconds >= p.DueAt {
 			return p, nil, ErrClosed
 		}
 		seen := map[uint64]bool{}
@@ -858,7 +870,7 @@ func (s *Store) Reconcile(ctx context.Context, now time.Time, publisher Publishe
 					p.Published = true
 				}
 			}
-			if !p.Closed && uint64(now.Unix()) >= p.DueAt {
+			if nowSeconds, ok := unixSeconds(now); !p.Closed && ok && nowSeconds >= p.DueAt {
 				if e = s.expire(ctx, p.ID, now); e != nil {
 					reconcileErrors = append(reconcileErrors, fmt.Errorf("expire poll %s: %w", idhex(p.ID), e))
 				}
@@ -891,7 +903,7 @@ func (s *Store) expire(ctx context.Context, pid id.ID, now time.Time) error {
 		if p.CommunityID != s.community {
 			return ErrNotFound
 		}
-		if p.Closed || uint64(now.Unix()) < p.DueAt {
+		if nowSeconds, ok := unixSeconds(now); p.Closed || !ok || nowSeconds < p.DueAt {
 			return nil
 		}
 		var revision [8]byte

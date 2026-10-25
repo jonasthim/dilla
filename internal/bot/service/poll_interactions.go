@@ -105,10 +105,24 @@ func pollResultStatus(e error) uint64 {
 	}
 }
 func (h PollInteractions) present(p polls.Poll) polls.Poll {
-	if uint64(h.now().Unix()) >= p.DueAt {
+	if seconds, ok := unixSeconds(h.now()); ok && seconds >= p.DueAt {
 		p.Closed = true
 	}
 	return p
+}
+
+func unixSeconds(now time.Time) (uint64, bool) {
+	seconds := now.Unix()
+	if seconds < 0 {
+		return 0, false
+	}
+	return uint64(seconds), true
+}
+
+// unavailableInteraction intentionally encodes malformed or unavailable private
+// requests as status 5 while returning no transport error to the response layer.
+func unavailableInteraction() (InteractionResult, error) {
+	return InteractionResult{Status: interactionStatusUnavailable}, nil
 }
 func pollIDValue(v any) (id.ID, bool) {
 	if x, ok := v.(id.ID); ok {
@@ -196,7 +210,7 @@ func (h PollInteractions) create(ctx context.Context, actor InteractionActor, r 
 	}
 	var a []any
 	if cborx.Unmarshal(payload, &a) != nil || len(a) != 7 || a[0] != uint64(1) {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	channel, ok := pollIDValue(a[1])
 	if !ok {
@@ -242,10 +256,11 @@ func (h PollInteractions) create(ctx context.Context, actor InteractionActor, r 
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	now := h.now()
-	if now.Unix() < 0 || uint64(now.Unix()) > math.MaxUint64-duration {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	createdAt, ok := unixSeconds(now)
+	if !ok || createdAt > math.MaxInt64-duration {
+		return unavailableInteraction()
 	}
-	p := polls.Poll{ID: r.RequestID, CommunityID: h.CommunityID, ChannelID: channel, ThreadID: thread, CreatorID: actor.User, Question: question, Answers: answers, Multi: multi == 1, CreatedAt: uint64(now.Unix()), DueAt: uint64(now.Unix()) + duration}
+	p := polls.Poll{ID: r.RequestID, CommunityID: h.CommunityID, ChannelID: channel, ThreadID: thread, CreatorID: actor.User, Question: question, Answers: answers, Multi: multi == 1, CreatedAt: createdAt, DueAt: createdAt + duration}
 	p, e = h.Store.Create(ctx, r.RequestID, fp, p, now)
 	if e != nil {
 		return InteractionResult{Status: pollResultStatus(e)}, nil
@@ -254,10 +269,10 @@ func (h PollInteractions) create(ctx context.Context, actor InteractionActor, r 
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	if e = h.Publisher.PublishPoll(ctx, p); e != nil {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	if e = h.Store.MarkPublished(ctx, p.ID); e != nil {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	p.Published = true
 	data, e := pollData([]any{uint64(1), pollSummary(h.present(p), nil)})
@@ -360,11 +375,11 @@ func (h PollInteractions) vote(ctx context.Context, actor InteractionActor, r pr
 	pid, ok := pollIDValue(r.Args[0])
 	raw, ok2 := r.Args[1].([]byte)
 	if !ok || !ok2 {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	var a []any
 	if cborx.Unmarshal(raw, &a) != nil || len(a) > 10 {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+		return unavailableInteraction()
 	}
 	choices := make([]uint64, 0, len(a))
 	for _, x := range a {
@@ -463,7 +478,7 @@ func (h PollInteractions) voters(ctx context.Context, actor InteractionActor, r 
 		}
 		var a []any
 		if cborx.Unmarshal(b, &a) != nil || len(a) != 4 || a[0] != uint64(1) {
-			return InteractionResult{Status: interactionStatusUnavailable}, nil
+			return unavailableInteraction()
 		}
 		cursorPoll, validID := pollIDValue(a[1])
 		cursorOption, validOption := a[2].(uint64)

@@ -6,15 +6,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/jonasthim/dilla/internal/bot/helper"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/cborx"
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/polls"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 

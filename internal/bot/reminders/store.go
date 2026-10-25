@@ -69,6 +69,14 @@ func NewStore(s State, binding native.Binding, clock ...func() time.Time) *Store
 	}
 	return &Store{state: s, community: binding.Community, installation: binding.Installation, Now: now}
 }
+
+func unixSeconds(now time.Time) (uint64, bool) {
+	seconds := now.Unix()
+	if seconds < 0 {
+		return 0, false
+	}
+	return uint64(seconds), true
+}
 func hx(v id.ID) string          { return fmt.Sprintf("%x", v[:]) }
 func reminderKey(v id.ID) []byte { return []byte(reminderPrefix + hx(v)) }
 func userKey(v id.ID) []byte     { return []byte(userPrefix + hx(v)) }
@@ -269,7 +277,11 @@ func (s *Store) Create(ctx context.Context, request, actor id.ID, fp [32]byte, r
 	if due.Before(time.Unix(0, 0)) || due.Unix() < 0 {
 		return Reminder{}, ErrInvalid
 	}
-	r.DueAt = uint64(due.UTC().Unix())
+	dueAt, ok := unixSeconds(due.UTC())
+	if !ok {
+		return Reminder{}, ErrInvalid
+	}
+	r.DueAt = dueAt
 	r.State = StateScheduled
 	r.Revision = 1
 	if r.DueAt == 0 || validate(r) != nil {
@@ -353,7 +365,7 @@ func (s *Store) mutate(ctx context.Context, pid, actor, request id.ID, fp [32]by
 	if r.Revision != expected {
 		return Reminder{}, ErrConflict
 	}
-	if r.State == StateScheduled && uint64(now.Unix()) >= r.DueAt {
+	if nowSeconds, ok := unixSeconds(now); r.State == StateScheduled && ok && nowSeconds >= r.DueAt {
 		r.State = StateDue
 	}
 	if target == StateCancelled && r.State != StateScheduled {
@@ -453,7 +465,7 @@ func (s *Store) List(ctx context.Context, actor id.ID, dueOnly bool, cursor stri
 			}
 			return nil, "", e
 		}
-		if r.State == StateScheduled && uint64(now.Unix()) >= r.DueAt {
+		if nowSeconds, ok := unixSeconds(now); r.State == StateScheduled && ok && nowSeconds >= r.DueAt {
 			r.State = StateDue
 		}
 		if dueOnly && r.State != StateDue {
@@ -505,7 +517,6 @@ func (s *Store) Tick(ctx context.Context) error {
 			if !strings.HasPrefix(string(entry.Key), reminderPrefix) {
 				break
 			}
-			after = entry.Key
 			if entry.Tombstone || entry.Revision == 0 {
 				continue
 			}
@@ -513,7 +524,7 @@ func (s *Store) Tick(ctx context.Context) error {
 			if e != nil {
 				return e
 			}
-			if r.State == StateScheduled && uint64(now.Unix()) >= r.DueAt {
+			if nowSeconds, ok := unixSeconds(now); r.State == StateScheduled && ok && nowSeconds >= r.DueAt {
 				r.State = StateDue
 				r.Revision++
 				b, e := encodeReminder(r)
