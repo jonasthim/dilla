@@ -703,8 +703,8 @@ impl ClientCore {
                 continue;
             }
             let live_source: bool = self.read(|c| c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND m.msg_id=?7 AND m.type=0 AND g.state=2 AND g.kind=3 AND g.community_id=?8 AND g.target_id=?9 AND g.interaction_installation_id=?10 AND g.interaction_device_id=?11)",
-                params![row.group, row.source_seq, row.sender_user, row.sender_device, row.sender_leaf, row.sender_sig_key, row.message_id, community_id.as_slice(), row.sender_user, installation_id.as_slice(), own.device_id.as_slice()], |r| r.get(0)).map_err(Into::into))?;
+                "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND m.msg_id=?7 AND m.type=0 AND m.body=?12 AND g.state=2 AND g.kind=3 AND g.community_id=?8 AND g.target_id=?9 AND g.interaction_installation_id=?10 AND g.interaction_device_id=?11)",
+                params![row.group, row.source_seq, row.sender_user, row.sender_device, row.sender_leaf, row.sender_sig_key, row.message_id, community_id.as_slice(), row.sender_user, installation_id.as_slice(), own.device_id.as_slice(), row.body], |r| r.get(0)).map_err(Into::into))?;
             let request_body: Option<String> = self.read(|c| c.query_row(
                 "SELECT body FROM app_messages WHERE group_id=?1 AND msg_id=?2 AND status=0 AND sender_user=?3 AND sender_device=?4 AND sender_kind=0 AND type=0",
                 params![row.group, row.request_id, own.user_id.as_slice(), own.device_id.as_slice()], |r| r.get(0)).optional().map_err(Into::into))?;

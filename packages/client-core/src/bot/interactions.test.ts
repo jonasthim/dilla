@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import type { CoreClient } from '../bridge';
+import { CoreCallError, type CoreClient } from '../bridge';
+import type { HumanInteractionEvent } from '../core-port';
 import { createBotInteractionClient, BotInteractionBindingMismatchError, BotInteractionIdentityConflictError,
   BotInteractionRejectedError, BotInteractionUncertainError, BotInteractionUnverifiableRequestError } from './interactions';
 import { world, toReady, COMMUNITY as WORKER_COMMUNITY, USER, DEVICE, textGroup } from '../worker/world';
@@ -12,6 +13,29 @@ const REQUEST = '22'.repeat(16);
 const INSTALLATION = 'aa'.repeat(16);
 const user = { id: '33'.repeat(16), username: 'member' };
 const response = (status = 0) => ({ deliveryId: '7', requestId: REQUEST, operation: 70, status, revision: '3', data: new Uint8Array([9]) });
+
+function controllerClient(w: ReturnType<typeof world>, communityId = COMMUNITY): CoreClient {
+  let nextCallId = 20_000;
+  return {
+    call: async command => {
+      const id = nextCallId++;
+      w.call(id, command);
+      let ret = w.ret(id);
+      await vi.waitFor(() => {
+        ret = w.ret(id);
+        expect(ret).toBeDefined();
+      });
+      if (ret === undefined || ret.t !== 'ret') throw new Error('Controller did not return a call result.');
+      if (!ret.ok) throw new CoreCallError(ret.error);
+      return ret.value;
+    },
+    get: name => name === 'account' ? { phase: 'ready', user: { id: toHex(USER), username: 'member' }, deviceId: toHex(DEVICE) }
+      : name === 'communities' ? [{ id: communityId }] : name === `permissions:${communityId}` ? { loaded: true } : undefined,
+    subscribe: () => () => {},
+    onCallKeys: () => () => {},
+    dispose: () => {},
+  } as CoreClient;
+}
 
 function fake(handler: (command: { m: string; [key: string]: unknown }) => unknown) {
   const calls: { m: string; [key: string]: unknown }[] = [];
@@ -98,6 +122,54 @@ it('recovers a consumed receipt through a fresh adapter with no volatile result 
   expect(f.calls.map(call => call.m)).toEqual(['getBotCommandStatus', 'readBotInteractionResponses', 'getBotCommandStatus']);
   expect(f.calls.find(call => call.m === 'readBotInteractionResponses')).toMatchObject({ requestIds: [REQUEST] });
   expect(f.calls.some(call => call.m === 'humanInteractionRequest' || call.m === 'ackBotInteractionResponses')).toBe(false);
+});
+
+it('reconciles through a new adapter and Controller after the first Controller ACKs into persistent CorePort state', async () => {
+  const requestId = new Uint8Array(16).fill(0x22);
+  const communityId = WORKER_COMMUNITY;
+  const body = encodeBotResponse({ requestId, communityId, status: 0, revision: 3n, data: encode([9]) });
+  const event: HumanInteractionEvent = { deliveryId: 7n, groupId: new Uint8Array(16).fill(0xc2), communityId,
+    requestId, sourceSeq: 3n, epoch: 1n, receivedAt: 10n, senderUser: USER, senderDevice: DEVICE,
+    messageId: new Uint8Array(16).fill(0x5d), body, operation: 70, channelId: null };
+  let pending = [event];
+  let persistedReceipts: HumanInteractionEvent[] = [];
+
+  const firstWorker = world();
+  await toReady(firstWorker);
+  firstWorker.routes.getBotCommandStatus.mockResolvedValue({
+    installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 4n,
+  });
+  firstWorker.core.humanInteractionEventsRead.mockImplementation((after: bigint) => ({
+    events: after === 0n ? pending : [], next: 7n, highWater: 7n,
+  }));
+  firstWorker.core.humanInteractionReceiptsRead.mockImplementation(() => persistedReceipts);
+  firstWorker.core.humanInteractionEventsAckSelected.mockImplementation((deliveryIds: readonly bigint[]) => {
+    expect(deliveryIds).toEqual([7n]);
+    persistedReceipts = pending.slice();
+    pending = [];
+  });
+  const firstAdapter = createBotInteractionClient(controllerClient(firstWorker, toHex(communityId)), toHex(communityId));
+  await expect(firstAdapter.read(toHex(requestId), 70)).resolves.toMatchObject({ requestId: toHex(requestId), status: 0, revision: '3' });
+  expect(persistedReceipts).toHaveLength(1);
+  expect(firstWorker.core.humanInteractionEventsAckSelected).toHaveBeenCalledTimes(1);
+
+  // A new world constructs a new Controller and CoreClient/adapter. Its pending journal is empty;
+  // only the persisted CorePort receipt remains, and this path cannot resend or ACK it again.
+  const reloadedWorker = world();
+  await toReady(reloadedWorker);
+  reloadedWorker.routes.getBotCommandStatus.mockResolvedValue({
+    installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 4n,
+  });
+  reloadedWorker.core.humanInteractionEventsRead.mockReturnValue({ events: [], next: 7n, highWater: 7n });
+  reloadedWorker.core.humanInteractionReceiptsRead.mockImplementation(() => persistedReceipts);
+  const reloadedAdapter = createBotInteractionClient(controllerClient(reloadedWorker, toHex(communityId)), toHex(communityId));
+  await expect(reloadedAdapter.read(toHex(requestId), 70)).resolves.toMatchObject({
+    requestId: toHex(requestId), status: 0, revision: '3', data: encode([9]),
+  });
+  expect(reloadedWorker.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+  expect(reloadedWorker.core.sendEncrypt).not.toHaveBeenCalled();
+  expect(reloadedWorker.core.sendConfirm).not.toHaveBeenCalled();
+  expect(reloadedWorker.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
 });
 
 it('rejects a capability scope mismatch before dispatching the requested operation', async () => {
