@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { CoreClient } from '../bridge';
-import { createBotInteractionClient, BotInteractionRejectedError, BotInteractionUncertainError } from './interactions';
+import { createBotInteractionClient, BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError } from './interactions';
 
 const COMMUNITY = '11'.repeat(16);
 const REQUEST = '22'.repeat(16);
@@ -52,6 +52,53 @@ it('rejects a capability scope mismatch before dispatching the requested operati
   await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 71, args: [],
     expectedScope: { installationId: INSTALLATION, botUserId: null, revision: '1' } })).rejects.toThrow('capability binding changed');
   expect(f.calls.some(call => call.m === 'humanInteractionRequest')).toBe(false);
+});
+
+it('keeps an unrelated uncertain upload guard after rejecting a stale expected scope', async () => {
+  let sends = 0;
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') { sends++; return { requestId: command.requestId, upload: 'pending' }; }
+    throw new Error(`unexpected command ${command.m}`);
+  });
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  const mutation = { requestId: REQUEST, operation: 70, args: [], expectedScope: { installationId: INSTALLATION, botUserId: null, revision: '1' } };
+  await expect(api.request(mutation)).rejects.toBeInstanceOf(BotInteractionUncertainError);
+  await expect(api.request(mutation)).rejects.toBeInstanceOf(BotInteractionUncertainError);
+  expect(sends).toBe(1);
+
+  await expect(api.request({ requestId: '55'.repeat(16), operation: 71, args: [],
+    expectedScope: { installationId: 'bb'.repeat(16), botUserId: null, revision: '1' } }))
+    .rejects.toBeInstanceOf(BotInteractionBindingMismatchError);
+  await expect(api.request(mutation)).rejects.toBeInstanceOf(BotInteractionUncertainError);
+  expect(sends).toBe(1);
+});
+
+it('preserves coalesced current-scope readers and their cached result after a stale expectation is rejected', async () => {
+  let reads = 0;
+  let resolveResponse: ((value: unknown) => void) | undefined;
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'readBotInteractionResponses') {
+      reads++;
+      return new Promise(resolve => { resolveResponse = resolve; });
+    }
+    if (command.m === 'ackBotInteractionResponses') return null;
+    throw new Error(`unexpected command ${command.m}`);
+  });
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  const first = api.read(REQUEST, 70);
+  const second = api.read(REQUEST, 70);
+  await vi.waitFor(() => expect(reads).toBe(1));
+  await expect(api.request({ requestId: '55'.repeat(16), operation: 71, args: [],
+    expectedScope: { installationId: 'bb'.repeat(16), botUserId: null, revision: '1' } }))
+    .rejects.toBeInstanceOf(BotInteractionBindingMismatchError);
+  resolveResponse?.({ responses: [response()], through: null });
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  expect(firstResult?.scope).toEqual({ installationId: INSTALLATION, botUserId: null, revision: '1' });
+  expect(secondResult).toEqual(firstResult);
+  expect(await api.read(REQUEST, 70)).toEqual(firstResult);
+  expect(reads).toBe(1);
 });
 
 it('shares one client per core/community and coalesces concurrent requests and reads for the same id', async () => {

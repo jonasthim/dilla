@@ -247,7 +247,6 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
       const initial = await ensureInstallationScope();
       const { generation, scope } = initial;
       if (input.expectedScope !== undefined && !sameScope(scope, input.expectedScope)) {
-        clearScopedResults();
         throw new BotInteractionBindingMismatchError();
       }
       const prior = results.get(key);
