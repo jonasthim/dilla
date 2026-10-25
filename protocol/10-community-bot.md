@@ -157,6 +157,16 @@ was redeemed but the state transaction then conflicted or failed, the row is
 unchanged and the same request can retry with that receipt. Reusing a grant for a
 different request tuple is refused.
 
+A successful settings write activates the evaluator, fresh action dependencies,
+revision and replay boundary before its acknowledgement. Later reconciliation
+of that revision preserves the activated evaluator and rolling observations;
+an exact successful retry also preserves them. Dependency or replay-source
+readiness failures refuse the write. Receipt timestamps have second resolution,
+so events from the activation's own receipt second remain conservatively
+replay-only; the first strictly later receipt second is eligible for live
+evaluation. Pre-activation history arriving through delayed source sync never
+becomes a new punitive action.
+
 The config service does not treat stored bot capability bits as actor authority.
 At event enforcement time, the moderation action endpoint rechecks the active
 installation's approved warning/timeout or removal capability and the actor's
