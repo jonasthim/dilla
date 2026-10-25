@@ -204,6 +204,7 @@ a second factor.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
+| `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
 | `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |

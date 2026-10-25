@@ -21,6 +21,7 @@ export type Command =
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
   | { m: 'getBotSpotifyConfig'; communityId: string }
+  | { m: 'patchBotProfile'; communityId: string; display: string }
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
   | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }

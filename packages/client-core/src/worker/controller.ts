@@ -199,6 +199,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'getBotSpotifyConfig',
+  'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
   'humanInteractionRequest',
@@ -387,6 +388,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   getBotSpotifyConfig: ['communityId'],
+  patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
   humanInteractionRequest: ['communityId', 'requestId'],
@@ -503,6 +505,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'getBotSpotifyConfig',
+    'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
     'humanInteractionRequest',
@@ -795,6 +798,8 @@ function invalid(command: Record<string, unknown>): string | null {
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
+  if (m === 'patchBotProfile' && (typeof command.display !== 'string' || command.display.trim() === ''
+    || profileTextProblem(command.display, DISPLAY_MAX_CHARS, false) !== null)) return 'bot display name is invalid';
   if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096
     || typeof command.clientId !== 'string' || !/^[A-Za-z0-9]{1,256}$/u.test(command.clientId))) {
     return 'Spotify application setting is invalid';
@@ -1397,6 +1402,7 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
+      case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
@@ -1542,6 +1548,13 @@ export class Controller {
   private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     return this.routes.getBotSpotifyConfig(fromHex(communityId));
+  }
+
+  private async patchBotProfile(communityId: string, display: string): Promise<string> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const saved = await this.routes.patchBotProfile(fromHex(communityId), display);
+    void this.reloadMembers(communityId).catch(() => undefined);
+    return saved;
   }
 
   private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {

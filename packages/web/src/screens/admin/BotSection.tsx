@@ -71,6 +71,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [spotifyClientId, setSpotifyClientId] = useState('');
   const [spotifyRedirectUrl, setSpotifyRedirectUrl] = useState('');
   const [spotifyConfigError, setSpotifyConfigError] = useState<string | null>(null);
+  const [botNameDraft, setBotNameDraft] = useState('');
+  const [botNameOverride, setBotNameOverride] = useState<{ userId: string; display: string } | null>(null);
+  const [botNameError, setBotNameError] = useState<string | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -118,6 +121,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setSpotifyClientId('');
     setSpotifyRedirectUrl('');
     setSpotifyConfigError(null);
+    setBotNameDraft('');
+    setBotNameOverride(null);
+    setBotNameError(null);
     setLoadedFor(null);
     setError(null);
     setPhase('idle');
@@ -395,6 +401,29 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
 
   const bot = currentInstallation?.userId === null || currentInstallation?.userId === undefined
     ? undefined : members?.find(m => m.userId === currentInstallation.userId && m.kind === 1);
+  const botDisplay = bot && botNameOverride?.userId === bot.userId ? botNameOverride.display : bot?.display || bot?.username || '';
+  useEffect(() => {
+    setBotNameDraft(bot?.display || bot?.username || '');
+    setBotNameOverride(null);
+  }, [bot?.userId, bot?.display, bot?.username]);
+  const saveBotName = () => {
+    if (busy || !current || currentError !== null || bot === undefined || access?.manageCommunity !== true) return;
+    const display = botNameDraft.trim();
+    if (display === '') { setBotNameError(t('admin.bot.name.invalid')); return; }
+    const requestCommunity = communityId;
+    const generation = readGeneration.current;
+    setBusyFor(requestCommunity);
+    setBotNameError(null);
+    void client.call({ m: 'patchBotProfile', communityId: requestCommunity, display }).then(value => {
+      if (generation !== readGeneration.current || selectedCommunity.current !== requestCommunity) return;
+      const saved = value as string;
+      setBotNameDraft(saved);
+      setBotNameOverride({ userId: bot.userId, display: saved });
+      announce(t('admin.bot.name.saved'));
+    }).catch((e: unknown) => {
+      if (generation === readGeneration.current) setBotNameError(errorMessage(errorOf(e)));
+    }).finally(() => setBusyFor(value => value === requestCommunity ? null : value));
+  };
   const enabled = currentInstallation !== null && currentInstallation.state !== 4;
   const welcomeEnabled = currentInstallation?.state === 3 && (currentInstallation.capabilities & (1 << 1)) !== 0;
   const canEditInstallationCapabilities = currentInstallation !== null && currentInstallation.state <= 3;
@@ -420,7 +449,15 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       {current && currentInstallation === null && currentError === null ? <p>{t('admin.bot.none')}</p> : null}
       {currentInstallation !== null ? (
         <SettingsRow id={`${base}-status-row`} label={t('admin.bot.title')}>
-          {bot ? <div className="dw-bot-identity"><Avatar name={bot.display || bot.username} size="sm" /><span>{bot.display || bot.username}</span></div> : null}
+          {bot ? <div className="dw-bot-identity"><Avatar name={botDisplay} size="sm" /><span>{botDisplay}</span></div> : null}
+          {bot && access?.manageCommunity === true ? <div>
+            <label htmlFor={`${base}-bot-display`}>{t('admin.bot.name.label')}</label>
+            <input id={`${base}-bot-display`} type="text" maxLength={64} value={botNameDraft} disabled={busy}
+              onChange={event => { setBotNameDraft(event.currentTarget.value); setBotNameError(null); }} />
+            <Button aria-disabled={busy || botNameDraft.trim() === '' || botNameDraft.trim() === botDisplay || undefined}
+              onClick={saveBotName}>{t('admin.bot.name.save')}</Button>
+            {botNameError !== null ? <p role="alert">{botNameError}</p> : null}
+          </div> : null}
           <p role="status" aria-live="polite">{status}</p>
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
           <Button aria-disabled={statusRefreshing || undefined} onClick={refreshStatus}>

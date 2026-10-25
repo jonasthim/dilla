@@ -990,7 +990,11 @@ test('FA4: search rows, You icons, phone settings title, channel reorder and pri
       // The longest name fits a wide dialog; at a phone's width it must be cut to one line, with the row still 44 high.
       await page.setViewportSize({ width: 390, height: 844 });
       const name = admin.locator('.dw-admin-row .dw-admin-name', { hasText: CHAN });
-      await expect.poll(() => name.evaluate(e => e.scrollWidth > e.clientWidth), { message: 'I6 the long name is cut at 390', timeout: WAIT }).toBe(true);
+      await expect.poll(() => name.evaluate(e => {
+        const row = e.closest('.dw-admin-row');
+        return e.getBoundingClientRect().height > 0 && (row?.getBoundingClientRect().height ?? 0) > 0
+          && e.scrollWidth > e.clientWidth;
+      }), { message: 'I6 the visible long name is cut at 390', timeout: WAIT }).toBe(true);
       const cut = await name.evaluate(e => ({ h: e.getBoundingClientRect().height, ellipsis: getComputedStyle(e).textOverflow, ws: getComputedStyle(e).whiteSpace, row: e.closest('.dw-admin-row')?.getBoundingClientRect().height ?? 0 }));
       expect.soft(cut.h, 'I6 the long name is one line high at 390').toBeLessThan(26);
       const rowsPhone = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
