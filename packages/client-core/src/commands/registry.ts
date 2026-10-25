@@ -238,7 +238,7 @@ function durationMillis(value: string): number | null {
   const parts = [...value.trim().matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h|d|w)/g)];
   if (parts.length === 0 || parts.map((part) => part[0]).join('') !== value.trim()) return null;
   const scale: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
-  return parts.reduce((sum, part) => sum + Number(part[1]) * scale[part[2]!], 0);
+  return parts.reduce((sum, part) => sum + Number(part[1]) * scale[part[2]], 0);
 }
 
 function isIsoLocalDateTime(value: string): boolean {
@@ -268,7 +268,7 @@ export type CommandParseResult =
   | { type: 'invocation'; text: string; invocation: CommandInvocation }
   | { type: 'invalid'; text: string; issues: ArgumentIssue[] };
 
-interface Token { value: string; start: number; hasUnquotedColon: boolean }
+interface Token { value: string; start: number; end: number; hasUnquotedColon: boolean }
 function tokenize(source: string): Token[] | null {
   const tokens: Token[] = [];
   let value = '';
@@ -278,7 +278,7 @@ function tokenize(source: string): Token[] | null {
   let active = false;
   let hasUnquotedColon = false;
   for (let i = 0; i < source.length; i++) {
-    const char = source[i]!;
+    const char = source[i];
     if (!active && /\s/u.test(char)) continue;
     if (!active) { active = true; start = i; }
     if (escaped) { value += char; escaped = false; continue; }
@@ -288,12 +288,12 @@ function tokenize(source: string): Token[] | null {
       continue;
     }
     if (char === '"' || char === "'") { quote = char; continue; }
-    if (/\s/u.test(char)) { tokens.push({ value, start, hasUnquotedColon }); value = ''; active = false; hasUnquotedColon = false; continue; }
+    if (/\s/u.test(char)) { tokens.push({ value, start, end: i, hasUnquotedColon }); value = ''; active = false; hasUnquotedColon = false; continue; }
     if (char === ':') hasUnquotedColon = true;
     value += char;
   }
   if (escaped || quote) return null;
-  if (active) tokens.push({ value, start, hasUnquotedColon });
+  if (active) tokens.push({ value, start, end: source.length, hasUnquotedColon });
   return tokens;
 }
 
@@ -322,7 +322,7 @@ export function parseCommand(input: string): CommandParseResult {
     const path = words.join(' ');
     const subcommands = path === '' ? [] : [...new Set(COMMANDS.flatMap((entry) => {
       const prefix = `${path} `;
-      return entry.id.startsWith(prefix) ? [entry.id.slice(prefix.length).split(' ')[0]!] : [];
+      return entry.id.startsWith(prefix) ? [entry.id.slice(prefix.length).split(' ')[0]] : [];
     }))];
     if (subcommands.length > 0 && tokens.length === words.length) {
       const missing = issue('missing', 'subcommand', `Choose a subcommand: ${subcommands.join(', ')}`);
@@ -333,13 +333,15 @@ export function parseCommand(input: string): CommandParseResult {
 
   const args: Record<string, string> = {};
   const issues: ArgumentIssue[] = [];
-  const positional: string[] = [];
+  const positional: Token[] = [];
+  const namedTokens: Token[] = [];
   const freeTextOnly = command.options.length === 1 && command.options[0]?.freeText === true;
   for (const token of tokens.slice(commandWordCount)) {
     const colon = token.value.indexOf(':');
     const named = token.hasUnquotedColon && colon >= 0 && command.options.some((option) => option.name === token.value.slice(0, colon).toLowerCase());
     const optionShaped = token.hasUnquotedColon && /^[a-z][a-z0-9_-]*:/i.test(token.value) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(token.value);
     if (named) {
+      namedTokens.push(token);
       const name = token.value.slice(0, colon).toLowerCase();
       const value = token.value.slice(colon + 1);
       if (!command.options.some((option) => option.name === name)) { issues.push(issue('unexpected', name, `Unexpected argument: ${name}`)); continue; }
@@ -349,18 +351,40 @@ export function parseCommand(input: string): CommandParseResult {
     } else if (optionShaped && !freeTextOnly) {
       const name = token.value.slice(0, colon).toLowerCase();
       issues.push(issue('unexpected', name, `Unknown named argument: ${name}`));
-    } else positional.push(token.value);
+    } else positional.push(token);
   }
   let pos = 0;
   for (const option of command.options) {
     if (option.name in args) continue;
     if (pos >= positional.length) continue;
-    args[option.name] = option.freeText ? positional.slice(pos).join(' ') : positional[pos]!;
+    args[option.name] = option.freeText
+      ? positionalFreeText(raw, positional.slice(pos), namedTokens)
+      : positional[pos].value;
     pos = option.freeText ? positional.length : pos + 1;
   }
-  if (pos < positional.length) issues.push(issue('unexpected', '', `Unexpected argument: ${positional.slice(pos).join(' ')}`));
+  if (pos < positional.length) issues.push(issue('unexpected', '', `Unexpected argument: ${positional.slice(pos).map(token => token.value).join(' ')}`));
   if (issues.length) return { type: 'invalid', text: input, issues };
   const validation = validateCommandArgs(command, args);
   if (!validation.valid) return { type: 'incomplete', text: input, commandId: command.id, validation };
   return { type: 'invocation', text: input, invocation: { commandId: command.id, args: validation.args } };
+}
+
+/** Join positional free-text tokens with their original whitespace, omitting named arguments between them. */
+function positionalFreeText(source: string, tokens: readonly Token[], namedTokens: readonly Token[]): string {
+  if (tokens.length === 0) return '';
+  let result = tokens[0].value;
+  for (let index = 1; index < tokens.length; index++) {
+    const previous = tokens[index - 1];
+    const current = tokens[index];
+    let cursor = previous.end;
+    let gap = '';
+    for (const named of namedTokens) {
+      if (named.start < cursor || named.end > current.start) continue;
+      gap += source.slice(cursor, named.start);
+      cursor = named.end;
+    }
+    gap += source.slice(cursor, current.start);
+    result += gap + current.value;
+  }
+  return result;
 }

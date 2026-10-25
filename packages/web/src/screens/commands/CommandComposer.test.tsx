@@ -99,13 +99,59 @@ describe('CommandComposer', () => {
     expect(props.onSendLiteral).toHaveBeenCalledWith('/does-not-exist hi');
   });
 
-  it('unescapes // once and returns ordinary text to the host draft', async () => {
+  it('waits for explicit send before passing // text and returns ordinary text unchanged', async () => {
+    const user = userEvent.setup();
     const literal = renderComposer({ initialText: '//play song' });
-    await waitFor(() => expect(literal.props.onSendLiteral).toHaveBeenCalledTimes(1));
+    expect(literal.props.onSendLiteral).not.toHaveBeenCalled();
+    screen.getByRole('button', { name: /send as text/i }).focus();
+    await user.keyboard('{Enter}');
     expect(literal.props.onSendLiteral).toHaveBeenCalledWith('/play song');
+    await user.click(screen.getByRole('button', { name: /send as text/i }));
+    expect(literal.props.onSendLiteral).toHaveBeenCalledTimes(1);
     literal.unmount();
     const ordinary = renderComposer({ initialText: 'hello\nworld' });
     await waitFor(() => expect(ordinary.props.onCancel).toHaveBeenCalledWith('hello\nworld'));
+  });
+
+  it('does not send when a literal draft changes while the component is mounted', () => {
+    const literal = renderComposer({ initialText: '//first' });
+    literal.rerender(<div className="d-root"><CommandComposer {...literal.props} initialText="//second" /></div>);
+    expect(literal.props.onSendLiteral).not.toHaveBeenCalled();
+  });
+
+  it('cannot submit a typed command omitted from the available definitions', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/kick user:user-1', definitions: definitions.filter(command => command.id !== 'kick') });
+    expect(screen.queryByRole('button', { name: /run command/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/unavailable|no matching|unknown command/i);
+    await user.click(screen.getByRole('combobox', { name: 'Command' }));
+    await user.keyboard('{Enter}');
+    expect(props.onExecute).not.toHaveBeenCalled();
+  });
+
+  it('returns a selected command draft to the host when it becomes unavailable', async () => {
+    const { props, rerender } = renderComposer({ initialText: '/leave' });
+    rerender(<div className="d-root"><CommandComposer {...props} definitions={definitions.filter(command => command.id !== 'leave')} /></div>);
+    await waitFor(() => expect(props.onCancel).toHaveBeenCalledWith('/leave'));
+    expect(screen.queryByRole('button', { name: /run command/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps positional free text separate from later named options', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/search hello scope:all' });
+    expect(screen.getByRole('combobox', { name: 'query' })).toHaveValue('hello');
+    expect(screen.getByRole('combobox', { name: 'scope' })).toHaveValue('all');
+    await user.click(screen.getByRole('button', { name: /run command/i }));
+    await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'search', args: { query: 'hello', scope: 'all' } }));
+  });
+
+  it('preserves a named free-text value containing a quoted newline', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/search query:"hello\nworld" scope:all' });
+    expect(screen.getByRole('combobox', { name: 'query' })).toHaveValue('hello\nworld');
+    expect(screen.getByRole('combobox', { name: 'scope' })).toHaveValue('all');
+    await user.click(screen.getByRole('button', { name: /run command/i }));
+    await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'search', args: { query: 'hello\nworld', scope: 'all' } }));
   });
 
   it('selects with arrows and Tab, closes suggestions before Escape cancels with the draft', async () => {

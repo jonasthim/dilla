@@ -68,6 +68,18 @@ describe('command registry', () => {
     });
   });
 
+  it('preserves multiline positional and named free text without absorbing named options', () => {
+    expect(parseCommand('/search hello scope:all')).toMatchObject({
+      type: 'invocation', invocation: { commandId: 'search', args: { query: 'hello', scope: 'all' } },
+    });
+    expect(parseCommand('/code js first line\nsecond line')).toMatchObject({
+      type: 'invocation', invocation: { commandId: 'code', args: { language: 'js', text: 'first line\nsecond line' } },
+    });
+    expect(parseCommand('/search query:"hello\nworld" scope:all')).toMatchObject({
+      type: 'invocation', invocation: { commandId: 'search', args: { query: 'hello\nworld', scope: 'all' } },
+    });
+  });
+
   it('labels built-in and bot-backed commands for the picker', () => {
     for (const id of ['play', 'queue remove', 'music', 'announcement create', 'selfrole add', 'rolepanel create', 'poll vote', 'remind', 'modlog']) {
       expect(commandById(id)?.provider).toBe('bot');

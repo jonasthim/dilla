@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { commandById, parseCommand, searchCommands, validateCommandArgs, type CommandDefinition, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
+import { commandComposerCopy as copy } from './copy.ts';
 import './CommandComposer.css';
 
 export interface CommandSuggestion { id: string; label: string; description?: string; value: string }
@@ -38,22 +39,19 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   const submitGeneration = useRef(0);
   const inFlight = useRef(false);
   const pickerId = useId();
-  const [pickerQuery, setPickerQuery] = useState(() => parsed.type === 'unknown' ? parsed.commandText
-    : parsed.type === 'incomplete' && !commandById(parsed.commandId) ? parsed.commandId : '');
   const parsedCommandId = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' ? parsed.commandId : '';
   const parsedArgs = parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {};
+  const initialAvailableCommand = props.definitions.find(command => command.id === parsedCommandId) ?? null;
+  const [pickerQuery, setPickerQuery] = useState(() => parsed.type === 'unknown' ? parsed.commandText : parsedCommandId && !initialAvailableCommand ? parsedCommandId : '');
   const [selectedCommand, setSelectedCommand] = useState<CommandDefinition | null>(() => {
-    return parsedCommandId ? props.definitions.find(command => command.id === parsedCommandId) ?? commandById(parsedCommandId) ?? null : null;
+    return initialAvailableCommand;
   });
   const [fields, setFields] = useState<Record<string, FieldState>>(() => {
     const values = parsedArgs;
     const definitionId = parsedCommandId;
-    const definition = props.definitions.find(command => command.id === definitionId) ?? commandById(definitionId);
-    const exactTail = definition?.options.some(option => option.freeText)
-      ? initialFreeText(props.initialText, definition)
-      : undefined;
+    const definition = props.definitions.find(command => command.id === definitionId);
     return Object.fromEntries((definition?.options ?? []).map(option => [option.name, {
-      text: exactTail !== undefined && option.freeText ? exactTail : values[option.name] ?? '',
+      text: values[option.name] ?? '',
       suggestions: [],
     }]));
   });
@@ -67,7 +65,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   const [result, setResult] = useState('');
   const [pending, setPending] = useState(false);
   const [optionalVisible, setOptionalVisible] = useState<Set<string>>(() => {
-    const definition = props.definitions.find(command => command.id === parsedCommandId) ?? commandById(parsedCommandId);
+    const definition = initialAvailableCommand;
     return new Set(definition?.options.filter(option => !option.required && parsedArgs[option.name] !== undefined).map(option => option.name) ?? []);
   });
   const [submitted, setSubmitted] = useState(false);
@@ -94,12 +92,9 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   useEffect(() => {
     if (!started.current) {
       started.current = true;
-      if (parsed.type === 'literal') {
-        if (initialText.startsWith('//')) sendLiteralOnce(parsed.text);
-        else onCancel(initialText);
-      }
+      if (parsed.type === 'literal' && !initialText.startsWith('//')) onCancel(initialText);
     }
-  }, [parsed, initialText, onCancel, sendLiteralOnce]);
+  }, [parsed, initialText, onCancel]);
 
   useEffect(() => {
     if (contextAtMount.current === props.contextKey) return;
@@ -114,6 +109,19 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
       ...field, selected: undefined, suggestions: [],
     }])));
   }, [props.contextKey]);
+
+  useEffect(() => {
+    if (!selectedCommand) return;
+    const available = definitionsById.get(selectedCommand.id);
+    if (!available) {
+      onCancel(buildDraft(original.current, dirty.current, selectedCommand, pickerQuery, fields));
+      setSelectedCommand(null);
+      setFields({});
+      setPopup('picker');
+      return;
+    }
+    if (available !== selectedCommand) setSelectedCommand(available);
+  }, [definitionsById, fields, onCancel, pickerQuery, selectedCommand]);
 
   useEffect(() => {
     if (!selectedCommand) return;
@@ -153,27 +161,24 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
     }
   }, [contextKey, suggest, selectedCommand, suggestionQuery]);
 
-  if (parsed.type === 'literal') return null;
+  const getDraft = (): string => buildDraft(original.current, dirty.current, selectedCommand, pickerQuery, fields);
+
+  if (parsed.type === 'literal') {
+    if (!initialText.startsWith('//')) return null;
+    return <section className="d-command-composer" aria-label={copy.region}>
+      <p className="d-command-composer__notice">{copy.sendTextQuestion}</p>
+      <p className="d-command-composer__preview">{parsed.text}</p>
+      <button type="button" className="d-command-composer__execute" onClick={() => sendLiteralOnce(parsed.text)}>{copy.sendAsText}</button>
+    </section>;
+  }
 
   const visibleOptions = selectedCommand?.options.filter(option => option.required || optionalVisible.has(option.name)) ?? [];
   const optionalOptions = selectedCommand?.options.filter(option => !option.required && !optionalVisible.has(option.name)) ?? [];
-  const getDraft = (): string => {
-    if (!dirty.current) return original.current;
-    if (!selectedCommand) return `/${pickerQuery}`;
-    const args = selectedCommand.options.flatMap(option => {
-      const field = fields[option.name];
-      const value = field?.selected?.value ?? field?.text ?? '';
-      return value === '' ? [] : [`${option.name}:${quote(value)}`];
-    });
-    return `/${selectedCommand.id}${args.length ? ` ${args.join(' ')}` : ''}`;
-  };
-
   const chooseCommand = (command: CommandDefinition) => {
     dirty.current = true;
     const initialArgs = parsedCommandId === command.id ? parsedArgs : {};
-    const exactTail = command.options.some(option => option.freeText) ? initialFreeText(original.current, command) : undefined;
     setSelectedCommand(command);
-    setFields(Object.fromEntries(command.options.map(option => [option.name, { text: exactTail !== undefined && option.freeText ? exactTail : initialArgs[option.name] ?? '', suggestions: [] }])));
+    setFields(Object.fromEntries(command.options.map(option => [option.name, { text: initialArgs[option.name] ?? '', suggestions: [] }])));
     setOptionalVisible(new Set(command.options.filter(option => !option.required && initialArgs[option.name] !== undefined).map(option => option.name)));
     setPickerQuery(command.id);
     setPopup(null);
@@ -208,12 +213,12 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
       if (!field || field.text === '') continue;
       if (isEntity(option)) {
         if (field.selected) args[option.name] = field.selected.value;
-        else entityErrors.push(`Choose ${option.name} from the suggestions.`);
+        else entityErrors.push(copy.chooseEntity(option.name));
       } else args[option.name] = field.selected?.value ?? field.text;
     }
     const validation = validateCommandArgs(selectedCommand, args);
     if (entityErrors.length || !validation.valid) {
-      setError(entityErrors[0] ?? validation.issues[0]?.message ?? 'Check the command arguments.');
+      setError(entityErrors[0] ?? validation.issues[0]?.message ?? copy.invalidArguments);
       setSubmitted(true);
       return;
     }
@@ -228,14 +233,14 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
       const response = await props.onExecute({ commandId: selectedCommand.id, args: validation.args });
       if (submitGeneration.current !== generation || contextNow.current !== context) return;
       setPending(response.status === 'pending');
-      if (response.status === 'failure') setError(response.message ?? 'The command failed. Your draft is still here.');
-      else if (response.status === 'pending') setResult(response.message ?? 'Command is still pending.');
-      else if (response.status === 'uncertain') setResult(response.message ?? 'The outcome is not confirmed. Your draft is still here.');
-      else setResult(response.message ?? (response.private ? 'Command completed privately.' : 'Command completed.'));
+      if (response.status === 'failure') setError(response.message ?? copy.commandFailed);
+      else if (response.status === 'pending') setResult(response.message ?? copy.stillPending);
+      else if (response.status === 'uncertain') setResult(response.message ?? copy.outcomeUnconfirmed);
+      else setResult(response.message ?? (response.private ? copy.completedPrivately : copy.completed));
     } catch (cause) {
       if (submitGeneration.current === generation && contextNow.current === context) {
         setPending(false);
-        setError(cause instanceof Error ? cause.message : 'The command could not be confirmed. Your draft is still here.');
+        setError(cause instanceof Error ? cause.message : copy.couldNotConfirm);
       }
     } finally {
       if (submitGeneration.current === generation && contextNow.current === context) inFlight.current = false;
@@ -285,12 +290,12 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   };
 
   const unknown = !selectedCommand && pickerCommands.length === 0 && pickerQuery.trim() !== '';
-  return <section className="d-command-composer" aria-label="Command composer" data-disabled={Boolean(props.disabledReason)}>
+  return <section className="d-command-composer" aria-label={copy.region} data-disabled={Boolean(props.disabledReason)}>
     {selectedCommand ? <>
       <div className="d-command-composer__heading">
-        <span className="d-command-composer__chip">/{selectedCommand.id}</span>
+        <span className="d-command-composer__chip">{copy.slash}{selectedCommand.id}</span>
         <h2>{selectedCommand.description}</h2>
-        <button type="button" className="d-command-composer__cancel" onClick={() => props.onCancel(getDraft())}>Cancel</button>
+        <button type="button" className="d-command-composer__cancel" onClick={() => props.onCancel(getDraft())}>{copy.cancel}</button>
       </div>
       {props.disabledReason && <p className="d-command-composer__notice">{props.disabledReason}</p>}
       <div className="d-command-composer__fields">
@@ -299,10 +304,10 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
           const listId = `${pickerId}-${option.name}`;
           const isChoice = option.kind === 'choice' && option.choices;
           return <div className="d-command-composer__field" key={option.name}>
-            <label htmlFor={`${pickerId}-${option.name}-input`}>{option.name}{option.required && <span aria-hidden="true"> · required</span>}</label>
+            <label htmlFor={`${pickerId}-${option.name}-input`}>{option.name}{option.required && <span aria-hidden="true">{copy.required}</span>}</label>
             <p id={`${pickerId}-${option.name}-hint`} className="d-command-composer__hint">{option.description}</p>
             {isChoice ? <select ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} value={field.text} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)}>
-              <option value="">Choose {option.name}</option>{option.choices!.map(choice => <option key={choice} value={choice}>{choice}</option>)}
+              <option value="">{copy.choose} {option.name}</option>{option.choices!.map(choice => <option key={choice} value={choice}>{choice}</option>)}
             </select> : option.kind === 'number' ? <input id={`${pickerId}-${option.name}-input`} aria-label={option.name} type="number" min={option.min} max={option.max} value={field.text} aria-invalid={Boolean(error && submitted)} aria-describedby={`${pickerId}-${option.name}-hint`} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />
               : option.freeText ? <textarea ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} role="combobox" aria-autocomplete="list" aria-expanded={popup === option.name && field.suggestions.length > 0} aria-controls={listId} aria-activedescendant={popup === option.name && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined} aria-describedby={`${pickerId}-${option.name}-hint`} aria-invalid={Boolean(error && submitted)} value={field.text} onFocus={() => { if (field.suggestions.length) setPopup(option.name); }} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />
                 : <input ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} role="combobox" aria-autocomplete="list" aria-expanded={popup === option.name && field.suggestions.length > 0} aria-controls={listId} aria-activedescendant={popup === option.name && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined} aria-describedby={`${pickerId}-${option.name}-hint`} aria-invalid={Boolean(error && submitted)} value={field.text} onFocus={() => { if (field.suggestions.length) setPopup(option.name); }} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />}
@@ -315,86 +320,40 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
         })}
       </div>
       {optionalOptions.length > 0 && <div className="d-command-composer__optional">
-        <span>Optional arguments</span>
+        <span>{copy.optionalArguments}</span>
         {optionalOptions.map(option => <button type="button" key={option.name} onClick={() => {
           dirty.current = true;
           setOptionalVisible(current => new Set(current).add(option.name));
           setFields(current => ({ ...current, [option.name]: { text: '', suggestions: [] } }));
-        }}>Add optional {option.name}</button>)}
+        }}>{copy.addOptional} {option.name}</button>)}
       </div>}
       {error && <p className="d-command-composer__error" role="alert">{error}</p>}
       <div className="d-command-composer__footer">
-        <p className="d-command-composer__live" role="status" aria-live="polite">{pending ? 'Running command privately…' : result}</p>
-        <button ref={executeButtonRef} type="button" className="d-command-composer__execute" disabled={Boolean(props.disabledReason) || pending} onClick={() => void execute()}>{pending ? 'Running…' : 'Run command'}</button>
+        <p className="d-command-composer__live" role="status" aria-live="polite">{pending ? copy.runningPrivately : result}</p>
+        <button ref={executeButtonRef} type="button" className="d-command-composer__execute" disabled={Boolean(props.disabledReason) || pending} onClick={() => void execute()}>{pending ? copy.running : copy.run}</button>
       </div>
     </> : <>
-      <label className="d-sr-only" htmlFor={`${pickerId}-command`}>Command</label>
-      <input id={`${pickerId}-command`} className="d-command-composer__picker" type="text" role="combobox" aria-label="Command" aria-autocomplete="list" aria-expanded={popup === 'picker' && pickerCommands.length > 0} aria-controls={`${pickerId}-commands`} aria-activedescendant={popup === 'picker' && activeIndex >= 0 ? `${pickerId}-command-${activeIndex}` : undefined} placeholder="Search commands" value={pickerQuery} onFocus={() => setPopup('picker')} onChange={event => { dirty.current = true; setPickerQuery(event.currentTarget.value); setPopup('picker'); setActiveIndex(-1); setError(''); }} onKeyDown={event => keyDown(event)} />
-      {popup === 'picker' && pickerCommands.length > 0 && <ul className="d-command-composer__list" id={`${pickerId}-commands`} role="listbox" aria-label="Commands">
+      <label className="d-sr-only" htmlFor={`${pickerId}-command`}>{copy.command}</label>
+      <input id={`${pickerId}-command`} className="d-command-composer__picker" type="text" role="combobox" aria-label={copy.command} aria-autocomplete="list" aria-expanded={popup === 'picker' && pickerCommands.length > 0} aria-controls={`${pickerId}-commands`} aria-activedescendant={popup === 'picker' && activeIndex >= 0 ? `${pickerId}-command-${activeIndex}` : undefined} placeholder={copy.searchCommands} value={pickerQuery} onFocus={() => setPopup('picker')} onChange={event => { dirty.current = true; setPickerQuery(event.currentTarget.value); setPopup('picker'); setActiveIndex(-1); setError(''); }} onKeyDown={event => keyDown(event)} />
+      {popup === 'picker' && pickerCommands.length > 0 && <ul className="d-command-composer__list" id={`${pickerId}-commands`} role="listbox" aria-label={copy.commandList}>
         {pickerCommands.map((command, index) => <li id={`${pickerId}-command-${index}`} role="option" aria-selected={index === activeIndex} key={command.id} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)} onKeyDown={event => { if (event.key === 'Enter') chooseCommand(command); }}>
-          <span>/{command.id}</span><small>{command.provider === 'builtin' ? 'Built in' : 'Bot'} · {command.description}</small>
+          <span>{copy.slash}{command.id}</span><small>{command.provider === 'builtin' ? copy.builtIn : copy.bot} {copy.separator} {command.description}</small>
         </li>)}
       </ul>}
-      {unknown && <p className="d-command-composer__error" role="alert">Unknown command: /{pickerQuery}</p>}
-      {unknown && <button type="button" onClick={() => sendLiteralOnce(original.current)}>Send as text</button>}
+      {unknown && <p className="d-command-composer__error" role="alert">{commandById(pickerQuery.trim()) ? copy.commandUnavailable(pickerQuery) : copy.unknownCommand(pickerQuery)}</p>}
+      {unknown && <button type="button" onClick={() => sendLiteralOnce(original.current)}>{copy.sendAsText}</button>}
       {error && <p className="d-command-composer__error" role="alert">{error}</p>}
     </>}
   </section>;
 }
 
-function initialFreeText(text: string, command: CommandDefinition): string | undefined {
-  const prefix = `/${command.id}`;
-  if (text.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) return undefined;
-  if (text.length > prefix.length && !/\s/u.test(text[prefix.length] ?? '')) return undefined;
-  let sourceStart = prefix.length;
-  if (sourceStart < text.length && /\s/u.test(text[sourceStart] ?? '')) sourceStart++;
-  const source = text.slice(sourceStart);
-  const tokens: Array<{ value: string; start: number; end: number }> = [];
-  let quoteChar = '';
-  let escaped = false;
-  let start = -1;
-  let value = '';
-  for (let index = 0; index < source.length; index++) {
-    const char = source[index] ?? '';
-    if (start < 0 && /\s/u.test(char)) continue;
-    if (start < 0) start = index;
-    if (escaped) { value += char; escaped = false; continue; }
-    if (char === '\\' && quoteChar) { escaped = true; continue; }
-    if (quoteChar) {
-      if (char === quoteChar) quoteChar = ''; else value += char;
-      continue;
-    }
-    if (char === '"' || char === "'") { quoteChar = char; continue; }
-    if (/\s/u.test(char)) {
-      tokens.push({ value, start, end: index });
-      start = -1;
-      value = '';
-      continue;
-    }
-    value += char;
-  }
-  if (start >= 0) tokens.push({ value, start, end: source.length });
-  let positional = 0;
-  for (const option of command.options) {
-    const namedIndex = tokens.findIndex((token, index) => index >= positional && token.value.slice(0, token.value.indexOf(':')) === option.name && token.value.includes(':'));
-    if (option.freeText) {
-      const token = namedIndex >= 0 ? tokens[namedIndex] : tokens[positional];
-      if (!token) return '';
-      if (namedIndex >= 0) {
-        const raw = source.slice(token.start + option.name.length + 1, token.end);
-        return dequote(raw);
-      }
-      return dequote(source.slice(token.start));
-    }
-    if (namedIndex >= 0) continue;
-    if (tokens[positional]) positional++;
-  }
-  return undefined;
-}
-
-function dequote(value: string): string {
-  if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) {
-    return value.slice(1, -1).replace(/\\([\\"'])/g, '$1');
-  }
-  return value;
+function buildDraft(original: string, dirty: boolean, command: CommandDefinition | null, pickerQuery: string, fields: Record<string, FieldState>): string {
+  if (!dirty) return original;
+  if (!command) return `/${pickerQuery}`;
+  const args = command.options.flatMap(option => {
+    const field = fields[option.name];
+    const value = field?.selected?.value ?? field?.text ?? '';
+    return value === '' ? [] : [`${option.name}:${quote(value)}`];
+  });
+  return `/${command.id}${args.length ? ` ${args.join(' ')}` : ''}`;
 }
