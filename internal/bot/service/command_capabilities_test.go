@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/polls"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 type commandCapabilitiesAuthorityFake struct {
@@ -45,7 +48,7 @@ func TestCommandCapabilitiesAllowsMemberSafeDiscoveryAndPreservesManagerGate(t *
 	if data[0] != uint64(1) || !installOK || !bytes.Equal(installBytes, installation[:]) || !botOK || !bytes.Equal(botBytes, bot[:]) || data[3] != uint64(1) || !operationsOK {
 		t.Fatalf("capabilities tuple = %#v", data)
 	}
-	want := []uint64{3, 70, 73, 81}
+	want := []uint64{3, 11, 70, 73, 74, 81}
 	if len(operations) != len(want) {
 		t.Fatalf("ordinary member operations = %#v, want %#v", operations, want)
 	}
@@ -88,15 +91,11 @@ func TestCommandCapabilitiesRejectsForeignCommunityAndBotActor(t *testing.T) {
 }
 
 func TestCommandOperationAllowedUsesInstallationCapabilitiesAndActorPermissions(t *testing.T) {
-	actor := client.ActorAuthority{EffectiveBits: commandPermConnect}
-	if commandOperationAllowed(protocol.OpMusicSearch, 0, actor) {
+	if commandOperationAllowed(protocol.OpMusicSearch, 0, client.ActorAuthority{}) {
 		t.Fatal("music operation exposed without approved installation capability")
 	}
-	if commandOperationAllowed(protocol.OpMusicSearch, commandCapMusic, client.ActorAuthority{}) {
-		t.Fatal("music operation exposed without current actor permission")
-	}
-	if !commandOperationAllowed(protocol.OpMusicSearch, commandCapMusic, actor) {
-		t.Fatal("music operation hidden with current actor permission and approved capability")
+	if !commandOperationAllowed(protocol.OpMusicSearch, commandCapMusic, client.ActorAuthority{}) {
+		t.Fatal("music operation hidden without a target-independent community permission")
 	}
 	if commandOperationAllowed(commandOpMusicProvidersStatus, commandCapMusic, client.ActorAuthority{}) {
 		t.Fatal("music provider status exposed without current manager permission")
@@ -104,4 +103,91 @@ func TestCommandOperationAllowedUsesInstallationCapabilitiesAndActorPermissions(
 	if !commandOperationAllowed(commandOpMusicProvidersStatus, commandCapMusic, client.ActorAuthority{EffectiveBits: manageCommunityBit}) {
 		t.Fatal("music provider status hidden from a current manager with approved music capability")
 	}
+}
+
+func TestCommandCapabilitiesKeepsCreatorPollCloseDiscoverable(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0)
+	community, actor, pollID := pollServiceID(1), pollServiceID(2), pollServiceID(3)
+	state := polls.NewStore(&pollTestState{}, community)
+	poll := polls.Poll{ID: pollID, CommunityID: community, ChannelID: pollServiceID(4), CreatorID: actor,
+		Question: "Q", Answers: []string{"A", "B"}, CreatedAt: uint64(now.Unix()), DueAt: uint64(now.Add(time.Hour).Unix())}
+	if _, err := state.Create(ctx, pollID, [32]byte{1}, poll, now); err != nil {
+		t.Fatal(err)
+	}
+	closeHandler := (PollInteractions{Store: state, Authority: &pollAuthorityFake{bits: pollPermView | pollPermReadHistory, member: true},
+		CommunityID: community, Now: func() time.Time { return now }}).Handlers()[protocol.OpPollClose].Handle
+	revision, expiry := uint64(1), uint64(now.Add(30*time.Second).Unix())
+	closed, err := closeHandler(ctx, InteractionActor{User: actor, Kind: 0}, protocol.Request{
+		RequestID: pollServiceID(9), CommunityID: community, Operation: protocol.OpPollClose,
+		Revision: &revision, Expires: &expiry, Args: []any{pollID},
+	})
+	if err != nil || closed.Status != 0 {
+		t.Fatalf("creator close status=%d err=%v; want creator with channel view/history to close", closed.Status, err)
+	}
+	operations := commandCapabilityOperations(t, CommandCapabilitiesInteractions{
+		Authority: &commandCapabilitiesAuthorityFake{present: true}, CommunityID: community,
+		InstallationID: interactionID(3), BotUserID: interactionID(4),
+		Supported: []protocol.Operation{protocol.OpCapabilities, protocol.OpPollClose},
+	}, actor)
+	if !operations[protocol.OpPollClose] {
+		t.Fatal("op3 hid registered poll close from a member who may be its creator")
+	}
+}
+
+func TestCommandCapabilitiesKeepsMusicDiscoverableForCurrentCallDJ(t *testing.T) {
+	ctx := context.Background()
+	community, installation, channel, actor, callID, djRole := id.New(), id.New(), id.New(), id.New(), id.New(), id.New()
+	resolved := client.ActorAuthority{RoleIDs: []id.ID{djRole}} // no community-wide connect permission
+	session := &musicAuthoritySessionFake{
+		actor: resolved, present: true,
+		call:        client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actor}}},
+		permissions: musicPermissionConnect | musicPermissionSpeak,
+	}
+	state := &musicAuthorityStoreFake{
+		installation: store.BotInstallationRow{ID: installation, CommunityID: community, State: store.BotInstallationReady, Capabilities: musicBotCapability},
+		policy:       []store.DJRolePolicyRow{{InstallationID: installation, RoleID: djRole}},
+	}
+	authority := &CommunityMusicInteractionAuthority{Session: session, Store: state, InstallationID: installation, CommunityID: community}
+	binding := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
+	if ok, err := authority.CanUse(ctx, InteractionActor{User: actor}, binding); err != nil || !ok {
+		t.Fatalf("CanUse = %v, %v; want current call member", ok, err)
+	}
+	if ok, err := authority.CanDJ(ctx, InteractionActor{User: actor}, binding); err != nil || !ok {
+		t.Fatalf("CanDJ = %v, %v; want current approved DJ", ok, err)
+	}
+	operations := commandCapabilityOperations(t, CommandCapabilitiesInteractions{
+		Authority: &commandCapabilitiesAuthorityFake{result: resolved, present: true}, CommunityID: community,
+		InstallationID: installation, BotUserID: id.New(), Capabilities: musicBotCapability,
+		Supported: []protocol.Operation{protocol.OpCapabilities, protocol.OpMusicPause},
+	}, actor)
+	if !operations[protocol.OpMusicPause] {
+		t.Fatal("op3 hid music pause from an authorized current-call DJ without community-wide connect")
+	}
+}
+
+func commandCapabilityOperations(t *testing.T, h CommandCapabilitiesInteractions, actor id.ID) map[protocol.Operation]bool {
+	t.Helper()
+	result, err := h.Handlers()[protocol.OpCapabilities].Handle(context.Background(), InteractionActor{User: actor, Kind: 0},
+		protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpCapabilities})
+	if err != nil || result.Status != 0 {
+		t.Fatalf("capabilities result=%+v err=%v", result, err)
+	}
+	var tuple []any
+	if err := cborx.Unmarshal(result.Data, &tuple); err != nil || len(tuple) != 5 {
+		t.Fatalf("capabilities tuple=%#v err=%v", tuple, err)
+	}
+	encoded, ok := tuple[4].([]any)
+	if !ok {
+		t.Fatalf("supported operations=%#v, want array", tuple[4])
+	}
+	operations := make(map[protocol.Operation]bool, len(encoded))
+	for _, value := range encoded {
+		n, ok := value.(uint64)
+		if !ok {
+			t.Fatalf("operation=%#v, want uint", value)
+		}
+		operations[protocol.Operation(n)] = true
+	}
+	return operations
 }

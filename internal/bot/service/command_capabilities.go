@@ -30,7 +30,6 @@ const (
 
 const (
 	commandPermManageMessages  uint64 = 1 << 2
-	commandPermConnect         uint64 = 1 << 7
 	commandPermManageRoles     uint64 = 1 << 15
 	commandPermManageCommunity uint64 = 1 << 16
 	commandPermViewAuditLog    uint64 = 1 << 17
@@ -91,7 +90,7 @@ func (h CommandCapabilitiesInteractions) get(ctx context.Context, actor Interact
 func commandOperationAllowed(operation protocol.Operation, capabilities uint8, actor client.ActorAuthority) bool {
 	const manager = commandPermManageCommunity
 	if actor.Owner || actor.Administrator {
-		actor.EffectiveBits |= manager | commandPermManageRoles | commandPermViewAuditLog | commandPermManageMessages | commandPermConnect
+		actor.EffectiveBits |= manager | commandPermManageRoles | commandPermViewAuditLog | commandPermManageMessages
 	}
 	switch operation {
 	case protocol.OpCapabilities:
@@ -105,7 +104,7 @@ func commandOperationAllowed(operation protocol.Operation, capabilities uint8, a
 		protocol.OpMusicPause, protocol.OpMusicResume, protocol.OpMusicSkip, protocol.OpMusicStop,
 		protocol.OpMusicSeek, protocol.OpMusicVolume, protocol.OpMusicShuffle, protocol.OpMusicRepeat,
 		protocol.OpMusicRemove, protocol.OpMusicMove, protocol.OpMusicClear:
-		return capabilities&commandCapMusic != 0 && actor.EffectiveBits&commandPermConnect != 0
+		return capabilities&commandCapMusic != 0
 	case commandOpMusicProvidersStatus:
 		return capabilities&commandCapMusic != 0 && (actor.Owner || actor.Administrator || actor.EffectiveBits&manager != 0)
 	case protocol.OpRolePanelPublish:
@@ -120,7 +119,9 @@ func commandOperationAllowed(operation protocol.Operation, capabilities uint8, a
 	case protocol.OpAutoModerationGet, protocol.OpAutoModerationPut:
 		return capabilities&commandCapWarnings != 0 && (actor.Owner || actor.Administrator || actor.EffectiveBits&manager != 0)
 	case protocol.OpPollClose:
-		return actor.EffectiveBits&commandPermManageMessages != 0
+		// Creator status and channel-scoped manage_messages need poll and target
+		// context; the registered close handler checks both against current state.
+		return true
 	case protocol.OpPollCreate, protocol.OpPollGet, protocol.OpPollList, protocol.OpPollVote, protocol.OpPollVoters,
 		protocol.OpReminderCreate, protocol.OpReminderList, protocol.OpReminderCancel, protocol.OpReminderDismiss, protocol.OpReminderDue:
 		return true
