@@ -91,26 +91,27 @@ func spotifyClientIDValid(v string) bool {
 
 func spotifySettingKey(community id.ID) string { return "community_bot_spotify:" + community.String() }
 
+func spotifyRedirectValid(redirect string) bool {
+	u, err := url.Parse(redirect)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Fragment == ""
+}
+
 func (d Deps) spotifyConfiguration(ctx context.Context, community id.ID) (string, string, error) {
 	redirect := "https://" + d.Domain + "/settings/bot/music/spotify/callback"
-	if d.Domain == "" { // Small test harnesses and legacy deployments can retain the old configured pair.
-		redirect = d.BotSpotifyRedirectURL
-	}
-	u, err := url.Parse(redirect)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
-		return "", "", errors.New("invalid Spotify callback URL")
-	}
 	raw, err := d.Repo.GetSetting(ctx, spotifySettingKey(community))
+	clientID := string(raw)
 	if errors.Is(err, store.ErrNotFound) {
-		if spotifyClientIDValid(d.BotSpotifyClientID) {
-			return d.BotSpotifyClientID, redirect, nil
+		clientID = d.BotSpotifyClientID
+		if d.BotSpotifyRedirectURL != "" { // Existing static OAuth configuration keeps its registered callback.
+			redirect = d.BotSpotifyRedirectURL
 		}
-		return "", redirect, nil
-	}
-	if err != nil || !spotifyClientIDValid(string(raw)) {
+	} else if err != nil || !spotifyClientIDValid(clientID) {
 		return "", "", errors.New("Spotify application setting unavailable")
 	}
-	return string(raw), redirect, nil
+	if !spotifyRedirectValid(redirect) {
+		return "", "", errors.New("invalid Spotify callback URL")
+	}
+	return clientID, redirect, nil
 }
 
 func (d Deps) GetBotSpotifyConfig(w http.ResponseWriter, r *http.Request) {
@@ -128,9 +129,14 @@ func (d Deps) GetBotSpotifyConfig(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	clientID, redirect, err := d.spotifyConfiguration(r.Context(), cid)
+	clientID, _, err := d.spotifyConfiguration(r.Context(), cid)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	redirect := "https://" + d.Domain + "/settings/bot/music/spotify/callback"
+	if !spotifyRedirectValid(redirect) {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "Spotify callback URL is unavailable"))
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{clientID, redirect})
@@ -204,9 +210,9 @@ func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "enter a valid Spotify application client ID"))
 		return
 	}
-	_, redirect, err := d.spotifyConfiguration(r.Context(), cid)
-	if err != nil {
-		server.WriteError(w, d.storeError(r, err))
+	redirect := "https://" + d.Domain + "/settings/bot/music/spotify/callback"
+	if !spotifyRedirectValid(redirect) {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "Spotify callback URL is unavailable"))
 		return
 	}
 	if err := d.Repo.PutSetting(r.Context(), spotifySettingKey(cid), []byte(req.ClientID), d.Clock.Now().Unix()); err != nil {
