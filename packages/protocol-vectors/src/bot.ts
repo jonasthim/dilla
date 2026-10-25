@@ -17,8 +17,12 @@ const cbor = (v:unknown) => hex(encode(v as never));
 export async function botVectors() {
  const pollPayload=encode([1n,id(0x91),null,'Lunch?', ['Pizza','Salad'],0n,86400n]);
  const reminderPayload=encode([1n,0n,3600n,'Take a break','Europe/Stockholm',null,null]);
+ const feffQuestionPoll=encode([1n,id(0x44),null,'\uFEFF',['One','Two'],0n,3600n]);
+ const feffAnswerPoll=encode([1n,id(0x44),null,'Question?',['\uFEFF','Two'],0n,3600n]);
  const inputs: Array<[number,unknown[],boolean,boolean,string]> = [
   [3,[],false,false,'capabilities'],
+  [70,[feffQuestionPoll],false,true,'poll question accepts FEFF, not Unicode White_Space'],
+  [70,[feffAnswerPoll],false,true,'poll answer accepts FEFF, not Unicode White_Space'],
   [70,[pollPayload],false,true,'poll.create'],[71,[id(0x91)],false,false,'poll.get'],
   [72,[id(0x44),null,null],false,false,'poll.list'],[73,[id(0x91),encode([0n,1n])],false,true,'poll.vote'],
   [74,[id(0x91)],false,true,'poll.close'],[75,[id(0x91),1n,null],false,false,'poll.voters'],
@@ -80,6 +84,10 @@ export async function botVectors() {
  rej('automod config get has arguments','request',[1n,id(1),comm,null,62n,null,null,[0n]]);
  const badPoll=encode([1n,id(0x91),null,'Question?',['Same','Same'],0n,86400n]);
  rej('poll duplicate answers','request',[1n,id(70),comm,null,70n,0n,120n,[badPoll]]);
+ const nelQuestionPoll=encode([1n,id(0x44),null,'\u0085',['One','Two'],0n,3600n]);
+ rej('poll question rejects Unicode White_Space NEL','request',[1n,id(70),comm,null,70n,0n,120n,[nelQuestionPoll]]);
+ const nelAnswerPoll=encode([1n,id(0x44),null,'Question?',['\u0085','Two'],0n,3600n]);
+ rej('poll answer rejects Unicode White_Space NEL','request',[1n,id(70),comm,null,70n,0n,120n,[nelAnswerPoll]]);
  const badDuration=encode([1n,id(0x91),null,'Question?',['One','Two'],0n,1800n]);
  rej('poll unsupported duration','request',[1n,id(70),comm,null,70n,0n,120n,[badDuration]]);
  rej('poll create nonzero revision','request',[1n,id(70),comm,null,70n,1n,120n,[pollPayload]]);

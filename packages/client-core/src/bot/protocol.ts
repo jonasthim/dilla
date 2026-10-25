@@ -2,6 +2,7 @@ import { arr, decode, encode, u64, type CborInput, type CborValue } from '../cbo
 
 const MAX = (1n << 64n) - 1n;
 const enc = new TextEncoder();
+const unicodeWhitespaceOnly = /^\p{White_Space}*$/u;
 const PREFIX = 'dilla.bot/1:';
 const HELPER_MAX = 1_048_576;
 
@@ -95,9 +96,9 @@ function validateUtilityPayload(raw: unknown, poll: boolean): Uint8Array {
   const b=bytes(raw); const f=canonicalArray(b,poll?1800:2200); if(f.length!==7 || u64(f[0])!==1n) fail('E_BOT_SHAPE');
   if(poll) {
     id(f[1]); nullable(f[2],id);
-    if(typeof f[3]!=='string' || f[3].trim().length===0 || Array.from(f[3]).length>300) fail('E_BOT_RANGE');
+    if(typeof f[3]!=='string' || unicodeWhitespaceOnly.test(f[3]) || Array.from(f[3]).length>300) fail('E_BOT_RANGE');
     const answerValues=f[4]; if(!Array.isArray(answerValues) || answerValues.length<2 || answerValues.length>10) fail('E_BOT_SHAPE');
-    const answers=new Set<string>(); for(const x of answerValues as CborValue[]) { if(typeof x!=='string') fail('E_BOT_SHAPE'); const answer=x as string; if(answer.trim().length===0 || Array.from(answer).length>100 || answers.has(answer)) fail('E_BOT_RANGE'); answers.add(answer); }
+    const answers=new Set<string>(); for(const x of answerValues as CborValue[]) { if(typeof x!=='string') fail('E_BOT_SHAPE'); const answer=x as string; if(unicodeWhitespaceOnly.test(answer) || Array.from(answer).length>100 || answers.has(answer)) fail('E_BOT_RANGE'); answers.add(answer); }
     if(u64(f[5])>1n || ![3600n,14400n,28800n,86400n,259200n,604800n].includes(u64(f[6]))) fail('E_BOT_RANGE');
   } else {
     const kind=u64(f[1]); if(kind>1n) fail('E_BOT_RANGE');

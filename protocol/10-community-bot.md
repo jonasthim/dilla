@@ -57,7 +57,7 @@ Operation, arguments, channel requirement, mutation:
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 - 3 capabilities: [], no channel, read
-- 70 poll.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, poll_id, channel_id, question, answers, multi, duration_seconds]`; channel_id is bstr16, question is 1..300 Unicode scalar values, answers are 2..10 unique nonblank strings of 1..100 Unicode scalar values, multi is 0 or 1, and duration is one of 3600, 14400, 28800, 86400, 259200, 604800 seconds. The encoded payload is capped at 1800 bytes so a result fits the response cap.
+- 70 poll.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, channel_id, thread_id|null, question, answers, multi, duration_seconds]`; channel_id is required bstr16, question is 1..300 Unicode scalar values, answers are 2..10 unique nonblank strings of 1..100 Unicode scalar values, multi is 0 or 1, and duration is one of 3600, 14400, 28800, 86400, 259200, 604800 seconds. The encoded payload is capped at 1800 bytes so a result fits the response cap.
 - 71 poll.get: [poll_id], no channel, read
 - 72 poll.list: [channel_id, thread_id|null, cursor bstr(1..256)|null], no channel, read
 - 73 poll.vote: [poll_id, selected bstr], no channel, mutation. selected is canonical CBOR array of up to 10 unique option indexes 0..9; empty withdraws. The handler checks indexes against actual choices and enforces single choice.
