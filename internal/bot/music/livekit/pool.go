@@ -434,7 +434,7 @@ func (p *Pool) Close() error {
 		return nil
 	}
 	p.closed, p.dead = true, true
-	active, conn, cancel, connectDone, startDone := p.active, p.connection, p.roomCancel, p.connectDone, p.startDone
+	active, cancel, connectDone, startDone := p.active, p.roomCancel, p.connectDone, p.startDone
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -449,7 +449,7 @@ func (p *Pool) Close() error {
 		<-startDone
 	}
 	p.mu.Lock()
-	active, conn = p.active, p.connection
+	active, conn := p.active, p.connection
 	p.mu.Unlock()
 	if active != nil {
 		_ = active.Close()

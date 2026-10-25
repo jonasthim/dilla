@@ -466,15 +466,14 @@ type poolBackendStub struct {
 	connectGate    chan struct{}
 	connectEntered chan struct{}
 	onUnpublish    func()
-	connections    []poolRoomStub
+	connections    []*poolRoomStub
 }
 
 func (b *poolBackendStub) connect(_ context.Context, _ client.Call, disconnected func()) (poolRoom, error) {
 	b.mu.Lock()
 	b.connects++
-	r := poolRoomStub{disconnected: disconnected, backend: b}
-	b.connections = append(b.connections, r)
-	room := &b.connections[len(b.connections)-1]
+	room := &poolRoomStub{disconnected: disconnected, backend: b}
+	b.connections = append(b.connections, room)
 	gate, entered := b.connectGate, b.connectEntered
 	b.mu.Unlock()
 	if entered != nil {
