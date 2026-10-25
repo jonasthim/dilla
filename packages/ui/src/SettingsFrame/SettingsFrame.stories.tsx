@@ -16,7 +16,7 @@ const meta: Meta = { title: 'Settings/SettingsFrame', parameters: { layout: 'ful
 export default meta;
 type Story = StoryObj;
 const noop = () => {};
-const ITEMS = [{ id: 'devices', label: 'devices' }, { id: 'notifications', label: 'notifications' }, { id: 'appearance', label: 'appearance' }];
+const ITEMS = [{ id: 'devices', label: 'devices', group: 'Account' }, { id: 'notifications', label: 'notifications', group: 'Preferences' }, { id: 'appearance', label: 'appearance', group: 'Preferences' }];
 const NOTIFY = [{ value: 'dms-mentions', label: 'direct messages and mentions' }, { value: 'everything', label: 'every message' }, { value: 'nothing', label: 'nothing' }];
 const MODES = [{ value: 'default', label: 'default' }, { value: 'all', label: 'all' }, { value: 'mentions', label: 'mentions' }, { value: 'nothing', label: 'nothing' }];
 const remove = { label: 'remove', onAction: noop };
@@ -129,8 +129,19 @@ export const Phone: Story = {
   render: () => (
     <PhoneLayoutProvider value>
       <SettingsFrame open modal={false} title="Settings" closeLabel="Close settings" onClose={noop} footer={FOOTER}
+        phonePage="section" sectionTitle="Notifications" backLabel="Back" onBack={noop}
         nav={<SettingsNav label="settings sections" items={ITEMS} activeId="notifications" onSelect={noop} />}>
         <NotificationsSection />
+      </SettingsFrame>
+    </PhoneLayoutProvider>
+  ),
+};
+export const PhoneIndex: Story = {
+  render: () => (
+    <PhoneLayoutProvider value>
+      <SettingsFrame open phonePage="index" identity={<div>Signed in as Ada</div>} search={<input aria-label="Search settings" placeholder="Search" />}
+        title="Settings" closeLabel="Close settings" onClose={noop} nav={<SettingsNav label="settings sections" items={ITEMS} activeId="devices" onSelect={noop} />}>
+        <DevicesSection />
       </SettingsFrame>
     </PhoneLayoutProvider>
   ),

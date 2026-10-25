@@ -55,6 +55,45 @@ describe('SettingsNav', () => {
     expect(p.onSelect).toHaveBeenLastCalledWith('devices');
   });
 
+  it('renders group headings only for groups that have items', () => {
+    render(<SettingsNav {...props({ items: [
+      { id: 'profile', label: 'profile', group: 'Account' },
+      { id: 'devices', label: 'devices', group: 'Account' },
+      { id: 'appearance', label: 'appearance', group: 'Preferences' },
+      { id: 'extra', label: 'extra' },
+    ] })} />);
+    const nav = screen.getByRole('navigation', { name: 'settings sections' });
+    expect(within(nav).getAllByRole('heading', { level: 2 }).map(h => h.textContent)).toEqual(['Account', 'Preferences']);
+    expect(within(nav).getAllByRole('button').map(b => b.textContent)).toEqual(['profile', 'devices', 'appearance', 'extra']);
+  });
+
+  it('keeps group headings out of the roving keyboard stops', async () => {
+    const user = userEvent.setup();
+    render(<SettingsNav {...props({ activeId: 'devices', items: [
+      { id: 'profile', label: 'profile', group: 'Account' },
+      { id: 'devices', label: 'devices', group: 'Account' },
+      { id: 'appearance', label: 'appearance', group: 'Preferences' },
+    ] })} />);
+    await user.tab();
+    expect(btn('devices')).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    expect(btn('appearance')).toHaveFocus();
+    await user.keyboard('{ArrowUp}');
+    expect(btn('devices')).toHaveFocus();
+  });
+
+  it('scrolls the active section item into view when the selection changes', () => {
+    const scroll = vi.fn();
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    const { rerender } = render(<SettingsNav {...props()} />);
+    scroll.mockClear();
+    rerender(<SettingsNav {...props({ activeId: 'appearance' })} />);
+    expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
+    if (descriptor) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', descriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><SettingsNav {...props()} /></div>);
     await expectNoAxeViolations(container);
