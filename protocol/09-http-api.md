@@ -204,6 +204,7 @@ a second factor.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
+| `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
 | `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |
@@ -317,6 +318,8 @@ CBOR API request, not a public redirect endpoint.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
+| `GET /v1/communities/{community}/bot/spotify/config` | E (manage_community) | — | `[client_id, callback_url]` |
+| `GET /v1/bot-runtime/installations/{installation}/spotify/config` | R (owning runtime) | — | `[client_id, callback_url]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts` | E (community bot manager, step-up) | `[step_up_proof]` | `[attempt_id, authorization_url, expires_unix]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts/{attempt}/callback` | E (manage_community, initiating session) | `[state, authorization_code]` | `202 [1]`; exact callback retries also return 202 |
 | `DELETE /v1/communities/{community}/bot/spotify/attempts/{attempt}` | E (manage_community, initiating session) | `[]` | `204` |

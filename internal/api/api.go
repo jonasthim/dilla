@@ -170,6 +170,8 @@ type Deps struct {
 	// BotEnrolled runs after a new bot identity, membership and role commit, so
 	// the composition root can bring its channel groups in line with the new member.
 	BotEnrolled func(context.Context, store.BotInstallationRow)
+	// BotProfileChanged prompts live community members to refresh the bot's display name.
+	BotProfileChanged func(context.Context, id.ID)
 	// BotMembershipPending repairs missing eligible MLS joins after a Ready
 	// transaction has rolled back. It must never run inside Repository.Tx.
 	BotMembershipPending func(context.Context, store.BotInstallationRow, []id.ID)

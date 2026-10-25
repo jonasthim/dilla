@@ -587,6 +587,16 @@ export class Routes {
     const row = decode(await this.body('GET', path, 'read', true));
     return row === null ? null : botInstallationRow(row, communityId);
   }
+  async patchBotProfile(communityId: Uint8Array, display: string): Promise<string> {
+    const normalized = checkedProfile('display', display, DISPLAY_MAX_CHARS);
+    if (!normalized) throw new RangeError('E_ROUTE_INPUT: bot display name is required');
+    const raw = await this.body('PATCH', `/v1/communities/${id('communityId', communityId)}/bot/profile`, 'write', true,
+      { body: encode([normalized]), retry429: false });
+    const fields = arr(decode(raw), 1);
+    const saved = str(fields[0]);
+    if (saved === '' || profileTextProblem(saved, DISPLAY_MAX_CHARS) !== null) throw new CborError('E_CBOR_SHAPE', 'invalid bot display name');
+    return saved;
+  }
   /** GET /bot-join-role returns [role id or null, active installation id]. 404 means no active bot. */
   async getBotJoinRole(communityId: Uint8Array): Promise<BotJoinRoleRow | null> {
     try {
@@ -709,10 +719,17 @@ export class Routes {
     return botInstallationRow(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/disable`,
       'write', true, { body, retry429: false })), communityId);
   }
-  async beginBotSpotifyAttempt(communityId: Uint8Array, stepUp: string): Promise<BotSpotifyAttempt> {
+  async getBotSpotifyConfig(communityId: Uint8Array): Promise<{ clientId: string; redirectUrl: string }> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot/spotify/config`, 'read', true);
+    const a = arr(decode(raw));
+    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'invalid Spotify application setting');
+    return { clientId: str(a[0]), redirectUrl: str(a[1]) };
+  }
+  async beginBotSpotifyAttempt(communityId: Uint8Array, stepUp: string, clientId: string): Promise<BotSpotifyAttempt> {
     if (typeof stepUp !== 'string' || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid step-up token');
+    if (!/^[A-Za-z0-9]{1,256}$/u.test(clientId)) throw new RangeError('E_ROUTE_INPUT: invalid Spotify client ID');
     const path = `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts`;
-    const body = encode([stepUp]);
+    const body = encode([stepUp, clientId]);
     const response = await this.http.request({ method: 'POST', path, bucket: 'write', idempotent: false,
       body, retry429: false, ok: [200], maxBodyBytes: 4096 });
     return botSpotifyAttempt(decode(response.body));

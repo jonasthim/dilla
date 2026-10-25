@@ -497,6 +497,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotProfileChanged = botRoleNotify.Changed
 	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
 		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot join role grant failed",
