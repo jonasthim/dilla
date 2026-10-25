@@ -155,7 +155,7 @@ Settings → Privacy and Settings → Devices, the onboarding steps, and their o
 
 - A small muted `web` tag after the name of a member whose message or presence comes from a
   browser session (member list, message header, profile popover).
-- On a bot present in a voice channel: the bot tag plus "can hear" (voice list and member list).
+- On a managed bot present in a voice channel: the bot tag plus "playback only"; managed bots cannot subscribe to call media.
 - The existing lock glyph on private voice channels (a permission fact, not encryption).
 
 ## The readable-channel glyph

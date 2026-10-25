@@ -728,9 +728,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
-											moderationRuntime, replayThrough, replayReceivedThrough, caseSink, moderationErr := configureAutoModeration(ctx, autoModerationState, nativeClient, result.Session, installation.ID, installation.CommunityID, logger)
+											_, replayThrough, replayReceivedThrough, caseSink, moderationErr := configureAutoModeration(ctx, autoModerationState, nativeClient, result.Session, installation.ID, installation.CommunityID, logger)
 											if moderationErr != nil {
-												logger.Warn("bot automatic moderation event intake paused; text events will be acknowledged without action", "installation_id", installation.ID.String(), "error", moderationErr.Error())
+												logger.Warn("bot automatic moderation configuration unavailable; retaining the last active policy", "installation_id", installation.ID.String(), "error", moderationErr.Error())
 											}
 											caseReader, interactionErr := service.NewModerationCaseReader(caseSink, result.Session)
 											if interactionErr == nil {
@@ -748,7 +748,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														musicInteractions,
 														nativeClient,
 														autoModerationGrantRedeemer{Session: result.Session, InstallationID: installation.ID},
-														moderationRuntime,
+														autoModerationState.ConfigRuntime(nativeClient, installation.ID, installation.CommunityID, func(cfg moderation.Config) (service.ModerationActorAuthority, service.ModerationActionSink, error) {
+															return prepareAutoModerationDependencies(nativeClient, result.Session, installation.CommunityID, cfg)
+														}),
 														musicProviderStatus,
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
@@ -764,7 +766,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 											if interactionErr == nil {
 												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
-												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough, replayReceivedThrough, newMusicChatCommands(installation.CommunityID, nativeClient, result.Session, api, coordinator, musicInteractions, gateways.startedAt))
+												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicChatCommands(installation.CommunityID, nativeClient, result.Session, api, coordinator, musicInteractions, gateways.startedAt))
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if musicInteractions != nil && (retainedNative || musicOwnedNative) {
 													gateways.SetTextPoller(installation.ID, func(pollCtx context.Context) error {

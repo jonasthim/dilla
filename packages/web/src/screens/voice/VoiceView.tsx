@@ -543,7 +543,7 @@ export function speakingDevices(state: CallView['state'], ownDevice: string | nu
 }
 
 export function rowLabels() {
-  return { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: voiceStateLabels(), away: t('afk.away') };
+  return { open: en['voice.open'], count: en['voice.count'], playbackOnly: t('voice.bot.playbackOnly'), state: voiceStateLabels(), away: t('afk.away') };
 }
 
 /** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as for a

@@ -264,7 +264,7 @@ func TestAutoModerationRuntimeConfigRevisionFencesInFlightActions(t *testing.T) 
 			var persistedRevision atomic.Uint64
 			updateDone := make(chan error, 1)
 			go func() {
-				updateDone <- runtime.PersistConfig(tc.config, func() error {
+				updateDone <- runtime.PersistConfig(context.Background(), tc.config, 0, func() error {
 					persistedRevision.Add(1)
 					return nil
 				})

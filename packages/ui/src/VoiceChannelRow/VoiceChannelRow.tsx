@@ -18,10 +18,10 @@ export interface VoiceChannelRowProps {
   readable?: boolean;
   /**
    * `open` is `voice.open` ('voice {name}'), `count` is `voice.count` ('{n} in voice'), both filled here;
-   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button; `joined` is `voice.row.joined` ('connected'), added to the description (after the count) of the row this device is in; the name stays 'voice {name}';
+   * `playbackOnly` is `voice.bot.playbackOnly` ('playback only'), shown with the bot tag; `join` is `voice.join`, the slot's icon button; `joined` is `voice.row.joined` ('connected'), added to the description (after the count) of the row this device is in; the name stays 'voice {name}';
    * `away` is `afk.away` ('away'), the word beside a person of the AFK channel's away roster (AW6).
    */
-  labels: { open: string; count: string; canHear: string; state: VoiceStateLabels; join: string; joined: string; away?: string };
+  labels: { open: string; count: string; playbackOnly: string; state: VoiceStateLabels; join: string; joined: string; away?: string };
   /** Opens the voice in the main pane (the row's own click). */
   onOpen(): void;
   /** The trailing join icon; without it, or when `joined`, the row has none. Its own click never opens the row (Shell decides, R24). */
@@ -98,7 +98,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
                   {p.bot ? (
                     <>
                       {' '}<span className="d-tag" data-kind="bot">{labels.state.bot}</span>
-                      {' '}<span className="d-tag" data-kind="canHear">{labels.canHear}</span>
+                      {' '}<span className="d-tag" data-kind="playbackOnly">{labels.playbackOnly}</span>
                     </>
                   ) : null}
                   {p.away === true && labels.away !== undefined ? <>{' '}<span className="d-voice-row__state" data-state="away">{labels.away}</span></> : null}

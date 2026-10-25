@@ -142,11 +142,11 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     await expect(enabled).toBeChecked();
     await expect(duplicateAction).toHaveValue('warn');
 
-    // The runtime reconciles saved rule revisions on a one second cadence. Let
-    // that activation pass before producing the burst so it cannot be treated
-    // as pre-activation journal backlog.
-    await targetPage.waitForTimeout(2_200);
-
+    // Acknowledgment activates the policy. Receipts have whole-second precision,
+    // so cross that observable server-clock boundary before producing live events.
+    const clockURL = `${host.control}/debug/clock`;
+    const acknowledgedSecond = (await (await fetch(clockURL)).json() as { now: number }).now;
+    await expect.poll(async () => (await (await fetch(clockURL)).json() as { now: number }).now).toBeGreaterThan(acknowledgedSecond);
     await sendRepeat(targetPage, EXCERPT_BODY);
     await sendRepeat(targetPage, EXCERPT_BODY);
     await sendRepeat(targetPage, EXCERPT_BODY);

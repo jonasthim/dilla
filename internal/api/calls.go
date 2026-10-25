@@ -620,7 +620,12 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
-	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
+	perm, err := h.admitGrant(r.Context(), bits, row, s.DeviceID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), perm, attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
@@ -1178,22 +1183,22 @@ func (h *Calls) caps() callCaps {
 // only while it holds a sharing slot of the call (ruling F1), and nothing while it is penalised in
 // the call's room for publishing media that is not dilla-sframe/1 (ruling F11) or the call is the
 // built-in AFK channel's (R3, R34).
-func (h *Calls) grantFor(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+func (h *Calls) grantFor(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) (*livekit.ParticipantPermission, error) {
 	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
-		return sfu.PublishGrant(false, false, false)
+		return restrictBotCallGrant(ctx, h.repo, dev, sfu.PublishGrant(false, false, false))
 	}
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev)
-	return sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+	return restrictBotCallGrant(ctx, h.repo, dev, sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased))
 }
 
 // admitGrant is what dev's token for row's room is minted with and what the /rtc gate admits: the
 // base grant, or listen-only while dev is penalised in that room (ruling F11) and in every call of
 // the built-in AFK channel (R3, R34).
-func (h *Calls) admitGrant(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+func (h *Calls) admitGrant(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) (*livekit.ParticipantPermission, error) {
 	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
-		return sfu.PublishGrant(false, false, false)
+		return restrictBotCallGrant(ctx, h.repo, dev, sfu.PublishGrant(false, false, false))
 	}
-	return baseGrant(bits)
+	return restrictBotCallGrant(ctx, h.repo, dev, baseGrant(bits))
 }
 
 // callFull is the advisory E_CALL_FULL count (DEV-01, gap G27): the room's participants other than
@@ -1317,7 +1322,7 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if h.isAFKChannel(ctx, ch) {
 		return nil, errAFKCall()
 	}
-	return h.admitGrant(ctx, bits, row, device), nil
+	return h.admitGrant(ctx, bits, row, device)
 }
 
 // Admitted records that the /rtc proxy let device's join of room through: the gate (AdmitRoom)
@@ -1399,8 +1404,9 @@ func (h *Calls) refuseBarred(ctx context.Context, repo store.Repository, device 
 	return nil
 }
 
-// baseGrant is what every call token is minted with and the /rtc gate admits: the microphone when
-// the device holds speak, subscribe always, never a camera or screen source. Promotion exists only
+// baseGrant is the human baseline for call tokens and /rtc admission: the microphone when
+// the device holds speak, subscribe always, never a camera or screen source. Bots are further
+// restricted by restrictBotCallGrant at every grant seam. Promotion exists only
 // as the push a share makes (DEV-02, ruling F1), so a token can never be replayed for video.
 func baseGrant(bits Bits) *livekit.ParticipantPermission {
 	return sfu.PublishGrant(bits.Has(PermSpeak), false, false)

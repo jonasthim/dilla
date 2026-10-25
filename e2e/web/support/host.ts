@@ -256,6 +256,13 @@ async function postControl(port: number, path: string, body: unknown): Promise<v
   if (response.status !== 204) throw new Error(`${path} returned HTTP ${response.status}: ${await response.text()}`);
 }
 
+// Suites with time-dependent behavior can warm these builds in a setup hook,
+// giving cold compilation its own budget instead of consuming delivery time.
+export async function prepareBotRuntimeBinaries(): Promise<void> {
+  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
+  await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
+}
+
 async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string): Promise<ChildProcess> {
   const runtimeToken = join(dataDir, 'bot-runtime.token');
   const stateDir = join(dataDir, 'bot-state');
@@ -267,8 +274,7 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
   if (!(instanceIdBytes instanceof Uint8Array) || instanceIdBytes.length !== 16) throw new Error('bot test discovery returned an invalid instance ID');
   const instanceId = Buffer.from(instanceIdBytes).toString('hex');
 
-  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
-  await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
+  await prepareBotRuntimeBinaries();
   if (clockURL !== undefined) await alignWallClock(clockURL, 'after Bot/helper build and before Bot installation');
   let helperInfo;
   try { helperInfo = statSync(BOT_HELPER_BIN); } catch {

@@ -32,7 +32,7 @@ const STATE = {
   unverified: t('voice.state.unverified'), connecting: t('voice.state.connecting'), video: t('voice.state.video'), screen: t('voice.state.screen'),
   web: t('voice.tag.web'), bot: t('voice.tag.bot'), noSound: t('voice.state.noSound'),
 };
-const ROW_LABELS = { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: STATE };
+const ROW_LABELS = { open: en['voice.open'], count: en['voice.count'], playbackOnly: t('voice.bot.playbackOnly'), state: STATE };
 const person = (name: string, over: Partial<VoiceParticipantView> = {}): VoiceParticipantView => ({
   deviceId: name, userId: name, name, state: 'ok', speaking: false, muted: false, deafened: false, video: false, screen: false, web: true,
   bot: false, ...over,

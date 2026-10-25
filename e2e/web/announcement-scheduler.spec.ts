@@ -2,13 +2,18 @@ import { randomBytes } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { test as appTest, addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp, type Account } from './support/app';
-import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 
 const HOST: HostConfig = { port: 8521, control: 8522, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const SERVER = 'Announcement Scheduler Acceptance';
 const MESSAGE = `scheduled browser notice ${randomBytes(5).toString('hex')}`;
 
 appTest.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}` });
+
+appTest.beforeAll(async () => {
+  appTest.setTimeout(360_000);
+  await prepareBotRuntimeBinaries();
+});
 
 /** Capture actual core-worker replies from the shipping UI and provide a test call over that same authenticated worker. */
 function installCoreWorkerBridge(): void {

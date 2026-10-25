@@ -527,7 +527,7 @@ export const en = {
   'voice.state.speaking': 'speaking',
   'voice.state.muted': 'muted',
   'voice.state.deafened': 'deafened',
-  'voice.bot.canHear': 'can hear',
+  'voice.bot.playbackOnly': 'playback only',
   'voice.state.notHeard': 'not heard yet',
   'voice.state.unverified': 'unverified stream',
   'voice.state.connecting': 'connecting',
