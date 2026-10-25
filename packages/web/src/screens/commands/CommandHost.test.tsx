@@ -1,12 +1,17 @@
 import { useState } from 'react';
-import { describe, expect, it } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
-import { CommandHost } from './CommandHost.tsx';
+import { clearCommandDraftMemory, CommandHost } from './CommandHost.tsx';
+import { CommandProvider } from './CommandContext.tsx';
+import type { CommandProviderHandlers } from './command-types.ts';
+
+beforeEach(() => clearCommandDraftMemory());
 
 function hostHarness(fake = new FakeClient()) {
+  const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
   let ordinary = '';
   const literals: string[] = [];
   function Harness() {
@@ -16,7 +21,7 @@ function hostHarness(fake = new FakeClient()) {
       <textarea aria-label="message" value={ordinary} onChange={event => {
         ordinary = event.currentTarget.value; rerender(n => n + 1);
       }} />
-      <CommandHost communityId={null} channelId={'11'.repeat(16)} items={[]} selfId={'22'.repeat(16)}
+      <CommandHost communityId={null} channelId={channelId} items={[]} selfId={'22'.repeat(16)}
         draft={ordinary} onDraft={text => { ordinary = text; rerender(n => n + 1); }} onSendLiteral={text => literals.push(text)} encodeMessage={text => text} openGif={() => undefined} gifsEnabled
         onModeChange={setMode} />
       <output>{mode ? 'command mode' : 'chat mode'}</output>
@@ -24,19 +29,31 @@ function hostHarness(fake = new FakeClient()) {
   }
   const user = userEvent.setup();
   const view = render(<CoreProvider client={fake}><Harness /></CoreProvider>);
-  return { user, view, fake, literals };
+  return { user, view, fake, literals, channelId };
 }
 
 describe('CommandHost', () => {
   it('routes a slash draft into the production built-in handler and publishes the resulting message', async () => {
-    const { user, fake } = hostHarness();
+    const { user, fake, channelId } = hostHarness();
     fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/me' } });
     expect(screen.getByText('command mode')).toBeInTheDocument();
     const field = screen.getByRole('combobox', { name: 'text' });
     await user.type(field, 'waves');
     await user.click(screen.getByRole('button', { name: /run/i }));
     await screen.findByText('Sent.');
-    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: '11'.repeat(16), text: '_waves_' }]);
+    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves_' }]);
+  });
+
+  it('executes a complete command typed after the first slash opens the picker', async () => {
+    const { user, fake, channelId } = hostHarness();
+    fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
+    const picker = await screen.findByRole('combobox', { name: 'Command' });
+    await user.type(picker, 'me waves hello');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('combobox', { name: 'text' })).toHaveValue('waves hello');
+    await user.click(screen.getByRole('button', { name: /run/i }));
+    await screen.findByText('Sent.');
+    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves hello_' }]);
   });
 
   it('keeps keyboard focus in the command picker after the first slash', async () => {
@@ -46,6 +63,117 @@ describe('CommandHost', () => {
     expect(picker).toHaveFocus();
     await user.type(picker, 'me');
     expect(screen.getByRole('option', { name: /\/me/ })).toBeInTheDocument();
+  });
+
+  it('keeps later eligible catalog entries reachable after the first slash', async () => {
+    const core = new FakeClient();
+    const user = userEvent.setup();
+    render(<CoreProvider client={core}><CommandHost communityId={'33'.repeat(16)} channelId={'44'.repeat(16)} bits={0x1ffffff}
+      items={[]} selfId={'22'.repeat(16)} draft="/" onDraft={() => undefined} onSendLiteral={() => undefined}
+      encodeMessage={text => text} openGif={() => undefined} gifsEnabled onModeChange={() => undefined} /></CoreProvider>);
+    const picker = await screen.findByRole('combobox', { name: 'Command' });
+    await user.type(picker, 'kick');
+    expect(screen.getByRole('option', { name: /\/kick/ })).toBeInTheDocument();
+  });
+
+  it('filters owner and higher-rank targets from moderation suggestions', async () => {
+    const core = new FakeClient();
+    const communityId = '55'.repeat(16), selfId = '66'.repeat(16), ownerId = '77'.repeat(16), targetId = '88'.repeat(16);
+    core.set('communities', [{ id: communityId, name: 'Town', owner: ownerId }]);
+    core.set(`permissions:${communityId}`, { loaded: true, top: 4, owner: false, manageCommunity: false, kickMembers: true, banMembers: true, moderateMembers: true, manageRoles: true, manageChannels: true, createInvite: true, everyoneId: '99'.repeat(16), overwritesLoaded: true });
+    core.set(`roles:${communityId}`, [
+      { id: 'a1'.repeat(16), name: 'lower', position: 1, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 },
+      { id: 'a2'.repeat(16), name: 'higher', position: 5, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 },
+      { id: 'a3'.repeat(16), name: 'self', position: 4, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 },
+    ]);
+    core.set(`members:${communityId}`, [
+      { userId: selfId, username: 'self', display: 'self', kind: 0, roleIds: ['a3'.repeat(16)] },
+      { userId: ownerId, username: 'owner', display: 'owner', kind: 0, roleIds: ['a2'.repeat(16)] },
+      { userId: targetId, username: 'target', display: 'target', kind: 0, roleIds: ['a1'.repeat(16)] },
+    ]);
+    const user = userEvent.setup();
+    render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={1 << 12}
+      items={[]} selfId={selfId} draft="/kick" onDraft={() => undefined} onSendLiteral={() => undefined}
+      encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+    const field = await screen.findByRole('combobox', { name: 'user' });
+    await user.type(field, 'target');
+    expect(await screen.findByRole('option', { name: 'target' })).toBeInTheDocument();
+    await user.clear(field);
+    await user.type(field, 'owner');
+    await waitFor(() => expect(screen.queryByRole('option', { name: 'owner' })).toBeNull());
+  });
+
+  it('sources unban and self-role options from their current server-managed slices', async () => {
+    const cid = '55'.repeat(16), channel = '44'.repeat(16), self = '66'.repeat(16);
+    const bannedId = '77'.repeat(16), roleId = '88'.repeat(16);
+    const core = new FakeClient();
+    core.set('communities', [{ id: cid, name: 'Town', owner: '99'.repeat(16) }]);
+    core.set(`permissions:${cid}`, { loaded: true, top: 4, owner: false, manageCommunity: false, kickMembers: false, banMembers: true, moderateMembers: false,
+      manageMessages: false, manageRoles: false, manageChannels: false, createInvite: false, everyoneId: 'aa'.repeat(16), overwritesLoaded: true });
+    core.set(`bans:${cid}`, [{ userId: bannedId, name: 'banned target', reason: '', byUser: self, created: 1, expires: null }]);
+    core.handler = async command => command.m === 'listSelfRoles' ? [{ id: roleId, name: 'Allowed role', selfSelected: false }] : null;
+    const user = userEvent.setup();
+    const view = render(<CoreProvider client={core}><CommandHost communityId={cid} channelId={channel} bits={1 << 13}
+      items={[]} selfId={self} draft="/unban" onDraft={() => undefined} onSendLiteral={() => undefined}
+      encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+    const banned = await screen.findByRole('combobox', { name: 'user' });
+    await user.type(banned, 'banned');
+    expect(await screen.findByRole('option', { name: /banned target/ })).toBeInTheDocument();
+    view.unmount();
+
+    clearCommandDraftMemory();
+    render(<CoreProvider client={core}><CommandHost communityId={cid} channelId={channel} bits={1 << 15}
+      items={[]} selfId={self} draft="/selfrole add" onDraft={() => undefined} onSendLiteral={() => undefined}
+      encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+    const role = await screen.findByRole('combobox', { name: 'role' });
+    await user.type(role, 'allowed');
+    expect(await screen.findByRole('option', { name: 'Allowed role' })).toBeInTheDocument();
+    expect(core.callsOf('listSelfRoles').length).toBeGreaterThan(0);
+  });
+
+  it('retains an uncertain request ID across a host remount for safe retry', async () => {
+    const ids: string[] = [];
+    const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
+    function Harness() {
+      const [mounted, setMounted] = useState(true);
+      const handlers: CommandProviderHandlers = { me: async (_invocation, context) => {
+        ids.push(context.requestId); return { status: 'uncertain' as const, private: true, message: 'uncertain' };
+      } };
+      return <CoreProvider client={new FakeClient()}><CommandProvider handlers={handlers}>
+        <button onClick={() => setMounted(value => !value)}>toggle host</button>
+        {mounted ? <CommandHost communityId={null} channelId={channelId} items={[]} selfId={null} draft="/me hello" onDraft={() => undefined}
+          onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /> : null}
+      </CommandProvider></CoreProvider>;
+    }
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(await screen.findByRole('button', { name: /run/i }));
+    await screen.findByText('uncertain');
+    const first = ids[0];
+    await user.click(screen.getByRole('button', { name: 'toggle host' }));
+    await user.click(screen.getByRole('button', { name: 'toggle host' }));
+    await user.click(await screen.findByRole('button', { name: /run/i }));
+    await waitFor(() => expect(ids).toHaveLength(2));
+    expect(ids[1]).toBe(first);
+  });
+
+  it('allocates a fresh request ID for a second intentional successful execution', async () => {
+    const ids: string[] = [];
+    const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
+    const handlers: CommandProviderHandlers = { me: async (_invocation, context) => {
+      ids.push(context.requestId); return { status: 'success' as const, private: true, message: 'done' };
+    } };
+    render(<CoreProvider client={new FakeClient()}><CommandProvider handlers={handlers}>
+      <CommandHost communityId={null} channelId={channelId} items={[]} selfId={null} draft="/me hello" onDraft={() => undefined}
+        onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+    </CommandProvider></CoreProvider>);
+    const user = userEvent.setup();
+    const run = await screen.findByRole('button', { name: /run/i });
+    await user.click(run);
+    await screen.findByText('done');
+    await user.click(screen.getByRole('button', { name: /run/i }));
+    await waitFor(() => expect(ids).toHaveLength(2));
+    expect(ids[1]).not.toBe(ids[0]);
   });
 
   it('keeps an unknown slash draft private until the explicit send as text action', async () => {

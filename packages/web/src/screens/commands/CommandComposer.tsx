@@ -11,7 +11,7 @@ export interface CommandComposerProps {
   onExecute: (invocation: CommandInvocation) => Promise<CommandResult>;
   onCancel: (text: string) => void;
   onSendLiteral: (text: string) => void;
-  suggest: (commandId: string, option: CommandOption, query: string) => Promise<readonly CommandSuggestion[]>;
+  suggest: (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>) => Promise<readonly CommandSuggestion[]>;
   contextKey: string;
   disabledReason?: string;
   onDraftChange?: (text: string) => void;
@@ -73,7 +73,8 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   const [submitted, setSubmitted] = useState(false);
   const suggestionQuery = selectedCommand?.options.map(option => `${option.name}:${fields[option.name]?.text ?? ''}`).join('\u0000') ?? '';
   const { suggest: getSuggestions } = props;
-  const suggest = useCallback((commandId: string, option: CommandOption, query: string) => getSuggestions(commandId, option, query), [getSuggestions]);
+  const suggest = useCallback((commandId: string, option: CommandOption, query: string) => getSuggestions(commandId, option, query,
+    Object.fromEntries(Object.entries(fieldsNow.current).map(([name, value]) => [name, value.selected?.value ?? value.text]))), [getSuggestions]);
   const contextKey = props.contextKey;
 
   const definitionsById = useMemo(() => new Map(props.definitions.map(command => [command.id, command])), [props.definitions]);
@@ -197,6 +198,20 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
     setResult('');
   };
 
+  const chooseTypedInvocation = (invocation: CommandInvocation) => {
+    const command = definitionsById.get(invocation.commandId);
+    if (!command) return false;
+    dirty.current = true;
+    setSelectedCommand(command);
+    setFields(Object.fromEntries(command.options.map(option => [option.name, { text: invocation.args[option.name] ?? '', suggestions: [] }])));
+    setOptionalVisible(new Set(command.options.filter(option => !option.required && invocation.args[option.name] !== undefined).map(option => option.name)));
+    setPickerQuery(command.id);
+    setPopup(null);
+    setActiveIndex(-1);
+    setError('');
+    return true;
+  };
+
   const updateField = (option: CommandOption, value: string) => {
     dirty.current = true;
     setFields(previous => ({ ...previous, [option.name]: { text: value, suggestions: [] } }));
@@ -286,6 +301,11 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
+      if (!option && !selectedCommand) {
+        const typed = parseCommand(`/${pickerQuery.trim()}`);
+        if (typed.type === 'invocation' && chooseTypedInvocation(typed.invocation)) return;
+        if (typed.type === 'incomplete' && chooseTypedInvocation({ commandId: typed.commandId, args: typed.validation.args })) return;
+      }
       if (listOpen && activeIndex >= 0) {
         if (option) {
           const candidate = fields[option.name]?.suggestions[activeIndex];
@@ -352,7 +372,10 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
         </li>)}
       </ul>}
       {(unknown || unavailableExact) && <p className="d-command-composer__error" role="alert">{unavailableExact ? copy.commandUnavailable(pickerQuery) : copy.unknownCommand(pickerQuery)}</p>}
-      {unknown && <button type="button" onClick={() => sendLiteralOnce(original.current)}>{copy.sendAsText}</button>}
+      {unknown && <button type="button" onClick={() => {
+        const draft = getDraft();
+        sendLiteralOnce(draft.startsWith('//') ? draft.slice(1) : draft);
+      }}>{copy.sendAsText}</button>}
       {error && <p className="d-command-composer__error" role="alert">{error}</p>}
     </>}
   </section>;

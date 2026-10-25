@@ -234,6 +234,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // The composer is controlled: the text of the channel or DM it was typed in.
   // `typed`: only a draft edited in this page sends typing; a restored update checkpoint cannot clear AFK.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string; typed?: true }>({ channelId: null, text: '' });
+  const ordinaryDrafts = useRef(new Map<string, string>());
   const [selfTimeout, setSelfTimeout] = useState<{ communityId: string; expires: number } | null>(null);
   const selfUserId = account?.user?.id;
   useEffect(() => {
@@ -301,6 +302,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
   const [threadDraft, setThreadDraft] = useState<{ channelId: string; rootMsgId: string; text: string } | null>(null);
+  const threadDrafts = useRef(new Map<string, string>());
+  const threadDraftKey = (channelId: string, rootMsgId: string) => `${channelId}/${rootMsgId}`;
   useEffect(() => { setSide(current => (current !== null && current.channelId !== channelId ? null : current)); }, [channelId]);
   const toggleMembers = () => {
     const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
@@ -816,6 +819,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     target.focus();
     refocus.current = null;
   });
+  const liveCall = useRef(call);
+  liveCall.current = call;
 
   // When the join dialog closes, focus goes to the composer (after the dialog returned it to its opener).
   const wasJoinOpen = useRef(false);
@@ -909,7 +914,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const withTray = m.attachments.length > 0;
     if (withTray && sending.current.has(id)) return;
     if (withTray) sending.current.add(id);
-    setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
+    setDraft(d => {
+      if (d.channelId !== id || d.text !== m.raw) return d;
+      ordinaryDrafts.current.set(id, '');
+      return { channelId: id, text: '' };
+    });
     const run = async () => {
       try {
         await client.call({ m: 'send', channelId: id, text: m.text,
@@ -918,7 +927,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         if (m.replyTo !== null) dispatch({ type: 'replySent', msgId: m.replyTo });
       } catch (e) {
         // A refused send gives the text back, unless something new has been typed since.
-        setDraft(d => (d.channelId === id && d.text === '' ? { channelId: id, text: m.raw } : d));
+        setDraft(d => {
+          if (d.channelId !== id || d.text !== '') return d;
+          ordinaryDrafts.current.set(id, m.raw);
+          return { channelId: id, text: m.raw };
+        });
         const error = errorOf(e);
         if (TRUST_BLOCKS.has(error.code)) setRefusedSend({ channelId: id, code: error.code as TrustBlock, gate: client.get('sendBlocks') });
         else report(e);
@@ -1158,8 +1171,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
       blocked={reason} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
-      items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
-      onDraft={text => setDraft({ channelId: targetId, text, typed: true })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
+      items={timeline?.items ?? []} book={book} draft={ordinaryDrafts.current.get(targetId) ?? (draft.channelId === targetId ? draft.text : '')}
+      onDraft={text => { ordinaryDrafts.current.set(targetId, text); setDraft({ channelId: targetId, text, typed: true }); }} ui={ui} dispatch={dispatch} onSend={send} onError={report}
       {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
       announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
   );
@@ -1583,6 +1596,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         if (saved.draft !== undefined && (saved.draft.channelId === null || typeof saved.draft.channelId === 'string')
           && typeof saved.draft.text === 'string') {
           setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
+          if (saved.draft.channelId !== null) ordinaryDrafts.current.set(saved.draft.channelId, saved.draft.text);
         }
         if (saved.side?.channelId === channelId && (saved.side.view === 'list'
           || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
@@ -1590,6 +1604,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
           && typeof saved.threadDraft.text === 'string') {
           setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
+          threadDrafts.current.set(threadDraftKey(channelId, saved.threadDraft.rootMsgId), saved.threadDraft.text);
         }
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
         const view = validViewPlace(saved.view);
@@ -1714,7 +1729,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
   const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} /> : adminPage;
   return (
-    <CommandProvider runtime={{ call, navigate, openThread, openSearch: openCommandSearch }} handlers={props.commandHandlers} suggest={props.commandSuggest}>
+    <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate, openThread, openSearch: openCommandSearch }} handlers={props.commandHandlers} suggest={props.commandSuggest}>
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
@@ -1775,9 +1790,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
             blocked={timeoutReason}
-            initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
+            initialDraft={threadDrafts.current.get(threadDraftKey(channel.id, sideNow.rootMsgId)) ?? (threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
-            onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />
+            onDraftChange={text => { threadDrafts.current.set(threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
               <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />

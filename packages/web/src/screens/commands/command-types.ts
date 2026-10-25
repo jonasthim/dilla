@@ -8,7 +8,13 @@ export interface CommandExecutionContext {
   requestId: string;
   /** Snapshot captured when execution starts. */
   binding: Readonly<Binding>;
+  /** Latest permission snapshot for the same open host, without retargeting this execution. */
+  getCurrentBinding(): Readonly<Binding>;
+  /** False after this host unmounts or its conversation binding changes. */
+  isCurrent(): boolean;
   client: CoreClient;
+  /** Reads the live React call view after asynchronous admission/session work. */
+  getCall(): CallView;
   call: CallView;
   navigate(route: Route): void;
   openThread(rootMsgId: string): void;
@@ -25,7 +31,7 @@ export interface CommandExecutionContext {
 export type CommandHandler = (invocation: CommandInvocation, context: CommandExecutionContext) => Promise<CommandResult>;
 export type CommandProviderHandlers = Readonly<Partial<Record<string, CommandHandler>>>;
 export interface CommandSuggestion { id: string; label: string; description?: string; value: string }
-export type CommandSuggestionProvider = (commandId: string, option: CommandOption, query: string, context: Readonly<Binding>) => Promise<readonly CommandSuggestion[]>;
+export type CommandSuggestionProvider = (commandId: string, option: CommandOption, query: string, context: Readonly<Binding>, values?: Readonly<Record<string, string>>) => Promise<readonly CommandSuggestion[]>;
 
 export interface CommandProviderValue {
   handlers?: CommandProviderHandlers;

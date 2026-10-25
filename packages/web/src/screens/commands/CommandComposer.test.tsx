@@ -34,6 +34,24 @@ async function chooseCommand(user: ReturnType<typeof userEvent.setup>, id: strin
 }
 
 describe('CommandComposer', () => {
+  it('routes a fully typed slash command and its argument from the picker into execution', async () => {
+    const user = userEvent.setup();
+    let executed: unknown;
+    renderComposer({ initialText: '/', onExecute: async invocation => { executed = invocation; return { status: 'success', private: false }; } });
+    const picker = screen.getByRole('combobox', { name: 'Command' });
+    await user.type(picker, 'me waves hello');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('combobox', { name: 'text' })).toHaveValue('waves hello');
+    await user.click(screen.getByRole('button', { name: /run/i }));
+    expect(executed).toEqual({ commandId: 'me', args: { text: 'waves hello' } });
+  });
+  it('sends the full text of an unknown command typed after the first slash', async () => {
+    const user = userEvent.setup();
+    const view = renderComposer({ onSendLiteral: vi.fn() });
+    await user.type(screen.getByRole('combobox', { name: 'Command' }), 'not-a-command');
+    await user.click(screen.getByRole('button', { name: /send as text/i }));
+    expect(view.props.onSendLiteral).toHaveBeenCalledWith('/not-a-command');
+  });
   beforeEach(() => vi.clearAllMocks());
 
   it('selects a command, validates named arguments, and explicitly submits a real invocation', async () => {

@@ -5,6 +5,7 @@ import type { Route } from '../../router.ts';
 
 export interface CommandRuntime {
   call: CallView;
+  getCall?(): CallView;
   navigate(route: Route): void;
   openThread(rootMsgId: string): void;
   openSearch(query: string, scope: 'channel' | 'community' | 'all'): void;

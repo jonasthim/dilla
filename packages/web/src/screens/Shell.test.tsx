@@ -403,6 +403,19 @@ it('sends typing off when leaving the visible channel', async () => {
   await user.click(screen.getByRole('button', { name: 'random' }));
   await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: false }));
 });
+it('keeps ordinary drafts separate while switching between channels', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND }));
+  } });
+  await user.type(composer(), 'general draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  await user.type(composer('random'), 'random draft');
+  await user.click(screen.getByRole('button', { name: 'general' }));
+  expect(composer()).toHaveValue('general draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  expect(composer('random')).toHaveValue('random draft');
+});
 it('returns focus to where search was opened when Escape closes it', async () => {
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   await user.click(composer());
