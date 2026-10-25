@@ -463,7 +463,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await rowAction(secondPanel, 'react');
     const removePicker = secondPage.getByRole('dialog', { name: copy('shell.emoji.label'), exact: true });
     await removePicker.getByRole('button', { name: copy('shell.emoji.01'), exact: true }).click();
-    await expect(reactionChip(secondPanel, copy('shell.emoji.01'), 1)).toHaveCount(0, { timeout: 30_000 });
+    await expect(reactionChip(secondPanel, copy('shell.emoji.01'), 1)).toHaveCount(0);
     await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     const settingsAfterRemoval = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settingsAfterRemoval.getByRole('navigation', { name: copy('admin.nav'), exact: true })
