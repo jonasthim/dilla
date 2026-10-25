@@ -42,3 +42,9 @@ command. Definitive reply refusals are consumed durably so one channel cannot
 block command intake elsewhere. Recently received commands from before the bot
 started do not resume restored playback; pending replies for commands already
 accepted before the restart can still finish.
+
+Pause and Stop release the audio stream and its provider resources. The Bot can
+remain silently in the voice channel so the next track does not disconnect and
+rejoin. This connection lasts at most 30 minutes and ends when the Bot is disabled
+or the channel is removed. A server disconnect stops playback; use a new playback
+command to request a fresh connection.

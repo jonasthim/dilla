@@ -337,3 +337,40 @@ func TestQueueStarterReleasesSpotifyLeaseBeforeRetry(t *testing.T) {
 		t.Fatal("retry resources not released exactly once")
 	}
 }
+
+func TestQueueStarterOnlyExplicitPlaybackResetsConnection(t *testing.T) {
+	resets, optionsCalls := 0, 0
+	stopped := errors.New("test stops before resources")
+	starter := QueueStarter{
+		ResetConnection: func() error { resets++; return nil },
+		OptionsFor:      func(context.Context, music.Track) (Options, error) { optionsCalls++; return Options{}, stopped },
+	}
+	track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"}
+	if _, err := starter.Start(context.Background(), track); !errors.Is(err, stopped) {
+		t.Fatal(err)
+	}
+	if resets != 0 {
+		t.Fatal("automatic advancement reset a removed connection")
+	}
+	if _, err := starter.StartExplicit(context.Background(), track); !errors.Is(err, stopped) {
+		t.Fatal(err)
+	}
+	if resets != 1 || optionsCalls != 2 {
+		t.Fatalf("resets=%d options=%d", resets, optionsCalls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := starter.StartExplicit(ctx, track); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if resets != 1 || optionsCalls != 2 {
+		t.Fatal("cancelled playback authorized a reconnect")
+	}
+	starter.ResetConnection = func() error { return ErrInvalid }
+	if _, err := starter.StartExplicit(context.Background(), track); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	if optionsCalls != 2 {
+		t.Fatal("failed reset acquired fresh resources")
+	}
+}

@@ -184,8 +184,9 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		stopParent()
 		trackCancel()
 		_ = source.Close()
+		terminal := p.lifecycleError(err)
 		p.finishStarting(generation, startDone)
-		return nil, p.lifecycleError(err)
+		return nil, terminal
 	}
 
 	unpublish, err := p.backend.publish(conn.room, source, sender)
@@ -193,8 +194,8 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		stopParent()
 		trackCancel()
 		_ = source.Close()
-		p.finishStarting(generation, startDone)
 		p.markDead(generation, errors.New("track publication failed"))
+		p.finishStarting(generation, startDone)
 		return nil, errors.New("music livekit: track publication failed")
 	}
 	if err := trackCtx.Err(); err != nil {
@@ -202,9 +203,10 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		stopParent()
 		trackCancel()
 		_ = source.Close()
-		p.finishStarting(generation, startDone)
 		p.markDead(generation, err)
-		return nil, p.lifecycleError(err)
+		terminal := p.lifecycleError(err)
+		p.finishStarting(generation, startDone)
+		return nil, terminal
 	}
 	s := &Session{
 		source: source, cancel: trackCancel, done: make(chan struct{}),
@@ -215,9 +217,10 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 	if p.closed || p.dead || p.generation != generation || p.connection != conn {
 		p.mu.Unlock()
 		s.finish(ErrPoolDead)
-		p.finishStarting(generation, startDone)
+		terminal := p.lifecycleError(ErrPoolDead)
 		close(s.done)
-		return nil, p.lifecycleError(ErrPoolDead)
+		p.finishStarting(generation, startDone)
+		return nil, terminal
 	}
 	p.active = s
 	p.finishStartingLocked(generation, startDone)

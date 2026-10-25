@@ -626,7 +626,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {
 		t.Fatalf("encoder = %#v", options.Encoder)
 	}
-	if _, ok := options.Publisher.(session.LiveKitPublisher); !ok || options.Epochs != epochs || options.Acquire != nil {
+	if _, ok := options.Publisher.(session.RetainedLiveKitPublisher); !ok || options.Epochs != epochs || options.Acquire != nil {
 		t.Fatalf("publisher/epoch/lease dependencies = %#v", options)
 	}
 
@@ -845,5 +845,45 @@ func TestMusicSupervisorSyncFailureKeepsNativeHelperUsableForOtherInteractions(t
 	}
 	if _, ok := registry.QueueStore(installation, community); !ok {
 		t.Fatal("successful later reconcile did not restore the music queue store")
+	}
+}
+
+func TestMusicQueueOwnsSeparateRetainedConnectionsPerChannel(t *testing.T) {
+	community := id.New()
+	var pools []*livekit.Pool
+	var starters []session.QueueStarter
+	for range 2 {
+		channel, group := id.New(), id.New()
+		starter, err := newMusicQueueStarter(musicRuntimeDeps{
+			Community: community, Channel: channel,
+			Calls:      &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://relay.example", Token: "call-token"}},
+			YouTubePCM: runtimePCM{}, Encoder: runtimeEncoder{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer starter.Close()
+		options, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		publisher, ok := options.Publisher.(session.RetainedLiveKitPublisher)
+		if !ok || publisher.Pool == nil || starter.ResetConnection == nil || starter.CloseConnection == nil {
+			t.Fatal("missing owned connection lifecycle")
+		}
+		pools = append(pools, publisher.Pool)
+		starters = append(starters, starter)
+	}
+	if pools[0] == pools[1] {
+		t.Fatal("channels share a retained connection")
+	}
+	if err := starters[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pools[0].Reset(); err == nil {
+		t.Fatal("closed owner allowed reconnect")
+	}
+	if err := pools[1].Reset(); err != nil {
+		t.Fatalf("closing one channel affected another: %v", err)
 	}
 }
