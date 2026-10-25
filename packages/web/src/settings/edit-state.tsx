@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Button, ConfirmDialog, SettingsFooter } from '@dilla/ui';
 import { requestNavigation, setNavigationGuard } from '../router.ts';
 import { settingsEditing as copy } from '../strings/settingsEditing.ts';
@@ -34,12 +34,31 @@ interface Registration {
 
 const WorkspaceContext = createContext<SettingsWorkspace | null>(null);
 const EditRegistrationContext = createContext<Registration | null>(null);
+const pendingOperations = new Map<symbol, boolean>();
+const pendingListeners = new Set<() => void>();
+const pendingSnapshot = (): number => [...pendingOperations.values()].filter(Boolean).length;
+function subscribePending(listener: () => void): () => void {
+  pendingListeners.add(listener);
+  return () => { pendingListeners.delete(listener); };
+}
+function setPendingOperation(owner: symbol, pending: boolean): void {
+  if (pendingOperations.get(owner) === pending) return;
+  pendingOperations.set(owner, pending);
+  for (const listener of pendingListeners) listener();
+}
+function clearPendingOperation(owner: symbol): void {
+  if (!pendingOperations.delete(owner)) return;
+  for (const listener of pendingListeners) listener();
+}
 const flagsFor = (state: SettingsEditState): SettingsEditFlags => ({ dirty: state.dirty, busy: state.busy, canSave: state.canSave });
 const sameFlags = (a: SettingsEditFlags | null, b: SettingsEditFlags): boolean =>
   a !== null && a.dirty === b.dirty && a.busy === b.busy && a.canSave === b.canSave;
 
 /** Owns the shared footer, unsaved-change prompt and browser departure guard for one settings workspace. */
 export function SettingsEditProvider({ children }: { children: ReactNode }) {
+  const pendingCount = useSyncExternalStore(subscribePending, pendingSnapshot, () => 0);
+  const pendingCountRef = useRef(pendingCount);
+  pendingCountRef.current = pendingCount;
   const [edit, setEdit] = useState<SettingsEditFlags | null>(null);
   const editRef = useRef<SettingsEditState | null>(null);
   const ownerRef = useRef<symbol | null>(null);
@@ -94,14 +113,14 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const guard = async (): Promise<boolean> => {
       const state = editRef.current;
-      if (!state || (!state.dirty && !state.busy)) return true;
+      if ((!state || (!state.dirty && !state.busy)) && pendingCountRef.current === 0) return true;
       setPrompt(true);
       return new Promise(resolve => promptResolvers.current.push(resolve));
     };
     const dispose = setNavigationGuard(guard);
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       const state = editRef.current;
-      if (!state || (!state.dirty && !state.busy)) return;
+      if ((!state || (!state.dirty && !state.busy)) && pendingCountRef.current === 0) return;
       event.preventDefault();
       event.returnValue = '';
     };
@@ -136,7 +155,7 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
   ) : null;
   const confirmation = (
     <ConfirmDialog open={prompt} tone="accent" title={copy.leaveTitle}
-      body={editRef.current?.busy ? copy.leaveBusyBody : copy.leaveBody} confirmLabel={copy.discard}
+      body={editRef.current?.busy || pendingCount > 0 ? copy.leaveBusyBody : copy.leaveBody} confirmLabel={copy.discard}
       busyLabel={copy.discard} cancelLabel={copy.keepEditing} busy={false} error={null}
       onConfirm={() => settlePrompt(true)} onClose={() => settlePrompt(false)} />
   );
@@ -168,4 +187,13 @@ export function useSettingsEdit(state: SettingsEditState): boolean {
 /** Shared workspace surfaces and helpers. Returns null outside a SettingsEditProvider. */
 export function useSettingsWorkspace(): SettingsWorkspace | null {
   return useContext(WorkspaceContext);
+}
+
+/** Register an accepted operation that continues independently of the currently mounted settings section. */
+export function useSettingsPendingOperation(pending: boolean): void {
+  const owner = useRef(Symbol('settings-pending-operation')).current;
+  useLayoutEffect(() => {
+    setPendingOperation(owner, pending);
+    return () => clearPendingOperation(owner);
+  }, [owner, pending]);
 }

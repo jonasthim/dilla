@@ -2,9 +2,9 @@ import { useMemo, useState } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { SettingsEditProvider, useSettingsEdit, useSettingsWorkspace, type SettingsEditState } from './edit-state.tsx';
+import { SettingsEditProvider, useSettingsEdit, useSettingsPendingOperation, useSettingsWorkspace, type SettingsEditState } from './edit-state.tsx';
 import { settingsEditing as copy } from '../strings/settingsEditing.ts';
-import { requestNavigation } from '../router.ts';
+import { requestNavigation, useRoute } from '../router.ts';
 
 function Draft({ busy = false, canSave = true, saveResult = true }: { busy?: boolean; canSave?: boolean; saveResult?: boolean }) {
   const [dirty, setDirty] = useState(true);
@@ -47,6 +47,42 @@ function InlineDraft() {
     <output data-testid="inline-managed">{String(managed)}</output>
     <output data-testid="inline-saved">{saved}</output>
     <button type="button" onClick={() => setRevision(value => value + 1)}>change revision</button>
+    {workspace?.footer}
+    {workspace?.confirmation}
+  </>;
+}
+
+function NestedNavigationDraft() {
+  const [, navigate] = useRoute();
+  const [accepted, setAccepted] = useState(false);
+  useSettingsEdit({ dirty: true, busy: false, canSave: false, save: async () => false, reset: () => undefined });
+  const workspace = useSettingsWorkspace();
+  return <>
+    <button type="button" onClick={() => { void requestNavigation(() => { void navigate({ name: 'activity' }); }).then(setAccepted); }}>approved outer navigation</button>
+    <output data-testid="nested-accepted">{String(accepted)}</output>
+    {workspace?.confirmation}
+  </>;
+}
+
+function PendingSection() {
+  useSettingsEdit({ dirty: true, busy: false, canSave: true, save: async () => true, reset: () => undefined });
+  return null;
+}
+
+function PendingHarness() {
+  const [pending, setPending] = useState(false);
+  const [secondPending, setSecondPending] = useState(false);
+  const [sectionMounted, setSectionMounted] = useState(true);
+  useSettingsPendingOperation(pending);
+  useSettingsPendingOperation(secondPending);
+  const workspace = useSettingsWorkspace();
+  return <>
+    <button type="button" onClick={() => setPending(true)}>start pending operation</button>
+    <button type="button" onClick={() => setPending(false)}>finish pending operation</button>
+    <button type="button" onClick={() => setSecondPending(true)}>start second pending operation</button>
+    <button type="button" onClick={() => setSecondPending(false)}>finish second pending operation</button>
+    <button type="button" onClick={() => setSectionMounted(false)}>unmount edit section</button>
+    {sectionMounted ? <PendingSection /> : null}
     {workspace?.footer}
     {workspace?.confirmation}
   </>;
@@ -109,6 +145,55 @@ describe('useSettingsEdit', () => {
     await expect(request).resolves.toBe(true);
     expect(action).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole('button', { name: copy.save })).not.toBeInTheDocument());
+  });
+
+  it('allows a guarded action to call navigate once after its confirmation', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/you');
+    render(<SettingsEditProvider><NestedNavigationDraft /></SettingsEditProvider>);
+    await user.click(screen.getByRole('button', { name: 'approved outer navigation' }));
+    const dialog = await screen.findByRole('dialog', { name: copy.leaveTitle });
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    await user.click(within(dialog).getByRole('button', { name: copy.discard }));
+    await waitFor(() => expect(window.location.pathname).toBe('/activity'));
+    expect(screen.getByTestId('nested-accepted')).toHaveTextContent('true');
+  });
+
+  it('keeps independent pending work guarded after a section unmounts, without disabling its form actions', async () => {
+    const user = userEvent.setup();
+    render(<SettingsEditProvider><PendingHarness /></SettingsEditProvider>);
+    expect(await screen.findByRole('button', { name: copy.save })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'start pending operation' }));
+    await user.click(screen.getByRole('button', { name: 'start second pending operation' }));
+    expect(screen.getByRole('button', { name: copy.save })).toBeEnabled();
+    expect(screen.getByRole('button', { name: copy.reset })).toBeEnabled();
+    const activeEvent = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(activeEvent);
+    expect(activeEvent.defaultPrevented).toBe(true);
+
+    await user.click(screen.getByRole('button', { name: 'unmount edit section' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: copy.save })).not.toBeInTheDocument());
+    let accepted!: Promise<boolean>;
+    const action = vi.fn();
+    act(() => { accepted = requestNavigation(action); });
+    const dialog = await screen.findByRole('dialog', { name: copy.leaveTitle });
+    expect(within(dialog).getByText(copy.leaveBusyBody)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: copy.keepEditing }));
+    await expect(accepted).resolves.toBe(false);
+    expect(action).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'finish pending operation' }));
+    const stillBusyEvent = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(stillBusyEvent);
+    expect(stillBusyEvent.defaultPrevented).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'finish second pending operation' }));
+    await waitFor(() => {
+      const cleanEvent = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(cleanEvent);
+      expect(cleanEvent.defaultPrevented).toBe(false);
+    });
+    await expect(requestNavigation(action)).resolves.toBe(true);
+    expect(action).toHaveBeenCalledTimes(1);
   });
 
   it('guards a pending accepted request and explains that it continues after leaving', async () => {

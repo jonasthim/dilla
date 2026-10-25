@@ -176,6 +176,7 @@ let navigationGuard: (() => Promise<boolean>) | null = null;
 let pendingTraversal: PendingTraversal | null = null;
 let guardRequest: Promise<boolean> | null = null;
 let navigationRequestPending = false;
+let approvedActionDepth = 0;
 let internalPopExpected: number | null = null;
 
 function runGuard(): Promise<boolean> {
@@ -194,6 +195,10 @@ export function setNavigationGuard(guard: (() => Promise<boolean>) | null): () =
 
 /** Ask permission before running a non-router departure action. Returns false if the user keeps editing. */
 export function requestNavigation(action: () => void): Promise<boolean> {
+  if (approvedActionDepth > 0) {
+    action();
+    return Promise.resolve(true);
+  }
   if (pendingTraversal || navigationRequestPending) return Promise.resolve(false);
   if (!navigationGuard) {
     action();
@@ -201,7 +206,10 @@ export function requestNavigation(action: () => void): Promise<boolean> {
   }
   navigationRequestPending = true;
   return runGuard().then(allowed => {
-    if (allowed) action();
+    if (allowed) {
+      approvedActionDepth++;
+      try { action(); } finally { approvedActionDepth--; }
+    }
     return allowed;
   }).finally(() => { navigationRequestPending = false; });
 }
