@@ -106,7 +106,7 @@ func (d Deps) spotifyConfiguration(ctx context.Context, community id.ID) (string
 			redirect = d.BotSpotifyRedirectURL
 		}
 	} else if err != nil || !spotifyClientIDValid(clientID) {
-		return "", "", errors.New("Spotify application setting unavailable")
+		return "", "", errors.New("spotify application setting unavailable")
 	}
 	if !spotifyRedirectValid(redirect) {
 		return "", "", errors.New("invalid Spotify callback URL")

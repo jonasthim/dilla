@@ -317,6 +317,8 @@ CBOR API request, not a public redirect endpoint.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
+| `GET /v1/communities/{community}/bot/spotify/config` | E (manage_community) | — | `[client_id, callback_url]` |
+| `GET /v1/bot-runtime/installations/{installation}/spotify/config` | R (owning runtime) | — | `[client_id, callback_url]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts` | E (community bot manager, step-up) | `[step_up_proof]` | `[attempt_id, authorization_url, expires_unix]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts/{attempt}/callback` | E (manage_community, initiating session) | `[state, authorization_code]` | `202 [1]`; exact callback retries also return 202 |
 | `DELETE /v1/communities/{community}/bot/spotify/attempts/{attempt}` | E (manage_community, initiating session) | `[]` | `204` |

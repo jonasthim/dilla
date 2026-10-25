@@ -312,6 +312,11 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.djRoles.save='Save DJ roles'`
 - `admin.bot.music.djRoles.saved='DJ roles saved.'`
 - `admin.bot.music.spotify='Spotify'`
+- `admin.bot.music.spotifyClientId='Spotify application client ID'`
+- `admin.bot.music.spotifyClientIdHelp='Create a Spotify application, register the callback URL below, then paste its public client ID here. No client secret is needed.'`
+- `admin.bot.music.spotifyCallback='Callback URL to register with Spotify'`
+- `admin.bot.music.spotifyClientIdInvalid='Enter the client ID from your Spotify application.'`
+- `admin.bot.music.spotifyConfigFailed='Could not load the Spotify application setting.'`
 - `admin.bot.music.spotifyLink='Link Spotify account'`
 - `admin.bot.music.spotifyLinking='Starting Spotify authorization…'`
 - `admin.bot.music.callbackDelivered='Authorization delivered; connection pending. Playback is not ready yet.'`

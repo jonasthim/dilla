@@ -510,7 +510,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <input id={`${base}-spotify-client-id`} type="text" autoComplete="off" spellCheck={false} value={spotifyClientId}
             maxLength={256} disabled={busy || access?.manageCommunity !== true}
             onChange={event => { setSpotifyClientId(event.currentTarget.value.trim()); setSpotifyConfigError(null); }} />
-          {spotifyRedirectUrl !== '' ? <p><strong>{t('admin.bot.music.spotifyCallback')}:</strong> <code>{spotifyRedirectUrl}</code></p> : null}
+          {spotifyRedirectUrl !== '' ? <p><strong>{t('admin.bot.music.spotifyCallback')}</strong> <code>{spotifyRedirectUrl}</code></p> : null}
           {spotifyConfigError !== null ? <p role="alert">{spotifyConfigError}</p> : null}
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
