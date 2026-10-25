@@ -159,13 +159,13 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); rememberAttempt(null);
     } catch (cause) {
       if (!live()) return;
-      if (cause instanceof BotUtilitiesStatusError && cause.status === 4) { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
+      if (cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3 || cause.status === 4)) { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(immutable, 73);
         if (recovered === 'accepted') rememberAttempt(null);
         else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
-      } else { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
+      } else { await refresh(); setError(t('poll.uncertain')); }
     } finally { setBusy(false); }
   };
   const close = async () => {
@@ -179,13 +179,13 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); }
     catch (cause) {
       if (!live()) return;
-      if (cause instanceof BotUtilitiesStatusError && cause.status === 4) { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+      if (cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3 || cause.status === 4)) { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(pending, 74);
         if (recovered === 'accepted') rememberAttempt(null);
         else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
-      } else { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+      } else { await refresh(); setError(t('poll.uncertain')); }
     }
     finally { setBusy(false); }
   };

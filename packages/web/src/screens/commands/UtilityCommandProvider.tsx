@@ -38,9 +38,16 @@ function canCreateFromContext(context: CommandExecutionContext, communityId: str
     && current.channelId === context.binding.channelId && ((current.bits ?? 0) & PERM.sendMessages) !== 0;
 }
 function pollPublished(context: CommandExecutionContext, pollId: string, channelId: string, threadId: string | null, botId: string): boolean {
+  // `items` is the authoritative channel/thread slice passed by CommandHost; `threadId`
+  // is its captured root. `item.reply.threadRoot` describes the quoted target, not this post.
+  if (context.binding.channelId !== channelId || thread(context.binding) !== threadId) return false;
   return context.items.some(item => item.state === 'ok' && !item.edited && item.senderUser === botId && item.bot
-    && finalMarker(item.body) === pollId && (threadId === null ? item.reply?.threadRoot == null : item.reply?.threadRoot === threadId)
+    && finalMarker(item.body) === pollId
     && item.msgId !== null && item.body.split(/\r?\n/u).at(-1) === `[dilla-poll:v1:${pollId}]`);
+}
+function canonicalTimezone(value: string): string | null {
+  try { return new Intl.DateTimeFormat('en', { timeZone: value }).resolvedOptions().timeZone; }
+  catch { return null; }
 }
 function finalMarker(body: string): string | null {
   const value = body.split(/\r?\n/u).at(-1) ?? '';
@@ -156,7 +163,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const cancelDialog = useRef<(() => void) | null>(null);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [records, setRecords] = useState<{ client: CoreClient; owner: string; rows: ReminderInboxEntry[]; loading: boolean; error: boolean } | null>(null);
-  const [pausedCommunities, setPausedCommunities] = useState<Map<string, string>>(() => new Map());
+  const pausedCommunities = useRef(new Map<string, string>());
   const [sourceAccessVersion, setSourceAccessVersion] = useState(0);
   const joinedCommunityKey = (client.get('communities') ?? []).map(row => row.id).sort().join(':');
   const [observedCommunities, setObservedCommunities] = useState(joinedCommunityKey);
@@ -176,16 +183,16 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const fetchToken = useRef(0);
   const utilityFor = useCallback((id: string) => createBotUtilities(client, id), [client]);
   const fetchInbox = useCallback(async (showLoading = false, retryPaused = false) => {
-    if (ownerKey === '' || observedCommunities !== joinedCommunityKey) { setRecords(null); return []; }
+    if (ownerKey === '' || observedCommunities !== joinedCommunityKey) { setRecords(null); return null; }
     const token = ++fetchToken.current; const currentOwner = ownerKey;
     const joined = (client.get('communities') ?? []).slice();
-    if (retryPaused) setPausedCommunities(new Map());
+    if (retryPaused) pausedCommunities.current = new Map();
     if (showLoading) setRecords({ client, owner: currentOwner, rows: [], loading: true, error: false });
     const next: ReminderInboxEntry[] = []; let failed = false; const unavailable = new Set<string>();
     const pauseKey = `${currentOwner}:${joinedCommunityKey}`;
     for (const [index, community] of joined.entries()) {
-      if (token !== fetchToken.current || liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return [];
-      if (!retryPaused && pausedCommunities.get(community.id) === pauseKey) continue;
+      if (liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return null;
+      if (!retryPaused && pausedCommunities.current.get(community.id) === pauseKey) continue;
       if (index > 0) await new Promise(resolve => window.setTimeout(resolve, Math.min(index * 120, 900)));
       const staged: ReminderInboxEntry[] = [];
       try {
@@ -198,8 +205,8 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           cursor = result.nextCursor; if (cursor === null) break;
         }
         if (cursor !== null) { failed = true; continue; }
-        if (token !== fetchToken.current || liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner
-          || !(client.get('communities') ?? []).some(row => row.id === community.id)) return [];
+        if (liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return null;
+        if (!(client.get('communities') ?? []).some(row => row.id === community.id)) continue;
         next.push(...staged);
       } catch (error) {
         if (error instanceof BotUtilitiesProviderUnavailableError || (error instanceof BotUtilitiesStatusError && (error.status === 2 || error.status === 3))) unavailable.add(community.id);
@@ -207,25 +214,20 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
         // This community is deliberately absent: disabled or inaccessible private data never stays visible.
       }
     }
-    if (token !== fetchToken.current || liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return [];
-    setPausedCommunities(previous => {
-      const currentIds = new Set(joined.map(row => row.id));
-      const nextPaused = retryPaused ? new Map<string, string>() : new Map([...previous].filter(([id]) => currentIds.has(id)));
-      let changed = nextPaused.size !== previous.size;
-      for (const id of unavailable) {
-        if (nextPaused.get(id) !== pauseKey) { nextPaused.set(id, pauseKey); changed = true; }
-      }
-      if (retryPaused && previous.size > 0) changed = true;
-      return changed ? nextPaused : previous;
-    });
+    if (liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return null;
     const ordered = next.sort((a, b) => Number(a.reminder.dueUnixSeconds - b.reminder.dueUnixSeconds));
+    if (token !== fetchToken.current) return ordered;
+    const currentIds = new Set((client.get('communities') ?? []).map(row => row.id));
+    const nextPaused = retryPaused ? new Map<string, string>() : new Map([...pausedCommunities.current].filter(([id]) => currentIds.has(id)));
+    for (const id of unavailable) if (currentIds.has(id)) nextPaused.set(id, pauseKey);
+    pausedCommunities.current = nextPaused;
     const previous = knownDue.current?.owner === currentOwner ? knownDue.current.ids : null;
     const seen = new Set(previous ?? []);
     if (previous !== null) for (const entry of ordered) if (entry.reminder.state === 'due' && !seen.has(entry.reminder.id)) notifyReminder(entry, client, () => setInboxOpen(true));
     for (const entry of ordered) if (entry.reminder.state === 'due') seen.add(entry.reminder.id);
     knownDue.current = { owner: currentOwner, ids: seen };
-    setRecords({ client, owner: currentOwner, rows: ordered, loading: false, error: failed }); return ordered;
-  }, [client, ownerKey, utilityFor, joinedCommunityKey, observedCommunities, pausedCommunities]);
+    setRecords({ client, owner: currentOwner, rows: ordered, loading: false, error: failed }); return failed ? null : ordered;
+  }, [client, ownerKey, utilityFor, joinedCommunityKey, observedCommunities]);
   useEffect(() => {
     if (ownerKey === '') { fetchToken.current++; knownDue.current = null; setRecords(null); return; }
     knownDue.current = null;
@@ -399,10 +401,11 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           for (let page = 0; page < 5; page++) { const result = await utility.reminderList(cursor); found = result.items.find(item => item.id === context.requestId); if (found) break; cursor = result.nextCursor; if (cursor === null) break; }
           const sourceMatches = found?.sourceChannelId === context.binding.channelId && found.sourceThreadId === thread(context.binding)
             || found?.sourceChannelId === null && found.sourceThreadId === null;
-          if (found && found.text === saved?.text && found.timezone === saved?.timezone && sourceMatches) {
+          if (found && found.text === saved?.text && canonicalTimezone(found.timezone) !== null
+            && canonicalTimezone(found.timezone) === canonicalTimezone(saved?.timezone ?? '') && sourceMatches) {
             attempts.delete(context.requestId); refreshRequestId(); return success(`${copy('reminder.created')} ${found.id}`);
           }
-          if (receipt?.status === 0 || (receipt !== null && receipt?.status !== 5)) return uncertain(copy('reminder.uncertain'));
+          return uncertain(copy('reminder.uncertain'));
         } catch { return uncertain(copy('reminder.uncertain')); }
       }
       const value = await open({ kind: 'reminder', when: invocation.args.when, text: invocation.args.text, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }, context) as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | null;
@@ -425,8 +428,10 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     };
     handlers['reminders list'] = async (_invocation, context) => {
       if (!context.isCurrent()) return failure('The conversation changed.');
-      const rows = (await fetchInbox(true, true)).filter(row => row.reminder.state === 'scheduled' || row.reminder.state === 'due');
+      const snapshot = await fetchInbox(true, true);
       if (!context.isCurrent()) return failure('The conversation changed.');
+      if (snapshot === null) return failure(copy('reminder.loadError'));
+      const rows = snapshot.filter(row => row.reminder.state === 'scheduled' || row.reminder.state === 'due');
       if (rows.length === 0) return success(copy('reminder.empty'));
       return success(copy('reminder.list', { count: rows.length, items: rows.slice(0, 12).map(row => `${row.reminder.id}: ${row.reminder.text}`).join('; ') }));
     };
@@ -437,7 +442,9 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       if (!context.isCurrent()) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('The conversation changed.');
       const target = invocation.args.reminder;
       try {
-        const row = prior === undefined ? (await fetchInbox(true, true)).find(item => item.reminder.id === target) : undefined;
+        const snapshot = prior === undefined ? await fetchInbox(true, true) : undefined;
+        if (snapshot === null) return failure(copy('reminder.loadError'));
+        const row = prior === undefined ? snapshot?.find(item => item.reminder.id === target) : undefined;
         if (!prior && !row) return failure('Choose one of your accessible reminders.');
         const community = saved?.communityId ?? row!.communityId;
         const scope = `${executionScope(context)}:${community}:${saved?.reminderId ?? row!.reminder.id}:${id}`;
@@ -451,7 +458,9 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           if (status?.status === 2 || status?.status === 3) return uncertain(copy('reminder.uncertainMutation'));
         } else if (!caps.supportedOperations.includes(operation)) return failure(copy('reminder.unavailable'));
         if (!caps.supportedOperations.includes(operation)) return uncertain(copy('reminder.uncertainMutation'));
-        const currentRow = prior ? (await fetchInbox(true, true)).find(item => item.communityId === community && item.reminder.id === saved!.reminderId) : row;
+        const currentSnapshot = prior ? await fetchInbox(true, true) : undefined;
+        if (prior && currentSnapshot === null) return uncertain(copy('reminder.uncertainMutation'));
+        const currentRow = prior ? currentSnapshot?.find(item => item.communityId === community && item.reminder.id === saved!.reminderId) : row;
         if (!currentRow) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('Choose one of your accessible reminders.');
         const input = { requestId: context.requestId, reminderId: saved?.reminderId ?? currentRow.reminder.id, revision: saved?.revision ?? currentRow.reminder.revision.toString() };
         if (!context.isCurrent()) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('The conversation changed.');

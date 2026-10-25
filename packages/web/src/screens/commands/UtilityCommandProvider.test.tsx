@@ -2,7 +2,7 @@ import { createElement, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type PollSummary, type ReminderSummary } from '@dilla/client-core';
+import { decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
 import * as ClientCore from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import type { CommandExecutionContext } from './command-types.ts';
@@ -120,6 +120,31 @@ describe('utility command provider', () => {
     act(() => { run = invoke(); }); expect(await run).toMatchObject({ status: 'success' });
     expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 80).map(row => row.requestId)).toEqual(['b2'.repeat(16)]); mounted.unmount();
+  });
+  it('returns an explicit reminder list only after its owned snapshot completes', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    let created!: Promise<unknown>;
+    act(() => { created = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Listed reminder' } }, commandContext(f.client, 'b4'.repeat(16))); });
+    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await created).toMatchObject({ status: 'success' });
+    let result: CommandResult | undefined; act(() => { void mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'b5'.repeat(16))).then(value => { result = value; }); });
+    await waitFor(() => { expect(result?.status).toBe('success'); expect(result?.message).toContain('Listed reminder'); }); mounted.unmount();
+  });
+  it.each(['reminders cancel', 'reminders dismiss'] as const)('%s resolves its first target lookup before dispatch', async commandId => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    let created!: Promise<unknown>;
+    act(() => { created = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: `Target for ${commandId}` } }, commandContext(f.client, 'b6'.repeat(16))); });
+    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await created;
+    let result: CommandResult | undefined; act(() => { void mounted.captured.value!.handlers[commandId]!({ commandId, args: { reminder: 'b6'.repeat(16) } }, commandContext(f.client, 'b7'.repeat(16))).then(value => { result = value; }); });
+    await waitFor(() => expect(result).toMatchObject({ status: 'success' })); expect(f.requests.some(row => row.operation === (commandId.endsWith('cancel') ? 82 : 83))).toBe(true); mounted.unmount();
+  });
+  it('reconciles timezone aliases using the adapter canonical zone', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'Alias zone' } }; const context = commandContext(f.client, 'b8'.repeat(16)); let run!: Promise<unknown>;
+    act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); }); await screen.findByRole('heading', { name: 'Set a reminder' });
+    await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'US/Eastern');
+    f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); }); expect(await run).toMatchObject({ status: 'success' });
+    expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument(); mounted.unmount();
   });
   it('keeps the poll question limit in Unicode code points', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
@@ -338,5 +363,35 @@ describe('poll card binding', () => {
     expect(mutations.length).toBeGreaterThan(0); expect(mutations.every(row => row.requestId === first.requestId)).toBe(true);
     const selectedMutation = mutations[0]; expect(selectedMutation).toBeDefined();
     expect(decode((selectedMutation?.args[1] as Uint8Array | undefined) ?? new Uint8Array())).toEqual([0n]);
+  });
+  it('keeps an uncertain vote ID when capability recovery temporarily fails', async () => {
+    const f = utilityFixture(); const base = f.client.handler; let ready = true; let refresh!: () => void;
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
+    f.client.handler = command => command.m === 'getBotCommandStatus'
+      ? Promise.resolve({ installationId: INSTALLATION, botUserId: BOT, state: ready ? 3 : 4, revision: '1' }) : base(command);
+    const user = userEvent.setup(); const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages };
+    const view = render(createElement(PollCard, props)); await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(73, false);
+    await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
+    ready = true; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
+    await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    expect(f.requests.filter(row => row.operation === 73).every(row => row.requestId === originalId)).toBe(true); view.unmount();
+  });
+  it('reconciles a threaded poll from its authoritative host items, independent of quote metadata', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    const rootId = 'bc'.repeat(16); const requestId = 'bd'.repeat(16);
+    const binding = { communityId: COMMUNITY, channelId: CHANNEL, threadId: rootId, bits: PERM.sendMessages | PERM.viewChannel };
+    const context = commandContext(f.client, requestId, { binding, getCurrentBinding: () => binding }); const invocation = { commandId: 'poll create', args: { question: 'Thread poll?', answers: 'A, B' } };
+    let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
+    await screen.findByRole('heading', { name: 'Create a poll' }); f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    const message = { key: 's10', state: 'ok' as const, reason: '', senderUser: BOT, senderDevice: null, own: false, web: false, bot: true, ts: 1_800_000_000,
+      body: `Thread poll?\n[dilla-poll:v1:${requestId}]`, msgId: 'be'.repeat(16), seq: '10', edited: false,
+      reply: { msgId: 'bf'.repeat(16), senderUser: BOT, seq: null, excerpt: 'quoted from another thread', state: 'ok' as const, threadRoot: 'c0'.repeat(16) },
+      reactions: [], pinned: false, attachments: [], mention: false, actions: [], thread: null };
+    const retryContext = commandContext(f.client, requestId, { binding, getCurrentBinding: () => binding, items: [message] });
+    expect(f.poll.threadId).toBe(rootId); expect(await mounted.captured.value!.handlers['poll create']!(invocation, retryContext)).toMatchObject({ status: 'success' }); mounted.unmount();
   });
 });
