@@ -18,10 +18,10 @@ import (
 func (h *Groups) registerBotInteractionGroupReads(mux *server.Mux, sessions *auth.Sessions) {
 	bot := BotSessionRoute(sessions, h.Limiter)
 	base := "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}"
-	mux.Handle("GET "+base+"/info", bot("GET "+base+"/info", dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupInfo)))
-	mux.Handle("GET "+base+"/handshakes", bot("GET "+base+"/handshakes", dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupHandshakes)))
-	mux.Handle("GET "+base+"/messages", bot("GET "+base+"/messages", dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupMessages)))
-	mux.Handle("POST "+base+"/cursor", bot("POST "+base+"/cursor", dsMeter(h.Limiter, dsClassWrite, h.botInteractionGroupCursor)))
+	mux.Handle("GET "+base+"/info", bot("GET "+base+"/info", http.HandlerFunc(h.botInteractionGroupInfo)))
+	mux.Handle("GET "+base+"/handshakes", bot("GET "+base+"/handshakes", http.HandlerFunc(h.botInteractionGroupHandshakes)))
+	mux.Handle("GET "+base+"/messages", bot("GET "+base+"/messages", http.HandlerFunc(h.botInteractionGroupMessages)))
+	mux.Handle("POST "+base+"/cursor", bot("POST "+base+"/cursor", http.HandlerFunc(h.botInteractionGroupCursor)))
 }
 
 func (h *Groups) botInteractionGroupRead(w http.ResponseWriter, r *http.Request, fn func(ds.CurrentBotInteractionGroupContext, store.Repository, auth.Session, id.ID) error) bool {
