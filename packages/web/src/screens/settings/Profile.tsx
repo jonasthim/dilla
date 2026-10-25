@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '@dilla/client-core';
 import { Banner, Button, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
+import { useSettingsEdit } from '../../settings/edit-state.tsx';
 
 const TITLE_ID = 'profile-title';
 const PROBLEM: Record<ProfileTextProblem, StringKey> = { chars: 'profile.error.chars', long: 'profile.error.long', blank: 'profile.error.blank' };
@@ -75,17 +76,29 @@ export function Profile(): React.JSX.Element {
   const text = (p: ProfileTextProblem | null) => (p === null ? undefined : t(PROBLEM[p]));
   const dirty = Object.keys(changed).length > 0;
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    if (pending || !dirty || invalid) return;
-    if (edited.display && next.display === '') { setDisplayError(true); return; }
+  const save = useCallback(async (): Promise<boolean> => {
+    if (pending || !dirty || invalid) return false;
+    if (edited.display && next.display === '') { setDisplayError(true); return false; }
     setPending(true);
     setFailed(null);
-    client.call({ m: 'updateProfile', ...changed }).then(() => { setSent({ ...baseline, ...Object.fromEntries(Object.entries(edited).filter(([, on]) => on).map(([k]) => [k, fields[k as keyof Fields]])) }); setDone(true); }).catch((e: unknown) => {
+    try {
+      await client.call({ m: 'updateProfile', ...changed });
+      setSent({ ...baseline, ...Object.fromEntries(Object.entries(edited).filter(([, on]) => on).map(([k]) => [k, fields[k as keyof Fields]])) });
+      setDone(true);
+      return true;
+    } catch (e: unknown) {
       const code = errorOf(e).code;
       setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : code === 'E_RATE_LIMITED' ? 'wait' : 'save');
-    }).finally(() => { setPending(false); });
-  };
+      return false;
+    } finally { setPending(false); }
+  }, [pending, dirty, invalid, edited.display, next.display, client, changed.display, changed.statusMsg, changed.bio,
+    baseline.display, baseline.statusMsg, baseline.bio, fields.display, fields.statusMsg, fields.bio]);
+  const reset = useCallback(() => { setFields(baseline); setFailed(null); setDone(false); setDisplayError(false); }, [baseline.display, baseline.statusMsg, baseline.bio]);
+  const state = useMemo(() => ({ dirty, busy: pending, canSave: dirty && !pending && !invalid,
+    save, reset }), [dirty, pending, invalid, save, reset]);
+  const managed = useSettingsEdit(state);
+
+  const submit = (event: FormEvent) => { event.preventDefault(); if (!managed) void save(); };
 
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
@@ -100,7 +113,7 @@ export function Profile(): React.JSX.Element {
         <TextField id="profile-bio" label={t('profile.bio.label')} value={fields.bio} onChange={bio => { edit({ bio }); }}
           maxLength={BIO_MAX_CHARS} multiline rows={5} hint={t('profile.bio.hint')} note={t('profile.serverReads')} error={text(problem.bio)} />
         <div className="dw-profile-form__actions">
-          <Button type="submit" disabled={!dirty || pending || invalid}>{t('profile.save')}</Button>
+          {managed ? null : <Button type="submit" disabled={!dirty || pending || invalid}>{t('profile.save')}</Button>}
           <p role="status" className="dw-profile-form__saved">{done && !dirty ? t('profile.saved') : ''}</p>
         </div>
       </form>
