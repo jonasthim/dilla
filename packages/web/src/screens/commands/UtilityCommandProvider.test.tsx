@@ -57,7 +57,7 @@ function utilityFixture() {
       return { responses: responses.filter(response => operations.includes(response.operation) && (ids === undefined || ids.includes(response.requestId))), through: null, blocked: false }; }
     if (command.m === 'ackBotInteractionResponses') return null; return null;
   });
-  return { client: core, requests, get poll() { return row; }, get reminder() { return reminder; }, failNext(operation: number, apply = true) { failOperation = operation; failApplies = apply; },
+  return { client: core, requests, responses, get poll() { return row; }, get reminder() { return reminder; }, failNext(operation: number, apply = true) { failOperation = operation; failApplies = apply; },
     markReminderDue() { if (reminder !== null) reminder = [...reminder.slice(0, 2), BigInt(Math.floor(Date.now() / 1000)) - 60n, ...reminder.slice(3, 6), 1n, BigInt(reminder[7] as bigint) + 1n]; } };
 }
 function commandContext(client: CoreClient, requestId: string, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
@@ -89,14 +89,37 @@ describe('utility command provider', () => {
     await screen.findByRole('heading', { name: 'Create a poll' });
     await user.clear(screen.getByLabelText('Question')); await user.type(screen.getByLabelText('Question'), 'Edited?');
     f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    const botPost = { key: 's9', state: 'ok' as const, reason: '', senderUser: BOT, senderDevice: null, own: false, web: false, bot: true,
+      ts: 1_800_000_000, body: `Edited?\n[dilla-poll:v1:${context.requestId}]`, msgId: 'bc'.repeat(16), seq: '9', edited: false, reply: null,
+      reactions: [], pinned: false, attachments: [], mention: false, actions: [], thread: null };
+    const retryContext = commandContext(f.client, context.requestId, { items: [botPost] });
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
-    expect(await screen.findByLabelText('Question')).toHaveValue('Edited?'); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await run).toMatchObject({ status: 'uncertain' });
+    act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, retryContext); });
+    expect(await run).toMatchObject({ status: 'success' });
     const writes = f.requests.filter(row => row.operation === 70); expect(writes).toHaveLength(1);
     expect(new Set(writes.map(row => row.requestId))).toEqual(new Set(['ac'.repeat(16)]));
     const payloads = writes.map(row => decode(row.args[0] as Uint8Array) as unknown[]);
     expect(payloads.every(payload => JSON.stringify(payload, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value) === JSON.stringify(payloads[0], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value))).toBe(true);
     expect(payloads[0]?.[3]).toBe('Edited?'); mounted.unmount();
+  });
+  it('keeps a pending poll create uncertain when send permission disappears', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    let bits = PERM.sendMessages; const context = commandContext(f.client, 'b1'.repeat(16), { getCurrentBinding: () => ({ communityId: COMMUNITY, channelId: CHANNEL, bits }) });
+    const invoke = () => mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, context);
+    let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'Create a poll' });
+    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    bits = 0; expect(await invoke()).toMatchObject({ status: 'uncertain' });
+    expect(f.requests.filter(row => row.operation === 70).map(row => row.requestId)).toEqual(['b1'.repeat(16)]); mounted.unmount();
+  });
+  it('reconciles an accepted reminder from its owner list before opening a retry dialog', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const context = commandContext(f.client, 'b2'.repeat(16)); const invoke = () => mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Keep one copy' } }, context);
+    const user = userEvent.setup(); let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'Set a reminder' });
+    f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' }); expect(f.reminder).not.toBeNull();
+    act(() => { run = invoke(); }); expect(await run).toMatchObject({ status: 'success' });
+    expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument();
+    expect(f.requests.filter(row => row.operation === 80).map(row => row.requestId)).toEqual(['b2'.repeat(16)]); mounted.unmount();
   });
   it('keeps the poll question limit in Unicode code points', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
@@ -164,6 +187,20 @@ describe('utility command provider', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' })); await waitFor(() => expect(f.requests.some(row => row.operation === 82)).toBe(true));
     mounted.unmount();
   });
+  it('does not dispatch an inbox mutation after the live account changes during capability lookup', async () => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    await real.reminderCreate({ requestId: 'b3'.repeat(16), whenKind: 0, when: 3600, text: 'Owner scoped', timezone: 'UTC', sourceChannelId: CHANNEL });
+    f.markReminderDue();
+    let hold = false; let release!: (value: Awaited<ReturnType<typeof real.capabilities>>) => void; const capProbe = vi.fn(); const cancel = vi.fn((input: Parameters<typeof real.reminderCancel>[0]) => real.reminderCancel(input));
+    const delayed = new Promise<Awaited<ReturnType<typeof real.capabilities>>>(resolve => { release = resolve; });
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, capabilities: () => { capProbe(); return hold ? delayed : real.capabilities(); }, reminderCancel: cancel });
+    const user = userEvent.setup(); const mounted = mount(f.client); await waitFor(() => expect(f.requests.some(row => row.operation === 81)).toBe(true));
+    await user.click(screen.getByRole('button', { name: /Reminders/ })); await screen.findByText('Owner scoped'); hold = true;
+    const before = capProbe.mock.calls.length; await user.click(screen.getByRole('button', { name: 'Cancel' })); await waitFor(() => expect(capProbe.mock.calls.length).toBeGreaterThan(before));
+    const changed = { ...f.client.get('account')!, user: { ...f.client.get('account')!.user!, id: 'ac'.repeat(16) } };
+    act(() => f.client.set('account', changed)); release({ version: 1, installationId: INSTALLATION, botUserId: BOT, supportedOperations: [3, 82] });
+    await waitFor(() => expect(cancel).not.toHaveBeenCalled()); mounted.unmount();
+  });
   it('redacts a source link immediately when the source channel is no longer active', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Still private' } }, commandContext(f.client, 'af'.repeat(16))); });
@@ -196,6 +233,27 @@ describe('utility command provider', () => {
     await user.click(screen.getByRole('button', { name: /Reminders/ }));
     expect(await screen.findByText('Reminder 100')).toBeInTheDocument(); expect(screen.getByText('Reminder 81')).toBeInTheDocument();
     expect(screen.getAllByRole('listitem')).toHaveLength(100); expect(screen.getByRole('button', { name: /33 due/ })).toBeInTheDocument(); mounted.unmount();
+  });
+  it('pages opaque reminder cursors through the real BotUtilities adapter', async () => {
+    const f = utilityFixture(); const base = f.client.handler; const pageRequests: Uint8Array[] = [];
+    f.client.handler = command => {
+      if (command.m !== 'humanInteractionRequest' || command.operation !== 81) return base(command);
+      const cursor = command.args[0] as Uint8Array | null;
+      const dueCursor = cursor === null ? 0 : Number(BigInt(new TextDecoder().decode(cursor).split('/')[1] ?? '0') - 1_800_000_100n);
+      const pageIndex = cursor === null ? 0 : Math.floor(dueCursor / 20);
+      pageRequests.push(cursor?.slice() ?? new Uint8Array());
+      const rows = Array.from({ length: 20 }, (_unused, i) => {
+        const n = pageIndex * 20 + i + 1; const id = n.toString(16).padStart(32, '0');
+        return [asBytes(id), `Adapter reminder ${n}`, 1_800_000_100n + BigInt(n), 'UTC', null, null, 1n, 1n];
+      });
+      const final = pageIndex === 4 ? null : new Uint8Array(new TextEncoder().encode(`${USER}/${(1_800_000_100n + BigInt((pageIndex + 1) * 20)).toString().padStart(20, '0')}/${((pageIndex + 1) * 20).toString(16).padStart(32, '0')}`));
+      f.responses.push({ deliveryId: String(1000 + pageRequests.length), requestId: command.requestId, communityId: COMMUNITY, operation: 81,
+        channelId: null, status: 0, revision: null, data: wire([1n, rows, final]) });
+      return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+    };
+    const mounted = mount(f.client, null); await waitFor(() => expect(pageRequests).toHaveLength(5));
+    expect(pageRequests[0]).toEqual(new Uint8Array()); expect(pageRequests.slice(1).every(cursor => cursor.length > 0)).toBe(true);
+    expect(screen.getByRole('button', { name: /100 due/ })).toBeInTheDocument(); mounted.unmount();
   });
   it('hides fetched reminder data immediately when the owner changes', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client);
@@ -263,12 +321,17 @@ describe('poll card binding', () => {
   });
   it('retries an uncertain poll vote with the same request id', async () => {
     const user = userEvent.setup(); const f = utilityFixture();
-    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
+    const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages | PERM.manageMessages } as const;
+    const view = render(createElement(PollCard, props));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
     f.failNext(73, false);
     await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const first = f.requests.find(row => row.operation === 73)!;
+    view.rerender(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
+    expect(screen.getAllByRole('checkbox')[0]).toBeChecked(); view.unmount();
+    render(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
+    expect(await screen.findByRole('button', { name: 'Retry vote' })).toBeEnabled(); expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
     await user.click(screen.getByRole('button', { name: 'Retry vote' }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const mutations = f.requests.filter(row => row.operation === 73);

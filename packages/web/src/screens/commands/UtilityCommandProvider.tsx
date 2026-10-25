@@ -19,6 +19,11 @@ const uncertain = (message: string): CommandResult => ({ status: 'uncertain', me
 const thread = (binding: Readonly<Binding>) => binding.threadId === undefined ? null : binding.threadId;
 type CreateAttempt = { kind: string; scope: string; installationId: string; value: Record<string, unknown> };
 const createAttempts = new WeakMap<CoreClient, Map<string, CreateAttempt>>();
+const inboxAttempts = new WeakMap<CoreClient, Map<string, { id: string; revision: string; installationId: string }>>();
+function inboxAttemptMap(client: CoreClient): Map<string, { id: string; revision: string; installationId: string }> {
+  const found = inboxAttempts.get(client); if (found) return found;
+  const created = new Map<string, { id: string; revision: string; installationId: string }>(); inboxAttempts.set(client, created); return created;
+}
 function createAttemptMap(client: CoreClient): Map<string, CreateAttempt> {
   const current = createAttempts.get(client); if (current) return current;
   const created = new Map<string, CreateAttempt>(); createAttempts.set(client, created); return created;
@@ -31,6 +36,16 @@ function canCreateFromContext(context: CommandExecutionContext, communityId: str
   const current = context.getCurrentBinding();
   return context.isCurrent() && current.communityId === communityId && current.channelId !== null
     && current.channelId === context.binding.channelId && ((current.bits ?? 0) & PERM.sendMessages) !== 0;
+}
+function pollPublished(context: CommandExecutionContext, pollId: string, channelId: string, threadId: string | null, botId: string): boolean {
+  return context.items.some(item => item.state === 'ok' && !item.edited && item.senderUser === botId && item.bot
+    && finalMarker(item.body) === pollId && (threadId === null ? item.reply?.threadRoot == null : item.reply?.threadRoot === threadId)
+    && item.msgId !== null && item.body.split(/\r?\n/u).at(-1) === `[dilla-poll:v1:${pollId}]`);
+}
+function finalMarker(body: string): string | null {
+  const value = body.split(/\r?\n/u).at(-1) ?? '';
+  const match = /^\[dilla-poll:v1:([0-9a-f]{32})\]$/u.exec(value);
+  return match?.[1] ?? null;
 }
 const caught = (error: unknown, kind: 'poll' | 'reminder' = 'poll'): CommandResult => {
   if (error instanceof BotUtilitiesUncertainMutationError) return uncertain(copy(kind === 'poll' ? 'poll.createdUncertain' : 'reminder.uncertain'));
@@ -215,10 +230,11 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     if (ownerKey === '') { fetchToken.current++; knownDue.current = null; setRecords(null); return; }
     knownDue.current = null;
     let stopped = false; let running = false; let queued = false; let timer = 0;
+    let availabilityTicks = 0;
     const poll = async (initial = false): Promise<void> => {
       if (stopped) return;
       if (running) { queued = true; return; }
-      running = true; await fetchInbox(initial); running = false;
+      running = true; availabilityTicks++; await fetchInbox(initial, availabilityTicks % 5 === 0); running = false;
       if (stopped) return;
       if (queued) { queued = false; void poll(); }
       else timer = window.setTimeout(() => { void poll(); }, 60_000);
@@ -280,9 +296,9 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     if (communityId === null) return {};
     const handlers: Record<string, (invocation: CommandInvocation, context: CommandExecutionContext) => Promise<CommandResult>> = {};
     handlers['poll create'] = async (invocation, context) => {
-      if (!canCreateFromContext(context, communityId) || !context.binding.channelId) return failure('Create a poll in a community channel.');
       const scope = executionScope(context); const attempts = createAttemptMap(client); const prior = attempts.get(context.requestId);
       if (prior && (prior.kind !== 'poll' || prior.scope !== scope)) return uncertain(copy('poll.createdUncertain'));
+      if (!canCreateFromContext(context, communityId) || !context.binding.channelId) return prior ? uncertain(copy('poll.createdUncertain')) : failure('Create a poll in a community channel.');
       let utility: BotUtilities; let caps;
       try { utility = utilityFor(communityId); caps = await utility.capabilities(); }
       catch (error) { return prior ? uncertain(copy('poll.createdUncertain')) : caught(error); }
@@ -290,7 +306,21 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       if (prior && prior.installationId !== caps.installationId) return uncertain(copy('poll.createdUncertain'));
       const answers = invocation.args.answers ?? '';
       const saved = prior?.value as { question: string; answers: string[]; multi: boolean; duration: number } | undefined;
-      const raw = await open({ kind: 'poll', question: saved?.question ?? invocation.args.question ?? '', answers: saved?.answers.join('\n') ?? answers.replace(/\s*,\s*/gu, '\n'), multi: saved?.multi ?? invocation.args.multiple === 'on', duration: saved ? Object.keys(DURATIONS).find(key => DURATIONS[key] === saved.duration) ?? '24h' : invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
+      if (prior) {
+        try {
+          const receipt = await utility.read(context.requestId, 70);
+          if (receipt?.status === 4) { attempts.delete(context.requestId); return failure('Poll creation was rejected. Start a new poll command.'); }
+          const poll = await utility.pollGet(context.requestId, { channelId: context.binding.channelId, threadId: thread(context.binding) });
+          if (poll.question === saved?.question && poll.answers.join('\u0000') === saved?.answers.join('\u0000')
+            && poll.multi === saved?.multi && pollPublished(context, poll.id, context.binding.channelId, thread(context.binding), caps.botUserId)) {
+            attempts.delete(context.requestId); return success(copy('poll.created') + ` ${poll.id}`);
+          }
+          if (receipt?.status === 0 || (receipt !== null && receipt?.status !== 5)) return uncertain(copy('poll.createdUncertain'));
+        } catch { return uncertain(copy('poll.createdUncertain')); }
+      }
+      // A retained mutation is immutable. Reopening its fields would imply that edits are
+      // part of the retry even though the original request ID is body-bound.
+      const raw = saved ?? await open({ kind: 'poll', question: invocation.args.question ?? '', answers: answers.replace(/\s*,\s*/gu, '\n'), multi: invocation.args.multiple === 'on', duration: invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
       if (raw === null) return prior ? uncertain(copy('poll.createdUncertain')) : failure('Poll creation cancelled.');
       const submitted = saved ?? raw;
       const attempt = prior ?? { kind: 'poll' as const, scope, installationId: caps.installationId, value: { ...raw, answers: [...raw.answers] } };
@@ -305,27 +335,28 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       }
     };
     for (const id of ['poll vote', 'poll results', 'poll close']) handlers[id] = async (invocation, context) => {
-      if (!context.isCurrent() || context.binding.communityId !== communityId) return failure('The conversation changed.');
+      const attempts = createAttemptMap(client); const scope = executionScope(context); const prior = attempts.get(context.requestId);
+      if (prior && (prior.kind !== id || prior.scope !== scope)) return uncertain(copy('poll.uncertain'));
+      if (!context.isCurrent() || context.binding.communityId !== communityId) return prior ? uncertain(copy('poll.uncertain')) : failure('The conversation changed.');
       const pollId = invocation.args.poll;
-      if (!pollId || !hexID.test(pollId)) return failure('Choose a poll from this conversation.');
+      const saved = prior?.value as { pollId: string; channelId: string; threadId: string | null; revision: string; choices?: number[] } | undefined;
+      if ((!pollId || !hexID.test(pollId)) && !saved) return failure('Choose a poll from this conversation.');
       try {
-        const utility = utilityFor(communityId); const poll = await utility.pollGet(pollId, { channelId: context.binding.channelId, threadId: thread(context.binding) });
-        if (id === 'poll results') return success(copy('poll.results', { question: poll.question, answers: poll.answers.map((answer, i) => `${answer}: ${poll.counts[i]}`).join('\n') }));
-        const operation = id === 'poll close' ? 74 : 73; const attempts = createAttemptMap(client); const scope = executionScope(context);
-        const prior = attempts.get(context.requestId);
-        if (prior && (prior.kind !== id || prior.scope !== scope)) return uncertain(copy('poll.uncertain'));
+        const utility = utilityFor(communityId); const operation = id === 'poll close' ? 74 : id === 'poll results' ? 71 : 73;
         const caps = await utility.capabilities();
         if (prior && prior.installationId !== caps.installationId) return uncertain(copy('poll.uncertain'));
         if (prior) {
           const status = await utility.read(context.requestId, operation);
           if (status?.status === 0) { attempts.delete(context.requestId); return success(id === 'poll close' ? copy('poll.closed') : 'Vote saved.'); }
           if (status?.status === 4) { attempts.delete(context.requestId); return failure(copy('poll.conflict')); }
-          if (status?.status === 2 || status?.status === 3 || !caps.supportedOperations.includes(operation)) return uncertain(copy('poll.uncertain'));
-        } else if (!caps.supportedOperations.includes(operation)) return failure('The Bot cannot update this poll.');
+          if (status?.status === 2 || status?.status === 3) return uncertain(copy('poll.uncertain'));
+        }
+        if (!caps.supportedOperations.includes(operation)) return prior ? uncertain(copy('poll.uncertain')) : failure('The Bot cannot update this poll.');
+        const poll = await utility.pollGet(saved?.pollId ?? pollId, { channelId: saved?.channelId ?? context.binding.channelId, threadId: saved?.threadId ?? thread(context.binding) });
+        if (id === 'poll results') return success(copy('poll.results', { question: poll.question, answers: poll.answers.map((answer, i) => `${answer}: ${poll.counts[i]}`).join('\n') }));
         if (id === 'poll close') {
-          if (poll.creatorId !== context.selfId && ((context.getCurrentBinding().bits ?? 0) & PERM.manageMessages) === 0) return failure('You cannot close this poll.');
-          const saved = prior?.value as { pollId: string; channelId: string; threadId: string | null; revision: string } | undefined;
-          const input = saved ?? { pollId, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision.toString() };
+          if (poll.creatorId !== context.selfId && ((context.getCurrentBinding().bits ?? 0) & PERM.manageMessages) === 0) return prior ? uncertain(copy('poll.uncertain')) : failure('You cannot close this poll.');
+          const input = saved ?? { pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision.toString() };
           if (!context.isCurrent()) return prior ? uncertain(copy('poll.uncertain')) : failure('The conversation changed.');
           attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: input });
           await utility.pollClose({ requestId: context.requestId, ...input });
@@ -335,8 +366,9 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
         const choices = (invocation.args.choice ?? '').split(',').map(value => value.trim()).filter(Boolean);
         const indexes = choices.map(value => { const numeric = Number(value); if (Number.isInteger(numeric) && numeric >= 1 && numeric <= poll.answers.length) return numeric - 1; return poll.answers.findIndex(answer => answer.toLocaleLowerCase() === value.toLocaleLowerCase()); });
         if (!prior && (indexes.length === 0 || indexes.some(index => index < 0) || (!poll.multi && indexes.length > 1))) return failure('Choose one or more answer names, separated by commas.');
-        const saved = prior?.value as { pollId: string; channelId: string; threadId: string | null; revision: string; choices: number[] } | undefined;
-        const input = saved ?? { pollId, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision.toString(), choices: indexes };
+        if (prior && saved?.choices === undefined) return uncertain(copy('poll.uncertain'));
+        const input = { pollId: saved?.pollId ?? poll.id, channelId: saved?.channelId ?? poll.channelId, threadId: saved?.threadId ?? poll.threadId,
+          revision: saved?.revision ?? poll.revision.toString(), choices: saved?.choices ?? indexes };
         if (!context.isCurrent()) return prior ? uncertain(copy('poll.uncertain')) : failure('The conversation changed.');
         attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: input });
         const updated = await utility.pollVote({ requestId: context.requestId, ...input });
@@ -345,21 +377,35 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       } catch (error) {
         const pending = createAttemptMap(client).get(context.requestId);
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (pending === undefined && error.status !== 5))) createAttemptMap(client).delete(context.requestId);
-        return caught(error);
+        if (prior && error instanceof BotUtilitiesStatusError && error.status === 4) return failure(id === 'poll close' ? copy('poll.closeConflict') : copy('poll.conflict'));
+        return prior ? uncertain(copy('poll.uncertain')) : caught(error);
       }
     };
     handlers.remind = async (invocation, context) => {
-      if (!canCreateFromContext(context, communityId)) return failure('Set reminders in a Bot-enabled community.');
       const scope = executionScope(context); const attempts = createAttemptMap(client); const prior = attempts.get(context.requestId);
       if (prior && (prior.kind !== 'reminder' || prior.scope !== scope)) return uncertain(copy('reminder.uncertain'));
+      if (!canCreateFromContext(context, communityId)) return prior ? uncertain(copy('reminder.uncertain')) : failure('Set reminders in a Bot-enabled community.');
       let utility: BotUtilities; let caps;
       try { utility = utilityFor(communityId); caps = await utility.capabilities(); }
       catch (error) { return prior ? uncertain(copy('reminder.uncertain')) : caught(error, 'reminder'); }
       if (!canCreateFromContext(context, communityId) || !caps.supportedOperations.includes(80)) return prior ? uncertain(copy('reminder.uncertain')) : failure('Reminders are unavailable in this channel.');
       if (prior && prior.installationId !== caps.installationId) return uncertain(copy('reminder.uncertain'));
       const saved = prior?.value as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | undefined;
-      const value = await open({ kind: 'reminder', when: saved?.when ?? invocation.args.when, text: saved?.text ?? invocation.args.text, timezone: saved?.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'),
-        chosen: saved?.result.mode === 'absolute' ? saved.result.unixSeconds : undefined }, context) as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | null;
+      if (prior) {
+        try {
+          const receipt = await utility.read(context.requestId, 80);
+          if (receipt?.status === 4) { attempts.delete(context.requestId); return failure(copy('reminder.conflict')); }
+          let cursor: Uint8Array | null = null; let found: ReminderSummary | undefined;
+          for (let page = 0; page < 5; page++) { const result = await utility.reminderList(cursor); found = result.items.find(item => item.id === context.requestId); if (found) break; cursor = result.nextCursor; if (cursor === null) break; }
+          const sourceMatches = found?.sourceChannelId === context.binding.channelId && found.sourceThreadId === thread(context.binding)
+            || found?.sourceChannelId === null && found.sourceThreadId === null;
+          if (found && found.text === saved?.text && found.timezone === saved?.timezone && sourceMatches) {
+            attempts.delete(context.requestId); refreshRequestId(); return success(`${copy('reminder.created')} ${found.id}`);
+          }
+          if (receipt?.status === 0 || (receipt !== null && receipt?.status !== 5)) return uncertain(copy('reminder.uncertain'));
+        } catch { return uncertain(copy('reminder.uncertain')); }
+      }
+      const value = await open({ kind: 'reminder', when: invocation.args.when, text: invocation.args.text, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }, context) as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | null;
       if (value === null) return prior ? uncertain(copy('reminder.uncertain')) : failure('Reminder creation cancelled.');
       const submitted = saved ?? value;
       attempts.set(context.requestId, prior ?? { kind: 'reminder', scope, installationId: caps.installationId,
@@ -379,39 +425,43 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     };
     handlers['reminders list'] = async (_invocation, context) => {
       if (!context.isCurrent()) return failure('The conversation changed.');
-      const rows = (await fetchInbox()).filter(row => row.reminder.state === 'scheduled' || row.reminder.state === 'due');
+      const rows = (await fetchInbox(true, true)).filter(row => row.reminder.state === 'scheduled' || row.reminder.state === 'due');
       if (!context.isCurrent()) return failure('The conversation changed.');
       if (rows.length === 0) return success(copy('reminder.empty'));
       return success(copy('reminder.list', { count: rows.length, items: rows.slice(0, 12).map(row => `${row.reminder.id}: ${row.reminder.text}`).join('; ') }));
     };
     for (const id of ['reminders cancel', 'reminders dismiss']) handlers[id] = async (invocation, context) => {
-      if (!context.isCurrent()) return failure('The conversation changed.');
-      const target = invocation.args.reminder;
-      const row = (await fetchInbox()).find(item => item.reminder.id === target);
-      if (!context.isCurrent()) return failure('The conversation changed.');
-      if (!row) return failure('Choose one of your accessible reminders.');
       const operation = id === 'reminders cancel' ? 82 : 83; const attempts = createAttemptMap(client);
-      const scope = `${executionScope(context)}:${row.communityId}:${row.reminder.id}:${id}`; const prior = attempts.get(context.requestId);
-      if (prior && (prior.kind !== id || prior.scope !== scope)) return uncertain(copy('reminder.uncertainMutation'));
+      const prior = attempts.get(context.requestId); const saved = prior?.value as { communityId: string; reminderId: string; revision: string } | undefined;
+      if (prior && (prior.kind !== id || !saved)) return uncertain(copy('reminder.uncertainMutation'));
+      if (!context.isCurrent()) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('The conversation changed.');
+      const target = invocation.args.reminder;
       try {
-        const utility = utilityFor(row.communityId); const caps = await utility.capabilities();
+        const row = prior === undefined ? (await fetchInbox(true, true)).find(item => item.reminder.id === target) : undefined;
+        if (!prior && !row) return failure('Choose one of your accessible reminders.');
+        const community = saved?.communityId ?? row!.communityId;
+        const scope = `${executionScope(context)}:${community}:${saved?.reminderId ?? row!.reminder.id}:${id}`;
+        if (prior && prior.scope !== scope) return uncertain(copy('reminder.uncertainMutation'));
+        const utility = utilityFor(community); const caps = await utility.capabilities();
         if (prior && prior.installationId !== caps.installationId) return uncertain(copy('reminder.uncertainMutation'));
         if (prior) {
           const status = await utility.read(context.requestId, operation);
           if (status?.status === 0) { attempts.delete(context.requestId); refreshRequestId(); return success(copy(id === 'reminders cancel' ? 'reminder.cancelled' : 'reminder.dismissed')); }
           if (status?.status === 4) { attempts.delete(context.requestId); return failure(copy('reminder.conflict')); }
-          if (status?.status === 2 || status?.status === 3 || !caps.supportedOperations.includes(operation)) return uncertain(copy('reminder.uncertainMutation'));
+          if (status?.status === 2 || status?.status === 3) return uncertain(copy('reminder.uncertainMutation'));
         } else if (!caps.supportedOperations.includes(operation)) return failure(copy('reminder.unavailable'));
-        const saved = prior?.value as { reminderId: string; revision: string } | undefined;
-        const input = { requestId: context.requestId, ...(saved ?? { reminderId: row.reminder.id, revision: row.reminder.revision.toString() }) };
+        if (!caps.supportedOperations.includes(operation)) return uncertain(copy('reminder.uncertainMutation'));
+        const currentRow = prior ? (await fetchInbox(true, true)).find(item => item.communityId === community && item.reminder.id === saved!.reminderId) : row;
+        if (!currentRow) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('Choose one of your accessible reminders.');
+        const input = { requestId: context.requestId, reminderId: saved?.reminderId ?? currentRow.reminder.id, revision: saved?.revision ?? currentRow.reminder.revision.toString() };
         if (!context.isCurrent()) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('The conversation changed.');
-        attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: { reminderId: input.reminderId, revision: input.revision } });
+        attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: { communityId: community, reminderId: input.reminderId, revision: input.revision } });
         if (id === 'reminders cancel') await utility.reminderCancel(input); else await utility.reminderDismiss(input);
         attempts.delete(context.requestId);
         refreshRequestId(); return success(copy(id === 'reminders cancel' ? 'reminder.cancelled' : 'reminder.dismissed'));
       } catch (error) {
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
-        return caught(error, 'reminder');
+        return prior ? uncertain(copy('reminder.uncertainMutation')) : caught(error, 'reminder');
       }
     };
     return handlers;
@@ -444,7 +494,8 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
 function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean; dueCount: number;
   open: boolean; onOpen(): void; onClose(): void; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState('');
-  const attempts = useRef(new Map<string, { id: string; revision: string; installationId: string }>());
+  const attempts = inboxAttemptMap(props.client);
+  const renderScope = useRef({ client: props.client, owner: props.ownerKey }); renderScope.current = { client: props.client, owner: props.ownerKey };
   const accountNow = props.client.get('account'); const liveOwner = accountNow?.instance?.id && accountNow.user?.id && accountNow.deviceId ? `${accountNow.instance.id}:${accountNow.user.id}:${accountNow.deviceId}` : '';
   const current = liveOwner === props.ownerKey ? props.rows : [];
   const due = current.filter(row => row.reminder.state === 'due'); const scheduled = current.filter(row => row.reminder.state === 'scheduled');
@@ -452,39 +503,51 @@ function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: Remi
     const key = `${props.ownerKey}:${row.communityId}:${row.reminder.id}:${action}`;
     if (busy !== null) return; setBusy(key); setError('');
     try {
-      const live = props.client.get('account');
-      if (`${live?.instance?.id ?? ''}:${live?.user?.id ?? ''}:${live?.deviceId ?? ''}` !== props.ownerKey) return;
+      const currentOwner = () => { const live = props.client.get('account'); return `${live?.instance?.id ?? ''}:${live?.user?.id ?? ''}:${live?.deviceId ?? ''}`; };
+      const isCurrent = () => renderScope.current.client === props.client && renderScope.current.owner === props.ownerKey && currentOwner() === props.ownerKey
+        && (props.client.get('communities') ?? []).some(item => item.id === row.communityId);
+      if (!isCurrent()) return;
+      const prior = attempts.get(key);
       const utility = props.utilityFor(row.communityId); const caps = await utility.capabilities();
-      if (liveOwner !== props.ownerKey || !(props.client.get('communities') ?? []).some(item => item.id === row.communityId)) return;
+      if (!isCurrent()) return;
       const op = action === 'cancel' ? 82 : 83;
-      if (!caps.supportedOperations.includes(op)) { setError(copy('reminder.unavailable')); return; }
-      const prior = attempts.current.get(key);
+      if (prior !== undefined) {
+        if (prior.installationId !== caps.installationId) { setError(copy('reminder.uncertainMutation')); return; }
+        const result = await utility.read(prior.id, op);
+        if (!isCurrent()) return;
+        if (result?.status === 0) { attempts.delete(key); props.onRefresh(); return; }
+        if (result?.status === 4) { attempts.delete(key); setError(copy('reminder.conflict')); props.onRefresh(); return; }
+        if (result?.status === 2 || result?.status === 3 || !caps.supportedOperations.includes(op)) { setError(copy('reminder.uncertainMutation')); return; }
+      } else if (!caps.supportedOperations.includes(op)) { setError(copy('reminder.unavailable')); return; }
       const attempt = prior ?? { id: makeId(), revision: row.reminder.revision.toString(), installationId: caps.installationId };
-      attempts.current.set(key, attempt);
+      attempts.set(key, attempt);
       if (attempt.installationId !== caps.installationId) { setError(copy('reminder.uncertainMutation')); return; }
       const input = { requestId: attempt.id, reminderId: row.reminder.id, revision: attempt.revision };
+      if (!isCurrent()) { setError(copy('reminder.uncertainMutation')); return; }
       if (action === 'cancel') await utility.reminderCancel(input); else await utility.reminderDismiss(input);
-      const after = props.client.get('account');
-      if (`${after?.instance?.id ?? ''}:${after?.user?.id ?? ''}:${after?.deviceId ?? ''}` !== props.ownerKey
-        || !(props.client.get('communities') ?? []).some(item => item.id === row.communityId)) return;
-      attempts.current.delete(key); props.onRefresh();
+      if (!isCurrent()) return;
+      attempts.delete(key); props.onRefresh();
     } catch (cause) {
       if (cause instanceof BotUtilitiesStatusError && cause.status === 4) {
-        attempts.current.delete(key); setError(copy('reminder.conflict')); props.onRefresh();
+        attempts.delete(key); setError(copy('reminder.conflict')); props.onRefresh();
       } else if (cause instanceof BotUtilitiesUncertainMutationError) {
-        const attempt = attempts.current.get(key);
+        const attempt = attempts.get(key);
         if (attempt !== undefined) {
           try {
             const result = await props.utilityFor(row.communityId).read(attempt.id, action === 'cancel' ? 82 : 83);
             const latest = props.client.get('account');
-            if (`${latest?.instance?.id ?? ''}:${latest?.user?.id ?? ''}:${latest?.deviceId ?? ''}` !== props.ownerKey) return;
-            if (result?.status === 0) { attempts.current.delete(key); props.onRefresh(); return; }
-            if (result?.status === 4) { attempts.current.delete(key); setError(copy('reminder.conflict')); props.onRefresh(); return; }
+            if (`${latest?.instance?.id ?? ''}:${latest?.user?.id ?? ''}:${latest?.deviceId ?? ''}` !== props.ownerKey
+              || !(props.client.get('communities') ?? []).some(item => item.id === row.communityId)) return;
+            if (result?.status === 0) { attempts.delete(key); props.onRefresh(); return; }
+            if (result?.status === 4) { attempts.delete(key); setError(copy('reminder.conflict')); props.onRefresh(); return; }
           } catch { /* Keep the captured revision and id for a later reconciliation. */ }
         }
         setError(copy('reminder.uncertainMutation')); props.onRefresh();
       } else {
-        if (!(cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3))) attempts.current.delete(key);
+        if (!(cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3))) {
+          // Once an attempt has been retained, transport/provider failures cannot release its ID.
+          if (!attempts.has(key)) attempts.delete(key);
+        }
         setError(cause instanceof BotUtilitiesProviderUnavailableError ? copy('reminder.unavailable') : 'Could not update this reminder. Refresh and try again.');
       }
     }

@@ -57,10 +57,12 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const source = props.client.get(`channels:${props.communityId}` as never)?.find((row: { id: string; kind: number; group: string }) => row.id === props.channelId);
   const communityAccessible = props.client.get('communities')?.some(row => row.id === props.communityId) === true;
   const sourceAccessible = communityAccessible && source?.kind === 0 && source.group === 'active';
-  const initialScope = `${owner}:${props.communityId}:${props.channelId}:${props.threadId ?? ''}:${props.pollId}:${props.bits ?? ''}:${accessScope}`;
+  // Attempt identity is the immutable target/binding. Permission snapshots and render
+  // generations gate work below, but must not fork an unresolved request into a new ID.
+  const identityScope = `${owner}:${props.communityId}:${props.channelId}:${props.threadId ?? ''}:${props.pollId}`;
   const [installationId, setInstallationId] = useState<string | null>(null);
   const installationRef = useRef(installationId); installationRef.current = installationId;
-  const scopeKey = `${initialScope}:${installationId ?? ''}`;
+  const scopeKey = `${identityScope}:${installationId ?? ''}`;
   const scopeRef = useRef(scopeKey); scopeRef.current = scopeKey;
   const [record, setRecord] = useState<{ client: CoreClient; scope: string; poll: PollSummary } | null>(null);
   const [verifiedScope, setVerifiedScope] = useState<string | null>(null);
@@ -71,11 +73,13 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const selectedRef = useRef<number[] | null>(selected); selectedRef.current = selected;
   const accessScopeRef = useRef(accessScope); accessScopeRef.current = accessScope;
   const sourceAccessibleRef = useRef(sourceAccessible); sourceAccessibleRef.current = sourceAccessible;
-  const attemptKey = `${scopeKey}:${props.pollId}`;
+  const attemptKey = scopeKey;
   const [storedAttempt, setStoredAttempt] = useState<{ key: string; value: PollAttempt | null } | null>(null);
-  const attempt = storedAttempt?.key === attemptKey ? storedAttempt.value : attemptMap(props.client).get(attemptKey) ?? null;
+  const matchingAttempt = [...attemptMap(props.client)].find(([key]) => key.startsWith(`${identityScope}:`));
+  const attempt = storedAttempt?.key === attemptKey ? storedAttempt.value : attemptMap(props.client).get(attemptKey) ?? matchingAttempt?.[1] ?? null;
+  const actualAttemptKey = attempt?.scope ?? attemptKey;
   const rememberAttempt = (next: PollAttempt | null) => {
-    if (next === null) attemptMap(props.client).delete(attemptKey); else attemptMap(props.client).set(attemptKey, next);
+    if (next === null) attemptMap(props.client).delete(actualAttemptKey); else attemptMap(props.client).set(next.scope, next);
     setStoredAttempt({ key: attemptKey, value: next });
   };
   const [voters, setVoters] = useState<{ option: number; ids: string[]; cursor: Uint8Array | null } | null>(null);
@@ -99,12 +103,14 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         if (generation.current === current) invalidate();
         return null;
       }
-      const boundScope = `${initialScope}:${caps.installationId}`;
+      const boundScope = `${identityScope}:${caps.installationId}`;
       setRecord({ client: props.client, scope: boundScope, poll }); setVerifiedScope(boundScope);
-      if (selectedRef.current === null) setSelected(poll.myChoices ?? []);
+      const retained = [...attemptMap(props.client)].find(([key]) => key.startsWith(`${identityScope}:`))?.[1];
+      if (retained?.scope !== undefined && retained.scope !== boundScope) setError(t('poll.uncertain'));
+      if (selectedRef.current === null) setSelected(retained?.choices ?? poll.myChoices ?? []);
       setError(''); return poll;
     } catch { if (generation.current === current) invalidate(); return null; }
-  }, [utilities, isSameOwner, invalidate, initialScope, sourceAccessible, accessScope, props.client, props.authorId, props.pollId, props.channelId, props.threadId]);
+  }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.authorId, props.pollId, props.channelId, props.threadId]);
   useEffect(() => {
     const node = ref.current; if (node === null) return;
     if (typeof IntersectionObserver === 'undefined') { setActive(true); return; }
@@ -206,9 +212,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       </label>)}
     </fieldset>
     <div className="dw-poll-card__actions">
-      {!poll.closed ? <Button variant="accent" disabled={busy || (attempt !== null && (attempt.kind !== 'vote' || attempt.choices.join(',') !== visibleSelected.join(',')))} onClick={() => void submit(attempt?.kind === 'vote' ? attempt.choices : visibleSelected)}>{attempt?.kind === 'vote' ? t('poll.retryVote') : t('poll.submit')}</Button> : null}
-      {!poll.closed && poll.myChoices !== null && poll.myChoices.length > 0 ? <Button variant="ghost" disabled={busy || (attempt !== null && (attempt.kind !== 'vote' || attempt.choices.length !== 0))} onClick={() => void submit(attempt?.kind === 'vote' ? attempt.choices : [])}>{attempt?.kind === 'vote' && attempt.choices.length === 0 ? t('poll.retryWithdraw') : t('poll.withdraw')}</Button> : null}
-      {canClose && !poll.closed ? <Button variant="ghost" disabled={busy || (attempt !== null && attempt.kind !== 'close')} onClick={() => void close()}>{attempt?.kind === 'close' ? t('poll.retryClose') : t('poll.close')}</Button> : null}
+      {!poll.closed ? <Button variant="accent" disabled={busy || (attempt !== null && (attempt.scope !== scopeKey || attempt.kind !== 'vote' || attempt.choices.join(',') !== visibleSelected.join(',')))} onClick={() => void submit(attempt?.kind === 'vote' ? attempt.choices : visibleSelected)}>{attempt?.kind === 'vote' ? t('poll.retryVote') : t('poll.submit')}</Button> : null}
+      {!poll.closed && poll.myChoices !== null && poll.myChoices.length > 0 ? <Button variant="ghost" disabled={busy || (attempt !== null && (attempt.scope !== scopeKey || attempt.kind !== 'vote' || attempt.choices.length !== 0))} onClick={() => void submit(attempt?.kind === 'vote' ? attempt.choices : [])}>{attempt?.kind === 'vote' && attempt.choices.length === 0 ? t('poll.retryWithdraw') : t('poll.withdraw')}</Button> : null}
+      {canClose && !poll.closed ? <Button variant="ghost" disabled={busy || (attempt !== null && (attempt.scope !== scopeKey || attempt.kind !== 'close'))} onClick={() => void close()}>{attempt?.kind === 'close' ? t('poll.retryClose') : t('poll.close')}</Button> : null}
     </div>
     <p className="dw-poll-card__due">{poll.closed ? t('poll.closed') : t('poll.closes', { time: new Date(Number(poll.dueAt) * 1000).toLocaleString() })}</p>
     {poll.answers.map((answer, index) => <div className="dw-poll-card__voters" key={`voters-${index}`}><Button variant="ghost" onClick={() => void loadVoters(index)}>{t('poll.voters', { answer, count: countLabel(poll.counts[index] ?? 0n) })}</Button></div>)}
