@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -120,6 +121,53 @@ func TestReminderCreateReplayAcrossDevicesKeepsOriginalDeadline(t *testing.T) {
 	}
 	if a.checks != 2 {
 		t.Fatalf("membership not refreshed across replay: %d", a.checks)
+	}
+}
+
+func TestReminderCancelPreEpochReturnsPrivateStatusAndPreservesExactReplay(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0)
+	h, _, state := newReminderTest(&now)
+	owner := reminderTestID(4)
+	reminder, err := h.Store.Create(ctx, reminderTestID(3), owner, [32]byte{1}, reminders.Reminder{Text: "x", Timezone: "UTC"}, time.Unix(4600, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, expires := uint64(1), uint64(1100)
+	r := protocol.Request{RequestID: reminderTestID(8), CommunityID: reminderTestID(1), Operation: protocol.OpReminderCancel, Revision: &revision, Expires: &expires, Args: []any{reminder.ID}}
+	snapshot := func() map[string]native.StateEntry {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		out := make(map[string]native.StateEntry, len(state.rows))
+		for key, entry := range state.rows {
+			entry.Key = append([]byte(nil), entry.Key...)
+			entry.Value = append([]byte(nil), entry.Value...)
+			out[key] = entry
+		}
+		return out
+	}
+	now = time.Unix(-1, 0)
+	before := snapshot()
+	result, err := h.cancel(ctx, InteractionActor{User: owner, Kind: 0}, r)
+	if err != nil || result.Status != interactionStatusUnavailable {
+		t.Fatalf("pre-epoch cancellation result=%+v err=%v, want private status 5", result, err)
+	}
+	if !reflect.DeepEqual(before, snapshot()) {
+		t.Fatal("pre-epoch cancellation handler changed reminder, quota, or receipt state")
+	}
+	now = time.Unix(1000, 0)
+	accepted, err := h.cancel(ctx, InteractionActor{User: owner, Kind: 0}, r)
+	if err != nil || accepted.Status != 0 || accepted.Revision == nil || *accepted.Revision != 2 {
+		t.Fatalf("valid cancellation result=%+v err=%v", accepted, err)
+	}
+	beforeReplay := snapshot()
+	now = time.Unix(-1, 0)
+	replayed, err := h.cancel(ctx, InteractionActor{User: owner, Kind: 0}, r)
+	if err != nil || replayed.Status != 0 || replayed.Revision == nil || *replayed.Revision != 2 {
+		t.Fatalf("pre-epoch exact replay=%+v err=%v", replayed, err)
+	}
+	if !reflect.DeepEqual(beforeReplay, snapshot()) {
+		t.Fatal("pre-epoch cancellation replay changed state")
 	}
 }
 func TestReminderMembershipRevocationAndCrossUserAreDenied(t *testing.T) {

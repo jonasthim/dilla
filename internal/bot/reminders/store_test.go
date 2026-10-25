@@ -3,6 +3,7 @@ package reminders
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
@@ -104,6 +105,52 @@ func TestCreateReplayRetainsAcceptedDeadlineAndRejectsChangedFingerprint(t *test
 	_, e = s.Create(ctx, tid(8), tid(4), [32]byte{2}, r, now)
 	if !errors.Is(e, ErrMutationIDConflict) {
 		t.Fatalf("changed fingerprint err=%v", e)
+	}
+}
+
+func TestPreEpochCancelFailsClosedAndExactReplayStillWins(t *testing.T) {
+	ctx := context.Background()
+	db := &durableState{}
+	s := NewStore(db, native.Binding{Community: tid(1), Installation: tid(2)}, func() time.Time { return time.Unix(-1, 0) })
+	r, err := s.Create(ctx, tid(8), tid(4), [32]byte{1}, Reminder{Text: "x", Timezone: "UTC"}, time.Unix(4600, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() map[string]native.StateEntry {
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		out := make(map[string]native.StateEntry, len(db.rows))
+		for key, entry := range db.rows {
+			entry.Key = append([]byte(nil), entry.Key...)
+			entry.Value = append([]byte(nil), entry.Value...)
+			out[key] = entry
+		}
+		return out
+	}
+	before := snapshot()
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, snapshot()) {
+		t.Fatal("pre-epoch scheduler changed reminder or quota state")
+	}
+	if _, err := s.Cancel(ctx, r.ID, tid(4), tid(9), [32]byte{2}, 1, time.Unix(-1, 0)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("pre-epoch cancel err=%v, want ErrInvalid", err)
+	}
+	if !reflect.DeepEqual(before, snapshot()) {
+		t.Fatal("pre-epoch cancellation changed reminder, receipt, or quota state")
+	}
+	accepted, err := s.Cancel(ctx, r.ID, tid(4), tid(10), [32]byte{3}, 1, time.Unix(1000, 0))
+	if err != nil || accepted.State != StateCancelled || accepted.Revision != 2 {
+		t.Fatalf("valid cancel=%+v err=%v", accepted, err)
+	}
+	beforeReplay := snapshot()
+	replayed, err := s.Cancel(ctx, r.ID, tid(4), tid(10), [32]byte{3}, 1, time.Unix(-1, 0))
+	if err != nil || replayed.State != StateCancelled || replayed.Revision != 2 {
+		t.Fatalf("pre-epoch exact replay=%+v err=%v", replayed, err)
+	}
+	if !reflect.DeepEqual(beforeReplay, snapshot()) {
+		t.Fatal("pre-epoch exact replay changed state")
 	}
 }
 func TestUserOwnershipQuotaAndCancelRelease(t *testing.T) {

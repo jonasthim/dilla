@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -126,6 +127,56 @@ func TestPollPermissionIsRefreshedForEveryRead(t *testing.T) {
 	}
 	if a.calls != 2 {
 		t.Fatalf("permission checks after revocation=%d want 2", a.calls)
+	}
+}
+
+func TestPollVotePreEpochReturnsPrivateStatusAndPreservesExactReplay(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(-1, 0)
+	state := &pollTestState{rows: map[string]native.StateEntry{}}
+	store := polls.NewStore(state, pollServiceID(1))
+	pollID := pollServiceID(3)
+	p := polls.Poll{ID: pollID, CommunityID: pollServiceID(1), ChannelID: pollServiceID(4), CreatorID: pollServiceID(2), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600, Published: true}
+	if _, err := store.Create(ctx, p.ID, [32]byte{1}, p, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	authority := &pollAuthorityFake{bits: pollPermView | pollPermSend, member: true}
+	h := PollInteractions{Store: store, Authority: authority, CommunityID: pollServiceID(1), Now: func() time.Time { return now }}
+	choices, _ := cborx.Marshal([]any{uint64(1)})
+	revision, expires := uint64(1), uint64(1000)
+	r := protocol.Request{RequestID: pollServiceID(8), CommunityID: pollServiceID(1), Operation: protocol.OpPollVote, Revision: &revision, Expires: &expires, Args: []any{pollID, choices}}
+	snapshot := func() map[string]native.StateEntry {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		out := make(map[string]native.StateEntry, len(state.rows))
+		for key, entry := range state.rows {
+			entry.Key = append([]byte(nil), entry.Key...)
+			entry.Value = append([]byte(nil), entry.Value...)
+			out[key] = entry
+		}
+		return out
+	}
+	before := snapshot()
+	result, err := h.vote(ctx, InteractionActor{User: pollServiceID(6), Kind: 0}, r)
+	if err != nil || result.Status != interactionStatusUnavailable {
+		t.Fatalf("pre-epoch vote result=%+v err=%v, want private status 5", result, err)
+	}
+	if !reflect.DeepEqual(before, snapshot()) {
+		t.Fatal("pre-epoch vote handler changed poll or receipt state")
+	}
+	now = time.Unix(1000, 0)
+	accepted, err := h.vote(ctx, InteractionActor{User: pollServiceID(6), Kind: 0}, r)
+	if err != nil || accepted.Status != 0 || accepted.Revision == nil || *accepted.Revision != 2 {
+		t.Fatalf("valid vote result=%+v err=%v", accepted, err)
+	}
+	beforeReplay := snapshot()
+	now = time.Unix(-1, 0)
+	replayed, err := h.vote(ctx, InteractionActor{User: pollServiceID(6), Kind: 0}, r)
+	if err != nil || replayed.Status != 0 || replayed.Revision == nil || *replayed.Revision != 2 {
+		t.Fatalf("pre-epoch exact replay=%+v err=%v", replayed, err)
+	}
+	if !reflect.DeepEqual(beforeReplay, snapshot()) {
+		t.Fatal("pre-epoch vote replay changed state")
 	}
 }
 func pollServiceID(n byte) (v id.ID) { v[15] = n; return }

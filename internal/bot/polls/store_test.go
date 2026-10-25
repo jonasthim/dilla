@@ -3,6 +3,7 @@ package polls
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -140,6 +141,53 @@ func TestCreateVoteReplaceWithdrawAndDurableReplay(t *testing.T) {
 	_, err = store.Vote(ctx, p.ID, pid(6), pid(8), [32]byte{9}, []uint64{0}, 2, now)
 	if !errors.Is(err, ErrMutationIDConflict) {
 		t.Fatalf("reuse err=%v", err)
+	}
+}
+
+func TestPreEpochVoteFailsClosedAndExactReplayStillWins(t *testing.T) {
+	ctx := context.Background()
+	state := newTestState()
+	store := NewStore(state, pid(1))
+	p := Poll{ID: pid(2), CommunityID: pid(1), ChannelID: pid(3), CreatorID: pid(4), Question: "Lunch?", Answers: []string{"Soup", "Salad"}, CreatedAt: 1000, DueAt: 4600, Published: true}
+	if _, err := store.Create(ctx, p.ID, [32]byte{1}, p, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() map[string]native.StateEntry {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		out := make(map[string]native.StateEntry, len(state.rows))
+		for key, entry := range state.rows {
+			entry.Key = append([]byte(nil), entry.Key...)
+			entry.Value = append([]byte(nil), entry.Value...)
+			out[key] = entry
+		}
+		return out
+	}
+	before := snapshot()
+	if _, err := store.Vote(ctx, p.ID, pid(6), pid(7), [32]byte{2}, []uint64{0}, 1, time.Unix(-1, 0)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("pre-epoch vote err=%v, want ErrInvalid", err)
+	}
+	if !reflect.DeepEqual(before, snapshot()) {
+		t.Fatal("pre-epoch vote changed poll, vote, quota, or receipt state")
+	}
+	accepted, err := store.Vote(ctx, p.ID, pid(6), pid(8), [32]byte{3}, []uint64{1}, 1, time.Unix(1000, 0))
+	if err != nil || accepted.Poll.Revision != 2 {
+		t.Fatalf("valid vote=%+v err=%v", accepted, err)
+	}
+	beforeReplay := snapshot()
+	replayed, err := store.Vote(ctx, p.ID, pid(6), pid(8), [32]byte{3}, []uint64{1}, 1, time.Unix(-1, 0))
+	if err != nil || replayed.Poll.Revision != 2 || replayed.Poll.Counts[1] != 1 {
+		t.Fatalf("pre-epoch exact replay=%+v err=%v", replayed, err)
+	}
+	if !reflect.DeepEqual(beforeReplay, snapshot()) {
+		t.Fatal("pre-epoch exact replay changed state")
+	}
+	if err := store.Reconcile(ctx, time.Unix(-1, 0), &publisherTest{}); err != nil {
+		t.Fatal(err)
+	}
+	afterScheduler, err := store.Get(ctx, p.ID)
+	if err != nil || afterScheduler.Closed || afterScheduler.Revision != 2 {
+		t.Fatalf("pre-epoch scheduler poll=%+v err=%v", afterScheduler, err)
 	}
 }
 

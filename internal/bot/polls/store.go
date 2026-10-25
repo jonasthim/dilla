@@ -467,7 +467,11 @@ func (s *Store) mutation(ctx context.Context, pid, actor, request id.ID, fp [32]
 func (s *Store) Vote(ctx context.Context, pid, actor, request id.ID, fp [32]byte, choices []uint64, expected uint64, now time.Time) (Outcome, error) {
 	var voteSnapshot native.StateValue
 	out, e := s.mutation(ctx, pid, actor, request, fp, expected, now, func(p Poll) (Poll, []uint64, error) {
-		if nowSeconds, ok := unixSeconds(now); p.Closed || ok && nowSeconds >= p.DueAt {
+		nowSeconds, ok := unixSeconds(now)
+		if !ok {
+			return p, nil, ErrInvalid
+		}
+		if p.Closed || nowSeconds >= p.DueAt {
 			return p, nil, ErrClosed
 		}
 		seen := map[uint64]bool{}

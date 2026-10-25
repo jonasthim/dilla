@@ -358,6 +358,9 @@ func (s *Store) mutate(ctx context.Context, pid, actor, request id.ID, fp [32]by
 	if old, ok, e := s.replay(ctx, actor, request, fp); ok {
 		return old, e
 	}
+	if _, ok := unixSeconds(now); !ok {
+		return Reminder{}, ErrInvalid
+	}
 	r, v, e := s.record(ctx, pid, actor)
 	if e != nil {
 		return Reminder{}, e
