@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
@@ -57,6 +58,31 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 0 || state.reads != 1 {
 		t.Fatalf("runtime welcome settings get=%+v reads=%d err=%v", result, state.reads, err)
 	}
+}
+
+func TestRuntimeInteractionHandlersRegisterProviderStatusAsRecomputedRead(t *testing.T) {
+	community := id.New()
+	status := service.MusicProviderStatusInteractions{CommunityID: community, Authority: runtimeProviderStatusAuthority{}, Snapshot: func(context.Context) service.MusicProviderStatusSnapshot {
+		return service.MusicProviderStatusSnapshot{InstallationID: id.New(), ObservedAt: 1, SpotifyAccount: service.ProviderAccountUnknown,
+			SpotifyAccountReason: service.ProviderReasonUnavailable, SpotifyPlayback: service.ProviderSetupUnknown,
+			SpotifyPlaybackReason: service.ProviderReasonUnavailable, YouTubePlayback: service.ProviderSetupUnknown,
+			YouTubePlaybackReason: service.ProviderReasonUnavailable}
+	}}
+	base := runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil)
+	if _, ok := base[protocol.OpMusicProvidersStatus]; ok {
+		t.Fatal("provider status registered without explicit runtime provider")
+	}
+	registered := runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil, status)
+	handler, ok := registered[protocol.OpMusicProvidersStatus]
+	if !ok || handler.Handle == nil || !handler.RecomputeOnReplay {
+		t.Fatalf("provider status handler = %+v, present=%v", handler, ok)
+	}
+}
+
+type runtimeProviderStatusAuthority struct{}
+
+func (runtimeProviderStatusAuthority) BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error) {
+	return client.ActorAuthority{}, true, nil
 }
 
 type runtimeModerationEvidenceReader struct{}

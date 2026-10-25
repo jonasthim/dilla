@@ -33,6 +33,7 @@ type spotifyTestNative struct {
 	binding  native.Binding
 	values   map[string]native.StateValue
 	fail     bool
+	stateErr error
 	calls    int
 	receipts map[id.ID][]uint64
 }
@@ -44,6 +45,9 @@ func (n *spotifyTestNative) StateGet(ctx context.Context, area uint64, key []byt
 	}
 	if area != spotifyCredentialArea {
 		return native.StateValue{}, errors.New("area")
+	}
+	if n.stateErr != nil {
+		return native.StateValue{}, n.stateErr
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -313,6 +317,66 @@ func TestSpotifyCredentialsRejectWrongBindingMalformedAndTombstone(t *testing.T)
 		n.values[string(s.key())] = native.StateValue{Revision: 2, Tombstone: true}
 		if _, err := s.Load(context.Background()); !errors.Is(err, ErrSpotifyState) {
 			t.Fatalf("got %v", err)
+		}
+	})
+}
+
+func TestSpotifyCredentialsInspectStatusIsReadOnlyAndDistinguishesMissingMalformedAndBinding(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		s, _, n, x := spotifyFixture(t)
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountNotLinked || reason != ProviderReasonMissingCredentials || n.calls != 0 || x.exchanges != 0 || x.refreshes != 0 {
+			t.Fatalf("status=%d reason=%d writes=%d exchanges=%d refreshes=%d", state, reason, n.calls, x.exchanges, x.refreshes)
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		s, _, n, x := spotifyFixture(t)
+		n.values[string(s.key())] = native.StateValue{Revision: 1, Value: []byte{0x80}}
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountNeedsAttention || reason != ProviderReasonInvalidCredentials || n.calls != 0 || x.exchanges != 0 || x.refreshes != 0 {
+			t.Fatalf("status=%d reason=%d writes=%d exchanges=%d refreshes=%d", state, reason, n.calls, x.exchanges, x.refreshes)
+		}
+	})
+	t.Run("store unavailable", func(t *testing.T) {
+		s, _, n, _ := spotifyFixture(t)
+		n.stateErr = errors.New("store")
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountUnknown || reason != ProviderReasonUnavailable || n.calls != 0 {
+			t.Fatalf("status=%d reason=%d writes=%d", state, reason, n.calls)
+		}
+	})
+	t.Run("valid stored credential", func(t *testing.T) {
+		s, runtime, n, x := spotifyFixture(t)
+		if err := s.Link(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		writes, exchanges, refreshes := n.calls, x.exchanges, x.refreshes
+		reader, err := NewSpotifyCredentialStatusReader(runtime, n, s.guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, reason := reader.InspectStatus(context.Background())
+		if state != ProviderAccountLinked || reason != ProviderReasonNone || n.calls != writes || x.exchanges != exchanges || x.refreshes != refreshes {
+			t.Fatalf("status=%d reason=%d writes %d->%d exchanges %d->%d refreshes %d->%d", state, reason, writes, n.calls, exchanges, x.exchanges, refreshes, x.refreshes)
+		}
+	})
+	t.Run("wrong installation payload binding", func(t *testing.T) {
+		s, _, n, _ := spotifyFixture(t)
+		if err := s.Link(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		stored := n.values[string(s.key())]
+		var fields []any
+		if err := cborx.Unmarshal(stored.Value, &fields); err != nil {
+			t.Fatal(err)
+		}
+		wrongBinding := testSpotifyID(9)
+		fields[3] = wrongBinding[:]
+		stored.Value, _ = cborx.Marshal(fields)
+		n.values[string(s.key())] = stored
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountNeedsAttention || reason != ProviderReasonBindingMismatch {
+			t.Fatalf("status=%d reason=%d; want binding failure", state, reason)
 		}
 	})
 }

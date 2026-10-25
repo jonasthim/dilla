@@ -1,4 +1,5 @@
 export * from './cbor';
+export * from './bot/provider-status';
 export { fromHex, toHex } from './hex';
 export { normaliseRecoveryKey } from './recovery-key';
 export { BACKUP_CODE, normaliseBackupCode } from './account/factors';

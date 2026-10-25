@@ -69,7 +69,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   10:{channel:true,mutation:false,count:0},11:{channel:true,mutation:false,count:1},12:{channel:true,mutation:true,count:1},
   13:{channel:true,mutation:true,count:0},14:{channel:true,mutation:true,count:0},15:{channel:true,mutation:true,count:0},16:{channel:true,mutation:true,count:0},
   17:{channel:true,mutation:true,count:1},18:{channel:true,mutation:true,count:1},19:{channel:true,mutation:true,count:0},20:{channel:true,mutation:true,count:1},
-  21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},
+  21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},24:{channel:false,mutation:false,count:0},
   30:{channel:false,mutation:false,count:1},31:{channel:false,mutation:true,count:2},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
   51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
   62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},64:{channel:false,mutation:false,count:1},

@@ -744,7 +744,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
+      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 24 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
     const music = operation >= 10 && operation <= 23;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
@@ -780,7 +780,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
     || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 1 || op === 2 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+    || !(op === 1 || op === 2 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
     || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
   if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)

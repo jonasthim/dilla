@@ -45,6 +45,7 @@ Operation, arguments, channel requirement, mutation:
 - 21 music.remove: [queue_item_id], channel required, mutation
 - 22 music.move: [queue_item_id, before_item_id|null], channel required, mutation
 - 23 music.clear: [], channel required, mutation
+- 24 music.providers.status: [], no channel, read; returns a fresh bounded provider snapshot
 - 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read; requires current `manage_community` and returns data `[1, rendered_text]` using the sample references `member`, `server`, and `channel` without posting
 - 31 roles.panel.publish: [destination_channel_id, mappings_bstr], no interaction channel, mutation; requires current `manage_roles`, ready Roles-capable Bot, and a readable destination; sends a normal Bot-authored encrypted text message through the send coordinator and returns `[destination_channel_id, accepted_message_seq]` only after its accepted send receipt
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
@@ -56,6 +57,19 @@ Operation, arguments, channel requirement, mutation:
 - 62 automod.config.get: [], no channel, read
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
+
+Operation 24 returns `[version=1, installation_id, observed_at, spotify_account,
+spotify_account_reason, spotify_playback, spotify_playback_reason,
+youtube_playback, youtube_playback_reason]`. `installation_id` is bstr16 and
+`observed_at` is a Unix timestamp in seconds. Account values are `0 unknown`,
+`1 not_linked`, `2 linked`, and `3 needs_attention`; setup values are `0 unknown`,
+`1 configured`, and `2 missing_requirements`. Reason values are `0 none`, `1
+missing_credentials`, `2 invalid_credentials`, `3 binding_mismatch`, `4
+account_mismatch`, `5 helper_missing`, `6 helper_invalid`, `7
+state_directory_unavailable`, `8 dependencies_missing`, `9 unsupported_bot`, and
+`10 unavailable`. The response contains no account identifiers, paths, provider
+errors, tokens, or OAuth codes. The handler checks the actor's current
+`manage_community` authority and recomputes the response on an exact replay.
 
 Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
 

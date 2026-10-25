@@ -315,6 +315,18 @@ describe('Controller', () => {
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
+  it('sends and reads channel-free music provider status operation 24', async () => {
+    const w = world(); await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52), requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_187, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId), operation: 24, args: [], revision: null });
+    await vi.waitFor(() => expect(w.ret(10_187)).toMatchObject({ ok: true, value: { upload: 'accepted' } }));
+    expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual([1n, requestId, COMMUNITY, null, 24n, null, null, []]);
+    w.call(10_188, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
+    await vi.waitFor(() => expect(w.ret(10_188)).toMatchObject({ ok: true }));
+  });
+
   it('arms a step-up grant with only the deterministic config digest and binds op 63 to the same group and request', async () => {
     const w=world(); await toReady(w);
     const groupId=new Uint8Array(16).fill(0x52), requestId=new Uint8Array(16).fill(0x54);

@@ -596,9 +596,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 							}
 							var musicInteractions *service.MusicInteractions
+							var musicProviderStatus service.MusicProviderStatusInteractions
 							var spotifyPCM session.PCMStarter
 							var spotifyCatalogResolver service.SpotifyMusicTrackResolver
 							if result.Installation.Capabilities&botMusicCapability != 0 {
+								statusReader, statusErr := service.NewSpotifyCredentialStatusReader(runtime, nativeClient, spotifyGuard)
+								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session, statusReader, cfg)
+								if statusErr != nil {
+									logger.Info("bot provider status will report Spotify credentials as unavailable", "installation_id", installation.ID.String())
+								}
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
 									var spotifyCredentials *service.SpotifyCredentials
@@ -697,6 +703,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														nativeClient,
 														autoModerationGrantRedeemer{Session: result.Session, InstallationID: installation.ID},
 														moderationRuntime,
+														musicProviderStatus,
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,
