@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -23,22 +25,27 @@ import (
 )
 
 type utilityStateFake struct {
-	mu         sync.Mutex
-	binding    native.Binding
-	values     map[string]native.StateValue
-	scanCalls  int
-	failScanAt int
+	mu                sync.Mutex
+	binding           native.Binding
+	values            map[string]native.StateValue
+	otherAreas        map[string]native.StateValue
+	scanCalls         int
+	failScanAt        int
+	failMarkPublished bool
 }
 
 func newUtilityStateFake() *utilityStateFake {
-	return &utilityStateFake{binding: native.Binding{Instance: utilityID(1), Community: utilityID(2), Installation: utilityID(3)}, values: map[string]native.StateValue{}}
+	return &utilityStateFake{binding: native.Binding{Instance: utilityID(1), Community: utilityID(2), Installation: utilityID(3)}, values: map[string]native.StateValue{}, otherAreas: map[string]native.StateValue{}}
 }
 func (s *utilityStateFake) Binding() native.Binding { return s.binding }
 func (s *utilityStateFake) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if area != 8 {
-		return native.StateValue{}, errors.New("wrong state area")
+		if v, ok := s.otherAreas[fmt.Sprintf("%d:%x", area, key)]; ok {
+			return v, nil
+		}
+		return native.StateValue{}, nil
 	}
 	return s.values[string(key)], nil
 }
@@ -47,25 +54,69 @@ func (s *utilityStateFake) StateTransaction(_ context.Context, _ id.ID, changes 
 	defer s.mu.Unlock()
 	out := make([]uint64, len(changes))
 	for i, ch := range changes {
+		if ch.Area != 8 {
+			stateKey := fmt.Sprintf("%d:%x", ch.Area, ch.Key)
+			v := s.otherAreas[stateKey]
+			if v.Revision != ch.ExpectedRevision {
+				return nil, errors.New("state conflict")
+			}
+			v.Revision++
+			v.Value = append([]byte(nil), ch.Value...)
+			v.Tombstone = ch.Value == nil
+			s.otherAreas[stateKey] = v
+			out[i] = v.Revision
+			continue
+		}
 		v := s.values[string(ch.Key)]
 		if ch.Area != 8 || v.Revision != ch.ExpectedRevision {
 			return nil, errors.New("state conflict")
 		}
 		v.Revision++
 		v.Value = append([]byte(nil), ch.Value...)
+		v.Tombstone = ch.Value == nil
+		if s.failMarkPublished && strings.HasPrefix(string(ch.Key), "dilla.bot.poll.v1/") && len(ch.Value) > 0 {
+			var row []any
+			if cborx.Unmarshal(ch.Value, &row) == nil && len(row) == 15 && row[14] == uint64(1) {
+				s.failMarkPublished = false
+				return nil, errors.New("injected published marker failure")
+			}
+		}
 		s.values[string(ch.Key)] = v
 		out[i] = v.Revision
 	}
 	return out, nil
 }
-func (s *utilityStateFake) StateScan(context.Context, uint64, []byte, uint64) (native.StatePage, error) {
+func (s *utilityStateFake) ConfirmSendReceipt(context.Context, id.ID, []byte) error { return nil }
+func (s *utilityStateFake) StateScan(_ context.Context, area uint64, after []byte, limit uint64) (native.StatePage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scanCalls++
 	if s.failScanAt > 0 && s.scanCalls == s.failScanAt {
 		return native.StatePage{}, errors.New("injected scan failure")
 	}
-	return native.StatePage{}, nil
+	rows := s.values
+	if area != 8 {
+		return native.StatePage{}, nil
+	}
+	keys := make([]string, 0, len(rows))
+	for key := range rows {
+		if len(after) == 0 || key > string(after) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > int(limit) {
+		keys = keys[:limit]
+	}
+	page := native.StatePage{}
+	for _, key := range keys {
+		v := rows[key]
+		page.Entries = append(page.Entries, native.StateEntry{Key: []byte(key), Revision: v.Revision, Value: append([]byte(nil), v.Value...), Tombstone: v.Tombstone})
+	}
+	if len(keys) > 0 {
+		page.Next = []byte(keys[len(keys)-1])
+	}
+	return page, nil
 }
 func utilityID(n byte) id.ID { var v id.ID; v[15] = n; return v }
 
@@ -104,7 +155,7 @@ type utilityCoordinatorFake struct {
 	preflightErr error
 }
 
-func (c *utilityCoordinatorFake) SendAuthorized(ctx context.Context, _ *client.Session, in service.SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
+func (c *utilityCoordinatorFake) SendAuthorized(ctx context.Context, _ service.SendSession, in service.SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
 	if err := preflight(ctx); err != nil {
 		return protocol.SendReceipt{}, err
 	}
@@ -129,11 +180,17 @@ func (c *utilityCoordinatorFake) SendAuthorized(ctx context.Context, _ *client.S
 	}
 	return receipt, nil
 }
+
+type utilityReceiptLookupFake struct{}
+
+func (utilityReceiptLookupFake) BotMessageReceipt(context.Context, id.ID, id.ID, id.ID, id.ID) (protocol.SendReceipt, error) {
+	return protocol.SendReceipt{}, client.ErrBotSendReceiptNotFound
+}
 func utilityPoll() polls.Poll {
 	return polls.Poll{ID: utilityID(4), CommunityID: utilityID(2), ChannelID: utilityID(5), CreatorID: utilityID(6), Question: "Where?", Answers: []string{"Here", "There"}, DueAt: uint64(time.Now().Add(time.Hour).Unix())}
 }
 func newPublisherTest(state *utilityStateFake, c *utilityCoordinatorFake, auth *utilityChannelAuthorityFake) *durablePollPublisher {
-	return &durablePollPublisher{state: state, coordinator: c, destination: utilityDestinationFake{group: utilityID(7)}, authority: utilityDiscoveryFake{instance: state.binding.Instance, generation: 9}, session: &client.Session{}, actorAuthority: auth, community: state.binding.Community, installation: state.binding.Installation, now: func() time.Time { return time.Unix(1234, 0).UTC() }}
+	return &durablePollPublisher{state: state, coordinator: c, destination: utilityDestinationFake{group: utilityID(7)}, authority: utilityDiscoveryFake{instance: state.binding.Instance, generation: 9}, session: &client.Session{}, receipts: utilityReceiptLookupFake{}, actorAuthority: auth, community: state.binding.Community, installation: state.binding.Installation, now: func() time.Time { return time.Unix(1234, 0).UTC() }}
 }
 func TestUtilityRuntimeRegistersPollReminderAndCapabilityOperations(t *testing.T) {
 	u := &utilityRuntime{polls: service.PollInteractions{Store: polls.NewStore(newUtilityStateFake(), utilityID(2)), Authority: utilityActorAuthority{session: &client.Session{}, community: utilityID(2)}, CommunityID: utilityID(2)}}
@@ -252,6 +309,32 @@ func TestPollPublisherRechecksCreatorCurrentAccessBeforeRetry(t *testing.T) {
 		t.Fatalf("revoked creator reached send coordinator: %d", len(coord.inputs))
 	}
 }
+
+func TestPollPublisherKeepsOriginalGroupForPreparedAttemptAcrossDiscoveryChange(t *testing.T) {
+	state := newUtilityStateFake()
+	coord := &utilityCoordinatorFake{preflightErr: errors.New("pause after durable preparation")}
+	auth := &utilityChannelAuthorityFake{member: true, bits: uint64(utilityPollSendPermission)}
+	poll := utilityPoll()
+	p := newPublisherTest(state, coord, auth)
+	if err := p.PublishPoll(context.Background(), poll); err == nil {
+		t.Fatal("expected first attempt to pause")
+	}
+	var saved utilityPublisherState
+	var err error
+	saved, err = decodePublication(state.values[string(publicationKey(poll.ID))].Value)
+	if err != nil || saved.group != utilityID(7) {
+		t.Fatalf("original group was not durably recorded: %+v err=%v", saved, err)
+	}
+	p.destination = utilityDestinationFake{group: utilityID(99)}
+	p.authority = utilityDiscoveryFake{instance: state.binding.Instance, generation: 10}
+	coord.preflightErr = nil
+	if err := p.PublishPoll(context.Background(), poll); err != nil {
+		t.Fatal(err)
+	}
+	if len(coord.inputs) != 2 || coord.inputs[1].AttemptID != coord.inputs[0].AttemptID || coord.inputs[1].GroupID != utilityID(7) || coord.inputs[1].ExpectedGeneration != 9 {
+		t.Fatalf("retry changed immutable group or generation: %+v", coord.inputs)
+	}
+}
 func TestPollPublicationBodyMarkerAndThreadAreBound(t *testing.T) {
 	// Exercise the body emitted to the coordinator and verify its readable fallback
 	// ends with the exact stable poll marker and preserves the thread root.
@@ -289,4 +372,321 @@ func TestPollPublicationBodyMarkerAndThreadAreBound(t *testing.T) {
 	if !ok || threadValue != *poll.ThreadID {
 		t.Fatalf("thread root was not bound in the send: %#v", request[4])
 	}
+}
+
+type reviewUnavailableDestination struct{}
+
+func (reviewUnavailableDestination) ResolveTextGroup(context.Context, id.ID, id.ID) (id.ID, error) {
+	return id.ID{}, errors.New("channel no longer has an active group")
+}
+
+func TestPollPublisherRecoversAcceptedEvidenceAfterDestinationLoss(t *testing.T) {
+	state := newUtilityStateFake()
+	coord := &utilityCoordinatorFake{}
+	auth := &utilityChannelAuthorityFake{member: true, bits: utilityPollSendPermission}
+	poll := utilityPoll()
+	if err := newPublisherTest(state, coord, auth).PublishPoll(context.Background(), poll); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newPublisherTest(state, coord, auth)
+	restarted.destination = reviewUnavailableDestination{}
+	if err := restarted.PublishPoll(context.Background(), poll); err != nil {
+		t.Fatalf("accepted publication depended on current destination: %v", err)
+	}
+}
+
+type utilityIntegrationNative struct {
+	*utilityStateFake
+	groups   map[id.ID]native.GroupInfo
+	requests [][]byte
+	prepared map[string]native.PreparedSend
+}
+
+func (n *utilityIntegrationNative) InspectGroup(_ context.Context, group id.ID) (native.GroupInfo, error) {
+	g, ok := n.groups[group]
+	if !ok {
+		return native.GroupInfo{}, errors.New("unknown test group")
+	}
+	return g, nil
+}
+func (n *utilityIntegrationNative) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	return nil, nil
+}
+func (n *utilityIntegrationNative) InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error) {
+	return native.InteractionGroupInspectResult{}, errors.New("unused interaction group")
+}
+func (n *utilityIntegrationNative) PrepareSend(_ context.Context, operation, attempt, group id.ID, request []byte, _, _ uint64) (native.PreparedSend, error) {
+	n.requests = append(n.requests, append([]byte(nil), request...))
+	key := fmt.Sprintf("%x/%x", operation[:], attempt[:])
+	if prior, ok := n.prepared[key]; ok {
+		return prior, nil
+	}
+	g := n.groups[group]
+	prepared := native.PreparedSend{MessageID: utilityID(byte(len(n.requests) + 20)), Epoch: g.Epoch, Class: 0, Ciphertext: []byte(fmt.Sprintf("cipher-%d", len(n.requests)))}
+	n.prepared[key] = prepared
+	return prepared, nil
+}
+func (n *utilityIntegrationNative) PrepareInteractionSend(context.Context, native.InteractionGroupExpected, []byte, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error) {
+	return native.PreparedSend{}, errors.New("unused private group send")
+}
+
+type utilityIntegrationSession struct {
+	mu                    sync.Mutex
+	community             id.ID
+	member, active, owner bool
+	bits, channelBits     uint64
+	receipts              map[id.ID]protocol.SendReceipt
+	uploads               []client.BotMessageUpload
+}
+
+func (s *utilityIntegrationSession) BotActorAuthority(_ context.Context, community, actor id.ID) (client.ActorAuthority, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active || community != s.community || !s.member {
+		return client.ActorAuthority{}, false, nil
+	}
+	return client.ActorAuthority{EffectiveBits: s.bits, Owner: s.owner}, true, nil
+}
+func (s *utilityIntegrationSession) BotActorChannelAuthority(_ context.Context, community, actor, channel id.ID) (uint64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.channelBits, s.active && s.member && community == s.community, nil
+}
+func (s *utilityIntegrationSession) BotMessageReceipt(_ context.Context, community, operation, attempt, group id.ID) (protocol.SendReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active {
+		return protocol.SendReceipt{}, errors.New("installation disabled")
+	}
+	if r, ok := s.receipts[attempt]; ok {
+		if r.OperationID == operation && r.GroupID == group && r.CommunityID == community {
+			return r, nil
+		}
+		return protocol.SendReceipt{}, client.ErrProtocol
+	}
+	return protocol.SendReceipt{}, client.ErrBotSendReceiptNotFound
+}
+func (s *utilityIntegrationSession) PostBotMessage(_ context.Context, community, group id.ID, upload client.BotMessageUpload) (protocol.SendReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active {
+		return protocol.SendReceipt{}, errors.New("installation disabled")
+	}
+	hash := sha256.Sum256(upload.PrivateMessage)
+	reply, _ := cborx.Marshal([]any{uint64(len(s.uploads) + 1), make([]byte, 32), uint64(2000)})
+	receipt := protocol.SendReceipt{OperationID: upload.OperationID, AttemptID: upload.AttemptID, PredecessorAttemptID: upload.PredecessorAttemptID, CommunityID: community, GroupID: group, ExpectedGeneration: upload.ExpectedGeneration, CiphertextHash: hash[:], Class: upload.Class, Outcome: protocol.ReceiptAccepted, Epoch: upload.Epoch, SendResponse: &protocol.OriginalSendResponse{Sequence: uint64(len(s.uploads) + 1), FrankingTag: make([]byte, 32), ReceiveTimestamp: 2000, Body: reply}}
+	s.receipts[upload.AttemptID] = receipt
+	s.uploads = append(s.uploads, upload)
+	return receipt, nil
+}
+func (s *utilityIntegrationSession) ResolveBotMessage(ctx context.Context, community, operation id.ID, resolution client.BotMessageResolution) (protocol.SendReceipt, error) {
+	return protocol.SendReceipt{}, errors.New("unexpected resolve")
+}
+
+type utilityIntegrationSnapshot struct {
+	expected native.InteractionGroupExpected
+}
+
+func (s utilityIntegrationSnapshot) InteractionSnapshot(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+	return s.expected, []byte{1}, nil
+}
+
+func integrationEvent(t *testing.T, request protocol.Request, delivery uint64, community, group, channel, actor, device id.ID) native.GroupEvent {
+	t.Helper()
+	body, err := protocol.EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return native.GroupEvent{DeliveryID: delivery, Group: group, Community: community, Channel: channel, SourceSequence: delivery, Epoch: 1, ReceivedAt: 1, SenderUser: actor, SenderDevice: device, SenderKind: 0, EnvelopeType: 0, Body: &body}
+}
+func integrationReply(t *testing.T, dispatcher *service.InteractionDispatcher, outbox *service.InteractionResponseOutbox, authority utilityDiscoveryFake, event native.GroupEvent, now time.Time) protocol.Response {
+	t.Helper()
+	body, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery, _, err := authority.DiscoverObserved(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = outbox.Send(context.Background(), event, []byte(body), id.New(), id.New(), uint64(now.Unix()), discovery.Generation); err != nil {
+		t.Fatal(err)
+	}
+	response, err := protocol.DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := outbox.Lookup(context.Background(), event); err != nil || !found {
+		t.Fatalf("private reply was not persisted: found=%v err=%v", found, err)
+	}
+	return response
+}
+
+func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0).UTC()
+	community, installation, bot, actor, device := utilityID(2), utilityID(3), utilityID(8), utilityID(6), utilityID(9)
+	dmGroup, dmChannel, pollGroup, pollChannel := utilityID(10), utilityID(11), utilityID(12), utilityID(13)
+	state := newUtilityStateFake()
+	session := &utilityIntegrationSession{community: community, member: true, active: true, channelBits: utilityPollSendPermission, receipts: map[id.ID]protocol.SendReceipt{}}
+	com := community
+	nativeBoundary := &utilityIntegrationNative{utilityStateFake: state, groups: map[id.ID]native.GroupInfo{dmGroup: {ID: dmGroup, Kind: 0, Community: &com, Target: dmChannel, State: 2, Epoch: 1, NextSequence: 1}, pollGroup: {ID: pollGroup, Kind: 0, Community: &com, Target: pollChannel, State: 2, Epoch: 1, NextSequence: 1}}, prepared: map[string]native.PreparedSend{}}
+	discovery := utilityDiscoveryFake{instance: state.binding.Instance, generation: 9}
+	coordinator, err := service.NewSendCoordinatorWithAdapters(nativeBoundary, discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actorAuthority := utilityActorAuthority{session: session, community: community}
+	publisher := &durablePollPublisher{state: nativeBoundary, coordinator: coordinator, destination: utilityDestinationFake{group: pollGroup}, authority: discovery, session: session, receipts: session, actorAuthority: session, community: community, installation: installation, now: func() time.Time { return now }}
+	pollStore := polls.NewStore(nativeBoundary, community)
+	reminderStore := reminders.NewStore(nativeBoundary, state.binding, func() time.Time { return now })
+	utilities := &utilityRuntime{polls: service.PollInteractions{Store: pollStore, Authority: actorAuthority, CommunityID: community, Now: func() time.Time { return now }, Publisher: publisher}, reminders: service.ReminderInteractions{Store: reminderStore, Authority: actorAuthority, CommunityID: community, Now: func() time.Time { return now }}}
+	base := service.OverviewInteractions{Authority: session, CommunityID: community}.Handlers()
+	base[protocol.OpMusicProvidersStatus] = service.InteractionHandlerSpec{Handle: func(context.Context, service.InteractionActor, protocol.Request) (service.InteractionResult, error) {
+		return service.InteractionResult{}, nil
+	}}
+	expected := native.InteractionGroupExpected{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, BotDevice: utilityID(14), ParticipantUser: actor, ParticipantDevice: device, Group: dmGroup, PolicyVersion: 1}
+	dispatcher, err := newRuntimeUtilityDispatcher(nativeBoundary, base, utilities, session, community, installation, bot, 1, func() uint64 { return uint64(now.Unix()) }, utilityIntegrationSnapshot{expected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := service.NewInteractionResponseOutboxWithAdapters(nativeBoundary, coordinator, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capEvent := integrationEvent(t, protocol.Request{RequestID: utilityID(20), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 1, community, dmGroup, dmChannel, actor, device)
+	capResponse := integrationReply(t, dispatcher, outbox, discovery, capEvent, now)
+	var capabilityData []any
+	if err := cborx.Unmarshal(capResponse.Data, &capabilityData); err != nil {
+		t.Fatal(err)
+	}
+	operations, ok := capabilityData[4].([]any)
+	if !ok || !hasOperation(operations, protocol.OpPollCreate) || !hasOperation(operations, protocol.OpReminderCreate) || hasOperation(operations, protocol.OpMusicProvidersStatus) {
+		t.Fatalf("ordinary member op3 operations=%v", capabilityData)
+	}
+	session.mu.Lock()
+	session.owner = true
+	session.mu.Unlock()
+	managerCap := dispatcherResponse(t, dispatcher, integrationEvent(t, protocol.Request{RequestID: utilityID(21), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 2, community, dmGroup, dmChannel, actor, device))
+	if err := cborx.Unmarshal(managerCap.Data, &capabilityData); err != nil {
+		t.Fatal(err)
+	}
+	operations = capabilityData[4].([]any)
+	if !hasOperation(operations, protocol.OpMusicProvidersStatus) {
+		t.Fatalf("registered op24 omitted for manager: %v", operations)
+	}
+	session.mu.Lock()
+	session.owner = false
+	session.mu.Unlock()
+	createPayload, _ := cborx.Marshal([]any{uint64(1), pollChannel, nil, "Lunch?", []any{"Soup", "Salad"}, uint64(0), uint64(3600)})
+	createReq := protocol.Request{RequestID: utilityID(22), CommunityID: community, Operation: protocol.OpPollCreate, Revision: u64ptr(0), Expires: u64ptr(uint64(now.Unix() + 30)), Args: []any{createPayload}}
+	createEvent := integrationEvent(t, createReq, 3, community, dmGroup, dmChannel, actor, device)
+	createResponse := integrationReply(t, dispatcher, outbox, discovery, createEvent, now)
+	if createResponse.Status != 0 {
+		t.Fatalf("poll create status=%d", createResponse.Status)
+	}
+	if len(session.uploads) != 3 {
+		t.Fatalf("expected poll publication plus two private replies, uploads=%d", len(session.uploads))
+	}
+	var publicSend []any
+	if err := cborx.Unmarshal(nativeBoundary.requests[1], &publicSend); err != nil {
+		t.Fatal(err)
+	}
+	if publicSend[2].(string) == "" || publicSend[4] != nil {
+		t.Fatalf("poll publication payload=%v", publicSend)
+	}
+	var privateSend []any
+	if err := cborx.Unmarshal(nativeBoundary.requests[2], &privateSend); err != nil {
+		t.Fatal(err)
+	}
+	privateBody, ok := privateSend[2].(string)
+	if !ok {
+		t.Fatal("private reply body missing")
+	}
+	if _, err := protocol.DecodeResponse(privateBody); err != nil {
+		t.Fatalf("private reply was not protocol response: %v", err)
+	}
+	reminderPayload, _ := cborx.Marshal([]any{uint64(1), uint64(0), uint64(60), "stretch", "UTC", nil, nil})
+	reminderReq := protocol.Request{RequestID: utilityID(23), CommunityID: community, Operation: protocol.OpReminderCreate, Revision: u64ptr(0), Expires: u64ptr(uint64(now.Unix() + 30)), Args: []any{reminderPayload}}
+	reminderEvent := integrationEvent(t, reminderReq, 4, community, dmGroup, dmChannel, actor, device)
+	if result := integrationReply(t, dispatcher, outbox, discovery, reminderEvent, now); result.Status != 0 {
+		t.Fatalf("reminder create status=%d", result.Status)
+	}
+	now = now.Add(120 * time.Second)
+	dueReq := protocol.Request{RequestID: utilityID(24), CommunityID: community, Operation: protocol.OpReminderDue, Args: []any{nil}}
+	if err := utilities.maintain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dueResponse := dispatcherResponse(t, dispatcher, integrationEvent(t, dueReq, 5, community, dmGroup, dmChannel, actor, device))
+	var dueData []any
+	if err := cborx.Unmarshal(dueResponse.Data, &dueData); err != nil {
+		t.Fatal(err)
+	}
+	records, ok := dueData[1].([]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("reminder catch-up page=%v", dueData)
+	}
+	// Simulate a crash after the public poll was accepted and before Published was
+	// marked. Reconciliation after creator revocation and destination loss must
+	// consume the recorded receipt without another POST.
+	secondPollID := utilityID(25)
+	state.failMarkPublished = true
+	// Use the shared registered handler so poll state, public send, and private
+	// response all traverse the production assembly, dispatcher, and outbox.
+	secondPayload, _ := cborx.Marshal([]any{uint64(1), pollChannel, nil, "Tea?", []any{"Yes", "No"}, uint64(0), uint64(3600)})
+	secondReq := protocol.Request{RequestID: secondPollID, CommunityID: community, Operation: protocol.OpPollCreate, Revision: u64ptr(0), Expires: u64ptr(uint64(now.Unix() + 30)), Args: []any{secondPayload}}
+	secondEvent := integrationEvent(t, secondReq, 6, community, dmGroup, dmChannel, actor, device)
+	secondResult := integrationReply(t, dispatcher, outbox, discovery, secondEvent, now)
+	if secondResult.Status == 0 {
+		t.Fatal("injected mark-published failure was hidden")
+	}
+	publicPostsBefore := len(session.uploads)
+	publisher.destination = reviewUnavailableDestination{}
+	session.mu.Lock()
+	session.member = false
+	session.channelBits = 0
+	session.mu.Unlock()
+	if err := utilities.maintain(ctx); err != nil {
+		t.Fatalf("accepted recovery after creator revoke: %v", err)
+	}
+	recovered, err := pollStore.Get(ctx, secondPollID)
+	if err != nil || !recovered.Published {
+		t.Fatalf("accepted poll not marked published after recovery: %+v err=%v", recovered, err)
+	}
+	if len(session.uploads) != publicPostsBefore {
+		t.Fatalf("accepted recovery duplicated sends: before=%d after=%d", publicPostsBefore, len(session.uploads))
+	}
+	revokedCap := dispatcherResponse(t, dispatcher, integrationEvent(t, protocol.Request{RequestID: utilityID(26), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 7, community, dmGroup, dmChannel, actor, device))
+	if revokedCap.Status != 2 {
+		t.Fatalf("revoked member op3 status=%d", revokedCap.Status)
+	}
+	session.mu.Lock()
+	session.active = false
+	session.mu.Unlock()
+	disabledCap := dispatcherResponse(t, dispatcher, integrationEvent(t, protocol.Request{RequestID: utilityID(27), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 8, community, dmGroup, dmChannel, actor, device))
+	if disabledCap.Status != 2 {
+		t.Fatalf("disabled installation op3 status=%d", disabledCap.Status)
+	}
+}
+
+func dispatcherResponse(t *testing.T, d *service.InteractionDispatcher, event native.GroupEvent) protocol.Response {
+	t.Helper()
+	body, err := d.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := protocol.DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func u64ptr(v uint64) *uint64 { return &v }
+func hasOperation(operations []any, want protocol.Operation) bool {
+	for _, v := range operations {
+		if x, ok := v.(uint64); ok && x == uint64(want) {
+			return true
+		}
+	}
+	return false
 }

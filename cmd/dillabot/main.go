@@ -761,9 +761,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														}),
 														musicProviderStatus,
 													)
-													for operation, handler := range utilities.handlers() {
-														handlers[operation] = handler
-													}
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,
 														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
@@ -771,11 +768,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													}) {
 														handlers[operation] = handler
 													}
+													botUser := id.ID{}
 													if result.Installation.BotUser != nil {
-														addCapabilityDiscoveryHandler(handlers, result.Session, installation.CommunityID, installation.ID, *result.Installation.BotUser, uint8(result.Installation.Capabilities))
+														botUser = *result.Installation.BotUser
 													}
-													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-														handlers, func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
+													dispatcher, interactionErr = newRuntimeUtilityDispatcher(nativeClient, handlers, utilities, result.Session,
+														installation.CommunityID, installation.ID, botUser, uint8(result.Installation.Capabilities),
+														func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
 												}
 											}
 											if interactionErr == nil {

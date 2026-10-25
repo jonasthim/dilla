@@ -472,3 +472,36 @@ func TestReconcileExpiresAllDuePollsAfterPublicationFailure(t *testing.T) {
 		t.Fatalf("expired poll quota not released: open=%v err=%v", open, decodeErr)
 	}
 }
+
+type reviewCloseConflictPublisher struct{ state *testState }
+
+func (p reviewCloseConflictPublisher) PublishPoll(context.Context, Poll) error {
+	p.state.txErr = ErrConflict
+	return errors.New("publication failed")
+}
+
+func TestReconcileRetriesExpiryConflictWithoutReleasingQuotaEarly(t *testing.T) {
+	ctx := context.Background()
+	state := newTestState()
+	store := NewStore(state, pid(1))
+	poll := Poll{ID: pid(2), CommunityID: pid(1), ChannelID: pid(3), CreatorID: pid(4), Question: "Q?", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 1100}
+	if _, err := store.Create(ctx, poll.ID, [32]byte{1}, poll, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	err := store.Reconcile(ctx, time.Unix(2000, 0), reviewCloseConflictPublisher{state})
+	if err == nil || !strings.Contains(err.Error(), "publication failed") {
+		t.Fatalf("publication failure should remain observable after successful expiry: %v", err)
+	}
+	closed, err := store.Get(ctx, poll.ID)
+	if err != nil || !closed.Closed {
+		t.Fatalf("expiry did not durably close after transient conflict: %+v err=%v", closed, err)
+	}
+	quota, err := store.get(ctx, quotaKey(pid(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := decodeIDs(quota.Value)
+	if err != nil || len(open) != 0 {
+		t.Fatalf("closed poll quota remains reserved: open=%v err=%v", open, err)
+	}
+}

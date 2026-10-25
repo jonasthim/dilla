@@ -28,11 +28,15 @@ var ErrInteractionRequestIDConflict = errors.New("bot interaction request id reu
 var ErrInteractionDispatcherBusy = errors.New("bot interaction dispatcher replay cache is full")
 var ErrInteractionReadReplayNotAuthorized = errors.New("interaction read replay is no longer authorized")
 
-type interactionNative interface {
+// InteractionNative is the authenticated native event and group-inspection
+// boundary used by the dispatcher.
+type InteractionNative interface {
 	Binding() native.Binding
 	InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
 	InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error)
 }
+
+type interactionNative = InteractionNative
 
 type InteractionSnapshotProvider interface {
 	InteractionSnapshot(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error)
@@ -110,7 +114,7 @@ func NewInteractionDispatcher(n *native.Client, handlers map[protocol.Operation]
 
 // NewInteractionDispatcherWithSnapshots enables kind-3 dispatch after the provider
 // obtains a fresh server-signed snapshot for the event's recorded participant.
-func NewInteractionDispatcherWithSnapshots(n *native.Client, handlers map[protocol.Operation]InteractionHandlerSpec, now func() uint64, snapshots InteractionSnapshotProvider) (*InteractionDispatcher, error) {
+func NewInteractionDispatcherWithSnapshots(n InteractionNative, handlers map[protocol.Operation]InteractionHandlerSpec, now func() uint64, snapshots InteractionSnapshotProvider) (*InteractionDispatcher, error) {
 	if snapshots == nil {
 		return nil, errors.New("missing interaction snapshot provider")
 	}

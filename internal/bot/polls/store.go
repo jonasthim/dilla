@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,13 +20,14 @@ import (
 )
 
 const (
-	stateArea     uint64 = 8
-	pollPrefix           = "dilla.bot.poll.v1/"
-	votePrefix           = "dilla.bot.poll-vote.v1/"
-	receiptPrefix        = "dilla.bot.poll-receipt.v1/"
-	maxStateValue        = 262144
-	maxOpenPolls         = 128
-	pageSize             = 20
+	stateArea           uint64 = 8
+	pollPrefix                 = "dilla.bot.poll.v1/"
+	votePrefix                 = "dilla.bot.poll-vote.v1/"
+	receiptPrefix              = "dilla.bot.poll-receipt.v1/"
+	maxStateValue              = 262144
+	maxOpenPolls               = 128
+	pageSize                   = 20
+	expiryCloseAttempts        = 4
 )
 
 var (
@@ -857,13 +859,8 @@ func (s *Store) Reconcile(ctx context.Context, now time.Time, publisher Publishe
 				}
 			}
 			if !p.Closed && uint64(now.Unix()) >= p.DueAt {
-				request := id.New()
-				fp := sha256.Sum256(append(p.ID[:], byte(p.Revision)))
-				if _, e = s.Close(ctx, p.ID, p.CreatorID, request, fp, p.Revision, now, false); e != nil && !errors.Is(e, ErrConflict) {
+				if e = s.expire(ctx, p.ID, now); e != nil {
 					reconcileErrors = append(reconcileErrors, fmt.Errorf("expire poll %s: %w", idhex(p.ID), e))
-				}
-				if e = s.releaseQuota(ctx, p.ID); e != nil {
-					reconcileErrors = append(reconcileErrors, fmt.Errorf("release poll quota %s: %w", idhex(p.ID), e))
 				}
 			}
 		}
@@ -872,39 +869,40 @@ func (s *Store) Reconcile(ctx context.Context, now time.Time, publisher Publishe
 		}
 	}
 }
-func (s *Store) releaseQuota(ctx context.Context, pid id.ID) error {
-	key := quotaKey(s.community)
-	for attempts := 0; attempts < 4; attempts++ {
-		v, e := s.get(ctx, key)
-		if e != nil {
-			return e
+
+// expire reloads after a CAS loss and retries the poll+quota transaction as a
+// unit. It never removes quota unless Close committed both rows atomically.
+func (s *Store) expire(ctx context.Context, pid id.ID, now time.Time) error {
+	for attempt := 0; attempt < expiryCloseAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		v, err := s.get(ctx, pollKey(pid))
+		if err != nil {
+			return err
 		}
 		if v.Revision == 0 || v.Tombstone {
+			return ErrNotFound
+		}
+		p, err := decodePoll(v.Value)
+		if err != nil {
+			return err
+		}
+		if p.CommunityID != s.community {
+			return ErrNotFound
+		}
+		if p.Closed || uint64(now.Unix()) < p.DueAt {
 			return nil
 		}
-		ids, e := decodeIDs(v.Value)
-		if e != nil {
-			return e
-		}
-		out := ids[:0]
-		for _, x := range ids {
-			if x != pid {
-				out = append(out, x)
-			}
-		}
-		if len(out) == len(ids) {
+		var revision [8]byte
+		binary.BigEndian.PutUint64(revision[:], p.Revision)
+		fingerprint := sha256.Sum256(append(append([]byte(nil), p.ID[:]...), revision[:]...))
+		_, err = s.Close(ctx, p.ID, p.CreatorID, id.New(), fingerprint, p.Revision, now, false)
+		if err == nil || errors.Is(err, ErrClosed) {
 			return nil
 		}
-		body, e := cborx.Marshal(idAny(out))
-		if e != nil {
-			return e
-		}
-		_, e = s.transact(ctx, id.New(), []native.StateChange{{Area: 8, Key: key, ExpectedRevision: v.Revision, Value: body}})
-		if e == nil {
-			return nil
-		}
-		if !errors.Is(e, ErrConflict) {
-			return e
+		if !errors.Is(err, ErrConflict) {
+			return err
 		}
 	}
 	return ErrConflict

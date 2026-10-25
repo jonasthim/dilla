@@ -15,7 +15,10 @@ import (
 
 var ErrSendTerminal = errors.New("bot send attempt is already accepted or unknown")
 
-type sendNative interface {
+// SendNative is the bounded native-state and crypto boundary consumed by the
+// coordinator. Production passes native.Client; runtime integration tests can
+// supply a deterministic fake while exercising the coordinator itself.
+type SendNative interface {
 	Binding() native.Binding
 	InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
 	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
@@ -23,15 +26,25 @@ type sendNative interface {
 	ConfirmSendReceipt(context.Context, id.ID, []byte) error
 }
 
-type sendAuthority interface {
+type sendNative = SendNative
+
+// SendAuthority supplies live instance identity and generation.
+type SendAuthority interface {
 	DiscoverObserved(context.Context) (client.Discovery, client.ResponseObservation, error)
 }
 
-type sendSession interface {
+type sendAuthority = SendAuthority
+
+// SendSession is the live managed-bot transport used by SendCoordinator.
+// Keeping it structural lets runtime assembly tests exercise the real
+// coordinator with a controlled network boundary.
+type SendSession interface {
 	PostBotMessage(context.Context, id.ID, id.ID, client.BotMessageUpload) (protocol.SendReceipt, error)
 	BotMessageReceipt(context.Context, id.ID, id.ID, id.ID, id.ID) (protocol.SendReceipt, error)
 	ResolveBotMessage(context.Context, id.ID, id.ID, client.BotMessageResolution) (protocol.SendReceipt, error)
 }
+
+type sendSession = SendSession
 
 type interactionSendSession interface {
 	IssueBotInteractionAdmission(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
@@ -68,6 +81,12 @@ func NewSendCoordinator(n *native.Client, authority *client.Client) (*SendCoordi
 	return newSendCoordinator(n, authority)
 }
 
+// NewSendCoordinatorWithAdapters is the shared construction path for the
+// daemon and tests that provide controlled native/network boundaries.
+func NewSendCoordinatorWithAdapters(n SendNative, authority SendAuthority) (*SendCoordinator, error) {
+	return newSendCoordinator(n, authority)
+}
+
 func newSendCoordinator(n sendNative, authority sendAuthority) (*SendCoordinator, error) {
 	if n == nil || authority == nil {
 		return nil, errors.New("missing send dependency")
@@ -92,7 +111,7 @@ func (s *SendCoordinator) Send(ctx context.Context, session *client.Session, in 
 // SendAuthorized resumes the same durable send attempt as Send, while checking
 // caller supplied authorization after receipt recovery and before any new
 // ciphertext is prepared or uploaded.
-func (s *SendCoordinator) SendAuthorized(ctx context.Context, session *client.Session, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
+func (s *SendCoordinator) SendAuthorized(ctx context.Context, session SendSession, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
 	if session == nil || preflight == nil {
 		return protocol.SendReceipt{}, errors.New("missing authorized send prerequisite")
 	}
@@ -196,6 +215,14 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 			return protocol.SendReceipt{}, err
 		}
 		return s.confirm(ctx, in.OperationID, receipt, upload, resolution)
+	}
+	// Preparation may take substantial time. Recheck authorization at the last
+	// local boundary before a fresh upload, including attempts whose ciphertext
+	// was prepared by an earlier process and resumed here.
+	if preflight != nil {
+		if err := preflight(ctx); err != nil {
+			return protocol.SendReceipt{}, err
+		}
 	}
 
 	receipt, postErr := session.PostBotMessage(ctx, s.binding.Community, in.GroupID, upload)

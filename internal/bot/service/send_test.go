@@ -245,6 +245,62 @@ func TestSendWithPreflightChecksOnlyUnacceptedAttempts(t *testing.T) {
 	}
 }
 
+type reviewRevokeDuringPrepare struct {
+	*sendNativeFake
+	allowed *bool
+}
+
+func (n reviewRevokeDuringPrepare) PrepareSend(ctx context.Context, operation, attempt, group id.ID, body []byte, now, generation uint64) (native.PreparedSend, error) {
+	*n.allowed = false
+	return n.sendNativeFake.PrepareSend(ctx, operation, attempt, group, body, now, generation)
+}
+
+func TestSendRechecksAuthorizationAtUploadBoundary(t *testing.T) {
+	c, n, s, in := sendFixture()
+	allowed := true
+	c.native = reviewRevokeDuringPrepare{sendNativeFake: n, allowed: &allowed}
+	blocked := errors.New("creator revoked during native preparation")
+	preflight := func(context.Context) error {
+		if !allowed {
+			return blocked
+		}
+		return nil
+	}
+	_, err := c.sendWithPreflight(context.Background(), s, in, preflight)
+	if !errors.Is(err, blocked) || s.posts != 0 || n.prepareCalls != 1 {
+		t.Fatalf("post-prepare revoke result err=%v posts=%d prepares=%d", err, s.posts, n.prepareCalls)
+	}
+}
+
+func TestSendReauthorizesPreparedAttemptOnResume(t *testing.T) {
+	c, n, s, in := sendFixture()
+	prepared := false
+	blocked := errors.New("creator revoked before prepared retry upload")
+	preflight := func(context.Context) error {
+		if prepared && s.posts > 0 {
+			return blocked
+		}
+		return nil
+	}
+	s.postErr = errors.New("temporary upload failure")
+	s.resolveErr = errors.New("receipt lookup unavailable")
+	if _, err := c.sendWithPreflight(context.Background(), s, in, func(ctx context.Context) error {
+		err := preflight(ctx)
+		return err
+	}); err == nil {
+		t.Fatal("first uncertain attempt unexpectedly succeeded")
+	}
+	prepared = true
+	// Model current authorization being revoked after the uncertain upload; a second
+	// invocation must stop before posting the already-prepared immutable ciphertext.
+	if _, err := c.sendWithPreflight(context.Background(), s, in, preflight); !errors.Is(err, blocked) {
+		t.Fatalf("prepared retry authorization error=%v", err)
+	}
+	if s.posts != 1 || n.prepareCalls != 1 {
+		t.Fatalf("prepared retry was reuploaded or reencrypted: posts=%d prepares=%d", s.posts, n.prepareCalls)
+	}
+}
+
 func TestSendAllowsSuccessorOnlyAfterClosedAttemptAndNewEpoch(t *testing.T) {
 	c, n, s, in := sendFixture()
 	prev := sendID(10)
