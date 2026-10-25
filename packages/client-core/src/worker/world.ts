@@ -4,7 +4,7 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type ManualWarningEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEvent, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type ManualWarningEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -311,6 +311,7 @@ export function world(opts: {
     humanInteractionSendPrepare: vi.fn((requestId: Uint8Array, _communityId: Uint8Array, _groupId: Uint8Array,
       _requestBody: Uint8Array, _now: bigint) => requestId),
     humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number): HumanInteractionEventPage => ({ events: [], next: 0n, highWater: 0n })),
+    humanInteractionReceiptsRead: vi.fn((_communityId: Uint8Array, _installationId: Uint8Array, _botUserId: Uint8Array, _requestIds: readonly Uint8Array[]): HumanInteractionEvent[] => []),
     humanInteractionEventsAck: vi.fn((_through: bigint) => {}),
     humanInteractionEventsAckSelected: vi.fn((_deliveryIds: readonly bigint[]) => {}),
     sendEncrypt: vi.fn((_msgId: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), messageBody: new Uint8Array([0xa1]) })),
@@ -439,7 +440,7 @@ export function world(opts: {
     postModerationRemoval: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve()),
     postMessage: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve({ raw: encode([1n]), seq: 1n })),
     getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
-    getBotCommandStatus: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
+    getBotCommandStatus: vi.fn((_id: Uint8Array) => Promise.resolve({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 1n })),
     armAutoModerationGrant: vi.fn((_group: Uint8Array, _requestId: Uint8Array, _community: Uint8Array, _revision: bigint,
       _expires: bigint, _hash: Uint8Array, _stepUp: string) => Promise.resolve({ token: 'opaque-grant-token', expires: NOW_S + 60n })),
     configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>

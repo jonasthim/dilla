@@ -9,6 +9,7 @@ use rusqlite::{OptionalExtension, params};
 
 const PAGE_LIMIT: u64 = 100;
 const MAX_PENDING: i64 = 4096;
+const MAX_CONSUMED_RECEIPTS: i64 = 4096;
 const PAGE_BYTES: usize = 1_047_900;
 
 struct EventRow {
@@ -395,6 +396,14 @@ fn fetch_rows(
     .map_err(Into::into)
 }
 
+fn prune_consumed_receipts(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    c.execute(
+        "DELETE FROM app_human_interaction_receipts WHERE receipt_id IN (SELECT receipt_id FROM app_human_interaction_receipts ORDER BY receipt_id DESC LIMIT -1 OFFSET ?1)",
+        [MAX_CONSUMED_RECEIPTS],
+    )?;
+    Ok(())
+}
+
 fn encode_event(row: &EventRow, request: &Request) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(13)
@@ -540,6 +549,9 @@ impl ClientCore {
                     && member_matches
                     && live
                     && trusted
+                    && event_request.as_ref().is_some_and(|request| {
+                        request.request_id.as_bytes() == row.request_id.as_slice()
+                    })
                     && request_body.as_deref().is_some_and(|request| {
                         row.body.as_deref().is_some_and(|body| {
                             response_matches_request(
@@ -584,6 +596,168 @@ impl ClientCore {
             e.raw(event);
         }
         e.uint(next).uint(high as u64);
+        Ok(e.into_vec())
+    }
+
+    /// Recovers only exact, previously consumed Bot responses. This does not participate in
+    /// journal pagination and therefore cannot turn generic reads into historical reads.
+    pub fn human_interaction_receipts_read(
+        &mut self,
+        community_id: &[u8; 16],
+        installation_id: &[u8; 16],
+        expected_bot_user_id: &[u8; 16],
+        request_ids: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
+        let ids = decode_strict(request_ids, |d| {
+            let count = d.array_len()?;
+            if !(1..=100).contains(&count) {
+                return Err(crate::cbor::CborError::WrongArrayLen {
+                    expected: 1,
+                    actual: count,
+                });
+            }
+            let mut ids = Vec::with_capacity(count);
+            for _ in 0..count {
+                ids.push(d.bytes_exact::<16>()?);
+            }
+            Ok(ids)
+        })
+        .map_err(|_| {
+            ClientError::new("E_CORE_INPUT", "invalid archived interaction request ids")
+        })?;
+        let mut unique = std::collections::HashSet::with_capacity(ids.len());
+        if own.kind != Kind::User.as_u8()
+            || installation_id.iter().all(|byte| *byte == 0)
+            || expected_bot_user_id.iter().all(|byte| *byte == 0)
+            || ids
+                .iter()
+                .any(|id| id.iter().all(|byte| *byte == 0) || !unique.insert(*id))
+        {
+            return Err(ClientError::new(
+                "E_CORE_INPUT",
+                "invalid archived interaction scope",
+            ));
+        }
+
+        let mut rows = Vec::new();
+        for request_id in ids {
+            rows.extend(self.read(|c| {
+                let mut stmt = c.prepare("SELECT delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body FROM app_human_interaction_receipts WHERE community_id=?1 AND request_id=?2 ORDER BY receipt_id")?;
+                stmt.query_map(params![community_id.as_slice(), request_id.as_slice()], |r| Ok(EventRow {
+                    delivery: r.get(0)?, group: r.get(1)?, community: r.get(2)?, request_id: r.get(3)?,
+                    source_seq: r.get(4)?, epoch: r.get(5)?, recv_ts: r.get(6)?, sender_user: r.get(7)?,
+                    sender_device: r.get(8)?, sender_leaf: r.get(9)?, sender_credential: r.get(10)?,
+                    sender_sig_key: r.get(11)?, message_id: r.get(12)?, body: Some(r.get(13)?), disposition: 0,
+                }))?.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+            })?);
+        }
+        rows.sort_by_key(|row| row.delivery);
+        let mut events = Vec::new();
+        for row in rows {
+            let group_id: [u8; 16] = row.group.as_slice().try_into().map_err(|_| {
+                ClientError::new("E_CORE_STORAGE", "archived interaction group malformed")
+            })?;
+            let community: [u8; 16] = row.community.as_slice().try_into().map_err(|_| {
+                ClientError::new("E_CORE_STORAGE", "archived interaction community malformed")
+            })?;
+            if community != *community_id {
+                continue;
+            }
+            let Some(group) = DillaGroup::load(
+                &self.provider,
+                &openmls::prelude::GroupId::from_slice(&group_id),
+            )?
+            else {
+                continue;
+            };
+            let binding = group.interaction_binding().ok();
+            let sender = CredentialIdentity::decode(&row.sender_credential).ok();
+            let current_group_binding = self.read(|c| {
+                c.query_row("SELECT EXISTS(SELECT 1 FROM app_groups WHERE group_id=?1 AND kind=3 AND state=2 AND community_id=?2 AND target_id=?3 AND interaction_installation_id=?4 AND interaction_device_id=?5)",
+                    params![row.group, community_id.as_slice(), row.sender_user.as_slice(), installation_id.as_slice(), own.device_id.as_slice()], |r| r.get::<_, bool>(0)).map_err(Into::into)
+            })?;
+            let valid_binding = binding.as_ref().is_some_and(|b| {
+                b.community_id.as_bytes() == community_id
+                    && b.instance_id.as_bytes() == &own.instance_id
+                    && b.participant_user_id.as_slice() == own.user_id
+                    && b.participant_device_id.as_bytes() == &own.device_id
+                    && &b.installation_id == installation_id
+                    && &b.bot_user_id == expected_bot_user_id
+                    && b.bot_user_id.as_slice() == row.sender_user.as_slice()
+            });
+            let Some(sender) = sender else { continue };
+            let member_matches = binding.as_ref().is_some_and(|b| {
+                sender.user_id.as_bytes() == row.sender_user.as_slice()
+                    && sender.device_id.as_bytes() == row.sender_device.as_slice()
+                    && human_owns_interaction(
+                        &group,
+                        &own,
+                        &b.bot_user_id,
+                        &sender,
+                        row.sender_leaf as u32,
+                        &row.sender_sig_key,
+                    )
+            });
+            if !current_group_binding || !valid_binding || !member_matches {
+                continue;
+            }
+            let live_source: bool = self.read(|c| c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND m.msg_id=?7 AND m.type=0 AND g.state=2 AND g.kind=3 AND g.community_id=?8 AND g.target_id=?9 AND g.interaction_installation_id=?10 AND g.interaction_device_id=?11)",
+                params![row.group, row.source_seq, row.sender_user, row.sender_device, row.sender_leaf, row.sender_sig_key, row.message_id, community_id.as_slice(), row.sender_user, installation_id.as_slice(), own.device_id.as_slice()], |r| r.get(0)).map_err(Into::into))?;
+            let request_body: Option<String> = self.read(|c| c.query_row(
+                "SELECT body FROM app_messages WHERE group_id=?1 AND msg_id=?2 AND status=0 AND sender_user=?3 AND sender_device=?4 AND sender_kind=0 AND type=0",
+                params![row.group, row.request_id, own.user_id.as_slice(), own.device_id.as_slice()], |r| r.get(0)).optional().map_err(Into::into))?;
+            let trusted = self.write(|_, u| {
+                Ok(u.with_conn(|c| {
+                    match trust::validate_pending_sender(
+                        c,
+                        &group,
+                        &group_id,
+                        row.sender_leaf as u32,
+                        &row.sender_credential,
+                    ) {
+                        Ok(()) => Ok(true),
+                        Err(error)
+                            if error.code == "E_CORE_STORAGE" || error.code == "E_CORE_RELOAD" =>
+                        {
+                            Err(StorageError::Sqlite(
+                                "archived interaction trust recheck failed operationally".into(),
+                            ))
+                        }
+                        Err(_) => Ok(false),
+                    }
+                })?)
+            })?;
+            let body = row.body.as_deref().unwrap_or_default();
+            let request = request_body
+                .as_deref()
+                .and_then(|body| Request::decode_body(body.as_bytes()).ok());
+            let Some(request) = request.filter(|request| {
+                live_source
+                    && trusted
+                    && request.request_id.as_bytes() == row.request_id.as_slice()
+                    && response_matches_request(
+                        body.as_bytes(),
+                        request_body.as_deref().unwrap_or_default().as_bytes(),
+                        community_id,
+                    )
+            }) else {
+                continue;
+            };
+            events.push(encode_event(&row, &request));
+        }
+        let mut e = Encoder::new();
+        e.array(events.len());
+        for event in &events {
+            e.raw(event);
+        }
+        if e.as_slice().len() > PAGE_BYTES {
+            return Err(ClientError::new(
+                "E_CORE_LIMIT",
+                "archived interaction response exceeds response limit",
+            ));
+        }
         Ok(e.into_vec())
     }
 
@@ -673,6 +847,13 @@ impl ClientCore {
                 }
                 for id in &ids {
                     if *id <= ack as u64 { continue; }
+                    // Transfer the authenticated response and all source provenance before
+                    // consuming its journal row. Both writes run in this same SQLite
+                    // transaction; an archive failure therefore leaves the pending body intact.
+                    c.execute(
+                        "INSERT OR IGNORE INTO app_human_interaction_receipts(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) SELECT delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body FROM app_human_interaction_events WHERE delivery_id=?1 AND disposition=0 AND body IS NOT NULL",
+                        [*id as i64],
+                    )?;
                     c.execute(
                         "UPDATE app_human_interaction_events SET body=NULL,disposition=2 WHERE delivery_id=?1 AND disposition<>2",
                         [*id as i64],
@@ -687,6 +868,9 @@ impl ClientCore {
                         }
                     }
                 }
+                // Oldest consumed receipts may age out at this explicit bound. Pending journal
+                // rows are in another table and are never evicted to make archive room.
+                prune_consumed_receipts(c)?;
                 let mut through = ack as u64;
                 while through < high as u64 {
                     let next = through + 1;
@@ -712,7 +896,10 @@ impl ClientCore {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PENDING, claim_response_request, response_matches_request};
+    use super::{
+        MAX_CONSUMED_RECEIPTS, MAX_PENDING, claim_response_request, prune_consumed_receipts,
+        response_matches_request,
+    };
     use crate::{
         bot::{Request, RequestArgs, Response},
         ids::{CommunityId, MsgId},
@@ -1024,6 +1211,75 @@ mod tests {
             )
             .expect("query rolled-back capacity claim");
         assert_eq!(unclaimed, 0, "failed full-queue writes leave no receipt");
+    }
+
+    #[test]
+    fn consumed_receipt_bound_never_evicts_pending_journal_rows() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open journal db");
+        connection
+            .execute_batch(super::super::schema::APP_HUMAN_INTERACTION_EVENTS)
+            .expect("create interaction journal and encrypted receipt archive");
+        for delivery in 1..=MAX_CONSUMED_RECEIPTS + 7 {
+            connection.execute(
+                "INSERT INTO app_human_interaction_receipts(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) VALUES(?1,?2,?3,?4,?5,1,1,?6,?7,0,X'',zeroblob(32),?8,'receipt')",
+                rusqlite::params![delivery, [3u8;16].as_slice(), [4u8;16].as_slice(), [6u8;16].as_slice(), delivery, [7u8;16].as_slice(), [8u8;16].as_slice(), [5u8;16].as_slice()],
+            ).expect("insert consumed response receipt");
+        }
+        connection.execute(
+            "INSERT INTO app_human_interaction_events(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) VALUES(9000,?1,?2,?3,9000,1,1,?4,?5,0,X'',zeroblob(32),?6,'still pending')",
+            rusqlite::params![[3u8;16].as_slice(), [4u8;16].as_slice(), [9u8;16].as_slice(), [7u8;16].as_slice(), [8u8;16].as_slice(), [5u8;16].as_slice()],
+        ).expect("seed independent pending row");
+        prune_consumed_receipts(&connection).expect("enforce consumed archive cap");
+        let (receipts, pending): (i64, Option<String>) = connection.query_row(
+            "SELECT (SELECT count(*) FROM app_human_interaction_receipts), (SELECT body FROM app_human_interaction_events WHERE delivery_id=9000)",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).expect("check archive and pending state");
+        assert_eq!(receipts, MAX_CONSUMED_RECEIPTS);
+        assert_eq!(
+            pending.as_deref(),
+            Some("still pending"),
+            "archive eviction cannot free capacity by dropping pending data"
+        );
+        let oldest: i64 = connection
+            .query_row(
+                "SELECT min(delivery_id) FROM app_human_interaction_receipts",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            oldest, 8,
+            "FIFO eviction retains the newest consumed receipts"
+        );
+    }
+
+    #[test]
+    fn archive_schema_upgrade_preserves_existing_pending_journal_rows_and_claims() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open pre-archive database");
+        connection
+            .execute_batch(super::super::schema::APP_HUMAN_INTERACTION_EVENTS)
+            .expect("create prior journal schema");
+        connection.execute(
+            "INSERT INTO app_human_interaction_events(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) VALUES(1,?1,?2,?3,1,1,1,?4,?5,0,X'',zeroblob(32),?6,'pending response')",
+            rusqlite::params![[3u8;16].as_slice(), [4u8;16].as_slice(), [6u8;16].as_slice(), [7u8;16].as_slice(), [8u8;16].as_slice(), [5u8;16].as_slice()],
+        ).expect("seed pending row before additive schema migration");
+        connection.execute(
+            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
+            rusqlite::params![[3u8;16].as_slice(), [6u8;16].as_slice()],
+        ).expect("seed existing durable response claim");
+        connection
+            .execute_batch(super::super::schema::APP_HUMAN_INTERACTION_EVENTS)
+            .expect("rerun idempotent archive migration");
+        let (pending, archive, claims): (Option<String>, i64, i64) = connection.query_row(
+            "SELECT (SELECT body FROM app_human_interaction_events WHERE delivery_id=1), (SELECT count(*) FROM app_human_interaction_receipts), (SELECT count(*) FROM app_human_interaction_response_claims)",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).expect("check migrated journal");
+        assert_eq!(pending.as_deref(), Some("pending response"));
+        assert_eq!(archive, 0);
+        assert_eq!(
+            claims, 1,
+            "the archive migration leaves response claims intact"
+        );
     }
 
     #[test]

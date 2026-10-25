@@ -992,6 +992,28 @@ impl CoreHandle {
         self.with_core(|c| c.human_interaction_events_read(after, limit))
             .map(Vec::into_boxed_slice)
     }
+    /// Reads only archived consumed responses matching the exact current community, installation,
+    /// and request-id set. CBOR result is `[events]`, using the event tuple from journal reads.
+    pub fn human_interaction_receipts_read(
+        &self,
+        community_id: &[u8],
+        installation_id: &[u8],
+        bot_user_id: &[u8],
+        request_ids: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let installation_id = js_fixed_arg::<16>("installation_id", installation_id)?;
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        self.with_core(|c| {
+            c.human_interaction_receipts_read(
+                &community_id,
+                &installation_id,
+                &bot_user_id,
+                request_ids,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
     /// Durably acknowledges and clears human interaction response bodies through a delivery id.
     pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
         self.with_core(|c| c.human_interaction_events_ack(through))

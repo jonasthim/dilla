@@ -411,6 +411,28 @@ CREATE TABLE IF NOT EXISTS app_human_interaction_events (
   UNIQUE(group_id,source_seq)
 );
 CREATE INDEX IF NOT EXISTS app_human_interaction_events_page ON app_human_interaction_events(delivery_id);
+-- Consumed Bot responses stay encrypted in the native client database so an acknowledged
+-- result can be recovered after a process restart. This is deliberately a separate bounded
+-- archive: it never counts against or evicts pending journal rows.
+CREATE TABLE IF NOT EXISTS app_human_interaction_receipts (
+  receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delivery_id INTEGER NOT NULL UNIQUE,
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  community_id BLOB NOT NULL CHECK(length(community_id)=16),
+  request_id BLOB NOT NULL CHECK(length(request_id)=16),
+  source_seq INTEGER NOT NULL CHECK(source_seq>0),
+  epoch INTEGER NOT NULL,
+  recv_ts INTEGER NOT NULL,
+  sender_user BLOB NOT NULL CHECK(length(sender_user)=16),
+  sender_device BLOB NOT NULL CHECK(length(sender_device)=16),
+  sender_leaf INTEGER NOT NULL,
+  sender_credential BLOB NOT NULL,
+  sender_sig_key BLOB NOT NULL CHECK(length(sender_sig_key)=32),
+  message_id BLOB NOT NULL CHECK(length(message_id)=16),
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS app_human_interaction_receipts_request
+  ON app_human_interaction_receipts(community_id,request_id,receipt_id);
 CREATE TABLE IF NOT EXISTS app_human_interaction_event_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   ack_delivery_id INTEGER NOT NULL DEFAULT 0,

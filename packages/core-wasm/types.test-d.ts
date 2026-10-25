@@ -60,6 +60,7 @@ interface ExpectedCoreHandle {
   human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
   human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
   human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
+  human_interaction_receipts_read(community_id: Uint8Array, installation_id: Uint8Array, bot_user_id: Uint8Array, request_ids: Uint8Array): Uint8Array;
   human_interaction_events_ack(through: bigint): void;
   human_interaction_events_ack_selected(delivery_ids: Uint8Array): void;
   group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
@@ -187,6 +188,7 @@ expectTrue<Equals<H['welcomes_apply'], E['welcomes_apply']>>();
 expectTrue<Equals<H['human_interaction_welcome_apply'], E['human_interaction_welcome_apply']>>();
 expectTrue<Equals<H['human_interaction_send_prepare'], E['human_interaction_send_prepare']>>();
 expectTrue<Equals<H['human_interaction_events_read'], E['human_interaction_events_read']>>();
+expectTrue<Equals<H['human_interaction_receipts_read'], E['human_interaction_receipts_read']>>();
 expectTrue<Equals<H['human_interaction_events_ack'], E['human_interaction_events_ack']>>();
 expectTrue<Equals<H['human_interaction_events_ack_selected'], E['human_interaction_events_ack_selected']>>();
 expectTrue<Equals<H['group_apply'], E['group_apply']>>();

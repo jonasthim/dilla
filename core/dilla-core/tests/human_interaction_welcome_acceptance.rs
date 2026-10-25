@@ -934,6 +934,9 @@ fn authenticated_response_roundtrip(operation: u64) {
     })
     .expect("response page shape");
     assert_eq!(response_count, 1);
+    human.probe.lock().expect("connection").execute_batch(
+        "CREATE TEMP TABLE receipt_restart_seed AS SELECT * FROM app_human_interaction_events WHERE delivery_id=1;",
+    ).expect("save authenticated event fixture for final restart check");
 
     // The event is durable across a core restart and an exact source replay cannot duplicate it.
     human = human.reopen();
@@ -1260,6 +1263,230 @@ fn authenticated_response_roundtrip(operation: u64) {
             .is_err(),
         "ordinary text groups cannot use the interaction request API"
     );
+    // Exercise the corrected transfer after the original receipt has been read, the worker/core
+    // has restarted, and older journal rows have been consumed. The stored event remains bound
+    // to the real source request and currently active interaction group.
+    {
+        let probe = human.probe.lock().expect("connection");
+        probe
+            .execute(
+                "UPDATE app_trust_pins SET changed_umk=NULL WHERE user_id=?1",
+                [BOT_USER.as_slice()],
+            )
+            .expect("restore current sender trust for receipt recovery test");
+        probe
+            .execute(
+                "UPDATE app_groups SET max_epoch=epoch WHERE group_id=?1",
+                [GROUP_ID.as_slice()],
+            )
+            .expect("restore active interaction group epoch");
+        probe.execute("INSERT INTO app_human_interaction_events(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,disposition) SELECT 5,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,0 FROM receipt_restart_seed", [])
+            .expect("restore valid event after older cursor checks");
+        probe
+            .execute(
+                "UPDATE app_human_interaction_event_state SET high_water=5 WHERE singleton=1",
+                [],
+            )
+            .expect("advance event high water");
+    }
+    human = human.reopen();
+    let selected = {
+        let mut e = Encoder::new();
+        e.array(1).uint(5);
+        e.into_vec()
+    };
+    human.probe.lock().expect("connection").execute_batch(
+        "CREATE TRIGGER fail_receipt_transfer BEFORE INSERT ON app_human_interaction_receipts BEGIN SELECT RAISE(FAIL,'transfer interrupted'); END;",
+    ).expect("install transactional failure trigger");
+    assert!(
+        human
+            .core
+            .human_interaction_events_ack_selected(&selected)
+            .is_err(),
+        "failed archive writes cannot consume journal data"
+    );
+    let after_failure = human
+        .core
+        .human_interaction_events_read(4, 10)
+        .expect("pending row survived failed transfer");
+    assert_eq!(
+        decode_strict(&after_failure, |d| {
+            d.array(3)?;
+            let n = d.array_len()?;
+            for _ in 0..n {
+                d.skip()?;
+            }
+            d.uint()?;
+            d.uint()?;
+            Ok(n)
+        })
+        .unwrap(),
+        1
+    );
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute_batch("DROP TRIGGER fail_receipt_transfer;")
+        .expect("remove transfer trigger");
+    human
+        .core
+        .human_interaction_events_ack_selected(&selected)
+        .expect("transfer response into native archive");
+    human
+        .core
+        .human_interaction_events_ack_selected(&selected)
+        .expect("duplicate transfer ACK remains idempotent");
+    human = human.reopen();
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    let archived = human
+        .core
+        .human_interaction_receipts_read(
+            &COMMUNITY,
+            &INSTALLATION,
+            &BOT_USER,
+            &request_ids.into_vec(),
+        )
+        .expect("recover archived response from reopened native core");
+    assert_eq!(
+        decode_strict(&archived, |d| {
+            let n = d.array_len()?;
+            for _ in 0..n {
+                d.array(13)?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.bytes_exact::<16>()?;
+                d.text()?;
+                d.uint()?;
+                d.opt_bytes_exact::<16>()?;
+            }
+            Ok(n)
+        })
+        .unwrap(),
+        1
+    );
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &[0x99; 16],
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len(),
+        )
+        .unwrap(),
+        0,
+        "a replaced installation cannot read the prior installation's receipt"
+    );
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &[0x98; 16],
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len()
+        )
+        .unwrap(),
+        0,
+        "a different current Bot identity cannot read the prior identity's receipt"
+    );
+    human.probe.lock().expect("connection").execute(
+        "UPDATE app_human_interaction_receipts SET source_seq=source_seq+100 WHERE delivery_id=5", [],
+    ).expect("tamper archived source provenance");
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len()
+        )
+        .unwrap(),
+        0,
+        "a source sequence mismatch fails closed"
+    );
+    human.probe.lock().expect("connection").execute(
+        "UPDATE app_human_interaction_receipts SET source_seq=(SELECT source_seq FROM receipt_restart_seed), body='tampered response' WHERE delivery_id=5", [],
+    ).expect("restore source and tamper archived response body");
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len()
+        )
+        .unwrap(),
+        0,
+        "a tampered archived response cannot be returned"
+    );
+    human.probe.lock().expect("connection").execute(
+        "UPDATE app_human_interaction_receipts SET body=(SELECT body FROM receipt_restart_seed) WHERE delivery_id=5", [],
+    ).expect("restore archived response before trust check");
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE app_trust_pins SET changed_umk=zeroblob(32) WHERE user_id=?1",
+            [BOT_USER.as_slice()],
+        )
+        .expect("revoke current Bot trust after receipt storage");
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len(),
+        )
+        .unwrap(),
+        0,
+        "archived plaintext is not returned after current trust revocation"
+    );
+
     human
         .probe
         .lock()

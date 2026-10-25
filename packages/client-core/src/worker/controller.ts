@@ -1420,7 +1420,7 @@ export class Controller {
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
-      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations, command.requestIds));
+      case 'readBotInteractionResponses': return this.readBotInteractionResponses(command.communityId, command.operations, command.requestIds);
       case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
       case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId, command.requestIds);
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
@@ -1693,25 +1693,54 @@ export class Controller {
     });
   }
 
-  private readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): {
+  private async readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): Promise<{
     responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
       status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
     through: string | null; blocked: boolean;
-  } {
+  }> {
     if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const allowed = new Set(operations);
     const requested = requestIds === undefined ? null : new Set(requestIds);
     const rows = this.readAllHumanInteractionEvents();
-    const responses = rows.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
-      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100).map(event => {
+    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
+    let archivedEvents: HumanInteractionEvent[] = [];
+    if (requestIds !== undefined && requestIds.length > 0) {
+      const status = await this.routes.getBotCommandStatus(fromHex(communityHex));
+      if (status === null || status.state !== 3 || status.botUserId === null) {
+        throw new Refusal('E_FORBIDDEN', 'current active Bot installation and community membership are required');
+      }
+      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
+        fromHex(communityHex), status.installationId, status.botUserId, requestIds.map(fromHex))
+        .filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+          && requested?.has(toHex(event.requestId)));
+    }
+    const byRequest = new Map<string, HumanInteractionEvent>();
+    for (const event of [...pendingEvents, ...archivedEvents]) {
+      const requestId = toHex(event.requestId);
+      const prior = byRequest.get(requestId);
+      if (prior !== undefined) {
+        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation
+          || toHex(prior.groupId) !== toHex(event.groupId)) {
+          throw new Refusal('E_CORE_STATE', 'contradictory duplicate Bot interaction receipts');
+        }
+        continue;
+      }
+      byRequest.set(requestId, event);
+    }
+    const events = [...byRequest.values()].slice(0, 100);
+    const mapResponse = (event: HumanInteractionEvent) => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
         operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
         status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
         sourceSeq: String(event.sourceSeq) };
-    });
-    const through = this.issueInteractionAckLease(communityHex, responses.map(row => BigInt(row.deliveryId)), this.pendingBotInteractionAcks);
+      };
+    const responses = events.map(mapResponse);
+    const through = this.issueInteractionAckLease(communityHex, pendingEvents
+      .filter(event => byRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId)
+      .map(event => event.deliveryId), this.pendingBotInteractionAcks);
     return { responses, through, blocked: false };
   }
 
@@ -1844,8 +1873,32 @@ export class Controller {
     const requested = requestIds === undefined ? null : new Set(requestIds);
     const rows = this.readAllHumanInteractionEvents();
     const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
-    const visibleEvents = rows.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
       && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
+    let archivedEvents: HumanInteractionEvent[] = [];
+    if (requestIds !== undefined) {
+      const status = await this.routes.getBotCommandStatus(communityId);
+      if (status === null || status.state !== 3 || status.botUserId === null) {
+        return { authorized: false, responses: [], through: null, blocked: false };
+      }
+      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
+        communityId, status.installationId, status.botUserId, requestIds.map(fromHex))
+        .filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+          && requested?.has(toHex(event.requestId)));
+    }
+    const eventsByRequest = new Map<string, HumanInteractionEvent>();
+    for (const event of [...pendingEvents, ...archivedEvents]) {
+      const requestId = toHex(event.requestId);
+      const prior = eventsByRequest.get(requestId);
+      if (prior !== undefined) {
+        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation) {
+          throw new Refusal('E_CORE_STATE', 'contradictory duplicate moderation receipts');
+        }
+        continue;
+      }
+      eventsByRequest.set(requestId, event);
+    }
+    const visibleEvents = [...eventsByRequest.values()].slice(0, 100);
     const responses = visibleEvents.map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, communityId, event.requestId);
@@ -1892,7 +1945,8 @@ export class Controller {
       }
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
     });
-    const through = this.issueInteractionAckLease(communityHex, responses.map(row => BigInt(row.deliveryId)), this.pendingHumanInteractionAcks);
+    const ackable = pendingEvents.filter(event => eventsByRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId);
+    const through = this.issueInteractionAckLease(communityHex, ackable.map(event => event.deliveryId), this.pendingHumanInteractionAcks);
     return { authorized: true, responses, through, blocked: false };
   }
 

@@ -89,6 +89,17 @@ it('exposes same-id reload reconciliation without sending another mutation', asy
   expect(f.calls.map(call => call.m)).toEqual(['getBotCommandStatus', 'readBotInteractionResponses', 'ackBotInteractionResponses', 'getBotCommandStatus']);
 });
 
+it('recovers a consumed receipt through a fresh adapter with no volatile result or ACK lease', async () => {
+  const f = fake(command => command.m === 'getBotCommandStatus'
+    ? { installationId: INSTALLATION, botUserId: 'bb'.repeat(16), state: 3, revision: '1' }
+    : command.m === 'readBotInteractionResponses' ? { responses: [response()], through: null } : null);
+  const result = await createBotInteractionClient(f.client, COMMUNITY).read(REQUEST, 70);
+  expect(result?.requestId).toBe(REQUEST);
+  expect(f.calls.map(call => call.m)).toEqual(['getBotCommandStatus', 'readBotInteractionResponses', 'getBotCommandStatus']);
+  expect(f.calls.find(call => call.m === 'readBotInteractionResponses')).toMatchObject({ requestIds: [REQUEST] });
+  expect(f.calls.some(call => call.m === 'humanInteractionRequest' || call.m === 'ackBotInteractionResponses')).toBe(false);
+});
+
 it('rejects a capability scope mismatch before dispatching the requested operation', async () => {
   const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: 'bb'.repeat(16), botUserId: null, state: 3, revision: '2' } : null);
   await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 71, args: [],

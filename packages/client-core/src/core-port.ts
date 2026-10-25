@@ -156,6 +156,7 @@ export interface CorePort {
   humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[];
   humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
   humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
+  humanInteractionReceiptsRead(communityId: Id, installationId: Id, botUserId: Id, requestIds: readonly Id[]): HumanInteractionEvent[];
   humanInteractionEventsAck(through: bigint): void;
   humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void;
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
@@ -319,6 +320,7 @@ export interface CoreHandle {
       human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
       human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
       human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
+      human_interaction_receipts_read(community_id: Uint8Array, installation_id: Uint8Array, bot_user_id: Uint8Array, request_ids: Uint8Array): Uint8Array;
       human_interaction_events_ack(through: bigint): void;
       human_interaction_events_ack_selected(delivery_ids: Uint8Array): void;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
@@ -665,6 +667,18 @@ export function wrapCore(handle: CoreHandle): CorePort {
           next: u64(page[1]), highWater: u64(page[2]),
         };
       },
+    )),
+    humanInteractionReceiptsRead: (communityId, installationId, botUserId, requestIds) => call(() => decoded(
+      'humanInteractionReceiptsRead', handle.human_interaction_receipts_read(communityId, installationId, botUserId, encode(requestIds)),
+      (v) => arr(v).map((item) => {
+        const row = arr(item, 13);
+        return {
+          deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
+          requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
+          senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
+          operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
+        };
+      }),
     )),
     humanInteractionEventsAck: (through) => call(() => handle.human_interaction_events_ack(through)),
     humanInteractionEventsAckSelected: (deliveryIds) => call(() => handle.human_interaction_events_ack_selected(encode(deliveryIds))),

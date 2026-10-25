@@ -33,6 +33,7 @@ import {
   type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
   type CallMediaEpoch, readCallMediaEpoch,
   type HumanInteractionEventPage,
+  type HumanInteractionEvent,
 } from '../../core-port';
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
@@ -1320,6 +1321,10 @@ export class ModelCore implements CorePort {
   humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage {
     void after; void limit;
     throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
+  }
+  humanInteractionReceiptsRead(communityId: Id, installationId: Id, botUserId: Id, requestIds: readonly Id[]): HumanInteractionEvent[] {
+    void communityId; void installationId; void botUserId; void requestIds;
+    throw new CoreError('E_CORE_STATE', 'human interaction receipts are not modelled');
   }
   humanInteractionEventsAck(through: bigint): void {
     void through;

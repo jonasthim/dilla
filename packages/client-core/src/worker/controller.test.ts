@@ -5,7 +5,7 @@ import { Enrol } from '../account/enrol';
 import { FakeCore } from '../testing/fake-core';
 import { FakeServer, NOW_S as FAKE_NOW_S, sessionFor } from '../testing/fake-server';
 import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/crypto';
-import { CoreError, type ThreadRow, type ActivityRow, type ApplyResult, type CorePort, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ThreadRow, type ActivityRow, type ApplyResult, type CorePort, type HumanInteractionEvent, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, type GatewayEvent } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
 import { toHex } from '../hex';
@@ -422,6 +422,31 @@ describe('Controller', () => {
     w.call(10_189, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '4'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(10_189)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
     expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers an exact archived receipt after worker recreation without creating an ACK lease', async () => {
+    const w = world(); await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5c);
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: 4n, data: encode([1n]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [], next: 0n, highWater: 9n });
+    const archivedEvent: HumanInteractionEvent = { deliveryId: 9n, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: 8n, epoch: 2n, receivedAt: 30n, senderUser: USER, senderDevice: DEVICE,
+      messageId: new Uint8Array(16).fill(0x5d), body, operation: 84, channelId: null };
+    w.core.humanInteractionReceiptsRead.mockReturnValue([archivedEvent]);
+    w.call(10_188, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [84], requestIds: [toHex(requestId)] });
+    await vi.waitFor(() => expect(w.ret(10_188)).toMatchObject({ ok: true, value: {
+      through: null, responses: [{ deliveryId: '9', requestId: toHex(requestId), operation: 84, revision: '4', data: encode([1n]) }],
+    } }));
+    expect(w.core.humanInteractionReceiptsRead).toHaveBeenCalledWith(COMMUNITY, new Uint8Array(16).fill(0x73), USER, [requestId]);
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
+  });
+
+  it('does not query archived receipts when the current Bot installation is disabled', async () => {
+    const w = world(); await toReady(w);
+    w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 4, revision: 2n });
+    w.call(10_187, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [84], requestIds: ['5c'.repeat(16)] });
+    await vi.waitFor(() => expect(w.ret(10_187)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
+    expect(w.core.humanInteractionReceiptsRead).not.toHaveBeenCalled();
   });
 
   it('reads member-safe Bot command status without requiring management settings authority', async () => {
