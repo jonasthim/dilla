@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { encode } from '../cbor';
 import type { CoreClient } from '../bridge';
-import { createVoiceMusicAdapter, voiceMusicAdapter } from './music.ts';
+import { createVoiceMusicAdapter, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter } from './music.ts';
 
 const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
@@ -171,7 +171,7 @@ describe('authenticated voice music adapter', () => {
     }
   });
 
-  it('explains that Spotify is unavailable when the linked account or provider cannot resolve a link', async () => {
+  it('keeps a Spotify status 5 outcome uncertain because the mutation may have persisted', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
@@ -181,7 +181,7 @@ describe('authenticated voice music adapter', () => {
     const enqueue = f.adapter.enqueue(CHANNEL, 'spotify:track:1234567890123456789012');
     await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
     f.answer(f.getRequest(12), 5, '1', encode([]));
-    await expect(enqueue).rejects.toThrow(/Spotify.*available|link.*Spotify/i);
+    await expect(enqueue).rejects.toBeInstanceOf(VoiceMusicAcceptedUnconfirmedError);
     unsubscribe();
   });
 

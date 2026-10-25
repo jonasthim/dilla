@@ -1,6 +1,6 @@
 import type { CoreClient } from '../bridge';
 import { decode, type CborValue } from '../cbor';
-import { createBotInteractionClient, type BotInteractionScope } from '../bot/interactions';
+import { BotInteractionBindingMismatchError, BotInteractionRejectedError, createBotInteractionClient, type BotInteractionScope } from '../bot/interactions';
 
 export interface VoiceMusicTrack {
   id: string;
@@ -68,7 +68,10 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   const refreshTasks = new Map<string, Promise<void>>();
   const refreshing = new Set<string>();
   const interactions = createBotInteractionClient(client, communityId);
-  let lastScope: BotInteractionScope | undefined;
+  const channelScopes = new Map<string, BotInteractionScope>();
+  interface MusicAttemptRecord { channelId: string; operation: number; args: readonly (string | number | Uint8Array | null)[];
+    revision: string; scope: BotInteractionScope; sent: boolean; acceptedRevision: string | null; }
+  const attempts = new Map<string, MusicAttemptRecord>();
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const publish = (channelId: string, state: VoiceMusicState) => {
@@ -89,8 +92,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   const request = async (channelId: string, operation: number, args: readonly (string | number | Uint8Array | null)[], revision: string | null, attempt?: VoiceMusicAttempt) => {
     if (!ID.test(channelId)) throw new Error('Invalid voice channel id.');
     const result = await interactions.request({ requestId: attempt?.requestId ?? newRequestId(), operation, channelId, args, revision,
-      expectedScope: attempt?.expectedScope ?? lastScope });
-    lastScope = result.scope;
+      expectedScope: attempt?.expectedScope });
+    if (operation === 10) channelScopes.set(channelId, result.scope);
     const response: InteractionResponse = { requestId: result.requestId, channelId, operation, status: result.status, revision: result.revision, data: result.data };
     if (operation === 10 && response.status === 0) {
       const snapshot = decodeSnapshot(response.data);
@@ -124,28 +127,110 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       .finally(() => { refreshing.delete(channelId); });
   };
   const mutate = async (channelId: string, operation: number, args: readonly (string | number | Uint8Array | null)[], attempt?: VoiceMusicAttempt) => {
-    const current = states.get(channelId);
-    if (current?.status !== 'available' || staleChannels.has(channelId)) await refresh(channelId);
-    const before = states.get(channelId);
-    if (before?.status !== 'available') throw new Error('Music state is unavailable.');
-    const result = await request(channelId, operation, args, revisions.get(channelId) ?? null, attempt);
+    let record = attempt === undefined ? undefined : attempts.get(attempt.requestId);
+    if (record !== undefined && (record.channelId !== channelId || record.operation !== operation)) {
+      throw new Error('The music attempt id is already bound to another operation.');
+    }
+    if (record === undefined && attempt !== undefined) {
+      const prior = await interactions.read(attempt.requestId, operation);
+      if (prior !== null) {
+        if (prior.status === 5) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The Bot reported an ambiguous persisted outcome.'));
+        if (prior.status !== 0) throw responseError(prior.status, operation === 12 && isSpotifyInput(args[0]));
+        try {
+          const receipt = decode(prior.data);
+          if (!Array.isArray(receipt) || receipt.length !== 0 || prior.revision === null || !/^(?:0|[1-9]\d*)$/u.test(prior.revision))
+            throw new Error('Malformed music mutation receipt.');
+        } catch (error) {
+          try { await refresh(channelId); } catch { /* the request ID remains reserved for a later reconciliation */ }
+          throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
+        }
+        try { await refresh(channelId); }
+        catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
+        if (BigInt(revisions.get(channelId) ?? '0') < BigInt(prior.revision))
+          throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The accepted music revision is not yet visible.'));
+        return;
+      }
+    }
+    if (record === undefined) {
+      const current = states.get(channelId);
+      if (current?.status !== 'available' || staleChannels.has(channelId)) await refresh(channelId);
+      const before = states.get(channelId);
+      if (before?.status !== 'available') throw new Error('Music state is unavailable.');
+      if ((operation === 21 || operation === 22) && !before.queue.some(item => item.id === args[0]))
+        throw new Error('That queue item is no longer available. Refresh the queue and choose it again.');
+      if (operation === 22 && args[1] !== null && args[1] !== undefined
+        && !before.queue.some(item => item.id === args[1] && item.id !== args[0]))
+        throw new Error('The destination queue item is no longer available. Refresh the queue and choose it again.');
+      const scope = attempt?.expectedScope ?? channelScopes.get(channelId);
+      if (scope === undefined) throw new Error('The Bot music state has no authenticated installation scope.');
+      record = { channelId, operation, args: Object.freeze(args.map(value => value instanceof Uint8Array ? value.slice() : value)),
+        revision: revisions.get(channelId) ?? '0', scope: Object.freeze({ ...scope }), sent: false, acceptedRevision: null };
+      if (attempt !== undefined) {
+        attempts.set(attempt.requestId, record);
+        while (attempts.size > 128) attempts.delete(attempts.keys().next().value!);
+      }
+    }
+    let result: InteractionResponse;
+    if (attempt !== undefined && record.sent) {
+      const reconciled = await interactions.read(attempt.requestId, operation);
+      if (reconciled === null) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('No durable result is available yet.'));
+      if (!sameInteractionScope(reconciled.scope, record.scope)) {
+        try { await refresh(channelId); } catch { /* a new read still uses the live installation scope */ }
+        throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The original music attempt is bound to a previous Bot installation.'));
+      }
+      result = { requestId: reconciled.requestId, channelId, operation, status: reconciled.status, revision: reconciled.revision, data: reconciled.data };
+    } else {
+      if (attempt !== undefined) record.sent = true;
+      try {
+        const resultValue = await interactions.request({ requestId: attempt?.requestId ?? newRequestId(), operation, channelId,
+          args: record.args, revision: record.revision, expectedScope: record.scope });
+        result = { requestId: resultValue.requestId, channelId, operation, status: resultValue.status, revision: resultValue.revision, data: resultValue.data };
+      } catch (error) {
+        if (attempt !== undefined && (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)) attempts.delete(attempt.requestId);
+        throw error;
+      }
+    }
+    if (result.status === 5) {
+      record.sent = true;
+      throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, new Error('The Bot reported an ambiguous persisted outcome.'));
+    }
     if (result.status === 4) {
+      if (attempt !== undefined) attempts.delete(attempt.requestId);
       // A conflict means our cached revision is stale. Refresh before rejecting so the next action can proceed.
       staleChannels.add(channelId);
       await refresh(channelId);
       throw responseError(result.status);
     }
-    if (result.status !== 0) throw responseError(result.status, operation === 12 && isSpotifyInput(args[0]));
+    if (result.status !== 0) {
+      if (attempt !== undefined) attempts.delete(attempt.requestId);
+      throw responseError(result.status, operation === 12 && isSpotifyInput(record.args[0]));
+    }
+    try {
+      const receipt = decode(result.data);
+      if (!Array.isArray(receipt) || receipt.length !== 0 || result.revision === null || !/^(?:0|[1-9]\d*)$/u.test(result.revision)
+        || BigInt(result.revision) <= BigInt(record.revision))
+        throw new Error('Malformed music mutation receipt.');
+    } catch (error) {
+      record.sent = true;
+      record.acceptedRevision = result.revision;
+      try { await refresh(channelId); } catch { /* keep the malformed receipt uncertain; a later call may observe state */ }
+      throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, error);
+    }
+    record.acceptedRevision = result.revision;
     // A successful operation response is not the accepted state. Wait for an authenticated state read
     // after the operation result so the panel only settles when the server-confirmed snapshot arrives.
     try { await refresh(channelId); }
     catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, error); }
-    if (result.revision !== null) {
+    if (!sameInteractionScope(channelScopes.get(channelId), record.scope))
+      throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, new Error('The Bot installation changed before the accepted music state could be confirmed.'));
+    if (record.acceptedRevision !== null) {
       const after = states.get(channelId);
-      if (after?.status !== 'available' || BigInt(revisions.get(channelId) ?? '0') < BigInt(result.revision)) {
-        throw new Error('The Bot operation succeeded but its resulting music state is not yet visible.');
+      if (after?.status !== 'available' || BigInt(revisions.get(channelId) ?? '0') < BigInt(record.acceptedRevision)) {
+        throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId,
+          new Error('The Bot operation succeeded but its resulting music state is not yet visible.'));
       }
     }
+    if (attempt !== undefined) attempts.delete(attempt.requestId);
   };
   const adapter: VoiceMusicAdapter = {
     state: channelId => states.get(channelId) ?? EMPTY,
@@ -169,7 +254,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     setVolume: (id, value, attempt) => mutate(id, 18, [bounded(value, 0, 100, 'volume')], attempt),
     setShuffle: (id, enabled, attempt) => {
       const current = states.get(id);
-      return current?.status === 'available' && current.shuffle === enabled ? undefined : mutate(id, 19, [], attempt);
+      return current?.status === 'available' && current.shuffle === enabled && (attempt === undefined || !attempts.has(attempt.requestId))
+        ? undefined : mutate(id, 19, [], attempt);
     },
     setRepeat: (id, repeat, attempt) => mutate(id, 20, [repeat === 'off' ? 0 : repeat === 'one' ? 1 : 2], attempt),
     remove: (id, queueId, attempt) => mutate(id, 21, [queueId], attempt),
@@ -181,10 +267,14 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     },
     enqueue: (id, input, attempt) => mutate(id, 12, [validatedInput(input, 2048, 'queue input')], attempt),
     move: (id, queueId, destinationIndex, attempt) => {
+      const existing = attempt === undefined ? undefined : attempts.get(attempt.requestId);
+      if (existing !== undefined) return mutate(id, 22, existing.args, attempt);
       const state = states.get(id);
       if (state?.status !== 'available') return Promise.reject(new Error('Music state is unavailable.'));
+      const destination = safeInteger(destinationIndex, 'queue position');
+      if (destination >= state.queue.length) return Promise.reject(new Error('Choose a position within the current queue.'));
       const queue = state.queue.filter(item => item.id !== queueId);
-      const target = Math.max(0, Math.min(queue.length, safeInteger(destinationIndex, 'queue position')));
+      const target = Math.min(queue.length, destination);
       const before = queue[target];
       return mutate(id, 22, [queueId, before === undefined ? null : before.id], attempt);
     },
@@ -205,6 +295,9 @@ export const voiceMusicAdapter: VoiceMusicAdapter = {
 
 interface InteractionResponse { requestId: string; channelId: string | null; operation: number; status: number; revision: string | null; data: Uint8Array; }
 function unavailable(): Promise<never> { return Promise.reject(new Error('Authenticated voice music transport is unavailable.')); }
+function sameInteractionScope(left: BotInteractionScope | undefined, right: BotInteractionScope): boolean {
+  return left !== undefined && left.installationId === right.installationId && left.botUserId === right.botUserId && left.revision === right.revision;
+}
 function responseError(status: number, spotifyInput = false): Error {
   if (spotifyInput && status === 5) return new VoiceMusicError('spotify-unavailable', 'Spotify is unavailable or not linked for this community.');
   if (spotifyInput && status === 6) return new VoiceMusicError('spotify-busy', 'Spotify playback is already active in another voice channel.');

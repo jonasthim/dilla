@@ -81,8 +81,13 @@ async function runAnnouncementMutation(client: CoreClient, communityId: string, 
   args: readonly (string | number | Uint8Array | null)[], revision: string, scope: BotInteractionScope): Promise<BotInteractionResult> {
   const store = announcementAttemptStore(client); const key = accountScopeKey(client, communityId, parentId);
   let attempt = store.get(key);
-  if (attempt !== undefined && (attempt.operation !== operation || attempt.revision !== revision || attempt.scopeKey !== JSON.stringify(scope)))
-    throw new BotInteractionUncertainError(attempt.requestId, 'This announcement attempt is bound to a different schedule revision. Refresh and reconcile it before starting another command.');
+  if (attempt !== undefined && (attempt.operation !== operation || attempt.revision !== revision || attempt.scopeKey !== JSON.stringify(scope))) {
+    if (!attempt.sent || attempt.operation !== operation) throw new BotInteractionUncertainError(attempt.requestId,
+      'This announcement attempt is bound to a different schedule revision or Bot installation. Reconcile it before starting another command.');
+    const prior = await createBotInteractionClient(client, communityId).read(attempt.requestId, operation);
+    if (prior === null) throw new BotInteractionUncertainError(attempt.requestId, 'The prior announcement result is still pending.');
+    return prior;
+  }
   if (attempt === undefined) {
     attempt = { scopeKey: JSON.stringify(scope), operation, requestId: childId(parentId, `announcement:${stage}`), args: args.map(value => value instanceof Uint8Array ? value.slice() : value), revision, scope, sent: false };
     store.set(key, attempt);
@@ -94,6 +99,8 @@ async function runAnnouncementMutation(client: CoreClient, communityId: string, 
     if (prior === null) throw new BotInteractionUncertainError(attempt.requestId, 'The prior announcement result is still pending. Reconcile this same request before editing the schedule again.');
     return prior;
   }
+  const persisted = await api.read(attempt.requestId, operation);
+  if (persisted !== null) { attempt.sent = true; return persisted; }
   attempt.sent = true;
   try {
     return await api.request({ requestId: attempt.requestId, operation, args: attempt.args, revision: attempt.revision, expectedScope: attempt.scope });
@@ -127,8 +134,13 @@ function decodeAnnouncementList(data: Uint8Array, revision: string | null, expec
 function toHex(data: Uint8Array): string { return Array.from(data, byte => byte.toString(16).padStart(2, '0')).join(''); }
 function confirmedAnnouncementMutation(response: { revision: string | null; data: Uint8Array }, previousRevision: string): boolean {
   if (response.revision === null || !/^(?:0|[1-9]\d*)$/u.test(response.revision) || BigInt(response.revision) <= BigInt(previousRevision)) return false;
-  const decoded = decode(response.data);
-  return Array.isArray(decoded) && decoded.length === 0;
+  try {
+    const decoded = decode(response.data);
+    return Array.isArray(decoded) && decoded.length === 0;
+  } catch { return false; }
+}
+function sameInteractionScope(left: BotInteractionScope, right: BotInteractionScope): boolean {
+  return left.installationId === right.installationId && left.botUserId === right.botUserId && left.revision === right.revision;
 }
 async function listAnnouncements(client: CoreClient, communityId: string, requestId: string, expectedScope?: { installationId: string; botUserId: string | null; revision: string }) {
   const api = createBotInteractionClient(client, communityId);
@@ -154,7 +166,7 @@ function validateCurrent(context: CommandExecutionContext, communityId: string, 
   return context.getCurrentBinding().bits !== undefined && (context.getCurrentBinding().bits! & (permission === 'manageRoles' ? PERM.manageRoles : PERM.manageCommunity)) !== 0;
 }
 function voiceStillCurrent(context: CommandExecutionContext, communityId: string, channelId: string): boolean {
-  return context.isCurrent() && requireCommunity(context, communityId) === channelId && validateCurrent(context, communityId, 'manageCommunity');
+  return context.isCurrent() && requireCommunity(context, communityId) === channelId;
 }
 /** Provider hook; the Shell owner renders `dialogs` alongside the ordinary command host. */
 export function useBotCommandProvider(client: CoreClient, communityId: string | null): {
@@ -185,8 +197,12 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       if (fresh.status !== 'available') return fail('The Bot music player is unavailable.');
       if (['queue', 'nowplaying', 'music', 'music help'].includes(invocation.commandId)) return musicReadSummary(invocation.commandId, invocation, context, fresh);
       if (!fresh.permissions.control) return fail('A DJ, owner, or administrator must control music in this voice channel.');
-      if (!voiceStillCurrent(context, cid, channelId)) return fail('The voice call or Manage Community permission changed before the command ran.');
+      if (!voiceStillCurrent(context, cid, channelId)) return fail('The voice call changed before the command ran.');
       const attempt = (stage: string) => ({ requestId: childId(context.requestId, `music:${stage}`) });
+      const applyControl = async (action: Promise<void>) => {
+        await action;
+        return voiceStillCurrent(context, cid, channelId);
+      };
       switch (invocation.commandId) {
         case 'play': {
           const input = invocation.args['query-or-url']?.trim() ?? '';
@@ -196,15 +212,14 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           if (!url) {
             const found = await adapter.search(channelId, input, attempt('search'));
             if (!context.isCurrent() || requireCommunity(context, cid) !== channelId) return uncertain('Search finished after the conversation or voice call changed.');
-            if (!validateCurrent(context, cid, 'manageCommunity')) return fail('Manage Community permission changed before the track was queued.');
             if (found.length === 0) return fail('No YouTube tracks matched that search.');
             const first = found[0];
             if (first === undefined) return fail('No YouTube tracks matched that search.');
             selected = first.input;
           }
           await adapter.enqueue(channelId, selected, attempt('enqueue'));
-          if (!context.isCurrent() || requireCommunity(context, cid) !== channelId || !validateCurrent(context, cid, 'manageCommunity'))
-            return ok('The track was added, but playback was not resumed because the voice call or permission changed.');
+          if (!context.isCurrent() || requireCommunity(context, cid) !== channelId)
+            return ok('The track was added, but playback was not resumed because the voice call changed.');
           const afterEnqueue = adapter.state(channelId);
           if (afterEnqueue.status === 'available' && afterEnqueue.paused) {
             try { await adapter.pause(channelId, false, attempt('resume')); }
@@ -212,42 +227,51 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           }
           return ok('Track added to the music queue.');
         }
-        case 'pause': await adapter.pause(channelId, true, attempt('pause')); return ok('Music paused.');
-        case 'resume': await adapter.pause(channelId, false, attempt('resume')); return ok('Music resumed.');
-        case 'skip': await adapter.skip(channelId, attempt('skip')); return ok('Skipped the current track.');
-        case 'stop': await adapter.stop(channelId, attempt('stop')); return ok('Music stopped.');
+        case 'pause': return await applyControl(Promise.resolve(adapter.pause(channelId, true, attempt('pause'))))
+          ? ok('Music paused.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        case 'resume': return await applyControl(Promise.resolve(adapter.pause(channelId, false, attempt('resume'))))
+          ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        case 'skip': return await applyControl(Promise.resolve(adapter.skip(channelId, attempt('skip'))))
+          ? ok('Skipped the current track.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        case 'stop': return await applyControl(Promise.resolve(adapter.stop(channelId, attempt('stop'))))
+          ? ok('Music stopped.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'seek': {
           const ms = parsePosition(invocation.args.position ?? '', fresh.track?.durationMs ?? Number.MAX_SAFE_INTEGER);
           if (ms === null) return fail('Use seconds, mm:ss, or hh:mm:ss within the current track.');
-          await adapter.seek(channelId, ms, attempt('seek')); return ok('Playback position updated.');
+          return await applyControl(Promise.resolve(adapter.seek(channelId, ms, attempt('seek'))))
+            ? ok('Playback position updated.') : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'volume': {
           const volume = Number(invocation.args.level);
           if (!Number.isInteger(volume) || volume < 0 || volume > 100) return fail('Volume must be from 0 to 100.');
-          await adapter.setVolume(channelId, volume, attempt('volume')); return ok(`Volume set to ${volume}%.`);
+          return await applyControl(Promise.resolve(adapter.setVolume(channelId, volume, attempt('volume'))))
+            ? ok(`Volume set to ${volume}%.`) : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'shuffle': {
           const enabled = invocation.args.mode === 'on';
-          await adapter.setShuffle(channelId, enabled, attempt(`shuffle:${enabled ? 'on' : 'off'}`)); return ok(`Shuffle ${enabled ? 'enabled' : 'disabled'}.`);
+          return await applyControl(Promise.resolve(adapter.setShuffle(channelId, enabled, attempt(`shuffle:${enabled ? 'on' : 'off'}`))))
+            ? ok(`Shuffle ${enabled ? 'enabled' : 'disabled'}.`) : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'repeat': {
           const mode = invocation.args.mode;
           if (mode !== 'off' && mode !== 'one' && mode !== 'all') return fail('Repeat mode must be off, one, or all.');
-          await adapter.setRepeat(channelId, mode, attempt(`repeat:${mode}`)); return ok(`Repeat set to ${mode}.`);
+          return await applyControl(Promise.resolve(adapter.setRepeat(channelId, mode, attempt(`repeat:${mode}`))))
+            ? ok(`Repeat set to ${mode}.`) : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'queue remove': {
           const id = invocation.args.item ?? '';
-          if (!fresh.queue.some(item => item.id === id)) return fail('That queue item is no longer available. Refresh the queue and choose it again.');
-          await adapter.remove(channelId, id, attempt(`queue:remove:${id}`)); return ok('Removed the track from the queue.');
+          return await applyControl(Promise.resolve(adapter.remove(channelId, id, attempt(`queue:remove:${id}`))))
+            ? ok('Removed the track from the queue.') : uncertain('The queue was updated, but the active voice call changed before completion.');
         }
         case 'queue move': {
           const id = invocation.args.item ?? '';
-          if (!fresh.queue.some(item => item.id === id)) return fail('That queue item is no longer available. Refresh the queue and choose it again.');
           const position = Number(invocation.args.position);
-          if (!Number.isInteger(position) || position < 1 || position > fresh.queue.length) return fail('Choose a position within the current queue.');
-          await adapter.move(channelId, id, position - 1, attempt(`queue:move:${id}:${position}`)); return ok(`Moved the track to position ${position}.`);
+          if (!Number.isInteger(position) || position < 1) return fail('Choose a position within the current queue.');
+          return await applyControl(Promise.resolve(adapter.move(channelId, id, position - 1, attempt(`queue:move:${id}:${position}`))))
+            ? ok(`Moved the track to position ${position}.`) : uncertain('The queue was updated, but the active voice call changed before completion.');
         }
-        case 'queue clear': await adapter.clearQueue(channelId, attempt('queue:clear')); return ok('Music queue cleared.');
+        case 'queue clear': return await applyControl(Promise.resolve(adapter.clearQueue(channelId, attempt('queue:clear'))))
+          ? ok('Music queue cleared.') : uncertain('The queue was cleared, but the active voice call changed before completion.');
         default: return fail('Unsupported music command.');
       }
     } catch (error) { return resultError(error); }
@@ -269,10 +293,12 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const reconciled = await runAnnouncementMutation(client, cid, context.requestId, pending.operation === 52 ? 'delete' : 'save', pending.operation,
           pending.args, pending.revision, scope);
         if (reconciled.status === 0) {
+          if (!sameInteractionScope(reconciled.scope, pending.scope)) return uncertain('The original schedule attempt is bound to a previous Bot installation. Reconcile that result before starting another edit.');
           if (!confirmedAnnouncementMutation(reconciled, pending.revision)) return uncertain('The Bot accepted the schedule change, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(attemptKey);
           return ok(pending.operation === 52 ? 'Scheduled announcement deleted.' : invocation.commandId === 'announcement edit' ? 'Announcement updated.' : 'Announcement scheduled.');
         }
+        if (reconciled.status === 5) return uncertain('The Bot reported an ambiguous schedule mutation. Retry this same attempt to reconcile it; the schedule was not resent.');
         announcementAttemptStore(client).delete(attemptKey);
         return reconciled.status === 4 ? fail('The schedule changed before saving. Refresh the announcement list and try again.')
           : fail(reconciled.status === 2 ? 'Manage Community permission is required.' : 'The announcement could not be saved.');
@@ -292,9 +318,11 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const storeKey = accountScopeKey(client, cid, context.requestId);
         const result = await runAnnouncementMutation(client, cid, context.requestId, 'delete', 52, [fromHex(row.id), row.revision], listed.revision, scope);
         if (result.status === 0) {
+          if (!sameInteractionScope(result.scope, scope)) return uncertain('The deletion was accepted, but the Bot installation changed before its result could be confirmed.');
           if (!confirmedAnnouncementMutation(result, listed.revision)) return uncertain('The Bot accepted deletion, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(storeKey); return ok('Scheduled announcement deleted.');
         }
+        if (result.status === 5) return uncertain('The Bot reported an ambiguous deletion. Retry this same attempt to reconcile it; deletion was not resent.');
         announcementAttemptStore(client).delete(storeKey);
         return result.status === 4 ? fail('The schedule changed before deletion. Refresh the announcement list and choose it again.')
           : fail(result.status === 2 ? 'Manage Community permission is required.' : 'The announcement could not be deleted.');
@@ -310,15 +338,17 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       const id = existing?.id ?? randomId();
       const itemRevision = existing === undefined ? 1 : existing.revision + 1;
       const encoded = encode([1n, fromHex(id), fromHex(schedule.channelId), schedule.text, schedule.kind, schedule.timezone, schedule.date,
-        BigInt(schedule.hour), BigInt(schedule.minute), BigInt(schedule.weekday), 1n, BigInt(itemRevision)]);
+        BigInt(schedule.hour), BigInt(schedule.minute), BigInt(schedule.weekday), existing?.enabled === false ? 0n : 1n, BigInt(itemRevision)]);
       const storeKey = accountScopeKey(client, cid, context.requestId);
       const saved = await runAnnouncementMutation(client, cid, context.requestId, 'save', 51,
         [existing === undefined ? null : fromHex(existing.id), encoded], listed.revision, scope);
       if (saved.status === 0) {
+        if (!sameInteractionScope(saved.scope, scope)) return uncertain('The schedule save was accepted, but the Bot installation changed before its result could be confirmed.');
         if (!confirmedAnnouncementMutation(saved, listed.revision)) return uncertain('The Bot accepted the schedule, but its revision receipt was malformed. Refresh the list before retrying.');
         announcementAttemptStore(client).delete(storeKey);
         return ok(existing === undefined ? 'Announcement scheduled.' : 'Announcement updated.');
       }
+      if (saved.status === 5) return uncertain('The Bot reported an ambiguous schedule save. Retry this same attempt to reconcile it; the schedule was not resent.');
       announcementAttemptStore(client).delete(storeKey);
       return saved.status === 4 ? fail('The schedule changed before saving. Refresh the announcement list and try again.')
         : fail(saved.status === 2 ? 'Manage Community permission is required.' : 'The announcement could not be saved.');
@@ -334,6 +364,10 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
     let pending = rolePanelAttempts(client).get(roleAttemptKey);
     try {
       if (pending === undefined) {
+        const api = createBotInteractionClient(client, cid);
+        const scopeRead = await api.request({ requestId: childId(context.requestId, 'rolepanel:scope'), operation: 3, args: [] });
+        if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return fail('The community or permission changed before opening the role panel.');
+        if (scopeRead.status !== 0) return fail('The Bot installation is unavailable for role panel publication.');
         const roles = await client.call({ m: 'listSelfRoles', communityId: cid }) as { id: string; name: string }[];
         if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return fail('The community or permission changed before opening the role panel.');
         if (roles.length === 0) return fail('Approve at least one self-service role before creating a panel.');
@@ -350,7 +384,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const payload = encode(options);
         pending = { communityId: cid, channelId: selected.channelId, roles: selected.roles, emojis: selected.emojis,
           publishId: childId(context.requestId, 'rolepanel:publish'), registerId: childId(context.requestId, 'rolepanel:register'), payload,
-          scope: undefined, sent: false, accepted: null };
+          scope: scopeRead.scope, sent: false, published: false, bodyKnown: true, accepted: null };
         rolePanelAttempts(client).set(roleAttemptKey, pending);
         while (rolePanelAttempts(client).size > 128) rolePanelAttempts(client).delete(rolePanelAttempts(client).keys().next().value!);
       }
@@ -361,8 +395,15 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           published = await api.read(pending.publishId, 31);
           if (published === null) return uncertain('The role panel publication may still be pending. Retry to reconcile the same request; it will not publish a second panel.');
         } else {
+          published = await api.read(pending.publishId, 31);
+          if (published !== null) {
+            pending.sent = true;
+            pending.published = true;
+            pending.bodyKnown = false;
+            return uncertain('A prior panel publication exists for this command ID, but its original role selection is no longer available. Inspect the channel before creating another panel.');
+          }
           pending.sent = true;
-          published = await api.request({ requestId: pending.publishId, operation: 31, args: [pending.channelId, pending.payload], revision: '0' });
+          published = await api.request({ requestId: pending.publishId, operation: 31, args: [pending.channelId, pending.payload], revision: '0', expectedScope: pending.scope });
         }
         if (published.status !== 0) {
           if (published.status === 2) { rolePanelAttempts(client).delete(roleAttemptKey); return fail('Manage Roles permission is required.'); }
@@ -371,11 +412,14 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         if (pending.scope !== undefined && (pending.scope.installationId !== published.scope.installationId
           || pending.scope.botUserId !== published.scope.botUserId || pending.scope.revision !== published.scope.revision))
           return uncertain('The Bot installation changed after publication. Verify the channel before continuing registration.');
-        const decoded = decode(published.data);
+        pending.published = true;
+        pending.scope = published.scope;
+        let decoded;
+        try { decoded = decode(published.data); }
+        catch { return uncertain('The role panel was published, but its receipt could not be decoded. Retry this same attempt to reconcile it.'); }
         if (!Array.isArray(decoded) || decoded.length !== 2 || !(decoded[0] instanceof Uint8Array) || typeof decoded[1] !== 'bigint'
           || toHex(decoded[0]) !== pending.channelId || decoded[1] < 1n) return uncertain('The role panel was accepted with an invalid receipt. Inspect the channel before retrying.');
         pending.accepted = { channelId: pending.channelId, messageSeq: decoded[1].toString() };
-        pending.scope = published.scope;
       }
       if (pending?.accepted !== null && pending?.accepted !== undefined) {
         const receipt = await createBotInteractionClient(client, cid).read(pending.publishId, 31);
@@ -383,6 +427,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           || receipt.scope.botUserId !== pending.scope.botUserId || receipt.scope.revision !== pending.scope.revision)
           return uncertain('The panel message was accepted, but the Bot installation binding changed before registration. Verify the channel and reconcile safely.');
       }
+      if (pending?.bodyKnown === false) return uncertain('The accepted panel cannot be matched to the current role selection. Inspect the channel before retrying.');
       if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return uncertain('The role panel was published, but current authority changed before registration. Retry to finish registration.');
       if (pending?.accepted === null || pending?.accepted === undefined) return uncertain('The role panel publication is not confirmed yet.');
       const acceptedPending = pending;
@@ -390,9 +435,11 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       const registration = { m: 'registerRolePanel' as const, communityId: cid, requestId: acceptedPending.registerId, channelId: acceptedPending.channelId,
         messageSeq: acceptedPanel.messageSeq, options: acceptedPending.roles.map(role => ({ emoji: acceptedPending.emojis[role.id] ?? '', roleId: role.id })) };
       await client.call(registration);
+      if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles'))
+        return uncertain('The panel registration was sent, but the current command context or permission changed before confirmation. Retry to reconcile this same registration ID.');
       rolePanelAttempts(client).delete(roleAttemptKey);
       return ok('Role panel published and registered.');
-    } catch (error) { return pending?.accepted !== null && pending?.accepted !== undefined
+    } catch (error) { return pending?.published === true || pending?.accepted !== null && pending?.accepted !== undefined
       ? uncertain('The panel message was accepted, but local registration is not confirmed. Retry this command to finish registration without publishing again.')
       : resultError(error); }
   }, [client, communityId, openDialog]);
@@ -453,7 +500,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
 
 interface RolePanelPending { communityId: string; channelId: string; roles: { id: string; name: string }[]; emojis: Record<string, string>;
   publishId: string; registerId: string; payload: Uint8Array; scope?: { installationId: string; botUserId: string | null; revision: string };
-  sent: boolean; accepted: { channelId: string; messageSeq: string } | null }
+  sent: boolean; published: boolean; bodyKnown: boolean; accepted: { channelId: string; messageSeq: string } | null }
 const rolePanelStores = new WeakMap<CoreClient, Map<string, RolePanelPending>>();
 function rolePanelAttempts(client: CoreClient): Map<string, RolePanelPending> {
   let store = rolePanelStores.get(client); if (store === undefined) { store = new Map(); rolePanelStores.set(client, store); }
