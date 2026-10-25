@@ -28,6 +28,12 @@ func (v authorityDeviceLists) Verify(_ context.Context, _ []byte, _ []byte, user
 	return cloneDeviceListEntries(v[user]), nil
 }
 
+func (v authorityDeviceLists) DeviceListEntries(_ context.Context, _ []byte, _ []byte, user []byte) ([]mlswasi.DeviceListEntry, error) {
+	var userID id.ID
+	copy(userID[:], user)
+	return cloneDeviceListEntries(v[userID]), nil
+}
+
 type authorityTxStub struct{ store.Repository }
 
 func TestPrepareKind3PreflightEvidenceBindsAdmissionAndRegistration(t *testing.T) {
@@ -69,10 +75,10 @@ func TestPrepareKind3PreflightEvidenceBindsAdmissionAndRegistration(t *testing.T
 	state := RegisteredKind3State{GroupID: tuple.GroupID, Binding: binding, LeafCount: 2, Generation: 1, Epoch: 1, NextSeq: 1}
 	badTuple := tuple
 	badTuple.ParticipantDeviceID = interactionID(101)
-	if _, err := d.ValidateKind3RegistrationAuthority(context.Background(), authorityTxStub{}, session, tuple.InstallationID, interactionID(102), admission.AdmissionID, interactionID(103), badTuple, request, []byte{1}, state, evidence); err == nil {
+	if _, err := d.ValidateKind3RegistrationAuthority(context.Background(), authorityTxStub{}, authorityDeviceLists{}, session, tuple.InstallationID, interactionID(102), admission.AdmissionID, interactionID(103), badTuple, request, []byte{1}, state, evidence); err == nil {
 		t.Fatal("validator accepted a participant device different from preflight")
 	}
-	if _, err := d.ValidateKind3RegistrationAuthority(context.Background(), authorityTxStub{}, session, interactionID(104), interactionID(102), admission.AdmissionID, interactionID(103), tuple, request, []byte{1}, state, evidence); err == nil {
+	if _, err := d.ValidateKind3RegistrationAuthority(context.Background(), authorityTxStub{}, authorityDeviceLists{}, session, interactionID(104), interactionID(102), admission.AdmissionID, interactionID(103), tuple, request, []byte{1}, state, evidence); err == nil {
 		t.Fatal("validator accepted cross-installation authority")
 	}
 }
@@ -194,7 +200,7 @@ func TestValidateKind3RegistrationAuthorityUsesCurrentReceiptAndGeneration(t *te
 		var verifiedResult VerifiedKind3Registration
 		err := repo.Tx(ctx, func(tx store.Repository) error {
 			var err error
-			verifiedResult, err = d.ValidateKind3RegistrationAuthority(ctx, tx, session, tuple.InstallationID, requestID, admission.AdmissionID, interactionID(16), tuple, registration, body, registered, evidence)
+			verifiedResult, err = d.ValidateKind3RegistrationAuthority(ctx, tx, authorityDeviceLists{tuple.BotUserID: botList, tuple.ParticipantUserID: participantList}, session, tuple.InstallationID, requestID, admission.AdmissionID, interactionID(16), tuple, registration, body, registered, evidence)
 			return err
 		})
 		return verifiedResult, err

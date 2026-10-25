@@ -11,11 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -308,6 +311,26 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	}
 	if _, _, err := fixture.h.ds.ReplayBotInteractionGroup(ctx, changedWelcome); err == nil {
 		t.Fatal("receipt-only replay accepted a changed initial Welcome")
+	}
+}
+
+func TestBotInteractionRegistrationWithSingleWASMInstance(t *testing.T) {
+	fixture := newKind3RegistrationFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wasm, err := mlswasi.New(ctx, loadWasmForDS(t), mlswasi.Options{PoolSize: 1, CacheDir: sharedWasmCacheDir(t), Now: fixture.h.clk.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
+	fixture.h.ds, err = ds.New(ds.Options{Store: fixture.h.repo, BotCapability: capability.New(fixture.h.repo), Wasm: wasm, Gateway: fixture.h.gw,
+		Clock: fixture.h.clk, Keys: testInstanceKeys(t), Policy: ds.DefaultPolicy(), Channels: fixture.h.channels,
+		ACL: fixture.h.acl, PostPolicy: fixture.h.postPolicy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, fixture.request); err != nil || !created {
+		t.Fatalf("single-instance registration created=%v err=%v", created, err)
 	}
 }
 

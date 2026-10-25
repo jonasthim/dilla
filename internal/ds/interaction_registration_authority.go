@@ -96,10 +96,12 @@ func PrepareKind3PreflightEvidence(ctx context.Context, extractor InteractionReg
 // ValidateKind3RegistrationAuthority reloads all mutable authority inside the caller's
 // final transaction. It acquires Community -> Installation -> sorted Bot/participant
 // User locks itself. The returned record is suitable for atomic admission consumption.
+// The verifier must be the guest already held by registration; acquiring another
+// instance while the transaction is open deadlocks a single-instance WASM pool.
 // It does not create or accept a registration itself.
-func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Repository, session auth.Session, installationID, admissionRequestID, admissionID, operationID id.ID, expected InteractionAdmissionTuple, registration RegisterRequest, registrationBody []byte, state RegisteredKind3State, evidence Kind3PreflightEvidence) (VerifiedKind3Registration, error) {
+func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Repository, verifier DeviceListVerifier, session auth.Session, installationID, admissionRequestID, admissionID, operationID id.ID, expected InteractionAdmissionTuple, registration RegisterRequest, registrationBody []byte, state RegisteredKind3State, evidence Kind3PreflightEvidence) (VerifiedKind3Registration, error) {
 	var out VerifiedKind3Registration
-	if tx == nil || d == nil || d.opts.Clock == nil || d.opts.DeviceLists == nil || session.Bot == nil || len(session.TokenHash) == 0 || installationID.IsZero() || admissionRequestID.IsZero() || admissionID.IsZero() || operationID.IsZero() {
+	if tx == nil || verifier == nil || d == nil || d.opts.Clock == nil || session.Bot == nil || len(session.TokenHash) == 0 || installationID.IsZero() || admissionRequestID.IsZero() || admissionID.IsZero() || operationID.IsZero() {
 		return out, errors.New("ds: incomplete final kind-3 authority context")
 	}
 	if evidence.admissionID.IsZero() || evidence.admissionID != admissionID || evidence.tuple != expected || expected.InstallationID != installationID || expected.BotUserID != session.UserID || expected.BotDeviceID != session.DeviceID || session.Bot.InstallationID != installationID || session.Bot.CommunityID != expected.CommunityID || registration.Session.UserID != session.UserID || registration.Session.DeviceID != session.DeviceID || !bytes.Equal(registration.Session.TokenHash, session.TokenHash) || registration.Session.Bot == nil || registration.Session.Bot.InstallationID != session.Bot.InstallationID || registration.Session.Bot.CommunityID != session.Bot.CommunityID || registration.Session.Bot.State != session.Bot.State {
@@ -192,11 +194,11 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	if err = interactionNotBanned(ctx, tx, installation.CommunityID, participant.ID, now); err != nil {
 		return out, err
 	}
-	botEntries, err := currentInteractionDeviceList(ctx, tx, d.opts.DeviceLists, bot, botDevice)
+	botEntries, err := currentInteractionDeviceList(ctx, tx, verifier, bot, botDevice)
 	if err != nil {
 		return out, fmt.Errorf("ds: current Bot device list: %w", err)
 	}
-	participantEntries, err := currentInteractionDeviceList(ctx, tx, d.opts.DeviceLists, participant, participantDevice)
+	participantEntries, err := currentInteractionDeviceList(ctx, tx, verifier, participant, participantDevice)
 	if err != nil {
 		return out, fmt.Errorf("ds: current participant device list: %w", err)
 	}
@@ -284,12 +286,12 @@ func interactionNotBanned(ctx context.Context, tx store.Repository, community, u
 	return nil
 }
 
-func currentInteractionDeviceList(ctx context.Context, tx store.Repository, verifier DeviceLists, user store.UserRow, device store.DeviceRow) ([]mlswasi.DeviceListEntry, error) {
+func currentInteractionDeviceList(ctx context.Context, tx store.Repository, verifier DeviceListVerifier, user store.UserRow, device store.DeviceRow) ([]mlswasi.DeviceListEntry, error) {
 	list, err := tx.GetDeviceList(ctx, user.ID)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := verifier.Verify(ctx, list.Blob, user.SSKPub, user.ID)
+	entries, err := verifier.DeviceListEntries(ctx, list.Blob, user.SSKPub, user.ID[:])
 	if err != nil {
 		return nil, err
 	}

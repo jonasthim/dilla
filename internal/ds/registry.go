@@ -349,7 +349,7 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 	var replay bool
 	var welcomeTree, welcomeTreeHash []byte
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
-		verified, err := d.ValidateKind3RegistrationAuthority(ctx, tx, r.Session, r.InstallationID, r.AdmissionRequestID, r.AdmissionID,
+		verified, err := d.ValidateKind3RegistrationAuthority(ctx, tx, inst, r.Session, r.InstallationID, r.AdmissionRequestID, r.AdmissionID,
 			r.OperationID, tuple, r.Registration, r.RegistrationBody, registered, evidence)
 		if err != nil {
 			return err
