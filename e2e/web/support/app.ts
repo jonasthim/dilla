@@ -125,7 +125,28 @@ export function copy(key: string, vars?: Record<string, string | number>): strin
   if (!Object.hasOwn(en, key)) {
     throw new Error(`packages/web/src/strings/en.ts has no key "${key}"; the web e2e page contract (task 25) drives it`);
   }
-  return t(key as keyof typeof en, vars);
+  // Existing capability flows still name the section they exercise with the older copy key. Resolve those
+  // names through the workspace registry so the tests keep targeting the same capability after regrouping.
+  const workspaceSection: Record<string, string> = {
+    'settings.nav.profile': 'workspace.profile',
+    'factorSettings.nav': 'workspace.signin',
+    'settings.nav.devices': 'workspace.devices',
+    'settings.nav.appearance': 'workspace.appearance',
+    'settings.nav.notifications': 'workspace.notifications',
+    'settings.nav.voice': 'workspace.voice',
+    'settings.nav.keyboard': 'workspace.keyboard',
+    'settings.nav.privacy': 'workspace.privacy',
+    'settings.nav.diagnostics': 'workspace.diagnostics',
+    'admin.nav.overview': 'workspace.overview',
+    'admin.nav.channels': 'workspace.channels',
+    'admin.nav.invites': 'workspace.invites',
+    'admin.nav.selfRoles': 'workspace.selfRoles',
+    'admin.nav.bans': 'workspace.bans',
+    'admin.nav.bot': 'workspace.bot',
+    'admin.nav.leave': 'workspace.danger',
+    'roles.tab': 'workspace.roles',
+  };
+  return t((workspaceSection[key] ?? key) as keyof typeof en, vars);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -782,19 +803,37 @@ export async function signIn(page: Page, account: Account, instanceName: string,
   await finishWithKey(page, account, instanceName, typed);
 }
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
+export type SettingsSection = 'profile' | 'signin' | 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
-/** The desktop user panel (the bottom left, with mute and deafen). */
+/** The user panel (desktop) or the You tab settings row (phone). */
 export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }
-/** The gear that opens Settings: the user panel's, since web3.8 the rail has no settings button. */
+/** Desktop Settings opener. Phone settings are opened from You → Open settings. */
 export function settingsGear(page: Page): Locator { return userPanel(page).getByRole('button', { name: copy('panel.settings'), exact: true }); }
-/** The gear, then the section from the settings navigation; resolves with the dialog. */
+/** Opens the requested section through the visible workspace navigation at the current viewport. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
-  await settingsGear(page).click();
+  const phone = await page.evaluate(() => matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches);
+  if (phone) {
+    const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
+    const you = tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true });
+    if (await you.count() > 0 && await you.getAttribute('aria-current') !== 'page') {
+      await you.click();
+      await expect(page).toHaveURL(/\/you$/, { timeout: WAIT });
+    }
+    const open = page.getByRole('button', { name: copy('workspace.open'), exact: true });
+    await expect(open).toBeVisible({ timeout: WAIT });
+    await open.click();
+  } else {
+    await settingsGear(page).click();
+  }
   const dialog = settingsDialog(page);
   await expect(dialog).toBeVisible({ timeout: WAIT });
+  const names: Record<SettingsSection, string> = {
+    profile: 'workspace.profile', signin: 'workspace.signin', devices: 'workspace.devices',
+    notifications: 'workspace.notifications', appearance: 'workspace.appearance', voice: 'workspace.voice',
+    privacy: 'workspace.privacy', keyboard: 'workspace.keyboard', diagnostics: 'workspace.diagnostics',
+  };
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })
-    .getByRole('button', { name: copy(`settings.nav.${section}`), exact: true }).click();
+    .getByRole('button', { name: copy(names[section]), exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/settings/${section}$`), { timeout: WAIT });
   return dialog;
 }

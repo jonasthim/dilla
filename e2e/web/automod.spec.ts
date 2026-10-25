@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import {
-  addServerVia, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, signUp, test,
+  addServerVia, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, signUp, test, WAIT,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 
@@ -53,7 +53,7 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
 
     // A real user can send repeated plaintext, which the native bot receives as decrypted group events.
     const harmlessRepeat = 'automod default remains passive';
@@ -62,12 +62,12 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     await sendRepeat(targetPage, harmlessRepeat);
     await expect(targetPage.locator('.d-message-row').filter({ hasText: harmlessRepeat })).toHaveCount(3);
 
-    await settings.getByRole('button', { name: 'Cancel', exact: true }).first().click();
+    await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
     await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
-    await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    await nav.getByRole('button', { name: copy('workspace.automoderation'), exact: true }).click();
 
     const loadSettings = settings.getByRole('button', { name: copy('admin.bot.automod.load'), exact: true });
     await loadSettings.click();
@@ -83,11 +83,14 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
 
     await enabled.check();
     await duplicateAction.selectOption('warn');
-    await settings.getByRole('button', { name: copy('admin.bot.automod.save'), exact: true }).click();
+    const saveAutomod = settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true });
+    await saveAutomod.click();
     const saveStepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await saveStepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await saveStepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-    await expect(settings.getByText(copy('admin.bot.automod.loaded'), { exact: true })).toBeHidden();
+    await expect(saveAutomod).toHaveCount(0, { timeout: WAIT });
+    // The save acknowledgement triggers a fresh read; verify the values that
+    // came back from the bot rather than trusting the local draft.
     await expect(settings.getByText(copy('admin.bot.automod.loaded'), { exact: true })).toBeVisible({ timeout: 90_000 });
     await expect(enabled).toBeChecked();
     await expect(duplicateAction).toHaveValue('warn');
@@ -102,6 +105,7 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     await sendRepeat(targetPage, EXCERPT_BODY);
     await expect(targetPage.locator('.d-message-row').filter({ hasText: EXCERPT_BODY })).toHaveCount(3);
 
+    await nav.getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     const loadCases = settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true });
     const automaticCase = settings.locator('article').filter({ hasText: 'duplicate_body' });
     // Each load is a snapshot. If the Bot has not processed the burst yet, request

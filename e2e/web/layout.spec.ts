@@ -25,8 +25,9 @@ import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { mkdirSync, rmSync } from 'node:fs';
 
 const CHECK_WEBROOT = process.env.DILLA_E2E_CHECK_WEBROOT === undefined ? null : relative(REPO_ROOT, resolve(process.env.DILLA_E2E_CHECK_WEBROOT));
-const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? 8615);
-const EMPTY: HostConfig = { port: LAYOUT_PORT, control: LAYOUT_PORT + 1, webRoot: 'packages/web/dist', sfu: { port: 7900, udpPort: 7902 }, ...(CHECK_WEBROOT === null ? {} : { keepData: true }) };
+const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? 8555);
+const LAYOUT_SFU_PORT = Number(process.env.DILLA_E2E_LAYOUT_SFU_PORT ?? 8559);
+const EMPTY: HostConfig = { port: LAYOUT_PORT, control: LAYOUT_PORT + 1, webRoot: 'packages/web/dist', sfu: { port: LAYOUT_SFU_PORT, udpPort: LAYOUT_SFU_PORT + 2 }, ...(CHECK_WEBROOT === null ? {} : { keepData: true }) };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 const FRIEND = 'Mira';
@@ -42,13 +43,15 @@ const SIZES = [
   { tag: '1024x768', width: 1024, height: 768, phone: false },
   { tag: '390x844', width: 390, height: 844, phone: true },
   { tag: '360x740', width: 360, height: 740, phone: true },
+  { tag: '320x740', width: 320, height: 740, phone: true },
+  { tag: '720x450 keyboard viewport', width: 720, height: 450, phone: true },
 ] as const;
 type Size = (typeof SIZES)[number];
 const PHONE = { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } as const;
 
 test('the guard accepts only the expected refusal of an ordinary Welcome context probe', () => {
   const group = '3ee4e8578f407046d67ab993704ad745';
-  const url = `http://127.0.0.1:8615/v1/groups/${group}/interaction-admission-context`;
+  const url = `http://127.0.0.1:${String(LAYOUT_PORT)}/v1/groups/${group}/interaction-admission-context`;
   const refusal = encode(['E_FORBIDDEN', 'current interaction context unavailable', null]);
   expect(isExpectedInteractionAdmissionContextRefusal(403, url, refusal)).toBe(true);
   expect(isExpectedInteractionAdmissionContextRefusal(403, `${url}?other=1`, refusal)).toBe(false);
@@ -278,7 +281,7 @@ function friendLaunch(browserName: string, launchOptions: object): object {
   return launchOptions;
 }
 
-test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
+test('the layout grammar holds at desktop, tablet, phone, narrow and keyboard-height viewports', async ({ page, playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
   const h = started();
   const t0 = Date.now();
   const lap = (what: string) => console.log(`LAP ${String(Math.round((Date.now() - t0) / 1000))}s ${what}`);
@@ -468,12 +471,40 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     await expectNoOverflow(page, tag, 'the voice stage');
   }
 
-  // User settings (B1): the settings bar's hairline is 48 below the top of the dialog.
-  await page.locator('.d-user-panel').getByRole('button', { name: copy('panel.settings'), exact: true }).click();
-  await expect(page.getByRole('dialog', { name: copy('settings.title'), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the settings bar', '.d-settings-frame__bar', 48, '.d-settings-frame__panel');
+  // Settings is a full-screen modal at every viewport. On desktop/tablet its inner workspace is centered and
+  // capped at 80rem with a 15rem sidebar; on phone it covers the tab strip and shows an index → section flow.
+  const settings = await openSettings(page, 'profile');
+  const settingsGeometry = await settings.evaluate(dialog => {
+    const rect = (selector: string) => {
+      const el = dialog.querySelector<HTMLElement>(selector);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom };
+    };
+    const viewport = { width: innerWidth, height: innerHeight };
+    const frame = rect('.d-settings-frame__panel')!;
+    const side = rect('.d-settings-frame__side')!;
+    const content = rect('.d-settings-frame__body > section')!;
+    return { viewport, frame, side, content, layout: dialog.getAttribute('data-layout') };
+  });
+  expect(settingsGeometry.frame.x).toBeGreaterThanOrEqual(0);
+  expect(settingsGeometry.frame.right).toBeLessThanOrEqual(settingsGeometry.viewport.width + 1);
+  expect(settingsGeometry.frame.y).toBeGreaterThanOrEqual(0);
+  expect(settingsGeometry.frame.bottom).toBeLessThanOrEqual(settingsGeometry.viewport.height + 1);
+  if (settingsGeometry.layout === null) {
+    expect(settingsGeometry.frame.width).toBe(Math.min(settingsGeometry.viewport.width, 1280));
+    expect(settingsGeometry.side.width).toBe(240);
+    expect(settingsGeometry.content.width).toBeLessThanOrEqual(768);
+    expect(settingsGeometry.content.x).toBeGreaterThanOrEqual(settingsGeometry.side.right - 1);
+  } else {
+    expect(settingsGeometry.frame.width).toBe(settingsGeometry.viewport.width);
+    expect(settingsGeometry.frame.height).toBeLessThanOrEqual(settingsGeometry.viewport.height + 1);
+    expect(settingsGeometry.side.width).toBe(settingsGeometry.viewport.width);
+    await expect(settings.locator('.d-settings-frame__bar')).toContainText(copy('workspace.back'));
+    await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
+  }
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog', { name: copy('settings.title'), exact: true })).toBeHidden({ timeout: WAIT });
+  await expect(settings).toBeHidden({ timeout: WAIT });
 }
 
 /** Opens a path in the app without a click that would join a call. */
@@ -620,46 +651,67 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectNoOverflow(page, tag, 'a direct message');
   await toList();
 
-  // The activity tab and the you tab, and a settings section reached from it.
+  // The activity and You tabs remain app destinations; You now has one settings entry point.
   await tab('nav.tab.activity').click();
   await expect(page.locator('.d-phone-header')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header');
   await expectTargets(page, tag, 'the activity tab');
   await tab('nav.tab.you').click();
-  await expect(page.locator('[data-settings-section]').first()).toBeVisible({ timeout: WAIT });
+  await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the phone header (you)', '.d-phone-header');
   await expectTargets(page, tag, 'the you tab');
-  await page.locator('[data-settings-section]').first().click();
-  await expect(page).toHaveURL(/\/settings\/[a-z]+$/, { timeout: WAIT });
-  // User settings on a phone is a pushed view under the phone header: the frame's own Close bar and nav are not drawn, so
-  // there is no bar to hold at 48 (nor one at the stacked-nav height).
-  await expectBar(page, tag, 'the phone header (settings)', '.d-phone-header');
-  expect.soft(await page.locator('.d-settings-frame__bar').evaluate(el => el.getClientRects().length), `the settings Close bar is not drawn on a phone at ${tag}`).toBe(0);
-  await expectTargets(page, tag, 'a settings section');
-  await back.click();
+  await page.locator('[data-settings-section="index"]').click();
+  const userSettings = settingsDialog(page);
+  await expect(userSettings).toBeVisible({ timeout: WAIT });
+  await expect(page).toHaveURL('/settings', { timeout: WAIT });
+  await expectTargets(page, tag, 'the user settings index');
+  await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toBeVisible();
+  await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
+  const frameBox = await userSettings.boundingBox();
+  expect(frameBox?.x).toBe(0);
+  expect(frameBox?.width).toBe(size.width);
+  await userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true }).click();
+  await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
+  await expectTargets(page, tag, 'a user settings section');
+  await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+  await page.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+  await expect(page).toHaveURL('/settings', { timeout: WAIT });
+  await page.keyboard.press('Escape');
+  await expect(userSettings).toBeHidden({ timeout: WAIT });
 
-  // Server settings on a phone is the dialog with its navigation stacked above the pane: the Close bar is 48 high and
-  // stands directly under that stack (so its hairline is below 48, never at it).
+  // Server settings uses the same phone index → section flow, with a section route under the selected community.
   await openPath(page, serverPath);
   await toList();
+  const serverSettingsOrigin = page.url();
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await expect(admin).toBeVisible({ timeout: WAIT });
+  await expectTargets(page, tag, 'the server settings index');
   const side = (await boxes(page, '.d-settings-frame__side'))[0];
-  const bar = (await boxes(page, '.d-settings-frame__bar'))[0];
-  expect.soft(side !== undefined && bar !== undefined, `the server settings dialog has its stacked navigation and its Close bar at ${tag}`).toBe(true);
-  if (side !== undefined && bar !== undefined) {
-    expectAt(`B1 the Close bar is 48 high at ${tag}`, bar.h, 48, 0.5);
-    expectAt(`B1 the Close bar stands directly under the stacked navigation at ${tag}`, bar.y, side.b, 0.5);
-    expect.soft(bar.b, `B1 the Close bar's hairline is below the stacked navigation, not at 48, at ${tag}`).toBeGreaterThan(48 + TOL);
-  }
-  await page.keyboard.press('Escape');
+  expect.soft(side !== undefined, `the server settings index has its grouped navigation at ${tag}`).toBe(true);
+  const close = admin.locator('.d-settings-frame__bar').getByRole('button', { name: copy('settings.close'), exact: true });
+  await expect(close).toBeVisible({ timeout: WAIT });
+  const closeBox = await close.boundingBox();
+  const viewport = page.viewportSize();
+  expect.soft(closeBox !== null && viewport !== null && closeBox.x >= 0 && closeBox.y >= 0
+    && closeBox.x + closeBox.width <= viewport.width && closeBox.y + closeBox.height <= viewport.height,
+  `the settings index Close control stays inside ${tag} viewport`).toBe(true);
+  const overview = admin.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+    .getByRole('button', { name: copy('workspace.overview'), exact: true });
+  await overview.click();
+  await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings\/overview$/, { timeout: WAIT });
+  await expectTargets(page, tag, 'a server settings section');
+  await expect(admin.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+  await admin.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+  await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
+  await close.click();
   await expect(admin).toBeHidden({ timeout: WAIT });
+  await expect(page).toHaveURL(serverSettingsOrigin, { timeout: WAIT });
 }
 
 // ---------------------------------------------------------------------------------------------------
 // The built-in AFK channel (WEB-AFK): its row is a voice row on the list's grammar, and its timeout is a settings row under
-// the name row in the Overview, on the settings grammar, with the section's one save in the frame's footer.
+// the name row in the Overview. The shared Save footer appears only after an edit.
 
 test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }) => {
   const h = started();
@@ -686,8 +738,13 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   expectOne('A5 the Overview rows share one label x', labels.map(b => b.x), labels.map(b => b.t));
   const controls = await boxes(page, '.d-settings-row__control', '.d-settings-frame__body');
   expectOne('A4 the Overview rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
-  await expect(settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true }), 'one save in the footer').toHaveCount(1);
-  expect.soft(await settings.getByRole('button', { name: copy('admin.overview.save'), exact: true }).count(), 'no other save button').toBe(1);
+  const save = settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true });
+  await expect(save, 'a clean Overview has no Save footer').toHaveCount(0);
+  await settings.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true }).selectOption('900');
+  await expect(save, 'one Save appears in the shared footer after a setting changes').toHaveCount(1);
+  expect.soft(await settings.getByRole('button', { name: copy('admin.overview.save'), exact: true }).count(), 'the shared footer owns the only Save').toBe(1);
+  await save.click();
+  await expect(save, 'the footer clears after the changed value is saved').toHaveCount(0, { timeout: WAIT });
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -896,7 +953,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 
 // ---------------------------------------------------------------------------------------------------
 // web3.9 FA4 (AUDIT-2 J1, H5, H6, I6, I7): search results with #channel, author and time and a KeyHint footer; the You tab's icons
-// with sign out; no repeated title in a phone's settings view; the admin reorder as arrow icon buttons with truncated names; privacy
+// with sign out; one phone settings entry point and an index/back traversal; the admin reorder as arrow icon buttons with truncated names; privacy
 // "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in all three themes where the surface is new.
 
 const THEMES = ['mesh', 'light', 'high-contrast'] as const;
@@ -910,7 +967,7 @@ async function expectAccessibleInThemes(page: Page, state: string): Promise<void
   } finally { await page.evaluate(t => { if (t === '') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }, before); }
 }
 
-test('FA4: search rows, You icons, phone settings title, channel reorder and privacy Compare', async ({ page, playwright, browserName, launchOptions, headless, channel }, testInfo) => {
+test('FA4: search rows, phone settings index, channel reorder and privacy Compare', async ({ page, playwright, browserName, launchOptions, headless, channel }, testInfo) => {
   const h = started();
   const CHAN = 'raid-planning-for-the-bridge-troll-and-the-long-winter-campaign';
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -1023,30 +1080,32 @@ test('FA4: search rows, You icons, phone settings title, channel reorder and pri
     await expectAccessibleInThemes(page, 'privacy');
     await closeSettings(page);
 
-    // H6 and H5 on a phone: the You tab has an icon per row, including sign out; a settings view repeats no title.
+    // On phone, You has one settings entry point. The modal index and section replace the shell's tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
     const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
     await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
-    await expect(page.locator('[data-settings-section]').first()).toBeVisible({ timeout: WAIT });
-    await attempt('H6 You icons', async () => {
-      const rowIcons = await boxes(page, '[data-settings-section] > svg:first-child');
-      const rowCount = await page.locator('[data-settings-section]').count();
-      expect.soft(rowIcons.length, 'H6 every settings row has a leading icon').toBe(rowCount);
-      const out = (await boxes(page, '.dw-you__signout svg'))[0];
-      expect.soft(out !== undefined, 'H6 sign out has an icon').toBe(true);
-      expectOne('H6 the icons share one left x, sign out included', [...rowIcons.map(b => b.x), ...(out === undefined ? [] : [out.x])], [...rowIcons.map(b => b.t || 'row'), 'sign out']);
-      const shapes = await page.locator('[data-settings-section] > svg:first-child').evaluateAll(els => els.map(e => e.innerHTML));
-      expect.soft(new Set(shapes).size, 'H6 each row has its own icon').toBe(shapes.length);
-    });
+    const settingsEntry = page.locator('[data-settings-section="index"]');
+    await expect(settingsEntry).toBeVisible({ timeout: WAIT });
+    await expect(settingsEntry).toContainText(copy('workspace.open'));
+    await expect(page.locator('[data-settings-section]')).toHaveCount(1);
     await expectAccessibleInThemes(page, 'the You tab');
-    await page.locator('[data-settings-section="privacy"]').click();
+    await settingsEntry.click();
     const phoneSettings = settingsDialog(page);
     await expect(phoneSettings).toBeVisible({ timeout: WAIT });
-    await attempt('H5 phone settings title', async () => {
-      const headings = await boxes(page, 'h1, h2', '.d-settings-frame');
-      expect.soft(headings.filter(b => b.w > 2 && b.h > 2).map(b => b.t), 'H5 only the PhoneHeader title is drawn as a heading').toHaveLength(1);
-    });
-    await expectAccessibleInThemes(page, 'a phone settings view');
+    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expect(phoneSettings.locator('.d-settings-frame__bar').getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
+    await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toBeVisible();
+    await phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).click();
+    await expect(page).toHaveURL('/settings/privacy', { timeout: WAIT });
+    await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+    await expect(phoneSettings.locator('.d-settings-frame__nav')).toBeHidden();
+    await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
+    await expectAccessibleInThemes(page, 'a phone settings section');
+    await phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expectAccessibleInThemes(page, 'the phone settings index');
+    await page.keyboard.press('Escape');
+    await expect(phoneSettings).toBeHidden({ timeout: WAIT });
   } finally {
     await second.close();
     rmSync(secondDir, { recursive: true, force: true });

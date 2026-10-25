@@ -40,33 +40,78 @@ test('native edit is searched by prefix and deleted text disappears after a posi
   await expectAccessible(page, 'search after delete');
 });
 
-test('Privacy, Keyboard and Diagnostics work at phone width with surviving focus', async ({ page, peer, instanceName }) => {
+test('Privacy, Keyboard and Diagnostics use the phone settings index and return with focus', async ({ page, peer, instanceName }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
-  await page.setViewportSize({ width: 360, height: 740 });
-  // The phone shell has no rail settings tile and no section list: Settings opens from a row of the You tab and closes with the header's back.
   const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
-  const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
   for (const section of ['privacy', 'keyboard', 'diagnostics'] as const) {
-    if (!(await tabs.isVisible())) await back.click();
-    await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
-    await page.locator(`[data-settings-section="${section}"]`).click();
-    const dialog = settingsDialog(page);
+    const dialog = await openSettings(page, section);
     await expect(dialog).toBeVisible({ timeout: WAIT });
     await expect(page).toHaveURL(new RegExp(`/settings/${section}$`), { timeout: WAIT });
-    // The phone header's title, then the section's own heading.
-    await expect(dialog.locator('.d-phone-header__title')).toBeVisible();
-    await expect(dialog.getByRole('heading', { level: 2 })).toHaveCount(2);
+    await expect(dialog.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+    await expect(dialog.locator('.d-settings-frame__nav')).toBeHidden();
+    await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
     await expectAccessible(page, `${section} at 360px`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-    await back.click();
+    await dialog.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+    await expect(dialog).toBeVisible({ timeout: WAIT });
+    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expect(dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden({ timeout: WAIT });
     expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
   }
+});
+
+test('settings search opens a registry result and focuses its setting anchor', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await peer.waitForDevices(2, setup.channel_id);
+  const settings = await openSettings(page, 'profile');
+  const search = settings.getByRole('searchbox', { name: copy('workspace.search'), exact: true });
+  await search.fill('microphone test');
+  const result = settings.getByRole('button', { name: /Voice.*Preferences \/ Voice/u });
+  await expect(result).toBeVisible({ timeout: WAIT });
+  await expect(result).toContainText(copy('workspace.voice'));
+  await search.press('Enter');
+  await expect(page).toHaveURL('/settings/voice', { timeout: WAIT });
+  await expect(settings.getByRole('heading', { name: copy('workspace.voice'), exact: true })).toBeFocused();
+  await closeSettings(page);
+});
+
+test('a dirty Profile draft survives Keep editing and is discarded only after confirmation', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await peer.waitForDevices(2, setup.channel_id);
+  const settings = await openSettings(page, 'profile');
+  const display = settings.getByRole('textbox', { name: copy('profile.display.label'), exact: true });
+  await display.fill('Unsaved profile draft');
+  await expect(settings.locator('.d-settings-frame__footer')).toContainText('Unsaved changes');
+  const nav = settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true });
+  await nav.getByRole('button', { name: copy('workspace.signin'), exact: true }).click();
+  let prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
+  await expect(prompt).toBeVisible({ timeout: WAIT });
+  await prompt.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
+  await expect(display).toHaveValue('Unsaved profile draft');
+  await nav.getByRole('button', { name: copy('workspace.signin'), exact: true }).click();
+  prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
+  await expect(prompt).toBeVisible({ timeout: WAIT });
+  await prompt.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(page).toHaveURL('/settings/signin', { timeout: WAIT });
+  await expect(settings.getByRole('heading', { name: copy('workspace.signin'), exact: true })).toBeFocused();
+  await closeSettings(page);
 });
 
 test('scopes and keyboard selection stay on the textbox until a target is chosen', async ({ page, peer, instanceName }) => {
@@ -163,8 +208,8 @@ test('desktop, phone and reflow keep controls accessible in three themes', async
   }
 });
 
-// I1, I2: the label is left and the controls share the 16rem column (one x, 256px wide); a long danger label grows its button, it never overprints.
-test('settings rows share one 16rem control column, and the sign-out button holds its text', async ({ page, peer, instanceName }) => {
+// I1, I2: labels and controls share aligned columns; a long danger label grows its button, it never overprints.
+test('settings rows align their controls, and the sign-out button holds its text', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
@@ -181,10 +226,10 @@ test('settings rows share one 16rem control column, and the sign-out button hold
   const signin = await columns(dialog);
   expect(signin.length).toBeGreaterThanOrEqual(4);
   expect(new Set(signin.map(c => c.x)).size, 'one control x in Sign-in').toBe(1);
-  expect(signin[0].width).toBe(256);
+  expect(new Set(signin.map(c => c.width)).size, 'one control width in Sign-in').toBe(1);
   await closeSettings(page);
   dialog = await openSettings(page, 'devices');
-  const out = dialog.getByRole('button', { name: copy('devices.signOut'), exact: true });
+  const out = dialog.locator('.d-settings-row__control').getByRole('button', { name: copy('devices.signOut'), exact: true }).first();
   await expect(out).toBeVisible({ timeout: WAIT });
   const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-settings-row__control')?.getBoundingClientRect().right ?? 0) + 1);
   expect(fits, 'the sign-out label is inside its button and its column').toBe(true);
