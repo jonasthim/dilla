@@ -198,6 +198,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'getBotSpotifyConfig',
   'listModerationCases',
   'listManualModerationEvidence',
   'humanInteractionRequest',
@@ -385,6 +386,7 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  getBotSpotifyConfig: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
   humanInteractionRequest: ['communityId', 'requestId'],
@@ -500,6 +502,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'getBotSpotifyConfig',
     'listModerationCases',
     'listManualModerationEvidence',
     'humanInteractionRequest',
@@ -792,8 +795,9 @@ function invalid(command: Record<string, unknown>): string | null {
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
-  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096)) {
-    return 'stepUp is invalid';
+  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096
+    || typeof command.clientId !== 'string' || !/^[A-Za-z0-9]{1,256}$/u.test(command.clientId))) {
+    return 'Spotify application setting is invalid';
   }
   if (m === 'callbackBotSpotifyAttempt') {
     if (typeof command.state !== 'string' || UTF8.encode(command.state).length < 1 || UTF8.encode(command.state).length > 256
@@ -1392,6 +1396,7 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
@@ -1532,6 +1537,11 @@ export class Controller {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.getBotInstallation(fromHex(communityId));
     return row === null ? null : botInstallationView(row);
+  }
+
+  private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    return this.routes.getBotSpotifyConfig(fromHex(communityId));
   }
 
   private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
@@ -1962,7 +1972,7 @@ export class Controller {
     attemptId: string; authorizeUrl: string; expires: string;
   }> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp);
+    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp, command.clientId);
     return { attemptId: toHex(attempt.attemptId), authorizeUrl: attempt.authorizeUrl, expires: attempt.expires.toString() };
   }
 

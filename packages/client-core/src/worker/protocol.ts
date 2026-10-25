@@ -20,6 +20,7 @@ export type Command =
   // a server whose create answer was lost, with the socket still up).
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
+  | { m: 'getBotSpotifyConfig'; communityId: string }
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
   | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
@@ -40,7 +41,7 @@ export type Command =
       options: readonly { emoji: string; roleId: string }[] }
   | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
   | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
-  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string }
+  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string; clientId: string }
   | { m: 'callbackBotSpotifyAttempt'; communityId: string; attemptId: string; state: string; code: string }
   | { m: 'cancelBotSpotifyAttempt'; communityId: string; attemptId: string }
   | { m: 'openChannel'; channelId: string }

@@ -482,6 +482,7 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
+    await user.type(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] }), 'client');
     await user.click(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] }));
     expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
@@ -492,11 +493,11 @@ describe('the server bot settings', () => {
     expect(stored).toContain('dd'.repeat(16));
     expect(stored).toContain('csrf-only');
     expect(stored).not.toContain('oauth-code');
-    expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up' })]);
+    expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
     expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
     expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: /spotify/i })).not.toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'getBotDjRoles', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
+    expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'getBotDjRoles', 'getBotSpotifyConfig', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
   it('saves one approved join-role setting with a request ID and explains future-join assignment', async () => {

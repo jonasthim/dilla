@@ -686,10 +686,10 @@ The direct test does not establish cross-server or full provider qualification; 
 reported as unavailable until its intended-host acceptance is complete.
 
 The server `install.sh` also places the architecture-matched Spotify PCM helper at
-`/usr/local/libexec/dilla-spotify-helper`. Spotify OAuth settings (`spotify_client_id` and
-`spotify_redirect_url`) may be configured in `/etc/dillabot/bot.toml` without that helper; this keeps
-authorization available while Spotify PCM playback remains unavailable. To enable PCM playback,
-configure the same OAuth pair and the absolute
+`/usr/local/libexec/dilla-spotify-helper`. Enter the public Spotify application client ID in
+community Bot settings and register the callback URL shown there in the Spotify application
+dashboard. Linking works without the PCM helper; playback remains unavailable until it is
+installed and configured. To enable PCM playback, configure the absolute
 `spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
 remains in Dilla server settings. The helper uses librespot's native TLS backend and needs the
 OpenSSL 3 runtime libraries (`libssl.so.3` and `libcrypto.so.3`). On Debian 13, install

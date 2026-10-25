@@ -68,6 +68,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [djRoleValues, setDjRoleValues] = useState<string[]>([]);
   const [djRolesLoadedFor, setDjRolesLoadedFor] = useState<string | null>(null);
   const [djRolesError, setDjRolesError] = useState<string | null>(null);
+  const [spotifyClientId, setSpotifyClientId] = useState('');
+  const [spotifyRedirectUrl, setSpotifyRedirectUrl] = useState('');
+  const [spotifyConfigError, setSpotifyConfigError] = useState<string | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -112,6 +115,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setDjRoleValues([]);
     setDjRolesLoadedFor(null);
     setDjRolesError(null);
+    setSpotifyClientId('');
+    setSpotifyRedirectUrl('');
+    setSpotifyConfigError(null);
     setLoadedFor(null);
     setError(null);
     setPhase('idle');
@@ -152,6 +158,15 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       if (generation !== readGeneration.current) return;
       setDjRolesError(errorMessage(errorOf(e)));
       setDjRolesLoadedFor(communityId);
+    });
+    void client.call({ m: 'getBotSpotifyConfig', communityId }).then(value => {
+      if (canceled || generation !== readGeneration.current) return;
+      if (value === null) return;
+      const setting = value as { clientId: string; redirectUrl: string };
+      setSpotifyClientId(setting.clientId);
+      setSpotifyRedirectUrl(setting.redirectUrl);
+    }).catch(() => {
+      if (!canceled && generation === readGeneration.current) setSpotifyConfigError(t('admin.bot.music.spotifyConfigFailed'));
     });
     void client.call({ m: 'refreshFactors' }).catch(() => undefined);
     return () => {
@@ -334,6 +349,11 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   };
   const linkSpotify = () => {
     if (busy || !current || currentError !== null || factors === undefined) return;
+    if (!/^[A-Za-z0-9]{1,256}$/u.test(spotifyClientId)) {
+      setSpotifyConfigError(t('admin.bot.music.spotifyClientIdInvalid'));
+      return;
+    }
+    setSpotifyConfigError(null);
     setStepUpPurpose('spotify');
     setPhase('stepup');
   };
@@ -344,7 +364,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setBusyFor(requestCommunity);
     setError(null);
     let attemptId: string | null = null;
-    void client.call({ m: 'beginBotSpotifyAttempt', communityId: requestCommunity, stepUp }).then((value) => {
+    void client.call({ m: 'beginBotSpotifyAttempt', communityId: requestCommunity, stepUp, clientId: spotifyClientId }).then((value) => {
       if (generation !== readGeneration.current || selectedCommunity.current !== requestCommunity) return;
       const attempt = value as { attemptId?: unknown; authorizeUrl?: unknown; expires?: unknown };
       if (typeof attempt.attemptId !== 'string' || !/^[0-9a-f]{32}$/.test(attempt.attemptId)
@@ -485,6 +505,13 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
             onClick={saveDjRoles}>{t('admin.bot.music.djRoles.save')}</Button> : null}
         </SettingsRow> : null}
         <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')}>
+          <p>{t('admin.bot.music.spotifyClientIdHelp')}</p>
+          <label htmlFor={`${base}-spotify-client-id`}>{t('admin.bot.music.spotifyClientId')}</label>
+          <input id={`${base}-spotify-client-id`} type="text" autoComplete="off" spellCheck={false} value={spotifyClientId}
+            maxLength={256} disabled={busy || access?.manageCommunity !== true}
+            onChange={event => { setSpotifyClientId(event.currentTarget.value.trim()); setSpotifyConfigError(null); }} />
+          {spotifyRedirectUrl !== '' ? <p><strong>{t('admin.bot.music.spotifyCallback')}:</strong> <code>{spotifyRedirectUrl}</code></p> : null}
+          {spotifyConfigError !== null ? <p role="alert">{spotifyConfigError}</p> : null}
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
         </SettingsRow>

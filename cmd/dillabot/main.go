@@ -427,13 +427,9 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 }
 
 func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, logger *slog.Logger) error {
-	var spotifyGuard *service.SpotifyAccountGuard
-	if cfg.SpotifyClientID != "" {
-		var err error
-		spotifyGuard, err = service.NewSpotifyAccountGuard(cfg.StateDir)
-		if err != nil {
-			return errors.New("spotify account guard unavailable")
-		}
+	spotifyGuard, err := service.NewSpotifyAccountGuard(cfg.StateDir)
+	if err != nil {
+		return errors.New("spotify account guard unavailable")
 	}
 	installations, err := runtime.ListInstallations(ctx)
 	if err != nil {
@@ -458,6 +454,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		eligible++
+		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
+		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
+			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
+		} else {
+			logger.Warn("bot Spotify application setting unavailable", "installation_id", installation.ID.String())
+		}
 		nativeClient, retainedNative := musicRegistry.Native(installation.ID, installation.CommunityID).(*native.Client)
 		if !retainedNative {
 			key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
@@ -600,9 +602,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
 									var spotifyCredentials *service.SpotifyCredentials
-									if cfg.SpotifyClientID != "" && spotifyGuard != nil {
+									if spotifyClientID != "" && spotifyGuard != nil {
 										var credentialErr error
-										spotifyCredentials, credentialErr = service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+										spotifyCredentials, credentialErr = service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
 										if credentialErr == nil {
 											if _, credentialErr = spotifyCredentials.Load(ctx); credentialErr == nil {
 												spotifyCatalogResolver = installationSpotifyCatalogResolver{credentials: spotifyCredentials, catalog: spotify.NewCatalog(nil)}
@@ -617,7 +619,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 									if cfg.SpotifyHelperExecutable != "" && spotifyGuard != nil {
 										if spotifyCredentials == nil {
-											spotifyCredentials, _ = service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+											spotifyCredentials, _ = service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
 										}
 										var credentialErr error
 										if spotifyCredentials != nil {
@@ -758,8 +760,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			_ = musicRegistry.Disable(installation.ID)
 			autoModerationState.Disable(installation.ID)
 		}
-		if membershipReady && cfg.SpotifyClientID != "" {
-			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+		if membershipReady && spotifyClientID != "" {
+			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
 			if linkErr == nil {
 				linkErr = credentials.ValidateAccount(ctx)
 			}
