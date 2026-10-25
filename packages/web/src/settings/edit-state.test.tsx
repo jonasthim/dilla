@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { SettingsEditProvider, useSettingsEdit, useSettingsPendingOperation, useSettingsWorkspace, type SettingsEditState } from './edit-state.tsx';
 import { settingsEditing as copy } from '../strings/settingsEditing.ts';
-import { requestNavigation, useRoute } from '../router.ts';
+import { pushHistoryState, replaceHistoryState, requestNavigation, useRoute } from '../router.ts';
 
 function Draft({ busy = false, canSave = true, saveResult = true }: { busy?: boolean; canSave?: boolean; saveResult?: boolean }) {
   const [dirty, setDirty] = useState(true);
@@ -88,6 +88,21 @@ function PendingHarness() {
   </>;
 }
 
+function PopPromptDraft() {
+  useRoute();
+  useSettingsEdit({ dirty: true, busy: false, canSave: false, save: async () => false, reset: () => undefined });
+  return <>{useSettingsWorkspace()?.confirmation}</>;
+}
+
+function CleanRouteProbe() {
+  const [, navigate] = useRoute();
+  const [accepted, setAccepted] = useState(false);
+  return <>
+    <button type="button" onClick={() => { void navigate({ name: 'you' }, true).then(setAccepted); }}>navigate after prompt unmount</button>
+    <output data-testid="after-unmount-accepted">{String(accepted)}</output>
+  </>;
+}
+
 describe('useSettingsEdit', () => {
   it('keeps standalone forms unmanaged', () => {
     render(<Draft />);
@@ -157,6 +172,42 @@ describe('useSettingsEdit', () => {
     await user.click(within(dialog).getByRole('button', { name: copy.discard }));
     await waitFor(() => expect(window.location.pathname).toBe('/activity'));
     expect(screen.getByTestId('nested-accepted')).toHaveTextContent('true');
+  });
+
+  it('cancels an open guard on provider unmount and permits navigation after a later provider mounts', async () => {
+    const action = vi.fn();
+    const view = render(<SettingsEditProvider><Draft /></SettingsEditProvider>);
+    await screen.findByRole('button', { name: copy.save });
+    let request!: Promise<boolean>;
+    act(() => { request = requestNavigation(action); });
+    await screen.findByRole('dialog', { name: copy.leaveTitle });
+
+    view.unmount();
+    await expect(request).resolves.toBe(false);
+    expect(action).not.toHaveBeenCalled();
+    await expect(requestNavigation(() => undefined)).resolves.toBe(true);
+
+    render(<SettingsEditProvider><button type="button">later provider</button></SettingsEditProvider>);
+    await screen.findByRole('button', { name: 'later provider' });
+    await expect(requestNavigation(action)).resolves.toBe(true);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a guarded browser traversal when its prompt provider unmounts', async () => {
+    const user = userEvent.setup();
+    replaceHistoryState(null, '', '/you');
+    pushHistoryState(null, '', '/activity');
+    const view = render(<SettingsEditProvider><PopPromptDraft /></SettingsEditProvider>);
+    act(() => { window.history.back(); });
+    await screen.findByRole('dialog', { name: copy.leaveTitle });
+    expect(window.location.pathname).toBe('/activity');
+
+    view.unmount();
+    await expect(requestNavigation(() => undefined)).resolves.toBe(true);
+    render(<SettingsEditProvider><CleanRouteProbe /></SettingsEditProvider>);
+    await user.click(screen.getByRole('button', { name: 'navigate after prompt unmount' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/you'));
+    expect(screen.getByTestId('after-unmount-accepted')).toHaveTextContent('true');
   });
 
   it('keeps independent pending work guarded after a section unmounts, without disabling its form actions', async () => {

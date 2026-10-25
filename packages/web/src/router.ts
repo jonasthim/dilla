@@ -175,22 +175,47 @@ type PendingTraversal = { delta: number; origin: number; phase: 'restore' | 'con
 let navigationGuard: (() => Promise<boolean>) | null = null;
 let pendingTraversal: PendingTraversal | null = null;
 let guardRequest: Promise<boolean> | null = null;
+let cancelGuardRequest: (() => void) | null = null;
 let navigationRequestPending = false;
 let approvedActionDepth = 0;
 let internalPopExpected: number | null = null;
 
+function cancelActiveGuardRequest(): void {
+  cancelGuardRequest?.();
+  navigationRequestPending = false;
+  if (pendingTraversal?.phase === 'confirm') {
+    pendingTraversal = null;
+    internalPopExpected = null;
+  }
+}
+
 function runGuard(): Promise<boolean> {
   if (!navigationGuard) return Promise.resolve(true);
   if (guardRequest) return guardRequest;
-  const task = Promise.resolve().then(() => navigationGuard?.() ?? true).catch(() => false).finally(() => { if (guardRequest === task) guardRequest = null; });
+  let resolveTask!: (allowed: boolean) => void;
+  const task = new Promise<boolean>(resolve => { resolveTask = resolve; });
   guardRequest = task;
+  const settle = (allowed: boolean) => {
+    if (guardRequest === task) {
+      guardRequest = null;
+      cancelGuardRequest = null;
+    }
+    resolveTask(allowed);
+  };
+  cancelGuardRequest = () => settle(false);
+  void Promise.resolve().then(() => navigationGuard?.() ?? true).then(settle, () => settle(false));
   return task;
 }
 
 /** Install the app-wide navigation guard. The returned disposer clears only this registration. */
 export function setNavigationGuard(guard: (() => Promise<boolean>) | null): () => void {
+  if (navigationGuard !== guard) cancelActiveGuardRequest();
   navigationGuard = guard;
-  return () => { if (navigationGuard === guard) navigationGuard = null; };
+  return () => {
+    if (navigationGuard !== guard) return;
+    navigationGuard = null;
+    cancelActiveGuardRequest();
+  };
 }
 
 /** Ask permission before running a non-router departure action. Returns false if the user keeps editing. */
@@ -258,6 +283,8 @@ function onPopState(event: PopStateEvent): void {
     if (current !== origin) { internalPopExpected = origin; history.go(origin - current); }
     return;
   }
+  // Legacy/raw pop fixtures and non-app entries can be unindexed. We cannot safely compute a reversible step for them,
+  // so update the observed route without arming a traversal that could wait forever for a nonexistent restore event.
   if (target === null) { notifyRoute(); return; }
   const delta = target - currentHistoryIndex;
   if (delta === 0) { notifyRoute(); return; }

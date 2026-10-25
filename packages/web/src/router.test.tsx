@@ -140,6 +140,15 @@ describe('guarded browser traversal', () => {
     return <output>{route.name}</output>;
   }
 
+  it('does not leave a pending traversal for an unindexed raw pop event', async () => {
+    const dispose = setNavigationGuard(async () => true);
+    act(() => { window.dispatchEvent(new PopStateEvent('popstate', { state: null })); });
+    const action = vi.fn();
+    await expect(requestNavigation(action)).resolves.toBe(true);
+    expect(action).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
   it('restores the visible entry before confirmation and replays back after discard', async () => {
     replaceHistoryState(null, '', '/you');
     const originPath = '/you';

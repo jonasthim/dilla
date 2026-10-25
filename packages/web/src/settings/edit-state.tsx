@@ -128,6 +128,8 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
     return () => {
       dispose();
       window.removeEventListener('beforeunload', onBeforeUnload);
+      const pending = promptResolvers.current.splice(0);
+      for (const resolve of pending) resolve(false);
     };
   }, []);
 

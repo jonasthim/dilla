@@ -28,5 +28,5 @@ Await the `useRoute` navigation callback for guarded joins and notification thre
 
 ## Verification
 
-- `npm test -- --run src/router.test.tsx src/settings/edit-state.test.tsx`: **74/74 passed**. Includes actual jsdom history branching (start → A → B → Back → C), restore/replay, accepted-only traversal notification, declined `goBack(expect)`, inline state/fresh operation closures, nested approved navigation, multiple pending-operation registrations, and pending work surviving section unmount.
+- `npm test -- --run src/router.test.tsx src/settings/edit-state.test.tsx`: **77/77 passed**. Includes actual jsdom history branching (start → A → B → Back → C), restore/replay, accepted-only traversal notification, declined `goBack(expect)`, inline state/fresh operation closures, nested approved navigation, multiple pending-operation registrations, pending work surviving section unmount, provider teardown with an open route prompt, and unindexed raw pop events without a stuck coordinator. Provider teardown resolves pending confirmation as Keep Editing, cancels the active guard request, and clears an in-flight traversal.
 - `npm run typecheck`: currently reports two errors in the in-progress primary-owned `BotSettingsPages` files (`BotSettingsPages.tsx:8` null return type and `BotSettingsPages.test.tsx:15` nullable client). No router/edit-state errors.
