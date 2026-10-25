@@ -50,12 +50,20 @@ export class BotInteractionBindingMismatchError extends Error {
   }
 }
 
+export class BotInteractionIdentityConflictError extends Error {
+  constructor(readonly requestId: string) {
+    super('The Bot interaction request id is already bound to a different operation or request body.');
+    this.name = 'BotInteractionIdentityConflictError';
+  }
+}
+
 export interface BotInteractionClient {
   request(input: BotInteractionRequest): Promise<BotInteractionResult>;
   read(requestId: string, operation: number): Promise<BotInteractionResult | null>;
 }
 
 const clients = new WeakMap<CoreClient, Map<string, BotInteractionClient>>();
+const REQUEST_FINGERPRINT_LIMIT = 128;
 
 /**
  * Shared typed transport for authenticated Bot interactions. Domain response statuses are returned
@@ -70,6 +78,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   if (existing !== undefined) return existing;
   const results = new Map<string, BotInteractionResult>();
   const uncertain = new Map<string, BotInteractionUncertainError | BotInteractionRejectedError>();
+  const requestFingerprints = new Map<string, { fingerprint: string; verified: boolean }>();
   // A shared read task includes the final authorization recheck. Store only that fully checked
   // promise so no coalesced waiter can observe the inner, not-yet-scoped response.
   const reads = new Map<string, Promise<BotInteractionResult | null>>();
@@ -80,7 +89,10 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   let authorizationScope: string | null = null;
   let accessScopeKey: string | null = null;
   let scopeGeneration = 0;
-  const clearScopedResults = (): void => { scopeGeneration++; results.clear(); uncertain.clear(); reads.clear(); requests.clear(); };
+  const clearScopedResults = (): void => {
+    scopeGeneration++;
+    results.clear(); uncertain.clear(); reads.clear(); requests.clear(); requestFingerprints.clear();
+  };
   const updateAccountScope = (): void => {
     const nextAccount = client.get?.('account')?.user?.id ?? null;
     if (nextAccount !== accountId) {
@@ -159,6 +171,50 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     }
   };
 
+  const requestKeyPrefix = (requestId: string): string => `${requestId}:`;
+  const activeRequest = (requestId: string): boolean => {
+    const prefix = requestKeyPrefix(requestId);
+    return [...requests.keys()].some(key => key.startsWith(prefix));
+  };
+  const rememberFingerprint = (requestId: string, fingerprint: string): void => {
+    const existing = requestFingerprints.get(requestId);
+    if (existing !== undefined) {
+      if (existing.fingerprint !== fingerprint) throw new BotInteractionIdentityConflictError(requestId);
+      requestFingerprints.delete(requestId);
+      requestFingerprints.set(requestId, existing);
+      return;
+    }
+    if (requestFingerprints.size >= REQUEST_FINGERPRINT_LIMIT) {
+      const evict = [...requestFingerprints.keys()].find(candidate => !activeRequest(candidate));
+      if (evict === undefined) throw new Error('Too many Bot interaction requests are active.');
+      requestFingerprints.delete(evict);
+      const prefix = requestKeyPrefix(evict);
+      for (const key of results.keys()) if (key.startsWith(prefix)) results.delete(key);
+      for (const key of uncertain.keys()) if (key.startsWith(prefix)) uncertain.delete(key);
+    }
+    requestFingerprints.set(requestId, { fingerprint, verified: false });
+  };
+  const snapshotRequest = (input: BotInteractionRequest): BotInteractionRequest => {
+    if (!Number.isSafeInteger(input.operation) || input.operation < 0 || !Array.isArray(input.args)) {
+      throw new Error('Invalid Bot interaction request identity.');
+    }
+    const args = Object.freeze(input.args.map((value: BotInteractionRequest['args'][number]): BotInteractionRequest['args'][number] =>
+      value instanceof Uint8Array ? new Uint8Array(value) : value));
+    const expectedScope = input.expectedScope === undefined ? undefined : Object.freeze({ ...input.expectedScope });
+    return Object.freeze({ operation: input.operation, channelId: input.channelId ?? null, args,
+      revision: input.revision ?? null, ...(expectedScope === undefined ? {} : { expectedScope }) });
+  };
+  const requestFingerprint = (input: BotInteractionRequest): string => {
+    const args = input.args.map(value => {
+      if (value === null) return ['null'];
+      if (typeof value === 'string') return ['string', value];
+      if (typeof value === 'number') return ['number', Object.is(value, -0) ? '-0' : String(value)];
+      if (value instanceof Uint8Array) return ['bytes', Array.from(value)];
+      throw new Error('Invalid Bot interaction request argument.');
+    });
+    return JSON.stringify([input.operation, input.channelId ?? null, input.revision ?? null, args]);
+  };
+
   const readOnce = async (requestId: string, operation: number, generation = scopeGeneration): Promise<Omit<BotInteractionResult, 'scope'> | null> => {
     if (!ID.test(requestId) || !Number.isSafeInteger(operation) || operation < 0) throw new Error('Invalid Bot interaction identity.');
     const key = keyOf(requestId, operation);
@@ -199,7 +255,8 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     finally { if (reads.get(key) === task) reads.delete(key); }
   };
 
-  const executeRequest = async (input: BotInteractionRequest, requestId: string, generation: number, scope: BotInteractionScope): Promise<BotInteractionResult> => {
+  const executeRequest = async (input: BotInteractionRequest, requestId: string, fingerprint: string,
+    generation: number, scope: BotInteractionScope): Promise<BotInteractionResult> => {
     if (!ID.test(requestId)) throw new Error('Invalid Bot interaction request id.');
     const send = client.call({ m: 'humanInteractionRequest', communityId,
       channelId: input.channelId ?? null, requestId, operation: input.operation, args: input.args,
@@ -215,6 +272,12 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     if (sent.requestId !== requestId) throw new BotInteractionUncertainError(requestId, 'The worker returned a different request id.');
     if (sent.upload === 'rejected') throw new BotInteractionRejectedError(requestId);
     if (sent.upload !== 'accepted') throw new BotInteractionUncertainError(requestId, 'The Bot interaction upload is still unresolved.');
+    if (generation !== scopeGeneration) throw new BotInteractionUncertainError(requestId, 'The Bot installation or account changed while the request was pending.');
+    const identity = requestFingerprints.get(requestId);
+    if (identity === undefined || identity.fingerprint !== fingerprint) {
+      throw new BotInteractionUncertainError(requestId, 'The Bot interaction request identity changed while the request was pending.');
+    }
+    identity.verified = true;
 
     const deadline = Date.now() + REQUEST_TIMEOUT_MS;
     while (Date.now() < deadline) {
@@ -242,23 +305,34 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   const request = (input: BotInteractionRequest): Promise<BotInteractionResult> => {
     const requestId = input.requestId ?? [...crypto.getRandomValues(new Uint8Array(16))]
       .map(byte => byte.toString(16).padStart(2, '0')).join('');
-    const key = keyOf(requestId, input.operation);
+    if (!ID.test(requestId)) return Promise.reject(new Error('Invalid Bot interaction request id.'));
+    let snapshot: BotInteractionRequest;
+    let fingerprint: string;
+    try {
+      snapshot = snapshotRequest(input);
+      fingerprint = requestFingerprint(snapshot);
+    } catch (error) { return Promise.reject(error instanceof Error ? error : new Error('Invalid Bot interaction request.')); }
+    const key = keyOf(requestId, snapshot.operation);
     return (async () => {
       const initial = await ensureInstallationScope();
       const { generation, scope } = initial;
-      if (input.expectedScope !== undefined && !sameScope(scope, input.expectedScope)) {
+      if (snapshot.expectedScope !== undefined && !sameScope(scope, snapshot.expectedScope)) {
         throw new BotInteractionBindingMismatchError();
       }
+      rememberFingerprint(requestId, fingerprint);
+      const identity = requestFingerprints.get(requestId);
       const prior = results.get(key);
-      if (prior !== undefined) return resultCopy(prior);
+      if (identity?.verified === true && prior !== undefined) return resultCopy(prior);
       const pending = requests.get(key);
       if (pending !== undefined) return pending.then(resultCopy);
       const failure = uncertain.get(key);
       if (failure !== undefined) throw failure;
-      const task = executeRequest(input, requestId, generation, scope);
+      const task = executeRequest(snapshot, requestId, fingerprint, generation, scope);
       requests.set(key, task);
       void task.catch(error => {
-        if (error instanceof BotInteractionUncertainError || error instanceof BotInteractionRejectedError) {
+        const currentIdentity = requestFingerprints.get(requestId);
+        if (generation === scopeGeneration && currentIdentity?.fingerprint === fingerprint
+          && (error instanceof BotInteractionUncertainError || error instanceof BotInteractionRejectedError)) {
           uncertain.delete(key);
           uncertain.set(key, error);
           while (uncertain.size > 128) {

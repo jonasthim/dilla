@@ -496,13 +496,13 @@ fn validate_utility_payload(op: u64, bytes: &[u8]) -> Result<(), CodecError> {
                     offset: d.position(),
                 });
             }
-            if let Some(thread) = d.opt_bytes_exact::<16>()? {
-                if thread.iter().all(|b| *b == 0) {
-                    return Err(CborError::TypeMismatch {
-                        expected: "thread id",
-                        offset: d.position(),
-                    });
-                }
+            if let Some(thread) = d.opt_bytes_exact::<16>()?
+                && thread.iter().all(|b| *b == 0)
+            {
+                return Err(CborError::TypeMismatch {
+                    expected: "thread id",
+                    offset: d.position(),
+                });
             }
             let q = d.text()?;
             if q.trim().is_empty() || q.chars().count() > 300 {

@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { CoreClient } from '../bridge';
-import { createBotInteractionClient, BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError } from './interactions';
+import { createBotInteractionClient, BotInteractionBindingMismatchError, BotInteractionIdentityConflictError,
+  BotInteractionRejectedError, BotInteractionUncertainError } from './interactions';
 
 const COMMUNITY = '11'.repeat(16);
 const REQUEST = '22'.repeat(16);
@@ -36,6 +37,43 @@ it('sends once, reads only the exact pending request and returns domain status c
   expect(f.calls.filter(call => call.m === 'readBotInteractionResponses').every(call =>
     call.requestIds instanceof Array && call.requestIds[0] === REQUEST)).toBe(true);
   expect(f.calls.filter(call => call.m === 'ackBotInteractionResponses')).toHaveLength(1);
+});
+
+it('rejects changed body reuse before returning a successful cached response', async () => {
+  const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' }
+    : command.m === 'humanInteractionRequest' ? { requestId: REQUEST, upload: 'accepted' }
+      : command.m === 'readBotInteractionResponses' ? { responses: [response()], through: 'b'.repeat(32) } : null);
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  await api.request({ requestId: REQUEST, operation: 70, args: [new Uint8Array([1])] });
+  await expect(api.request({ requestId: REQUEST, operation: 70, args: [new Uint8Array([2])] }))
+    .rejects.toBeInstanceOf(BotInteractionIdentityConflictError);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+});
+
+it('rejects a different body while the original request is awaiting its response', async () => {
+  let responseReads = 0;
+  const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' }
+    : command.m === 'humanInteractionRequest' ? { requestId: REQUEST, upload: 'accepted' }
+      : command.m === 'readBotInteractionResponses' ? { responses: ++responseReads === 1 ? [] : [response()],
+        through: responseReads === 1 ? null : 'b'.repeat(32) } : null);
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  const first = api.request({ requestId: REQUEST, operation: 70, args: ['original'] });
+  await vi.waitFor(() => expect(responseReads).toBe(1));
+  await expect(api.request({ requestId: REQUEST, operation: 70, args: ['changed'] }))
+    .rejects.toBeInstanceOf(BotInteractionIdentityConflictError);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+  await expect(first).resolves.toMatchObject({ requestId: REQUEST });
+});
+
+it('rejects reuse of a request id across different operations', async () => {
+  const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' }
+    : command.m === 'humanInteractionRequest' ? { requestId: REQUEST, upload: 'accepted' }
+      : command.m === 'readBotInteractionResponses' ? { responses: [response()], through: 'b'.repeat(32) } : null);
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  await api.request({ requestId: REQUEST, operation: 70, args: ['same args'] });
+  await expect(api.request({ requestId: REQUEST, operation: 71, args: ['same args'] }))
+    .rejects.toBeInstanceOf(BotInteractionIdentityConflictError);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
 });
 
 it('exposes same-id reload reconciliation without sending another mutation', async () => {
@@ -138,6 +176,8 @@ it('turns pending and rejected uploads into typed errors carrying the stable req
     const api = createBotInteractionClient(f.client, COMMUNITY);
     await expect(api.request({ requestId: REQUEST, operation: 70, args: [] }))
       .rejects.toMatchObject({ name: 'BotInteractionUncertainError', requestId: REQUEST });
+    await expect(api.request({ requestId: REQUEST, operation: 70, args: ['changed'] }))
+      .rejects.toBeInstanceOf(BotInteractionIdentityConflictError);
     await expect(api.request({ requestId: REQUEST, operation: 70, args: [] }))
       .rejects.toMatchObject({ name: 'BotInteractionUncertainError', requestId: REQUEST });
     expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
@@ -147,6 +187,36 @@ it('turns pending and rejected uploads into typed errors carrying the stable req
   await expect(createBotInteractionClient(rejected.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args: [] }))
     .rejects.toBeInstanceOf(BotInteractionRejectedError);
   expect(rejected.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+});
+
+it('snapshots caller-owned bytes before awaiting installation authorization', async () => {
+  let statusReads = 0;
+  let finishStatus: ((value: unknown) => void) | undefined;
+  const f = fake(command => command.m === 'getBotCommandStatus' ? ++statusReads === 1
+    ? new Promise(resolve => { finishStatus = resolve; })
+    : { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' }
+    : command.m === 'humanInteractionRequest' ? { requestId: REQUEST, upload: 'accepted' }
+      : command.m === 'readBotInteractionResponses' ? { responses: [response()], through: 'b'.repeat(32) } : null);
+  const bytes = new Uint8Array([1]);
+  const args = [bytes] as (string | number | Uint8Array | null)[];
+  const pending = createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args });
+  await vi.waitFor(() => expect(finishStatus).toBeTypeOf('function'));
+  bytes[0] = 2;
+  args[0] = new Uint8Array([3]);
+  finishStatus?.({ installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' });
+  await pending;
+  expect(f.calls.find(call => call.m === 'humanInteractionRequest')?.args).toEqual([new Uint8Array([1])]);
+});
+
+it('does not treat a read-only result as a known request body fingerprint', async () => {
+  const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' }
+    : command.m === 'readBotInteractionResponses' ? { responses: [response()], through: 'b'.repeat(32) }
+      : command.m === 'humanInteractionRequest' ? { requestId: REQUEST, upload: 'rejected' } : null);
+  const api = createBotInteractionClient(f.client, COMMUNITY);
+  expect((await api.read(REQUEST, 70))?.status).toBe(0);
+  await expect(api.request({ requestId: REQUEST, operation: 70, args: ['unverified original body'] }))
+    .rejects.toBeInstanceOf(BotInteractionRejectedError);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
 });
 
 it('times out with a typed uncertain result and never resends with a new id', async () => {
