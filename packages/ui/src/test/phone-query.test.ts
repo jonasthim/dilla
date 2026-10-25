@@ -45,7 +45,7 @@ function rules(css: string): Array<{ selector: string; body: string }> {
 describe('R9: the phone media query', () => {
   it('every @media rule with 47.99rem in packages/ui reads the full phone query', () => {
     const found = files.flatMap(f => preludes(f.css, 'media').map(p => ({ file: f.file, prelude: p })));
-    expect(found.length).toBe(14); // web3.9 FA1 added Button, SettingsRow, Toggle, VoiceSettings
+    expect(found.length).toBe(13); // SettingsFrame now gets phone geometry from its own layout context.
     for (const { file, prelude } of found) expect(`${file}: ${prelude}`).toBe(`${file}: ${PHONE_MEDIA}`);
   });
 
@@ -53,7 +53,7 @@ describe('R9: the phone media query', () => {
     const named = ['AttachmentCard/AttachmentCard.css', 'CallTile/CallTile.css', 'CallStage/CallStage.css', 'MediaPlayer/MediaPlayer.css',
       'RingBanner/RingBanner.css', 'CallControls/CallControls.css', 'styles/base.css'];
     for (const n of named) expect(files.find(f => f.file === n)?.css.includes(PHONE_MEDIA), n).toBe(true);
-    expect(files.find(f => f.file === 'styles/base.css')?.css.split(PHONE_MEDIA).length).toBe(3);
+    expect(files.find(f => f.file === 'styles/base.css')?.css.split(PHONE_MEDIA).length).toBe(2);
   });
 });
 

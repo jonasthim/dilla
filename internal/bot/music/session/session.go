@@ -57,7 +57,46 @@ type Options struct {
 // YouTube options may omit the installation-wide lease.
 type OptionsForTrack func(context.Context, music.Track) (Options, error)
 
-type QueueStarter struct{ OptionsFor OptionsForTrack }
+type QueueStarter struct {
+	OptionsFor OptionsForTrack
+	// ResetConnection is reserved for an explicit playback action. Automatic EOF
+	// advancement cannot clear a disconnected room's terminal state.
+	ResetConnection func() error
+	CloseConnection func() error
+}
+
+func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (music.Playback, error) {
+	if ctx == nil || s.OptionsFor == nil {
+		return nil, ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.ResetConnection != nil {
+		if err := s.ResetConnection(); err != nil {
+			return nil, err
+		}
+	}
+	playback, err := s.Start(ctx, track)
+	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
+		return playback, err
+	}
+	// A fresh authorized call can replace a retained room before its delayed
+	// disconnect callback arrives. acquireRoom marks that old binding dead.
+	// Only an explicit action may tear it down and reacquire current options.
+	if resetErr := s.ResetConnection(); resetErr != nil {
+		return nil, resetErr
+	}
+	return s.Start(ctx, track)
+}
+
+// Close releases the retained connection when its queue owner is closed.
+func (s QueueStarter) Close() error {
+	if s.CloseConnection != nil {
+		return s.CloseConnection()
+	}
+	return nil
+}
 
 func (s QueueStarter) Start(ctx context.Context, track music.Track) (music.Playback, error) {
 	if ctx == nil || s.OptionsFor == nil {

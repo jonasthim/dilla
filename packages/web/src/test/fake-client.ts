@@ -1,4 +1,4 @@
-import { createElement, type FunctionComponent, type ReactNode } from 'react';
+import { createElement, type FunctionComponent } from 'react';
 import { vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,10 +8,9 @@ import { CALL_IDLE } from '@dilla/client-core';
 import type { PageCall, PageCallState } from '../call/session.ts';
 import type { UiError } from '../core/errors.ts';
 import { CoreProvider } from '../core/context.tsx';
-import { Settings } from '../screens/Settings.tsx';
 import { Shell } from '../screens/Shell.tsx';
 import { VoiceDepsContext, type VoiceDeps, type VoiceModule } from '../screens/voice/useCall.tsx';
-import { useRoute } from '../router.ts';
+import { replaceHistoryState } from '../router.ts';
 import { account, ME } from './fixtures.ts';
 
 /** What a refused call rejects with: the four fields of the worker's error, as the bridge's CoreCallError carries them. */
@@ -204,15 +203,13 @@ export interface VoiceHarnessOptions {
 /** A call AudioContext double (VoiceDeps.createCallContext): which one, and whether it was closed. */
 export interface FakeCallContext { n: number; closed: boolean; close(): Promise<void> }
 
-function Root({ withSettings, update }: { withSettings: boolean; update?: import('../screens/Shell.tsx').ShellUpdateDeps }) {
-  const [route] = useRoute();
-  // As App does: Settings goes to the shell as its page, which a phone puts inside the shell and a desktop after it.
-  return createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps; page?: ReactNode }>,
-    { update, page: withSettings && route.name === 'settings' ? createElement(Settings) : null });
+function Root({ update }: { update?: import('../screens/Shell.tsx').ShellUpdateDeps }) {
+  // The shipping Shell owns both settings workspaces and keeps the media runtime mounted beneath them.
+  return createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps }>, { update });
 }
 
 export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
-  window.history.replaceState(null, '', o.path ?? `/c/${A}/${GENV}`);
+  replaceHistoryState(null, '', o.path ?? `/c/${A}/${GENV}`);
   const log: string[] = [];
   const sessions: FakeSession[] = [];
   const notifications: FakeNote[] = [];
@@ -324,7 +321,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     }),
   };
   const user = userEvent.setup();
-  const tree = createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Root, { withSettings: o.withSettings ?? false, update: o.update }));
+  const tree = createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Root, { update: o.update }));
   const view = render(createElement('div', { className: 'd-root' }, createElement(CoreProvider, { client: fake, children: tree })));
   return {
     client: fake,

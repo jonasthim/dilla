@@ -40,11 +40,16 @@ fn response_matches_request(
     ) else {
         return false;
     };
-    ((matches!(request.operation, 60 | 64)
+    ((matches!(request.operation, 0 | 24)
         && request.channel_id.is_none()
         && request.revision.is_none()
         && request.expires.is_none()
-        && matches!(request.args, RequestArgs::Cursor(_)))
+        && matches!(request.args, RequestArgs::None))
+        || (matches!(request.operation, 60 | 64)
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::Cursor(_)))
         || (request.operation == 1
             && request.channel_id.is_none()
             && request.revision.is_none()
@@ -647,12 +652,32 @@ mod tests {
             request_body.as_bytes(),
             &[2; 16]
         ));
-        let other_operation = request([1; 16], [2; 16], 0, RequestArgs::None);
-        assert!(!response_matches_request(
-            response([1; 16], [2; 16]).as_bytes(),
-            other_operation.as_bytes(),
-            &[2; 16]
-        ));
+    }
+
+    #[test]
+    fn provider_observation_responses_require_exact_local_request_and_community() {
+        for operation in [0, 24] {
+            let request_body = request([1; 16], [2; 16], operation, RequestArgs::None);
+            assert!(
+                response_matches_request(
+                    response([1; 16], [2; 16]).as_bytes(),
+                    request_body.as_bytes(),
+                    &[2; 16]
+                ),
+                "operation {operation}"
+            );
+            for (request_id, response_community, journal_community) in [
+                ([3; 16], [2; 16], [2; 16]),
+                ([1; 16], [4; 16], [2; 16]),
+                ([1; 16], [2; 16], [4; 16]),
+            ] {
+                assert!(!response_matches_request(
+                    response(request_id, response_community).as_bytes(),
+                    request_body.as_bytes(),
+                    &journal_community
+                ));
+            }
+        }
     }
 
     #[test]

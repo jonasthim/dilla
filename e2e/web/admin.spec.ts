@@ -187,7 +187,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     const nameField = settings.getByRole('textbox', { name: copy('admin.overview.name'), exact: true });
     await nameField.fill(RENAMED);
     await button(settings, 'admin.overview.save').click();
-    await expect(settings.getByText(copy('admin.overview.saved'), { exact: true })).toBeVisible({ timeout: WAIT });
+    await expect(settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true }))
+      .toHaveCount(0, { timeout: WAIT });
     await expect(railItem(page2, RENAMED)).toBeVisible({ timeout: 5_000 });
     await expect(railItem(page, RENAMED)).toBeVisible();
 
@@ -263,7 +264,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await openChannel(page2, RENAMED, 'lobby');
     await expect(memberRow(page, RENAMED, FRIEND)).toBeVisible({ timeout: WAIT });
 
-    // 12. Björn's card for Ada (the owner) lists only message and compare; his settings show only invites and the leave tab.
+    // 12. Björn's card for Ada (the owner) lists only message and compare; his settings expose member read access, invites,
+    // self-assignable roles and ownership/leave, without the owner's Overview or Channels.
     await expect(membersRegion(page2, RENAMED)).toBeVisible({ timeout: WAIT });
     await memberRow(page2, RENAMED, OWNER).locator('.d-member-list__open').click();
     const seenCard = page2.getByRole('dialog', { name: OWNER });
@@ -273,7 +275,9 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await page2.keyboard.press('Escape');
     const mine = await openSettings(page2);
     const nav = mine.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button');
-    await expect(nav).toHaveText([copy('admin.nav.invites'), copy('admin.nav.selfRoles'), copy('admin.nav.leave')]);
+    await expect(nav).toHaveText([
+      copy('workspace.members'), copy('workspace.invites'), copy('workspace.selfRoles'), copy('workspace.danger'),
+    ]);
     // WS8: the sidebar has no leave button; leave is a section of server settings.
     await expect(page2.locator('.d-channel-list').getByRole('button', { name: copy('admin.leave.open'), exact: true })).toHaveCount(0);
     await navItem(mine, 'admin.nav.leave').click();
@@ -294,20 +298,21 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await openChannel(page2, RENAMED, 'lobby');
     await expect(memberRow(page, RENAMED, FRIEND)).toBeVisible({ timeout: WAIT });
     settings = await openSettings(page);
-    await navItem(settings, 'admin.nav.delete').click();
+    await navItem(settings, 'workspace.danger').click();
     await button(settings.locator('.dw-settings-section'), 'admin.nav.transfer').click();
     const transfer = dialogOf(page, 'admin.transfer.title', { server: RENAMED });
     await transfer.getByRole('combobox', { name: copy('admin.transfer.member'), exact: true }).selectOption({ label: FRIEND });
     await transfer.getByRole('textbox', { name: copy('admin.transfer.confirmName'), exact: true }).fill(RENAMED);
     await button(transfer, 'admin.transfer.confirm').click();
     await expect(transfer).toBeHidden({ timeout: WAIT });
-    await expect(navItem(settings, 'admin.nav.leave')).toBeVisible({ timeout: WAIT });
-    await expect(navItem(settings, 'admin.nav.delete')).toHaveCount(0);
+    await expect(navItem(settings, 'workspace.danger')).toBeVisible({ timeout: WAIT });
+    await expect(button(settings.locator('.dw-settings-section'), 'admin.leave.open')).toBeVisible({ timeout: WAIT });
+    await expect(button(settings.locator('.dw-settings-section'), 'admin.nav.delete')).toHaveCount(0);
     await closeSettings(page);
 
     // 15. Björn deletes the server with its typed name. Both rails are empty and Ada is told.
     const owned = await openSettings(page2);
-    await navItem(owned, 'admin.nav.delete').click();
+    await navItem(owned, 'workspace.danger').click();
     await button(owned.locator('.dw-settings-section'), 'admin.nav.delete').click();
     const del = dialogOf(page2, 'admin.delete.title', { server: RENAMED });
     await del.getByRole('textbox', { name: copy('admin.delete.confirmName'), exact: true }).fill(RENAMED.normalize('NFD'));

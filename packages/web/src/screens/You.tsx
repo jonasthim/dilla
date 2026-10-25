@@ -1,24 +1,20 @@
 import { useEffect } from 'react';
-import { Avatar, Icon, PhoneHeader, StateDot, type IconName } from '@dilla/ui';
+import { Avatar, Icon, PhoneHeader, StateDot } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import type { SettingsSection } from '../router.ts';
 import { t } from '../strings/index.ts';
 import { devicesChunk, mergeMembers, selfName } from './shell-model.ts';
-import { NAV } from './Settings.tsx';
 import { SignOutAction } from './settings/SignOut.tsx';
 import { PresencePicker } from './PresencePicker.tsx';
 
+const SETTINGS_ICON = 'settings';
 const CHEVRON = 'chevron-right';
-const SECTION_ICON: Record<SettingsSection, IconName> = {
-  profile: 'at-sign', devices: 'monitor-smartphone', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'shield', keyboard: 'keyboard', diagnostics: 'activity',
-};
-
 /**
  * The phone's You tab (flow 12): who this is, the four facts the desktop holds in Settings → Diagnostics (this device's node, link,
- * generation and devices), one row per Settings section in Settings' own order, and sign out.
+ * generation and devices), one entry to the settings index, and sign out.
  */
-export function You(props: { onOpenSettings(section: SettingsSection): void }): React.JSX.Element {
+export function You(props: { onOpenSettings(section: SettingsSection | null): void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
   const connection = useSlice('connection');
@@ -56,15 +52,13 @@ export function You(props: { onOpenSettings(section: SettingsSection): void }): 
       </section>
       <h2 id="dw-you-settings" className="d-label dw-you__listhead">{t('you.settings')}</h2>
       <ul className="dw-phone-list dw-you__sections" aria-labelledby="dw-you-settings">
-        {NAV.map(item => (
-          <li key={item.id}>
-            <button type="button" className="dw-phone-row" data-settings-section={item.id} onClick={() => props.onOpenSettings(item.id)}>
-              <Icon name={SECTION_ICON[item.id]} size={20} />
-              <span className="dw-phone-row__text"><span>{t(item.key)}</span></span>
-              <Icon name={CHEVRON} size={18} />
-            </button>
-          </li>
-        ))}
+        <li>
+          <button type="button" className="dw-phone-row" data-settings-section="index" onClick={() => props.onOpenSettings(null)}>
+            <Icon name={SETTINGS_ICON} size={20} />
+            <span className="dw-phone-row__text"><span>{t('workspace.open')}</span></span>
+            <Icon name={CHEVRON} size={18} />
+          </button>
+        </li>
       </ul>
       <div className="dw-you__signout"><SignOutAction icon /></div>
     </div>

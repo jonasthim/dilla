@@ -7,7 +7,6 @@ import { FakeClient } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { t } from '../strings/index.ts';
-import { NAV } from './Settings.tsx';
 import { You } from './You.tsx';
 
 const A = 'a1'.repeat(16);
@@ -85,15 +84,12 @@ describe('You', () => {
     expect(fact(t('shell.status.devices'))).toHaveTextContent('2');
   });
 
-  it('lists one button per settings section, in the Settings order', async () => {
+  it('has one entry to the settings index', async () => {
     const { user, onOpenSettings } = setup();
     const list = screen.getByRole('list', { name: t('you.settings') });
-    const buttons = within(list).getAllByRole('button');
-    expect(buttons.map(b => b.textContent)).toEqual(NAV.map(item => t(item.key)));
-    await user.click(within(list).getByRole('button', { name: t('settings.nav.privacy') }));
-    expect(onOpenSettings).toHaveBeenCalledWith('privacy');
-    await user.click(within(list).getByRole('button', { name: t('factorSettings.nav') }));
-    expect(onOpenSettings).toHaveBeenLastCalledWith('signin');
+    expect(within(list).getAllByRole('button')).toHaveLength(1);
+    await user.click(within(list).getByRole('button', { name: t('workspace.open') }));
+    expect(onOpenSettings).toHaveBeenCalledWith(null);
   });
 
   it('ends with the sign-out action and has no axe violations', async () => {
@@ -105,7 +101,7 @@ describe('You', () => {
   it('gives every settings row a distinct icon, and sign out its own', () => {
     setup();
     const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'));
-    expect(rows).toHaveLength(NAV.length);
+    expect(rows).toHaveLength(1);
     const icons = rows.map(row => row.querySelector('svg')?.innerHTML ?? '');
     expect(icons.every(svg => svg !== '')).toBe(true);
     expect(new Set(icons).size).toBe(icons.length);

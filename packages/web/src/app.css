@@ -259,13 +259,6 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
      sign-in have no shell and keep their page scroll above the keyboard. The layout.ts hook sets the attribute while the phone
      shell is mounted (R10). */
   html[data-phone-shell], html[data-phone-shell] body { overflow: hidden; }
-  .d-settings-frame:has(.d-phone-header) { max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__panel { display: block; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__side, .d-settings-frame:has(.d-phone-header) .d-settings-frame__bar { display: none; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__pane { height: 100%; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body { padding: 0 0 1.5rem; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > :not(.d-phone-header):not(dialog) { margin-left: var(--row-pad-x); margin-right: var(--row-pad-x); }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > .d-phone-header + * { margin-top: 1rem; }
 }
 
 

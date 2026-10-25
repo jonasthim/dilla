@@ -3,14 +3,14 @@ import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   ActionMenu, AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner, PhoneHeader,
-  TabBar, UnsupportedVoice,
+  TabBar, UnsupportedVoice, PhoneLayoutProvider,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
-import { baseRoute, goBack, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
+import { baseRoute, goBack, subscribeCommittedTraversal, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
 import { phoneNow, readPaneWidths, rememberedTab, rememberTab, usePhoneLayout, writePaneWidths, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, formatTime, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
@@ -32,6 +32,7 @@ import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
 import { MemberCardHost, type OpenCard } from './admin/MemberCardHost.tsx';
+import { Settings } from './Settings.tsx';
 import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
 import { ChannelEditFlow } from './admin/ChannelEditFlow.tsx';
 import { useSounds } from './voice/useSounds.tsx';
@@ -154,9 +155,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const [route, goTo] = useRoute();
   // Every push on a phone is one the app made, so back from it is the history's back (R13); a replace never is.
   const navigate = useCallback((to: Route, replace?: boolean) => goTo(to, replace, phone && replace !== true ? { phoneBack: true } : undefined), [goTo, phone]);
-  const overlay = route.name === 'settings';
+  const overlay = route.name === 'settings' || route.name === 'serverSettings';
   const base = useMemo(() => baseRoute(route), [route]);
-  const routeCommunity = base.name === 'channel' ? base.communityId : null;
+  const routeCommunity = base.name === 'channel' ? base.communityId : route.name === 'serverSettings' && route.from === null ? route.communityId : null;
   const channelId = base.name === 'channel' ? base.channelId : null;
   const dmId = base.name === 'dm' ? base.channelId : null;
 
@@ -308,15 +309,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   };
   // The open profile card from a mention pill or a message's author (MP7); the member pane holds its own for a row. Opening one closes the other.
   const [profileCard, setProfileCard] = useState<OpenCard | null>(null);
-  const [adminFor, setAdminFor] = useState<string | null>(null);
-  const [adminTab, setAdminTab] = useState<AdminTab>('overview');
+  const adminFor = route.name === 'serverSettings' ? route.communityId : null;
+  const adminTab = route.name === 'serverSettings' ? route.section : null;
   // Final fix I1: where focus was when server settings opened (as searchOpener); it goes back there when the dialog closes.
   const adminOpener = useRef<HTMLElement | null>(null);
-  const openAdminFor = (id: string, tab: AdminTab) => {
+  const openAdminFor = (id: string, tab: AdminTab | null) => {
     const active = document.activeElement;
     adminOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
-    setAdminTab(tab);
-    setAdminFor(id);
+    void navigate({ name: 'serverSettings', communityId: id, section: tab, from: null });
   };
   const adminWas = useRef<string | null>(null);
   useEffect(() => {
@@ -415,7 +415,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     if (fresh.length === 0) return;
     seenRemovals.current = new Set([...seenRemovals.current, ...fresh.map(r => r.id)]);
     const gone = new Set(fresh.map(r => r.communityId));
-    setAdminFor(open => (open !== null && gone.has(open) ? null : open));
     if (communityId !== null && gone.has(communityId)) {
       setChannelOpen(false);
     }
@@ -597,16 +596,16 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       setJoinError(readJoinError(window.history.state));
       setJoinOpen(true);
     }
-    if (communities.length > 0) navigate({ name: 'channel', communityId: communities[0].id, channelId: null }, true);
-    else if (base.name === 'welcome') navigate({ name: 'root' }, true);
+    if (communities.length > 0) void navigate({ name: 'channel', communityId: communities[0].id, channelId: null }, true);
+    else if (base.name === 'welcome') void navigate({ name: 'root' }, true);
   }, [overlay, base, communities, navigate]);
 
   // (1b) A desktop has no You or Activity page: You is Settings → devices (opened over nothing, so closing it leaves for /), and
   // Activity is the server list. A phone shows both.
   useEffect(() => {
     if (phone || overlay) return;
-    if (base.name === 'you') goTo({ name: 'settings', section: 'devices', from: null }, true, { from: null });
-    else if (base.name === 'activity') goTo({ name: 'root' }, true);
+    if (base.name === 'you') void goTo({ name: 'settings', section: null, from: null }, true, { from: null });
+    else if (base.name === 'activity') void goTo({ name: 'root' }, true);
   }, [phone, overlay, base.name, goTo]);
 
   // (2) A server that is not in the list is left for /, except the one the join dialog just reported.
@@ -614,13 +613,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     if (overlay || communities === undefined) return;
     if (joined !== null && communities.some(c => c.id === joined)) setJoined(null);
     if (routeCommunity === null || routeCommunity === joined || communities.some(c => c.id === routeCommunity)) return;
-    navigate({ name: 'root' }, true);
+    void navigate({ name: 'root' }, true);
   }, [overlay, routeCommunity, communities, joined, navigate]);
 
   // (2b) A DM the loaded list does not hold is left for /.
   useEffect(() => {
     if (overlay || dmId === null || dms === undefined || dm !== null) return;
-    navigate({ name: 'root' }, true);
+    void navigate({ name: 'root' }, true);
   }, [overlay, dmId, dms, dm, navigate]);
 
   // (3) Once per server change, the worker loads its channels and members, and who is in its voice channels (L-TS-50
@@ -675,9 +674,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     if (channelId === null) {
       // A phone shows the server's channel list here; it never opens a channel by itself.
       const first = phone ? null : defaultChannel(ordered);
-      if (first !== null) navigate({ name: 'channel', communityId, channelId: first.id }, true);
+      if (first !== null) void navigate({ name: 'channel', communityId, channelId: first.id }, true);
     } else if (channel === null) {
-      navigate({ name: 'channel', communityId, channelId: null }, true);
+      void navigate({ name: 'channel', communityId, channelId: null }, true);
     }
   }, [overlay, base.name, communityId, channelId, channels, ordered, channel, navigate, phone]);
 
@@ -757,7 +756,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       const next = stepChannel(ordered, channelId, e.key === 'ArrowUp' ? -1 : 1);
       if (next === null) return;
       e.preventDefault();
-      navigate({ name: 'channel', communityId, channelId: next.id });
+      void navigate({ name: 'channel', communityId, channelId: next.id });
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -850,7 +849,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const onJoined = (id: string) => {
     setJoined(id);
     closeJoin();
-    navigate({ name: 'channel', communityId: id, channelId: null });
+    void navigate({ name: 'channel', communityId: id, channelId: null });
   };
 
   const closePicker = () => { setPickerOpen(false); setPickerError(null); };
@@ -868,7 +867,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         if (typeof id === 'string' && HEX32.test(id)) {
           pickedDm.current = true;
           setPickerOpen(false);
-          navigate({ name: 'dm', channelId: id });
+          void navigate({ name: 'dm', channelId: id });
         }
       } catch (e) {
         setPickerError(errorOf(e));
@@ -948,8 +947,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
   const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}} presenceChoice={account?.presenceChoice}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
-    onOpen={id => navigate({ name: 'dm', channelId: id })}
-    onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
+    onOpen={id => void navigate({ name: 'dm', channelId: id })}
+    onAnswer={id => { void navigate({ name: 'dm', channelId: id }).then(allowed => { if (allowed) call.join(id); }); }} />;
   // AW6: the AFK channel hosts no call (R-AW1). Its people are this server's away roster, named from its members and shown
   // as away, never the voice book's: under its row and on its page (fix round 1, Jonas's concern 2 ruling).
   const afkHere = afkLists[(communities ?? []).findIndex(c => c.id === communityId)];
@@ -960,8 +959,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const selfAway = self !== null && (afkHere?.away ?? []).some(row => row.userId === self.id);
   const voiceCtx: VoiceContext = {
     client, call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
-    onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
-    onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
+    onCompare: userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
+    onVoiceSettings: () => void navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
     afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway } : null),
   };
@@ -1023,7 +1022,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     voiceRooms[r.id] = afkChannels.has(r.id) ? { joined: r.joined, held: r.held, participants: awayPeople, count: en['voice.afk.count'] }
       : { joined: r.joined, held: r.held, participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
   }
-  const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
+  const openVoice = (id: string) => { if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
     const counts = sumBadges(list.filter(ch => ch.kind !== CATEGORY).map(ch => rowBadge(badges, settings, ch.id, c.id)));
@@ -1045,10 +1044,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const phonePane: 'list' | 'view' = overlay || base.name === 'dm' || (base.name === 'channel' && base.channelId !== null) ? 'view' : 'list';
   const openSettings = useRef<string | null>(null);
   if (phone && phonePane === 'list' && phoneTab === 'activity') {
-    sidebar = <Activity onOpen={target => navigate(target.communityId === null ? { name: 'dm', channelId: target.channelId }
+    sidebar = <Activity onOpen={target => void navigate(target.communityId === null ? { name: 'dm', channelId: target.channelId }
       : { name: 'channel', communityId: target.communityId, channelId: target.channelId })} />;
   } else if (phone && phonePane === 'list' && phoneTab === 'you') {
-    sidebar = <You onOpenSettings={section => { openSettings.current = section; navigate({ name: 'settings', section, from: null }); }} />;
+    sidebar = <You onOpenSettings={section => { openSettings.current = section ?? 'index'; void navigate({ name: 'settings', section, from: null }); }} />;
   } else if (phone || community !== null || hasDms || noServer) {
     // Flow 07: with no server the sidebar still stands, on the DMs tab, so its picker can say why it is empty.
     const onDms = homeSelected;
@@ -1064,7 +1063,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     const voiceHere = !onDms && community !== null && content === undefined;
     // Flow 07: the server's actions. The instance serves no role bits, so the one permission fact here is ownership: the
     // owner holds ManageChannels; every member holds CreateInvite by default (@everyone), and a refusal is said in the dialog.
-    const openAdmin = (tab: AdminTab) => { if (community !== null) openAdminFor(community.id, tab); };
+    const openAdmin = (tab: AdminTab | null) => { if (community !== null) openAdminFor(community.id, tab); };
     // Final fix B1: "edit channel" sits in the channel header (M2), not here.
     // Web3.8 (WS8): the gear sits beside the server's name (leave and delete live in server settings); the phone adds search.
     // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
@@ -1093,7 +1092,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
             <Icon name={SEARCH} size={18} /></Button>
         ) : null}
         {voiceHere ? (
-          <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
+          <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin(null)}>
             <Icon name={SETTINGS} size={18} /></Button>
         ) : null}
       </>
@@ -1116,7 +1115,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => {
-          navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
+          void navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
           // R24: on a desktop a click on a voice row opens it and joins; a phone's tap only opens it (the 44px icon joins).
           const room = voiceRooms[id];
           if (!onDms && !phone && room !== undefined && !room.joined && !room.held) voiceCtx.onJoinVoice?.(id);
@@ -1258,7 +1257,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const callBarUp = phone && call.channelId !== null && !(phonePane === 'view' && call.channelId === (voiceChannel?.id ?? dm?.id));
   // The dot is the call bar's open button, folded to 44 x 44: the same name, the same target.
   const dot = callBarUp && keyTyping && call.channelId !== null
-    ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) navigate(callTarget); } } : undefined;
+    ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) void navigate(callTarget); } } : undefined;
   const dotProp = dot === undefined ? {} : { dot };
   const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
@@ -1321,7 +1320,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     const threadRoot = (hit as SearchHitView & { threadRoot?: string | null }).threadRoot ?? null;
     if (threadRoot !== null && hit.communityId !== null) {
       // A reply shows in its thread, not in the channel's timeline: the thread opens beside the channel.
-      navigate({ name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
+      void navigate({ name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
       leaveSearchLayer();
       // The palette is gone, so the root's row is where focus goes back to; a phone's members sheet gives way to the thread.
       sideOpener.current = null;
@@ -1332,7 +1331,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     }
     const name = `timeline:${hit.channelId}` as const;
     const available = () => client.get(name)?.items.some(item => item.seq === hit.seq && item.state === 'ok') === true;
-    navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
+    void navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
       : { name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
     if (client.get(name) === undefined) {
       await new Promise<void>(resolve => {
@@ -1395,7 +1394,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
       ) : null}
       {ownTrust !== null ? (
-        <Banner tone="danger" action={{ label: t('privacy.ownAction'), onAction: () => navigate({ name: 'settings', section: 'devices', from: null }) }}>
+        <Banner tone="danger" action={{ label: t('privacy.ownAction'), onAction: () => void navigate({ name: 'settings', section: 'devices', from: null }) }}>
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
@@ -1416,7 +1415,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       {changedHere.length > 0 ? <div className="dw-trust-alerts" data-doc-state="trust-conversation">{changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
         labels={{ changed: t(row.changedUmk === null ? 'privacy.changedNoKey' : 'privacy.changed'), unlisted: t('privacy.unlisted'),
           verify: t('privacy.compare', { name: row.name }) }}
-        onVerify={row.changedUmk === null ? undefined : () => navigate({ name: 'settings', section: 'privacy', from: null })} />)}</div> : null}
+        onVerify={row.changedUmk === null ? undefined : () => void navigate({ name: 'settings', section: 'privacy', from: null })} />)}</div> : null}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
           {TRUST_BLOCKS.has(commandError.code)
@@ -1462,24 +1461,24 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       const from = pushedFrom();
       const fromList = from !== null && tabOf(from) === to && from.name !== 'dm' && from.name !== 'settings' && !(from.name === 'channel' && from.channelId !== null);
       if (fromList) tabBackOff.current = goBack(tabRoot(to), navigate, tabRoot(to));
-      else navigate(tabRoot(to), true);
-    } else navigate(tabTarget(to), true);
+      else void navigate(tabRoot(to), true);
+    } else void navigate(tabTarget(to), true);
   };
-  const tabBar = !phone ? undefined : (
+  const tabBar = !phone || overlay ? undefined : (
     <TabBar label={t('nav.tabs.label')} onSelect={id => {
       const to = id as PhoneTab;
       const current = to === phoneTab && phonePane === 'view';
       // Server settings is a page above the tabs: leaving by a tab closes it.
-      if (adminFor !== null) setAdminFor(null);
       if (pendingTab.current !== null) { pendingTab.current = { to, current }; return; }
       // An open sheet closes first. Its entry is popped (async), and only then does the tab open on the view's entry.
       if (asideShown && (sideNow !== null ? threadSheet : memberSheet).close()) {
         pendingTab.current = { to, current };
-        window.addEventListener('popstate', () => {
+        const off = subscribeCommittedTraversal(() => {
+          off();
           const next = pendingTab.current;
           pendingTab.current = null;
           if (next !== null) openTab(next.to, next.current);
-        }, { once: true });
+        });
       } else openTab(to, current);
     }} items={[
       tabItem('home', 'server', homeCount), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
@@ -1499,11 +1498,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const callBar = !callBarUp || keyTyping || call.channelId === null ? undefined : (
     <CallBar phase={callPhase(voiceCtx)} where={whereOf(call.channelId)} muted={call.state?.muted ?? false}
       labels={{ open: t('nav.call.open', { where: callWhere(call.channelId) }), mute: t('voice.mute'), leave: t('voice.leave'), region: t('voice.dock.region') }}
-      onOpen={() => { if (callTarget !== null) navigate(callTarget); }} onMute={call.toggleMute} onLeave={() => call.leave()} />
+      onOpen={() => { if (callTarget !== null) void navigate(callTarget); }} onMute={call.toggleMute} onLeave={() => call.leave()} />
   );
   // A phone remembers where each tab was left (never a settings route, nor the root that only redirects).
   useEffect(() => {
-    if (phone && route.name !== 'settings' && route.name !== 'root' && route.name !== 'welcome') rememberTab(tabOf(route), routePath(route));
+    if (phone && route.name !== 'settings' && route.name !== 'serverSettings' && route.name !== 'root' && route.name !== 'welcome') rememberTab(tabOf(route), routePath(route));
   }, [phone, route]);
   // Focus follows the pane (flow 12): a pushed view's heading when focus was lost with the list; the opening row of Settings, else
   // the list's heading, when a pane or a tab comes back. Never on the first render.
@@ -1693,9 +1692,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
-  // Server settings is a page above the shell on a phone (the same slot as Settings), and after it on a desktop.
-  const adminPage = adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
-    onClose={() => setAdminFor(null)} announce={announce} /> : null;
+  const closeSettings = () => {
+    const from = route.name === 'settings' || route.name === 'serverSettings' ? route.from : null;
+    void navigate(from === null ? (adminFor ? { name: 'channel', communityId: adminFor, channelId: null } : { name: 'root' }) : routeOf(from), true);
+  };
+  const settingsActivity = <div className="dw-settings-activity">
+    <LinkBanner status={status} labels={{ offline: t('nav.link.offline'), connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />
+    {overlay ? ringFlow : null}
+    {callTarget !== null ? <Button onClick={() => void navigate(callTarget)}>{t('workspace.returnCall')}</Button> : null}
+  </div>;
+  const adminPage = adminFor !== null ? <ServerSettings key={adminFor} communityId={adminFor} tab={adminTab}
+    onTab={section => void navigate({ name: 'serverSettings', communityId: adminFor, section, from: null }, !phone || section === null)}
+    onClose={closeSettings} announce={announce} activity={settingsActivity}
+    onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
+  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} /> : adminPage;
   return (
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
@@ -1720,23 +1730,23 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         skipLabel={t('shell.skip')}
         {...(phone ? {} : { paneWidths, onPaneResize, resizeLabels: { sidebar: t('pane.resize.sidebar'), aside: t('pane.resize.aside') } })}
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} onTypingChange={setTyping} covered={phone && (overlay || adminFor !== null)}
-        page={phone ? <>{adminPage}{props.page}</> : undefined}
+        page={undefined}
         rail={phone && phoneTab !== 'home' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={homeSelected ? null : communityId}
-          onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
+          onSelect={id => void navigate({ name: 'channel', communityId: id, channelId: null })}
           addLabel={t('layout.rail.add')} onAdd={() => setAddOpen(true)}
           itemLabel={railLabel}
           home={{ label: t('home.tile'), itemLabel: t('home.tileLabel', { unread: dmCounts.unread, mentions: dmCounts.mentions }),
-            selected: homeSelected, unread: dmCounts.unread, mentions: dmCounts.mentions, onSelect: () => navigate({ name: 'dms' }) }} />}
+            selected: homeSelected, unread: dmCounts.unread, mentions: dmCounts.mentions, onSelect: () => void navigate({ name: 'dms' }) }} />}
         sidebar={sidebar}
         bottom={phone || self === null ? undefined : <>
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
-            server={dockServer} onStatus={() => navigate({ name: 'settings', section: 'diagnostics', from: null })}
+            server={dockServer} onStatus={() => void navigate({ name: 'settings', section: 'diagnostics', from: null })}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
           <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
-            onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
+            onSettings={() => void navigate({ name: 'settings', section: null, from: null })}
             ptt={settings?.['voice.mode'] === 'ptt' ? { held: call.state?.speaking === true } : false} />
         </>}
-        ring={rings !== undefined && rings.length > 0 ? ringFlow : undefined}
+        ring={!overlay && rings !== undefined && rings.length > 0 ? ringFlow : undefined}
         header={<>
           {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
           <p className="d-sr-only dw-voice-lasting" role="status">{call.lasting}</p>
@@ -1765,7 +1775,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
               <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
-              onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
+              onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
               announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
           : community === null ? undefined : t('members.region', { server: community.name })}
@@ -1780,7 +1790,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       {self !== null && (dm !== null || community !== null) ? (
         <MemberCardHost communityId={dm !== null ? null : community?.id ?? null}
           {...(dm !== null ? { dm: { members: allMembers, peerId: dm.kind === 3 ? dm.members.find(id => id !== self.id) ?? null : null, peerName: dm.name } } : {})} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
-          onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
+          onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
       ) : null}
       <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
         requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
@@ -1799,20 +1809,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         body={t(noServer ? 'shell.dms.noServer' : pickerMembers.length === 0 ? 'shell.dms.alone' : 'shell.dms.newBody')}
         onClose={closePicker} onPick={startDm} />
       <CreateServerFlow open={createOpen} onClose={() => setCreateOpen(false)}
-        onServer={id => { setJoined(id); navigate({ name: 'channel', communityId: id, channelId: null }); }}
+        onServer={id => { setJoined(id); void navigate({ name: 'channel', communityId: id, channelId: null }); }}
         onDone={({ communityId: id, channelId: general }) => {
           pendingFocus.current = { id: general, from: targetId };
           setCreateOpen(false);
-          navigate({ name: 'channel', communityId: id, channelId: general }, true);
+          void navigate({ name: 'channel', communityId: id, channelId: general }, true);
         }} />
       <CreateChannelFlow open={channelOpen} community={community} parentId={channelParent} onClose={() => setChannelOpen(false)}
         onDone={(id, kind) => {
           if (kind === 'text') pendingFocus.current = { id, from: targetId };
           setChannelOpen(false);
-          if (community !== null) navigate({ name: 'channel', communityId: community.id, channelId: id });
+          if (community !== null) void navigate({ name: 'channel', communityId: community.id, channelId: id });
         }} />
       <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
-      {phone ? null : <>{adminPage}{props.page}</>}
+      <PhoneLayoutProvider value={phone}>{settingsPage}{props.page}</PhoneLayoutProvider>
     </>
   );
 }

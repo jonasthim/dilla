@@ -337,3 +337,78 @@ func TestQueueStarterReleasesSpotifyLeaseBeforeRetry(t *testing.T) {
 		t.Fatal("retry resources not released exactly once")
 	}
 }
+
+func TestQueueStarterOnlyExplicitPlaybackResetsConnection(t *testing.T) {
+	resets, optionsCalls := 0, 0
+	stopped := errors.New("test stops before resources")
+	starter := QueueStarter{
+		ResetConnection: func() error { resets++; return nil },
+		OptionsFor:      func(context.Context, music.Track) (Options, error) { optionsCalls++; return Options{}, stopped },
+	}
+	track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"}
+	if _, err := starter.Start(context.Background(), track); !errors.Is(err, stopped) {
+		t.Fatal(err)
+	}
+	if resets != 0 {
+		t.Fatal("automatic advancement reset a removed connection")
+	}
+	if _, err := starter.StartExplicit(context.Background(), track); !errors.Is(err, stopped) {
+		t.Fatal(err)
+	}
+	if resets != 1 || optionsCalls != 2 {
+		t.Fatalf("resets=%d options=%d", resets, optionsCalls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := starter.StartExplicit(ctx, track); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if resets != 1 || optionsCalls != 2 {
+		t.Fatal("cancelled playback authorized a reconnect")
+	}
+	starter.ResetConnection = func() error { return ErrInvalid }
+	if _, err := starter.StartExplicit(context.Background(), track); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	if optionsCalls != 2 {
+		t.Fatal("failed reset acquired fresh resources")
+	}
+}
+
+func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		explicit              bool
+		second                error
+		wantCalls, wantResets int
+	}{
+		{"explicit replacement", true, ErrInvalid, 2, 2},
+		{"automatic advancement", false, ErrInvalid, 1, 0},
+		{"repeated binding failure is terminal", true, livekit.ErrBinding, 2, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, resets := 0, 0
+			starter := QueueStarter{ResetConnection: func() error { resets++; return nil }, OptionsFor: func(context.Context, music.Track) (Options, error) {
+				calls++
+				if calls == 1 {
+					return Options{}, livekit.ErrBinding
+				}
+				return Options{}, tc.second
+			}}
+			track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"}
+			var err error
+			if tc.explicit {
+				_, err = starter.StartExplicit(context.Background(), track)
+			} else {
+				_, err = starter.Start(context.Background(), track)
+			}
+			wantErr := tc.second
+			if !tc.explicit {
+				wantErr = livekit.ErrBinding
+			}
+			if !errors.Is(err, wantErr) || calls != tc.wantCalls || resets != tc.wantResets {
+				t.Fatalf("err=%v options=%d resets=%d", err, calls, resets)
+			}
+		})
+	}
+}

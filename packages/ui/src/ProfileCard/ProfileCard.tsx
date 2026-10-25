@@ -42,6 +42,8 @@ export interface ProfileCardProps {
   presenceLabels?: Partial<Record<Presence, string>>;
   /** Where focus goes on close when the anchor is gone (and no row carries its focus key). */
   fallbackFocus?: () => HTMLElement | null;
+  /** Restricts trigger lookup to a workspace when another covered surface has matching focus keys. */
+  focusScope?: ParentNode | null;
 }
 
 const GAP = 8;
@@ -56,7 +58,7 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  */
 export function ProfileCard({
   name, username, presence, status, bio, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
-  bioLabel = 'about', ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
+  bioLabel = 'about', ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus, focusScope,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
   const mode = layout ?? (phone ? 'sheet' : 'popover');
@@ -68,7 +70,9 @@ export function ProfileCard({
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const onCloseRef = useRef(onClose);
   const fallbackRef = useRef(fallbackFocus);
+  const focusScopeRef = useRef(focusScope);
   fallbackRef.current = fallbackFocus;
+  focusScopeRef.current = focusScope;
   onCloseRef.current = onClose;
 
   // The bio box is a tab stop only while it overflows (WCAG 2.1.1: a keyboard reaches what scrolls, and nothing else gets a stop).
@@ -91,7 +95,7 @@ export function ProfileCard({
       const active = document.activeElement;
       const inside = active === null || active === document.body || el?.contains(active) === true;
       if (!inside) return;
-      focusReturnTarget(opener.current, () => fallbackRef.current?.())?.focus();
+      focusReturnTarget(opener.current, () => fallbackRef.current?.(), focusScopeRef.current)?.focus();
     };
   }, []);
 

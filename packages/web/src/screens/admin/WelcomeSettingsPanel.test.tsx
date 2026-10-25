@@ -105,6 +105,22 @@ describe('welcome settings panel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.save'] })).not.toHaveAttribute('aria-disabled', 'true'));
   });
 
+  it('preserves an edited template when a reload updates the confirmed baseline', async () => {
+    const { ackSpy, getRequest, setResponse } = setup();
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await waitFor(() => expect(getRequest()).toBeDefined());
+    setResponse({ requestId: getRequest()!.requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
+    await screen.findByDisplayValue(CONFIG.template);
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByRole('textbox', { name: en['admin.bot.welcomeSettings.template'] }), { target: { value: 'My unsaved template' } });
+    const oldRequestId = getRequest()!.requestId;
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.reload'] }));
+    await waitFor(() => expect(getRequest()?.requestId).not.toBe(oldRequestId));
+    setResponse({ requestId: getRequest()!.requestId, operation: 1, status: 0, revision: '8', data: encodeWelcomeSettings({ ...CONFIG, template: 'Updated elsewhere' }) });
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('textbox', { name: en['admin.bot.welcomeSettings.template'] })).toHaveValue('My unsaved template');
+  });
+
   it('hides the configured-message claim while the form has unsaved changes', async () => {
     const { getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));

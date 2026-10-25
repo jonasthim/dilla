@@ -75,3 +75,16 @@ func (p LiveKitPublisher) Start(ctx context.Context, call client.Call, group id.
 }
 
 var _ livekit.EpochSource = (*native.Client)(nil)
+
+// RetainedLiveKitPublisher replaces a track inside the queue owner's authorized
+// room. The QueueStarter closes the pool when that owner is torn down.
+type RetainedLiveKitPublisher struct{ Pool *livekit.Pool }
+
+func (p RetainedLiveKitPublisher) Start(ctx context.Context, call client.Call, group id.ID, epochs livekit.EpochSource, enc Encoder) (Publisher, error) {
+	concrete, ok := enc.(*musicruntime.Session)
+	if !ok || p.Pool == nil {
+		_ = enc.Close()
+		return nil, ErrInvalid
+	}
+	return p.Pool.Start(ctx, call, group, epochs, concrete)
+}

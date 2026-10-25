@@ -42,6 +42,16 @@ const dialog = (page: import('@playwright/test').Page, name: string, vars?: Reco
 const settingsNav = (settings: import('@playwright/test').Locator, key: string) =>
   settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
     .getByRole('button', { name: copy(key), exact: true });
+const expectProviderRuntimeEvidence = async (settings: import('@playwright/test').Locator): Promise<void> => {
+  const providers = settings.locator('[data-setting="music-providers"]');
+  const status = providers.getByRole('status');
+  await expect(status).toHaveText(copy('workspace.providers.linkedHelp'), { timeout: 35_000 });
+  // The fresh fixture has no Spotify account state, and the pinned provider tools above are present.
+  await expect(providers.getByText(copy('workspace.providers.spotifyAccount'), { exact: true }).locator('xpath=following-sibling::dd[1]'))
+    .toHaveText(copy('workspace.providers.notLinked'));
+  await expect(providers.getByText(copy('workspace.providers.youtubeSetup'), { exact: true }).locator('xpath=following-sibling::dd[1]'))
+    .toHaveText(copy('workspace.providers.configured'));
+};
 const memberRow = (page: import('@playwright/test').Page, server: string, name: string) =>
   page.getByRole('complementary', { name: copy('members.region', { server }), exact: true })
     .getByRole('listitem').filter({ hasText: name });
@@ -53,6 +63,23 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const page = owner.page;
   const djPage = dj.page;
   const djTwoPage = djTwo.page;
+  const sandboxOrigin = new URL(process.env.DILLA_TEST_HOST!).origin;
+  let djAuthorization = '';
+  djPage.on('request', request => {
+    if (!request.url().startsWith(`${sandboxOrigin}/`)) return;
+    const authorization = request.headers()['authorization'];
+    if (authorization?.startsWith('Bearer ')) djAuthorization = authorization;
+  });
+  const currentCallGroup = async (channel: string): Promise<string> => {
+    expect(djAuthorization !== '', 'DJ has an authenticated sandbox session').toBe(true);
+    const response = await djPage.request.get(`${sandboxOrigin}/v1/channels/${channel}/call`, {
+      headers: { authorization: djAuthorization, accept: 'application/cbor' },
+    });
+    expect(response.ok()).toBe(true);
+    const group = arr(decode(new Uint8Array(await response.body())))[0];
+    expect(group).toBeInstanceOf(Uint8Array);
+    return Buffer.from(group as Uint8Array).toString('hex');
+  };
   const invite = process.env.DILLA_TESTKIT_INVITE?.split(',')[0];
   if (!invite) throw new Error('global setup did not export the test instance invite');
   const control = process.env.DILLA_TESTKIT_CONTROL;
@@ -88,13 +115,17 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const stepUp = dialog(page, 'factorSettings.stepUp.title');
   await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
   await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.status.ready') }))
+    .toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
 
+  await settingsNav(settings, 'workspace.music').click();
+  await expectProviderRuntimeEvidence(settings);
   await expect(settings.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeVisible({ timeout: WAIT });
   const djPolicy = settings.getByRole('group', { name: copy('admin.bot.music.djRoles.label'), exact: true });
   await djPolicy.getByRole('checkbox', { name: DJ_ROLE, exact: true }).check();
-  await settings.getByRole('button', { name: copy('admin.bot.music.djRoles.save'), exact: true }).click();
-  await expect(page.getByTestId('shell-announcer')).toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
+  await settings.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.music.djRoles.saved') }))
+    .toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
   await page.keyboard.press('Escape');
 
   const inviteLink = await makeInviteLink(page, SERVER);
@@ -126,12 +157,16 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const stepUpTwo = dialog(page, 'factorSettings.stepUp.title');
   await stepUpTwo.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
   await stepUpTwo.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.status.ready') }))
+    .toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+  await settingsNav(settings, 'workspace.music').click();
+  await expectProviderRuntimeEvidence(settings);
   await expect(settings.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeVisible({ timeout: WAIT });
   const djPolicyTwo = settings.getByRole('group', { name: copy('admin.bot.music.djRoles.label'), exact: true });
   await djPolicyTwo.getByRole('checkbox', { name: DJ_ROLE, exact: true }).check();
-  await settings.getByRole('button', { name: copy('admin.bot.music.djRoles.save'), exact: true }).click();
-  await expect(page.getByTestId('shell-announcer')).toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
+  await settings.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.music.djRoles.saved') }))
+    .toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
   await page.keyboard.press('Escape');
 
   const inviteLinkTwo = await makeInviteLink(page, SERVER_TWO);
@@ -194,13 +229,11 @@ test('two communities run isolated YouTube playback with independent Bot identit
     try {
       await audible(musicPage);
     } catch (error) {
-      const diagnostic = await musicPage.evaluate(({ currentTitle, rms, verifiedFrames, previousFrames, tracksBefore }) => {
+      const diagnostic = await musicPage.evaluate(({ rms, verifiedFrames, previousFrames, tracksBefore }) => {
         const windowState = window as unknown as {
           __dw?: { contexts?: AudioContext[]; remoteTracks?: Set<string>; remoteAnalysers?: AnalyserNode[] };
-          __dillaMusicTrace?: { sent?: Record<string, number>; reads?: { errors?: string[]; responses?: { operation: number; status: number }[] } };
         };
         return {
-          title: currentTitle,
           rms,
           verifiedFrames,
           contexts: (windowState.__dw?.contexts ?? []).map((context) => context.state),
@@ -210,12 +243,8 @@ test('two communities run isolated YouTube playback with independent Bot identit
           framesAddedSincePrevious: previousFrames === undefined ? null : verifiedFrames - previousFrames,
           trackIDsAddedSincePrevious: tracksBefore === undefined ? null :
             [...(windowState.__dw?.remoteTracks ?? [])].filter((trackID) => !tracksBefore.includes(trackID)).sort(),
-          musicRequests: windowState.__dillaMusicTrace?.sent ?? {},
-          musicReadErrors: windowState.__dillaMusicTrace?.reads?.errors ?? [],
-          musicResponseStatuses: (windowState.__dillaMusicTrace?.reads?.responses ?? []).map((response) => response.status),
         };
-      }, { currentTitle: null,
-        rms: await audibleLevel(musicPage), verifiedFrames: await heardCount(musicPage, botDevice), previousFrames,
+      }, { rms: await audibleLevel(musicPage), verifiedFrames: await heardCount(musicPage, botDevice), previousFrames,
         tracksBefore });
       throw new Error(`${String(error)}\nSafe audio diagnostic (no IDs or media payloads): ${JSON.stringify(diagnostic)}`);
     }
@@ -277,10 +306,16 @@ test('two communities run isolated YouTube playback with independent Bot identit
   // channel. A retained Bot group must not block playback in its replacement.
   const callChannel = (await callSlice(djPage))?.channelId;
   expect(callChannel).toBeTruthy();
-  await djPage.getByRole('button', { name: copy('voice.leave'), exact: true }).first().click();
-  await expect(djPage.locator('[data-call-phase]').first()).toHaveAttribute('data-call-phase', 'idle', { timeout: WAIT });
+  const oldGroup = await currentCallGroup(callChannel!);
+  // Stop intentionally retains the Bot's authorized room. End this sandbox call
+  // through the current human leaf's public API, rather than assuming it is alone.
+  const ended = await djPage.request.delete(`${sandboxOrigin}/v1/calls/${callChannel}`, {
+    headers: { authorization: djAuthorization },
+  });
+  expect(ended.status()).toBe(204);
   await expect.poll(() => snapshotDevices(djPage, callChannel!), { timeout: WAIT }).toEqual([]);
   await joinVoice(djPage, SERVER, 'general');
+  expect(await currentCallGroup(callChannel!)).not.toBe(oldGroup);
   await command(djPage, SERVER, '/resume', /Music resumed/);
   await expect.poll(() => audibleLevel(djPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
 
@@ -291,8 +326,10 @@ test('two communities run isolated YouTube playback with independent Bot identit
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'admin.nav.bot').click();
   await settings.getByRole('button', { name: copy('admin.bot.disable'), exact: true }).click();
-  await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.disabled'), { timeout: WAIT });
-  await expect(page.getByTestId('shell-announcer')).toHaveText(copy('admin.bot.disabledNotice'), { timeout: WAIT });
+  await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.disabled') }))
+    .toHaveText(copy('admin.bot.status.disabled'), { timeout: WAIT });
+  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.disabledNotice') }))
+    .toHaveText(copy('admin.bot.disabledNotice'), { timeout: WAIT });
   await expect.poll(() => snapshotDevices(djPage, callA!.channelId!), { timeout: 90_000 }).not.toContain(botDeviceA);
   await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
   await expect.poll(() => heardCount(djTwoPage, botDeviceB), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);

@@ -6,12 +6,11 @@ import { errorOf, type UiError } from './core/errors.ts';
 import { useSlice } from './core/use-slice.ts';
 import { notificationCtor, startNotifier } from './notify.ts';
 import { requestThread } from './thread-request.ts';
-import { joinErrorState, useRoute, type Route } from './router.ts';
+import { joinErrorState, replaceHistoryState, useRoute, type Route } from './router.ts';
 import { Boot } from './screens/Boot.tsx';
 import { ForcedFactor } from './screens/factor/ForcedFactor.tsx';
 import { Onboarding, type SignupResult } from './screens/Onboarding.tsx';
-import { Settings } from './screens/Settings.tsx';
-import { focusUserSettings, Shell } from './screens/Shell.tsx';
+import { Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn } from './screens/SignIn.tsx';
 import { OtherTab } from './screens/OtherTab.tsx';
@@ -56,7 +55,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     if (spotifyCallbackScrubbed.current) return;
     // Capture only in this page's memory, then remove the authorization code before Boot or sign-in can be shown.
     spotifyCallbackSearch.current = callbackSearch;
-    window.history.replaceState(window.history.state, '', window.location.pathname);
+    replaceHistoryState(window.history.state, '', window.location.pathname);
     spotifyCallbackScrubbed.current = true;
   }, [route.name, callbackSearch]);
   const account = useSlice('account');
@@ -227,42 +226,36 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     focus: () => window.focus(),
     open: n => {
       leftByNotice.current = shown.current.name === 'settings';
-      navigate(n.communityId === null ? { name: 'dm', channelId: n.channelId } : { name: 'channel', communityId: n.communityId, channelId: n.channelId });
-      if (n.threadRoot !== null && n.communityId !== null) requestThread(n.channelId, n.threadRoot);
+      void navigate(n.communityId === null ? { name: 'dm', channelId: n.channelId } : { name: 'channel', communityId: n.communityId, channelId: n.channelId }).then(allowed => {
+        if (allowed && n.threadRoot !== null && n.communityId !== null) requestThread(n.channelId, n.threadRoot);
+      });
     },
   }), [client, navigate]);
-  // When Settings closes (Escape, its close button, the browser's back), focus returns to the user panel's gear
-  // after the commit, so after the dialog's own close (pre-flight row 1.22: not when a notification click left it).
-  const wasSettings = useRef(false);
-  useEffect(() => {
-    const isSettings = route.name === 'settings';
-    if (wasSettings.current && !isSettings && !leftByNotice.current) focusUserSettings();
-    if (!isSettings) leftByNotice.current = false;
-    wasSettings.current = isSettings;
-  }, [route.name]);
   const screen = screenFor(phase, account?.factorSetup?.origin);
   // Onboarding stays mounted after the phase turns ready, until its done step calls onFinish; so does SignIn.
   const [onboarding, setOnboarding] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+  const signInForCallback = useRef(false);
   useEffect(() => {
     if (screen === 'onboarding') { setOnboarding(true); setSigningIn(false); }
-    if (screen === 'signin') { setSigningIn(true); setOnboarding(false); }
-  }, [screen]);
+    if (screen === 'signin') { signInForCallback.current = route.name === 'spotifyCallback'; setSigningIn(true); setOnboarding(false); }
+  }, [screen, route.name]);
   const finish = (result: SignupResult) => {
     setOnboarding(false);
     if (result.communityId !== null) {
-      navigate({ name: 'channel', communityId: result.communityId, channelId: null }, true);
+      void navigate({ name: 'channel', communityId: result.communityId, channelId: null }, true);
     } else if (result.joinError !== null) {
-      navigate({ name: 'welcome', invite: result.invite, signin: null }, true);
+      void navigate({ name: 'welcome', invite: result.invite, signin: null }, true);
       // Pre-flight ruling (e): the refused join rides on this history entry for the join dialog.
-      history.replaceState(joinErrorState(result.joinError), '');
+      replaceHistoryState(joinErrorState(result.joinError), '');
     } else {
-      navigate({ name: 'root' }, true);
+      void navigate({ name: 'root' }, true);
     }
   };
   const finishSignIn = () => {
     setSigningIn(false);
-    if (route.name !== 'spotifyCallback') navigate({ name: 'root' }, true);
+    if (!signInForCallback.current && route.name !== 'spotifyCallback') void navigate({ name: 'root' }, true);
+    signInForCallback.current = false;
   };
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
@@ -289,7 +282,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
       case 'shell': return route.name === 'spotifyCallback' ? null
-        : <Shell update={props.update} page={route.name === 'settings' ? <Settings /> : null} />;
+        : <Shell update={props.update} />;
     }
   }
 }

@@ -9,6 +9,7 @@ import { en } from '../../strings/index.ts';
 import { decode, encode } from '@dilla/client-core';
 import { ServerSettings } from './ServerSettings.tsx';
 import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
+import { BotSection, type BotPageKind } from './BotSection.tsx';
 
 vi.mock('./spotify-link.ts', async importOriginal => ({ ...await importOriginal<typeof import('./spotify-link.ts')>(), authorizeSpotify: vi.fn() }));
 import { authorizeSpotify, spotifySession } from './spotify-link.ts';
@@ -19,10 +20,10 @@ type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 
 const ROW: Installation = { id: 'b2'.repeat(16), communityId: SERVER, state: 0, revision: '1', userId: null,
   deviceId: null, capabilities: 0, updatedAt: '100' };
 const ACCESS = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
-  banMembers: true, moderateMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
+  banMembers: true, moderateMembers: true, createInvite: true, manageRoles: true, viewAuditLog: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 
 function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true, fakeTimers = false,
-  handler?: (command: Parameters<FakeClient['call']>[0]) => Promise<unknown>) {
+  handler?: (command: Parameters<FakeClient['call']>[0]) => Promise<unknown>, page: BotPageKind = 'bot') {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('factors', { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
@@ -43,9 +44,15 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
   const announce = vi.fn();
   const user = fakeTimers ? userEvent.setup({ advanceTimers: vi.advanceTimersByTime }) : userEvent.setup();
   const view = render(<PhoneLayoutProvider value={phone}><div className="d-root"><CoreProvider client={fake}>
-    <ServerSettings communityId={SERVER} tab="bot" onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
+    {phone ? <ServerSettings communityId={SERVER} tab={page} onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
+      : <BotSection communityId={SERVER} serverName="Midgard" announce={announce} page={page} />}
   </CoreProvider></div></PhoneLayoutProvider>);
   return { fake, user, view, announce };
+}
+
+function setupPage(page: BotPageKind, initial: Installation | null = null, failGet = false, phone = false, manageRoles = true,
+  fakeTimers = false, handler?: (command: Parameters<FakeClient['call']>[0]) => Promise<unknown>) {
+  return setup(initial, failGet, phone, manageRoles, fakeTimers, handler, page);
 }
 
 describe('the server bot settings', () => {
@@ -80,7 +87,7 @@ describe('the server bot settings', () => {
 
   it('waits for automatic settings response acknowledgement before reporting loaded', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-    const { fake, user } = setup(ready);
+    const { fake, user } = setupPage('automoderation', ready);
     let releaseAck!: (value: null) => void;
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
@@ -104,7 +111,7 @@ describe('the server bot settings', () => {
 
   it('keeps a settings response pending until earlier journal entries are acknowledged', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-    const { fake, user } = setup(ready);
+    const { fake, user } = setupPage('automoderation', ready);
     let prefixOpen = false;
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
@@ -129,7 +136,7 @@ describe('the server bot settings', () => {
 
   it('loads automatic moderation over op 62 and prepares a step-up protected op 63 save', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-    const { fake, user } = setup(ready);
+    const { fake, user } = setupPage('automoderation', ready);
     const latest = new Map<number, { requestId: string; operation: number }>();
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
@@ -166,7 +173,7 @@ describe('the server bot settings', () => {
   });
 
   it.each(['E_CORE_STATE','E_FORBIDDEN'] as const)('does not poll responses after a definite %s save rejection', async code => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setup(ready);const responseReads:number[][]=[];
+    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setupPage('automoderation', ready);const responseReads:number[][]=[];
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
       if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
@@ -195,7 +202,7 @@ describe('the server bot settings', () => {
   });
 
   it('does not send automatic moderation config when step-up is denied', async () => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setup(ready);
+    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setupPage('automoderation', ready);
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
       if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
@@ -218,7 +225,7 @@ describe('the server bot settings', () => {
   });
 
   it('retries an uncertain automatic moderation upload with the same request ID and document', async () => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setup(ready);
+    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setupPage('automoderation', ready);
     const latest=new Map<number,{requestId:string;operation:number}>(); let saves=0;
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
@@ -254,7 +261,7 @@ describe('the server bot settings', () => {
   });
 
   it('loads more than 64 exemptions and preserves them on an unrelated save within the encoded size limit', async () => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)};const {fake,user}=setup(ready);
+    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)};const {fake,user}=setupPage('automoderation', ready);
     const exemptions=Array.from({length:68},(_,i)=>i.toString(16).padStart(32,'0'));
     expect(encode([1n,0n,'log','log','log',601000n,exemptions]).length).toBeLessThanOrEqual(2400);
     const latest=new Map<number,{requestId:string;operation:number}>();
@@ -289,7 +296,7 @@ describe('the server bot settings', () => {
 
   it('reaches welcome get and put through authenticated Bot interactions and waits for correlated responses', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: 1 << 1, revision: '7' };
-    const { fake, user } = setup(ready);
+    const { fake, user } = setupPage('welcome', ready);
     const channelId = 'cc'.repeat(16);
     act(() => fake.set(`channels:${SERVER}`, [{ id: channelId, communityId: SERVER, kind: 0, mode: 0, name: 'general', topic: '',
       parentId: null, position: 1, slowmode: 0, announcement: false, group: 'active' }]));
@@ -308,7 +315,6 @@ describe('the server bot settings', () => {
       }] });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
-    await screen.findByText(en['admin.bot.status.ready']);
     await user.click(await screen.findByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
     await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toMatchObject([
       { communityId: SERVER, channelId: null, operation: 1, args: [5], revision: null },
@@ -326,7 +332,7 @@ describe('the server bot settings', () => {
   });
 
   it('does not request or invent moderation details before the user asks', async () => {
-    const { fake } = setup({ ...ROW, state: 3 });
+    const { fake } = setupPage('moderationLog', { ...ROW, state: 3 });
     expect(await screen.findByRole('heading', { name: en['admin.bot.moderationLog.title'] })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
     expect(fake.calls.map(call => call.m)).not.toContain('listModerationCases');
@@ -337,7 +343,7 @@ describe('the server bot settings', () => {
   });
 
   it('keeps automatic case retrieval available alongside the manual evidence view', async () => {
-    const { fake, user } = setup({ ...ROW, state: 3 });
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
@@ -351,8 +357,33 @@ describe('the server bot settings', () => {
     expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
   });
 
+  it('renders a case once when overlapping response snapshots arrive in one journal page', async () => {
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
+    let requestId = '';
+    const sharedCase = { key: 'a'.repeat(32) + ':1', channelId: 'b'.repeat(32), actorId: 'c'.repeat(32),
+      messageId: 'a'.repeat(32), revision: '1', reason: 'duplicate_body', action: 'warn',
+      excerpt: 'one durable warning', receivedAt: '1800000000' };
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'listModerationCases') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
+        { deliveryId: '2', requestId: '55'.repeat(16), status: 0, hasMore: false, nextCursor: null, cases: [sharedCase] },
+        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [sharedCase,
+          { ...sharedCase, key: 'd'.repeat(32) + ':1', messageId: 'd'.repeat(32), excerpt: 'a distinct warning' }] },
+      ] });
+      return Promise.resolve(null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.loadAutomatic'] }));
+    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toEqual([
+      { m: 'ackHumanInteractionResponses', communityId: SERVER, through: '3' },
+    ]));
+    expect(screen.getAllByRole('article')).toHaveLength(2);
+    expect(screen.getAllByText('one durable warning')).toHaveLength(1);
+    expect(screen.getByText('a distinct warning')).toBeInTheDocument();
+  });
+
   it('shows a typed response page, then acknowledges it after rendering', async () => {
-    const { fake, user } = setup({ ...ROW, state: 3 });
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
     let requestId = '';
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
@@ -378,7 +409,7 @@ describe('the server bot settings', () => {
   });
 
   it('renders every response in the acknowledged prefix before acknowledging it', async () => {
-    const { fake, user } = setup({ ...ROW, state: 3 });
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
     let requestId = '';
     const priorRequestId = '55'.repeat(16);
     fake.handler = command => {
@@ -406,7 +437,7 @@ describe('the server bot settings', () => {
   });
 
   it('renders an older response before acknowledging it while the current request is pending', async () => {
-    const { fake, user } = setup({ ...ROW, state: 3 });
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
@@ -429,7 +460,7 @@ describe('the server bot settings', () => {
   });
 
   it('renders a safe date fallback for an out-of-range received timestamp', async () => {
-    const { fake, user } = setup({ ...ROW, state: 3 });
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
     let requestId = '';
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
@@ -485,7 +516,7 @@ describe('the server bot settings', () => {
   it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
     spotifySession.clear();
     vi.mocked(authorizeSpotify).mockClear();
-    const { fake, user } = setup({ ...ROW, state: 3, capabilities: 1 });
+    const { fake, user } = setupPage('music', { ...ROW, state: 3, capabilities: 1 });
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3, capabilities: 1 });
       if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
@@ -494,7 +525,7 @@ describe('the server bot settings', () => {
       });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
-    await screen.findByText(en['admin.bot.status.ready']);
+    await waitFor(() => expect(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] })).not.toHaveAttribute('aria-disabled', 'true'));
     await user.type(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] }), 'client');
     await user.click(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] }));
     expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
@@ -507,15 +538,17 @@ describe('the server bot settings', () => {
     expect(stored).toContain('csrf-only');
     expect(stored).not.toContain('oauth-code');
     expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
-    expect(screen.queryByText('Provider status unavailable')).toBeNull();
+    expect(screen.getByRole('heading', { name: en['workspace.providers.title'] })).toBeInTheDocument();
+    expect(screen.getByText(en['workspace.providers.youtubeSetup'])).toBeInTheDocument();
     expect(screen.getByText(/Join a voice channel, then type \/play/)).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'getBotDjRoles', 'getBotSpotifyConfig', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'getBotDjRoles', 'getBotSpotifyConfig',
+      'humanInteractionRequest', 'readBotInteractionResponses', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
   it('saves one approved join-role setting with a request ID and explains future-join assignment', async () => {
     const initial = { ...ROW, state: 3 as const, revision: '3' };
-    const { fake, user, announce } = setup(initial);
+    const { fake, user, announce } = setupPage('joinRoles', initial);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
@@ -534,7 +567,7 @@ describe('the server bot settings', () => {
 
   it('edits DJ role policy only for the current ready installation and below the actor hierarchy', async () => {
     const initial = { ...ROW, state: 3 as const, capabilities: 1 };
-    const { fake, user, announce } = setup(initial);
+    const { fake, user, announce } = setupPage('music', initial);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
@@ -563,7 +596,7 @@ describe('the server bot settings', () => {
 
   it('shows DJ role policy read-only without both current manager permissions', async () => {
     const initial = { ...ROW, state: 3 as const };
-    const { fake } = setup(initial, false, false, false);
+    const { fake } = setupPage('music', initial, false, false, false);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
@@ -574,37 +607,31 @@ describe('the server bot settings', () => {
     expect(screen.queryByRole('button', { name: en['admin.bot.music.djRoles.save'] })).not.toBeInTheDocument();
   });
 
-  it('keeps installation controls available when join-role read is forbidden', async () => {
+  it('does not read join-role configuration on the bot page', async () => {
     const initial = { ...ROW, state: 3 as const, revision: '3' };
-    const { fake, user } = setup(initial, false, false, false);
+    const { fake } = setup(initial, false, false, false);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }));
-      if (command.m === 'disableBotInstallation') return Promise.resolve({ ...initial, state: 4, revision: '4' });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
-    await waitFor(() => expect(fake.callsOf('disableBotInstallation')).toHaveLength(1));
-    expect(await screen.findByText(en['admin.bot.status.disabled'])).toBeInTheDocument();
+    expect(fake.callsOf('getBotJoinRole')).toHaveLength(0);
   });
 
-  it('keeps installation controls available after a rejected join-role save', async () => {
+  it('keeps the join-role form available after a rejected save', async () => {
     const initial = { ...ROW, state: 3 as const, revision: '3' };
-    const { fake, user } = setup(initial);
+    const { fake, user } = setupPage('joinRoles', initial);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
       if (command.m === 'configureBotJoinRole') return Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }));
-      if (command.m === 'disableBotInstallation') return Promise.resolve({ ...initial, state: 4, revision: '4' });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     const select = await screen.findByRole('combobox', { name: en['admin.bot.joinRole.label'] });
     await user.selectOptions(select, '22'.repeat(16));
     await user.click(screen.getByRole('button', { name: en['admin.bot.joinRole.save'] }));
     expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.forbidden']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
-    await waitFor(() => expect(fake.callsOf('disableBotInstallation')).toHaveLength(1));
   });
 
   it('shows staged status and asks for step-up before enabling through the worker', async () => {
@@ -707,7 +734,7 @@ describe('the server bot settings', () => {
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
     expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '30', capabilities: 1 | 8 | 16 });
-    expect(await screen.findByRole('status')).toHaveTextContent(en['admin.bot.status.joining']);
+    expect(await screen.findByText(en['admin.bot.status.joining'])).toBeInTheDocument();
   });
 
   it('does not save an edit against a stale ready installation revision', async () => {
@@ -821,7 +848,7 @@ describe('the server bot settings', () => {
       const ready = { ...ROW, state: 3 as const, capabilities: 1, revision: '3', userId: '77'.repeat(16) };
       let installationReads = 0;
       let djRoleReads = 0;
-      const { fake } = setup(pending, false, false, true, true, command => {
+      const { fake } = setupPage('music', pending, false, false, true, true, command => {
         if (command.m === 'getBotInstallation') {
           installationReads += 1;
           return Promise.resolve(installationReads === 1 ? pending : ready);
@@ -846,7 +873,7 @@ describe('the server bot settings', () => {
   it('starts polling when a newly enabled bot moves from absent to Pending', async () => {
     vi.useFakeTimers();
     try {
-      const { fake } = setup(null, false, false, true, true);
+      const { fake } = setupPage('bot', null, false, false, true, true);
       await act(async () => { await Promise.resolve(); await Promise.resolve(); });
       expect(screen.getByText(en['admin.bot.none'])).toBeInTheDocument();
       let polls = 0;
@@ -865,9 +892,9 @@ describe('the server bot settings', () => {
         fireEvent.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
         await Promise.resolve(); await Promise.resolve();
       });
-      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.pending']);
+      expect(screen.getByText(en['admin.bot.status.pending'])).toBeInTheDocument();
       await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
-      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
+      expect(screen.getByText(en['admin.bot.status.ready'])).toBeInTheDocument();
       expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
     } finally {
       vi.useRealTimers();
@@ -895,12 +922,12 @@ describe('the server bot settings', () => {
         <ServerSettings communityId={SERVER} tab="bot" onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
       </CoreProvider></div>);
       await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.pending']);
+      expect(screen.getByText(en['admin.bot.status.pending'])).toBeInTheDocument();
       view.rerender(<div className="d-root"><CoreProvider client={fake}>
         <ServerSettings communityId={communityB} tab="bot" onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
       </CoreProvider></div>);
       await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
+      expect(screen.getByText(en['admin.bot.status.ready'])).toBeInTheDocument();
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
     } finally {
@@ -984,13 +1011,13 @@ describe('the server bot settings', () => {
     const staleDisable = screen.queryByRole('button', { name: en['admin.bot.disable'] });
     if (staleDisable !== null) await user.click(staleDisable);
     expect(fake.callsOf('disableBotInstallation')).toHaveLength(0);
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(en['admin.bot.status.ready'])).toBeNull();
 
     await act(async () => { resolveB(rowB); await readB; });
-    expect(await screen.findByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
+    expect(await screen.findByText(en['admin.bot.status.ready'])).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
     await waitFor(() => expect(fake.callsOf('disableBotInstallation')).toHaveLength(1));
     expect(fake.callsOf('disableBotInstallation')[0]).toMatchObject({ communityId: communityB, expectedRevision: '9' });
-    expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.disabled']);
+    expect(screen.getByText(en['admin.bot.status.disabled'])).toBeInTheDocument();
   });
 });

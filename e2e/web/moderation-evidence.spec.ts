@@ -47,8 +47,8 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
 
     // The open Bot panel polls the native runtime until the installation is ready.
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
-    await settings.getByRole('button', { name: 'Cancel', exact: true }).first().click();
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
 
     // The owner warns Bea through her member card; the reason is the evidence we retrieve below.
@@ -70,7 +70,7 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     const loadEvidence = settings.getByRole('button', { name: /Load manual evidence|Sending request/u });
     await loadEvidence.click();
     const returned = settings.locator('article').filter({ hasText: REASON });

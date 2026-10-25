@@ -17,7 +17,7 @@ import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
+  type HumanInteractionEvent, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
@@ -744,7 +744,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
+      || !(operation === 0 || operation === 1 || operation === 2 || operation >= 10 && operation <= 24 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
     const music = operation >= 10 && operation <= 23;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
@@ -780,7 +780,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
     || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 1 || op === 2 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+    || !(op === 0 || op === 1 || op === 2 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
     || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
   if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
@@ -956,6 +956,15 @@ const heldForTrust = (row: TimelineRow): boolean => row.status === 1 && HELD_REA
 /** A live row the core holds for its sender's trust, and when it was held (elapsed ms, R8). */
 type HeldLive = { groupId: Id; seq: bigint; heldAt: number };
 
+const OBSERVED_INTERACTION_CACHE_MAX = 64;
+const OBSERVED_INTERACTION_CACHE_TTL_MS = 60_000;
+const OBSERVED_INTERACTION_DRAIN_CHUNKS = 16;
+
+interface BotInteractionResponseView {
+  deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
+  status: number; revision: string | null; data: Uint8Array; sourceSeq: string;
+}
+
 export class Controller {
   private readonly parts: ControllerParts;
   /** The id of the last removal notice (web3.4 C4). */
@@ -991,6 +1000,8 @@ export class Controller {
   private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
   private readonly pendingHumanInteractionAcks = new Map<string, string>();
   private readonly pendingBotInteractionAcks = new Map<string, string>();
+  private readonly observedInteractionResponses = new Map<string, { expiresAt: number; response: BotInteractionResponseView }>();
+  private acknowledgedInteractionThrough = 0n;
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1666,25 +1677,115 @@ export class Controller {
     });
   }
 
+  private expireObservedInteractionResponses(): void {
+    const now = this.deps.now();
+    for (const [deliveryId, cached] of this.observedInteractionResponses) {
+      if (cached.expiresAt <= now) this.observedInteractionResponses.delete(deliveryId);
+    }
+  }
+
+  private clearInteractionResponseState(): void {
+    this.observedInteractionResponses.clear();
+    this.pendingBotInteractionAcks.clear();
+    this.pendingHumanInteractionAcks.clear();
+  }
+
+  private cacheObservedInteractionResponse(event: HumanInteractionEvent): void {
+    try {
+      const response = decodeBotResponse(event.body);
+      validateBotResponseForRequest(response, event.communityId, event.requestId);
+      const deliveryId = String(event.deliveryId);
+      this.observedInteractionResponses.delete(deliveryId);
+      this.observedInteractionResponses.set(deliveryId, { expiresAt: this.deps.now() + OBSERVED_INTERACTION_CACHE_TTL_MS,
+        response: { deliveryId, requestId: toHex(event.requestId), communityId: toHex(event.communityId),
+          operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
+          status: response.status, revision: response.revision?.toString() ?? null, data: response.data.slice(),
+          sourceSeq: String(event.sourceSeq) } });
+      while (this.observedInteractionResponses.size > OBSERVED_INTERACTION_CACHE_MAX) {
+        const oldest = this.observedInteractionResponses.keys().next().value;
+        if (oldest === undefined) break;
+        this.observedInteractionResponses.delete(oldest);
+      }
+    } catch {
+      // Operation 0/24 is observational. An invalid envelope is omitted, then the event can be
+      // acknowledged so it cannot pin the shared journal ahead of later mutation responses.
+    }
+  }
+
+  /** Drain only the global journal's contiguous operation-0/24 prefix. Cache before ack so a
+   *  transient page/unmount cannot lose an observation when the prefix is successfully consumed. */
+  private drainObservedInteractionPrefix(): void {
+    this.expireObservedInteractionResponses();
+    const core = this.core;
+    if (core === null) return;
+    for (let chunk = 0; chunk < OBSERVED_INTERACTION_DRAIN_CHUNKS; chunk++) {
+      let page: ReturnType<CorePort['humanInteractionEventsRead']>;
+      try { page = core.humanInteractionEventsRead(0n, 100); } catch { return; }
+      const prefix: HumanInteractionEvent[] = [];
+      for (const event of page.events) {
+        if (event.operation !== 0 && event.operation !== 24) break;
+        prefix.push(event);
+      }
+      if (prefix.length === 0) {
+        // Core may advance past a full page of stale or trust-invalid rows without exposing
+        // them as events. Its next cursor is still a safe, consumed prefix and must not strand
+        // a later live observation behind those suppressed rows.
+        if (page.events.length === 0 && page.next > this.acknowledgedInteractionThrough) {
+          try { core.humanInteractionEventsAck(page.next); } catch { return; }
+          this.acknowledgedInteractionThrough = page.next;
+          continue;
+        }
+        return;
+      }
+      for (const event of prefix) this.cacheObservedInteractionResponse(event);
+      const through = prefix[prefix.length - 1].deliveryId;
+      if (through <= this.acknowledgedInteractionThrough) return;
+      try { core.humanInteractionEventsAck(through); }
+      catch { return; }
+      this.acknowledgedInteractionThrough = through;
+      if (prefix.length < page.events.length) return;
+    }
+  }
+
+  private cachedObservedInteractionResponses(communityHex: string, allowed: ReadonlySet<number>): BotInteractionResponseView[] {
+    this.expireObservedInteractionResponses();
+    return [...this.observedInteractionResponses.values()]
+      .map(cached => cached.response)
+      .filter(response => response.communityId === communityHex && allowed.has(response.operation))
+      .map(response => ({ ...response, data: response.data.slice() }));
+  }
+
+  private acknowledgeInteractionEvents(core: CorePort, through: bigint): void {
+    if (through <= this.acknowledgedInteractionThrough) return;
+    core.humanInteractionEventsAck(through);
+    this.acknowledgedInteractionThrough = through;
+  }
+
   private readBotInteractionResponses(communityHex: string, operations: readonly number[]): {
-    responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
-      status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
-    through: string | null; blocked: boolean;
+    responses: BotInteractionResponseView[]; through: string | null; blocked: boolean;
   } {
     if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const allowed = new Set(operations);
-    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
-    const responses = page.events.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)).map(event => {
+    this.drainObservedInteractionPrefix();
+    const core = this.requireCore();
+    const page = core.humanInteractionEventsRead(0n, 100);
+    const responses = this.cachedObservedInteractionResponses(communityHex, allowed);
+    const seen = new Set(responses.map(response => response.deliveryId));
+    for (const event of page.events) {
+      if (toHex(event.communityId) !== communityHex || !allowed.has(event.operation)) continue;
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
-      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
+      const deliveryId = String(event.deliveryId);
+      if (seen.has(deliveryId)) continue;
+      seen.add(deliveryId);
+      responses.push({ deliveryId, requestId: toHex(event.requestId), communityId: communityHex,
         operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
-        status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
-        sourceSeq: String(event.sourceSeq) };
-    });
+        status: response.status, revision: response.revision?.toString() ?? null, data: response.data.slice(),
+        sourceSeq: String(event.sourceSeq) });
+    }
     const firstBlocked = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !allowed.has(event.operation));
     const ackable = firstBlocked < 0 ? page.events : page.events.slice(0, firstBlocked);
-    const throughValue = firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
+    const throughValue = page.events.length === 0 ? 0n : firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
     const through = throughValue > 0n ? String(throughValue) : null;
     if (through !== null) {
       this.pendingBotInteractionAcks.set(`${communityHex}:${through}`, through);
@@ -1702,7 +1803,7 @@ export class Controller {
     if (!this.listed(communityHex) || this.pendingBotInteractionAcks.get(key) !== through) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
-    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    this.acknowledgeInteractionEvents(this.requireCore(), BigInt(through));
     this.pendingBotInteractionAcks.delete(key);
     return null;
   }
@@ -1791,7 +1892,9 @@ export class Controller {
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       return { authorized: false, responses: [], through: null, blocked: false };
     }
-    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    this.drainObservedInteractionPrefix();
+    const core = this.requireCore();
+    const page = core.humanInteractionEventsRead(0n, 100);
     const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
     const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !isModerationRead(event.operation));
     // The journal ack is global, so this screen may consume only the contiguous prefix for its
@@ -1870,7 +1973,7 @@ export class Controller {
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
     }
-    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    this.acknowledgeInteractionEvents(this.requireCore(), BigInt(through));
     this.pendingHumanInteractionAcks.delete(key);
     return null;
   }
@@ -2106,6 +2209,8 @@ export class Controller {
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
+      if (core !== paused) this.acknowledgedInteractionThrough = 0n;
+      this.clearInteractionResponseState();
       this.core = core;
       this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
@@ -2391,6 +2496,7 @@ export class Controller {
     this.clearReauthTimer();
     this.clearHeldReads();
     this.clearPendingRolePanelActionRetries();
+    this.clearInteractionResponseState();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -4196,6 +4302,7 @@ export class Controller {
   private quiesce(): void {
     if (this.wiping) return;
     this.wiping = true;
+    this.clearInteractionResponseState();
     this.clearReauthTimer();
     this.clearPendingRolePanelActionRetries();
     this.typingOff();
@@ -4236,6 +4343,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.clearInteractionResponseState();
     this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
@@ -5041,6 +5149,7 @@ export class Controller {
     this.clearPendingRolePanelActionRetries();
     await this.barrier.close();
     this.clearReauthTimer();
+    this.clearInteractionResponseState();
     // L-TS-56 step 9: the call is left and the rings cleared before the store is released; the leave's round trips are
     // bounded, since the instance removes the leaf when the call ends anyway.
     let bound: number | null = null;

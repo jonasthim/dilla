@@ -29,11 +29,11 @@ Roles, the permission editor, role assignment, channel permissions, private chan
 
 ## 1280×800
 
-The Roles tab is a section of server settings between channels and invites, in the settings dialog's left navigation. The roles list fills the content pane, one row per role with its colour dot, name, member count and actions at the row end. The role editor is a dialog; its name, colour, toggles and permission grid sit in one column and only the grid scrolls, under a pinned footer with save and cancel. The assign dialog opens from a member row's menu in the member list. The channel permissions section sits in channel settings below the name, with the private toggle at its top and the entries listed beneath.
+Roles is in the People group of the fullscreen server settings workspace. Navigation and content scroll independently, as specified in [Flow 18](18-fullscreen-settings.md). The roles list fills the content pane, one row per role with its colour dot, name, member count and actions at the row end. The role editor is a dialog; its name, colour, toggles and permission grid sit in one column and only the grid scrolls, under a pinned footer with save and cancel. The assign dialog opens from a member row's menu in the member list. The channel permissions section sits in channel settings below the name, with the private toggle at its top and the entries listed beneath.
 
 ## 360×740
 
-The settings navigation collapses to a select above the content. Role rows stack: name and count above, actions below, with every target at least 24 px and the primary ones 44 px. The role editor and assign dialog fill the viewport width; the permission grid is one column and scrolls inside the dialog while the footer stays pinned. The member menu is reached from the narrow member drawer, which is modal; the assign dialog renders through the dialog portal above it. The channel permissions section is a full-width column and each entry's allow, default and deny control wraps under its name. Nothing needs horizontal scroll at 200 % zoom.
+The grouped settings index opens Roles as a single section, with Back returning to the index and the app tab bar hidden throughout settings. Role rows stack: name and count above, actions below, with primary touch targets at least 44 px. The role editor and assign dialog fill the viewport width; the permission grid is one column and scrolls inside the dialog while the footer stays pinned. Member actions are available in the Members section and from the contextual member drawer; nested dialogs remain above their opener. The channel permissions section is a full-width column and each entry's allow, default and deny control wraps under its name. Nothing needs horizontal scroll at 200 % zoom.
 
 ## Keyboard map
 
@@ -61,7 +61,7 @@ The settings navigation collapses to a select above the content. Role rows stack
 
 ## Announcements
 
-All are polite, through the shell announcer. Dialog errors are `role=alert`.
+All are polite, through the announcer inside settings while the workspace is open, or the shell announcer for contextual actions outside settings. Dialog errors are `role=alert`.
 
 - `roles.moved`
 - `roles.editor.saved`

@@ -40,6 +40,27 @@ async function pick(user: ReturnType<typeof userEvent.setup>, who: string, item:
 }
 
 describe('MemberPane', () => {
+  it('restores a settings member row inside its own scope when the covered shell has a duplicate row', () => {
+    const fake = new FakeClient();
+    fake.set('communities', [{ id: CID, name: 'Midgard', owner: OWNER }]);
+    fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada'), m(BOB, 'bob'), m(CAL, 'carol')]);
+    fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' });
+    fake.set(`roles:${CID}`, []);
+    const background = document.createElement('button');
+    background.dataset.focusKey = `member:${BOB}`;
+    background.textContent = 'covered bob';
+    const host = document.createElement('div');
+    document.body.append(background, host);
+    const view = render(<div className="d-root"><CoreProvider client={fake}><MemberPane communityId={CID} selfId={ME}
+      onMessage={vi.fn()} onCompare={vi.fn()} announce={vi.fn()} focusScope="settings" /></CoreProvider></div>, { container: host });
+    const scoped = host.querySelector<HTMLElement>('.d-root > div')!;
+    const before = within(scoped).getByRole('button', { name: /\bbob\b/ });
+    act(() => before.focus());
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
+    expect(within(scoped).getByRole('button', { name: /\bbob\b/ })).toHaveFocus();
+    expect(background).not.toHaveFocus();
+    view.unmount(); background.remove(); host.remove();
+  });
   // S3: the members aside has its own 48 bar (MemberList's `label`), so its hairline sits on the header's line.
   it('draws the members bar, a heading named for the list', () => {
     setup();

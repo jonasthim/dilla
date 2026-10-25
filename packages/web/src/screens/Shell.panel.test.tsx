@@ -7,6 +7,7 @@ import { t } from '../strings/index.ts';
 import { A, callState, GENV, MEMBERS, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { focusUserSettings } from './Shell.tsx';
+import { pushHistoryState, replaceHistoryState } from '../router.ts';
 
 // web3.8 WS6: the desktop user panel at the bottom left (R23-R25), the call panel above it, settings behind the gear.
 function media(phone: boolean) {
@@ -15,6 +16,8 @@ function media(phone: boolean) {
   })) as unknown as typeof window.matchMedia;
 }
 afterEach(() => {
+  cleanup();
+  replaceHistoryState(null, '', '/');
   Reflect.deleteProperty(window, 'matchMedia');
   // eslint-disable-next-line no-restricted-properties -- clears the tab memory the shell writes
   window.sessionStorage.clear();
@@ -45,8 +48,7 @@ function shell(o: VoiceHarnessOptions = {}) {
 const writes = (app: ReturnType<typeof shell>) => app.client.callsOf('setSetting').map(c => c.value);
 
 async function joinVoice(app: ReturnType<typeof shell>) {
-  window.history.pushState(null, '', `/c/${A}/${GENV}`);
-  act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+  act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
   await app.user.click(await main().findByRole('button', { name: 'join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
@@ -113,11 +115,11 @@ describe('the desktop user panel', () => {
     expect(inPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('the gear opens /settings/devices', async () => {
+  it('the gear opens the desktop Settings root', async () => {
     const app = shell();
     await screen.findByRole('main');
     await app.user.click(gear());
-    expect(window.location.pathname).toBe('/settings/devices');
+    expect(window.location.pathname).toBe('/settings');
   });
 
   it('the avatar and name block is a button named by the current status; it opens the four statuses and a choice sets the account presence', async () => {
@@ -289,8 +291,7 @@ describe('fail closed (security round 1)', () => {
   it('a mute pressed while the join is pending leaves the session muted once it starts', async () => {
     const app = shell();
     await screen.findByRole('main');
-    window.history.pushState(null, '', `/c/${A}/${GENV}`);
-    act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+    act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
     const release = app.holdStart();
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
@@ -331,8 +332,7 @@ describe('fail closed (security round 1)', () => {
   /** The voice channel's stage with its join button, before any join. */
   async function openVoiceChannel() {
     await screen.findByRole('main');
-    window.history.pushState(null, '', `/c/${A}/${GENV}`);
-    act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+    act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
     return main().findByRole('button', { name: 'join voice' });
   }
   /** setSetting answers only when its turn is released, one by one, in the order sent. */

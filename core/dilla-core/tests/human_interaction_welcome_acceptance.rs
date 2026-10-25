@@ -340,6 +340,20 @@ fn seed_trust(
 
 #[test]
 fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch() {
+    authenticated_response_roundtrip(60);
+}
+
+#[test]
+fn capability_response_survives_authenticated_journal_restart_and_ack() {
+    authenticated_response_roundtrip(0);
+}
+
+#[test]
+fn provider_status_response_survives_authenticated_journal_restart_and_ack() {
+    authenticated_response_roundtrip(24);
+}
+
+fn authenticated_response_roundtrip(operation: u64) {
     let server_key = SigningKey::from_bytes(&[0xa7; 32]);
     let server_public = server_key.verifying_key().to_bytes();
     let mut human = enrolled_human(&server_public);
@@ -610,11 +624,14 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .bytes(&request_id)
         .bytes(&COMMUNITY)
         .null()
-        .uint(60)
+        .uint(operation)
         .null()
-        .null()
-        .array(1)
         .null();
+    if operation == 60 {
+        bot_request.array(1).null();
+    } else {
+        bot_request.array(0);
+    }
     let bot_request = bot_request.into_vec();
     // Music commands carry the authenticated voice channel in the protocol tuple. Mutations
     // also carry the caller's expected revision and short expiry, while the actor stays implicit.

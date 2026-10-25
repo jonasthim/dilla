@@ -1,6 +1,6 @@
 // web3.8, WS4 (item 11): the sidebar's actions moved. From an empty host, Ada (the owner) starts "Midgard Crew" and makes a
 // channel through the "+" in the channel list's header; Björn (a member with the default @everyone: create invite, no manage
-// channels) has no "+", opens server settings, lands on Invites, makes a link and copies it. At 390x844 the header has the search icon
+// channels) has no "+", opens server settings, selects Invites, makes a link and copies it. At 390x844 the header has the search icon
 // and the gear (no menu), a member reaches leave under settings, and the list header has the "+" for Ada only.
 import { expect, type Page } from '@playwright/test';
 import { addServerVia,
@@ -76,7 +76,8 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await railItem(page2, SERVER).click();
     await expect(page2).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
 
-    // Björn has no "+", and the sidebar has no invite link; "server settings" opens on Invites.
+    // Björn has no "+", and the sidebar has no invite link. Settings opens the first permitted section;
+    // the grouped navigation keeps Invites available to a member with create-invite permission.
     await expect(button(page2, 'admin.open')).toBeVisible({ timeout: WAIT });
     await expect(newChannelButton(page2)).toHaveCount(0);
     await expect(button(page2, 'invite.open')).toHaveCount(0);
@@ -85,7 +86,10 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     const settings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await expect(nav).toBeVisible({ timeout: WAIT });
+    await expect(nav.getByRole('button', { name: copy('workspace.members'), exact: true })).toHaveAttribute('aria-current', 'page');
+    await nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
     await expect(nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(page2).toHaveURL(/\/settings\/invites$/, { timeout: WAIT });
     await expectAccessible(page2, 'server settings, Invites, for a member');
 
     // He makes a link and copies it; in Chromium the clipboard is read back and compared to the URL the dialog shows.
