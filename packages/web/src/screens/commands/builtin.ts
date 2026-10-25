@@ -67,7 +67,7 @@ const entries: Record<string, CommandHandler> = {
     return success(COMMANDS_HELP);
   }),
   me: handler((invocation, context) => publish(context, `_${invocation.args.text}_`)),
-  shrug: handler((invocation, context) => publish(context, `¯\\_(ツ)_/¯${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
+  shrug: handler((invocation, context) => publish(context, `¯\\\\\\_(ツ)\\_/¯${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
   tableflip: handler((invocation, context) => publish(context, `(╯°□°)╯︵ ┻━┻${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
   unflip: handler((invocation, context) => publish(context, `┬─┬ ノ( ゜-゜ノ)${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
   code: handler((invocation, context) => {

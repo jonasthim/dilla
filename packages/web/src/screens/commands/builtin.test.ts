@@ -258,7 +258,7 @@ describe('builtin handler safety regressions', () => {
     const core = new FakeClient();
     const threadId = 'ab'.repeat(16);
     const cases: { id: string; args: Record<string, string>; text: string }[] = [
-      { id: 'shrug', args: {}, text: '¯\\_(ツ)_/¯' },
+      { id: 'shrug', args: {}, text: '¯\\\\\\_(ツ)\\_/¯' },
       { id: 'tableflip', args: {}, text: '(╯°□°)╯︵ ┻━┻' },
       { id: 'unflip', args: {}, text: '┬─┬ ノ( ゜-゜ノ)' },
       { id: 'code', args: { language: 'ts', text: 'let n = 1' }, text: '```ts\nlet n = 1\n```' },
