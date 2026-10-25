@@ -90,6 +90,44 @@ fn response_matches_request(
             && request.revision.is_some()
             && request.expires.is_some()
             && matches!(request.args, RequestArgs::AutoModerationPut { .. }))
+        || (request.operation == 3
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::None))
+        || (matches!(request.operation, 70 | 80)
+            && request.channel_id.is_none()
+            && request.revision == Some(0)
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::UtilityPayload(_)))
+        || (matches!(request.operation, 71 | 74 | 82 | 83)
+            && request.channel_id.is_none()
+            && (if matches!(request.operation, 74 | 82 | 83) {
+                request.revision.is_some() && request.expires.is_some()
+            } else {
+                request.revision.is_none() && request.expires.is_none()
+            })
+            && matches!(request.args, RequestArgs::UtilityId(_)))
+        || (request.operation == 72
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::PollList { .. }))
+        || (request.operation == 73
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::PollVote { .. }))
+        || (request.operation == 75
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::PollVoters { .. }))
+        || (matches!(request.operation, 81 | 84)
+            && request.channel_id.is_none()
+            && request.revision.is_none()
+            && request.expires.is_none()
+            && matches!(request.args, RequestArgs::Cursor(_)))
         || ((10..=11).contains(&request.operation)
             && request.channel_id.is_some()
             && request.revision.is_none()
@@ -600,20 +638,26 @@ mod tests {
                 || operation == 51
                 || operation == 52
                 || operation == 61
-                || operation == 63)
-                .then_some(if operation == 31 { 0 } else { 7 }),
+                || operation == 63
+                || matches!(operation, 70 | 73 | 74 | 80 | 82 | 83))
+            .then_some(if matches!(operation, 31 | 70 | 80) {
+                0
+            } else {
+                7
+            }),
             expires: (operation == 13
                 || operation == 2
                 || operation == 31
                 || operation == 51
                 || operation == 52
                 || operation == 61
-                || operation == 63)
-                .then_some(20),
+                || operation == 63
+                || matches!(operation, 70 | 73 | 74 | 80 | 82 | 83))
+            .then_some(20),
             args,
         }
         .encode_body()
-        .unwrap()
+        .unwrap_or_else(|e| panic!("encode request op {operation}: {e:?}"))
     }
     fn response(request_id: [u8; 16], community: [u8; 16]) -> String {
         Response {
@@ -861,5 +905,92 @@ mod tests {
             )
             .expect("query rolled-back capacity claim");
         assert_eq!(unclaimed, 0, "failed full-queue writes leave no receipt");
+    }
+    #[test]
+    fn utility_response_binding_accepts_only_the_new_exact_request_shapes() {
+        use crate::ids::ChannelId;
+        let poll_payload = {
+            let mut e = crate::cbor::Encoder::new();
+            e.array(7)
+                .uint(1)
+                .bytes(&[9; 16])
+                .null()
+                .text("Question?")
+                .array(2)
+                .text("One")
+                .text("Two")
+                .uint(0)
+                .uint(86400);
+            e.into_vec()
+        };
+        let reminder_payload = {
+            let mut e = crate::cbor::Encoder::new();
+            e.array(7)
+                .uint(1)
+                .uint(0)
+                .uint(3600)
+                .text("Take a break")
+                .text("UTC")
+                .null()
+                .null();
+            e.into_vec()
+        };
+        let cases = [
+            (3, RequestArgs::None),
+            (70, RequestArgs::UtilityPayload(poll_payload.clone())),
+            (71, RequestArgs::UtilityId(MsgId::from_bytes([9; 16]))),
+            (
+                72,
+                RequestArgs::PollList {
+                    channel: ChannelId::from_bytes([3; 16]),
+                    thread: None,
+                    cursor: None,
+                },
+            ),
+            (
+                73,
+                RequestArgs::PollVote {
+                    poll: MsgId::from_bytes([9; 16]),
+                    selected: vec![0x82, 0, 1],
+                },
+            ),
+            (74, RequestArgs::UtilityId(MsgId::from_bytes([9; 16]))),
+            (
+                75,
+                RequestArgs::PollVoters {
+                    poll: MsgId::from_bytes([9; 16]),
+                    option: 1,
+                    cursor: None,
+                },
+            ),
+            (80, RequestArgs::UtilityPayload(reminder_payload)),
+            (81, RequestArgs::Cursor(None)),
+            (82, RequestArgs::UtilityId(MsgId::from_bytes([9; 16]))),
+            (83, RequestArgs::UtilityId(MsgId::from_bytes([9; 16]))),
+            (84, RequestArgs::Cursor(None)),
+        ];
+        for (index, (op, args)) in cases.into_iter().enumerate() {
+            let req_id = [index as u8 + 1; 16];
+            let mutation = matches!(op, 70 | 73 | 74 | 80 | 82 | 83);
+            let request_body = crate::bot::Request {
+                request_id: MsgId::from_bytes(req_id),
+                community_id: CommunityId::from_bytes([2; 16]),
+                channel_id: None,
+                operation: op,
+                revision: mutation.then_some(if matches!(op, 70 | 80) { 0 } else { 7 }),
+                expires: mutation.then_some(20),
+                args,
+            }
+            .encode_body()
+            .unwrap_or_else(|e| panic!("encode utility op {op}: {e:?}"));
+            assert!(
+                response_matches_request(
+                    response(req_id, [2; 16]).as_bytes(),
+                    request_body.as_bytes(),
+                    &[2; 16]
+                ),
+                "op {op}"
+            );
+        }
     }
 }

@@ -56,6 +56,18 @@ Operation, arguments, channel requirement, mutation:
 - 62 automod.config.get: [], no channel, read
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
+- 3 capabilities: [], no channel, read
+- 70 poll.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, poll_id, channel_id, question, answers, multi, duration_seconds]`; channel_id is bstr16, question is 1..300 Unicode scalar values, answers are 2..10 unique nonblank strings of 1..100 Unicode scalar values, multi is 0 or 1, and duration is one of 3600, 14400, 28800, 86400, 259200, 604800 seconds. The encoded payload is capped at 1800 bytes so a result fits the response cap.
+- 71 poll.get: [poll_id], no channel, read
+- 72 poll.list: [channel_id, thread_id|null, cursor bstr(1..256)|null], no channel, read
+- 73 poll.vote: [poll_id, selected bstr], no channel, mutation. selected is canonical CBOR array of up to 10 unique option indexes 0..9; empty withdraws. The handler checks indexes against actual choices and enforces single choice.
+- 74 poll.close: [poll_id], no channel, mutation
+- 75 poll.voters: [poll_id, option 0..9, cursor bstr(1..256)|null], no channel, read
+- 80 reminder.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, when_kind, when, text, timezone, source_channel_id|null, source_thread_id|null]`; kind 0 is relative seconds 60..31536000, kind 1 is Unix seconds 1..253402300799; text is 1..1500 UTF8 bytes, timezone 1..100 UTF8 bytes, and a thread requires its source channel. Encoded payload is capped at 2200 bytes.
+- 81 reminder.list: [cursor bstr(1..256)|null], no channel, read
+- 82 reminder.cancel: [reminder_id], no channel, mutation
+- 83 reminder.dismiss: [reminder_id], no channel, mutation
+- 84 reminder.due: [cursor bstr(1..256)|null], no channel, read
 
 Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
 
