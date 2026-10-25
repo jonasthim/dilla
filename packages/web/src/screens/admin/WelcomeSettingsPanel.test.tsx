@@ -43,6 +43,23 @@ describe('welcome settings panel', () => {
     await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(COMMUNITY, '1'));
   });
 
+  it('treats the ACK lease as opaque when delivery ids have advanced', async () => {
+    let requestId: string | null = null;
+    const ack = vi.fn(async () => null);
+    const gateway: WelcomeSettingsGateway = {
+      request: async input => { requestId = input.requestId; return { requestId, upload: 'accepted' }; },
+      read: async () => ({ responses: requestId === null ? [] : [{ deliveryId: '101', sourceSeq: '101', communityId: COMMUNITY,
+        channelId: null, requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) }],
+        through: requestId === null ? null : '1', blocked: false }),
+      ack,
+    };
+    render(<WelcomeSettingsPanel communityId={COMMUNITY} serverName="Midgard" channels={[{ id: CHANNEL, name: 'general' }]}
+      enabled canManage gateway={gateway} />);
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await screen.findByDisplayValue(CONFIG.template);
+    await waitFor(() => expect(ack).toHaveBeenCalledWith(COMMUNITY, '1'));
+  });
+
   it('does not report a save as complete until the exact request receives a successful revised response', async () => {
     const { requestSpy, ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));

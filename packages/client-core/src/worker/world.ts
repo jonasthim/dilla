@@ -439,6 +439,7 @@ export function world(opts: {
     postModerationRemoval: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve()),
     postMessage: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve({ raw: encode([1n]), seq: 1n })),
     getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
+    getBotCommandStatus: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
     armAutoModerationGrant: vi.fn((_group: Uint8Array, _requestId: Uint8Array, _community: Uint8Array, _revision: bigint,
       _expires: bigint, _hash: Uint8Array, _stepUp: string) => Promise.resolve({ token: 'opaque-grant-token', expires: NOW_S + 60n })),
     configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>

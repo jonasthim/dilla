@@ -102,7 +102,7 @@ describe('the server bot settings', () => {
     await screen.findByText(en['admin.bot.automod.loaded']);
   });
 
-  it('keeps a settings response pending until earlier journal entries are acknowledged', async () => {
+  it('waits for the exact settings response and acknowledges its opaque lease', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
     const { fake, user } = setup(ready);
     let prefixOpen = false;
@@ -111,11 +111,11 @@ describe('the server bot settings', () => {
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
       if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
       if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? '4' : null, blocked: !prefixOpen, responses: [{
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? 'a'.repeat(32) : null, blocked: !prefixOpen, responses: prefixOpen ? [{
         deliveryId: '4', sourceSeq: '8', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
         communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
         data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
-      }] });
+      }] : [] });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));

@@ -150,11 +150,9 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
             if (response.status === 4) { setMustReload(true); setConfig(null); }
           }
           // Acknowledge in an effect after React commits the visible result.
-          const through = page.through === null ? null : BigInt(page.through);
-          const ackableRows = through === null ? [] : page.responses.filter(row => BigInt(row.deliveryId) <= through);
           const ownResponse = (row: WelcomeResponse): boolean => row.requestId === pending.requestId
             && row.communityId === pending.communityId && row.operation === pending.operation && row.channelId === null;
-          if (through !== null && page.through !== null && BigInt(response.deliveryId) <= through && ackableRows.every(ownResponse)) {
+          if (page.through !== null && ownResponse(response) && page.responses.every(ownResponse)) {
             setAckRetry(0);
             setAckThrough({ communityId: pending.communityId, through: page.through });
           }

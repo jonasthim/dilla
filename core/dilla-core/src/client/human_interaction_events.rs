@@ -363,7 +363,10 @@ fn fetch_rows(
     after: u64,
     limit: u64,
 ) -> Result<Vec<EventRow>, StorageError> {
-    let mut stmt = c.prepare("SELECT delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,disposition FROM app_human_interaction_events WHERE delivery_id>?1 ORDER BY delivery_id LIMIT ?2")?;
+    // Cursor pages are consumed by the worker, whose inbox bound is over unconsumed rows. Retained
+    // selectively consumed and suppressed tombstones must not consume that page budget or strand
+    // a later pending response behind an unrelated unconsumed row.
+    let mut stmt = c.prepare("SELECT delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,disposition FROM app_human_interaction_events WHERE delivery_id>?1 AND disposition=0 AND body IS NOT NULL ORDER BY delivery_id LIMIT ?2")?;
     stmt.query_map(params![after as i64, limit as i64], |r| {
         Ok(EventRow {
             delivery: r.get(0)?,
@@ -443,6 +446,7 @@ impl ClientCore {
         }
         let mut events = Vec::new();
         let mut next = after.max(ack as u64);
+        let page_was_short = rows.len() < limit as usize;
         for row in rows {
             let mut visible = row.body.is_some() && row.disposition == 0;
             let mut event_request = None;
@@ -565,6 +569,9 @@ impl ClientCore {
                 events.push(encode_event(&row, request));
             }
             next = row.delivery as u64;
+        }
+        if page_was_short {
+            next = high as u64;
         }
         let mut e = Encoder::new();
         e.array(3).array(events.len());
@@ -992,6 +999,41 @@ mod tests {
             )
             .expect("query rolled-back capacity claim");
         assert_eq!(unclaimed, 0, "failed full-queue writes leave no receipt");
+    }
+
+    #[test]
+    fn response_pages_skip_consumed_and_suppressed_tombstones() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open journal db");
+        connection
+            .execute_batch(super::super::schema::APP_HUMAN_INTERACTION_EVENTS)
+            .expect("create event journal");
+        for delivery in 1..=4_201i64 {
+            let disposition = if delivery == 1 || delivery == 4_201 {
+                0
+            } else if delivery % 2 == 0 {
+                2
+            } else {
+                1
+            };
+            let body: Option<&str> = (disposition == 0).then_some("pending");
+            connection.execute(
+                "INSERT INTO app_human_interaction_events(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,disposition) VALUES(?1,?2,?3,?4,?5,1,1,?6,?7,0,X'',zeroblob(32),?8,?9,?10)",
+                rusqlite::params![delivery, [3u8; 16].as_slice(), [4u8; 16].as_slice(), [6u8; 16].as_slice(), delivery, [7u8; 16].as_slice(), [8u8; 16].as_slice(), [5u8; 16].as_slice(), body, disposition],
+            ).expect("insert event row");
+        }
+        let page = super::fetch_rows(&connection, 0, 100).expect("fetch active event page");
+        assert_eq!(
+            page.len(),
+            2,
+            "tombstones must not consume the active page budget"
+        );
+        assert_eq!(page[0].delivery, 1);
+        assert_eq!(page[1].delivery, 4_201);
+        assert_eq!(
+            super::fetch_rows(&connection, 1, 100).expect("fetch after old pending row")[0]
+                .delivery,
+            4_201
+        );
     }
     #[test]
     fn utility_response_binding_accepts_only_the_new_exact_request_shapes() {

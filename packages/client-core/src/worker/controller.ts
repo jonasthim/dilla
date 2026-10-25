@@ -198,6 +198,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'getBotCommandStatus',
   'getBotSpotifyConfig',
   'patchBotProfile',
   'listModerationCases',
@@ -387,6 +388,7 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  getBotCommandStatus: ['communityId'],
   getBotSpotifyConfig: ['communityId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
@@ -504,6 +506,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'getBotCommandStatus',
     'getBotSpotifyConfig',
     'patchBotProfile',
     'listModerationCases',
@@ -792,10 +795,8 @@ function invalid(command: Record<string, unknown>): string | null {
     && (!Array.isArray(command.requestIds) || command.requestIds.length < 1 || command.requestIds.length > 100
       || command.requestIds.some((id: unknown) => typeof id !== 'string' || !ID.test(id))
       || new Set(command.requestIds).size !== command.requestIds.length)) return 'response request ids are invalid';
-  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
-    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
-  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
-    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
+  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
+  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -1002,7 +1003,7 @@ export class Controller {
   private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
   private readonly pendingHumanInteractionAcks = new Map<string, bigint[]>();
   private readonly pendingBotInteractionAcks = new Map<string, bigint[]>();
-  private interactionAckLeaseSequence = 0;
+  private interactionAckLeaseGeneration = 0;
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1413,6 +1414,7 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
       case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
@@ -1557,6 +1559,13 @@ export class Controller {
     return row === null ? null : botInstallationView(row);
   }
 
+  private async getBotCommandStatus(communityId: string) {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotCommandStatus(fromHex(communityId));
+    return row === null ? null : { installationId: toHex(row.installationId),
+      botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
+  }
+
   private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     return this.routes.getBotSpotifyConfig(fromHex(communityId));
@@ -1614,7 +1623,7 @@ export class Controller {
     const idArgument = (index: number): boolean =>
       (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
         || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
-        || operation === 71 && index === 0 || operation === 72 && index === 0 || operation === 73 && index === 0
+        || operation === 71 && index === 0 || operation === 72 && (index === 0 || index === 1) || operation === 73 && index === 0
         || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);
     const args: CborInput[] = command.args.map((value, index) =>
       idArgument(index) && typeof value === 'string'
@@ -1712,7 +1721,9 @@ export class Controller {
     if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
-    this.requireCore().humanInteractionEventsAckSelected(deliveryIds);
+    const core = this.requireCore();
+    core.humanInteractionEventsAckSelected(deliveryIds);
+    this.pendingBotInteractionAcks.delete(key);
     return null;
   }
 
@@ -1732,7 +1743,10 @@ export class Controller {
 
   private issueInteractionAckLease(communityHex: string, deliveryIds: bigint[], leases: Map<string, bigint[]>): string | null {
     if (deliveryIds.length === 0) return null;
-    const token = String(++this.interactionAckLeaseSequence);
+    let token: string;
+    do {
+      token = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    } while (leases.has(`${communityHex}:${token}`));
     const key = `${communityHex}:${token}`;
     leases.set(key, deliveryIds);
     while (leases.size > 128) {
@@ -1888,11 +1902,17 @@ export class Controller {
     if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
+    const core = this.requireCore();
+    const generation = this.interactionAckLeaseGeneration;
     const permissions = await this.routes.getPermissions(fromHex(communityHex));
+    if (generation !== this.interactionAckLeaseGeneration || core !== this.core || this.pendingHumanInteractionAcks.get(key) !== deliveryIds) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement is stale');
+    }
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
     }
-    this.requireCore().humanInteractionEventsAckSelected(deliveryIds);
+    core.humanInteractionEventsAckSelected(deliveryIds);
+    this.pendingHumanInteractionAcks.delete(key);
     return null;
   }
 
@@ -2127,6 +2147,7 @@ export class Controller {
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
+      if (this.core !== core) this.clearInteractionAckLeases();
       this.core = core;
       this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
@@ -4257,6 +4278,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.clearInteractionAckLeases();
     this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
@@ -4315,6 +4337,12 @@ export class Controller {
     this.calls.reset();
     this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfOffline = null;
     this.setConnection({ status: 'offline', generation: null });
+  }
+
+  private clearInteractionAckLeases(): void {
+    this.interactionAckLeaseGeneration++;
+    this.pendingBotInteractionAcks.clear();
+    this.pendingHumanInteractionAcks.clear();
   }
 
   // ---- channels and timelines ----

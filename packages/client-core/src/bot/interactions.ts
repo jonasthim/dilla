@@ -58,24 +58,72 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   const keyOf = (requestId: string, operation: number): string => `${requestId}:${operation}`;
   const resultCopy = (row: BotInteractionResult): BotInteractionResult => ({ ...row, data: row.data.slice() });
   let accountId = client.get?.('account')?.user?.id ?? null;
-  let installationId: string | null | undefined;
+  let authorizationScope: string | null = null;
+  let accessScopeKey: string | null = null;
   let scopeGeneration = 0;
   const clearScopedResults = (): void => { scopeGeneration++; results.clear(); uncertain.clear(); reads.clear(); requests.clear(); };
   const updateAccountScope = (): void => {
     const nextAccount = client.get?.('account')?.user?.id ?? null;
     if (nextAccount !== accountId) {
       accountId = nextAccount;
-      installationId = undefined;
+      authorizationScope = null;
       clearScopedResults();
     }
   };
-  client.subscribe?.('account', updateAccountScope);
-  const ensureInstallationScope = async (): Promise<void> => {
+  const localAccessScope = (): { key: string } => {
     updateAccountScope();
-    const installation = await client.call({ m: 'getBotInstallation', communityId }) as { id?: unknown } | null;
-    const nextInstallation = installation !== null && typeof installation.id === 'string' ? installation.id : null;
-    if (installationId !== undefined && nextInstallation !== installationId) clearScopedResults();
-    installationId = nextInstallation;
+    const account = client.get?.('account');
+    if (account?.phase !== 'ready' || account.user === null || account.deviceId === null) {
+      throw new Error('The Bot interaction transport requires a ready account and device.');
+    }
+    const communities = client.get?.('communities') ?? [];
+    if (!communities.some(row => row.id === communityId)) throw new Error('The Bot interaction community is no longer accessible.');
+    const permissions = client.get?.(`permissions:${communityId}`);
+    return { key: JSON.stringify([account.instance?.id ?? null, account.user.id, account.deviceId,
+      communities.find(row => row.id === communityId), permissions ?? null]) };
+  };
+  const observeAccessScope = (): void => {
+    try {
+      const current = localAccessScope().key;
+      if (accessScopeKey !== null && current !== accessScopeKey) clearScopedResults();
+      accessScopeKey = current;
+    } catch {
+      if (accessScopeKey !== null) clearScopedResults();
+      accessScopeKey = null;
+    }
+  };
+  client.subscribe?.('account', () => { updateAccountScope(); observeAccessScope(); });
+  const ensureInstallationScope = async (): Promise<number> => {
+    const before = localAccessScope();
+    const generation = scopeGeneration;
+    const installation = await client.call({ m: 'getBotCommandStatus', communityId }) as {
+      installationId?: unknown; botUserId?: unknown; state?: unknown; revision?: unknown;
+    } | null;
+    let after: { key: string };
+    try { after = localAccessScope(); }
+    catch (error) { clearScopedResults(); accessScopeKey = null; authorizationScope = null; throw error; }
+    if (generation !== scopeGeneration || before.key !== after.key) {
+      clearScopedResults();
+      throw new Error('The Bot interaction account or community access changed during authorization.');
+    }
+    const installKey = installation === null ? null : JSON.stringify([installation.installationId, installation.botUserId,
+      installation.state, installation.revision]);
+    const nextScope = JSON.stringify([after.key, installKey]);
+    if (authorizationScope !== null && nextScope !== authorizationScope) clearScopedResults();
+    authorizationScope = nextScope;
+    accessScopeKey = after.key;
+    if (installation === null || typeof installation.installationId !== 'string' || !ID.test(installation.installationId)
+      || installation.state !== 3 || installation.botUserId !== null && (typeof installation.botUserId !== 'string' || !ID.test(installation.botUserId))) {
+      throw new Error('The Bot interaction installation is not active.');
+    }
+    return scopeGeneration;
+  };
+  const assertRequestScope = (generation: number): void => {
+    const current = localAccessScope().key;
+    if (generation !== scopeGeneration || current !== accessScopeKey) {
+      clearScopedResults();
+      throw new BotInteractionUncertainError('', 'The Bot interaction account or community access changed while the request was pending.');
+    }
   };
   const rememberResult = (key: string, result: BotInteractionResult): void => {
     results.delete(key);
@@ -108,8 +156,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
   };
 
   const read = async (requestId: string, operation: number): Promise<BotInteractionResult | null> => {
-    await ensureInstallationScope();
-    const generation = scopeGeneration;
+    const generation = await ensureInstallationScope();
     const key = keyOf(requestId, operation);
     const cached = results.get(key);
     if (cached !== undefined) return resultCopy(cached);
@@ -117,14 +164,16 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     if (pending !== undefined) return pending.then(row => row === null ? null : resultCopy(row));
     const task = readOnce(requestId, operation, generation);
     reads.set(key, task);
-    try { return await task; }
+    try {
+      const result = await task;
+      if (result !== null && await ensureInstallationScope() !== generation) return null;
+      return result;
+    }
     finally { if (reads.get(key) === task) reads.delete(key); }
   };
 
-  const executeRequest = async (input: BotInteractionRequest, requestId: string): Promise<BotInteractionResult> => {
+  const executeRequest = async (input: BotInteractionRequest, requestId: string, generation: number): Promise<BotInteractionResult> => {
     if (!ID.test(requestId)) throw new Error('Invalid Bot interaction request id.');
-    await ensureInstallationScope();
-    const generation = scopeGeneration;
     const send = client.call({ m: 'humanInteractionRequest', communityId,
       channelId: input.channelId ?? null, requestId, operation: input.operation, args: input.args,
       revision: input.revision ?? null }) as Promise<{ requestId: string; upload: string }>;
@@ -144,7 +193,16 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     while (Date.now() < deadline) {
       if (generation !== scopeGeneration) throw new BotInteractionUncertainError(requestId, 'The Bot installation or account changed while the request was pending.');
       const result = await readOnce(requestId, input.operation, generation);
-      if (result !== null) return result;
+      if (result !== null) {
+        try {
+          if (await ensureInstallationScope() !== generation) throw new Error('scope changed');
+        } catch {
+          throw new BotInteractionUncertainError(requestId, 'The Bot installation or account changed while the request was pending.');
+        }
+        try { assertRequestScope(generation); }
+        catch { throw new BotInteractionUncertainError(requestId, 'The Bot interaction account or community access changed while the request was pending.'); }
+        return result;
+      }
       const remaining = deadline - Date.now();
       if (remaining > 0) await new Promise<void>(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL_MS, remaining)));
     }
@@ -155,27 +213,30 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     const requestId = input.requestId ?? [...crypto.getRandomValues(new Uint8Array(16))]
       .map(byte => byte.toString(16).padStart(2, '0')).join('');
     const key = keyOf(requestId, input.operation);
-    const prior = results.get(key);
-    if (prior !== undefined) return Promise.resolve(resultCopy(prior));
-    const pending = requests.get(key);
-    if (pending !== undefined) return pending.then(resultCopy);
-    const failure = uncertain.get(key);
-    if (failure !== undefined) return Promise.reject(failure);
-    const task = executeRequest(input, requestId);
-    requests.set(key, task);
-    void task.catch(error => {
-      if (error instanceof BotInteractionUncertainError || error instanceof BotInteractionRejectedError) {
-        uncertain.delete(key);
-        uncertain.set(key, error);
-        while (uncertain.size > 128) {
-          const oldest = uncertain.keys().next().value;
-          if (oldest === undefined) break;
-          uncertain.delete(oldest);
+    return (async () => {
+      const generation = await ensureInstallationScope();
+      const prior = results.get(key);
+      if (prior !== undefined) return resultCopy(prior);
+      const pending = requests.get(key);
+      if (pending !== undefined) return pending.then(resultCopy);
+      const failure = uncertain.get(key);
+      if (failure !== undefined) throw failure;
+      const task = executeRequest(input, requestId, generation);
+      requests.set(key, task);
+      void task.catch(error => {
+        if (error instanceof BotInteractionUncertainError || error instanceof BotInteractionRejectedError) {
+          uncertain.delete(key);
+          uncertain.set(key, error);
+          while (uncertain.size > 128) {
+            const oldest = uncertain.keys().next().value;
+            if (oldest === undefined) break;
+            uncertain.delete(oldest);
+          }
         }
-      }
-    });
-    void task.finally(() => { if (requests.get(key) === task) requests.delete(key); }).catch(() => undefined);
-    return task.then(resultCopy);
+      });
+      void task.finally(() => { if (requests.get(key) === task) requests.delete(key); }).catch(() => undefined);
+      return task.then(resultCopy);
+    })();
   };
 
   const adapter: BotInteractionClient = { request, read };
