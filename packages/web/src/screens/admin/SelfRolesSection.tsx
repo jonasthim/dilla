@@ -144,7 +144,7 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
     let canceled = false; let timer: number | undefined;
     const poll = async (): Promise<void> => {
       try {
-        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [31] }) as {
+        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [31], requestIds: [pendingPanel.requestId] }) as {
           through: string | null; responses: PanelResponse[] };
         if (canceled) return;
         const row = page.responses.find(item => item.requestId === pendingPanel.requestId && item.communityId === communityId

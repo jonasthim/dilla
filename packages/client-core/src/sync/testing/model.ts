@@ -1325,6 +1325,10 @@ export class ModelCore implements CorePort {
     void through;
     throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
   }
+  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void {
+    void deliveryIds;
+    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
+  }
 
   // --- ordered processing (L-CORE-08) ---
 

@@ -154,7 +154,7 @@ describe('welcome settings panel', () => {
 
     expect(await screen.findByDisplayValue(configB.template)).toBeInTheDocument();
     expect(ackSpy).toHaveBeenCalledWith(communityB, '1');
-    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2]);
+    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2], [requestB.requestId]);
   });
 
   it('never acknowledges a pending response cursor against a newly selected community', async () => {

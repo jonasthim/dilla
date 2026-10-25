@@ -1044,13 +1044,103 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         1
     );
     human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE app_trust_pins SET changed_umk=zeroblob(32) WHERE user_id=?1",
+            [BOT_USER.as_slice()],
+        )
+        .expect("revoke the Bot sender trust decision");
+    let after_trust_revocation = human
         .core
-        .human_interaction_events_ack(3)
-        .expect("ack response");
+        .human_interaction_events_read(0, 10)
+        .expect("recheck trust when rereading the durable response");
+    assert_eq!(
+        decode_strict(&after_trust_revocation, |d| {
+            d.array(3)?;
+            let count = d.array_len()?;
+            d.uint()?;
+            d.uint()?;
+            Ok(count)
+        })
+        .expect("revoked response page shape"),
+        0,
+        "trust revocation suppresses a previously readable response"
+    );
+    {
+        let probe = human.probe.lock().expect("connection");
+        probe.execute(
+            "INSERT INTO app_human_interaction_events(group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) SELECT group_id,community_id,request_id,source_seq+1,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,'pending' FROM app_human_interaction_events WHERE delivery_id=3",
+            [],
+        ).expect("seed a later unconsumed response row");
+        probe
+            .execute(
+                "UPDATE app_human_interaction_event_state SET high_water=4 WHERE singleton=1",
+                [],
+            )
+            .expect("seed journal high water");
+    }
+    let empty_selection = Encoder::new();
+    assert!(
+        human
+            .core
+            .human_interaction_events_ack_selected(&empty_selection.into_vec())
+            .is_err()
+    );
+    let duplicate_selection = {
+        let mut e = Encoder::new();
+        e.array(2).uint(3).uint(3);
+        e.into_vec()
+    };
+    assert!(
+        human
+            .core
+            .human_interaction_events_ack_selected(&duplicate_selection)
+            .is_err()
+    );
+    let first_selection = {
+        let mut e = Encoder::new();
+        e.array(1).uint(3);
+        e.into_vec()
+    };
     human
         .core
-        .human_interaction_events_ack(3)
-        .expect("repeated response ack is idempotent");
+        .human_interaction_events_ack_selected(&first_selection)
+        .expect("selectively consume response");
+    human
+        .core
+        .human_interaction_events_ack_selected(&first_selection)
+        .expect("repeated selective consume is idempotent");
+    let (ack, selected_exists, later_body): (i64, i64, Option<String>) = human.probe.lock().expect("connection").query_row(
+        "SELECT (SELECT ack_delivery_id FROM app_human_interaction_event_state WHERE singleton=1),
+          (SELECT count(*) FROM app_human_interaction_events WHERE delivery_id=3),
+          (SELECT body FROM app_human_interaction_events WHERE delivery_id=4)",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).expect("read selective acknowledgement state");
+    assert_eq!(selected_exists, 0, "the named consumed response was pruned");
+    assert_eq!(
+        later_body.as_deref(),
+        Some("pending"),
+        "the later unselected response body remains durable"
+    );
+    assert_eq!(
+        ack, 3,
+        "the global prefix advances only through the consumed response"
+    );
+    let final_selection = {
+        let mut e = Encoder::new();
+        e.array(1).uint(4);
+        e.into_vec()
+    };
+    human
+        .core
+        .human_interaction_events_ack_selected(&final_selection)
+        .expect("consume remaining response");
+    human
+        .core
+        .human_interaction_events_ack(4)
+        .expect("compatibility cleanup for preceding unconsumed rows");
     human = human.reopen();
     let receipts: i64 = human
         .probe

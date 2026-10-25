@@ -27,9 +27,9 @@ export type Command =
   | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
   | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
       args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
-  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[] }
+  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
   | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
-  | { m: 'readHumanInteractionResponses'; communityId: string }
+  | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }
   | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }

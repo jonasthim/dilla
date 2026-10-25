@@ -68,7 +68,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   const poll = async () => {
     if (polling !== null) return polling;
     polling = (async () => {
-      const result = await client.call({ m: 'readBotInteractionResponses', communityId, operations: MUSIC_OPERATIONS }) as ReadResult;
+      const result = await client.call({ m: 'readBotInteractionResponses', communityId, operations: MUSIC_OPERATIONS,
+        requestIds: [...waiters.keys()] }) as ReadResult;
       // Apply every returned event before acknowledging the contiguous prefix. The worker leaves any
       // interleaved operation/community unacknowledged, so this reader never advances past another consumer.
       for (const response of result.responses) {

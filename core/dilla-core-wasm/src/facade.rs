@@ -996,6 +996,14 @@ impl CoreHandle {
     pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
         self.with_core(|c| c.human_interaction_events_ack(through))
     }
+    /// Consumes only the human interaction response delivery ids explicitly selected by the
+    /// authenticated worker, encoded as deterministic CBOR `uint[]`.
+    pub fn human_interaction_events_ack_selected(
+        &self,
+        delivery_ids: &[u8],
+    ) -> Result<(), JsError> {
+        self.with_core(|c| c.human_interaction_events_ack_selected(delivery_ids))
+    }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {
         let msg_id = js_fixed_arg::<16>("msg_id", msg_id)?;

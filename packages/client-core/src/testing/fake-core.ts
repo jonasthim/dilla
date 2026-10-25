@@ -410,6 +410,7 @@ export class FakeCore implements CorePort {
   }
   humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage { return this.notModelled('humanInteractionEventsRead', after, limit); }
   humanInteractionEventsAck(through: bigint): void { return this.notModelled('humanInteractionEventsAck', through); }
+  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void { return this.notModelled('humanInteractionEventsAckSelected', deliveryIds); }
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult { return this.notModelled('groupApply', groupId, handshakes, messages, through); }
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array { return this.notModelled('commitBuild', groupId, proposalsBody); }
   commitConfirm(groupId: Id): ApplyResult { return this.notModelled('commitConfirm', groupId); }

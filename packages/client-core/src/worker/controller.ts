@@ -17,7 +17,7 @@ import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
+  type HumanInteractionEvent, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
@@ -744,13 +744,16 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
+      || !(operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 23 || operation === 31
+        || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
+        || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
     const music = operation >= 10 && operation <= 23;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
     if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1
-      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 ? 2 : operation === 61 ? 3 : 0;
+    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
+      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
+        : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
     if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
     if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
     if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
@@ -773,14 +776,22 @@ function invalid(command: Record<string, unknown>): string | null {
       || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
     if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
     if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
+      || operation === 82 || operation === 83;
     const revision = command.revision;
     if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
       : revision !== null) return 'interaction revision is invalid';
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
-    || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 1 || op === 2 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+    || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
+    || !(op === 1 || op === 2 || op === 3 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52
+      || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
+    || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+  if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined
+    && (!Array.isArray(command.requestIds) || command.requestIds.length < 1 || command.requestIds.length > 100
+      || command.requestIds.some((id: unknown) => typeof id !== 'string' || !ID.test(id))
+      || new Set(command.requestIds).size !== command.requestIds.length)) return 'response request ids are invalid';
   if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
     || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
   if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
@@ -989,8 +1000,9 @@ export class Controller {
   private core: CorePort | null = null;
   private readonly acceptedHumanInteractionSends = new Set<string>();
   private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
-  private readonly pendingHumanInteractionAcks = new Map<string, string>();
-  private readonly pendingBotInteractionAcks = new Map<string, string>();
+  private readonly pendingHumanInteractionAcks = new Map<string, bigint[]>();
+  private readonly pendingBotInteractionAcks = new Map<string, bigint[]>();
+  private interactionAckLeaseSequence = 0;
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1406,9 +1418,9 @@ export class Controller {
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
-      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations));
+      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations, command.requestIds));
       case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
-      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId);
+      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId, command.requestIds);
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
@@ -1596,10 +1608,16 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
-    const args: CborInput[] = command.args.map((value, index) =>
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
+      || operation === 82 || operation === 83;
+    const idArgument = (index: number): boolean =>
       (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
-        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0) && typeof value === 'string'
+        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
+        || operation === 71 && index === 0 || operation === 72 && index === 0 || operation === 73 && index === 0
+        || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);
+    const args: CborInput[] = command.args.map((value, index) =>
+      idArgument(index) && typeof value === 'string'
         ? fromHex(value) : value);
     const sync = this.requireSync();
     return sync.runOnGroup(groupId, async () => {
@@ -1666,15 +1684,17 @@ export class Controller {
     });
   }
 
-  private readBotInteractionResponses(communityHex: string, operations: readonly number[]): {
+  private readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): {
     responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
       status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
     through: string | null; blocked: boolean;
   } {
     if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const allowed = new Set(operations);
-    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
-    const responses = page.events.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)).map(event => {
+    const requested = requestIds === undefined ? null : new Set(requestIds);
+    const rows = this.readAllHumanInteractionEvents();
+    const responses = rows.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100).map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
@@ -1682,29 +1702,45 @@ export class Controller {
         status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
         sourceSeq: String(event.sourceSeq) };
     });
-    const firstBlocked = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !allowed.has(event.operation));
-    const ackable = firstBlocked < 0 ? page.events : page.events.slice(0, firstBlocked);
-    const throughValue = firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
-    const through = throughValue > 0n ? String(throughValue) : null;
-    if (through !== null) {
-      this.pendingBotInteractionAcks.set(`${communityHex}:${through}`, through);
-      while (this.pendingBotInteractionAcks.size > 32) {
-        const oldest = this.pendingBotInteractionAcks.keys().next().value;
-        if (oldest === undefined) break;
-        this.pendingBotInteractionAcks.delete(oldest);
-      }
-    }
-    return { responses, through, blocked: firstBlocked >= 0 };
+    const through = this.issueInteractionAckLease(communityHex, responses.map(row => BigInt(row.deliveryId)), this.pendingBotInteractionAcks);
+    return { responses, through, blocked: false };
   }
 
   private ackBotInteractionResponses(communityHex: string, through: string): null {
     const key = `${communityHex}:${through}`;
-    if (!this.listed(communityHex) || this.pendingBotInteractionAcks.get(key) !== through) {
+    const deliveryIds = this.pendingBotInteractionAcks.get(key);
+    if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
-    this.requireCore().humanInteractionEventsAck(BigInt(through));
-    this.pendingBotInteractionAcks.delete(key);
+    this.requireCore().humanInteractionEventsAckSelected(deliveryIds);
     return null;
+  }
+
+  private readAllHumanInteractionEvents(): HumanInteractionEvent[] {
+    const events: HumanInteractionEvent[] = [];
+    let cursor = 0n;
+    let targetHighWater: bigint | null = null;
+    for (let pageNo = 0; pageNo < 41; pageNo++) {
+      const page = this.requireCore().humanInteractionEventsRead(cursor, 100);
+      targetHighWater ??= page.highWater;
+      events.push(...page.events.filter(event => event.deliveryId <= targetHighWater!));
+      if (page.next <= cursor || page.next >= targetHighWater) break;
+      cursor = page.next;
+    }
+    return events;
+  }
+
+  private issueInteractionAckLease(communityHex: string, deliveryIds: bigint[], leases: Map<string, bigint[]>): string | null {
+    if (deliveryIds.length === 0) return null;
+    const token = String(++this.interactionAckLeaseSequence);
+    const key = `${communityHex}:${token}`;
+    leases.set(key, deliveryIds);
+    while (leases.size > 128) {
+      const oldest = leases.keys().next().value;
+      if (oldest === undefined) break;
+      leases.delete(oldest);
+    }
+    return token;
   }
 
   /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
@@ -1777,7 +1813,7 @@ export class Controller {
       return { requestId: requestHex, status: 'accepted' };
     });
   }
-  private async readHumanInteractionResponses(communityHex: string): Promise<{
+  private async readHumanInteractionResponses(communityHex: string, requestIds?: readonly string[]): Promise<{
     authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
       cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
         reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean; nextCursor: string | null }[];
@@ -1791,15 +1827,11 @@ export class Controller {
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       return { authorized: false, responses: [], through: null, blocked: false };
     }
-    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    const requested = requestIds === undefined ? null : new Set(requestIds);
+    const rows = this.readAllHumanInteractionEvents();
     const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
-    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !isModerationRead(event.operation));
-    // The journal ack is global, so this screen may consume only the contiguous prefix for its
-    // community. Events for another server stay pending and are handled in that server's Bot tab.
-    // The journal is global and read pages are bounded. Show only this community's decoded
-    // responses even when another community occurs earlier in the page; only the contiguous
-    // current-community prefix is eligible for acknowledgement below.
-    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation));
+    const visibleEvents = rows.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
     const responses = visibleEvents.map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, communityId, event.requestId);
@@ -1846,32 +1878,21 @@ export class Controller {
       }
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
     });
-    const ackableEvents = firstOtherCommunity < 0 ? page.events : page.events.slice(0, firstOtherCommunity);
-    const throughValue = firstOtherCommunity < 0 ? page.next : ackableEvents.at(-1)?.deliveryId ?? 0n;
-    const through = throughValue > 0n ? String(throughValue) : null;
-    if (through !== null) {
-      const key = `${communityHex}:${through}`;
-      this.pendingHumanInteractionAcks.set(key, through);
-      while (this.pendingHumanInteractionAcks.size > 32) {
-        const oldest = this.pendingHumanInteractionAcks.keys().next().value;
-        if (oldest === undefined) break;
-        this.pendingHumanInteractionAcks.delete(oldest);
-      }
-    }
-    return { authorized: true, responses, through, blocked: firstOtherCommunity >= 0 };
+    const through = this.issueInteractionAckLease(communityHex, responses.map(row => BigInt(row.deliveryId)), this.pendingHumanInteractionAcks);
+    return { authorized: true, responses, through, blocked: false };
   }
 
   private async ackHumanInteractionResponses(communityHex: string, through: string): Promise<null> {
     const key = `${communityHex}:${through}`;
-    if (!this.listed(communityHex) || this.pendingHumanInteractionAcks.get(key) !== through) {
+    const deliveryIds = this.pendingHumanInteractionAcks.get(key);
+    if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
     const permissions = await this.routes.getPermissions(fromHex(communityHex));
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
     }
-    this.requireCore().humanInteractionEventsAck(BigInt(through));
-    this.pendingHumanInteractionAcks.delete(key);
+    this.requireCore().humanInteractionEventsAckSelected(deliveryIds);
     return null;
   }
 

@@ -1,7 +1,7 @@
 use super::{ClientCore, ClientError, Own, trust};
 use crate::{
     bot::{Request, RequestArgs, Response},
-    cbor::Encoder,
+    cbor::{Encoder, decode_strict},
     identity::{CredentialIdentity, Kind, SignerTier, Tier},
     mls::{DillaGroup, GroupKind, StorageError},
 };
@@ -608,6 +608,93 @@ impl ClientCore {
             c.execute("DELETE FROM app_human_interaction_events WHERE delivery_id<=?1", [through as i64])?;
             Ok(())
         })?))
+    }
+
+    /// Consumes exactly the delivered rows named by the worker. The journal is shared by every
+    /// screen, so a consumer may not acknowledge an arbitrary prefix. Rows stay durable until
+    /// selected, and the global cursor advances only over a contiguous consumed prefix.
+    pub fn human_interaction_events_ack_selected(
+        &mut self,
+        delivery_ids: &[u8],
+    ) -> Result<(), ClientError> {
+        let own = self.own()?;
+        if own.kind != Kind::User.as_u8() {
+            return Err(ClientError::new(
+                "E_CORE_INPUT",
+                "invalid human interaction event acknowledgement identity",
+            ));
+        }
+        let ids = decode_strict(delivery_ids, |d| {
+            let count = d.array_len()?;
+            if !(1..=100).contains(&count) {
+                return Err(crate::cbor::CborError::WrongArrayLen {
+                    expected: 1,
+                    actual: count,
+                });
+            }
+            let mut ids = Vec::with_capacity(count);
+            for _ in 0..count {
+                ids.push(d.uint()?);
+            }
+            Ok(ids)
+        })
+        .map_err(|_| ClientError::new("E_CORE_INPUT", "invalid selected event ids"))?;
+        let mut unique = std::collections::HashSet::with_capacity(ids.len());
+        if ids
+            .iter()
+            .any(|id| *id == 0 || *id > i64::MAX as u64 || !unique.insert(*id))
+        {
+            return Err(ClientError::new(
+                "E_CORE_INPUT",
+                "invalid selected event ids",
+            ));
+        }
+
+        self.write(|_, u| {
+            Ok(u.with_conn(|c| {
+                let (ack, high): (i64, i64) = c.query_row(
+                    "SELECT ack_delivery_id,high_water FROM app_human_interaction_event_state WHERE singleton=1",
+                    [], |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                if ids.iter().any(|id| *id > high as u64) {
+                    return Err(StorageError::Sqlite("selected event id exceeds high water".into()));
+                }
+                for id in &ids {
+                    if *id <= ack as u64 { continue; }
+                    c.execute(
+                        "UPDATE app_human_interaction_events SET body=NULL,disposition=2 WHERE delivery_id=?1 AND disposition<>2",
+                        [*id as i64],
+                    )?;
+                    if c.changes() == 0 {
+                        let exists: bool = c.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM app_human_interaction_events WHERE delivery_id=?1 AND disposition=2)",
+                            [*id as i64], |r| r.get(0),
+                        )?;
+                        if !exists {
+                            return Err(StorageError::Sqlite("selected event id is not in the journal".into()));
+                        }
+                    }
+                }
+                let mut through = ack as u64;
+                while through < high as u64 {
+                    let next = through + 1;
+                    let consumed: Option<i64> = c.query_row(
+                        "SELECT disposition FROM app_human_interaction_events WHERE delivery_id=?1",
+                        [next as i64], |r| r.get(0),
+                    ).optional()?;
+                    if consumed.is_some_and(|disposition| disposition != 0) {
+                        through = next;
+                    } else {
+                        break;
+                    }
+                }
+                if through > ack as u64 {
+                    c.execute("UPDATE app_human_interaction_event_state SET ack_delivery_id=?1 WHERE singleton=1", [through as i64])?;
+                    c.execute("DELETE FROM app_human_interaction_events WHERE delivery_id<=?1", [through as i64])?;
+                }
+                Ok(())
+            })?)
+        })
     }
 }
 

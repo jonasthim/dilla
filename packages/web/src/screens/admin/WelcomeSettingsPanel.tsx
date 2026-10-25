@@ -18,7 +18,7 @@ type WelcomeResponse = {
 export interface WelcomeSettingsGateway {
   request(input: { communityId: string; channelId: null; requestId: string; operation: 1 | 2;
     args: readonly (string | number | Uint8Array | null)[]; revision: string | null }): Promise<{ requestId: string; upload: Upload }>;
-  read(communityId: string, operations: readonly number[]): Promise<{ responses: WelcomeResponse[]; through: string | null; blocked: boolean }>;
+  read(communityId: string, operations: readonly number[], requestIds: readonly string[]): Promise<{ responses: WelcomeResponse[]; through: string | null; blocked: boolean }>;
   ack(communityId: string, through: string): Promise<null>;
 }
 
@@ -119,7 +119,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
     let timer: number | undefined;
     const poll = async (): Promise<void> => {
       try {
-        const page = await gateway.read(communityId, [1, 2]);
+        const page = await gateway.read(communityId, [1, 2], [pending.requestId]);
         if (canceled) return;
         const response = page.responses.find(row => row.requestId === pending.requestId && row.communityId === pending.communityId
           && row.operation === pending.operation && row.channelId === null);

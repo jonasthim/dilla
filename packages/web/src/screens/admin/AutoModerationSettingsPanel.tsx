@@ -44,7 +44,7 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
   useEffect(() => {
     if (phase !== 'waiting' || request === null || requestOp !== 62) return; const g=generation.current; let canceled=false; let timer:number|undefined;
     const poll=async ():Promise<void> => { try {
-      const page=await client.call({m:'readBotInteractionResponses',communityId,operations:[62]}) as {responses:Row[];through:string|null;blocked:boolean};
+      const page=await client.call({m:'readBotInteractionResponses',communityId,operations:[62],requestIds:[request]}) as {responses:Row[];through:string|null;blocked:boolean};
       if(canceled||g!==generation.current||current.current!==communityId)return;
       const row=page.responses.find(r=>r.requestId===request&&r.communityId===communityId&&r.operation===62);
       if(row!==undefined&&(page.through===null||BigInt(page.through)<BigInt(row.deliveryId))){timer=window.setTimeout(()=>void poll(),1000);return;}
@@ -81,7 +81,7 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
     }catch{setPhase('idle');setError(t('admin.bot.automod.prepareError'));}
   };
   useEffect(()=>{if(phase!=='waiting'||request===null||requestOp!==63)return;const g=generation.current;let canceled=false;let timer:number|undefined;
-    const poll=async():Promise<void>=>{try{const page=await client.call({m:'readBotInteractionResponses',communityId,operations:[63]}) as {responses:Row[];through:string|null};
+    const poll=async():Promise<void>=>{try{const page=await client.call({m:'readBotInteractionResponses',communityId,operations:[63],requestIds:[request]}) as {responses:Row[];through:string|null};
       if(canceled||g!==generation.current||current.current!==communityId)return;
       const row=page.responses.find(r=>r.requestId===request&&r.communityId===communityId&&r.operation===63);
       if(row!==undefined&&(page.through===null||BigInt(page.through)<BigInt(row.deliveryId))){timer=window.setTimeout(()=>void poll(),1000);return;}

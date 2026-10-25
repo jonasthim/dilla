@@ -157,6 +157,7 @@ export interface CorePort {
   humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
   humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
   humanInteractionEventsAck(through: bigint): void;
+  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void;
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array;
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
@@ -319,6 +320,7 @@ export interface CoreHandle {
       human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
       human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
       human_interaction_events_ack(through: bigint): void;
+      human_interaction_events_ack_selected(delivery_ids: Uint8Array): void;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
       commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
       commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -665,6 +667,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
       },
     )),
     humanInteractionEventsAck: (through) => call(() => handle.human_interaction_events_ack(through)),
+    humanInteractionEventsAckSelected: (deliveryIds) => call(() => handle.human_interaction_events_ack_selected(encode(deliveryIds))),
     groupApply: (groupId, handshakes, messages, through) => call(() => decoded('groupApply', handle.group_apply(groupId, handshakes, messages, through), readApply)),
     commitBuild: (groupId, proposalsBody) => call(() => handle.commit_build(groupId, proposalsBody)),
     commitConfirm: (groupId) => call(() => decoded('commitConfirm', handle.commit_confirm(groupId), readApply)),
