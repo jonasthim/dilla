@@ -313,10 +313,12 @@ describe('SettingsFrame', () => {
 // jsdom computes no layout, so the frame geometry assertions below read the layout rules themselves.
 describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
   let stacked = '';
+  let base = '';
   beforeAll(async () => {
     const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
     const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
     stacked = fs.readFileSync(`${cwd}/src/SettingsFrame/SettingsFrame.css`, 'utf8');
+    base = fs.readFileSync(`${cwd}/src/styles/base.css`, 'utf8');
   });
 
   it('keeps the sidebar and content as independent columns with their own scroll regions', () => {
@@ -334,6 +336,14 @@ describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
     expect(css).toContain('width: min(100%, 64rem)');
     expect(css).toMatch(/\.d-settings-frame \{[^}]*width: 100vw;[^}]*height: 100dvh;/);
     expect(css).toMatch(/\.d-settings-frame__panel \{[^}]*max-width: 80rem;/);
+  });
+
+  it('leaves fullscreen and phone scroll ownership to SettingsFrame instead of legacy container overrides', () => {
+    expect(base).not.toContain('@container d-settings');
+    expect(base).not.toMatch(/\.d-settings-frame[^{}]*\[data-modeless\]/);
+    expect(base).toContain('.d-settings-frame[data-layout="phone"] .d-settings-row, [data-phone] .d-settings-row');
+    expect(stacked).toMatch(/\.d-settings-frame__body \{[^}]*overflow-y: auto;/);
+    expect(stacked).toMatch(/\.d-settings-frame\[data-layout="phone"\] \.d-settings-frame__nav \{[^}]*overflow-y: auto;/);
   });
 });
 

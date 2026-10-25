@@ -117,28 +117,6 @@
 }
 /* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */
 .d-root .d-app-shell__aside[tabindex="-1"]:focus-visible { outline: none; }
-/* The settings frame (L-UI-24). Under 45rem of viewport it fills the viewport; under 45rem of its own
-   width the navigation stacks above the section. The second is a container query on the frame, so a
-   story can show it at any viewport through --d-settings-w and --d-settings-h. The frame's container
-   declaration lives here with the two rules that read it. */
-.d-settings-frame { container: d-settings / inline-size; }
-@media (max-width: 44.99rem) {
-  .d-settings-frame.d-settings-frame { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
-}
-/* web3.7.1: on a phone the frame is a non-modal page that ends above the tab bar (--d-tabbar-h, set on <html> by the shell), below the ring. */
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-settings-frame.d-settings-frame[data-modeless] { position: fixed; inset: calc(var(--d-vvtop, 0px) + var(--d-ring-h, 0px) + var(--d-banner-h, 0px)) 0 auto 0; width: 100%; height: calc(var(--d-vvh, 100dvh) - var(--d-tabbar-h, 0px) - var(--d-ring-h, 0px) - var(--d-banner-h, 0px)); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; z-index: 20; }
-}
-@container d-settings (max-width: 44.99rem) {
-  /* A11Y-DESIGN-01: stacked, the whole panel scrolls as one column (at 320 × 256, 400 % zoom, a fixed navigation left
-     the section a two-line strip); the navigation and the section grow with their content. */
-  .d-settings-frame .d-settings-frame__panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; overflow-y: auto; }
-  .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); overflow: visible; min-height: auto; }
-  .d-settings-frame .d-settings-frame__pane { min-height: auto; }
-  .d-settings-frame .d-settings-frame__body { overflow: visible; }
-  /* R17: a narrow frame stacks the label over a full-width control, as a phone does. */
-  .d-settings-frame .d-settings-row { grid-template-columns: minmax(0, 1fr); }
-}
 /* web3.9 (R17, H5, I6): the settings frame and its rows on a phone layout. The frame is a dialog, so it carries its own data-layout. */
 .d-settings-frame[data-layout="phone"] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
 .d-settings-frame[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
