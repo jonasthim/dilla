@@ -480,7 +480,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'admin.nav.bot').click();
   await settings.getByRole('button', { name: copy('admin.bot.disable'), exact: true }).click();
-  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.status.disabled') }))
+  await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.disabled') }))
     .toHaveText(copy('admin.bot.status.disabled'), { timeout: WAIT });
   await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.disabledNotice') }))
     .toHaveText(copy('admin.bot.disabledNotice'), { timeout: WAIT });

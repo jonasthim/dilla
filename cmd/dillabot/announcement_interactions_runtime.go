@@ -9,6 +9,8 @@ import (
 )
 
 func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, automodGrant service.AutoModerationGrantRedeemer, automodRuntime service.AutoModerationConfigRuntime, providerStatus ...service.MusicProviderStatusInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+	statusRegistered := len(providerStatus) > 0 && providerStatus[0].Authority != nil && providerStatus[0].Snapshot != nil
+	overview.SupportsMusicProviderStatus = statusRegistered
 	handlers := overview.Handlers()
 	for operation, handler := range announcements.Handlers() {
 		handlers[operation] = handler
@@ -40,7 +42,7 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 			handlers[operation] = handler
 		}
 	}
-	if len(providerStatus) > 0 && providerStatus[0].Authority != nil && providerStatus[0].Snapshot != nil {
+	if statusRegistered {
 		for operation, handler := range providerStatus[0].Handlers() {
 			handlers[operation] = handler
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -72,17 +73,40 @@ func TestRuntimeInteractionHandlersRegisterProviderStatusAsRecomputedRead(t *tes
 	if _, ok := base[protocol.OpMusicProvidersStatus]; ok {
 		t.Fatal("provider status registered without explicit runtime provider")
 	}
-	registered := runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil, status)
+	incomplete := runtimeInteractionHandlers(service.OverviewInteractions{Authority: runtimeProviderStatusAuthority{}, CommunityID: community},
+		service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil,
+		service.MusicProviderStatusInteractions{Authority: runtimeProviderStatusAuthority{}})
+	if _, ok := incomplete[protocol.OpMusicProvidersStatus]; ok {
+		t.Fatal("provider status registered without a snapshot handler")
+	}
+	legacy, err := incomplete[protocol.OpOverviewGet].Handle(context.Background(), service.InteractionActor{User: id.New()}, protocol.Request{CommunityID: community})
+	if err != nil || legacy.Status != 0 {
+		t.Fatalf("overview with incomplete provider status = %+v, %v", legacy, err)
+	}
+	var legacyPayload []any
+	if err := cborx.Unmarshal(legacy.Data, &legacyPayload); err != nil || len(legacyPayload) != 5 || legacyPayload[0] != uint64(1) {
+		t.Fatalf("incomplete provider overview capability = %#v, err=%v; want legacy version 1", legacyPayload, err)
+	}
+	registered := runtimeInteractionHandlers(service.OverviewInteractions{Authority: runtimeProviderStatusAuthority{}, CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil, status)
 	handler, ok := registered[protocol.OpMusicProvidersStatus]
 	if !ok || handler.Handle == nil || !handler.RecomputeOnReplay {
 		t.Fatalf("provider status handler = %+v, present=%v", handler, ok)
+	}
+	overview := registered[protocol.OpOverviewGet]
+	result, err := overview.Handle(context.Background(), service.InteractionActor{User: id.New()}, protocol.Request{CommunityID: community})
+	if err != nil || result.Status != 0 {
+		t.Fatalf("overview with provider status = %+v, %v", result, err)
+	}
+	var payload []any
+	if err := cborx.Unmarshal(result.Data, &payload); err != nil || len(payload) != 6 || payload[0] != uint64(2) {
+		t.Fatalf("provider status overview capability = %#v, err=%v; want version 2", payload, err)
 	}
 }
 
 type runtimeProviderStatusAuthority struct{}
 
 func (runtimeProviderStatusAuthority) BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error) {
-	return client.ActorAuthority{}, true, nil
+	return client.ActorAuthority{Owner: true}, true, nil
 }
 
 type runtimeModerationEvidenceReader struct{}

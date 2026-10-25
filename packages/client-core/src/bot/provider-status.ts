@@ -34,6 +34,33 @@ const idBytes = (value: unknown): Uint8Array => {
   return value;
 };
 
+/** Decode the bounded overview capability tuple without assuming a Bot protocol version. */
+export function decodeMusicProviderCapability(data: Uint8Array): boolean {
+  if (!(data instanceof Uint8Array) || data.length > 128) throw new TypeError('invalid overview capability payload');
+  const fields = arr(decode(data));
+  if (fields.length < 1) throw new TypeError('invalid overview capability shape');
+  const version = u64(fields[0]);
+  if (version !== 1n && version !== 2n) throw new TypeError('unsupported overview capability version');
+  if (fields.length !== (version === 1n ? 5 : 6)) throw new TypeError('invalid overview capability shape');
+  idBytes(fields[1]);
+  u64(fields[2]);
+  if ((u64(fields[3]) !== 0n && u64(fields[3]) !== 1n) || (u64(fields[4]) !== 0n && u64(fields[4]) !== 1n)) {
+    throw new TypeError('invalid overview capability flags');
+  }
+  if (version === 1n) return false;
+  const operations = arr(fields[5]);
+  if (operations.length > 32) throw new TypeError('overview capability operation list exceeds limit');
+  const seen = new Set<bigint>();
+  let supportsMusicProviderStatus = false;
+  for (const field of operations) {
+    const operation = u64(field);
+    if (operation > 255n || seen.has(operation)) throw new TypeError('invalid overview capability operation');
+    seen.add(operation);
+    if (operation === 24n) supportsMusicProviderStatus = true;
+  }
+  return supportsMusicProviderStatus;
+}
+
 /** Decode operation 24's `[version, installation, observedAt, ...fixed enums]` CBOR tuple. */
 export function decodeMusicProviderStatus(data: Uint8Array): MusicProviderStatusSnapshot {
   if (!(data instanceof Uint8Array) || data.length > 512) throw new TypeError('invalid music provider status payload');
