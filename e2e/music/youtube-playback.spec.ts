@@ -273,6 +273,14 @@ test('two communities run isolated YouTube playback with independent Bot identit
   await command(djPage, SERVER, '/stop', /Music stopped/);
   await expect.poll(() => audibleLevel(djPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeLessThan(AUDIBLE_RMS);
   await expect.poll(() => audibleLevel(djTwoPage), { timeout: WAIT, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
+  // End A's old call completely and create a new call group for the same
+  // channel. A retained Bot group must not block playback in its replacement.
+  const callChannel = (await callSlice(djPage))?.channelId;
+  expect(callChannel).toBeTruthy();
+  await djPage.getByRole('button', { name: copy('voice.leave'), exact: true }).first().click();
+  await expect(djPage.locator('[data-call-phase]').first()).toHaveAttribute('data-call-phase', 'idle', { timeout: WAIT });
+  await expect.poll(() => snapshotDevices(djPage, callChannel!), { timeout: WAIT }).toEqual([]);
+  await joinVoice(djPage, SERVER, 'general');
   await command(djPage, SERVER, '/resume', /Music resumed/);
   await expect.poll(() => audibleLevel(djPage), { timeout: 90_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(AUDIBLE_RMS);
 
