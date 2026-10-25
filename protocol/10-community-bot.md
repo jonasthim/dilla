@@ -1418,6 +1418,13 @@ Codes 19 and 20 are private IPC operations, not Bot interaction operation codes:
 - 20 `call_group_forget`: payload `[call_channel_id]`; forgets a gone local call group
   so the same channel can be joined in a later call.
 
+Installation reconciliation may retain local groups from calls that have ended.
+A call-source `403 E_FORBIDDEN` or member-only `404 E_NOT_FOUND` leaves that
+source unapplied and unacknowledged and permits unrelated installation
+reconciliation to continue. It is not evidence of current call authority; a later
+pass retries, and new playback still requires fresh call admission. Text-source
+403 errors and transport failures remain terminal for that reconciliation pass.
+
 Call-group membership still follows the normal external-join sequence. A helper check
 does not authorize a server request or mint media credentials; the server's current-leaf
 gate remains in force.

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -18,12 +19,14 @@ func (f musicCallMembershipReaderFake) GroupPage(context.Context, id.ID, string,
 }
 
 type musicCallMembershipForgetterFake struct {
-	calls int
-	err   error
+	calls  int
+	groups []id.ID
+	err    error
 }
 
-func (f *musicCallMembershipForgetterFake) CallGroupForget(context.Context, id.ID) error {
+func (f *musicCallMembershipForgetterFake) CallGroupForget(_ context.Context, group id.ID) error {
 	f.calls++
+	f.groups = append(f.groups, group)
 	return f.err
 }
 
@@ -60,4 +63,29 @@ func TestMusicCallResumeForgetsOnlyDefinitivelyRemovedLeaf(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestMusicCallJoinForgetsSupersededGroupForSameChannel(t *testing.T) {
+	community, channel, current, old := id.New(), id.New(), id.New(), id.New()
+	otherCommunity, otherChannel := id.New(), id.New()
+	groups := []native.GroupInfo{
+		{ID: old, Kind: 1, Community: &community, Target: channel, State: 2},
+		{ID: current, Kind: 1, Community: &community, Target: channel, State: 2},
+		{ID: id.New(), Kind: 1, Community: &community, Target: otherChannel, State: 2},
+		{ID: id.New(), Kind: 1, Community: &otherCommunity, Target: channel, State: 2},
+		{ID: id.New(), Kind: 0, Community: &community, Target: channel, State: 2},
+		{ID: id.New(), Kind: 3, Community: &community, Target: channel, State: 2},
+		{ID: id.New(), Kind: 1, Community: &community, Target: channel, State: 4},
+	}
+	f := &musicCallMembershipForgetterFake{}
+	if err := forgetSupersededMusicCallGroups(context.Background(), f, groups, community, channel, current); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.groups) != 1 || f.groups[0] != old {
+		t.Fatalf("forgot groups %v, want only superseded call %v", f.groups, old)
+	}
+	f.err = errors.New("storage unavailable")
+	if err := forgetSupersededMusicCallGroups(context.Background(), f, groups, community, channel, current); !errors.Is(err, f.err) {
+		t.Fatalf("forget failure ignored: %v", err)
+	}
 }

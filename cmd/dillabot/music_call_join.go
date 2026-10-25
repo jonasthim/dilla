@@ -49,6 +49,9 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	if err != nil {
 		return musicCallJoinStageError("native_groups", err)
 	}
+	if err := forgetSupersededMusicCallGroups(ctx, core, groups, community, channel, group); err != nil {
+		return musicCallJoinStageError("forget_superseded_group", err)
+	}
 	var localJoinEpoch uint64
 	for _, existing := range groups {
 		if existing.ID != group {
@@ -187,6 +190,22 @@ func prepareMusicCallGroupMembership(ctx context.Context, reader musicCallMember
 		return false, err
 	}
 	return false, nil
+}
+
+// ChannelCall has identified the server's current group for this channel. A
+// different local call group for the same binding cannot be used by that call;
+// retire it before the core's one-active-group-per-channel join gate is entered.
+func forgetSupersededMusicCallGroups(ctx context.Context, core musicCallMembershipForgetter, groups []native.GroupInfo, community, channel, current id.ID) error {
+	for _, previous := range groups {
+		if previous.ID == current || previous.Kind != 1 || previous.State == 4 ||
+			previous.Community == nil || *previous.Community != community || previous.Target != channel {
+			continue
+		}
+		if err := core.CallGroupForget(ctx, previous.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func musicCallJoinStageError(stage string, err error) error {

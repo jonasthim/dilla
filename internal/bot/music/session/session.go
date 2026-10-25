@@ -77,6 +77,16 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 			return nil, err
 		}
 	}
+	playback, err := s.Start(ctx, track)
+	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
+		return playback, err
+	}
+	// A fresh authorized call can replace a retained room before its delayed
+	// disconnect callback arrives. acquireRoom marks that old binding dead.
+	// Only an explicit action may tear it down and reacquire current options.
+	if resetErr := s.ResetConnection(); resetErr != nil {
+		return nil, resetErr
+	}
 	return s.Start(ctx, track)
 }
 

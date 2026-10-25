@@ -606,3 +606,45 @@ func poolDeadline(t *testing.T, p *Pool) time.Time {
 }
 
 var _ counter.State = (*poolEpochs)(nil)
+
+func TestPoolReplacementBindingFencesDelayedOldRoomCallback(t *testing.T) {
+	p, err := NewPool(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	backend := &poolBackendStub{}
+	p.backend = backend
+	epochs := newPoolEpochs()
+	call, group := poolCall(81, 82)
+	first, err := p.startSource(context.Background(), call, group, epochs, newPoolSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close()
+	if err := p.Reset(); err != nil {
+		t.Fatal(err)
+	} // old room still appears healthy.
+	replacement := call
+	replacement.GroupID = testID(83)
+	if _, err := p.startSource(context.Background(), replacement, replacement.GroupID, epochs, newPoolSource()); !errors.Is(err, ErrBinding) {
+		t.Fatalf("replacement without explicit reset = %v", err)
+	}
+	if err := p.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.startSource(context.Background(), replacement, replacement.GroupID, epochs, newPoolSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.disconnectRoom(0) // delayed callback belongs to the retired binding.
+	_ = second.Close()
+	third, err := p.startSource(context.Background(), replacement, replacement.GroupID, epochs, newPoolSource())
+	if err != nil {
+		t.Fatalf("old callback poisoned replacement: %v", err)
+	}
+	_ = third.Close()
+	if connects, _, _ := backend.counts(); connects != 2 {
+		t.Fatalf("connections=%d, want one per binding", connects)
+	}
+}
