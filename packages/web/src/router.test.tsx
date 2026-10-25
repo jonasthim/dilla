@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { baseRoute, goBack, parseRoute, PHONE_BACK, routeOf, routePath, SETTINGS_FROM, tabOf, useRoute, type Route } from './router.ts';
+import { baseRoute, goBack, parseRoute, PHONE_BACK, pushHistoryState, replaceHistoryState, requestNavigation, routeOf, routePath, SETTINGS_FROM, setNavigationGuard, tabOf, useRoute, type Route } from './router.ts';
 
 const C = '0123456789abcdef'.repeat(2);
 const CH = 'fedcba9876543210'.repeat(2);
@@ -30,7 +30,7 @@ describe('parseRoute', () => {
     [`/dm/${DM.toUpperCase()}`, '', null, { name: 'root' }],
     ['/dm/', '', null, { name: 'root' }],
     [`/dm/${DM}/x`, '', null, { name: 'root' }],
-    ['/settings', '', null, { name: 'settings', section: 'devices', from: null }],
+    ['/settings', '', null, { name: 'settings', section: null, from: null }],
     ['/settings/devices', '', { settingsFrom: `/c/${C}/${CH}` }, { name: 'settings', section: 'devices', from: `/c/${C}/${CH}` }],
     ['/settings/notifications', '', { settingsFrom: `/dm/${DM}` }, { name: 'settings', section: 'notifications', from: `/dm/${DM}` }],
     ['/settings/appearance', '', { settingsFrom: '/welcome?invite=X' }, { name: 'settings', section: 'appearance', from: '/welcome?invite=X' }],
@@ -47,6 +47,11 @@ describe('parseRoute', () => {
     ['/settings/bot/music/spotify/callback', '?code=one&state=two', null,
       { name: 'spotifyCallback', search: '?code=one&state=two' }],
     ['/settings/signin', '', null, { name: 'settings', section: 'signin', from: null }],
+    ['/settings/unrecognized', '', null, { name: 'settings', section: null, from: null }],
+    [`/c/${C}/settings`, '', { settingsFrom: `/c/${CH}/settings/roles` }, { name: 'serverSettings', communityId: C, section: null, from: null }],
+    [`/c/${C}/settings/channels`, '', { settingsFrom: `/c/${CH}/channels` }, { name: 'serverSettings', communityId: C, section: 'channels', from: `/c/${CH}/channels` }],
+    [`/c/${C}/settings/roles`, '', null, { name: 'serverSettings', communityId: C, section: 'roles', from: null }],
+    [`/c/${C}/settings/future`, '', null, { name: 'serverSettings', communityId: C, section: null, from: null }],
     ['/settings/', '', null, { name: 'root' }],
   ];
   it.each(cases)('%s%s', (path, search, state, want) => {
@@ -69,12 +74,16 @@ describe('routePath', () => {
     expect(routePath({ name: 'channel', communityId: C, channelId: CH })).toBe(`/c/${C}/${CH}`);
     expect(routePath({ name: 'dm', channelId: DM })).toBe(`/dm/${DM}`);
     expect(routePath({ name: 'settings', section: 'notifications', from: '/x' })).toBe('/settings/notifications');
+    expect(routePath({ name: 'settings', section: null, from: null })).toBe('/settings');
+    expect(routePath({ name: 'serverSettings', communityId: C, section: null, from: null })).toBe(`/c/${C}/settings`);
+    expect(routePath({ name: 'serverSettings', communityId: C, section: 'roles', from: null })).toBe(`/c/${C}/settings/roles`);
     expect(routePath({ name: 'spotifyCallback', search: '?code=x' })).toBe('/settings/bot/music/spotify/callback?code=x');
     expect(routeOf('/welcome?invite=a%20b%26c')).toEqual({ name: 'welcome', invite: 'a b&c', signin: null });
     expect(routeOf('/welcome?signin=race')).toEqual({ name: 'welcome', invite: null, signin: 'race' });
     expect(routeOf('/welcome?invite=a%20b%26c&signin=race')).toEqual({ name: 'welcome', invite: 'a b&c', signin: 'race' });
     expect(routeOf(`/c/${C}/${CH}`)).toEqual({ name: 'channel', communityId: C, channelId: CH });
     expect(routeOf('/settings/devices')).toEqual({ name: 'settings', section: 'devices', from: null });
+    expect(routeOf(`/c/${C}/settings/roles`)).toEqual({ name: 'serverSettings', communityId: C, section: 'roles', from: null });
   });
 });
 
@@ -110,6 +119,82 @@ describe('useRoute', () => {
     });
     expect(screen.getByRole('status')).toHaveTextContent('{"name":"root"}');
   });
+
+  it('publishes a replace when only history state changes', async () => {
+    function StateProbe() {
+      const [route, go] = useRoute();
+      return <><output>{JSON.stringify(route)}</output><button type="button" onClick={() => go({ name: 'settings', section: 'privacy', from: '/you', compare: 'ab'.repeat(16) }, true)}>compare</button></>;
+    }
+    const user = userEvent.setup();
+    window.history.replaceState({ settingsFrom: '/you' }, '', '/settings/privacy');
+    render(<StateProbe />);
+    await user.click(screen.getByRole('button', { name: 'compare' }));
+    expect(window.location.pathname + window.location.search).toBe('/settings/privacy');
+    expect(screen.getByRole('status')).toHaveTextContent(`"compare":"${'ab'.repeat(16)}"`);
+  });
+});
+
+describe('guarded browser traversal', () => {
+  function CurrentRoute() {
+    const [route] = useRoute();
+    return <output>{route.name}</output>;
+  }
+
+  it('restores the visible entry before confirmation and replays back after discard', async () => {
+    replaceHistoryState(null, '', '/you');
+    const originPath = '/you';
+    const originState = window.history.state;
+    pushHistoryState(null, '', '/activity');
+    const targetPath = '/activity';
+    const targetState = window.history.state;
+    const go = vi.spyOn(window.history, 'go').mockImplementation(delta => {
+      const restore = (delta ?? 0) > 0;
+      window.history.replaceState(restore ? targetState : originState, '', restore ? targetPath : originPath);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: restore ? targetState : originState }));
+    });
+    let resolveGuard!: (allow: boolean) => void;
+    const dispose = setNavigationGuard(() => new Promise(resolve => { resolveGuard = resolve; }));
+    render(<CurrentRoute />);
+
+    act(() => {
+      window.history.replaceState(originState, '', originPath);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: originState }));
+    });
+    await waitFor(() => expect(go).toHaveBeenCalledWith(1));
+    expect(window.location.pathname).toBe(targetPath);
+    expect(screen.getByRole('status')).toHaveTextContent('activity');
+
+    await act(async () => { resolveGuard(true); await Promise.resolve(); });
+    await waitFor(() => expect(go).toHaveBeenCalledWith(-1));
+    expect(window.location.pathname).toBe(originPath);
+    expect(screen.getByRole('status')).toHaveTextContent('you');
+    dispose();
+    go.mockRestore();
+  });
+
+  it('keeps the current entry after confirmation is declined', async () => {
+    replaceHistoryState(null, '', '/you');
+    const originPath = '/you';
+    const originState = window.history.state;
+    pushHistoryState(null, '', '/activity');
+    const targetPath = '/activity';
+    const targetState = window.history.state;
+    const go = vi.spyOn(window.history, 'go').mockImplementation(delta => {
+      window.history.replaceState(targetState, '', targetPath);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: targetState }));
+    });
+    const dispose = setNavigationGuard(async () => false);
+    render(<CurrentRoute />);
+    act(() => {
+      window.history.replaceState(originState, '', originPath);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: originState }));
+    });
+    await waitFor(() => expect(go).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(window.location.pathname).toBe(targetPath));
+    expect(screen.getByRole('status')).toHaveTextContent('activity');
+    dispose();
+    go.mockRestore();
+  });
 });
 
 function SettingsProbe() {
@@ -131,12 +216,26 @@ describe('the settings route', () => {
     const before = window.history.length;
     await user.click(screen.getByRole('button', { name: 'open' }));
     expect(window.location.pathname).toBe('/settings/devices');
-    expect(window.history.state).toEqual({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
+    expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
     expect(screen.getByRole('status')).toHaveTextContent(`{"name":"settings","section":"devices","from":"/c/${C}/${CH}"}`);
     await user.click(screen.getByRole('button', { name: 'section' }));
     expect(window.location.pathname).toBe('/settings/appearance');
-    expect(window.history.state).toEqual({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
+    expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
     expect(window.history.length).toBe(before + 1);
+  });
+
+  it('keeps the current non-settings origin when opening server settings', async () => {
+    function ServerProbe() {
+      const [route, go] = useRoute();
+      return <><output>{JSON.stringify(route)}</output><button type="button" onClick={() => go({ name: 'serverSettings', communityId: C, section: 'roles', from: null })}>server settings</button></>;
+    }
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', `/c/${C}/${CH}`);
+    render(<ServerProbe />);
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    expect(window.location.pathname).toBe(`/c/${C}/settings/roles`);
+    expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
+    expect(screen.getByRole('status')).toHaveTextContent(`"name":"serverSettings"`);
   });
 });
 
@@ -174,6 +273,7 @@ describe('the phone routes', () => {
     expect(tabOf({ name: 'activity' })).toBe('activity');
     expect(tabOf({ name: 'you' })).toBe('you');
     expect(tabOf({ name: 'settings', section: 'devices', from: null })).toBe('you');
+    expect(tabOf({ name: 'serverSettings', communityId: C, section: null, from: null })).toBe('you');
   });
 });
 
@@ -195,10 +295,10 @@ describe('navigate with phoneBack', () => {
     window.history.replaceState(null, '', '/you');
     render(<PhoneProbe />);
     await user.click(screen.getByRole('button', { name: 'push back' }));
-    expect(window.history.state).toEqual({ [PHONE_BACK]: true, phoneFrom: '/you' });
+    expect(window.history.state).toMatchObject({ [PHONE_BACK]: true, phoneFrom: '/you' });
     window.history.replaceState(null, '', '/activity');
     await user.click(screen.getByRole('button', { name: 'plain' }));
-    expect(window.history.state).toBeNull();
+    expect(window.history.state).not.toHaveProperty(PHONE_BACK);
   });
 
   it('keeps settingsFrom beside phoneBack on a settings route', async () => {
@@ -206,7 +306,7 @@ describe('navigate with phoneBack', () => {
     window.history.replaceState(null, '', '/you');
     render(<PhoneProbe />);
     await user.click(screen.getByRole('button', { name: 'open settings' }));
-    expect(window.history.state).toEqual({ [SETTINGS_FROM]: '/you', [PHONE_BACK]: true, phoneFrom: '/you' });
+    expect(window.history.state).toMatchObject({ [SETTINGS_FROM]: '/you', [PHONE_BACK]: true, phoneFrom: '/you' });
   });
 });
 
