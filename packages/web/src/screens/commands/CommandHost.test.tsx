@@ -133,20 +133,21 @@ describe('CommandHost', () => {
 
   it('retains an uncertain request ID across a host remount for safe retry', async () => {
     const ids: string[] = [];
+    const fake = new FakeClient();
     const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
     function Harness() {
       const [mounted, setMounted] = useState(true);
       const handlers: CommandProviderHandlers = { me: async (_invocation, context) => {
         ids.push(context.requestId); return { status: 'uncertain' as const, private: true, message: 'uncertain' };
       } };
-      return <CoreProvider client={new FakeClient()}><CommandProvider handlers={handlers}>
+      return <CommandProvider handlers={handlers}>
         <button onClick={() => setMounted(value => !value)}>toggle host</button>
         {mounted ? <CommandHost communityId={null} channelId={channelId} items={[]} selfId={null} draft="/me hello" onDraft={() => undefined}
           onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /> : null}
-      </CommandProvider></CoreProvider>;
+      </CommandProvider>;
     }
     const user = userEvent.setup();
-    render(<Harness />);
+    render(<CoreProvider client={fake}><Harness /></CoreProvider>);
     await user.click(await screen.findByRole('button', { name: /run/i }));
     await screen.findByText('uncertain');
     const first = ids[0];

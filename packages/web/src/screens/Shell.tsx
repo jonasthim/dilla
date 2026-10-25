@@ -48,6 +48,12 @@ import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
 import type { CommandProviderHandlers, CommandSuggestionProvider } from './commands/command-types.ts';
 
+const DRAFT_MEMORY_LIMIT = 128;
+function rememberDraft(map: Map<string, string>, key: string, value: string): void {
+  map.delete(key); map.set(key, value);
+  while (map.size > DRAFT_MEMORY_LIMIT) map.delete(map.keys().next().value!);
+}
+
 export interface ShellUpdateDeps {
   currentEntry: string;
   watch: typeof watchUpdates;
@@ -915,9 +921,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     if (withTray && sending.current.has(id)) return;
     if (withTray) sending.current.add(id);
     setDraft(d => {
-      if (d.channelId !== id || d.text !== m.raw) return d;
-      ordinaryDrafts.current.set(id, '');
-      return { channelId: id, text: '' };
+      if (ordinaryDrafts.current.get(id) !== m.raw) return d;
+      rememberDraft(ordinaryDrafts.current, id, '');
+      return d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : { ...d };
     });
     const run = async () => {
       try {
@@ -928,9 +934,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       } catch (e) {
         // A refused send gives the text back, unless something new has been typed since.
         setDraft(d => {
-          if (d.channelId !== id || d.text !== '') return d;
-          ordinaryDrafts.current.set(id, m.raw);
-          return { channelId: id, text: m.raw };
+          if (ordinaryDrafts.current.get(id) !== '') return d;
+          rememberDraft(ordinaryDrafts.current, id, m.raw);
+          return d.channelId === id && d.text === '' ? { channelId: id, text: m.raw } : { ...d };
         });
         const error = errorOf(e);
         if (TRUST_BLOCKS.has(error.code)) setRefusedSend({ channelId: id, code: error.code as TrustBlock, gate: client.get('sendBlocks') });
@@ -1172,7 +1178,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       blocked={reason} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={ordinaryDrafts.current.get(targetId) ?? (draft.channelId === targetId ? draft.text : '')}
-      onDraft={text => { ordinaryDrafts.current.set(targetId, text); setDraft({ channelId: targetId, text, typed: true }); }} ui={ui} dispatch={dispatch} onSend={send} onError={report}
+      onDraft={text => { rememberDraft(ordinaryDrafts.current, targetId, text); setDraft({ channelId: targetId, text, typed: true }); }} ui={ui} dispatch={dispatch} onSend={send} onError={report}
       {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
       announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
   );
@@ -1596,7 +1602,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         if (saved.draft !== undefined && (saved.draft.channelId === null || typeof saved.draft.channelId === 'string')
           && typeof saved.draft.text === 'string') {
           setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
-          if (saved.draft.channelId !== null) ordinaryDrafts.current.set(saved.draft.channelId, saved.draft.text);
+          if (saved.draft.channelId !== null) rememberDraft(ordinaryDrafts.current, saved.draft.channelId, saved.draft.text);
         }
         if (saved.side?.channelId === channelId && (saved.side.view === 'list'
           || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
@@ -1604,7 +1610,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
           && typeof saved.threadDraft.text === 'string') {
           setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
-          threadDrafts.current.set(threadDraftKey(channelId, saved.threadDraft.rootMsgId), saved.threadDraft.text);
+          rememberDraft(threadDrafts.current, threadDraftKey(channelId, saved.threadDraft.rootMsgId), saved.threadDraft.text);
         }
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
         const view = validViewPlace(saved.view);
@@ -1792,7 +1798,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             blocked={timeoutReason}
             initialDraft={threadDrafts.current.get(threadDraftKey(channel.id, sideNow.rootMsgId)) ?? (threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
-            onDraftChange={text => { threadDrafts.current.set(threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
+            onDraftChange={text => { rememberDraft(threadDrafts.current, threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
               <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />

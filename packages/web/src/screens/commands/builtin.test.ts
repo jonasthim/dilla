@@ -241,6 +241,13 @@ describe('builtin handler safety regressions', () => {
     expect(core.callsOf('pin')).toHaveLength(1);
   });
 
+  it('unpins the exact loaded message when Pin Messages is granted', async () => {
+    const core = new FakeClient();
+    const result = await builtinHandlers.unpin!({ commandId: 'unpin', args: { message } }, contextWithBinding({ bits: PERM.pinMessages }, { client: core, items: [{ ...ownMessage, pinned: true }] }));
+    expect(result).toMatchObject({ status: 'success', message: 'Message unpinned.' });
+    expect(core.callsOf('pin')).toEqual([{ m: 'pin', channelId: context.binding.channelId, msgId: message, on: false }]);
+  });
+
   it('forwards each formatting handler as a plain type-0 send to the current channel or thread', async () => {
     const core = new FakeClient();
     const threadId = 'ab'.repeat(16);
@@ -399,6 +406,23 @@ describe('builtin handler safety regressions', () => {
     expect(core.callsOf('grantRole')).toEqual([{ m: 'grantRole', communityId: cid, userId: target, roleId }]);
   });
 
+  it('removes a rank-safe role after confirmation with exact target IDs', async () => {
+    const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, manageRoles: true });
+    const cid = context.binding.communityId!, target = '66'.repeat(16), roleId = 'aa'.repeat(16);
+    core.set(`roles:${cid}`, [...core.get(`roles:${cid}`)!, { id: roleId, name: 'Helper', position: 2, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 }]);
+    core.set(`members:${cid}`, core.get(`members:${cid}`)!.map(row => row.userId === target ? { ...row, roleIds: [roleId] } : row));
+    let confirmed = 0;
+    core.handler = async command => {
+      if (command.m === 'revokeRole') core.set(`members:${cid}`, core.get(`members:${cid}`)!.map(row => row.userId === target ? { ...row, roleIds: [] } : row));
+      return null;
+    };
+    const outcome = await builtinHandlers['role remove']!({ commandId: 'role remove', args: { user: target, role: roleId } }, { ...context, client: core, confirm: async () => { confirmed++; return true; } });
+    expect(outcome).toMatchObject({ status: 'success', message: 'Helper removed from target.' });
+    expect(confirmed).toBe(1);
+    expect(core.callsOf('revokeRole')).toEqual([{ m: 'revokeRole', communityId: cid, userId: target, roleId }]);
+    expect(core.get(`members:${cid}`)?.find(row => row.userId === target)?.roleIds).toEqual([]);
+  });
+
   it('lists and grants only roles returned by the self-role service', async () => {
     const core = new FakeClient();
     const cid = context.binding.communityId!, roleId = 'ef'.repeat(16);
@@ -408,6 +432,42 @@ describe('builtin handler safety regressions', () => {
     expect(listed.message).toContain('Reader');
     expect(added.status).toBe('success');
     expect(core.callsOf('selectSelfRole')).toEqual([{ m: 'selectSelfRole', communityId: cid, roleId, requestId: context.requestId, enabled: true }]);
+  });
+
+  it('removes only a currently selected self-role using the stable role ID and attempt ID', async () => {
+    const core = new FakeClient();
+    const cid = context.binding.communityId!, roleId = 'ef'.repeat(16);
+    core.handler = async command => command.m === 'listSelfRoles' ? [{ id: roleId, name: 'Reader', selfSelected: true }] : null;
+    const outcome = await builtinHandlers['selfrole remove']!({ commandId: 'selfrole remove', args: { role: roleId } }, { ...context, client: core });
+    expect(outcome).toMatchObject({ status: 'success', message: 'Reader removed.' });
+    expect(core.callsOf('selectSelfRole')).toEqual([{ m: 'selectSelfRole', communityId: cid, roleId, requestId: context.requestId, enabled: false }]);
+  });
+
+  it('clears an existing timeout with the confirmed stable user ID', async () => {
+    const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, timeout: true });
+    const target = '66'.repeat(16), cid = context.binding.communityId!;
+    core.handler = async command => command.m === 'getMemberTimeout' ? '2000000000' : null;
+    const outcome = await builtinHandlers.untimeout!({ commandId: 'untimeout', args: { user: target } }, { ...context, client: core });
+    expect(outcome.status).toBe('success');
+    expect(core.callsOf('getMemberTimeout')).toEqual([{ m: 'getMemberTimeout', communityId: cid, userId: target }]);
+    expect(core.callsOf('clearMemberTimeout')).toEqual([{ m: 'clearMemberTimeout', communityId: cid, userId: target, requestId: context.requestId }]);
+  });
+
+  it('leaves the live voice call and reports the outcome', async () => {
+    const leave = vi.fn();
+    const outcome = await builtinHandlers.leave!({ commandId: 'leave', args: {} }, { ...context, getCall: () => ({ channelId: '55'.repeat(16), leave } as never) });
+    expect(outcome).toMatchObject({ status: 'success', message: 'Left voice.' });
+    expect(leave).toHaveBeenCalledOnce();
+  });
+
+  it('opens invite and moderation history through the focused host callbacks', async () => {
+    const openInvite = vi.fn(async () => true), openModerationLog = vi.fn();
+    const invite = await builtinHandlers.invite!({ commandId: 'invite', args: {} }, contextWithBinding({ bits: PERM.createInvite }, { openInvite }));
+    const modlog = await builtinHandlers.modlog!({ commandId: 'modlog', args: {} }, contextWithBinding({ bits: PERM.viewAuditLog }, { openModerationLog }));
+    expect(invite).toMatchObject({ status: 'success', message: 'Invite created and shown privately.' });
+    expect(openInvite).toHaveBeenCalledOnce();
+    expect(modlog).toMatchObject({ status: 'success', message: 'Moderation history opened.' });
+    expect(openModerationLog).toHaveBeenCalledOnce();
   });
 
   it('has a real handler registered for every built-in catalog entry', () => {

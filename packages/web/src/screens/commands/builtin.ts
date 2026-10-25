@@ -7,6 +7,13 @@ import { resolveManualRemoval, sendManualRemovalEvidence } from '../conversation
 const result = (status: CommandResult['status'], message: string, isPrivate = true): CommandResult => ({ status, message, private: isPrivate });
 const success = (message: string, isPrivate = true) => result('success', message, isPrivate);
 const failure = (message: string) => result('failure', message);
+const definitiveMutationCodes = new Set(['E_BAD_INPUT', 'E_FORBIDDEN', 'E_NOT_FOUND', 'E_UNAUTHORIZED', 'E_CONFLICT', 'E_RATE_LIMITED', 'E_BOT_PERMISSION', 'E_BOT_BAD_INPUT']);
+function mutationError(error: unknown): CommandResult {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : '';
+  if (definitiveMutationCodes.has(code) || (typeof error === 'object' && error !== null && 'status' in error && Number((error as { status: unknown }).status) >= 400 && Number((error as { status: unknown }).status) < 500))
+    return failure(code ? `Command was refused (${code}).` : 'Command was refused.');
+  return result('uncertain', code ? `The command result is uncertain (${code}). Check the current server state before retrying.` : 'The command result is uncertain. Check the current server state before retrying.');
+}
 const targetThread = (binding: Readonly<Binding>) => binding.threadId === undefined ? {} : { threadId: binding.threadId };
 const encodedSize = (value: string) => new TextEncoder().encode(value).length;
 const uncertainPublications = new Set<string>();
@@ -46,7 +53,7 @@ function exactMessage(context: CommandExecutionContext, id: string): TimelineIte
 
 const handler = (fn: (invocation: CommandInvocation, context: CommandExecutionContext) => Promise<CommandResult> | CommandResult): CommandHandler => async (invocation, context) => {
   try { return await fn(invocation, context); }
-  catch (error) { return failure(error instanceof Error ? error.message : 'Command failed.'); }
+  catch (error) { return mutationError(error); }
 };
 
 const entries: Record<string, CommandHandler> = {
