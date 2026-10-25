@@ -203,6 +203,7 @@ a second factor.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
+| `GET /v1/communities/{community}/bot/command-status` | E (human, current community member, wire v3) | — | `null` when no active installation; otherwise `[1,installation_id,bot_user_id|null,state,revision]`; no-store; omits configuration, capabilities and credentials |
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
 | `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
 | `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
@@ -318,6 +319,7 @@ CBOR API request, not a public redirect endpoint.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
+| `GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority` | B (ready, channel visible to bot) | — | `[community_id,actor_id,channel_id,effective_permission_bits]` for the current human member; 403/404 if installation, membership or visibility checks fail; no-store |
 | `GET /v1/communities/{community}/bot/spotify/config` | E (manage_community) | — | `[client_id, callback_url]` |
 | `GET /v1/bot-runtime/installations/{installation}/spotify/config` | R (owning runtime) | — | `[client_id, callback_url]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts` | E (community bot manager, step-up) | `[step_up_proof]` | `[attempt_id, authorization_url, expires_unix]` |
