@@ -169,6 +169,11 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 		"--ro-bind", caBundle, "/etc/ssl/cert.pem",
 		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run",
 	)
+	// Debian's FFmpeg may resolve shared libraries through /etc/alternatives
+	// (for example libblas.so.3). Keep those symlinks available read-only.
+	if info, err := os.Stat("/etc/alternatives"); err == nil && info.IsDir() {
+		args = append(args, "--dir", "/etc/alternatives", "--ro-bind", "/etc/alternatives", "/etc/alternatives")
+	}
 	for _, path := range append([]string{python}, tools...) {
 		if path != "" {
 			args = addPathMount(args, path)
