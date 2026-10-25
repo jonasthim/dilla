@@ -1,0 +1,400 @@
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { commandById, parseCommand, searchCommands, validateCommandArgs, type CommandDefinition, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
+import './CommandComposer.css';
+
+export interface CommandSuggestion { id: string; label: string; description?: string; value: string }
+
+export interface CommandComposerProps {
+  definitions: readonly CommandDefinition[];
+  initialText: string;
+  onExecute: (invocation: CommandInvocation) => Promise<CommandResult>;
+  onCancel: (text: string) => void;
+  onSendLiteral: (text: string) => void;
+  suggest: (commandId: string, option: CommandOption, query: string) => Promise<readonly CommandSuggestion[]>;
+  contextKey: string;
+  disabledReason?: string;
+}
+
+interface FieldState {
+  text: string;
+  selected?: CommandSuggestion;
+  suggestions: readonly CommandSuggestion[];
+}
+
+const ENTITY_KINDS = new Set(['user', 'channel', 'role', 'message', 'queue-item', 'poll', 'announcement', 'reminder']);
+const isEntity = (option: CommandOption): boolean => ENTITY_KINDS.has(option.kind);
+const quote = (value: string): string => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+
+export function CommandComposer(props: CommandComposerProps): React.JSX.Element | null {
+  const { initialText, onCancel, onSendLiteral } = props;
+  const parsed = useMemo(() => parseCommand(initialText), [initialText]);
+  const original = useRef(initialText);
+  const started = useRef(false);
+  const literalSent = useRef(false);
+  const dirty = useRef(false);
+  const contextNow = useRef(props.contextKey);
+  const contextAtMount = useRef(props.contextKey);
+  const suggestionsGeneration = useRef(new Map<string, number>());
+  const submitGeneration = useRef(0);
+  const inFlight = useRef(false);
+  const pickerId = useId();
+  const [pickerQuery, setPickerQuery] = useState(() => parsed.type === 'unknown' ? parsed.commandText
+    : parsed.type === 'incomplete' && !commandById(parsed.commandId) ? parsed.commandId : '');
+  const parsedCommandId = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' ? parsed.commandId : '';
+  const parsedArgs = parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {};
+  const [selectedCommand, setSelectedCommand] = useState<CommandDefinition | null>(() => {
+    return parsedCommandId ? props.definitions.find(command => command.id === parsedCommandId) ?? commandById(parsedCommandId) ?? null : null;
+  });
+  const [fields, setFields] = useState<Record<string, FieldState>>(() => {
+    const values = parsedArgs;
+    const definitionId = parsedCommandId;
+    const definition = props.definitions.find(command => command.id === definitionId) ?? commandById(definitionId);
+    const exactTail = definition?.options.some(option => option.freeText)
+      ? initialFreeText(props.initialText, definition)
+      : undefined;
+    return Object.fromEntries((definition?.options ?? []).map(option => [option.name, {
+      text: exactTail !== undefined && option.freeText ? exactTail : values[option.name] ?? '',
+      suggestions: [],
+    }]));
+  });
+  const fieldsNow = useRef(fields);
+  fieldsNow.current = fields;
+  const fieldRefs = useRef(new Map<string, HTMLElement>());
+  const executeButtonRef = useRef<HTMLButtonElement>(null);
+  const [popup, setPopup] = useState<string | null>(() => selectedCommand ? selectedCommand.options.find(option => fields[option.name]?.text)?.name ?? null : 'picker');
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState('');
+  const [pending, setPending] = useState(false);
+  const [optionalVisible, setOptionalVisible] = useState<Set<string>>(() => {
+    const definition = props.definitions.find(command => command.id === parsedCommandId) ?? commandById(parsedCommandId);
+    return new Set(definition?.options.filter(option => !option.required && parsedArgs[option.name] !== undefined).map(option => option.name) ?? []);
+  });
+  const [submitted, setSubmitted] = useState(false);
+  const suggestionQuery = selectedCommand?.options.map(option => `${option.name}:${fields[option.name]?.text ?? ''}`).join('\u0000') ?? '';
+  const { suggest: getSuggestions } = props;
+  const suggest = useCallback((commandId: string, option: CommandOption, query: string) => getSuggestions(commandId, option, query), [getSuggestions]);
+  const contextKey = props.contextKey;
+
+  const definitionsById = useMemo(() => new Map(props.definitions.map(command => [command.id, command])), [props.definitions]);
+  const pickerCommands = useMemo(() => {
+    const ranked = searchCommands(pickerQuery, 25).filter(command => definitionsById.has(command.id));
+    const included = new Set(ranked.map(command => command.id));
+    const needle = pickerQuery.trim().toLowerCase();
+    const remaining = props.definitions.filter(command => !included.has(command.id) && (needle === '' || command.id.toLowerCase().includes(needle) || command.description.toLowerCase().includes(needle)));
+    return [...ranked, ...remaining].slice(0, 25);
+  }, [definitionsById, pickerQuery, props.definitions]);
+
+  contextNow.current = props.contextKey;
+  const sendLiteralOnce = useCallback((text: string) => {
+    if (literalSent.current) return;
+    literalSent.current = true;
+    onSendLiteral(text);
+  }, [onSendLiteral]);
+  useEffect(() => {
+    if (!started.current) {
+      started.current = true;
+      if (parsed.type === 'literal') {
+        if (initialText.startsWith('//')) sendLiteralOnce(parsed.text);
+        else onCancel(initialText);
+      }
+    }
+  }, [parsed, initialText, onCancel, sendLiteralOnce]);
+
+  useEffect(() => {
+    if (contextAtMount.current === props.contextKey) return;
+    contextAtMount.current = props.contextKey;
+    suggestionsGeneration.current.clear();
+    submitGeneration.current++;
+    inFlight.current = false;
+    setPending(false);
+    setError('');
+    setResult('');
+    setFields(previous => Object.fromEntries(Object.entries(previous).map(([name, field]) => [name, {
+      ...field, selected: undefined, suggestions: [],
+    }])));
+  }, [props.contextKey]);
+
+  useEffect(() => {
+    if (!selectedCommand) return;
+    const first = selectedCommand.options.find(option => option.required) ?? selectedCommand.options[0];
+    if (first) fieldRefs.current.get(first.name)?.focus();
+    else executeButtonRef.current?.focus();
+  }, [selectedCommand]);
+
+  useEffect(() => {
+    if (!selectedCommand) return;
+    for (const option of selectedCommand.options) {
+      const field = fieldsNow.current[option.name];
+      if (!field?.text) continue;
+      const generation = (suggestionsGeneration.current.get(option.name) ?? 0) + 1;
+      suggestionsGeneration.current.set(option.name, generation);
+      const requestedContext = contextKey;
+      void suggest(selectedCommand.id, option, field.text).then(suggestions => {
+        if (suggestionsGeneration.current.get(option.name) !== generation || contextNow.current !== requestedContext) return;
+        setFields(previous => {
+          const current = previous[option.name];
+          if (!current || current.text !== field.text) return previous;
+          let selected = current.selected;
+          if (isEntity(option) && !selected) {
+            const exactValue = suggestions.find(candidate => candidate.value === current.text);
+            const labels = suggestions.filter(candidate => candidate.label === current.text);
+            selected = exactValue ?? (labels.length === 1 ? labels[0] : undefined);
+          }
+          return { ...previous, [option.name]: { ...current, selected, suggestions } };
+        });
+      }).catch(() => {
+        if (suggestionsGeneration.current.get(option.name) !== generation || contextNow.current !== requestedContext) return;
+        setFields(previous => {
+          const current = previous[option.name];
+          return current?.text === field.text ? { ...previous, [option.name]: { ...current, suggestions: [] } } : previous;
+        });
+      });
+    }
+  }, [contextKey, suggest, selectedCommand, suggestionQuery]);
+
+  if (parsed.type === 'literal') return null;
+
+  const visibleOptions = selectedCommand?.options.filter(option => option.required || optionalVisible.has(option.name)) ?? [];
+  const optionalOptions = selectedCommand?.options.filter(option => !option.required && !optionalVisible.has(option.name)) ?? [];
+  const getDraft = (): string => {
+    if (!dirty.current) return original.current;
+    if (!selectedCommand) return `/${pickerQuery}`;
+    const args = selectedCommand.options.flatMap(option => {
+      const field = fields[option.name];
+      const value = field?.selected?.value ?? field?.text ?? '';
+      return value === '' ? [] : [`${option.name}:${quote(value)}`];
+    });
+    return `/${selectedCommand.id}${args.length ? ` ${args.join(' ')}` : ''}`;
+  };
+
+  const chooseCommand = (command: CommandDefinition) => {
+    dirty.current = true;
+    const initialArgs = parsedCommandId === command.id ? parsedArgs : {};
+    const exactTail = command.options.some(option => option.freeText) ? initialFreeText(original.current, command) : undefined;
+    setSelectedCommand(command);
+    setFields(Object.fromEntries(command.options.map(option => [option.name, { text: exactTail !== undefined && option.freeText ? exactTail : initialArgs[option.name] ?? '', suggestions: [] }])));
+    setOptionalVisible(new Set(command.options.filter(option => !option.required && initialArgs[option.name] !== undefined).map(option => option.name)));
+    setPickerQuery(command.id);
+    setPopup(null);
+    setActiveIndex(-1);
+    setError('');
+    setResult('');
+  };
+
+  const updateField = (option: CommandOption, value: string) => {
+    dirty.current = true;
+    setFields(previous => ({ ...previous, [option.name]: { text: value, suggestions: [] } }));
+    setPopup(option.name);
+    setActiveIndex(-1);
+    setError('');
+    setResult('');
+  };
+
+  const chooseSuggestion = (option: CommandOption, candidate: CommandSuggestion) => {
+    dirty.current = true;
+    setFields(previous => ({ ...previous, [option.name]: { text: candidate.label, selected: candidate, suggestions: previous[option.name]?.suggestions ?? [] } }));
+    setPopup(null);
+    setActiveIndex(-1);
+    setError('');
+  };
+
+  const execute = async () => {
+    if (!selectedCommand || inFlight.current || pending || props.disabledReason) return;
+    const args: Record<string, string> = {};
+    const entityErrors: string[] = [];
+    for (const option of selectedCommand.options) {
+      const field = fields[option.name];
+      if (!field || field.text === '') continue;
+      if (isEntity(option)) {
+        if (field.selected) args[option.name] = field.selected.value;
+        else entityErrors.push(`Choose ${option.name} from the suggestions.`);
+      } else args[option.name] = field.selected?.value ?? field.text;
+    }
+    const validation = validateCommandArgs(selectedCommand, args);
+    if (entityErrors.length || !validation.valid) {
+      setError(entityErrors[0] ?? validation.issues[0]?.message ?? 'Check the command arguments.');
+      setSubmitted(true);
+      return;
+    }
+    inFlight.current = true;
+    const generation = ++submitGeneration.current;
+    const context = props.contextKey;
+    setPending(true);
+    setResult('');
+    setError('');
+    setSubmitted(true);
+    try {
+      const response = await props.onExecute({ commandId: selectedCommand.id, args: validation.args });
+      if (submitGeneration.current !== generation || contextNow.current !== context) return;
+      setPending(response.status === 'pending');
+      if (response.status === 'failure') setError(response.message ?? 'The command failed. Your draft is still here.');
+      else if (response.status === 'pending') setResult(response.message ?? 'Command is still pending.');
+      else if (response.status === 'uncertain') setResult(response.message ?? 'The outcome is not confirmed. Your draft is still here.');
+      else setResult(response.message ?? (response.private ? 'Command completed privately.' : 'Command completed.'));
+    } catch (cause) {
+      if (submitGeneration.current === generation && contextNow.current === context) {
+        setPending(false);
+        setError(cause instanceof Error ? cause.message : 'The command could not be confirmed. Your draft is still here.');
+      }
+    } finally {
+      if (submitGeneration.current === generation && contextNow.current === context) inFlight.current = false;
+    }
+  };
+
+  const keyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>, option?: CommandOption) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    const list = option ? fields[option.name]?.suggestions ?? [] : pickerCommands;
+    const listOpen = popup === (option?.name ?? 'picker') && list.length > 0;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!listOpen) return;
+      event.preventDefault();
+      setActiveIndex(index => event.key === 'ArrowDown' ? (index + 1 + list.length) % list.length : (index - 1 + list.length) % list.length);
+      return;
+    }
+    if (event.key === 'Tab' && listOpen && activeIndex >= 0) {
+      event.preventDefault();
+      if (option) {
+        const candidate = fields[option.name]?.suggestions[activeIndex];
+        if (candidate) chooseSuggestion(option, candidate);
+      } else {
+        const command = pickerCommands[activeIndex];
+        if (command) chooseCommand(command);
+      }
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (popup !== null) { setPopup(null); setActiveIndex(-1); }
+      else props.onCancel(getDraft());
+      return;
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      if (listOpen && activeIndex >= 0) {
+        if (option) {
+          const candidate = fields[option.name]?.suggestions[activeIndex];
+          if (candidate) chooseSuggestion(option, candidate);
+        } else {
+          const command = pickerCommands[activeIndex];
+          if (command) chooseCommand(command);
+        }
+      } else if (option) void execute();
+      else if (listOpen && pickerCommands[0]) chooseCommand(pickerCommands[0]);
+    }
+  };
+
+  const unknown = !selectedCommand && pickerCommands.length === 0 && pickerQuery.trim() !== '';
+  return <section className="d-command-composer" aria-label="Command composer" data-disabled={Boolean(props.disabledReason)}>
+    {selectedCommand ? <>
+      <div className="d-command-composer__heading">
+        <span className="d-command-composer__chip">/{selectedCommand.id}</span>
+        <h2>{selectedCommand.description}</h2>
+        <button type="button" className="d-command-composer__cancel" onClick={() => props.onCancel(getDraft())}>Cancel</button>
+      </div>
+      {props.disabledReason && <p className="d-command-composer__notice">{props.disabledReason}</p>}
+      <div className="d-command-composer__fields">
+        {visibleOptions.map(option => {
+          const field = fields[option.name] ?? { text: '', suggestions: [] };
+          const listId = `${pickerId}-${option.name}`;
+          const isChoice = option.kind === 'choice' && option.choices;
+          return <div className="d-command-composer__field" key={option.name}>
+            <label htmlFor={`${pickerId}-${option.name}-input`}>{option.name}{option.required && <span aria-hidden="true"> · required</span>}</label>
+            <p id={`${pickerId}-${option.name}-hint`} className="d-command-composer__hint">{option.description}</p>
+            {isChoice ? <select ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} value={field.text} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)}>
+              <option value="">Choose {option.name}</option>{option.choices!.map(choice => <option key={choice} value={choice}>{choice}</option>)}
+            </select> : option.kind === 'number' ? <input id={`${pickerId}-${option.name}-input`} aria-label={option.name} type="number" min={option.min} max={option.max} value={field.text} aria-invalid={Boolean(error && submitted)} aria-describedby={`${pickerId}-${option.name}-hint`} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />
+              : option.freeText ? <textarea ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} role="combobox" aria-autocomplete="list" aria-expanded={popup === option.name && field.suggestions.length > 0} aria-controls={listId} aria-activedescendant={popup === option.name && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined} aria-describedby={`${pickerId}-${option.name}-hint`} aria-invalid={Boolean(error && submitted)} value={field.text} onFocus={() => { if (field.suggestions.length) setPopup(option.name); }} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />
+                : <input ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} role="combobox" aria-autocomplete="list" aria-expanded={popup === option.name && field.suggestions.length > 0} aria-controls={listId} aria-activedescendant={popup === option.name && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined} aria-describedby={`${pickerId}-${option.name}-hint`} aria-invalid={Boolean(error && submitted)} value={field.text} onFocus={() => { if (field.suggestions.length) setPopup(option.name); }} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />}
+            {popup === option.name && field.suggestions.length > 0 && <ul className="d-command-composer__list" id={listId} role="listbox" aria-label={`${option.name} suggestions`}>
+              {field.suggestions.map((candidate, index) => <li id={`${listId}-${index}`} role="option" aria-selected={index === activeIndex} key={candidate.id} onMouseDown={event => event.preventDefault()} onClick={() => chooseSuggestion(option, candidate)} onKeyDown={event => { if (event.key === 'Enter') chooseSuggestion(option, candidate); }}>
+                <span>{candidate.label}</span>{candidate.description && <small>{candidate.description}</small>}
+              </li>)}
+            </ul>}
+          </div>;
+        })}
+      </div>
+      {optionalOptions.length > 0 && <div className="d-command-composer__optional">
+        <span>Optional arguments</span>
+        {optionalOptions.map(option => <button type="button" key={option.name} onClick={() => {
+          dirty.current = true;
+          setOptionalVisible(current => new Set(current).add(option.name));
+          setFields(current => ({ ...current, [option.name]: { text: '', suggestions: [] } }));
+        }}>Add optional {option.name}</button>)}
+      </div>}
+      {error && <p className="d-command-composer__error" role="alert">{error}</p>}
+      <div className="d-command-composer__footer">
+        <p className="d-command-composer__live" role="status" aria-live="polite">{pending ? 'Running command privately…' : result}</p>
+        <button ref={executeButtonRef} type="button" className="d-command-composer__execute" disabled={Boolean(props.disabledReason) || pending} onClick={() => void execute()}>{pending ? 'Running…' : 'Run command'}</button>
+      </div>
+    </> : <>
+      <label className="d-sr-only" htmlFor={`${pickerId}-command`}>Command</label>
+      <input id={`${pickerId}-command`} className="d-command-composer__picker" type="text" role="combobox" aria-label="Command" aria-autocomplete="list" aria-expanded={popup === 'picker' && pickerCommands.length > 0} aria-controls={`${pickerId}-commands`} aria-activedescendant={popup === 'picker' && activeIndex >= 0 ? `${pickerId}-command-${activeIndex}` : undefined} placeholder="Search commands" value={pickerQuery} onFocus={() => setPopup('picker')} onChange={event => { dirty.current = true; setPickerQuery(event.currentTarget.value); setPopup('picker'); setActiveIndex(-1); setError(''); }} onKeyDown={event => keyDown(event)} />
+      {popup === 'picker' && pickerCommands.length > 0 && <ul className="d-command-composer__list" id={`${pickerId}-commands`} role="listbox" aria-label="Commands">
+        {pickerCommands.map((command, index) => <li id={`${pickerId}-command-${index}`} role="option" aria-selected={index === activeIndex} key={command.id} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)} onKeyDown={event => { if (event.key === 'Enter') chooseCommand(command); }}>
+          <span>/{command.id}</span><small>{command.provider === 'builtin' ? 'Built in' : 'Bot'} · {command.description}</small>
+        </li>)}
+      </ul>}
+      {unknown && <p className="d-command-composer__error" role="alert">Unknown command: /{pickerQuery}</p>}
+      {unknown && <button type="button" onClick={() => sendLiteralOnce(original.current)}>Send as text</button>}
+      {error && <p className="d-command-composer__error" role="alert">{error}</p>}
+    </>}
+  </section>;
+}
+
+function initialFreeText(text: string, command: CommandDefinition): string | undefined {
+  const prefix = `/${command.id}`;
+  if (text.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) return undefined;
+  if (text.length > prefix.length && !/\s/u.test(text[prefix.length] ?? '')) return undefined;
+  let sourceStart = prefix.length;
+  if (sourceStart < text.length && /\s/u.test(text[sourceStart] ?? '')) sourceStart++;
+  const source = text.slice(sourceStart);
+  const tokens: Array<{ value: string; start: number; end: number }> = [];
+  let quoteChar = '';
+  let escaped = false;
+  let start = -1;
+  let value = '';
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index] ?? '';
+    if (start < 0 && /\s/u.test(char)) continue;
+    if (start < 0) start = index;
+    if (escaped) { value += char; escaped = false; continue; }
+    if (char === '\\' && quoteChar) { escaped = true; continue; }
+    if (quoteChar) {
+      if (char === quoteChar) quoteChar = ''; else value += char;
+      continue;
+    }
+    if (char === '"' || char === "'") { quoteChar = char; continue; }
+    if (/\s/u.test(char)) {
+      tokens.push({ value, start, end: index });
+      start = -1;
+      value = '';
+      continue;
+    }
+    value += char;
+  }
+  if (start >= 0) tokens.push({ value, start, end: source.length });
+  let positional = 0;
+  for (const option of command.options) {
+    const namedIndex = tokens.findIndex((token, index) => index >= positional && token.value.slice(0, token.value.indexOf(':')) === option.name && token.value.includes(':'));
+    if (option.freeText) {
+      const token = namedIndex >= 0 ? tokens[namedIndex] : tokens[positional];
+      if (!token) return '';
+      if (namedIndex >= 0) {
+        const raw = source.slice(token.start + option.name.length + 1, token.end);
+        return dequote(raw);
+      }
+      return dequote(source.slice(token.start));
+    }
+    if (namedIndex >= 0) continue;
+    if (tokens[positional]) positional++;
+  }
+  return undefined;
+}
+
+function dequote(value: string): string {
+  if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) {
+    return value.slice(1, -1).replace(/\\([\\"'])/g, '$1');
+  }
+  return value;
+}
