@@ -81,10 +81,10 @@ describe('command registry', () => {
   });
 
   it('labels built-in and bot-backed commands for the picker', () => {
-    for (const id of ['play', 'queue remove', 'music', 'announcement create', 'selfrole add', 'rolepanel create', 'poll vote', 'remind', 'modlog']) {
+    for (const id of ['play', 'queue remove', 'music', 'announcement create', 'rolepanel create', 'poll vote', 'remind']) {
       expect(commandById(id)?.provider).toBe('bot');
     }
-    for (const id of ['warn', 'kick', 'ban', 'delete', 'reply', 'join']) {
+    for (const id of ['warn', 'kick', 'ban', 'delete', 'reply', 'join', 'selfrole list', 'selfrole add', 'selfrole remove', 'modlog']) {
       expect(commandById(id)?.provider).toBe('builtin');
     }
   });

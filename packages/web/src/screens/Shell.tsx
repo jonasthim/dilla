@@ -44,6 +44,8 @@ import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
+import { CommandProvider } from './commands/CommandContext.tsx';
+import type { CommandProviderHandlers, CommandSuggestionProvider } from './commands/command-types.ts';
 
 export interface ShellUpdateDeps {
   currentEntry: string;
@@ -147,7 +149,7 @@ function restoredConversationUi(value: unknown): ConversationUi | null {
  * under a settings route the shell shows the route Settings was opened over and never navigates (L-TS-27). The
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
-export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}): React.JSX.Element {
+export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; commandHandlers?: CommandProviderHandlers; commandSuggest?: CommandSuggestionProvider } = {}): React.JSX.Element {
   const client = useCore();
   const phone = usePhoneLayout();
   useVisualViewportHeight(phone);
@@ -1690,6 +1692,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     })();
   }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, homeSelected,
     searchOpen, searchQuery, searchScope, searchId, call, recentUpdateCall]);
+  const openCommandSearch = (query: string, scope: 'channel' | 'community' | 'all') => {
+    const id = scope === 'channel' ? targetId : scope === 'community' ? communityId : null;
+    if (scope !== 'all' && id === null) return;
+    setSearchScope(scope); setSearchQuery(query); setSearchOpen(true); issueSearch(query, scope, id);
+  };
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
@@ -1697,6 +1704,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const adminPage = adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
     onClose={() => setAdminFor(null)} announce={announce} /> : null;
   return (
+    <CommandProvider runtime={{ call, navigate, openThread, openSearch: openCommandSearch }} handlers={props.commandHandlers} suggest={props.commandSuggest}>
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
@@ -1814,6 +1822,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
       {phone ? null : <>{adminPage}{props.page}</>}
     </>
+    </CommandProvider>
   );
 }
 

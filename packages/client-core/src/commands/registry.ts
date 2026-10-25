@@ -134,11 +134,10 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
 
 const botCommandIds = new Set([
   'play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
-  'queue remove', 'queue move', 'queue clear', 'music', 'music help', 'modlog', 'rolepanel create',
+  'queue remove', 'queue move', 'queue clear', 'music', 'music help', 'rolepanel create',
   'announcement list', 'announcement create', 'announcement edit', 'announcement delete',
   'poll create', 'poll vote', 'poll results', 'poll close',
   'remind', 'reminders list', 'reminders cancel', 'reminders dismiss',
-  'selfrole list', 'selfrole add', 'selfrole remove',
 ]);
 
 function materialize(seed: (typeof seeds)[number]): CommandDefinition {
