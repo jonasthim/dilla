@@ -59,6 +59,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   const fieldsNow = useRef(fields);
   fieldsNow.current = fields;
   const fieldRefs = useRef(new Map<string, HTMLElement>());
+  const composerRef = useRef<HTMLElement>(null);
   const pickerRef = useRef<HTMLInputElement>(null);
   const executeButtonRef = useRef<HTMLButtonElement>(null);
   const [popup, setPopup] = useState<string | null>(() => selectedCommand ? selectedCommand.options.find(option => fields[option.name]?.text)?.name ?? null : 'picker');
@@ -101,6 +102,22 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
     literalSent.current = true;
     onSendLiteral(text);
   }, [onSendLiteral]);
+  const handleComposerKeyDown = useCallback((event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (parsed.type === 'literal') { onCancel(getDraft()); return; }
+    const popupHasResults = popup === 'picker'
+      ? pickerCommands.length > 0
+      : popup !== null && Boolean(fieldsNow.current[popup]?.suggestions.length);
+    if (popupHasResults) { setPopup(null); setActiveIndex(-1); }
+    else onCancel(getDraft());
+  }, [getDraft, onCancel, parsed.type, pickerCommands, popup]);
+  useEffect(() => {
+    const root = composerRef.current;
+    root?.addEventListener('keydown', handleComposerKeyDown);
+    return () => root?.removeEventListener('keydown', handleComposerKeyDown);
+  }, [handleComposerKeyDown]);
   useEffect(() => {
     if (!started.current) {
       started.current = true;
@@ -175,7 +192,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
 
   if (parsed.type === 'literal') {
     if (!initialText.startsWith('//')) return null;
-    return <section className="d-command-composer" aria-label={copy.region}>
+    return <section ref={composerRef} className="d-command-composer" aria-label={copy.region}>
       <p className="d-command-composer__notice">{copy.sendTextQuestion}</p>
       <p className="d-command-composer__preview">{parsed.text}</p>
       <button type="button" className="d-command-composer__execute" onClick={() => sendLiteralOnce(parsed.text)}>{copy.sendAsText}</button>
@@ -292,12 +309,6 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
       }
       return;
     }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      if (popup !== null) { setPopup(null); setActiveIndex(-1); }
-      else props.onCancel(getDraft());
-      return;
-    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       if (!option && !selectedCommand) {
@@ -320,7 +331,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
 
   const unavailableExact = !selectedCommand && commandById(pickerQuery.trim()) !== undefined && !props.definitions.some(command => command.id === pickerQuery.trim());
   const unknown = !selectedCommand && pickerCommands.length === 0 && pickerQuery.trim() !== '';
-  return <section className="d-command-composer" aria-label={copy.region} data-disabled={Boolean(props.disabledReason)}>
+  return <section ref={composerRef} className="d-command-composer" aria-label={copy.region} data-disabled={Boolean(props.disabledReason)}>
     {selectedCommand ? <>
       <div className="d-command-composer__heading">
         <span className="d-command-composer__chip">{copy.slash}{selectedCommand.id}</span>

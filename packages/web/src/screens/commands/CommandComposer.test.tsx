@@ -186,6 +186,77 @@ describe('CommandComposer', () => {
     expect(props.onCancel).toHaveBeenCalledWith(expect.stringContaining('volume'));
   });
 
+  it('cancels from the Run button after a command completes', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/help' });
+    const run = screen.getByRole('button', { name: /run command/i });
+    await user.click(run);
+    await screen.findByRole('status');
+    run.focus();
+
+    await user.keyboard('{Escape}');
+
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    expect(props.onCancel).toHaveBeenCalledWith('/help');
+  });
+
+  it('cancels from the command Cancel button', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/help' });
+    screen.getByRole('button', { name: /cancel/i }).focus();
+
+    await user.keyboard('{Escape}');
+
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    expect(props.onCancel).toHaveBeenCalledWith('/help');
+  });
+
+  it('cancels from optional argument buttons and the literal send button', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/poll create' });
+    const addQuestion = screen.getByRole('button', { name: 'Add optional question' });
+    addQuestion.focus();
+    await user.keyboard('{Escape}');
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    expect(props.onCancel).toHaveBeenCalledWith('/poll create');
+
+    const literal = renderComposer({ initialText: '//hello' });
+    screen.getByRole('button', { name: /send as text/i }).focus();
+    await user.keyboard('{Escape}');
+    expect(literal.props.onCancel).toHaveBeenCalledTimes(1);
+    expect(literal.props.onCancel).toHaveBeenCalledWith('//hello');
+    expect(literal.props.onSendLiteral).not.toHaveBeenCalled();
+  });
+
+  it('handles input Escape once, dismissing the popup before cancelling', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/vo' });
+    const picker = screen.getByRole('combobox', { name: 'Command' });
+    picker.focus();
+
+    await user.keyboard('{Escape}');
+    expect(props.onCancel).not.toHaveBeenCalled();
+    await user.keyboard('{Escape}');
+    expect(props.onCancel).toHaveBeenCalledTimes(1);
+    expect(props.onCancel).toHaveBeenCalledWith('/vo');
+  });
+
+  it('ignores composing Escape events', () => {
+    const { props } = renderComposer({ initialText: '/help' });
+    fireEvent.keyDown(screen.getByRole('button', { name: /run command/i }), { key: 'Escape', isComposing: true, keyCode: 229 });
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+
+  it('keeps native Enter activation on Run to a single execution', async () => {
+    const user = userEvent.setup();
+    const { props } = renderComposer({ initialText: '/help' });
+    screen.getByRole('button', { name: /run command/i }).focus();
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(props.onExecute).toHaveBeenCalledTimes(1));
+  });
+
   it('does not treat an IME composition Enter as selection or submission', async () => {
     const user = userEvent.setup();
     const { props } = renderComposer();
