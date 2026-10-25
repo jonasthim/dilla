@@ -7,12 +7,13 @@ import { MusicProviderStatus } from './MusicProviderStatus.tsx';
 import { noteSpotifyReturn } from '../../settings/spotify-return.ts';
 
 const cid = '11'.repeat(16); const installationId = '22'.repeat(16);
-function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, linked = true) {
+function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, linked = true, pending?: 'send' | 'read') {
   const fake = new FakeClient();
   fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
   let requestId = '';
   let operation = 0;
   fake.handler = command => Promise.resolve((() => {
+    if (pending === 'send' && command.m === 'humanInteractionRequest' || pending === 'read' && command.m === 'readBotInteractionResponses') return new Promise<never>(() => {});
     if (command.m === 'humanInteractionRequest') { requestId = command.requestId; operation = command.operation; return { requestId, upload: 'accepted' }; }
     if (command.m === 'readBotInteractionResponses') return { responses: empty ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', revision: null,
       data: operation === 0 ? capabilityData ?? encode(legacy ? [1, fromHex('44'.repeat(16)), 0, 1, 0] : [2, fromHex('44'.repeat(16)), 0, 1, 0, [24]])
@@ -77,6 +78,22 @@ describe('music provider status', () => {
     const reads = fake.callsOf('readBotInteractionResponses').length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(reads);
+  });
+  it.each(['send', 'read'] as const)('expires even when the worker %s call never settles', async pending => {
+    vi.useFakeTimers();
+    setup(0, false, 0, false, false, undefined, true, pending);
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(screen.getByRole('status')).toHaveTextContent('unavailable');
+    expect(screen.getByRole('button', { name: 'Refresh provider status' })).toBeEnabled();
+  });
+  it('keeps a completed observation until its freshness window expires', async () => {
+    vi.useFakeTimers();
+    setup();
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(screen.getByText('Linked')).toBeVisible();
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(screen.getByRole('status')).toHaveTextContent('out of date');
+    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
   });
   it('reconciles an OAuth return for at most sixty seconds without treating delivery as Linked', async () => {
     vi.useFakeTimers();

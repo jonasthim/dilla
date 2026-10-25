@@ -38,6 +38,14 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     setPhase('loading');
     const oauthDeadline = spotifyReturnDeadline(communityId);
     const deadline = oauthDeadline ?? Date.now() + 30_000;
+    // A worker request can itself stall before polling begins. Bound the entire
+    // observation attempt independently of whether individual calls settle.
+    const timeout = window.setTimeout(() => {
+      if (!canRead()) return;
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      setPhase('unavailable');
+    }, Math.max(0, deadline - Date.now()));
     let requestId = newRequestId();
     // Ask an operation understood by older bots before sending the new status operation.
     let operation: 0 | 24 = 0;
@@ -67,7 +75,7 @@ export function MusicProviderStatus({ communityId, installationId }: { community
         setSnapshot(observed); setNow(Date.now()); setPhase('known');
         if (oauthDeadline !== null && observed.spotifyAccount !== 'linked' && Date.now() < deadline) {
           requestId = newRequestId(); later(send);
-        }
+        } else window.clearTimeout(timeout);
       } catch { if (canRead()) setPhase('unavailable'); }
     };
     const send = async (): Promise<void> => {
@@ -80,7 +88,7 @@ export function MusicProviderStatus({ communityId, installationId }: { community
       } catch { if (canRead()) setPhase('unavailable'); }
     };
     void send();
-    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
+    return () => { stopped = true; window.clearTimeout(timeout); if (timer !== undefined) window.clearTimeout(timer); };
   }, [client, communityId, installationId, authorized, generation]);
   const shown = authorized ? snapshot : null;
   const stale = shown !== null && now / 1000 - Number(shown.observedAt) > 60;
