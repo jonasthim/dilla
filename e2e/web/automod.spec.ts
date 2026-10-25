@@ -12,6 +12,43 @@ const OWNER = 'Ada';
 const TARGET = 'Bea';
 const EXCERPT_BODY = `automod-evidence-${'x'.repeat(540)}-AUTOMOD_TAIL_SENTINEL`;
 
+async function traceCoreWorker(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => {
+    const root = window as unknown as { __dillaWorkerTrace?: { calls: unknown[]; returns: unknown[] } };
+    root.__dillaWorkerTrace = { calls: [], returns: [] };
+    const OriginalWorker = window.Worker;
+    window.Worker = new Proxy(OriginalWorker, {
+      construct(target, args, newTarget) {
+        const worker = Reflect.construct(target, args, newTarget) as Worker;
+        const post = worker.postMessage.bind(worker);
+        worker.postMessage = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
+          root.__dillaWorkerTrace?.calls.push(message);
+          post(message, transfer as Transferable[]);
+        };
+        worker.addEventListener('message', event => root.__dillaWorkerTrace?.returns.push(event.data));
+        return worker;
+      },
+    }) as typeof Worker;
+  });
+}
+
+async function workerDiagnostic(page: import('@playwright/test').Page): Promise<unknown> {
+  return page.evaluate(() => {
+    const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[]; returns: unknown[] } }).__dillaWorkerTrace;
+    const calls = (trace?.calls ?? []).slice(-30).map(raw => {
+      const event = raw as { id?: number; command?: { m?: string; operation?: number; requestId?: string } };
+      return { id: event.id ?? null, method: event.command?.m ?? null,
+        operation: event.command?.operation ?? null, requestId: event.command?.requestId ?? null };
+    });
+    const returns = (trace?.returns ?? []).slice(-30).map(raw => {
+      const event = raw as { t?: string; id?: number; ok?: boolean; error?: { code?: string }; value?: { status?: unknown; upload?: unknown } };
+      return { type: event.t ?? null, id: event.id ?? null, ok: event.ok ?? null,
+        errorCode: event.error?.code ?? null, status: event.value?.status ?? null, upload: event.value?.upload ?? null };
+    });
+    return { calls, returns };
+  });
+}
+
 async function sendRepeat(page: import('@playwright/test').Page, text: string): Promise<void> {
   const box = composerBox(page, 'general');
   await box.fill(text);
@@ -25,6 +62,7 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
   let host: StartedHost | null = null;
   let targetContext: import('@playwright/test').BrowserContext | null = null;
   try {
+    await traceCoreWorker(page);
     host = await startTestHost(HOST);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, OWNER, host.control);
     await addServerVia(page, 'create');
@@ -71,7 +109,12 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
 
     const loadSettings = settings.getByRole('button', { name: copy('admin.bot.automod.load'), exact: true });
     await loadSettings.click();
-    await expect(settings.getByText(copy('admin.bot.automod.loaded'), { exact: true })).toBeVisible();
+    try {
+      await expect(settings.getByText(copy('admin.bot.automod.loaded'), { exact: true })).toBeVisible({ timeout: 90_000 });
+    } catch (error) {
+      const diagnostic = await workerDiagnostic(page);
+      throw new Error(`${String(error)}\nAutomoderation worker RPC summary: ${JSON.stringify(diagnostic)}`);
+    }
     const enabled = settings.getByRole('checkbox', { name: copy('admin.bot.automod.enabled'), exact: true });
     const duplicateAction = settings.getByRole('combobox', { name: copy('admin.bot.automod.duplicate'), exact: true });
     await expect(enabled).not.toBeChecked();
