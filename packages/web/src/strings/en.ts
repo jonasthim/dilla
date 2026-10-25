@@ -31,7 +31,9 @@ import { home } from './home.ts';
 import { profile } from './profile.ts';
 import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
+import { settingsWorkspace } from './settingsWorkspace.ts';
 export const en = {
+  ...settingsWorkspace,
   ...gif,
   ...storeNewer,
   ...privacy,

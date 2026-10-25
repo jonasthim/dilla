@@ -6,6 +6,10 @@ const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/', '
 type StoryContext = { id: string; title: string; name: string };
 
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
+    if (context.id === 'settings-settingsframe--phone-index') {
+      await page.setViewportSize({ width: 640, height: 400 });
+      await page.waitForFunction(() => document.querySelector('.d-settings-frame')?.getAttribute('data-layout') === 'phone');
+    }
     await injectAxe(page);
     const strict = STRICT_TARGET_TITLES.some(prefix => context.title.startsWith(prefix));
     await checkA11y(page, '#storybook-root', {
@@ -126,27 +130,110 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         await page.emulateMedia({ media: 'screen' });
       }
     }
-    // A11Y-DESIGN-01: at 320 × 256 the stacked settings frame scrolls as one column, so its last control can be reached.
+    // A11Y-DESIGN-01: desktop settings keep the sidebar and body as independent scroll regions. At 200% zoom,
+    // the effective 640 × 400 CSS viewport enters the existing phone breakpoint: the section frame stays fullscreen,
+    // with its title/actions and footer outside the scrolling body.
     if (context.id === 'settings-settingsframe--zoomed-in') {
-      const r = await page.evaluate(() => {
+      const desktop = await page.evaluate(() => {
         const frame = document.querySelector('.d-settings-frame');
         const panel = document.querySelector('.d-settings-frame__panel');
         const body = document.querySelector('.d-settings-frame__body');
         const side = document.querySelector('.d-settings-frame__side');
-        const last = Array.from(document.querySelectorAll('.d-settings-frame__body button')).at(-1);
-        if (!frame || !panel || !body || !side || !last) return null;
-        const size = frame.getBoundingClientRect();
-        panel.scrollTop = panel.scrollHeight;
-        const p = panel.getBoundingClientRect();
-        const b = last.getBoundingClientRect();
+        if (!frame || !panel || !body || !side) return null;
+        const rect = frame.getBoundingClientRect();
+        const styles = getComputedStyle(panel);
         return {
-          width: Math.round(size.width), height: Math.round(size.height), panelScrolls: panel.scrollHeight > panel.clientHeight,
-          bodyScrolls: body.scrollHeight > body.clientHeight + 1, sideScrolls: side.scrollHeight > side.clientHeight + 1,
-          lastInView: b.top >= p.top - 1 && b.bottom <= p.bottom + 1,
+          width: Math.round(rect.width), height: Math.round(rect.height), x: Math.round(rect.x), y: Math.round(rect.y),
+          columns: styles.gridTemplateColumns.trim().split(/\s+/).length,
+          sideOverflow: getComputedStyle(side).overflowY, bodyOverflow: getComputedStyle(body).overflowY,
+          horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
+            || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
         };
       });
-      if (!r || r.width !== 320 || r.height !== 256 || !r.panelScrolls || r.bodyScrolls || r.sideScrolls || !r.lastInView) {
-        throw new Error(`${context.title} / ${context.name}: the stacked frame does not scroll as one column (${JSON.stringify(r)})`);
+      if (!desktop || desktop.width !== 1280 || desktop.height !== 800 || desktop.x !== 0 || desktop.y !== 0
+        || desktop.columns < 2 || desktop.sideOverflow !== 'auto' || desktop.bodyOverflow !== 'auto' || desktop.horizontalOverflow) {
+        throw new Error(`${context.title} / ${context.name}: desktop settings geometry or independent scrolling is incorrect (${JSON.stringify(desktop)})`);
+      }
+
+      // A 1280 × 800 physical display at 200% browser zoom exposes a 640 × 400 CSS viewport.
+      await page.setViewportSize({ width: 640, height: 400 });
+      await page.waitForFunction(() => document.querySelector('.d-settings-frame')?.getAttribute('data-layout') === 'phone');
+      await checkA11y(page, '#storybook-root', {
+        detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
+        ...(strict ? { axeOptions: { rules: { 'target-size': { enabled: true } } } } : {}),
+      });
+      const zoomed = await page.evaluate(() => {
+        const frame = document.querySelector('.d-settings-frame');
+        const panel = document.querySelector('.d-settings-frame__panel');
+        const body = document.querySelector('.d-settings-frame__body');
+        const nav = document.querySelector('.d-settings-frame__nav');
+        const bar = document.querySelector('.d-settings-frame__bar');
+        const footer = document.querySelector('.d-settings-frame__footer');
+        const back = document.querySelector('[data-settings-back]');
+        const sectionTitle = document.querySelector('.d-settings-frame__section-title');
+        const last = Array.from(document.querySelectorAll('.d-settings-frame__body button')).at(-1);
+        if (!frame || !panel || !body || !nav || !bar || !footer || !back || !sectionTitle || !last) return null;
+        const size = frame.getBoundingClientRect();
+        body.scrollTop = body.scrollHeight;
+        const bodyRect = body.getBoundingClientRect();
+        const headerRect = bar.getBoundingClientRect();
+        const footerRect = footer.getBoundingClientRect();
+        const lastRect = last.getBoundingClientRect();
+        return {
+          width: Math.round(size.width), height: Math.round(size.height), x: Math.round(size.x), y: Math.round(size.y),
+          isPhoneSection: frame.getAttribute('data-layout') === 'phone' && frame.getAttribute('data-phone-page') === 'section',
+          panelColumns: getComputedStyle(panel).gridTemplateColumns.trim().split(/\s+/).length,
+          bodyScrolls: body.scrollHeight > body.clientHeight + 1, bodyOverflow: getComputedStyle(body).overflowY,
+          navigationHidden: nav.hasAttribute('hidden'), hasClose: Array.from(frame.querySelectorAll('.d-settings-frame__bar button'))
+            .some(button => button.textContent?.includes('Close settings') ?? false),
+          sectionTitle: sectionTitle.textContent?.trim(),
+          headerInPlace: Math.abs(headerRect.top - size.top) <= 1 && headerRect.bottom <= bodyRect.top + 1,
+          footerInPlace: Math.abs(footerRect.bottom - size.bottom) <= 1 && footerRect.top >= bodyRect.bottom - 1,
+          backVisible: back.getBoundingClientRect().width > 0 && back.getBoundingClientRect().height > 0,
+          lastInView: lastRect.top >= bodyRect.top - 1 && lastRect.bottom <= bodyRect.bottom + 1,
+          horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
+            || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
+        };
+      });
+      if (!zoomed || zoomed.width !== 640 || zoomed.height !== 400 || zoomed.x !== 0 || zoomed.y !== 0
+        || !zoomed.isPhoneSection || zoomed.panelColumns !== 1 || !zoomed.bodyScrolls || zoomed.bodyOverflow !== 'auto'
+        || !zoomed.navigationHidden || zoomed.hasClose || !zoomed.headerInPlace || !zoomed.footerInPlace
+        || !zoomed.backVisible || zoomed.sectionTitle !== 'Devices' || !zoomed.lastInView || zoomed.horizontalOverflow) {
+        throw new Error(`${context.title} / ${context.name}: phone section frame breaks its fullscreen scroll regions at 200% zoom (${JSON.stringify(zoomed)})`);
+      }
+    }
+    if (context.id === 'settings-settingsframe--phone-index') {
+      const index = await page.evaluate(() => {
+        const frame = document.querySelector('.d-settings-frame');
+        const panel = document.querySelector('.d-settings-frame__panel');
+        const side = document.querySelector('.d-settings-frame__side');
+        const nav = document.querySelector('.d-settings-frame__nav');
+        const close = frame?.querySelector('.d-settings-frame__bar button');
+        if (!frame || !panel || !side || !nav || !close) return null;
+        const size = frame.getBoundingClientRect();
+        const navRect = nav.getBoundingClientRect();
+        close.scrollIntoView({ block: 'nearest' });
+        const closeBefore = close.getBoundingClientRect();
+        nav.scrollTop = nav.scrollHeight;
+        const last = Array.from(nav.querySelectorAll('.d-settings-nav__item')).at(-1);
+        if (!last) return null;
+        const lastRect = last.getBoundingClientRect();
+        const closeAfter = close.getBoundingClientRect();
+        return {
+          width: Math.round(size.width), height: Math.round(size.height), x: Math.round(size.x), y: Math.round(size.y),
+          isPhoneIndex: frame.getAttribute('data-layout') === 'phone' && frame.getAttribute('data-phone-page') === 'index',
+          navOverflow: getComputedStyle(nav).overflowY, navScrolls: nav.scrollHeight > nav.clientHeight + 1,
+          lastInView: lastRect.top >= navRect.top - 1 && lastRect.bottom <= navRect.bottom + 1,
+          closeInView: closeAfter.top >= size.top && closeAfter.bottom <= size.bottom && closeAfter.top >= navRect.bottom - 1,
+          closeDoesNotMove: Math.abs(closeBefore.top - closeAfter.top) < 1,
+          horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
+            || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
+        };
+      });
+      if (!index || index.width !== 640 || index.height !== 400 || index.x !== 0 || index.y !== 0
+        || !index.isPhoneIndex || index.navOverflow !== 'auto' || !index.navScrolls || !index.lastInView
+        || !index.closeInView || !index.closeDoesNotMove || index.horizontalOverflow) {
+        throw new Error(`${context.title} / ${context.name}: phone index navigation scrolls with or hides Close (${JSON.stringify(index)})`);
       }
     }
     if (context.id.startsWith('ceremony-onboardingframe--')) {

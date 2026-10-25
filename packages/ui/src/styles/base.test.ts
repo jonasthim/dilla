@@ -27,8 +27,8 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/\.d-app-shell__tabbar\[hidden\], [^{]*\[data-typing="true"\] \.d-app-shell__tabbar \{ display: none; \}/);
     expect(css).toMatch(/\.d-app-shell__aside, [^{]*__backdrop \{ bottom: var\(--d-tabbar-h, 0px\); \}/);
   });
-  it('starts the non-modal settings page below the ring, and pads the thread sheet composer once', () => {
-    expect(css).toMatch(/\[data-modeless\] \{[^}]*inset: calc\(var\(--d-vvtop, 0px\) \+ var\(--d-ring-h, 0px\) \+ var\(--d-banner-h, 0px\)\) 0 auto 0;[^}]*- var\(--d-ring-h, 0px\) - var\(--d-banner-h, 0px\)\)/);
+  it('leaves fullscreen settings to the modal frame and pads the thread sheet composer once', () => {
+    expect(css).not.toMatch(/\.d-settings-frame[^{}]*\[data-modeless\]/);
     expect(css).toMatch(/\[data-layout="phone"\] \.d-app-shell__banner \{ position: relative; z-index: 21; \}/);
     expect(css).toMatch(/\.d-thread-pane\[data-phone\] \.d-composer \{ padding-bottom: 0\.5rem; \}/);
   });
@@ -63,7 +63,7 @@ describe('web3.9 base.css rules (UI-1)', () => {
     expect(css).toContain('.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }');
   });
   it('adds no @media of its own for it (the phone-query count stays with phone-query.test.ts)', () => {
-    expect(css.split('(max-width: 47.99rem), (pointer: coarse)').length - 1).toBe(2);
+    expect(css.split('(max-width: 47.99rem), (pointer: coarse)').length - 1).toBe(1);
   });
 });
 

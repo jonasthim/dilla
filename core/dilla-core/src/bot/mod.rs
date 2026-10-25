@@ -275,7 +275,7 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|10..=23|30|31|40|50..=52|60..=64) {
+        if !matches!(self.operation, 0|1|2|10..=24|30|31|40|50..=52|60..=64) {
             return Err(CodecError::Operation);
         }
         if self.operation == 31 && self.revision != Some(0) {
@@ -385,7 +385,7 @@ fn is_mutation(op: u64) -> bool {
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
     match op {
-        0 | 10 | 13..=16 | 19 | 23 => matches!(a, RequestArgs::None),
+        0 | 10 | 13..=16 | 19 | 23 | 24 => matches!(a, RequestArgs::None),
         1 => matches!(a, RequestArgs::Section { section: 0..=5 }),
         2 => matches!(a, RequestArgs::SettingsPut { section: 0..=5, .. }),
         11 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,200,true)),
@@ -491,7 +491,7 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
         offset: d.position(),
     };
     Ok(match op {
-        0 | 10 | 13..=16 | 19 | 23 => {
+        0 | 10 | 13..=16 | 19 | 23 | 24 => {
             d.array(0)?;
             RequestArgs::None
         }

@@ -180,7 +180,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
 
   // The first navigation away from the connect step writes the route without the race query.
   const dropRace = () => {
-    if (route.name === 'welcome' && route.signin !== null) navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
+    if (route.name === 'welcome' && route.signin !== null) void navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
   };
   const connectNext = () => {
     setBanner(null);

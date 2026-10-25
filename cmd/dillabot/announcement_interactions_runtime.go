@@ -8,7 +8,9 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/service"
 )
 
-func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, automodGrant service.AutoModerationGrantRedeemer, automodRuntime service.AutoModerationConfigRuntime) map[protocol.Operation]service.InteractionHandlerSpec {
+func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, automodGrant service.AutoModerationGrantRedeemer, automodRuntime service.AutoModerationConfigRuntime, providerStatus ...service.MusicProviderStatusInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+	statusRegistered := len(providerStatus) > 0 && providerStatus[0].Authority != nil && providerStatus[0].Snapshot != nil
+	overview.SupportsMusicProviderStatus = statusRegistered
 	handlers := overview.Handlers()
 	for operation, handler := range announcements.Handlers() {
 		handlers[operation] = handler
@@ -37,6 +39,11 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 	}
 	if music != nil && music.Store != nil && music.Authority != nil {
 		for operation, handler := range music.Handlers() {
+			handlers[operation] = handler
+		}
+	}
+	if statusRegistered {
+		for operation, handler := range providerStatus[0].Handlers() {
 			handlers[operation] = handler
 		}
 	}

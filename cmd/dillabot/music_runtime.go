@@ -167,8 +167,14 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
 	publisher := deps.Publisher
+	var resetConnection, closeConnection func() error
 	if publisher == nil {
-		publisher = session.LiveKitPublisher{Lifetime: deps.Lifetime}
+		pool, err := livekit.NewPool(deps.Lifetime)
+		if err != nil {
+			return session.QueueStarter{}, err
+		}
+		publisher = session.RetainedLiveKitPublisher{Pool: pool}
+		resetConnection, closeConnection = pool.Reset, pool.Close
 	}
 	options := func(ctx context.Context, track music.Track) (session.Options, error) {
 		if ctx == nil || track.CanonicalID == "" {
@@ -213,7 +219,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 			Encoder: deps.Encoder, Publisher: publisher, Epochs: deps.Epochs,
 		}, nil
 	}
-	return session.QueueStarter{OptionsFor: options}, nil
+	return session.QueueStarter{OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection}, nil
 }
 
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {

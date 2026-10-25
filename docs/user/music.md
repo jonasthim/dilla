@@ -3,14 +3,14 @@
 Enable the bot's Music capability in **Server settings → Bot**, and approve the
 roles allowed to act as DJs. Owners and administrators can control playback
 without a separate DJ-role grant. The bot needs permission to connect and speak in
-the voice channel. Spotify account linking stays in these settings; YouTube
+the voice channel. Spotify account linking is in **Server settings → Music**; YouTube
 requires the host's yt-dlp playback tools.
 
 To let another member control music without making them an administrator:
 
 1. Create a normal **DJ** role under **Server settings → Roles**.
 2. Assign that role to the member.
-3. Under **Server settings → Bot → Music → DJ roles**, select **DJ** and save.
+3. Under **Server settings → Music → DJ roles**, select **DJ** and save.
 
 DJ access is a bot role approval, not a checkbox in the role's permission list.
 
@@ -57,3 +57,9 @@ command. Definitive reply refusals are consumed durably so one channel cannot
 block command intake elsewhere. Recently received commands from before the bot
 started do not resume restored playback; pending replies for commands already
 accepted before the restart can still finish.
+
+Pause and Stop release the audio stream and its provider resources. The Bot can
+remain silently in the voice channel so the next track does not disconnect and
+rejoin. This connection lasts at most 30 minutes and ends when the Bot is disabled
+or the channel is removed. A server disconnect stops playback; use a new playback
+command to request a fresh connection.

@@ -21,6 +21,18 @@ function setup(stored: 'system' | 'mesh' | 'light' | 'high-contrast' | null) {
 const theme = () => screen.getByRole('radiogroup', { name: 'theme' });
 
 describe('Appearance', () => {
+  it('writes density and reduced motion preferences immediately through settings storage', async () => {
+    const { user } = setup('system');
+    const fake = new FakeClient();
+    fake.set('settings', {});
+    render(<CoreProvider client={fake}><Appearance /></CoreProvider>);
+    await user.click(screen.getByRole('radio', { name: 'Compact' }));
+    await user.click(screen.getByRole('radio', { name: 'On' }));
+    expect(fake.callsOf('setSetting')).toEqual([
+      { m: 'setSetting', key: 'density', value: 'compact' },
+      { m: 'setSetting', key: 'reduceMotion', value: 'on' },
+    ]);
+  });
   it('names the theme control once (walk 23)', async () => {
     const { ready } = setup('light');
     await ready;
@@ -48,10 +60,9 @@ describe('Appearance', () => {
   });
 });
 
-// I1: guard, green at start: the theme is already one settings row (the grammar was adopted in web3.8).
-it('is one settings row', async () => {
+it('shows theme, density and reduced motion as settings rows', async () => {
   const { ready } = setup('light');
   await ready;
   const view = render(<CoreProvider client={new FakeClient()}><Appearance /></CoreProvider>);
-  expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(1);
+  expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(3);
 });

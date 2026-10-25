@@ -1,11 +1,12 @@
 import { afterEach, describe, it, expect } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, CommunityAccess, MemberSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { Shell } from './Shell.tsx';
+import { replaceHistoryState } from '../router.ts';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -23,7 +24,7 @@ const VOICE = 'e5'.repeat(16);
 const GEN_B = 'd4'.repeat(16);
 
 function setup(owner = OTHER, route = `/c/${A}/${GEN}`, channels = CHANNELS) {
-  window.history.replaceState(null, '', route);
+  replaceHistoryState(null, '', route);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
@@ -37,7 +38,7 @@ function setup(owner = OTHER, route = `/c/${A}/${GEN}`, channels = CHANNELS) {
   return { fake, user };
 }
 
-afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); });
+afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); replaceHistoryState(null, '', '/'); });
 const wide = () => {
   window.matchMedia = ((query: string) => ({ matches: true, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
     addListener: () => undefined, removeListener: () => undefined, onchange: null, dispatchEvent: () => false }));
@@ -162,9 +163,9 @@ describe('Shell, server admin and member list (flow 08)', () => {
     act(() => { fake.publish(`permissions:${A}`, access()); });
     await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'leave server' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Ownership / Leave' }));
     expect(within(dialog).getByRole('heading', { level: 2, name: 'leave server' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'leave server', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Ownership / Leave', current: 'page' })).toBeInTheDocument();
   });
 
   it('closing server settings returns focus to the gear', async () => {
@@ -177,13 +178,13 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(gear).toHaveFocus();
   });
 
-  it('server settings opens on the invites tab for a member who holds only create invite (R20)', async () => {
+  it('server settings opens Members and keeps Invites available to a member with create invite', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
-    expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
   });
 
   it('a removal from one server leaves the settings of another open', async () => {
@@ -233,7 +234,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
       fake.publish('removals', [{ id: 1, communityId: A, name: 'Midgard' }]);
     });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(window.location.pathname).toMatch(new RegExp(`^/c/${B}`));
+    await waitFor(() => expect(window.location.pathname).toMatch(new RegExp(`^/c/${B}`)));
     const notice = screen.getByText('You are no longer in Midgard.');
     await user.click(within(notice.parentElement as HTMLElement).getByRole('button', { name: 'dismiss' }));
     expect(screen.queryByText('You are no longer in Midgard.')).toBeNull();
@@ -243,14 +244,14 @@ describe('Shell, server admin and member list (flow 08)', () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
     await user.click(screen.getByRole('button', { name: 'server settings' }));
-    expect(await screen.findByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     act(() => { fake.publish('removals', [{ id: 7, communityId: A, name: 'Midgard' }]); });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('You are no longer in Midgard.')).toBeInTheDocument();
   });
 
   it('a removal from the only server goes to the root', () => {
-    window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+    replaceHistoryState(null, '', `/c/${A}/${GEN}`);
     const fake = new FakeClient();
     fake.set('account', account());
     fake.set('connection', { status: 'online', generation: '7' });
@@ -263,5 +264,24 @@ describe('Shell, server admin and member list (flow 08)', () => {
       fake.publish('removals', [{ id: 1, communityId: A, name: 'Midgard' }]);
     });
     expect(window.location.pathname).toBe('/');
+  });
+});
+
+
+describe('fullscreen server settings routes', () => {
+  it('opens server settings at its route while retaining the conversation', async () => {
+    const { fake, user } = setup();
+    act(() => fake.publish(`permissions:${A}`, access({ manageCommunity: true })));
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    expect(location.pathname).toBe(`/c/${A}/settings`);
+    expect(history.state).toMatchObject({ settingsFrom: `/c/${A}/${GEN}` });
+    expect(screen.getByRole('dialog', { name: 'Server settings' })).toHaveAttribute('aria-modal', 'true');
+    expect(fake.callsOf('callLeave')).toEqual([]);
+  });
+  it('mounts an authorized direct settings link after access arrives', async () => {
+    const { fake } = setup(OTHER, `/c/${A}/settings/members`);
+    act(() => fake.publish(`permissions:${A}`, access()));
+    expect(await screen.findByRole('dialog', { name: 'Server settings' })).toBeInTheDocument();
+    expect(fake.callsOf('getBotInstallation')).toEqual([]);
   });
 });

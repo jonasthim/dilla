@@ -10,6 +10,7 @@ import { suggestDeviceName } from './device-name.ts';
 import { RenameDialog } from './RenameDialog.tsx';
 import { KeyDialog } from './KeyDialog.tsx';
 import { SignOutAction } from './SignOut.tsx';
+import { useSettingsPendingOperation, useSettingsWorkspace } from '../../settings/edit-state.tsx';
 
 const TITLE_ID = 'devices-title';
 
@@ -51,14 +52,17 @@ export function Devices(): React.JSX.Element {
   const client = useCore();
   const devices = useSlice('devices');
   const account = useSlice('account');
+  const workspace = useSettingsWorkspace();
   const [target, setTarget] = useState<Target>(null);
   const [loadError, setLoadError] = useState<UiError | null>(null);
   const [plainBusy, setPlainBusy] = useState(false);
+  const [forgetPending, setForgetPending] = useState(false);
   const [plainError, setPlainError] = useState<UiError | null>(null);
   const plainRunning = useRef(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   // Set by a resolved removal; read once the dialog has closed (its own close effect runs first, as a child's).
   const focusHeading = useRef(false);
+  useSettingsPendingOperation(forgetPending);
 
   const refresh = useCallback(() => {
     setLoadError(null);
@@ -76,6 +80,11 @@ export function Devices(): React.JSX.Element {
     setPlainError(null);
     setTarget(next);
   };
+  const requestForget = () => {
+    const openDialog = () => choose({ kind: 'forget' });
+    if (workspace) void workspace.requestNavigation(openDialog);
+    else openDialog();
+  };
   const close = () => { if (!plainRunning.current) setTarget(null); };
 
   const confirmPlain = async (command: Command, removal: boolean) => {
@@ -83,6 +92,7 @@ export function Devices(): React.JSX.Element {
     plainRunning.current = true;
     setPlainBusy(true);
     setPlainError(null);
+    if (command.m === 'forgetBrowser') setForgetPending(true);
     try {
       await client.call(command);
       if (removal) focusHeading.current = true;
@@ -90,6 +100,7 @@ export function Devices(): React.JSX.Element {
     } catch (e) {
       setPlainError(errorOf(e));
     } finally {
+      if (command.m === 'forgetBrowser') setForgetPending(false);
       plainRunning.current = false;
       setPlainBusy(false);
     }
@@ -155,7 +166,7 @@ export function Devices(): React.JSX.Element {
         <SignOutAction />
       </SettingsRow>
       <SettingsRow id="devices-forget" label={t('devices.forgetTitle')}>
-        <Button onClick={() => choose({ kind: 'forget' })}>{t('devices.forget')}</Button>
+        <Button onClick={requestForget}>{t('devices.forget')}</Button>
       </SettingsRow>
 
       <KeyDialog open={revokeId !== null} id="devices-revoke" subject={subjectOf(revokeId)} title={t('devices.revokeTitle')} body={t('devices.revokeBody')}

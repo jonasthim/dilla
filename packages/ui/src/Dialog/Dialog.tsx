@@ -21,11 +21,11 @@ export type DialogProps = { open: boolean; title: string; onClose: () => void; c
  * else the element that now carries the opener's `data-focus-key` (a row re-mounted elsewhere while the dialog was
  * open); else `fallback`. Null when none of them exists: the caller then leaves focus alone.
  */
-export function focusReturnTarget(opener: HTMLElement | null, fallback?: () => HTMLElement | null | undefined): HTMLElement | null {
+export function focusReturnTarget(opener: HTMLElement | null, fallback?: () => HTMLElement | null | undefined, scope?: ParentNode | null): HTMLElement | null {
   if (opener !== null && opener.isConnected) return opener;
   const key = opener?.dataset.focusKey;
   if (key !== undefined) {
-    const same = Array.from(document.querySelectorAll<HTMLElement>('[data-focus-key]')).find(e => e.dataset.focusKey === key);
+    const same = Array.from((scope ?? document).querySelectorAll<HTMLElement>('[data-focus-key]')).find(e => e.dataset.focusKey === key);
     if (same !== undefined) return same;
   }
   return fallback?.() ?? null;

@@ -231,8 +231,9 @@ describe('the role flows', () => {
     const { user } = setup({ acc: { manageRoles: true } });
     await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = screen.getByRole('dialog', { name: /settings/i });
-    await user.click(within(dialog).getByRole('button', { name: 'roles' }));
-    expect(within(dialog).getByRole('button', { name: 'roles', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Roles' }));
+    expect(within(dialog).getByRole('button', { name: 'Roles', current: 'page' })).toBeInTheDocument();
     expect(within(dialog).getByRole('heading', { name: 'Roles' })).toBeInTheDocument();
   });
 });

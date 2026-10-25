@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
-  FIREFOX_FAVICON_LINE, addServerVia, completeSignUp, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
+  FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
   openChannel, reactionChip, rowAction, sendText, signIn, signUp, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -117,7 +117,7 @@ test('a bot enabled through server settings reaches ready through the native run
       const refreshed = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await refreshed.getByRole('navigation', { name: copy('admin.nav'), exact: true })
         .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-      return refreshed.getByRole('status').innerText();
+      return refreshed.locator('.dw-bot-settings').getByRole('status').innerText();
     }, { timeout: 90_000, intervals: [1_000, 2_000, 3_000] }).toBe(copy('admin.bot.status.ready'));
   } finally {
     await host?.stop();
@@ -166,7 +166,7 @@ test('music chat commands receive public bot replies through the native runtime'
       const refreshed = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await refreshed.getByRole('navigation', { name: copy('admin.nav'), exact: true })
         .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-      return refreshed.getByRole('status').innerText();
+      return refreshed.locator('.dw-bot-settings').getByRole('status').innerText();
     }, { timeout: 90_000, intervals: [1_000, 2_000, 3_000] }).toBe(copy('admin.bot.status.ready'));
     await page.keyboard.press('Escape');
     await openChannel(page, SERVER, 'general');
@@ -216,11 +216,13 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     // Establish this device's private group before taking its issuer offline.
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
     await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
-    await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
 
     // Device 1 submits a real encrypted request while the Bot is offline. The pending response
@@ -229,7 +231,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     const loadAutomatic = settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true });
     await loadAutomatic.click();
     await expect(settings.getByText(copy('admin.bot.moderationLog.waiting'), { exact: true })).toBeVisible();
@@ -257,7 +259,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await deviceOne.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     settings = deviceOne.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
     await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
     await expect.poll(async () => deviceOne.evaluate(requestId => {
@@ -281,7 +283,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     const secondSettings = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     await secondSettings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
     await expect.poll(() => lastWorkerCommandOutcome(secondPage!, 'listModerationCases'),
       { timeout: 20_000, intervals: [250, 500, 1_000] }).toEqual({
@@ -354,23 +356,27 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 30_000 });
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 30_000 });
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('workspace.joinRoles'), exact: true }).click();
 
     const joinRoleSelect = settings.getByRole('combobox', { name: copy('admin.bot.joinRole.label'), exact: true });
     await expect(joinRoleSelect).toBeVisible();
     const selectedJoinRole = await joinRoleSelect.selectOption({ label: joinRoleName });
-    const saveJoinRole = settings.getByRole('button', { name: copy('admin.bot.joinRole.save'), exact: true });
+    const saveJoinRole = settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true });
     await expect(saveJoinRole).toBeEnabled();
     await saveJoinRole.click();
-    await expect(saveJoinRole).toBeDisabled();
+    await expect(saveJoinRole).toHaveCount(0, { timeout: WAIT });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('workspace.joinRoles'), exact: true }).click();
     await expect(settings.getByRole('combobox', { name: copy('admin.bot.joinRole.label'), exact: true }))
       .toHaveValue(selectedJoinRole[0] ?? '');
-    await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
     const inviteLink = await makeInviteLink(page, SERVER);
 
@@ -384,7 +390,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     await expect.poll(async () => {
       const openSettings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       if (await openSettings.isVisible()) {
-        await openSettings.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await openSettings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
         await expect(openSettings).toBeHidden();
       }
       await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
@@ -469,7 +475,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 30_000 });
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 30_000 });
 
     // Approve a plain role using the owner UI; only approved, eligible roles can appear in the panel publisher.
     await nav.getByRole('button', { name: copy('admin.nav.selfRoles'), exact: true }).click();
@@ -478,7 +484,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await expect(approvalCheckbox).not.toBeChecked();
     await approvalCheckbox.click();
     await expect(approvalCheckbox).toBeChecked();
-    await expect(page.getByTestId('shell-announcer')).toContainText(copy('admin.bot.selfRoles.saved'));
+    await expect(settings.locator('.d-sr-only[role="status"]')).toHaveText(copy('admin.bot.selfRoles.saved'));
 
     // Join the second human before publishing so the acceptance exercises live encrypted delivery.
     await page.keyboard.press('Escape');
@@ -500,8 +506,9 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await settings.getByLabel(`${copy('admin.bot.rolePanel.emoji')} for ${roleName}`, { exact: true }).fill('👍');
     await settings.getByRole('combobox', { name: copy('admin.bot.rolePanel.channel'), exact: true }).selectOption({ label: 'general' });
     await settings.getByRole('button', { name: copy('admin.bot.rolePanel.publish'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.rolePanel.pending'));
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.rolePanel.published'), { timeout: 90_000 });
+    const selfRoles = settings.getByRole('region', { name: copy('admin.bot.selfRoles.title'), exact: true });
+    await expect(selfRoles.getByRole('status').filter({ hasText: copy('admin.bot.rolePanel.pending') })).toHaveText(copy('admin.bot.rolePanel.pending'));
+    await expect(selfRoles.getByRole('status').filter({ hasText: copy('admin.bot.rolePanel.published') })).toHaveText(copy('admin.bot.rolePanel.published'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
     await expect(settings).toBeHidden();
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,9 +89,11 @@ func (p *supervisorPlayback) Close() error {
 }
 
 type supervisorStarter struct {
-	starts  []music.Track
-	current *supervisorPlayback
-	fail    bool
+	explicitStarts int
+	closed         atomic.Int32
+	starts         []music.Track
+	current        *supervisorPlayback
+	fail           bool
 }
 
 type fakeTimer struct {
@@ -116,6 +119,43 @@ func (s *supervisorStarter) Start(ctx context.Context, t music.Track) (music.Pla
 	s.current = &supervisorPlayback{done: make(chan struct{})}
 	return s.current, nil
 }
+func (s *supervisorStarter) StartExplicit(ctx context.Context, track music.Track) (music.Playback, error) {
+	s.explicitStarts++
+	return s.Start(ctx, track)
+}
+func (s *supervisorStarter) Close() error { s.closed.Add(1); return nil }
+
+func TestSupervisorCancellationClosesRetainedConnectionOnce(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	starter := &supervisorStarter{}
+	supervisor, err := music.NewSupervisor(ctx, tid(4), supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	cancel()
+	deadline := time.After(time.Second)
+	for starter.closed.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("cancellation did not close retained connection")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if err := supervisor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if starter.closed.Load() != 1 {
+		t.Fatal("retained connection closed more than once")
+	}
+}
+
 func tid(v byte) (x id.ID) { x[15] = v; return }
 
 func TestSupervisorPersistsQueueBeforePlaybackAndNeverAutoplaysRestore(t *testing.T) {
@@ -238,6 +278,9 @@ func TestSupervisorAppliesCommittedRevisionWithoutSecondMutationWrite(t *testing
 	}
 	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err != nil {
 		t.Fatal(err)
+	}
+	if starter.explicitStarts != 2 {
+		t.Fatalf("committed resume and Skip must authorize their own fresh admission: %d", starter.explicitStarts)
 	}
 	if len(starter.starts) != 2 || starter.starts[1].ID != nextTrack.ID || starter.current == nil {
 		t.Fatalf("committed active Skip starts=%v, want playback of %s", starter.starts, nextTrack.ID)
@@ -527,6 +570,9 @@ func TestSupervisorAdvancesAfterTrackEOF(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
+	if starter.explicitStarts != 1 {
+		t.Fatalf("EOF must not authorize a room reconnect: explicit starts=%d", starter.explicitStarts)
+	}
 	if len(starter.starts) != 2 || s.State().Current == nil || s.State().Current.ID != "b" {
 		t.Fatalf("did not advance: starts=%v state=%+v", starter.starts, s.State())
 	}
@@ -575,5 +621,31 @@ func TestSupervisorEOFFailuresLeaveQueuePaused(t *testing.T) {
 				t.Fatalf("EOF %s left unsafe state: %+v", phase, got)
 			}
 		})
+	}
+}
+
+func TestSupervisorResumeWhilePlayingKeepsCurrentPublication(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &supervisorStarter{}
+	s, err := music.NewSupervisor(context.Background(), tid(4), supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}
+	if _, err := s.Apply(context.Background(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := s.Apply(context.Background(), s.State().Revision, music.Operation{Kind: music.OpResume}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(starter.starts) != 1 || s.State().Paused {
+		t.Fatalf("repeated Resume replaced a live track: starts=%d state=%+v", len(starter.starts), s.State())
 	}
 }

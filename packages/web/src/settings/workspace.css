@@ -1,0 +1,15 @@
+.dw-settings-search { display: grid; gap: 0.5rem; padding: 0.75rem 0.625rem; }
+.dw-settings-search label { color: var(--fg-3); font-size: var(--text-xs); }
+.dw-settings-search input { width: 100%; min-width: 0; box-sizing: border-box; padding: 0.625rem; color: var(--fg); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-sm); font: inherit; }
+.dw-settings-results ul { list-style: none; padding: 0; margin: 0; }
+.dw-settings-results button { display: grid; gap: 0.25rem; width: 100%; min-height: 2.75rem; padding: 0.75rem 0.625rem; text-align: start; border: 0; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+.dw-settings-results button:hover { background: var(--bg-2); }
+.dw-settings-results small { color: var(--fg-3); font-size: var(--text-xs); }
+.dw-settings-results p { padding: 0.625rem; color: var(--fg-3); font-size: var(--text-sm); }
+.dw-settings-identity { padding: 0.625rem; overflow-wrap: anywhere; }
+.dw-settings-identity strong, .dw-settings-identity span { display: block; }
+.dw-settings-identity span { color: var(--fg-3); font-size: var(--text-xs); }
+.dw-settings-activity { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+
+.dw-bot-settings code { overflow-wrap: anywhere; white-space: normal; }
+.dw-bot-settings .d-settings-row__control { min-width: 0; }
