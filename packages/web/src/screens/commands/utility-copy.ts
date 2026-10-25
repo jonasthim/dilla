@@ -1,32 +1,6 @@
-const copy = {
-  'poll.chooseMany': 'Choose any that fit', 'poll.chooseOne': 'Choose one answer', 'poll.submit': 'Submit vote',
-  'poll.withdraw': 'Withdraw vote', 'poll.retryVote': 'Retry vote', 'poll.retryWithdraw': 'Retry withdrawal', 'poll.retryClose': 'Retry close', 'poll.close': 'Close poll', 'poll.closed': 'Poll closed', 'poll.closes': 'Closes {time}',
-  'poll.voters': '{count} · {answer}', 'poll.noVoters': 'No votes yet.', 'poll.moreVoters': 'More voters',
-  'poll.openThread': 'Open this thread', 'poll.conflict': 'The poll changed. Review the latest results before voting again.',
-  'poll.uncertain': 'The vote result is uncertain. Refresh the poll before trying again.', 'poll.readError': 'Could not load voter names.',
-  'poll.created': 'Poll published.', 'poll.createdUncertain': 'The poll may have been published. Check this conversation before retrying.',
-  'poll.results': '{question}\n{answers}', 'poll.noPolls': 'There are no polls in this conversation.',
-  'poll.createTitle': 'Create a poll', 'poll.question': 'Question', 'poll.answers': 'Answers', 'poll.answerHelp': 'One answer per line. Add 2 to 10 answers.',
-  'poll.multiple': 'Allow multiple answers', 'poll.duration': 'Close after', 'poll.validation': 'Check the question, answers, and size limit.',
-  'poll.byteCount': '{current} of {limit} bytes', 'poll.charCount': '{current} of {limit} characters',
-  'reminder.createTitle': 'Set a reminder', 'reminder.when': 'When', 'reminder.text': 'Reminder', 'reminder.timezone': 'Time zone',
-  'reminder.preview': 'This will be due {preview}.', 'reminder.byteCount': '{current} of 1500 bytes', 'reminder.invalid': 'Choose a valid time from 1 minute to 365 days away and enter reminder text.',
-  'reminder.ambiguous': 'This local time occurs twice. Choose which time you mean.', 'reminder.earlier': 'Earlier · {offset}',
-  'reminder.later': 'Later · {offset}', 'reminder.created': 'Reminder set.',
-  'reminder.uncertain': 'The reminder may have been set. Check your reminders before trying again.',
-  'reminder.list': '{count} reminder(s): {items}', 'reminder.empty': 'You have no reminders.',
-  'reminder.cancelled': 'Reminder cancelled.', 'reminder.dismissed': 'Reminder dismissed.',
-  'reminder.inbox': 'Reminders', 'reminder.inboxTitle': 'Your reminders', 'reminder.due': 'Due', 'reminder.upcoming': 'Scheduled',
-  'reminder.loading': 'Loading reminders…', 'reminder.loadError': 'Some reminders could not be loaded. Try again shortly.',
-  'reminder.emptyInbox': 'No reminders are due or scheduled.', 'reminder.cancel': 'Cancel', 'reminder.dismiss': 'Dismiss',
-  'reminder.source': 'Open source message', 'reminder.sourceUnavailable': 'The source message is no longer available.',
-  'reminder.more': 'Load more', 'reminder.badge': '{count} due', 'reminder.close': 'Close reminders',
-  'reminder.uncertainMutation': 'The change may have been saved. Refresh reminders before trying again.',
-} as const;
-export type UtilityCopyKey = keyof typeof copy;
+import { t, type StringKey } from '../../strings/index.ts';
+import { utility } from '../../strings/utility.ts';
+export type UtilityCopyKey = keyof typeof utility & StringKey;
 export function utilityText(key: UtilityCopyKey, vars?: Record<string, string | number>): string {
-  return copy[key].replace(/\{([a-zA-Z]+)\}/gu, (_, name: string) => {
-    if (vars?.[name] === undefined) throw new Error(`utility copy: ${key} needs {${name}}`);
-    return String(vars[name]);
-  });
+  return t(key, vars);
 }

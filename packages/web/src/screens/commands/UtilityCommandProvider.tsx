@@ -3,7 +3,7 @@ import { Button, Dialog } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
-import { PERM, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
+import { channelBitsOf, PERM, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
 import { t } from '../../strings/index.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
@@ -17,6 +17,21 @@ const success = (message: string): CommandResult => ({ status: 'success', messag
 const failure = (message: string): CommandResult => ({ status: 'failure', message, private: true });
 const uncertain = (message: string): CommandResult => ({ status: 'uncertain', message, private: true });
 const thread = (binding: Readonly<Binding>) => binding.threadId === undefined ? null : binding.threadId;
+type CreateAttempt = { kind: string; scope: string; installationId: string; value: Record<string, unknown> };
+const createAttempts = new WeakMap<CoreClient, Map<string, CreateAttempt>>();
+function createAttemptMap(client: CoreClient): Map<string, CreateAttempt> {
+  const current = createAttempts.get(client); if (current) return current;
+  const created = new Map<string, CreateAttempt>(); createAttempts.set(client, created); return created;
+}
+function executionScope(context: CommandExecutionContext): string {
+  const account = context.client.get('account');
+  return [account?.instance?.id ?? '', account?.user?.id ?? '', account?.deviceId ?? '', context.binding.communityId ?? '', context.binding.channelId ?? '', thread(context.binding) ?? ''].join(':');
+}
+function canCreateFromContext(context: CommandExecutionContext, communityId: string): boolean {
+  const current = context.getCurrentBinding();
+  return context.isCurrent() && current.communityId === communityId && current.channelId !== null
+    && current.channelId === context.binding.channelId && ((current.bits ?? 0) & PERM.sendMessages) !== 0;
+}
 const caught = (error: unknown, kind: 'poll' | 'reminder' = 'poll'): CommandResult => {
   if (error instanceof BotUtilitiesUncertainMutationError) return uncertain(copy(kind === 'poll' ? 'poll.createdUncertain' : 'reminder.uncertain'));
   if (error instanceof BotUtilitiesProviderUnavailableError) return failure('The Bot is unavailable in this community.');
@@ -31,10 +46,10 @@ const caught = (error: unknown, kind: 'poll' | 'reminder' = 'poll'): CommandResu
 export interface UtilityDialogBase { isCurrent(): boolean; onCancel(): void; }
 export type UtilityDialogInput =
   | { kind: 'poll'; question: string; answers: string; multi: boolean; duration: string; channelId: string; threadId: string | null }
-  | { kind: 'reminder'; when: string; text: string; timezone: string };
+  | { kind: 'reminder'; when: string; text: string; timezone: string; chosen?: number };
 export type UtilityDialogState =
   | (UtilityDialogBase & { kind: 'poll'; question: string; answers: string; multi: boolean; duration: string; channelId: string; threadId: string | null; onSubmit(value: { question: string; answers: string[]; multi: boolean; duration: number }): void })
-  | (UtilityDialogBase & { kind: 'reminder'; when: string; text: string; timezone: string; onSubmit(value: { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> }): void });
+  | (UtilityDialogBase & { kind: 'reminder'; when: string; text: string; timezone: string; chosen?: number; onSubmit(value: { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> }): void });
 
 export function UtilityCommandDialogs({ dialog }: { dialog: UtilityDialogState | null }): React.JSX.Element | null {
   useEffect(() => {
@@ -63,7 +78,10 @@ function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { ki
   };
   return <Dialog open title={copy('poll.createTitle')} closeLabel={t('dialog.close')} onClose={() => dialog.onCancel()}
     footer={<><Button onClick={() => dialog.onCancel()}>{t('chperm.cancel')}</Button><Button variant="accent" onClick={submit}>{t('botCommand.save')}</Button></>}>
-    <label>{copy('poll.question')}<textarea value={question} maxLength={300} onChange={event => setQuestion(event.currentTarget.value)} data-autofocus /></label>
+    <label>{copy('poll.question')}<textarea value={question} onChange={event => {
+      const next = event.currentTarget.value;
+      if (Array.from(next).length <= 300) setQuestion(next);
+    }} data-autofocus /></label>
     <p>{copy('poll.charCount', { current: Array.from(question).length, limit: 300 })}</p>
     <label>{copy('poll.answers')}<textarea value={answers} onChange={event => setAnswers(event.currentTarget.value)} /></label><p>{copy('poll.answerHelp')}</p>
     <p>{copy('poll.byteCount', { current: bytes ?? new TextEncoder().encode(question + lines.join('')).length, limit: 1800 })}{aggregateError ? <span role="alert">Poll answers exceed the 1800 byte limit.</span> : null}</p>
@@ -75,7 +93,7 @@ function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { ki
 }
 function ReminderCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { kind: 'reminder' }> }): React.JSX.Element {
   const [when, setWhen] = useState(dialog.when); const [text, setText] = useState(dialog.text); const [timezone, setTimezone] = useState(dialog.timezone);
-  const [chosen, setChosen] = useState<number | null>(null); const [error, setError] = useState(''); const [now, setNow] = useState(() => new Date());
+  const [chosen, setChosen] = useState<number | null>(dialog.chosen ?? null); const [error, setError] = useState(''); const [now, setNow] = useState(() => new Date());
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 15_000); return () => window.clearInterval(timer); }, []);
   const parsed = useMemo(() => parseReminderTime(when.trim().replace(/^in\s+/iu, ''), timezone, now), [when, timezone, now]);
   const resolved = parsed.kind === 'ambiguous' && chosen !== null ? resolveReminderTimeCandidate(parsed, chosen, now) : parsed;
@@ -99,6 +117,17 @@ function ReminderCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, 
 
 export interface ReminderInboxEntry { communityId: string; reminder: ReminderSummary; }
 export type UtilityNavigate = (communityId: string, channelId: string, threadId: string | null) => void;
+function sourceAccessible(client: CoreClient, communityId: string, channelId: string | null): boolean {
+  if (channelId === null) return false;
+  const community = client.get('communities')?.find(row => row.id === communityId);
+  const channel = client.get(`channels:${communityId}`)?.find(row => row.id === channelId);
+  const account = client.get('account'); const access = client.get(`permissions:${communityId}`);
+  const roles = client.get(`roles:${communityId}`); const members = client.get(`members:${communityId}`); const overwrites = client.get(`overwrites:${communityId}`);
+  if (community === undefined || channel?.kind !== 0 || channel.group !== 'active' || account?.user === null || account?.user === undefined
+    || access === undefined || !access.loaded || !access.overwritesLoaded || access.everyoneId === '' || roles === undefined || members === undefined || overwrites === undefined) return false;
+  const bits = channelBitsOf({ owner: community.owner, everyoneId: access.everyoneId, roles, members, overwrites: overwrites[channelId] ?? [] }, account.user.id);
+  return bits !== null && (bits & PERM.viewChannel) !== 0;
+}
 export function useUtilityCommandProvider(client: CoreClient, communityId: string | null, onNavigate?: UtilityNavigate): {
   handlers: CommandProviderHandlers; suggest: CommandSuggestionProvider; dialogs: ReactNode; inbox: ReactNode; dueCount: number;
 } {
@@ -109,11 +138,20 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const [dialog, setDialog] = useState<UtilityDialogState | null>(null);
   const [dialogScope, setDialogScope] = useState<{ client: CoreClient; owner: string; communityId: string | null } | null>(null);
   const resolveDialog = useRef<((value: unknown) => void) | null>(null);
+  const cancelDialog = useRef<(() => void) | null>(null);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [records, setRecords] = useState<{ client: CoreClient; owner: string; rows: ReminderInboxEntry[]; loading: boolean; error: boolean } | null>(null);
+  const [pausedCommunities, setPausedCommunities] = useState<Map<string, string>>(() => new Map());
+  const [sourceAccessVersion, setSourceAccessVersion] = useState(0);
   const joinedCommunityKey = (client.get('communities') ?? []).map(row => row.id).sort().join(':');
   const [observedCommunities, setObservedCommunities] = useState(joinedCommunityKey);
   useEffect(() => client.subscribe('communities', () => setObservedCommunities((client.get('communities') ?? []).map(row => row.id).sort().join(':'))), [client]);
+  useEffect(() => {
+    const ids = joinedCommunityKey.split(':').filter(Boolean);
+    const keys = ids.flatMap(id => [`channels:${id}` as const, `permissions:${id}` as const, `roles:${id}` as const, `members:${id}` as const, `overwrites:${id}` as const]);
+    const off = keys.map(key => client.subscribe(key, () => setSourceAccessVersion(value => value + 1)));
+    return () => { for (const unsubscribe of off) unsubscribe(); };
+  }, [client, joinedCommunityKey]);
   const currentRecords = useMemo(() => {
     const liveCommunityIds = new Set(joinedCommunityKey.split(':').filter(Boolean));
     return records?.client === client && records.owner === ownerKey ? records.rows.filter(row => liveCommunityIds.has(row.communityId)) : [];
@@ -122,29 +160,49 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const knownDue = useRef<{ owner: string; ids: Set<string> } | null>(null);
   const fetchToken = useRef(0);
   const utilityFor = useCallback((id: string) => createBotUtilities(client, id), [client]);
-  const fetchInbox = useCallback(async (showLoading = false) => {
+  const fetchInbox = useCallback(async (showLoading = false, retryPaused = false) => {
     if (ownerKey === '' || observedCommunities !== joinedCommunityKey) { setRecords(null); return []; }
     const token = ++fetchToken.current; const currentOwner = ownerKey;
     const joined = (client.get('communities') ?? []).slice();
+    if (retryPaused) setPausedCommunities(new Map());
     if (showLoading) setRecords({ client, owner: currentOwner, rows: [], loading: true, error: false });
-    const next: ReminderInboxEntry[] = []; let failed = false;
+    const next: ReminderInboxEntry[] = []; let failed = false; const unavailable = new Set<string>();
+    const pauseKey = `${currentOwner}:${joinedCommunityKey}`;
     for (const [index, community] of joined.entries()) {
       if (token !== fetchToken.current || liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return [];
+      if (!retryPaused && pausedCommunities.get(community.id) === pauseKey) continue;
       if (index > 0) await new Promise(resolve => window.setTimeout(resolve, Math.min(index * 120, 900)));
+      const staged: ReminderInboxEntry[] = [];
       try {
-        const utility = utilityFor(community.id); await utility.capabilities();
+        const utility = utilityFor(community.id); const caps = await utility.capabilities();
+        if (!caps.supportedOperations.includes(81)) { unavailable.add(community.id); continue; }
         let cursor: Uint8Array | null = null;
-        for (let page = 0; page < 4; page++) {
+        for (let page = 0; page < 5; page++) {
           const result = await utility.reminderList(cursor);
-          next.push(...result.items.filter(item => item.state === 'scheduled' || item.state === 'due').map(reminder => ({ communityId: community.id, reminder })));
+          staged.push(...result.items.filter(item => item.state === 'scheduled' || item.state === 'due').map(reminder => ({ communityId: community.id, reminder })));
           cursor = result.nextCursor; if (cursor === null) break;
         }
+        if (cursor !== null) { failed = true; continue; }
+        if (token !== fetchToken.current || liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner
+          || !(client.get('communities') ?? []).some(row => row.id === community.id)) return [];
+        next.push(...staged);
       } catch (error) {
-        if (!(error instanceof BotUtilitiesProviderUnavailableError) && !(error instanceof BotUtilitiesStatusError && error.status === 2)) failed = true;
+        if (error instanceof BotUtilitiesProviderUnavailableError || (error instanceof BotUtilitiesStatusError && (error.status === 2 || error.status === 3))) unavailable.add(community.id);
+        else failed = true;
         // This community is deliberately absent: disabled or inaccessible private data never stays visible.
       }
     }
     if (token !== fetchToken.current || liveScope.current.client !== client || liveScope.current.ownerKey !== currentOwner) return [];
+    setPausedCommunities(previous => {
+      const currentIds = new Set(joined.map(row => row.id));
+      const nextPaused = retryPaused ? new Map<string, string>() : new Map([...previous].filter(([id]) => currentIds.has(id)));
+      let changed = nextPaused.size !== previous.size;
+      for (const id of unavailable) {
+        if (nextPaused.get(id) !== pauseKey) { nextPaused.set(id, pauseKey); changed = true; }
+      }
+      if (retryPaused && previous.size > 0) changed = true;
+      return changed ? nextPaused : previous;
+    });
     const ordered = next.sort((a, b) => Number(a.reminder.dueUnixSeconds - b.reminder.dueUnixSeconds));
     const previous = knownDue.current?.owner === currentOwner ? knownDue.current.ids : null;
     const seen = new Set(previous ?? []);
@@ -152,7 +210,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     for (const entry of ordered) if (entry.reminder.state === 'due') seen.add(entry.reminder.id);
     knownDue.current = { owner: currentOwner, ids: seen };
     setRecords({ client, owner: currentOwner, rows: ordered, loading: false, error: failed }); return ordered;
-  }, [client, ownerKey, utilityFor, joinedCommunityKey, observedCommunities]);
+  }, [client, ownerKey, utilityFor, joinedCommunityKey, observedCommunities, pausedCommunities]);
   useEffect(() => {
     if (ownerKey === '') { fetchToken.current++; knownDue.current = null; setRecords(null); return; }
     knownDue.current = null;
@@ -171,39 +229,80 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     const token = fetchToken;
     return () => { stopped = true; token.current++; window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [ownerKey, fetchInbox]);
-  const openDialog = useCallback((state: UtilityDialogInput, context: CommandExecutionContext) => new Promise<unknown>(resolve => {
+  const openDialog = useCallback((state: UtilityDialogInput, context: CommandExecutionContext, installationId: string, operation: 70 | 80) => new Promise<unknown>(resolve => {
     if (liveScope.current.client !== client || liveScope.current.ownerKey === '' || !context.isCurrent()) { resolve(null); return; }
+    cancelDialog.current?.();
     const scope = { client, owner: liveScope.current.ownerKey, communityId };
     setDialogScope(scope);
-    resolveDialog.current?.(null); resolveDialog.current = resolve;
-    const isScopeCurrent = () => liveScope.current.client === scope.client && liveScope.current.ownerKey === scope.owner && liveScope.current.communityId === scope.communityId && context.isCurrent();
-    const cancel = () => { resolveDialog.current?.(null); resolveDialog.current = null; setDialog(null); setDialogScope(null); };
-    const submit = (value: unknown) => { if (!isScopeCurrent()) { cancel(); return; } resolveDialog.current?.(value); resolveDialog.current = null; setDialog(null); setDialogScope(null); };
+    resolveDialog.current = resolve;
+    const capturedBinding = context.binding;
+    const isScopeCurrent = () => {
+      const current = context.getCurrentBinding();
+      return liveScope.current.client === scope.client && liveScope.current.ownerKey === scope.owner && liveScope.current.communityId === scope.communityId
+        && current.communityId === communityId && current.channelId === capturedBinding.channelId && current.channelId !== null
+        && ((current.bits ?? 0) & PERM.sendMessages) !== 0 && context.isCurrent();
+    };
+    let timer = 0; let capabilityProbe = 0; let settled = false;
+    const finish = (value: unknown) => {
+      if (settled) return; settled = true; window.clearInterval(timer);
+      if (resolveDialog.current === resolve) { resolveDialog.current = null; cancelDialog.current = null; setDialog(null); setDialogScope(null); }
+      resolve(value);
+    };
+    const cancel = () => finish(null);
+    cancelDialog.current = cancel;
+    timer = window.setInterval(() => {
+      if (!isScopeCurrent()) { cancel(); return; }
+      capabilityProbe++;
+      if (capabilityProbe % 10 === 0 && communityId !== null) void utilityFor(communityId).capabilities().then(caps => {
+        if (!isScopeCurrent() || caps.installationId !== installationId || !caps.supportedOperations.includes(operation)) cancel();
+      }).catch(cancel);
+    }, 100);
+    const submit = (value: unknown) => { if (!isScopeCurrent()) { cancel(); return; } finish(value); };
     setDialog({ ...state, isCurrent: isScopeCurrent, onCancel: cancel, onSubmit: submit });
-  }), [client, communityId]);
+  }), [client, communityId, utilityFor]);
   useEffect(() => {
     if (dialogScope === null || (dialogScope.client === client && dialogScope.owner === ownerKey && dialogScope.communityId === communityId)) return;
-    resolveDialog.current?.(null); resolveDialog.current = null; setDialog(null); setDialogScope(null);
+    cancelDialog.current?.();
   }, [client, communityId, dialogScope, ownerKey]);
-  useEffect(() => () => { fetchToken.current++; resolveDialog.current?.(null); resolveDialog.current = null; }, []);
+  useEffect(() => () => { fetchToken.current++; cancelDialog.current?.(); }, []);
   const refreshRequestId = useCallback(() => { void fetchInbox(); }, [fetchInbox]);
   const open = useCallback(async (state: UtilityDialogInput, context: CommandExecutionContext) => {
-    if (!context.isCurrent()) return null;
-    const value = await openDialog(state, context);
-    return context.isCurrent() ? value : null;
-  }, [openDialog]);
+    if (communityId === null || !canCreateFromContext(context, communityId)) return null;
+    const operation = state.kind === 'poll' ? 70 : 80;
+    try {
+      const caps = await utilityFor(communityId).capabilities();
+      if (!canCreateFromContext(context, communityId) || !caps.supportedOperations.includes(operation)) return null;
+      const value = await openDialog(state, context, caps.installationId, operation);
+      return context.isCurrent() ? value : null;
+    } catch { return null; }
+  }, [communityId, openDialog, utilityFor]);
   const commandHandlers = useMemo<CommandProviderHandlers>(() => {
     if (communityId === null) return {};
     const handlers: Record<string, (invocation: CommandInvocation, context: CommandExecutionContext) => Promise<CommandResult>> = {};
     handlers['poll create'] = async (invocation, context) => {
-      if (!context.isCurrent() || context.binding.communityId !== communityId || !context.binding.channelId) return failure('Create a poll in a community channel.');
+      if (!canCreateFromContext(context, communityId) || !context.binding.channelId) return failure('Create a poll in a community channel.');
+      const scope = executionScope(context); const attempts = createAttemptMap(client); const prior = attempts.get(context.requestId);
+      if (prior && (prior.kind !== 'poll' || prior.scope !== scope)) return uncertain(copy('poll.createdUncertain'));
+      let utility: BotUtilities; let caps;
+      try { utility = utilityFor(communityId); caps = await utility.capabilities(); }
+      catch (error) { return prior ? uncertain(copy('poll.createdUncertain')) : caught(error); }
+      if (!canCreateFromContext(context, communityId) || !caps.supportedOperations.includes(70)) return prior ? uncertain(copy('poll.createdUncertain')) : failure('The Bot cannot create polls in this channel.');
+      if (prior && prior.installationId !== caps.installationId) return uncertain(copy('poll.createdUncertain'));
       const answers = invocation.args.answers ?? '';
-      const raw = await open({ kind: 'poll', question: invocation.args.question ?? '', answers: answers.replace(/\s*,\s*/gu, '\n'), multi: invocation.args.multiple === 'on', duration: invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
-      if (raw === null) return failure('Poll creation cancelled.');
-      try { if (!context.isCurrent()) return failure('The conversation changed.');
-        const utility = utilityFor(communityId); const poll = await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: raw.question, answers: raw.answers, multi: raw.multi, durationSeconds: raw.duration });
+      const saved = prior?.value as { question: string; answers: string[]; multi: boolean; duration: number } | undefined;
+      const raw = await open({ kind: 'poll', question: saved?.question ?? invocation.args.question ?? '', answers: saved?.answers.join('\n') ?? answers.replace(/\s*,\s*/gu, '\n'), multi: saved?.multi ?? invocation.args.multiple === 'on', duration: saved ? Object.keys(DURATIONS).find(key => DURATIONS[key] === saved.duration) ?? '24h' : invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
+      if (raw === null) return prior ? uncertain(copy('poll.createdUncertain')) : failure('Poll creation cancelled.');
+      const submitted = saved ?? raw;
+      const attempt = prior ?? { kind: 'poll' as const, scope, installationId: caps.installationId, value: { ...raw, answers: [...raw.answers] } };
+      attempts.set(context.requestId, attempt);
+      try { if (!canCreateFromContext(context, communityId)) return uncertain(copy('poll.createdUncertain'));
+        const poll = await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: submitted.question, answers: submitted.answers, multi: submitted.multi, durationSeconds: submitted.duration });
+        attempts.delete(context.requestId);
         return success(copy('poll.created') + ` ${poll.id}`);
-      } catch (error) { return caught(error); }
+      } catch (error) {
+        if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
+        return caught(error);
+      }
     };
     for (const id of ['poll vote', 'poll results', 'poll close']) handlers[id] = async (invocation, context) => {
       if (!context.isCurrent() || context.binding.communityId !== communityId) return failure('The conversation changed.');
@@ -212,32 +311,71 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       try {
         const utility = utilityFor(communityId); const poll = await utility.pollGet(pollId, { channelId: context.binding.channelId, threadId: thread(context.binding) });
         if (id === 'poll results') return success(copy('poll.results', { question: poll.question, answers: poll.answers.map((answer, i) => `${answer}: ${poll.counts[i]}`).join('\n') }));
+        const operation = id === 'poll close' ? 74 : 73; const attempts = createAttemptMap(client); const scope = executionScope(context);
+        const prior = attempts.get(context.requestId);
+        if (prior && (prior.kind !== id || prior.scope !== scope)) return uncertain(copy('poll.uncertain'));
+        const caps = await utility.capabilities();
+        if (prior && prior.installationId !== caps.installationId) return uncertain(copy('poll.uncertain'));
+        if (prior) {
+          const status = await utility.read(context.requestId, operation);
+          if (status?.status === 0) { attempts.delete(context.requestId); return success(id === 'poll close' ? copy('poll.closed') : 'Vote saved.'); }
+          if (status?.status === 4) { attempts.delete(context.requestId); return failure(copy('poll.conflict')); }
+          if (status?.status === 2 || status?.status === 3 || !caps.supportedOperations.includes(operation)) return uncertain(copy('poll.uncertain'));
+        } else if (!caps.supportedOperations.includes(operation)) return failure('The Bot cannot update this poll.');
         if (id === 'poll close') {
           if (poll.creatorId !== context.selfId && ((context.getCurrentBinding().bits ?? 0) & PERM.manageMessages) === 0) return failure('You cannot close this poll.');
-          if (!context.isCurrent()) return failure('The conversation changed.');
-          await utility.pollClose({ requestId: context.requestId, pollId, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision });
+          const saved = prior?.value as { pollId: string; channelId: string; threadId: string | null; revision: string } | undefined;
+          const input = saved ?? { pollId, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision.toString() };
+          if (!context.isCurrent()) return prior ? uncertain(copy('poll.uncertain')) : failure('The conversation changed.');
+          attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: input });
+          await utility.pollClose({ requestId: context.requestId, ...input });
+          attempts.delete(context.requestId);
           return success(copy('poll.closed'));
         }
         const choices = (invocation.args.choice ?? '').split(',').map(value => value.trim()).filter(Boolean);
         const indexes = choices.map(value => { const numeric = Number(value); if (Number.isInteger(numeric) && numeric >= 1 && numeric <= poll.answers.length) return numeric - 1; return poll.answers.findIndex(answer => answer.toLocaleLowerCase() === value.toLocaleLowerCase()); });
-        if (indexes.length === 0 || indexes.some(index => index < 0) || (!poll.multi && indexes.length > 1)) return failure('Choose one or more answer names, separated by commas.');
-        if (!context.isCurrent()) return failure('The conversation changed.');
-        const updated = await utility.pollVote({ requestId: context.requestId, pollId, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision, choices: indexes });
+        if (!prior && (indexes.length === 0 || indexes.some(index => index < 0) || (!poll.multi && indexes.length > 1))) return failure('Choose one or more answer names, separated by commas.');
+        const saved = prior?.value as { pollId: string; channelId: string; threadId: string | null; revision: string; choices: number[] } | undefined;
+        const input = saved ?? { pollId, channelId: poll.channelId, threadId: poll.threadId, revision: poll.revision.toString(), choices: indexes };
+        if (!context.isCurrent()) return prior ? uncertain(copy('poll.uncertain')) : failure('The conversation changed.');
+        attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: input });
+        const updated = await utility.pollVote({ requestId: context.requestId, ...input });
+        attempts.delete(context.requestId);
         return success(`Vote saved. ${updated.answers.map((answer, i) => `${answer}: ${updated.counts[i]}`).join(', ')}`);
-      } catch (error) { return caught(error); }
+      } catch (error) {
+        const pending = createAttemptMap(client).get(context.requestId);
+        if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (pending === undefined && error.status !== 5))) createAttemptMap(client).delete(context.requestId);
+        return caught(error);
+      }
     };
     handlers.remind = async (invocation, context) => {
-      if (!context.isCurrent() || context.binding.communityId !== communityId) return failure('Set reminders in a Bot-enabled community.');
-      const value = await open({ kind: 'reminder', when: invocation.args.when, text: invocation.args.text, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }, context) as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | null;
-      if (value === null) return failure('Reminder creation cancelled.');
+      if (!canCreateFromContext(context, communityId)) return failure('Set reminders in a Bot-enabled community.');
+      const scope = executionScope(context); const attempts = createAttemptMap(client); const prior = attempts.get(context.requestId);
+      if (prior && (prior.kind !== 'reminder' || prior.scope !== scope)) return uncertain(copy('reminder.uncertain'));
+      let utility: BotUtilities; let caps;
+      try { utility = utilityFor(communityId); caps = await utility.capabilities(); }
+      catch (error) { return prior ? uncertain(copy('reminder.uncertain')) : caught(error, 'reminder'); }
+      if (!canCreateFromContext(context, communityId) || !caps.supportedOperations.includes(80)) return prior ? uncertain(copy('reminder.uncertain')) : failure('Reminders are unavailable in this channel.');
+      if (prior && prior.installationId !== caps.installationId) return uncertain(copy('reminder.uncertain'));
+      const saved = prior?.value as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | undefined;
+      const value = await open({ kind: 'reminder', when: saved?.when ?? invocation.args.when, text: saved?.text ?? invocation.args.text, timezone: saved?.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'),
+        chosen: saved?.result.mode === 'absolute' ? saved.result.unixSeconds : undefined }, context) as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | null;
+      if (value === null) return prior ? uncertain(copy('reminder.uncertain')) : failure('Reminder creation cancelled.');
+      const submitted = saved ?? value;
+      attempts.set(context.requestId, prior ?? { kind: 'reminder', scope, installationId: caps.installationId,
+        value: { when: submitted.when, text: submitted.text, timezone: submitted.timezone, result: submitted.result } });
       try {
-        if (!context.isCurrent()) return failure('The conversation changed.');
-        const utility = utilityFor(communityId); const reminder = await utility.reminderCreate({ requestId: context.requestId,
-          whenKind: value.result.mode === 'relative' ? 0 : 1,
-          when: value.result.mode === 'relative' ? value.result.seconds : value.result.unixSeconds,
-          text: value.text, timezone: value.timezone, sourceChannelId: context.binding.channelId, sourceThreadId: thread(context.binding) });
+        if (!canCreateFromContext(context, communityId)) return uncertain(copy('reminder.uncertain'));
+        const reminder = await utility.reminderCreate({ requestId: context.requestId,
+          whenKind: submitted.result.mode === 'relative' ? 0 : 1,
+          when: submitted.result.mode === 'relative' ? submitted.result.seconds : submitted.result.unixSeconds,
+          text: submitted.text, timezone: submitted.timezone, sourceChannelId: context.binding.channelId, sourceThreadId: thread(context.binding) });
+        attempts.delete(context.requestId);
         refreshRequestId(); return success(`${copy('reminder.created')} ${reminder.id}`);
-      } catch (error) { return caught(error, 'reminder'); }
+      } catch (error) {
+        if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
+        return caught(error, 'reminder');
+      }
     };
     handlers['reminders list'] = async (_invocation, context) => {
       if (!context.isCurrent()) return failure('The conversation changed.');
@@ -252,14 +390,32 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       const row = (await fetchInbox()).find(item => item.reminder.id === target);
       if (!context.isCurrent()) return failure('The conversation changed.');
       if (!row) return failure('Choose one of your accessible reminders.');
+      const operation = id === 'reminders cancel' ? 82 : 83; const attempts = createAttemptMap(client);
+      const scope = `${executionScope(context)}:${row.communityId}:${row.reminder.id}:${id}`; const prior = attempts.get(context.requestId);
+      if (prior && (prior.kind !== id || prior.scope !== scope)) return uncertain(copy('reminder.uncertainMutation'));
       try {
-        const utility = utilityFor(row.communityId); const input = { requestId: context.requestId, reminderId: row.reminder.id, revision: row.reminder.revision };
+        const utility = utilityFor(row.communityId); const caps = await utility.capabilities();
+        if (prior && prior.installationId !== caps.installationId) return uncertain(copy('reminder.uncertainMutation'));
+        if (prior) {
+          const status = await utility.read(context.requestId, operation);
+          if (status?.status === 0) { attempts.delete(context.requestId); refreshRequestId(); return success(copy(id === 'reminders cancel' ? 'reminder.cancelled' : 'reminder.dismissed')); }
+          if (status?.status === 4) { attempts.delete(context.requestId); return failure(copy('reminder.conflict')); }
+          if (status?.status === 2 || status?.status === 3 || !caps.supportedOperations.includes(operation)) return uncertain(copy('reminder.uncertainMutation'));
+        } else if (!caps.supportedOperations.includes(operation)) return failure(copy('reminder.unavailable'));
+        const saved = prior?.value as { reminderId: string; revision: string } | undefined;
+        const input = { requestId: context.requestId, ...(saved ?? { reminderId: row.reminder.id, revision: row.reminder.revision.toString() }) };
+        if (!context.isCurrent()) return prior ? uncertain(copy('reminder.uncertainMutation')) : failure('The conversation changed.');
+        attempts.set(context.requestId, prior ?? { kind: id, scope, installationId: caps.installationId, value: { reminderId: input.reminderId, revision: input.revision } });
         if (id === 'reminders cancel') await utility.reminderCancel(input); else await utility.reminderDismiss(input);
+        attempts.delete(context.requestId);
         refreshRequestId(); return success(copy(id === 'reminders cancel' ? 'reminder.cancelled' : 'reminder.dismissed'));
-      } catch (error) { return caught(error, 'reminder'); }
+      } catch (error) {
+        if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
+        return caught(error, 'reminder');
+      }
     };
     return handlers;
-  }, [communityId, fetchInbox, open, refreshRequestId, utilityFor]);
+  }, [client, communityId, fetchInbox, open, refreshRequestId, utilityFor]);
   const suggest = useCallback<CommandSuggestionProvider>(async (commandId, option, query, binding, values) => {
     const q = query.toLocaleLowerCase(); const out: CommandSuggestion[] = [];
     const add = (id: string, label: string, value: string, description?: string) => { if (label.toLocaleLowerCase().includes(q) || value === query) out.push({ id, label, value, ...(description ? { description } : {}) }); };
@@ -279,41 +435,64 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   }, [communityId, currentRecords, utilityFor]);
   const dueCount = currentRecords.filter(row => row.reminder.state === 'due').length;
   const visibleDialog = dialogScope?.client === client && dialogScope.owner === ownerKey && dialogScope.communityId === communityId ? dialog : null;
-  const inbox = <ReminderInbox client={client} ownerKey={ownerKey} rows={currentRecords} loading={records?.client !== client || records?.owner !== ownerKey ? ownerKey !== '' : records.loading}
+  const inbox = <ReminderInbox client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={records?.client !== client || records?.owner !== ownerKey ? ownerKey !== '' : records.loading}
     error={records?.client === client && records?.owner === ownerKey ? records.error : false} dueCount={dueCount} open={inboxOpen} onOpen={() => setInboxOpen(true)} onClose={() => setInboxOpen(false)}
-    onRefresh={() => void fetchInbox(true)} onNavigate={onNavigate} utilityFor={utilityFor} />;
+    onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />;
   return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog }), inbox, dueCount };
 }
 
-function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; loading: boolean; error: boolean; dueCount: number;
+function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean; dueCount: number;
   open: boolean; onOpen(): void; onClose(): void; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
-  const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState(''); const attempts = useRef(new Map<string, string>());
+  const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState('');
+  const attempts = useRef(new Map<string, { id: string; revision: string; installationId: string }>());
   const accountNow = props.client.get('account'); const liveOwner = accountNow?.instance?.id && accountNow.user?.id && accountNow.deviceId ? `${accountNow.instance.id}:${accountNow.user.id}:${accountNow.deviceId}` : '';
   const current = liveOwner === props.ownerKey ? props.rows : [];
   const due = current.filter(row => row.reminder.state === 'due'); const scheduled = current.filter(row => row.reminder.state === 'scheduled');
   const mutate = async (row: ReminderInboxEntry, action: 'cancel' | 'dismiss') => {
     const key = `${props.ownerKey}:${row.communityId}:${row.reminder.id}:${action}`;
     if (busy !== null) return; setBusy(key); setError('');
-    const requestId = attempts.current.get(key) ?? makeId(); attempts.current.set(key, requestId);
     try {
       const live = props.client.get('account');
       if (`${live?.instance?.id ?? ''}:${live?.user?.id ?? ''}:${live?.deviceId ?? ''}` !== props.ownerKey) return;
-      const utility = props.utilityFor(row.communityId); const input = { requestId, reminderId: row.reminder.id, revision: row.reminder.revision };
+      const utility = props.utilityFor(row.communityId); const caps = await utility.capabilities();
+      if (liveOwner !== props.ownerKey || !(props.client.get('communities') ?? []).some(item => item.id === row.communityId)) return;
+      const op = action === 'cancel' ? 82 : 83;
+      if (!caps.supportedOperations.includes(op)) { setError(copy('reminder.unavailable')); return; }
+      const prior = attempts.current.get(key);
+      const attempt = prior ?? { id: makeId(), revision: row.reminder.revision.toString(), installationId: caps.installationId };
+      attempts.current.set(key, attempt);
+      if (attempt.installationId !== caps.installationId) { setError(copy('reminder.uncertainMutation')); return; }
+      const input = { requestId: attempt.id, reminderId: row.reminder.id, revision: attempt.revision };
       if (action === 'cancel') await utility.reminderCancel(input); else await utility.reminderDismiss(input);
       const after = props.client.get('account');
-      if (`${after?.instance?.id ?? ''}:${after?.user?.id ?? ''}:${after?.deviceId ?? ''}` !== props.ownerKey) return;
+      if (`${after?.instance?.id ?? ''}:${after?.user?.id ?? ''}:${after?.deviceId ?? ''}` !== props.ownerKey
+        || !(props.client.get('communities') ?? []).some(item => item.id === row.communityId)) return;
       attempts.current.delete(key); props.onRefresh();
     } catch (cause) {
-      if (!(cause instanceof BotUtilitiesUncertainMutationError)) attempts.current.delete(key);
-      setError(cause instanceof BotUtilitiesUncertainMutationError ? copy('reminder.uncertainMutation') : 'Could not update this reminder. Refresh and try again.');
-      props.onRefresh();
+      if (cause instanceof BotUtilitiesStatusError && cause.status === 4) {
+        attempts.current.delete(key); setError(copy('reminder.conflict')); props.onRefresh();
+      } else if (cause instanceof BotUtilitiesUncertainMutationError) {
+        const attempt = attempts.current.get(key);
+        if (attempt !== undefined) {
+          try {
+            const result = await props.utilityFor(row.communityId).read(attempt.id, action === 'cancel' ? 82 : 83);
+            const latest = props.client.get('account');
+            if (`${latest?.instance?.id ?? ''}:${latest?.user?.id ?? ''}:${latest?.deviceId ?? ''}` !== props.ownerKey) return;
+            if (result?.status === 0) { attempts.current.delete(key); props.onRefresh(); return; }
+            if (result?.status === 4) { attempts.current.delete(key); setError(copy('reminder.conflict')); props.onRefresh(); return; }
+          } catch { /* Keep the captured revision and id for a later reconciliation. */ }
+        }
+        setError(copy('reminder.uncertainMutation')); props.onRefresh();
+      } else {
+        if (!(cause instanceof BotUtilitiesStatusError && (cause.status === 2 || cause.status === 3))) attempts.current.delete(key);
+        setError(cause instanceof BotUtilitiesProviderUnavailableError ? copy('reminder.unavailable') : 'Could not update this reminder. Refresh and try again.');
+      }
     }
     finally { setBusy(null); }
   };
   const sourceAvailable = (row: ReminderInboxEntry): boolean => {
-    const item = row.reminder; if (!item.sourceChannelId) return false;
-    const channels = props.client.get(`channels:${row.communityId}`) ?? [];
-    return props.onNavigate !== undefined && channels.some(channel => channel.id === item.sourceChannelId && channel.kind === 0);
+    const item = row.reminder;
+    return props.onNavigate !== undefined && sourceAccessible(props.client, row.communityId, item.sourceChannelId);
   };
   const jump = (row: ReminderInboxEntry) => {
     if (liveOwner !== props.ownerKey || !sourceAvailable(row) || row.reminder.sourceChannelId === null) return;
@@ -322,7 +501,7 @@ function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: Remi
   return <>
     <Button variant="ghost" aria-haspopup="dialog" onClick={() => props.onOpen()}>{copy('reminder.inbox')}{props.dueCount > 0 ? <span className="dw-reminder-badge" aria-label={copy('reminder.badge', { count: props.dueCount })}>{props.dueCount}</span> : null}</Button>
     <Dialog open={props.open} title={copy('reminder.inboxTitle')} closeLabel={copy('reminder.close')} onClose={() => props.onClose()}>
-      <div key={props.ownerKey} className="dw-reminder-inbox">
+      <div className="dw-reminder-inbox">
         {props.loading ? <p role="status">{copy('reminder.loading')}</p> : null}
         {props.error ? <p role="alert">{copy('reminder.loadError')}</p> : null}
         {error ? <p role="alert">{error}</p> : null}
@@ -341,7 +520,7 @@ function ReminderRow(props: { row: ReminderInboxEntry; busy: boolean; canSource:
   const item = props.row.reminder;
   return <li className="dw-reminder-card"><p>{item.text}</p><p>{new Date(Number(item.dueUnixSeconds) * 1000).toLocaleString()} · {item.timezone}</p>
     {item.sourceChannelId !== null ? props.canSource ? <Button variant="ghost" onClick={() => props.onSource()}>{copy('reminder.source')}</Button> : <span>{copy('reminder.sourceUnavailable')}</span> : null}
-    {item.state === 'scheduled' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onCancel()}>{copy('reminder.cancel')}</Button> : null}
+    {item.state === 'scheduled' || item.state === 'due' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onCancel()}>{copy('reminder.cancel')}</Button> : null}
     {item.state === 'due' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onDismiss()}>{copy('reminder.dismiss')}</Button> : null}
   </li>;
 }

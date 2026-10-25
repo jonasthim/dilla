@@ -1,8 +1,9 @@
 import { createElement, useEffect } from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decode, encode as importEncode, fromHex, PERM, type CoreClient, type CommandContext as Binding, type PollSummary } from '@dilla/client-core';
+import { decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type PollSummary, type ReminderSummary } from '@dilla/client-core';
+import * as ClientCore from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import type { CommandExecutionContext } from './command-types.ts';
 import { finalPollMarker, PollCard } from './PollCard.tsx';
@@ -18,7 +19,11 @@ function pollWire(p: PollSummary): unknown[] { return [asBytes(p.id), asBytes(p.
 function utilityFixture() {
   const core = new FakeClient();
   core.set('account', ({ phase: 'ready', user: { id: USER, username: 'ada' }, deviceId: '88'.repeat(16), instance: { id: '99'.repeat(16), name: 'test', registrationMode: 0, passwordSignup: true, totp: false, passkeys: false }, recoveryKey: null, error: null, signIn: null, factorSetup: null, rootMismatch: null, ownTrust: [] } as never));
-  core.set('communities', [{ id: COMMUNITY, name: 'Test', owner: USER }]); core.set(`permissions:${COMMUNITY}`, { loaded: true } as never);
+  core.set('communities', [{ id: COMMUNITY, name: 'Test', owner: USER }]);
+  const everyone = '66'.repeat(16);
+  core.set(`permissions:${COMMUNITY}`, { loaded: true, everyoneId: everyone, overwritesLoaded: true } as never);
+  core.set(`roles:${COMMUNITY}`, [{ id: everyone, position: 0, allow: PERM.viewChannel | PERM.sendMessages, deny: 0 }] as never);
+  core.set(`overwrites:${COMMUNITY}`, {});
   core.set(`channels:${COMMUNITY}`, [{ id: CHANNEL, communityId: COMMUNITY, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' }]);
   core.set(`members:${COMMUNITY}`, [{ userId: USER, username: 'ada', display: 'Ada', kind: 0, roleIds: [] }]);
   const requests: { operation: number; requestId: string; args: readonly unknown[] }[] = [];
@@ -56,12 +61,12 @@ function utilityFixture() {
     markReminderDue() { if (reminder !== null) reminder = [...reminder.slice(0, 2), BigInt(Math.floor(Date.now() / 1000)) - 60n, ...reminder.slice(3, 6), 1n, BigInt(reminder[7] as bigint) + 1n]; } };
 }
 function commandContext(client: CoreClient, requestId: string, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
-  const binding: Binding = { communityId: COMMUNITY, channelId: CHANNEL, bits: PERM.manageMessages };
+  const binding: Binding = { communityId: COMMUNITY, channelId: CHANNEL, bits: PERM.manageMessages | PERM.sendMessages };
   return { requestId, binding, getCurrentBinding: () => binding, isCurrent: () => true, client, getCall: () => ({} as never), call: {} as never,
     navigate: vi.fn(), openThread: vi.fn(), openSearch: vi.fn(), items: [], selfId: USER, encodeMessage: value => value, confirm: () => Promise.resolve(true), openInvite: () => Promise.resolve(true), openGif: vi.fn(), openModerationLog: vi.fn(), ...over };
 }
-function mount(client: CoreClient, community: string | null = COMMUNITY) { const captured: { value?: ReturnType<typeof useUtilityCommandProvider> } = {};
-  function Probe() { const value = useUtilityCommandProvider(client, community); useEffect(() => { captured.value = value; }); return createElement('div', null, value.dialogs, value.inbox); }
+function mount(client: CoreClient, community: string | null = COMMUNITY, onNavigate?: (communityId: string, channelId: string, threadId: string | null) => void) { const captured: { value?: ReturnType<typeof useUtilityCommandProvider> } = {};
+  function Probe() { const value = useUtilityCommandProvider(client, community, onNavigate); useEffect(() => { captured.value = value; }); return createElement('div', null, value.dialogs, value.inbox); }
   const view = render(createElement(Probe)); return { captured, ...view, rerenderProbe: () => view.rerender(createElement(Probe)) }; }
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -75,6 +80,40 @@ describe('utility command provider', () => {
     const created = f.requests.find(row => row.operation === 70)!; expect(created.requestId).toBe('aa'.repeat(16));
     expect(decode(created.args[0] as Uint8Array)).toMatchObject([1n, asBytes(CHANNEL), null, 'Lunch?', ['Soup', 'Salad'], 1n, 86_400n]);
     expect(f.poll.id).toBe('aa'.repeat(16)); mounted.unmount();
+  });
+  it('keeps the edited poll body and request id through an uncertain retry', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const invocation = { commandId: 'poll create', args: { question: 'Original?', answers: 'A, B' } };
+    const context = commandContext(f.client, 'ac'.repeat(16)); let run!: Promise<unknown>;
+    act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
+    await screen.findByRole('heading', { name: 'Create a poll' });
+    await user.clear(screen.getByLabelText('Question')); await user.type(screen.getByLabelText('Question'), 'Edited?');
+    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
+    expect(await screen.findByLabelText('Question')).toHaveValue('Edited?'); await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await run).toMatchObject({ status: 'uncertain' });
+    const writes = f.requests.filter(row => row.operation === 70); expect(writes).toHaveLength(1);
+    expect(new Set(writes.map(row => row.requestId))).toEqual(new Set(['ac'.repeat(16)]));
+    const payloads = writes.map(row => decode(row.args[0] as Uint8Array) as unknown[]);
+    expect(payloads.every(payload => JSON.stringify(payload, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value) === JSON.stringify(payloads[0], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value))).toBe(true);
+    expect(payloads[0]?.[3]).toBe('Edited?'); mounted.unmount();
+  });
+  it('keeps the poll question limit in Unicode code points', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q', answers: 'A, B' } }, commandContext(f.client, 'b0'.repeat(16))); });
+    await screen.findByRole('heading', { name: 'Create a poll' }); const question = screen.getByLabelText('Question');
+    fireEvent.change(question, { target: { value: '😀'.repeat(300) } }); expect(question).toHaveValue('😀'.repeat(300));
+    expect(screen.getByText('300 of 300 characters')).toBeInTheDocument();
+    fireEvent.change(question, { target: { value: '😀'.repeat(301) } }); expect(question).toHaveValue('😀'.repeat(300));
+    await user.click(screen.getByRole('button', { name: 'Cancel' })); await run; mounted.unmount();
+  });
+  it('closes a creation dialog when live send permission is revoked', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    let bits = PERM.sendMessages | PERM.manageMessages; const context = commandContext(f.client, 'b1'.repeat(16), { getCurrentBinding: () => ({ communityId: COMMUNITY, channelId: CHANNEL, bits }) });
+    let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, context); });
+    await screen.findByRole('heading', { name: 'Create a poll' }); bits = PERM.manageMessages;
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Create a poll' })).not.toBeInTheDocument());
+    expect(await run).toMatchObject({ status: 'failure' }); expect(f.requests.some(row => row.operation === 70)).toBe(false); mounted.unmount();
   });
   it('replaces a vote with the selected answer and reports the returned count', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
@@ -95,7 +134,7 @@ describe('utility command provider', () => {
   });
 
   it('shows due reminders in the inbox and reuses an uncertain dismissal attempt', async () => {
-    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client);
+    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
     await waitFor(() => expect(mounted.captured.value).toBeDefined());
     await waitFor(() => expect(f.requests.some(row => row.operation === 81)).toBe(true));
     let create!: Promise<unknown>;
@@ -115,6 +154,25 @@ describe('utility command provider', () => {
     expect(f.requests.find(row => row.operation === 83)?.requestId).toMatch(/^[0-9a-f]{32}$/u);
     mounted.unmount();
   });
+  it('allows cancelling a due reminder from the inbox', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Cancel me' } }, commandContext(f.client, 'ad'.repeat(16))); });
+    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
+    f.markReminderDue(); await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ae'.repeat(16))); });
+    await user.click(screen.getByRole('button', { name: /Reminders/ })); await screen.findByText('Cancel me');
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel' })); await waitFor(() => expect(f.requests.some(row => row.operation === 82)).toBe(true));
+    mounted.unmount();
+  });
+  it('redacts a source link immediately when the source channel is no longer active', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
+    let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Still private' } }, commandContext(f.client, 'af'.repeat(16))); });
+    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
+    await user.click(screen.getByRole('button', { name: 'Reminders' })); await screen.findByRole('button', { name: 'Open source message' });
+    act(() => f.client.set(`channels:${COMMUNITY}`, f.client.get(`channels:${COMMUNITY}`)!.map(row => ({ ...row, group: 'removed' })) as never)); mounted.rerenderProbe();
+    expect(screen.queryByRole('button', { name: 'Open source message' })).not.toBeInTheDocument(); expect(screen.getByText('Still private')).toBeInTheDocument();
+    mounted.unmount();
+  });
 
   it('keeps the reminders inbox available when no community composer is active', async () => {
     const f = utilityFixture(); const mounted = mount(f.client, null);
@@ -122,6 +180,22 @@ describe('utility command provider', () => {
     expect(screen.getByRole('button', { name: 'Reminders' })).toBeInTheDocument();
     expect(mounted.captured.value!.handlers.remind).toBeUndefined();
     mounted.unmount();
+  });
+  it('loads every page at the 100 reminder quota, including the last records', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const pages: ReminderSummary[][] = Array.from({ length: 5 }, (_, page) => Array.from({ length: 20 }, (_unused, index) => {
+      const n = page * 20 + index + 1;
+      return { id: n.toString(16).padStart(32, '0'), communityId: COMMUNITY, text: `Reminder ${n}`, createdAt: 1_800_000_000n,
+        dueUnixSeconds: 1_800_000_000n + BigInt(n), timezone: 'UTC', sourceChannelId: CHANNEL, sourceThreadId: null,
+        state: n % 3 === 0 ? 'due' : 'scheduled', revision: 1n };
+    }));
+    const listPage = vi.fn((cursor?: Uint8Array | null) => { const index = cursor?.[0] ?? 0; return Promise.resolve({ items: pages[index] ?? [], nextCursor: index < 4 ? new Uint8Array([index + 1]) : null }); });
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ version: 1, installationId: INSTALLATION, botUserId: BOT, supportedOperations: [3, 80, 81, 82, 83, 84] }),
+      reminderList: listPage } as unknown as BotUtilities);
+    const mounted = mount(f.client, null);
+    await waitFor(() => expect(listPage).toHaveBeenCalledTimes(5));
+    await user.click(screen.getByRole('button', { name: /Reminders/ }));
+    expect(await screen.findByText('Reminder 100')).toBeInTheDocument(); expect(screen.getByText('Reminder 81')).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(100); expect(screen.getByRole('button', { name: /33 due/ })).toBeInTheDocument(); mounted.unmount();
   });
   it('hides fetched reminder data immediately when the owner changes', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client);
@@ -171,7 +245,7 @@ describe('poll card binding', () => {
     expect(render(createElement(PollCard, props)).container.firstChild).toBeNull(); expect(render(createElement(PollCard, { ...props, bot: true, edited: true })).container.firstChild).toBeNull(); expect(f.requests).toHaveLength(0); });
   it('rejects a bot marker when the authenticated author or backing thread does not match', async () => {
     const f = utilityFixture(); const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: 'aa'.repeat(16), bot: true, edited: false, deleted: false, selfId: USER, bits: 0 };
-    const { container } = render(createElement(PollCard, props)); expect(container.querySelector('section')).toBeNull(); await waitFor(() => expect(f.requests.some(row => row.operation === 3)).toBe(true)); expect(f.requests.some(row => row.operation === 71)).toBe(false);
+    const { container } = render(createElement(PollCard, props)); expect(container.querySelector('h3')).toBeNull(); await waitFor(() => expect(f.requests.some(row => row.operation === 3)).toBe(true)); expect(f.requests.some(row => row.operation === 71)).toBe(false);
     render(createElement(PollCard, { ...props, authorId: BOT, threadId: 'ee'.repeat(16) }));
     await waitFor(() => expect(f.requests.some(row => row.operation === 71)).toBe(true));
     expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument();
@@ -192,12 +266,14 @@ describe('poll card binding', () => {
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
     f.failNext(73, false);
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const first = f.requests.find(row => row.operation === 73)!;
     await user.click(screen.getByRole('button', { name: 'Retry vote' }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const mutations = f.requests.filter(row => row.operation === 73);
     expect(mutations.length).toBeGreaterThan(0); expect(mutations.every(row => row.requestId === first.requestId)).toBe(true);
+    const selectedMutation = mutations[0]; expect(selectedMutation).toBeDefined();
+    expect(decode((selectedMutation?.args[1] as Uint8Array | undefined) ?? new Uint8Array())).toEqual([0n]);
   });
 });

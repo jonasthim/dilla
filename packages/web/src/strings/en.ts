@@ -33,7 +33,9 @@ import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 import { settingsWorkspace } from './settingsWorkspace.ts';
 import { botCommand } from './botCommand.ts';
+import { utility } from './utility.ts';
 export const en = {
+  ...utility,
   ...botCommand,
   ...settingsWorkspace,
   ...gif,
