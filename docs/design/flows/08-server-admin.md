@@ -224,6 +224,10 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.nav.bot='bot'`
 - `admin.nav.selfRoles='self-service roles'`
 - `admin.bot.title='Bot'`
+- `admin.bot.name.label='Bot display name'`
+- `admin.bot.name.save='Save bot name'`
+- `admin.bot.name.saved='Bot name saved.'`
+- `admin.bot.name.invalid='Enter a bot display name.'`
 - `admin.bot.loading='Checking bot installation…'`
 - `admin.bot.selfRoles.title='Self-service roles'`
 - `admin.bot.selfRoles.configure='Allow members to assign these roles'`

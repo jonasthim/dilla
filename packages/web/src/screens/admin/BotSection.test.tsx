@@ -55,8 +55,9 @@ describe('the server bot settings', () => {
     fake.publish(`members:${SERVER}`, [{ userId: botId, username: 'dillabot', display: 'Dilla Bot', kind: 1, roleIds: [] }]);
     fake.handler = command => command.m === 'patchBotProfile' ? Promise.resolve('Music Bot') : Promise.resolve(null);
     const field = await screen.findByRole('textbox', { name: 'Bot display name' });
-    await user.clear(field);
-    await user.type(field, 'Music Bot');
+    await waitFor(() => expect(field).toHaveValue('Dilla Bot'));
+    fireEvent.change(field, { target: { value: 'Music Bot' } });
+    expect(field).toHaveValue('Music Bot');
     await user.click(screen.getByRole('button', { name: 'Save bot name' }));
     await waitFor(() => expect(fake.callsOf('patchBotProfile')).toEqual([{ m: 'patchBotProfile', communityId: SERVER, display: 'Music Bot' }]));
     expect(announce).toHaveBeenCalledWith('Bot name saved.');
