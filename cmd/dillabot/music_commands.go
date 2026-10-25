@@ -29,6 +29,7 @@ type musicCommandState interface {
 type musicCommandCalls interface {
 	Channels(context.Context, id.ID) ([]client.Channel, error)
 	ChannelCall(context.Context, id.ID) (client.ChannelCallState, error)
+	ChannelPermissions(context.Context, id.ID) (uint64, error)
 }
 type musicCommandRecord struct {
 	_                    struct{} `cbor:",toarray"`
@@ -41,23 +42,28 @@ type musicCommandRecord struct {
 	AttemptID            id.ID
 	ExpectedGeneration   uint64
 	PredecessorAttemptID *id.ID
+	ClosedAttempts       uint64
 }
 
 // Commands consume only authenticated native text events. The durable record is
 // committed before any effect, so an interrupted command is never executed twice.
 // A pending record after interruption produces an explicit uncertain-outcome reply.
 type musicChatCommands struct {
-	community  id.ID
-	state      musicCommandState
-	calls      musicCommandCalls
-	handlers   map[protocol.Operation]service.InteractionHandlerSpec
-	send       func(context.Context, native.GroupEvent, musicCommandRecord, string) (protocol.SendOutcome, error)
-	generation func(context.Context) (uint64, error)
+	community             id.ID
+	state                 musicCommandState
+	calls                 musicCommandCalls
+	handlers              map[protocol.Operation]service.InteractionHandlerSpec
+	send                  func(context.Context, native.GroupEvent, musicCommandRecord, string) (protocol.SendOutcome, error)
+	generation            func(context.Context) (uint64, error)
+	replayReceivedThrough uint64
 }
 
 const musicCommandHelp = "Music commands: /play <YouTube search or YouTube/Spotify URL>, /pause, /resume, /skip, /queue, /stop. Join a voice channel first. Playback controls require a configured DJ role."
 
 func (h *musicChatCommands) HandleGroupEvent(ctx context.Context, e native.GroupEvent) error {
+	return h.HandleModeratedGroupEvent(ctx, e, true)
+}
+func (h *musicChatCommands) HandleModeratedGroupEvent(ctx context.Context, e native.GroupEvent, allowNew bool) error {
 	if e.Body == nil || e.EnvelopeType != 0 || e.SenderKind != 0 || e.SenderUser.IsZero() || e.SenderDevice.IsZero() || e.Message.IsZero() || e.Community != h.community || e.Thread != nil {
 		return nil
 	}
@@ -103,7 +109,7 @@ func (h *musicChatCommands) HandleGroupEvent(ctx context.Context, e native.Group
 		return nil
 	}
 	if revision > 0 {
-		if stored.Tombstone || cborx.Unmarshal(stored.Value, &record) != nil || record.Version != 1 || record.Phase < 1 || record.Phase > 4 || record.Fingerprint != fingerprint || record.OperationID.IsZero() || record.AttemptID.IsZero() {
+		if stored.Tombstone || cborx.Unmarshal(stored.Value, &record) != nil || record.Version != 1 || record.Phase < 1 || record.Phase > 5 || record.Fingerprint != fingerprint || record.OperationID.IsZero() || record.AttemptID.IsZero() {
 			return errors.New("invalid music command receipt")
 		}
 		if record.Phase >= 3 {
@@ -119,8 +125,20 @@ func (h *musicChatCommands) HandleGroupEvent(ctx context.Context, e native.Group
 	} else {
 		now := unixSecondsOrZero(time.Now())
 		// Historic catch-up must never replay old playback commands after a restart.
-		if e.ReceivedAt == 0 || e.ReceivedAt > now || now-e.ReceivedAt > 120 {
+		if e.ReceivedAt <= h.replayReceivedThrough/1000 || e.ReceivedAt == 0 || e.ReceivedAt > now || now-e.ReceivedAt > 120 {
 			return nil
+		}
+		if !allowNew {
+			record.Phase = 5
+			return persist()
+		}
+		allowed, err := h.canReply(ctx, e.Channel)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			record.Phase = 5
+			return persist()
 		}
 		if err := persist(); err != nil {
 			return err
@@ -132,6 +150,14 @@ func (h *musicChatCommands) HandleGroupEvent(ctx context.Context, e native.Group
 		}
 	}
 
+	allowed, permissionErr := h.canReply(ctx, e.Channel)
+	if permissionErr != nil {
+		return permissionErr
+	}
+	if !allowed {
+		record.Phase = 5
+		return persist()
+	}
 	if record.ExpectedGeneration == 0 {
 		generation, err := h.generation(ctx)
 		if err != nil {
@@ -153,6 +179,15 @@ func (h *musicChatCommands) HandleGroupEvent(ctx context.Context, e native.Group
 	case protocol.ReceiptAccepted:
 		record.Phase = 3
 	case protocol.ReceiptClosedNotAccepted:
+		record.ClosedAttempts++
+		allowed, err := h.canReply(ctx, e.Channel)
+		if err != nil {
+			return err
+		}
+		if !allowed || record.ClosedAttempts >= 3 {
+			record.Phase = 5
+			return persist()
+		}
 		predecessor := record.AttemptID
 		record.PredecessorAttemptID = &predecessor
 		record.AttemptID = id.New()
@@ -217,7 +252,11 @@ func (h *musicChatCommands) execute(ctx context.Context, e native.GroupEvent, co
 		}
 		request.Operation = op
 		request.Args = args
-		return handler.Handle(ctx, actor, request)
+		result, err := handler.Handle(ctx, actor, request)
+		if err != nil || result.Status != 0 {
+			slog.Warn("bot music command operation unavailable", "operation", uint64(op), "status", result.Status, "failed", err != nil)
+		}
+		return result, err
 	}
 	snapshot, err := invoke(protocol.OpMusicState, []any{})
 	if err != nil || snapshot.Status != 0 {
@@ -350,7 +389,7 @@ func (r chatMusicResolver) Resolve(ctx context.Context, input string) ([]music.T
 	return tracks, err
 }
 
-func newMusicChatCommands(community id.ID, n *native.Client, session *client.Session, api *client.Client, coordinator *service.SendCoordinator, m *service.MusicInteractions) service.GroupEventHandler {
+func newMusicChatCommands(community id.ID, n *native.Client, session *client.Session, api *client.Client, coordinator *service.SendCoordinator, m *service.MusicInteractions, replayReceivedThrough uint64) service.GroupEventHandler {
 	if m == nil {
 		return nil
 	}
@@ -358,7 +397,7 @@ func newMusicChatCommands(community id.ID, n *native.Client, session *client.Ses
 	if handlers.Resolver != nil {
 		handlers.Resolver = chatMusicResolver{handlers.Resolver}
 	}
-	return &musicChatCommands{community: community, state: n, calls: session, handlers: handlers.Handlers(), generation: func(ctx context.Context) (uint64, error) {
+	return &musicChatCommands{replayReceivedThrough: replayReceivedThrough, community: community, state: n, calls: session, handlers: handlers.Handlers(), generation: func(ctx context.Context) (uint64, error) {
 		discovery, _, err := api.DiscoverObserved(ctx)
 		return discovery.Generation, err
 	}, send: func(ctx context.Context, e native.GroupEvent, r musicCommandRecord, text string) (protocol.SendOutcome, error) {
@@ -383,4 +422,17 @@ func boundMusicReply(text string) string {
 		text = text[:len(text)-1]
 	}
 	return text + "\n…"
+}
+
+func (h *musicChatCommands) canReply(ctx context.Context, channel id.ID) (bool, error) {
+	bits, err := h.calls.ChannelPermissions(ctx, channel)
+	var refused *client.APIError
+	if errors.As(err, &refused) && (refused.Status == 403 || refused.Status == 404) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	const viewAndSend uint64 = 1<<0 | 1<<1
+	return bits&viewAndSend == viewAndSend, nil
 }

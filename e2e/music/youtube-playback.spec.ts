@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '../voice/support/peer-browser';
 import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, voiceRow, WAIT } from '../voice/support/voice';
-import { addServerVia, channelRow, completeSignUp, copy, makeInviteLink, messageRow, newAccount, openChannel, sendText, signUp } from '../web/support/app';
+import { addServerVia, channelRow, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, signUp } from '../web/support/app';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const SERVER = 'Music acceptance A';
@@ -164,7 +164,9 @@ test('two communities run isolated YouTube playback with independent Bot identit
     const replies = messageRow(musicPage, 'general', '').filter({ hasText: expected })
       .filter({ has: musicPage.locator('[data-kind="bot"]') });
     const before = await replies.count();
-    await sendText(musicPage, 'general', text);
+    const composer = composerBox(musicPage, 'general');
+    await composer.fill(text);
+    await composer.press('Enter');
     await expect(replies).toHaveCount(before + 1, { timeout: 90_000 });
     const reply = await replies.nth(before).innerText();
     await voiceRow(musicPage, 'general').click();
@@ -257,7 +259,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const tracksBeforePlaylistSkip = await djPage.evaluate(() =>
     [...((window as unknown as { __dw: { remoteTracks: Set<string> } }).__dw.remoteTracks)].sort());
   await command(djPage, SERVER, '/skip', /Skipped the current track/);
-  expect(await command(djPage, SERVER, '/queue', /Now playing:/)).toContain('Deep Learning Basics: Introduction and Overview');
+  expect(await command(djPage, SERVER, '/queue', /(?:Now playing|Paused):/)).toContain('Deep Learning Basics: Introduction and Overview');
   await expect.poll(() => heardCount(djPage, botDeviceA), { timeout: 90_000, intervals: [250, 500, 1_000] })
     .toBeGreaterThan(framesBeforePlaylistSkip);
   await requireAudible(djPage, botDeviceA, framesBeforePlaylistSkip, tracksBeforePlaylistSkip);
@@ -276,8 +278,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   // Disable only community A's Bot through its owner controls. Community B must keep its
   // authenticated Bot stream and audible output while A's stream disappears.
-  await page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
-    .getByRole('button', { name: SERVER, exact: true }).click();
+  await railItem(page, SERVER).click();
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'admin.nav.bot').click();

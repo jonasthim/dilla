@@ -318,3 +318,100 @@ func TestMusicChatDoesNotRepeatUnknownReplyAfterRestore(t *testing.T) {
 		t.Fatal("unknown post-restore outcome was replayed")
 	}
 }
+
+func TestMusicChatUnseenStartupReplayDoesNotStartPlayback(t *testing.T) {
+	h, e, ops, replies := commandFixture(t, "/play old song")
+	h.replayReceivedThrough = e.ReceivedAt * 1000
+	if err := h.HandleGroupEvent(t.Context(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(*ops) != 0 || len(*replies) != 0 {
+		t.Fatal("unseen startup command resumed audio")
+	}
+}
+func TestMusicChatReplyRetrySurvivesStartupFence(t *testing.T) {
+	h, e, ops, replies := commandFixture(t, "/skip")
+	send := h.send
+	h.send = func(context.Context, native.GroupEvent, musicCommandRecord, string) (protocol.SendOutcome, error) {
+		return protocol.ReceiptUnknownAfterRestore, errors.New("network timeout")
+	}
+	if err := h.HandleGroupEvent(t.Context(), e); err == nil {
+		t.Fatal("failed reply not retained")
+	}
+	before := len(*ops)
+	h.send = send
+	h.replayReceivedThrough = e.ReceivedAt * 1000
+	if err := h.HandleGroupEvent(t.Context(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(*ops) != before || len(*replies) != 1 {
+		t.Fatal("startup fence broke permitted reply retry")
+	}
+}
+func TestMusicChatModerationDuplicateCannotExecuteUnseenCommand(t *testing.T) {
+	h, e, ops, _ := commandFixture(t, "/play blocked song")
+	if err := h.HandleModeratedGroupEvent(t.Context(), e, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*ops) != 0 {
+		t.Fatal("rejected command executed on duplicate log-only decision")
+	}
+}
+
+type commandNoReply struct{ commandCalls }
+
+func (commandNoReply) ChannelPermissions(context.Context, id.ID) (uint64, error) { return 1, nil }
+func TestMusicChatWithoutReplyPermissionDoesNotExecuteOrBlock(t *testing.T) {
+	h, e, ops, replies := commandFixture(t, "/skip")
+	h.calls = commandNoReply{h.calls.(commandCalls)}
+	if err := h.HandleGroupEvent(t.Context(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(*ops) != 0 || len(*replies) != 0 {
+		t.Fatal("command without reply permission executed")
+	}
+}
+
+func (commandCalls) ChannelPermissions(context.Context, id.ID) (uint64, error) { return 3, nil }
+
+func TestMusicChatRepeatedClosedRepliesDoNotBlockJournalForever(t *testing.T) {
+	h, e, ops, _ := commandFixture(t, "/skip")
+	sends := 0
+	h.send = func(context.Context, native.GroupEvent, musicCommandRecord, string) (protocol.SendOutcome, error) {
+		sends++
+		return protocol.ReceiptClosedNotAccepted, nil
+	}
+	for i := 0; i < 3; i++ {
+		err := h.HandleGroupEvent(t.Context(), e)
+		if i < 2 && err == nil {
+			t.Fatal("closed attempt not retained")
+		}
+		if i == 2 && err != nil {
+			t.Fatal("permanently closed replies block journal")
+		}
+	}
+	before := len(*ops)
+	if err := h.HandleGroupEvent(t.Context(), e); err != nil {
+		t.Fatal(err)
+	}
+	if sends != 3 || len(*ops) != before {
+		t.Fatal("terminal refusal retried command or reply")
+	}
+}
+func TestMusicChatRevokedReplyPermissionConsumesPendingReply(t *testing.T) {
+	h, e, ops, _ := commandFixture(t, "/skip")
+	h.send = func(context.Context, native.GroupEvent, musicCommandRecord, string) (protocol.SendOutcome, error) {
+		return protocol.ReceiptUnknownAfterRestore, errors.New("upload timeout")
+	}
+	if err := h.HandleGroupEvent(t.Context(), e); err == nil {
+		t.Fatal("failed reply not retained")
+	}
+	before := len(*ops)
+	h.calls = commandNoReply{h.calls.(commandCalls)}
+	if err := h.HandleGroupEvent(t.Context(), e); err != nil {
+		t.Fatal("permission refusal blocks journal")
+	}
+	if len(*ops) != before {
+		t.Fatal("permission refusal repeated mutation")
+	}
+}

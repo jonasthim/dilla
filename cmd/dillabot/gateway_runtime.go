@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -5,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/gatewayclient"
@@ -20,17 +23,18 @@ type botGatewayEntry struct {
 	client       *gatewayclient.Client
 }
 type botGatewayRuntime struct {
-	ctx      context.Context
-	api      *client.Client
-	loopback bool
-	log      *slog.Logger
-	entries  map[id.ID]*botGatewayEntry
-	wake     chan struct{}
-	pollers  map[id.ID]func(context.Context) error
+	ctx       context.Context
+	api       *client.Client
+	loopback  bool
+	log       *slog.Logger
+	entries   map[id.ID]*botGatewayEntry
+	wake      chan struct{}
+	pollers   map[id.ID]func(context.Context) error
+	startedAt uint64
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
+	return &botGatewayRuntime{startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
 }
 func (r *botGatewayRuntime) Wake() <-chan struct{} { return r.wake }
 func (r *botGatewayRuntime) notify() {

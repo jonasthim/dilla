@@ -36,3 +36,9 @@ An informational reply whose delivery becomes unknown after a server restore is
 retained as uncertain and is not sent again; `/queue` can inspect the current
 state. A send attempt definitively rejected after an encryption epoch change
 gets a fresh attempt only after its closed receipt has been recorded.
+
+The bot checks permission to reply in the text channel before executing a new
+command. Definitive reply refusals are consumed durably so one channel cannot
+block command intake elsewhere. Recently received commands from before the bot
+started do not resume restored playback; pending replies for commands already
+accepted before the restart can still finish.

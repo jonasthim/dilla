@@ -163,6 +163,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 			// A definitive authorization refusal proves no action was accepted.
 			// Consume the event as log-only so this shared journal cursor can move;
 			// unknown and transient errors remain retryable below.
+			decision.EnforcementRefused = true
 			decision.Action = moderation.ActionLog
 			return decision, nil
 		}

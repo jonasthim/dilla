@@ -60,7 +60,7 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 		}
 		if h.automoderation == nil {
 			if h.musicCommands != nil {
-				return h.musicCommands.HandleGroupEvent(ctx, event)
+				return h.routeMusicCommand(ctx, event, true)
 			}
 			return nil
 		}
@@ -90,8 +90,15 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 			slog.Warn("automatic moderation event handling failed", "stage", stageErr.Stage,
 				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds)
 		}
-		if err == nil && decision.Action != moderation.ActionRemove && decision.Action != moderation.ActionTimeout && h.musicCommands != nil {
-			return h.musicCommands.HandleGroupEvent(ctx, event)
+		if h.musicCommands != nil && (decision.Action == moderation.ActionRemove || decision.Action == moderation.ActionTimeout || decision.EnforcementRefused) {
+			// Record rejected command eligibility before a transient enforcement retry
+			// or a later rules change can turn that same delivery into a log-only result.
+			return errors.Join(err, h.routeMusicCommand(ctx, event, false))
+		}
+
+		if err == nil && h.musicCommands != nil {
+			allowNew := !decision.DuplicateDelivery && !decision.EnforcementRefused && decision.Action != moderation.ActionRemove && decision.Action != moderation.ActionTimeout
+			return h.routeMusicCommand(ctx, event, allowNew)
 		}
 		return err
 	case 3: // Managed kind-3 interaction behavior retains its existing durable sender path.
@@ -124,4 +131,16 @@ func moderationMentionIDs(body *string) []string {
 		}
 	}
 	return mentions
+}
+
+func (h groupEventRouter) routeMusicCommand(ctx context.Context, event native.GroupEvent, allowNew bool) error {
+	if resumable, ok := h.musicCommands.(interface {
+		HandleModeratedGroupEvent(context.Context, native.GroupEvent, bool) error
+	}); ok {
+		return resumable.HandleModeratedGroupEvent(ctx, event, allowNew)
+	}
+	if allowNew && h.musicCommands != nil {
+		return h.musicCommands.HandleGroupEvent(ctx, event)
+	}
+	return nil
 }
