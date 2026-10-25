@@ -10,3 +10,6 @@
 .dw-settings-identity strong, .dw-settings-identity span { display: block; }
 .dw-settings-identity span { color: var(--fg-3); font-size: var(--text-xs); }
 .dw-settings-activity { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+
+.dw-bot-settings code { overflow-wrap: anywhere; white-space: normal; }
+.dw-bot-settings .d-settings-row__control { min-width: 0; }

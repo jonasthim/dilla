@@ -35,6 +35,19 @@ describe('bot settings pages', () => {
     expect(client.callsOf('getBotSpotifyConfig')).toHaveLength(0);
   });
 
+  it('opens an audit-only moderation log without installation management reads', async () => {
+    const client = new FakeClient();
+    client.set('account', account());
+    client.set('communities', [{ id: COMMUNITY, name: 'Midgard', owner: 'ff'.repeat(16) }]);
+    client.set(`permissions:${COMMUNITY}`, { loaded: true, viewAuditLog: true, manageCommunity: false, manageRoles: false,
+      manageChannels: false, kickMembers: false, banMembers: false, createInvite: false, owner: false, top: 0,
+      everyoneId: '', overwritesLoaded: true });
+    render(<CoreProvider client={client}><ServerSettings communityId={COMMUNITY} tab="moderationLog"
+      onTab={() => undefined} onClose={() => undefined} announce={() => undefined} /></CoreProvider>);
+    expect(await screen.findByRole('heading', { name: en['workspace.moderationLog'] })).toBeInTheDocument();
+    expect(client.callsOf('getBotInstallation')).toHaveLength(0);
+  });
+
   it('keeps an accepted welcome request owned and polls it across page changes', async () => {
     const client = new FakeClient();
     client.set('account', account());

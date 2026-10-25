@@ -25,7 +25,7 @@ const decodeConfig = (raw: Uint8Array): Config => {
 export function AutoModerationSettingsPanel({ communityId, botReady, canManage, canManageMessages, canModerateMembers, capabilities }: {
   communityId: string; botReady: boolean; canManage: boolean; canManageMessages: boolean; canModerateMembers: boolean; capabilities: number;
 }): React.JSX.Element {
-  const client = useCore(); const base = useId(); const generation = useRef(0);
+  const client = useCore(); const base = useId(); const dirtyRef = useRef(false); const generation = useRef(0);
   const readOperations = useBotInteractionOperation('automod-read');
   const saveOperations = useBotInteractionOperation('automod-save');
   const sharedRead = readOperations?.operation('automod-read') ?? null;
@@ -70,12 +70,13 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
     if (sharedRead.phase === 'failed') { setError(t('admin.bot.automod.loadError')); return; }
     if (sharedRead.error === 'read') setError(t('admin.bot.automod.readError'));
     const row = sharedRead.response;
-    if (row === null) return;
+    if (row === null || !sharedRead.acked) return;
     try {
       if (row.status !== 0) { setError(t('admin.bot.automod.readDenied')); }
       else {
         const loadedConfig = decodeConfig(row.data);
-        setConfig(loadedConfig); setConfirmed(loadedConfig); setExemptText(loadedConfig.exempt.join('\n')); setRevision(row.revision); setLoaded(true);
+        if (!dirtyRef.current) { setConfig(loadedConfig); setExemptText(loadedConfig.exempt.join('\n')); }
+        setConfirmed(loadedConfig); setRevision(row.revision); setLoaded(true);
         setNotice(t('admin.bot.automod.loaded')); setError(null);
       }
     } catch { setError(t('admin.bot.automod.readError')); }
@@ -87,7 +88,7 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
     if (sharedSave.phase === 'failed') { setPhase('idle'); setError(t('admin.bot.automod.saveError')); return; }
     if (sharedSave.error === 'read') setError(t('admin.bot.automod.readError'));
     const row = sharedSave.response;
-    if (row === null) return;
+    if (row === null || !sharedSave.acked) return;
     setPhase('idle');
     if (row.status === 0) { setRevision(row.revision); setLoaded(false); setNotice(t('admin.bot.automod.saved')); setError(null); }
     else if (row.status === 4) { setRevision(row.revision); setLoaded(false); setNotice(t('admin.bot.automod.conflictCurrent',{revision:row.revision??'unknown'})); setError(t('admin.bot.automod.conflict')); }
@@ -104,12 +105,12 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
       if(row!==undefined&&(page.through===null||BigInt(page.through)<BigInt(row.deliveryId))){timer=window.setTimeout(()=>void poll(),1000);return;}
       if(page.through) await client.call({m:'ackBotInteractionResponses',communityId,through:page.through});
       if(canceled||g!==generation.current||current.current!==communityId)return;
-      if(row){ if(row.status===0){ const x=decodeConfig(row.data); setConfig(x); setExemptText(x.exempt.join('\n')); setRevision(row.revision); setLoaded(true); setPhase('idle'); setNotice(t('admin.bot.automod.loaded')); }
+      if(row){ if(row.status===0){ const x=decodeConfig(row.data); if (!dirtyRef.current) { setConfig(x); setExemptText(x.exempt.join('\n')); } setConfirmed(x); setRevision(row.revision); setLoaded(true); setPhase('idle'); setNotice(t('admin.bot.automod.loaded')); }
         else {setPhase('idle');setError(t('admin.bot.automod.readDenied'));} }
       else timer=window.setTimeout(()=>void poll(),1000);
     } catch { if(!canceled){setPhase('idle');setError(t('admin.bot.automod.readError'));} } };
     void poll(); return ()=>{canceled=true;if(timer!==undefined)window.clearTimeout(timer);};
-  },[client,communityId,phase,request,requestOp,setConfig,setExemptText,setLoaded,setRevision]);
+  },[client,communityId,phase,request,requestOp,setConfig,setConfirmed,setExemptText,setLoaded,setRevision]);
   const beginSave=useCallback(():boolean=>{
     if(!loaded||revision===null||!botReady||!canManage)return false;
     const exemptions=exemptText.split(/[\s,]+/u).filter(Boolean);
@@ -166,6 +167,7 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
   const dirty = loaded && (confirmed === null || config.enabled !== confirmed.enabled || config.rate !== confirmed.rate
     || config.duplicate !== confirmed.duplicate || config.mention !== confirmed.mention || config.timeout !== confirmed.timeout
     || exemptions.join(',') !== confirmed.exempt.join(','));
+  dirtyRef.current = dirty;
   const validDraft = exemptions.length <= 256 && exemptions.every(value => /^[0-9a-f]{32}$/u.test(value))
     && new Set(exemptions).size === exemptions.length && Number.isSafeInteger(config.timeout)
     && config.timeout >= 1 && config.timeout <= 2419200000;
@@ -189,7 +191,7 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
     <p>{t('admin.bot.automod.defaults')}</p><p>{t('admin.bot.automod.capabilityHelp')}</p>{!botReady?<p>{t('admin.bot.automod.requiresBot')}</p>:null}
     {!canManage?<p>{t('admin.bot.automod.requiresManager')}</p>:null}
     <Button aria-disabled={!botReady||!canManage||busy||undefined} onClick={()=>void read()}>{busy?t('admin.bot.automod.waiting'):t('admin.bot.automod.load')}</Button>
-    {loaded?<fieldset disabled={!canManage}><label><input type="checkbox" checked={config.enabled} onChange={e=>setConfig({...config,enabled:e.target.checked})}/>{t('admin.bot.automod.enabled')}</label>
+    {loaded?<fieldset disabled={!canManage || busy}><label><input type="checkbox" checked={config.enabled} onChange={e=>setConfig({...config,enabled:e.target.checked})}/>{t('admin.bot.automod.enabled')}</label>
       {action('rate',t('admin.bot.automod.rate'))}{action('duplicate',t('admin.bot.automod.duplicate'))}{action('mention',t('admin.bot.automod.mention'))}
       <label>{t('admin.bot.automod.timeout')}<input type="number" min={1} max={2419200000} step={1000} value={config.timeout} onChange={e=>setConfig({...config,timeout:Number(e.target.value)})}/></label>
       <label>{t('admin.bot.automod.exemptions')}<textarea value={exemptText} onChange={e=>setExemptText(e.target.value)}/></label></fieldset>:null}

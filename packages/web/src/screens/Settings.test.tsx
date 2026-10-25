@@ -44,7 +44,7 @@ describe('Settings', () => {
     const { fake, user } = setup('/settings/profile', null);
     const status = screen.getByRole('textbox', { name: /status message/i });
     await user.type(status, 'keep this draft');
-    const signOut = screen.getByRole('button', { name: 'sign out and remove this browser' });
+    const signOut = screen.getByRole('button', { name: 'Sign out' });
     await user.click(signOut);
     const guard = screen.getByRole('dialog', { name: 'Discard unsaved changes?' });
     expect(screen.queryByRole('dialog', { name: 'Sign out and remove this browser?' })).toBeNull();

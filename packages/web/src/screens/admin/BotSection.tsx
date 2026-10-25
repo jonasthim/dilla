@@ -1,6 +1,6 @@
 // Server Settings → Bot: inspect the managed installation and enable/disable it through the core worker.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Avatar, Button, SettingsRow } from '@dilla/ui';
+import { Avatar, Button, SettingsRow, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -13,6 +13,7 @@ import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSett
 import { type SectionProps } from './shared.ts';
 import { authorizeSpotify, spotifySession } from './spotify-link.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
+import { useRoute } from '../../router.ts';
 import { useBotDraftState, useBotMutation } from './bot-settings-context.tsx';
 
 export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'automoderation' | 'moderationLog';
@@ -57,6 +58,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   const base = useId();
   const factors = useSlice('factors');
   const workspace = useSettingsWorkspace();
+  const [, navigate] = useRoute();
   const beginMutation = useBotMutation();
   const members = useSlice(`members:${communityId}`);
   const channelsState = useSlice(`channels:${communityId}`);
@@ -500,10 +502,11 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       : page === 'automoderation' ? 'admin.bot.automod.title' : 'admin.bot.moderationLog.title';
 
   return (
-    <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
+    <section className="dw-settings-section dw-bot-settings" aria-labelledby={`${base}-title`}>
       <h2 id={`${base}-title`} tabIndex={-1}>{t(pageTitle)}</h2>
       {!current ? <p aria-busy="true">{t('admin.bot.loading')}</p> : null}
       {current && currentInstallation === null && currentError === null ? <p>{t('admin.bot.none')}</p> : null}
+      {page !== 'bot' && page !== 'moderationLog' && current && currentInstallation?.state !== 3 ? <Button onClick={() => void navigate({ name: 'serverSettings', communityId, section: 'bot', from: null }, true)}>{t('workspace.botSetup')}</Button> : null}
       {page === 'bot' && currentInstallation !== null ? (
         <SettingsRow id={`${base}-status-row`} label={t('admin.bot.title')}>
           {bot ? <div className="dw-bot-identity"><Avatar name={botDisplay} size="sm" /><span>{botDisplay}</span></div> : null}
@@ -601,20 +604,15 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
         </SettingsRow> : null}
         <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')}>
           <p>{t('admin.bot.music.spotifyClientIdHelp')}</p>
-          <label htmlFor={`${base}-spotify-client-id`}>{t('admin.bot.music.spotifyClientId')}</label>
-          <input id={`${base}-spotify-client-id`} type="text" autoComplete="off" spellCheck={false} value={spotifyClientId}
-            maxLength={256} disabled={busy || access?.manageCommunity !== true}
-            onChange={event => { setSpotifyClientId(event.currentTarget.value.trim()); setSpotifyConfigError(null); }} />
+          <TextField id={`${base}-spotify-client-id`} label={t('admin.bot.music.spotifyClientId')} value={spotifyClientId}
+            maxLength={256} disabled={busy || access?.manageCommunity !== true} autoComplete="off" spellCheck={false}
+            onChange={value => { setSpotifyClientId(value.trim()); setSpotifyConfigError(null); }} />
           {spotifyRedirectUrl !== '' ? <p><strong>{t('admin.bot.music.spotifyCallback')}</strong> <code>{spotifyRedirectUrl}</code></p> : null}
           {spotifyConfigError !== null ? <p role="alert">{spotifyConfigError}</p> : null}
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
         </SettingsRow>
-        <SettingsRow id={`${base}-youtube-row`} label={t('admin.bot.music.youtube')}>
-          <p>{t('admin.bot.music.providerUnknown')}</p>
-          <p>{t('admin.bot.music.youtubeHelp')}</p>
-        </SettingsRow>
-        {currentInstallation !== null ? <MusicProviderStatus communityId={communityId} installationId={currentInstallation.id} /> : null}
+        <MusicProviderStatus communityId={communityId} installationId={currentInstallation?.id ?? null} />
       </section> : null}
       {page === 'welcome' ? <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}
         enabled={welcomeEnabled} canManage={access?.loaded === true && access.manageCommunity} gateway={welcomeGateway} />

@@ -8,6 +8,7 @@ import { devicesChunk, mergeMembers, selfName } from './shell-model.ts';
 import { SignOutAction } from './settings/SignOut.tsx';
 import { PresencePicker } from './PresencePicker.tsx';
 
+const SETTINGS_ICON = 'settings';
 const CHEVRON = 'chevron-right';
 /**
  * The phone's You tab (flow 12): who this is, the four facts the desktop holds in Settings → Diagnostics (this device's node, link,
@@ -53,7 +54,7 @@ export function You(props: { onOpenSettings(section: SettingsSection | null): vo
       <ul className="dw-phone-list dw-you__sections" aria-labelledby="dw-you-settings">
         <li>
           <button type="button" className="dw-phone-row" data-settings-section="index" onClick={() => props.onOpenSettings(null)}>
-            <Icon name="settings" size={20} />
+            <Icon name={SETTINGS_ICON} size={20} />
             <span className="dw-phone-row__text"><span>{t('workspace.open')}</span></span>
             <Icon name={CHEVRON} size={18} />
           </button>

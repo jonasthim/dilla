@@ -124,7 +124,7 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
     <span>{t('workspace.username', { username: account.user.username })}</span>
   </div> : null;
   const nav = <SettingsNavigation scope="user" activeId={activeSection} onSelect={select} />;
-  const signOut = <div className="dw-settings-signout"><SignOutAction /></div>;
+  const signOut = <div className="dw-settings-signout"><SignOutAction label={t('workspace.signOut')} /></div>;
   const sectionContent = phoneIndex ? null : activeSection === 'profile' ? <Profile />
     : activeSection === 'devices' ? <Devices />
       : activeSection === 'signin' ? <SignInFactors announce={announce} live={announcement} />

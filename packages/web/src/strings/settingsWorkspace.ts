@@ -1,4 +1,6 @@
 export const settingsWorkspace = {
+  'workspace.signOut': 'Sign out',
+  'workspace.botSetup': 'Open Bot settings',
   'workspace.username': '@{username}',
   'workspace.group.account': 'Account',
   'workspace.group.preferences': 'Preferences',

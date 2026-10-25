@@ -66,6 +66,7 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
     if (!authorized || existing?.phase === 'sending' || existing?.phase === 'waiting' || existing?.phase === 'response') return null;
     const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
     const operation: BotInteractionOperation = { ...input, scope, requestId, phase: 'sending', response: null, error: null, acked: false, uploadStatus: null };
+    liveOperations.current = { ...liveOperations.current, [scope]: operation };
     dispatch(operation);
     return requestId;
   }, [authorized, dispatch]);
@@ -84,7 +85,7 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
     });
   }, []);
   const clearOperation = useCallback((scope: string): void => {
-    setOperations(current => { const next = { ...current }; delete next[scope]; return next; });
+    setOperations(current => { const next = { ...current }; delete next[scope]; return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next; });
   }, []);
   const getOperation = useCallback((scope: string): BotInteractionOperation | null => operations[scope] ?? null, [operations]);
   const getDraft = useCallback(<T,>(key: string, fallback: T): T => (drafts[key] as T | undefined) ?? fallback, [drafts]);
@@ -145,9 +146,9 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
           const cid = communities[index];
           setOperations(current => {
             const next = { ...current };
-            for (const item of waiting) if (item.communityId === cid && next[item.scope]?.requestId === item.requestId)
+            for (const item of waiting) if (item.communityId === cid && next[item.scope]?.requestId === item.requestId && next[item.scope].error !== 'read')
               next[item.scope] = { ...next[item.scope], error: 'read' };
-            return next;
+            return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
           });
           continue;
         }
@@ -157,7 +158,7 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
           const next = { ...current };
           for (const item of owned) if (next[item.scope]?.requestId === item.requestId && next[item.scope].error === 'read')
             next[item.scope] = { ...next[item.scope], error: null };
-          return next;
+          return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
         });
         if (page.blocked || page.through === null) continue;
         const delivered = page.responses.filter(row => BigInt(row.deliveryId) <= BigInt(page.through!));
@@ -173,7 +174,7 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
               && candidate.communityId === row.communityId && candidate.operation === row.operation && row.channelId === null);
             if (item !== undefined && item.response === null) next[item.scope] = { ...item, phase: 'response', response: row, acked: false };
           }
-          return next;
+          return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
         });
         try {
           await client.call({ m: 'ackBotInteractionResponses', communityId: cid, through: page.through });
@@ -182,9 +183,9 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
             for (const row of delivered) {
               const item = Object.values(current).find(candidate => candidate.requestId === row.requestId
                 && candidate.communityId === row.communityId && candidate.operation === row.operation && row.channelId === null);
-              if (item !== undefined && item.response?.deliveryId === row.deliveryId) next[item.scope] = { ...item, acked: true };
+              if (item !== undefined && !item.acked && item.response?.deliveryId === row.deliveryId) next[item.scope] = { ...item, acked: true };
             }
-            return next;
+            return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
           });
         } catch { /* retry the same owned prefix on the next poll */ }
       }

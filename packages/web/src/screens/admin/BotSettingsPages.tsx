@@ -1,3 +1,5 @@
+import { ModerationLog } from './ModerationLog.tsx';
+import { t } from '../../strings/index.ts';
 import { BotSection } from './BotSection.tsx';
 import type { SectionProps } from './shared.ts';
 
@@ -8,4 +10,4 @@ export function WelcomePage(props: SectionProps): React.JSX.Element { return <Bo
 export function JoinRolesPage(props: SectionProps): React.JSX.Element { return <BotSection {...props} page="joinRoles" />; }
 export function MusicPage(props: SectionProps): React.JSX.Element { return <BotSection {...props} page="music" />; }
 export function AutomoderationPage(props: SectionProps): React.JSX.Element { return <BotSection {...props} page="automoderation" />; }
-export function ModerationLogPage(props: SectionProps): React.JSX.Element { return <BotSection {...props} page="moderationLog" />; }
+export function ModerationLogPage(props: SectionProps): React.JSX.Element { return <section className="dw-settings-section"><h2 tabIndex={-1}>{t('workspace.moderationLog')}</h2><ModerationLog communityId={props.communityId} showHeading={false} /></section>; }

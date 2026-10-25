@@ -47,6 +47,7 @@ const validRevision = (value: string | null): value is string => value !== null 
 
 export function WelcomeSettingsPanel({ communityId, serverName, channels, enabled, canManage, gateway }: WelcomeSettingsPanelProps): React.JSX.Element {
   const base = useId();
+  const dirtyRef = useRef(false);
   const sharedOperations = useBotInteractionOperation('welcome');
   const sharedPending = sharedOperations?.operation('welcome') ?? null;
   const [config, setConfig] = useBotDraftState<WelcomeSettingsValue | null>(communityId, 'welcome.config', null);
@@ -119,15 +120,18 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
     if (sharedPending.phase === 'failed') { setError(t('admin.bot.welcomeSettings.uploadFailed')); return; }
     if (sharedPending.error === 'read') setError(t('admin.bot.welcomeSettings.readFailed'));
     const response = sharedPending.response;
-    if (response === null) return;
+    if (response === null || !sharedPending.acked) return;
     try {
       if (response.status !== 0 || !validRevision(response.revision)) {
         setError(t(response.status === 4 ? 'admin.bot.welcomeSettings.conflict' : 'admin.bot.welcomeSettings.responseFailed'));
-        if (response.status === 4) { setMustReload(true); setConfig(null); }
+        if (response.status === 4) { setMustReload(true); }
       } else if (sharedPending.operation === 1) {
         const saved = decodeWelcomeSettings(response.data);
-        setConfig(saved); setSelectedChannel(saved?.channelId ?? fallbackChannel);
-        setTemplate(saved?.template ?? 'Welcome {member} to {server}!'); setRevision(response.revision);
+        setConfig(saved);
+        if (!dirtyRef.current) {
+          setSelectedChannel(saved?.channelId ?? fallbackChannel);
+          setTemplate(saved?.template ?? 'Welcome {member} to {server}!');
+        } setRevision(response.revision);
         setLoaded(true); setMustReload(false); setNotice(null); setError(null);
       } else {
         const empty = decodeWelcomeSettings(response.data);
@@ -175,8 +179,10 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
             if (pending.operation === 1) {
               const saved = decodeWelcomeSettings(response.data);
               setConfig(saved);
-              setSelectedChannel(saved?.channelId ?? fallbackChannel);
-              setTemplate(saved?.template ?? 'Welcome {member} to {server}!');
+              if (!dirtyRef.current) {
+                setSelectedChannel(saved?.channelId ?? fallbackChannel);
+                setTemplate(saved?.template ?? 'Welcome {member} to {server}!');
+              }
               setRevision(response.revision);
               setLoaded(true);
               setMustReload(false);
@@ -194,7 +200,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
           } else {
             setPending(null);
             setError(t(response.status === 4 ? 'admin.bot.welcomeSettings.conflict' : 'admin.bot.welcomeSettings.responseFailed'));
-            if (response.status === 4) { setMustReload(true); setConfig(null); }
+            if (response.status === 4) { setMustReload(true); }
           }
           // Acknowledge in an effect after React commits the visible result.
           const through = page.through === null ? null : BigInt(page.through);
@@ -250,12 +256,13 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
   }, [mustReload, revision, selectedChannel, template, serverName, sharedOperations, communityId, request, setError, setNotice]);
 
   const dirty = loaded && (config === null || !configuredDraft);
+  dirtyRef.current = dirty;
   const canSave = dirty && !unavailable && revision !== null && !mustReload && selectedChannel !== ''
     && template.trim() !== '' && new TextEncoder().encode(template).length <= 2000 && !operationBusy;
   const editState = useMemo<SettingsEditState>(() => ({ dirty, busy: operationBusy, canSave, save: submitSave, reset: () => {
-    if (config === null) return;
-    setSelectedChannel(config.channelId); setTemplate(config.template);
-  } }), [dirty, operationBusy, canSave, submitSave, config, setSelectedChannel, setTemplate]);
+    setSelectedChannel(config?.channelId ?? fallbackChannel); setTemplate(config?.template ?? 'Welcome {member} to {server}!');
+    if (config === null) setLoaded(false);
+  } }), [dirty, operationBusy, canSave, submitSave, config, fallbackChannel, setLoaded, setSelectedChannel, setTemplate]);
   const managed = useSettingsEdit(editState);
 
   return <section aria-labelledby={`${base}-title`}>

@@ -513,8 +513,8 @@ describe('the server bot settings', () => {
     expect(stored).toContain('csrf-only');
     expect(stored).not.toContain('oauth-code');
     expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
-    expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
-    expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: en['workspace.providers.title'] })).toBeInTheDocument();
+    expect(screen.getByText(en['workspace.providers.youtubeSetup'])).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
     expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'getBotDjRoles', 'getBotSpotifyConfig',
       'humanInteractionRequest', 'readBotInteractionResponses', 'stepUp', 'beginBotSpotifyAttempt']);
