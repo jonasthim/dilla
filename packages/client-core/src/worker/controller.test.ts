@@ -532,7 +532,7 @@ describe('Controller', () => {
     let welcomePolls = 0;
     w.sync.pollWelcomes.mockImplementation(() => {
       welcomePolls++;
-      if (welcomePolls === 3) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+      if (welcomePolls === 20) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
       return Promise.resolve();
     });
     w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
@@ -541,7 +541,7 @@ describe('Controller', () => {
     });
     w.call(98, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(3);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(20);
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 

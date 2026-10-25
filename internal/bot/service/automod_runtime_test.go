@@ -341,9 +341,15 @@ func TestAutoModerationRuntimeConsumesDefinitiveRevocationButRetriesUnknownOutco
 	for i := 0; i < 6; i++ {
 		event.SourceSequence++
 		event.Message = id.New()
-		if _, err := runtime.Handle(context.Background(), event, false, nil); err != nil {
+
+		decision, err := runtime.Handle(context.Background(), event, false, nil)
+		if err != nil {
 			t.Fatalf("definitive refusal should be terminal log-only handling: %v", err)
 		}
+		if i == 5 && !decision.EnforcementRefused {
+			t.Fatal("downstream command intake cannot distinguish refused enforcement")
+		}
+
 	}
 	event.SourceSequence++
 	event.Message = id.New()

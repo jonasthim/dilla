@@ -28,7 +28,7 @@ function setup(query = `?code=oauth-code&state=${STATE}`, expires = `${Math.floo
 describe('Spotify authorization callback', () => {
   it('validates the attempt context, posts the transient code, scrubs the URL and clears storage', async () => {
     const { client } = setup();
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
+    expect(await screen.findByText(/authorization delivered to the bot/i)).toBeInTheDocument();
     expect(client.callsOf('callbackBotSpotifyAttempt')).toEqual([expect.objectContaining({
       communityId: COMMUNITY, attemptId: ATTEMPT, state: STATE, code: 'oauth-code',
     })]);
@@ -73,7 +73,7 @@ describe('Spotify authorization callback', () => {
     expect(window.location.search).toBe('');
     expect(spotifySession.getItem('dilla.spotifyAttempt')).not.toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: /retry authorization delivery/i }));
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
+    expect(await screen.findByText(/authorization delivered to the bot/i)).toBeInTheDocument();
     expect(client.callsOf('callbackBotSpotifyAttempt')).toEqual([
       expect.objectContaining({ attemptId: ATTEMPT, state: STATE, code: 'oauth-code' }),
       expect.objectContaining({ attemptId: ATTEMPT, state: STATE, code: 'oauth-code' }),
@@ -83,7 +83,7 @@ describe('Spotify authorization callback', () => {
 
   it('returns to the associated server after authorization has a definite result', async () => {
     const { client } = setup();
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
+    expect(await screen.findByText(/authorization delivered to the bot/i)).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole('button', { name: /return to server/i }));
     expect(window.location.pathname).toBe(`/c/${COMMUNITY}`);
     expect(client.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);

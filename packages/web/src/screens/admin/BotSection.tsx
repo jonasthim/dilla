@@ -552,9 +552,8 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
         </SettingsRow>
-        <SettingsRow id={`${base}-youtube-row`} label={t('admin.bot.music.youtube')}>
-          <p>{t('admin.bot.music.providerUnknown')}</p>
-          <p>{t('admin.bot.music.youtubeHelp')}</p>
+        <SettingsRow id={`${base}-music-commands-row`} label={t('admin.bot.music.commands')}>
+          <p>{t('admin.bot.music.chatHelp')}</p>
         </SettingsRow>
       </section>
       <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}

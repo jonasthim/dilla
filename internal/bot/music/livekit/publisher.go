@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	ErrBinding      = errors.New("music livekit: call media binding rejected")
-	ErrEpochChanged = errors.New("music livekit: call media epoch changed")
+	ErrBinding        = errors.New("music livekit: call media binding rejected")
+	ErrEpochChanged   = errors.New("music livekit: call media epoch changed")
+	ErrRoomConnection = errors.New("music livekit: room connection failed")
 )
 
 const epochPollInterval = 2 * time.Second
@@ -92,7 +93,7 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 	if err != nil {
 		cancel()
 		_ = source.Close()
-		return nil, errors.New("music livekit: room connection failed")
+		return nil, ErrRoomConnection
 	}
 	if err := runCtx.Err(); err != nil {
 		room.Disconnect()

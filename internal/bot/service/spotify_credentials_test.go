@@ -42,6 +42,9 @@ func (n *spotifyTestNative) StateGet(ctx context.Context, area uint64, key []byt
 	if err := ctx.Err(); err != nil {
 		return native.StateValue{}, err
 	}
+	if len(key) < 1 || len(key) > 128 {
+		return native.StateValue{}, errors.New("invalid native state key")
+	}
 	if area != spotifyCredentialArea {
 		return native.StateValue{}, errors.New("area")
 	}
@@ -63,6 +66,9 @@ func (n *spotifyTestNative) StateTransaction(ctx context.Context, tx id.ID, chan
 		return nil, errors.New("transaction")
 	}
 	c := changes[0]
+	if len(c.Key) < 1 || len(c.Key) > 128 {
+		return nil, errors.New("invalid native state key")
+	}
 	v := n.values[string(c.Key)]
 	if v.Revision != c.ExpectedRevision {
 		return nil, ErrSpotifyConflict

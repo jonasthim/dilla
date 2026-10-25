@@ -73,7 +73,10 @@ type Decision struct {
 	Rules             []Rule
 	Timeout           time.Duration
 	DuplicateDelivery bool
-	Ignored           bool
+	// EnforcementRefused means a punitive decision could not be applied. It must
+	// not authorize downstream actions merely because intake can advance.
+	EnforcementRefused bool
+	Ignored            bool
 }
 
 type observation struct {
