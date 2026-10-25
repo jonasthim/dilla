@@ -357,6 +357,31 @@ describe('the server bot settings', () => {
     expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
   });
 
+  it('renders a case once when overlapping response snapshots arrive in one journal page', async () => {
+    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
+    let requestId = '';
+    const sharedCase = { key: 'a'.repeat(32) + ':1', channelId: 'b'.repeat(32), actorId: 'c'.repeat(32),
+      messageId: 'a'.repeat(32), revision: '1', reason: 'duplicate_body', action: 'warn',
+      excerpt: 'one durable warning', receivedAt: '1800000000' };
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'listModerationCases') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
+        { deliveryId: '2', requestId: '55'.repeat(16), status: 0, hasMore: false, nextCursor: null, cases: [sharedCase] },
+        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [sharedCase,
+          { ...sharedCase, key: 'd'.repeat(32) + ':1', messageId: 'd'.repeat(32), excerpt: 'a distinct warning' }] },
+      ] });
+      return Promise.resolve(null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.loadAutomatic'] }));
+    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toEqual([
+      { m: 'ackHumanInteractionResponses', communityId: SERVER, through: '3' },
+    ]));
+    expect(screen.getAllByRole('article')).toHaveLength(2);
+    expect(screen.getAllByText('one durable warning')).toHaveLength(1);
+    expect(screen.getByText('a distinct warning')).toBeInTheDocument();
+  });
+
   it('shows a typed response page, then acknowledges it after rendering', async () => {
     const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
     let requestId = '';

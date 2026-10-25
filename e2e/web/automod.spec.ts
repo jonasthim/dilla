@@ -51,10 +51,13 @@ async function workerDiagnostic(page: import('@playwright/test').Page): Promise<
 }
 
 async function sendRepeat(page: import('@playwright/test').Page, text: string): Promise<void> {
+  const rows = messageRow(page, 'general', text);
+  const previousCount = await rows.count();
   const box = composerBox(page, 'general');
   await box.fill(text);
   await box.press('Enter');
-  await expect(messageRow(page, 'general', text).last()).toHaveAttribute('data-state', 'ok');
+  await expect(rows).toHaveCount(previousCount + 1);
+  await expect(rows.last()).toHaveAttribute('data-state', 'ok');
 }
 
 test.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}` });
@@ -152,12 +155,25 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     await nav.getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     const loadCases = settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true });
     const automaticCase = settings.locator('article').filter({ hasText: 'duplicate_body' });
-    // Each load is a snapshot. If the Bot has not processed the burst yet, request
-    // another snapshot instead of waiting for the first response to change.
-    await expect(async () => {
+    const automaticEmpty = settings.getByRole('note').filter({ hasText: copy('admin.bot.moderationLog.empty') });
+    // A log read is a snapshot. Wait for this request to finish; retry only a
+    // completed empty snapshot so a second click cannot replace a pending read.
+    const deadline = Date.now() + WAIT;
+    let foundAutomaticCase = false;
+    while (!foundAutomaticCase) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Automatic moderation case did not appear before the bounded log wait expired');
       await loadCases.click();
-      await expect(automaticCase).toHaveCount(1, { timeout: 5_000 });
-    }).toPass({ timeout: 45_000, intervals: [500, 1_000, 2_000] });
+      let completedSnapshot: 'case' | 'empty' | null = null;
+      await expect.poll(async () => {
+        const count = await automaticCase.count();
+        if (count === 1) completedSnapshot = 'case';
+        else if (count === 0 && await automaticEmpty.isVisible()) completedSnapshot = 'empty';
+        return completedSnapshot;
+      }, { timeout: remaining, intervals: [500, 1_000, 2_000] }).not.toBeNull();
+      foundAutomaticCase = completedSnapshot === 'case';
+    }
+    await expect(automaticCase).toHaveCount(1);
     await expect(automaticCase).toContainText('warn');
     const excerpt = await automaticCase.locator('p').nth(1).innerText();
     expect(excerpt.length).toBe(512);

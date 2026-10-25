@@ -92,7 +92,12 @@ export function ModerationLog({ communityId, showHeading = true }: { communityId
           setListedCases(previous => {
             const seen = new Set(previous.map(row => row.key));
             const pageCases = page.responses.flatMap(response => response.cases);
-            return [...previous, ...pageCases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
+            const additions = pageCases.filter(row => {
+              if (seen.has(row.key)) return false;
+              seen.add(row.key);
+              return true;
+            });
+            return [...previous, ...additions].slice(0, MAX_DISPLAY_CASES);
           });
           if (page.through !== null) setAckThrough(page.through);
           const result = page.responses.find(response => response.requestId === request);
