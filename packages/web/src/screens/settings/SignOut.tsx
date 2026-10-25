@@ -3,6 +3,7 @@ import { Button, Icon } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { t } from '../../strings/index.ts';
 import { KeyDialog } from './KeyDialog.tsx';
+import { useSettingsWorkspace, useSettingsPendingOperation } from '../../settings/edit-state.tsx';
 
 const LOG_OUT = 'log-out';
 
@@ -13,13 +14,26 @@ const LOG_OUT = 'log-out';
  */
 export function SignOutAction({ icon = false }: { icon?: boolean } = {}): React.JSX.Element {
   const client = useCore();
+  const workspace = useSettingsWorkspace();
   const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  useSettingsPendingOperation(pending);
+  const requestOpen = () => {
+    const openDialog = () => setOpen(true);
+    if (workspace) void workspace.requestNavigation(openDialog);
+    else openDialog();
+  };
+  const confirm = async (key: string) => {
+    setPending(true);
+    try { await client.call({ m: 'signOutRevoke', recoveryKey: key }); }
+    finally { setPending(false); }
+  };
   return (
     <>
-      <Button variant="danger" onClick={() => setOpen(true)}>{icon ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem' }}><Icon name={LOG_OUT} size={20} />{t('devices.signOut')}</span> : t('devices.signOut')}</Button>
+      <Button variant="danger" onClick={requestOpen}>{icon ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem' }}><Icon name={LOG_OUT} size={20} />{t('devices.signOut')}</span> : t('devices.signOut')}</Button>
       <KeyDialog open={open} id="devices-signout" title={t('devices.signOutTitle')} body={t('devices.signOutBody')}
         confirmLabel={t('devices.confirmSignOut')} onClose={() => setOpen(false)}
-        onConfirm={key => client.call({ m: 'signOutRevoke', recoveryKey: key })} />
+        onConfirm={confirm} />
     </>
   );
 }

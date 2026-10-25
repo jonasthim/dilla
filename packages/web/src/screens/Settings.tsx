@@ -1,5 +1,5 @@
 import { SettingsFrame, PhoneLayoutProvider } from '@dilla/ui';
-import { routeOf, useRoute, type SettingsSection } from '../router.ts';
+import { goBack, routeOf, useRoute, type SettingsSection } from '../router.ts';
 import { phoneNow, usePhoneLayout } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
@@ -74,6 +74,11 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
     focusHeading.current = false;
     contentRef.current?.querySelector<HTMLElement>('[data-privacy-heading]')?.focus();
   }, [comparison, contentRef]);
+  useEffect(() => {
+    if (section !== null) return;
+    setAnchor(null);
+    setComparison(null);
+  }, [section]);
 
   const failCompare = (userId: string, umk: string, error: CompareError) =>
     setComparison(current => current?.record.userId === userId && current.umk === umk ? { ...current, error } : current);
@@ -111,9 +116,8 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
     navigate(from === null ? { name: 'root' } : routeOf(from), true);
   };
   const back = () => {
-    setAnchor(null);
-    setComparison(null);
-    navigate({ name: 'settings', section: null, from }, true);
+    const index = { name: 'settings', section: null, from } as const;
+    goBack(index, navigate, index);
   };
   const identity = account?.user ? <div className="dw-settings-identity">
     <strong>{account.user.display || account.user.username}</strong>

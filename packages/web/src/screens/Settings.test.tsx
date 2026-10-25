@@ -40,6 +40,38 @@ describe('Settings', () => {
     expect(await screen.findByText('Profile saved')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
   });
+  it('keeps a dirty Profile draft when sign-out is denied, and opens the key ceremony after explicit discard', async () => {
+    const { fake, user } = setup('/settings/profile', null);
+    const status = screen.getByRole('textbox', { name: /status message/i });
+    await user.type(status, 'keep this draft');
+    const signOut = screen.getByRole('button', { name: 'sign out and remove this browser' });
+    await user.click(signOut);
+    const guard = screen.getByRole('dialog', { name: 'Discard unsaved changes?' });
+    expect(screen.queryByRole('dialog', { name: 'Sign out and remove this browser?' })).toBeNull();
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }));
+    expect(status).toHaveValue('keep this draft');
+    expect(fake.callsOf('signOutRevoke')).toEqual([]);
+    await user.click(signOut);
+    await user.click(within(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).getByRole('button', { name: 'Discard changes' }));
+    expect(await screen.findByRole('dialog', { name: 'Sign out and remove this browser?' })).toBeInTheDocument();
+    expect(status).toHaveValue('');
+  });
+  it('keeps a pending forget operation registered while navigation is requested', async () => {
+    const { fake, user } = setup('/settings/devices', null);
+    let finishForget!: () => void;
+    fake.handler = command => command.m === 'forgetBrowser'
+      ? new Promise(resolve => { finishForget = () => resolve(null); }) : Promise.resolve(null);
+    await user.click(screen.getByRole('button', { name: 'forget this browser' }));
+    await user.click(screen.getByRole('button', { name: 'Forget' }));
+    expect(await screen.findByRole('button', { name: 'Working…' })).toBeInTheDocument();
+    await user.click(navButton('Profile'));
+    const guard = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' });
+    expect(guard).toHaveTextContent('A request is already in progress. It will continue if you leave. Unsaved changes will be discarded.');
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }));
+    expect(window.location.pathname).toBe('/settings/devices');
+    await act(async () => { finishForget(); await Promise.resolve(); });
+    expect(screen.queryByRole('dialog', { name: 'Forget this browser?' })).toBeNull();
+  });
   it('keeps failed Profile edits available and resets them to the latest account values', async () => {
     const { fake, user } = setup('/settings/profile', null);
     const status = screen.getByRole('textbox', { name: /status message/i });
@@ -71,9 +103,12 @@ describe('Settings', () => {
       await user.click(within(dialog).getByRole('button', { name: 'Devices' }));
       expect(dialog).toHaveAttribute('data-phone-page', 'section');
       expect(window.location.pathname).toBe('/settings/devices');
+      const sectionEntryIndex = (window.history.state as Record<string, unknown>).dillaHistoryIndex as number;
       await user.click(within(dialog).getByRole('button', { name: 'Back to settings' }));
       expect(window.location.pathname).toBe('/settings');
       expect(dialog).toHaveAttribute('data-phone-page', 'index');
+      const backEntryIndex = (window.history.state as Record<string, unknown>).dillaHistoryIndex;
+      expect(typeof backEntryIndex !== 'number' || backEntryIndex < sectionEntryIndex).toBe(true);
       expect(within(dialog).queryByRole('heading', { level: 2, name: 'Profile' })).toBeNull();
     } finally { Reflect.deleteProperty(window, 'matchMedia'); }
   });
