@@ -31,7 +31,9 @@ export interface CommandExecutionContext {
 export type CommandHandler = (invocation: CommandInvocation, context: CommandExecutionContext) => Promise<CommandResult>;
 export type CommandProviderHandlers = Readonly<Partial<Record<string, CommandHandler>>>;
 export interface CommandSuggestion { id: string; label: string; description?: string; value: string }
-export type CommandSuggestionProvider = (commandId: string, option: CommandOption, query: string, context: Readonly<Binding>, values?: Readonly<Record<string, string>>) => Promise<readonly CommandSuggestion[]>;
+/** A provider-owned list may include a nonselectable discovery notice. Undefined means unhandled. */
+export type CommandSuggestionList = readonly CommandSuggestion[] & { readonly notice?: string };
+export type CommandSuggestionProvider = (commandId: string, option: CommandOption, query: string, context: Readonly<Binding>, values?: Readonly<Record<string, string>>) => Promise<CommandSuggestionList | undefined>;
 
 export interface CommandProviderValue {
   handlers?: CommandProviderHandlers;

@@ -368,3 +368,14 @@ describe('CommandComposer', () => {
     await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'leave', args: {} }));
   });
 });
+
+
+it('renders suggestion notices separately from selectable entities', async () => {
+  const user = userEvent.setup(); const message = 'Poll browsing reached 1000 records. Enter the exact poll ID to find an older poll.';
+  const { props } = renderComposer({ initialText: '/poll results', suggest: () => Promise.resolve(Object.assign([], { notice: message })) });
+  await user.type(screen.getByRole('combobox', { name: 'poll' }), 'older');
+  expect(await screen.findByRole('note')).toHaveTextContent(message);
+  expect(screen.queryByRole('option')).toBeNull();
+  await user.click(screen.getByRole('button', { name: /run command/i }));
+  expect(props.onExecute).not.toHaveBeenCalled();
+});

@@ -363,3 +363,50 @@ func TestNativeStatusFourIsReturnedAsInteractionConflict(t *testing.T) {
 		t.Fatalf("native conflict status=%d err=%v", out.Status, e)
 	}
 }
+
+func TestFinalReviewLongRemindersRequireSixPages(t *testing.T) {
+	now := time.Unix(1000, 0)
+	h, _, _ := newReminderTest(&now)
+	owner := reminderTestID(4)
+	for i := byte(10); i < 16; i++ {
+		_, err := h.Store.Create(t.Context(), reminderTestID(i), owner, [32]byte{i}, reminders.Reminder{Text: strings.Repeat("x", 1500), Timezone: "UTC"}, time.Unix(2000+int64(i), 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var cursor any
+	for page := 0; page < 6; page++ {
+		result, err := h.list(t.Context(), InteractionActor{User: owner}, protocol.Request{RequestID: reminderTestID(byte(30 + page)), CommunityID: reminderTestID(1), Operation: protocol.OpReminderList, Args: []any{cursor}})
+		if err != nil || result.Status != 0 {
+			t.Fatalf("page=%d result=%+v error=%v", page, result, err)
+		}
+		var data []any
+		if err = cborx.Unmarshal(result.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		rows := data[1].([]any)
+		if len(rows) != 1 {
+			t.Fatalf("page%d rows%d", page, len(rows))
+		}
+		cursor = data[2]
+		t.Logf("page=%d rows=%d bytes=%d hasMore=%v", page+1, len(rows), len(result.Data), cursor != nil)
+		if (page < 5) != (cursor != nil) {
+			t.Fatal("unexpected cursor")
+		}
+	}
+}
+func TestFinalReviewDueReminderCancel(t *testing.T) {
+	now := time.Unix(1000, 0)
+	h, _, _ := newReminderTest(&now)
+	owner := reminderTestID(4)
+	row, err := h.Store.Create(t.Context(), reminderTestID(10), owner, [32]byte{10}, reminders.Reminder{Text: "due", Timezone: "UTC"}, time.Unix(1060, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = time.Unix(1061, 0)
+	revision, expires := row.Revision, uint64(1120)
+	result, err := h.cancel(t.Context(), InteractionActor{User: owner}, protocol.Request{RequestID: reminderTestID(20), CommunityID: reminderTestID(1), Operation: protocol.OpReminderCancel, Revision: &revision, Expires: &expires, Args: []any{row.ID}})
+	if err != nil || result.Status != 0 {
+		t.Fatalf("due cancellation should succeed per UI contract; status=%d error=%v", result.Status, err)
+	}
+}

@@ -406,7 +406,7 @@ func (p *durablePollPublisher) PublishPoll(ctx context.Context, poll polls.Poll)
 		} else {
 			record.phase = 1
 		}
-		record, snapshot, e = p.persist(ctx, poll.ID, snapshot, record)
+		_, _, e = p.persist(ctx, poll.ID, snapshot, record)
 		if e != nil {
 			return e
 		}
@@ -482,7 +482,7 @@ func addCapabilityDiscoveryHandler(handlers map[protocol.Operation]service.Inter
 	if handlers == nil || session == nil || community.IsZero() || installation.IsZero() || botUser.IsZero() {
 		return
 	}
-	supported := make([]protocol.Operation, 0, len(handlers))
+	supported := []protocol.Operation{protocol.OpCapabilities}
 	for op := range handlers {
 		if op != protocol.OpCapabilities {
 			supported = append(supported, op)
@@ -508,8 +508,8 @@ func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.
 	for op, handler := range utilities.handlers() {
 		handlers[op] = handler
 	}
-	if handlers != nil && authority != nil && !community.IsZero() && !installation.IsZero() && !botUser.IsZero() {
-		supported := make([]protocol.Operation, 0, len(handlers))
+	if authority != nil && !community.IsZero() && !installation.IsZero() && !botUser.IsZero() {
+		supported := []protocol.Operation{protocol.OpCapabilities}
 		for op := range handlers {
 			if op != protocol.OpCapabilities {
 				supported = append(supported, op)
@@ -522,7 +522,10 @@ func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.
 	return handlers
 }
 
-func newRuntimeUtilityDispatcher(nativeBoundary service.InteractionNative, handlers map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint8, now func() uint64, snapshots service.InteractionSnapshotProvider) (*service.InteractionDispatcher, error) {
-	assembled := assembleUtilityInteractionHandlers(handlers, utilities, authority, community, installation, botUser, capabilities)
+func newRuntimeUtilityDispatcher(nativeBoundary service.InteractionNative, handlers map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint64, now func() uint64, snapshots service.InteractionSnapshotProvider) (*service.InteractionDispatcher, error) {
+	if capabilities > 255 {
+		return nil, errors.New("utility capabilities exceed the wire byte range")
+	}
+	assembled := assembleUtilityInteractionHandlers(handlers, utilities, authority, community, installation, botUser, uint8(capabilities))
 	return service.NewInteractionDispatcherWithSnapshots(nativeBoundary, assembled, now, snapshots)
 }

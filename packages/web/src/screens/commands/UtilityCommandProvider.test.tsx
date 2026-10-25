@@ -12,6 +12,7 @@ import { notifyReminder, useUtilityCommandProvider } from './UtilityCommandProvi
 const COMMUNITY = '11'.repeat(16); const CHANNEL = '22'.repeat(16); const USER = '33'.repeat(16);
 const INSTALLATION = '44'.repeat(16); const BOT = '55'.repeat(16); const POLL = '77'.repeat(16);
 const wire = (value: unknown): Uint8Array => importEncode(value as never);
+const utf8 = (value: string): Uint8Array => new Uint8Array(new TextEncoder().encode(value));
 const asBytes = (id: string) => fromHex(id); const toHex = (id: Uint8Array) => Array.from(id, byte => byte.toString(16).padStart(2, '0')).join('');
 const supported = [3, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84].map(BigInt);
 function pollSummary(over: Partial<PollSummary> = {}): PollSummary { return { id: POLL, channelId: CHANNEL, threadId: null, creatorId: USER, question: 'Lunch?', answers: ['Soup', 'Salad'], multi: true, createdAt: 1_800_000_000n, dueAt: 1_800_003_600n, closed: false, counts: [0n, 0n], myChoices: [], revision: 1n, ...over }; }
@@ -259,24 +260,24 @@ describe('utility command provider', () => {
     expect(await screen.findByText('Reminder 100')).toBeInTheDocument(); expect(screen.getByText('Reminder 81')).toBeInTheDocument();
     expect(screen.getAllByRole('listitem')).toHaveLength(100); expect(screen.getByRole('button', { name: /33 due/ })).toBeInTheDocument(); mounted.unmount();
   });
-  it('pages opaque reminder cursors through the real BotUtilities adapter', async () => {
+  it('pages 100 long single-record responses through the real BotUtilities adapter', async () => {
     const f = utilityFixture(); const base = f.client.handler; const pageRequests: Uint8Array[] = [];
     f.client.handler = command => {
       if (command.m !== 'humanInteractionRequest' || command.operation !== 81) return base(command);
       const cursor = command.args[0] as Uint8Array | null;
       const dueCursor = cursor === null ? 0 : Number(BigInt(new TextDecoder().decode(cursor).split('/')[1] ?? '0') - 1_800_000_100n);
-      const pageIndex = cursor === null ? 0 : Math.floor(dueCursor / 20);
+      const pageIndex = cursor === null ? 0 : dueCursor;
       pageRequests.push(cursor?.slice() ?? new Uint8Array());
-      const rows = Array.from({ length: 20 }, (_unused, i) => {
-        const n = pageIndex * 20 + i + 1; const id = n.toString(16).padStart(32, '0');
-        return [asBytes(id), `Adapter reminder ${n}`, 1_800_000_100n + BigInt(n), 'UTC', null, null, 1n, 1n];
+      const rows = Array.from({ length: 1 }, (_unused, i) => {
+        const n = pageIndex + i + 1; const id = n.toString(16).padStart(32, '0');
+        return [asBytes(id), 'x'.repeat(1450) + ` ${n}`, 1_800_000_100n + BigInt(n), 'UTC', null, null, 1n, 1n];
       });
-      const final = pageIndex === 4 ? null : new Uint8Array(new TextEncoder().encode(`${USER}/${(1_800_000_100n + BigInt((pageIndex + 1) * 20)).toString().padStart(20, '0')}/${((pageIndex + 1) * 20).toString(16).padStart(32, '0')}`));
+      const final = pageIndex === 99 ? null : new Uint8Array(new TextEncoder().encode(`${USER}/${(1_800_000_100n + BigInt((pageIndex + 1))).toString().padStart(20, '0')}/${((pageIndex + 1)).toString(16).padStart(32, '0')}`));
       f.responses.push({ deliveryId: String(1000 + pageRequests.length), requestId: command.requestId, communityId: COMMUNITY, operation: 81,
         channelId: null, status: 0, revision: null, data: wire([1n, rows, final]) });
       return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
     };
-    const mounted = mount(f.client, null); await waitFor(() => expect(pageRequests).toHaveLength(5));
+    const mounted = mount(f.client, null); await waitFor(() => expect(pageRequests).toHaveLength(100));
     expect(pageRequests[0]).toEqual(new Uint8Array()); expect(pageRequests.slice(1).every(cursor => cursor.length > 0)).toBe(true);
     expect(screen.getByRole('button', { name: /100 due/ })).toBeInTheDocument(); mounted.unmount();
   });
@@ -599,4 +600,75 @@ describe('utility outcome and privacy regressions', () => {
     expect(new Set(ids).size).toBe(3); expect(ids).not.toContain(f.requests.find(row => row.operation === operation)!.requestId); view.unmount();
   });
 
+});
+
+
+describe('byte-bounded utility discovery and reconciliation', () => {
+  it('recovers a created reminder after six other long one-record pages', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const context = commandContext(f.client, 'c1'.repeat(16)); const invoke = { commandId: 'remind', args: { when: 'in 1h', text: 'Recovered seventh reminder' } };
+    const user = userEvent.setup(); let first!: Promise<CommandResult>;
+    act(() => { first = mounted.captured.value!.handlers.remind!(invoke, context); });
+    await screen.findByRole('heading', { name: 'Set a reminder' }); f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await first).toMatchObject({ status: 'uncertain' });
+    const saved = f.reminder!; const base = f.client.handler; let pages = 0;
+    f.client.handler = command => {
+      if (command.m !== 'humanInteractionRequest' || command.operation !== 81) return base(command);
+      const input = command.args[0] as Uint8Array | null;
+      const index = input === null ? 0 : Number(new TextDecoder().decode(input).split('/')[2]?.slice(-2));
+      const id = (index + 1).toString().padStart(32, '0');
+      const row = index === 6 ? saved : [asBytes(id), 'x'.repeat(1500), 1_800_000_000n + BigInt(index), 'UTC', null, null, 1n, 1n];
+      const cursor = index === 6 ? null : utf8(`${USER}/${(1_800_000_000n + BigInt(index)).toString().padStart(20, '0')}/${id}`);
+      f.responses.push({ deliveryId: String(1000 + ++pages), requestId: command.requestId, communityId: COMMUNITY, operation: 81, channelId: null, status: 0, revision: null, data: wire([1n, [row], cursor]) });
+      return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+    };
+    const recovered = await mounted.captured.value!.handlers.remind!(invoke, context);
+    expect(pages).toBe(7); expect(recovered).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 80)).toHaveLength(1); mounted.unmount();
+  });
+
+  it('finds matching polls beyond eight byte-limited pages through the real adapter', async () => {
+    const f = utilityFixture(); const base = f.client.handler; let pages = 0;
+    f.client.handler = command => {
+      if (command.m !== 'humanInteractionRequest' || command.operation !== 72) return base(command);
+      const cursor = command.args[2] as Uint8Array | null;
+      const priorId = cursor === null ? 0 : parseInt(new TextDecoder().decode((decode(cursor) as unknown[])[4] as Uint8Array).slice(-32), 16);
+      const n = priorId + 1; const id = n.toString(16).padStart(32, '0');
+      const row = pollSummary({ id, question: n === 10 ? 'Wanted tenth poll' : 'Other poll', answers: Array.from({ length: 10 }, (_, index) => String(index) + 'x'.repeat(99)), counts: Array(10).fill(0n) as bigint[] });
+      const next = n === 10 ? null : wire([1n, asBytes(COMMUNITY), asBytes(CHANNEL), null, utf8(`dilla.bot.poll.v1/${id}`)]);
+      f.responses.push({ deliveryId: String(1000 + ++pages), requestId: command.requestId, communityId: COMMUNITY, operation: 72, channelId: null, status: 0, revision: null, data: wire([1n, [pollWire(row)], next]) });
+      return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+    };
+    const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const suggestions = await mounted.captured.value!.suggest('poll results', { name: 'poll', kind: 'poll', description: '', required: true }, 'Wanted', commandContext(f.client, 'c2'.repeat(16)).binding);
+    expect(suggestions).toMatchObject([{ value: 'a'.padStart(32, '0'), label: 'Wanted tenth poll' }]); expect(pages).toBe(10); mounted.unmount();
+  });
+
+  it('bounds unbounded poll history explicitly and uses authenticated exact-ID and choice lookup', async () => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let n = 0;
+    const pollList = vi.fn(() => { const start = n; n += 20; return Promise.resolve({ items: Array.from({ length: 20 }, (_, i) => pollSummary({ id: (start + i + 1).toString(16).padStart(32, '0') })), nextCursor: utf8(String(n)) }); });
+    const pollGet = vi.fn((id: string, options: Parameters<BotUtilities['pollGet']>[1]) => real.pollGet(id, options));
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, pollList, pollGet });
+    const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const binding = commandContext(f.client, 'c3'.repeat(16)).binding; const suggest = mounted.captured.value!.suggest;
+    const list = await suggest('poll results', { name: 'poll', kind: 'poll', description: '', required: true }, 'Lunch', binding);
+    expect(pollList).toHaveBeenCalledTimes(50); expect(list?.notice).toMatch(/1000 records.*exact poll ID/u);
+    const exact = await suggest('poll results', { name: 'poll', kind: 'poll', description: '', required: true }, POLL, binding);
+    expect(exact?.map(row => row.value)).toEqual([POLL]); expect(pollGet).toHaveBeenCalledWith(POLL, { channelId: CHANNEL, threadId: null });
+    const choices = await suggest('poll vote', { name: 'choice', kind: 'text', description: '', required: true }, 'Soup', binding, { poll: POLL });
+    expect(choices?.map(row => row.value)).toEqual(['1']); expect(pollList).toHaveBeenCalledTimes(50); mounted.unmount();
+  });
+
+  it.each(['reminder', 'poll'] as const)('stops %s discovery on repeated cursors', async kind => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    const reminderList = vi.fn(() => Promise.resolve({ items: [{ id: 'ab'.repeat(16), text: 'loop', state: 'due' } as ReminderSummary], nextCursor: new Uint8Array([1]) }));
+    const pollList = vi.fn(() => Promise.resolve({ items: [pollSummary()], nextCursor: new Uint8Array([1]) }));
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, reminderList, pollList });
+    const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    if (kind === 'poll') {
+      const result = await mounted.captured.value!.suggest('poll results', { name: 'poll', kind: 'poll', description: '', required: true }, 'Lunch', commandContext(f.client, 'c4'.repeat(16)).binding);
+      expect(result?.notice).toMatch(/could not be loaded/u); expect(pollList).toHaveBeenCalledTimes(2);
+    } else { await waitFor(() => expect(reminderList).toHaveBeenCalledTimes(2)); expect(mounted.captured.value!.dueCount).toBe(0); }
+    mounted.unmount();
+  });
 });

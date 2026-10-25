@@ -371,7 +371,7 @@ func (s *Store) mutate(ctx context.Context, pid, actor, request id.ID, fp [32]by
 	if nowSeconds, ok := unixSeconds(now); r.State == StateScheduled && ok && nowSeconds >= r.DueAt {
 		r.State = StateDue
 	}
-	if target == StateCancelled && r.State != StateScheduled {
+	if target == StateCancelled && r.State != StateScheduled && r.State != StateDue {
 		return Reminder{}, ErrConflict
 	}
 	if target == StateDismissed && r.State != StateDue {

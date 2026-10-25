@@ -243,7 +243,7 @@ func TestTickPersistsOfflineDueState(t *testing.T) {
 		t.Fatalf("tick reminder=%+v err=%v", got, e)
 	}
 }
-func TestDismissRequiresDueAndCancelAfterDueConflicts(t *testing.T) {
+func TestDismissRequiresDueAndCancelledCannotBeDismissed(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(&durableState{}, native.Binding{Community: tid(1), Installation: tid(2)})
 	now := time.Unix(1000, 0)
@@ -255,10 +255,10 @@ func TestDismissRequiresDueAndCancelAfterDueConflicts(t *testing.T) {
 	if _, e = s.Dismiss(ctx, r.ID, tid(4), tid(9), [32]byte{9}, 1, now); !errors.Is(e, ErrConflict) {
 		t.Fatalf("early dismiss=%v", e)
 	}
-	if _, e = s.Cancel(ctx, r.ID, tid(4), tid(10), [32]byte{10}, 1, due); !errors.Is(e, ErrConflict) {
+	if _, e = s.Cancel(ctx, r.ID, tid(4), tid(10), [32]byte{10}, 1, due); e != nil {
 		t.Fatalf("late cancel=%v", e)
 	}
-	if _, e = s.Dismiss(ctx, r.ID, tid(4), tid(11), [32]byte{11}, 1, due); e != nil {
+	if _, e = s.Dismiss(ctx, r.ID, tid(4), tid(11), [32]byte{11}, 2, due); !errors.Is(e, ErrConflict) {
 		t.Fatalf("due dismiss=%v", e)
 	}
 }
@@ -386,5 +386,55 @@ func TestTwoDismissalsUsingSameSnapshotHaveOneWinner(t *testing.T) {
 	got, e := s.Get(ctx, r.ID, tid(4))
 	if e != nil || got.State != StateDismissed || got.Revision != 2 {
 		t.Fatalf("final row=%+v err=%v", got, e)
+	}
+}
+
+func TestCancelScheduledOrDueReplaysAndReleasesQuotaOnce(t *testing.T) {
+	for _, state := range []string{"scheduled", "crossing", "due"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := t.Context()
+			s := NewStore(&durableState{}, native.Binding{Community: tid(1), Installation: tid(2)})
+			now, due := time.Unix(1000, 0), time.Unix(1060, 0)
+			for i := byte(10); i < 110; i++ {
+				if _, err := s.Create(ctx, tid(i), tid(4), [32]byte{i}, Reminder{Text: "x", Timezone: "UTC"}, due); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state != "scheduled" {
+				now = due
+			}
+			if state == "due" {
+				s.Now = func() time.Time { return now }
+				if err := s.Tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row, err := s.Get(ctx, tid(10), tid(4))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state == "due" && row.State != StateDue {
+				t.Fatalf("not persisted due: %+v", row)
+			}
+			if _, err = s.Cancel(ctx, row.ID, tid(5), tid(200), [32]byte{200}, row.Revision, now); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("foreign cancel: %v", err)
+			}
+			accepted, err := s.Cancel(ctx, row.ID, tid(4), tid(201), [32]byte{201}, row.Revision, now)
+			if err != nil || accepted.State != StateCancelled || accepted.Revision != row.Revision+1 {
+				t.Fatalf("cancel=%+v error=%v", accepted, err)
+			}
+			for i := 0; i < 2; i++ {
+				replay, err := s.Cancel(ctx, row.ID, tid(4), tid(201), [32]byte{201}, row.Revision, now.Add(time.Hour))
+				if err != nil || !reflect.DeepEqual(accepted, replay) {
+					t.Fatalf("replay=%+v error=%v", replay, err)
+				}
+			}
+			if _, err = s.Create(ctx, tid(202), tid(4), [32]byte{202}, Reminder{Text: "released", Timezone: "UTC"}, due.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.Create(ctx, tid(203), tid(4), [32]byte{203}, Reminder{Text: "full again", Timezone: "UTC"}, due.Add(time.Hour)); !errors.Is(err, ErrQuota) {
+				t.Fatalf("replay released quota twice: %v", err)
+			}
+		})
 	}
 }

@@ -19,6 +19,23 @@ const uncertain = (message: string): CommandResult => ({ status: 'uncertain', me
 const thread = (binding: Readonly<Binding>) => binding.threadId === undefined ? null : binding.threadId;
 type CreateAttempt = { kind: string; scope: string; installationId: string; value: Record<string, unknown> };
 const createAttempts = new WeakMap<CoreClient, Map<string, CreateAttempt>>();
+/** Active reminder quota is 100; byte-limited pages may contain just one row. */
+async function listReminders(utility: BotUtilities): Promise<ReminderSummary[]> {
+  const rows: ReminderSummary[] = []; const seen = new Set<string>(); let cursor: Uint8Array | null = null;
+  for (let page = 0; page < 100; page++) {
+    const result = await utility.reminderList(cursor);
+    if (result.items.length === 0 && result.nextCursor !== null) throw new Error('Reminder pagination made no progress.');
+    rows.push(...result.items);
+    if (rows.length > 100) throw new Error('Reminder list exceeds its quota.');
+    cursor = result.nextCursor;
+    if (cursor === null) return rows;
+    const key = Array.from(cursor).join(',');
+    if (seen.has(key)) throw new Error('Reminder pagination repeated a cursor.');
+    seen.add(key);
+  }
+  throw new Error('Reminder list did not finish within its quota.');
+}
+
 const inboxAttempts = new WeakMap<CoreClient, Map<string, { id: string; revision: string; installationId: string }>>();
 function inboxAttemptMap(client: CoreClient): Map<string, { id: string; revision: string; installationId: string }> {
   const found = inboxAttempts.get(client); if (found) return found;
@@ -206,13 +223,8 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
         const utility = utilityFor(community.id); const caps = await utility.capabilities();
         if (!caps.supportedOperations.includes(81)) { unavailable.add(community.id); continue; }
         scanned.set(community.id, { utility, installationId: caps.installationId, botUserId: caps.botUserId });
-        let cursor: Uint8Array | null = null;
-        for (let page = 0; page < 5; page++) {
-          const result = await utility.reminderList(cursor);
-          staged.push(...result.items.filter(item => item.state === 'scheduled' || item.state === 'due').map(reminder => ({ communityId: community.id, reminder })));
-          cursor = result.nextCursor; if (cursor === null) break;
-        }
-        if (cursor !== null) { failed = true; continue; }
+        const reminders = await listReminders(utility);
+        staged.push(...reminders.filter(item => item.state === 'scheduled' || item.state === 'due').map(reminder => ({ communityId: community.id, reminder })));
         if (!current()) return null;
         if (!(client.get('communities') ?? []).some(row => row.id === community.id)) continue;
         next.push(...staged);
@@ -422,8 +434,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
         try {
           const receipt = await utility.read(context.requestId, 80);
           if (receipt?.status === 4) { attempts.delete(context.requestId); return failure(copy('reminder.conflict')); }
-          let cursor: Uint8Array | null = null; let found: ReminderSummary | undefined;
-          for (let page = 0; page < 5; page++) { const result = await utility.reminderList(cursor); found = result.items.find(item => item.id === context.requestId); if (found) break; cursor = result.nextCursor; if (cursor === null) break; }
+          const found = (await listReminders(utility)).find(item => item.id === context.requestId);
           const sourceMatches = found?.sourceChannelId === context.binding.channelId && found.sourceThreadId === thread(context.binding)
             || found?.sourceChannelId === null && found.sourceThreadId === null;
           if (found && found.text === saved?.text && canonicalTimezone(found.timezone) !== null
@@ -508,12 +519,32 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       const currentCommunity = binding.communityId;
       if (currentCommunity !== communityId || !binding.channelId || option.name === 'question' || option.name === 'answers') return [];
       try {
-        const utility = utilityFor(communityId); const page = await utility.pollList({ channelId: binding.channelId, threadId: thread(binding) });
-        const polls = [...page.items]; let cursor = page.nextCursor;
-        for (let n = 0; cursor !== null && n < 7; n++) { const next = await utility.pollList({ channelId: binding.channelId, threadId: thread(binding), cursor }); polls.push(...next.items); cursor = next.nextCursor; }
-        if (option.name === 'poll') for (const poll of polls) add(poll.id, poll.question, poll.id, `${poll.answers.length} answers`);
-        if (option.name === 'choice' && values?.poll) { const poll = polls.find(item => item.id === values.poll); for (const [index, answer] of (poll?.answers ?? []).entries()) add(String(index), answer, String(index + 1)); }
-      } catch { return []; }
+        const utility = utilityFor(communityId);
+        const source = { channelId: binding.channelId, threadId: thread(binding) };
+        // Historical closed polls have no total quota. Exact IDs never depend on the browse window.
+        const exactId = option.name === 'choice' ? values?.poll : query.trim();
+        if (exactId && /^[0-9a-f]{32}$/u.test(exactId)) {
+          const poll = await utility.pollGet(exactId, source);
+          if (option.name === 'poll') add(poll.id, poll.question, poll.id, `${poll.answers.length} answers`);
+          else for (const [index, answer] of poll.answers.entries()) add(String(index), answer, String(index + 1));
+        } else {
+          let cursor: Uint8Array | null = null; const seen = new Set<string>(); let count = 0;
+          for (let page = 0; page < 1000; page++) {
+            const result = await utility.pollList({ ...source, cursor });
+            if (result.items.length === 0 && result.nextCursor !== null) throw new Error('Poll pagination made no progress.');
+            const remaining = 1000 - count;
+            for (const poll of result.items.slice(0, remaining)) if (option.name === 'poll') add(poll.id, poll.question, poll.id, `${poll.answers.length} answers`);
+            count += result.items.length;
+            cursor = result.nextCursor;
+            if (count >= 1000 && (cursor !== null || result.items.length > remaining))
+              return Object.assign(out.slice(0, 20), { notice: 'Poll browsing reached 1000 records. Enter the exact poll ID to find an older poll.' });
+            if (cursor === null) break;
+            const key = Array.from(cursor).join(',');
+            if (seen.has(key)) throw new Error('Poll pagination repeated a cursor.');
+            seen.add(key);
+          }
+        }
+      } catch { return Object.assign([], { notice: 'Poll suggestions could not be loaded. Retry or enter the exact poll ID.' }); }
     }
     if (commandId.startsWith('reminders ') && option.name === 'reminder') for (const row of currentRecords) add(row.reminder.id, row.reminder.text, row.reminder.id, row.reminder.state);
     return out.slice(0, 20);

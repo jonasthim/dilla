@@ -510,3 +510,31 @@ function contextWithBinding(over: Partial<CommandExecutionContext['binding']>, o
   const binding = { ...context.binding, ...over };
   return { ...context, ...other, binding, getCurrentBinding: () => binding };
 }
+
+
+describe('timeout reconciliation against the expiry-only API contract', () => {
+  it.each(['accepted', 'changed', 'removed'] as const)('does not replay a lost timeout response when current state is %s', async state => {
+    const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, timeout: true });
+    let current: string | null = null;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    core.handler = command => {
+      if (command.m === 'setMemberTimeout') { current = command.expires; return Promise.reject(new Error('accepted response lost')); }
+      return Promise.resolve(command.m === 'getMemberTimeout' ? current : null);
+    };
+    const invoke = { commandId: 'timeout', args: { user: '66'.repeat(16), duration: '10m' } };
+    const attempt = { ...context, client: core, requestId: 'timeout-lost' };
+    try {
+      expect(await builtinHandlers.timeout!(invoke, attempt)).toMatchObject({ status: 'uncertain' });
+      expect(core.callsOf('setMemberTimeout')).toEqual([{ m: 'setMemberTimeout', communityId: context.binding.communityId, userId: invoke.args.user, requestId: attempt.requestId, expires: '1800000600' }]);
+      expect(await builtinHandlers.timeout!({ ...invoke, args: { ...invoke.args, duration: '20m' } }, attempt)).toMatchObject({ status: 'failure' });
+      expect(core.callsOf('setMemberTimeout')).toHaveLength(1);
+      now.mockReturnValue(1_800_000_300_000);
+      if (state === 'changed') current = '1800000900';
+      if (state === 'removed') current = null;
+      expect(await builtinHandlers.timeout!(invoke, attempt)).toMatchObject({ status: state === 'accepted' ? 'success' : 'uncertain' });
+      expect(core.callsOf('setMemberTimeout')).toHaveLength(1);
+      expect(core.callsOf('getMemberTimeout')).toHaveLength(1);
+      expect(current).toBe(state === 'accepted' ? '1800000600' : state === 'changed' ? '1800000900' : null);
+    } finally { now.mockRestore(); }
+  });
+});

@@ -1,6 +1,6 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError, createBotInteractionClient, createVoiceMusicAdapter, decode, encode, fromHex, PERM, type BotInteractionResult, type BotInteractionScope, type CoreClient,
-  COMMANDS, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
+  COMMANDS, parseSeekPosition, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestionProvider } from './command-types.ts';
 import { BotCommandDialogs, type BotCommandDialogState, type BotCommandDialogValue } from './BotCommandDialogs.tsx';
 
@@ -163,8 +163,9 @@ function confirmedAnnouncementMutation(response: { revision: string | null; data
     return Array.isArray(decoded) && decoded.length === 0;
   } catch { return false; }
 }
-function sameInteractionScope(left: BotInteractionScope, right: BotInteractionScope): boolean {
-  return left.installationId === right.installationId && left.botUserId === right.botUserId && left.revision === right.revision;
+// Historical receipts keep their original native provenance while the current config revision may change.
+function sameInteractionIdentity(left: BotInteractionScope, right: BotInteractionScope): boolean {
+  return left.installationId === right.installationId && left.botUserId === right.botUserId;
 }
 async function listAnnouncements(client: CoreClient, communityId: string, requestId: string, expectedScope?: { installationId: string; botUserId: string | null; revision: string }) {
   const api = createBotInteractionClient(client, communityId);
@@ -291,9 +292,9 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         case 'stop': return await applyControl(() => adapter.stop(channelId, attempt('stop')))
           ? ok('Music stopped.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'seek': {
-          const ms = parsePosition(invocation.args.position ?? '', fresh.track?.durationMs ?? Number.MAX_SAFE_INTEGER);
+          const ms = parseSeekPosition(invocation.args.position ?? '');
           if (ms === null) return fail('Use seconds, mm:ss, or hh:mm:ss within the current track.');
-          return await applyControl(() => adapter.seek(channelId, ms, attempt('seek')))
+          return await applyControl(() => adapter.seek(channelId, Math.min(ms, fresh.track?.durationMs ?? Number.MAX_SAFE_INTEGER), attempt('seek')))
             ? ok('Playback position updated.') : uncertain('Music was updated, but the active voice call changed before completion.');
         }
         case 'volume': {
@@ -364,7 +365,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           pending.args, pending.revision, scope);
         if (reconciled.status === 0) {
           if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The schedule result is available, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
-          if (!sameInteractionScope(reconciled.scope, pending.scope)) return uncertain('The original schedule attempt is bound to a previous Bot installation. Reconcile that result before starting another edit.');
+          if (!sameInteractionIdentity(reconciled.scope, pending.scope)) return uncertain('The original schedule attempt is bound to a previous Bot installation. Reconcile that result before starting another edit.');
           if (!confirmedAnnouncementMutation(reconciled, pending.revision)) return uncertain('The Bot accepted the schedule change, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(attemptKey);
           return ok(pending.operation === 52 ? 'Scheduled announcement deleted.' : invocation.commandId === 'announcement edit' ? 'Announcement updated.' : 'Announcement scheduled.');
@@ -390,7 +391,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const result = await runAnnouncementMutation(client, cid, context.requestId, 'delete', 52, [fromHex(row.id), row.revision], listed.revision, scope);
         if (result.status === 0) {
           if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The deletion was accepted, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
-          if (!sameInteractionScope(result.scope, scope)) return uncertain('The deletion was accepted, but the Bot installation changed before its result could be confirmed.');
+          if (!sameInteractionIdentity(result.scope, scope)) return uncertain('The deletion was accepted, but the Bot installation changed before its result could be confirmed.');
           if (!confirmedAnnouncementMutation(result, listed.revision)) return uncertain('The Bot accepted deletion, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(storeKey); return ok('Scheduled announcement deleted.');
         }
@@ -416,7 +417,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         [existing === undefined ? null : fromHex(existing.id), encoded], listed.revision, scope);
       if (saved.status === 0) {
         if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The schedule was accepted, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
-        if (!sameInteractionScope(saved.scope, scope)) return uncertain('The schedule save was accepted, but the Bot installation changed before its result could be confirmed.');
+        if (!sameInteractionIdentity(saved.scope, scope)) return uncertain('The schedule save was accepted, but the Bot installation changed before its result could be confirmed.');
         if (!confirmedAnnouncementMutation(saved, listed.revision)) return uncertain('The Bot accepted the schedule, but its revision receipt was malformed. Refresh the list before retrying.');
         announcementAttemptStore(client).delete(storeKey);
         return ok(existing === undefined ? 'Announcement scheduled.' : 'Announcement updated.');
@@ -495,7 +496,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           return uncertain('The role panel publication result is not confirmed. Retry this command to reconcile it.');
         }
         if (pending.scope !== undefined && (pending.scope.installationId !== published.scope.installationId
-          || pending.scope.botUserId !== published.scope.botUserId || pending.scope.revision !== published.scope.revision))
+          || pending.scope.botUserId !== published.scope.botUserId))
           return uncertain('The Bot installation changed after publication. Verify the channel before continuing registration.');
         pending.published = true;
         pending.scope = published.scope;
@@ -509,12 +510,19 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       if (pending?.accepted !== null && pending?.accepted !== undefined) {
         const receipt = await createBotInteractionClient(client, cid).read(pending.publishId, 31);
         if (receipt === null || pending.scope === undefined || receipt.scope.installationId !== pending.scope.installationId
-          || receipt.scope.botUserId !== pending.scope.botUserId || receipt.scope.revision !== pending.scope.revision)
+          || receipt.scope.botUserId !== pending.scope.botUserId)
           return uncertain('The panel message was accepted, but the Bot installation binding changed before registration. Verify the channel and reconcile safely.');
       }
       if (pending?.bodyKnown === false) return uncertain('The accepted panel cannot be matched to the current role selection. Inspect the channel before retrying.');
       if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return uncertain('The role panel was published, but current authority changed before registration. Retry to finish registration.');
       if (pending?.accepted === null || pending?.accepted === undefined) return uncertain('The role panel publication is not confirmed yet.');
+      const registrationScope = await createBotInteractionClient(client, cid).request({
+        requestId: randomId(), operation: 3, args: [],
+      });
+      if (registrationScope.status !== 0 || pending.scope === undefined || !sameInteractionIdentity(registrationScope.scope, pending.scope))
+        return uncertain('The original Bot installation must be ready before panel registration can finish.');
+      if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles'))
+        return uncertain('Current authority changed before panel registration. Retry to finish registration.');
       const acceptedPending = pending;
       const acceptedPanel = pending.accepted;
       const registration = { m: 'registerRolePanel' as const, communityId: cid, requestId: acceptedPending.registerId, channelId: acceptedPending.channelId,
@@ -595,15 +603,5 @@ const rolePanelStores = new WeakMap<CoreClient, Map<string, RolePanelPending>>()
 function rolePanelAttempts(client: CoreClient): Map<string, RolePanelPending> {
   let store = rolePanelStores.get(client); if (store === undefined) { store = new Map(); rolePanelStores.set(client, store); }
   return store;
-}
-function parsePosition(raw: string, durationMs: number): number | null {
-  const parts = raw.split(':');
-  if (parts.length < 1 || parts.length > 3 || parts.some(part => !/^\d+$/u.test(part))) return null;
-  const nums = parts.map(Number);
-  if (nums.slice(1).some(part => part >= 60)) return null;
-  let seconds = 0;
-  for (const part of nums) seconds = seconds * 60 + part;
-  if (!Number.isSafeInteger(seconds)) return null;
-  return Math.min(Math.max(0, seconds * 1000), durationMs);
 }
 function randomId(): string { const bytes = crypto.getRandomValues(new Uint8Array(16)); if (bytes.every(value => value === 0)) bytes[15] = 1; return toHex(bytes); }

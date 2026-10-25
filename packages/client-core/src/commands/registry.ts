@@ -219,7 +219,9 @@ export function validateCommandArgs(command: CommandDefinition, input: Record<st
       }
     } else if (option.kind === 'duration' && !isDuration(value)) {
       issues.push(issue('invalid', name, `${name} must be a duration such as 10m or 2h`));
-    } else if (option.kind === 'time' && (command.id === 'remind' && name === 'when' ? !isReminderWhen(value) : !isTimeValue(value))) {
+    } else if (command.id === 'seek' && name === 'position' && parseSeekPosition(value) === null) {
+      issues.push(issue('invalid', name, 'position must be seconds, mm:ss or hh:mm:ss'));
+    } else if (option.kind === 'time' && command.id !== 'seek' && (command.id === 'remind' && name === 'when' ? !isReminderWhen(value) : !isTimeValue(value))) {
       issues.push(issue('invalid', name, `${name} must be a duration or ISO local date and time${command.id === 'remind' ? ' (from 1 minute to 365 days for durations)' : ''}`));
     }
   }
@@ -386,4 +388,14 @@ function positionalFreeText(source: string, tokens: readonly Token[], namedToken
     result += gap + current.value;
   }
   return result;
+}
+
+/** Seek positions are whole seconds or mm:ss/hh:mm:ss with bounded inner fields. */
+export function parseSeekPosition(raw: string): number | null {
+  const parts = raw.split(':');
+  if (parts.length > 3 || parts.some(part => !/^\d+$/u.test(part))) return null;
+  const numbers = parts.map(Number);
+  if (numbers.slice(1).some(part => part >= 60)) return null;
+  const milliseconds = numbers.reduce((seconds, part) => seconds * 60 + part, 0) * 1000;
+  return Number.isSafeInteger(milliseconds) ? milliseconds : null;
 }

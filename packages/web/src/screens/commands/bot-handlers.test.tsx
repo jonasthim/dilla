@@ -2,7 +2,7 @@ import { createElement, useEffect } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { decode, encode, fromHex, PERM, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
+import { decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
 import type { CommandExecutionContext } from './command-types.ts';
 import { useBotCommandProvider } from './bot-handlers.ts';
 
@@ -20,7 +20,7 @@ function musicSnapshot(revision: number, paused: boolean, queue: { id: string; p
 function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean; invalidRefreshAfterEnqueue?: boolean; seededQueue?: boolean; seedSchedule?: boolean;
   malformedAnnouncementReceipt?: boolean; ambiguousOperations?: number[]; unknownUploads?: number[]; disabledSchedule?: boolean; invalidMusicReceipt?: boolean;
   djControl?: boolean; readFailureOperations?: number[] } = {}) {
-  let musicRevision = 1; let paused = true; let badSnapshotOnce = false; let positionMs = 0; let volume = 70; let shuffle = false; let repeat = 0; let installRevision = '9'; let botState = 3;
+  let musicRevision = 1; let paused = true; let badSnapshotOnce = false; let positionMs = 0; let volume = 70; let shuffle = false; let repeat = 0; let installationId = INSTALLATION; let botUserId: string | null = null; let installRevision = '9'; let botState = 3;
   let currentTrack: { id: string; provider: string; canonical: string; title: string; artist: string } | null = { id: CURRENT_ITEM, provider: 'youtube', canonical: 'mnopqrstuvw', title: 'Current track', artist: 'Listener' };
   let queue: { id: string; provider: string; canonical: string; title: string; artist: string }[] = options.seededQueue
     ? [{ id: ITEM, provider: 'youtube', canonical: 'abcdefghijk', title: 'Queued track', artist: 'Listener' },
@@ -36,7 +36,7 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
   const client = {
     // eslint-disable-next-line @typescript-eslint/require-await -- models CoreClient.call while resolving each worker command.
     call: vi.fn(async (command: Wire): Promise<unknown> => {
-      if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: botState, revision: installRevision };
+      if (command.m === 'getBotCommandStatus') return { installationId, botUserId, state: botState, revision: installRevision };
       if (command.m === 'listSelfRoles') return [{ id: '88'.repeat(16), name: 'Reader' }];
       if (command.m === 'registerRolePanel') { requests.push(command); if (failRegistrationOnce) { failRegistrationOnce = false; throw new Error('temporary registration failure'); }
         registeredPanels.set(String(command.requestId), command); return null; }
@@ -104,6 +104,7 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
     subscribe: () => () => undefined, onCallKeys: () => () => undefined, dispose: () => undefined,
   } as unknown as CoreClient;
   return { client, requests, schedules, registeredPanels, get musicState() { return { queue, currentTrack, paused, positionMs, volume, shuffle, repeat }; },
+    setInstallation(value: string) { installationId = value; }, setBotUser(value: string) { botUserId = value; },
     setInstallRevision(value: string) { installRevision = value; }, setBotState(value: number) { botState = value; }, setJoinedVoice(value: string) { joinedVoice = value; },
     getJoinedVoice() { return joinedVoice; }, reorderQueue() { queue = [...queue].reverse(); musicRevision++; } };
 }
@@ -275,13 +276,13 @@ describe('Bot slash command provider', () => {
     expect(f.musicState.paused).toBe(true);
   });
 
-  it('reconciles a durable result after an unknown upload and refreshes through a new installation scope', async () => {
+  it('reconciles a durable result after a capability revision change and refreshes current state', async () => {
     const f = fixture({ unknownUploads: [13] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const context = commandContext(f.client); const invoke = { commandId: 'pause', args: {} };
     expect(await capture.value!.handlers.pause!(invoke, context)).toMatchObject({ status: 'uncertain' });
     f.setInstallRevision('10');
-    expect(await capture.value!.handlers.pause!(invoke, context)).toMatchObject({ status: 'uncertain' });
+    expect(await capture.value!.handlers.pause!(invoke, context)).toMatchObject({ status: 'success' });
     expect(f.requests.filter(row => row.operation === 13)).toHaveLength(1);
     expect(f.requests.filter(row => row.operation === 10).length).toBeGreaterThan(1);
     expect(f.musicState.paused).toBe(true);
@@ -555,5 +556,37 @@ describe('Bot slash command provider', () => {
     expect(await capture.value!.handlers['rolepanel create']!(invoke, context)).toMatchObject({ status: 'success' });
     expect(f.requests.filter(row => row.operation === 31)).toHaveLength(1);
     expect(f.requests.filter(row => row.m === 'registerRolePanel')).toHaveLength(1);
+  });
+});
+
+
+describe('historical receipt identity across changed capability revisions', () => {
+  it.each(['music', 'announcement', 'rolepanel'] as const)('settles %s after a same-bot revision change, refusing identity replacements', async kind => {
+    for (const change of ['revision', 'installation', 'bot'] as const) {
+      const operation = kind === 'music' ? 13 : kind === 'announcement' ? 51 : 31;
+      const f = fixture({ readFailureOperations: [operation] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+      const view = mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined()); const user = userEvent.setup();
+      const context = commandContext(f.client); const commandId = kind === 'music' ? 'pause' : kind === 'announcement' ? 'announcement create' : 'rolepanel create';
+      const invoke: { commandId: string; args: Record<string, string> } = { commandId, args: kind === 'announcement' ? { text: 'Historical receipt' } : {} };
+      const handler = capture.value!.handlers[commandId]!;
+      const first = handler(invoke, context);
+      if (kind === 'announcement') { await screen.findByRole('dialog', { name: 'Schedule an announcement' }); await user.click(screen.getByRole('button', { name: 'Save' })); }
+      if (kind === 'rolepanel') { await user.click(await screen.findByRole('checkbox', { name: 'Reader' })); await user.type(screen.getByLabelText('Reaction for Reader'), '📚'); await user.click(screen.getByRole('button', { name: 'Publish panel' })); }
+      expect(await first).toMatchObject({ status: 'uncertain' });
+      f.setInstallRevision('10');
+      if (change === 'installation') f.setInstallation('ba'.repeat(16));
+      if (change === 'bot') f.setBotUser('bc'.repeat(16));
+      expect(await handler(invoke, context)).toMatchObject({ status: change === 'revision' ? 'success' : 'uncertain' });
+      expect(f.requests.filter(row => row.operation === operation)).toHaveLength(1);
+      if (kind === 'rolepanel') expect(f.requests.filter(row => row.m === 'registerRolePanel')).toHaveLength(change === 'revision' ? 1 : 0);
+      view.unmount();
+    }
+  });
+  it.each([['90', 90_000], ['1:02', 62_000], ['0:01:02', 62_000]] as const)('runs registry-parsed /seek %s with the shared grammar', async (position, milliseconds) => {
+    const parsed = parseCommand(`/seek ${position}`); expect(parsed.type).toBe('invocation'); if (parsed.type !== 'invocation') throw new Error('Invalid seek parse');
+    const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {}; const view = mountProvider(f.client, capture);
+    await waitFor(() => expect(capture.value).toBeDefined());
+    expect(await capture.value!.handlers.seek!(parsed.invocation, commandContext(f.client))).toMatchObject({ status: 'success' });
+    expect(f.requests.find(row => row.operation === 17)?.args).toEqual([milliseconds]); view.unmount();
   });
 });

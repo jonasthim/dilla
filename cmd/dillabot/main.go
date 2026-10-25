@@ -773,7 +773,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														botUser = *result.Installation.BotUser
 													}
 													dispatcher, interactionErr = newRuntimeUtilityDispatcher(nativeClient, handlers, utilities, result.Session,
-														installation.CommunityID, installation.ID, botUser, uint8(result.Installation.Capabilities),
+														installation.CommunityID, installation.ID, botUser, result.Installation.Capabilities,
 														func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
 												}
 											}

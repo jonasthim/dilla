@@ -210,3 +210,16 @@ describe('CommandHost', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 });
+
+
+it.each([true, false])('preserves suggestion ownership when a provider handles the command: %s', async handled => {
+  const core = new FakeClient(); const community = 'c1'.repeat(16); const target = 'c2'.repeat(16);
+  core.set(`members:${community}`, [{ userId: target, username: 'known member', display: '', kind: 0, roleIds: [] }]);
+  const user = userEvent.setup();
+  render(<CoreProvider client={core}><CommandProvider suggest={() => Promise.resolve(handled ? [] : undefined)}>
+    <CommandHost communityId={community} channelId={'c3'.repeat(16)} items={[]} selfId={'c4'.repeat(16)} draft="/dm"
+      onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+  </CommandProvider></CoreProvider>);
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'known');
+  await waitFor(() => expect(screen.queryByRole('option', { name: 'known member' }) !== null).toBe(!handled));
+});

@@ -8,9 +8,8 @@ import { t } from '../../strings/index.ts';
 import { useCommandProviders } from './CommandContext.tsx';
 import { CommandComposer } from './CommandComposer.tsx';
 import { builtinHandlers, eligibleAssignableRole, eligibleModerationTarget } from './builtin.ts';
-import type { CommandExecutionContext } from './command-types.ts';
+import type { CommandExecutionContext, CommandSuggestionList } from './command-types.ts';
 import type { TimelineItem } from '@dilla/client-core';
-import type { CommandSuggestion } from './CommandComposer.tsx';
 
 interface Confirmation { title: string; body: string }
 interface SavedDraft { text: string; requestId: string; invocationKey: string; mode: 'active' | 'canceled' | 'consumed' }
@@ -175,7 +174,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       return response;
     });
   }, [handlers, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif]);
-  const suggest = useCallback(async (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>): Promise<readonly CommandSuggestion[]> => {
+  const suggest = useCallback(async (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>): Promise<CommandSuggestionList> => {
     const supplied = await suggestionProvider?.(commandId, option, query, binding, values);
     if (supplied !== undefined) return supplied;
     if (option.kind === 'message') return items.filter((item): item is TimelineItem & { msgId: string } => item.state === 'ok' && item.msgId !== null && (item.msgId === query || item.body.toLowerCase().includes(query.toLowerCase())))

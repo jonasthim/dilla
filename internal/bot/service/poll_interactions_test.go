@@ -250,7 +250,10 @@ func TestPollListHandlerPaginatesByEncodedBytes(t *testing.T) {
 	for i := range answers {
 		answers[i] = strings.Repeat(string(rune('a'+i)), 100)
 	}
-	ids := []id.ID{pollServiceID(20), pollServiceID(21)}
+	ids := make([]id.ID, 10)
+	for i := range ids {
+		ids[i] = pollServiceID(byte(20 + i))
+	}
 	for _, pid := range ids {
 		p := polls.Poll{ID: pid, CommunityID: pollServiceID(1), ChannelID: channel, CreatorID: pollServiceID(2), Question: question, Answers: answers, CreatedAt: 1000, DueAt: 4600}
 		if _, e := store.Create(ctx, pid, [32]byte{pid[15]}, p, now); e != nil {
@@ -261,7 +264,7 @@ func TestPollListHandlerPaginatesByEncodedBytes(t *testing.T) {
 	actor := InteractionActor{User: pollServiceID(2)}
 	cursor := any(nil)
 	var seen []id.ID
-	for pageNo := 0; pageNo < 3; pageNo++ {
+	for pageNo := 0; pageNo < 11; pageNo++ {
 		result, e := h.list(ctx, actor, protocol.Request{CommunityID: pollServiceID(1), Operation: protocol.OpPollList, Args: []any{channel, nil, cursor}})
 		if e != nil || result.Status != 0 || len(result.Data) > 2400 {
 			t.Fatalf("page %d result=%+v err=%v", pageNo, result, e)
@@ -282,11 +285,11 @@ func TestPollListHandlerPaginatesByEncodedBytes(t *testing.T) {
 		if cursor == nil {
 			break
 		}
-		if pageNo == 2 {
+		if pageNo == 10 {
 			t.Fatal("pagination did not terminate")
 		}
 	}
-	if len(seen) != 2 || seen[0] != ids[0] || seen[1] != ids[1] {
+	if !reflect.DeepEqual(seen, ids) {
 		t.Fatalf("listed poll IDs=%v", seen)
 	}
 }

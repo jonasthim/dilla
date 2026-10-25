@@ -178,7 +178,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       try { reconciled = await interactions.read(attempt.requestId, operation); }
       catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (reconciled === null) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('No durable result is available yet.'));
-      if (!sameInteractionScope(reconciled.scope, record.scope)) {
+      if (!sameInteractionIdentity(reconciled.scope, record.scope)) {
         try { await refresh(channelId); } catch { /* a new read still uses the live installation scope */ }
         throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The original music attempt is bound to a previous Bot installation.'));
       }
@@ -227,7 +227,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     // after the operation result so the panel only settles when the server-confirmed snapshot arrives.
     try { await refresh(channelId); }
     catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, error); }
-    if (!sameInteractionScope(channelScopes.get(channelId), record.scope))
+    if (!sameInteractionIdentity(channelScopes.get(channelId), record.scope))
       throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, new Error('The Bot installation changed before the accepted music state could be confirmed.'));
     if (record.acceptedRevision !== null) {
       const after = states.get(channelId);
@@ -301,8 +301,8 @@ export const voiceMusicAdapter: VoiceMusicAdapter = {
 
 interface InteractionResponse { requestId: string; channelId: string | null; operation: number; status: number; revision: string | null; data: Uint8Array; }
 function unavailable(): Promise<never> { return Promise.reject(new Error('Authenticated voice music transport is unavailable.')); }
-function sameInteractionScope(left: BotInteractionScope | undefined, right: BotInteractionScope): boolean {
-  return left !== undefined && left.installationId === right.installationId && left.botUserId === right.botUserId && left.revision === right.revision;
+function sameInteractionIdentity(left: BotInteractionScope | undefined, right: BotInteractionScope): boolean {
+  return left !== undefined && left.installationId === right.installationId && left.botUserId === right.botUserId;
 }
 function responseError(status: number, spotifyInput = false): Error {
   if (spotifyInput && status === 5) return new VoiceMusicError('spotify-unavailable', 'Spotify is unavailable or not linked for this community.');

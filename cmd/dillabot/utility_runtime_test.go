@@ -268,7 +268,7 @@ func TestPollPublisherPersistsAcceptedReceiptAndRestartDoesNotSendAgain(t *testi
 func TestPollPublisherClosedReceiptAllowsSuccessorButUnknownIsTerminal(t *testing.T) {
 	state := newUtilityStateFake()
 	coord := &utilityCoordinatorFake{outcomes: []protocol.SendOutcome{protocol.ReceiptClosedNotAccepted, protocol.ReceiptAccepted}}
-	auth := &utilityChannelAuthorityFake{member: true, bits: uint64(utilityPollSendPermission)}
+	auth := &utilityChannelAuthorityFake{member: true, bits: utilityPollSendPermission}
 	poll := utilityPoll()
 	if err := newPublisherTest(state, coord, auth).PublishPoll(context.Background(), poll); err == nil {
 		t.Fatal("closed nonaccepted publication was reported successful")
@@ -295,7 +295,7 @@ func TestPollPublisherClosedReceiptAllowsSuccessorButUnknownIsTerminal(t *testin
 func TestPollPublisherRechecksCreatorCurrentAccessBeforeRetry(t *testing.T) {
 	state := newUtilityStateFake()
 	coord := &utilityCoordinatorFake{preflightErr: errors.New("transient send failure")}
-	auth := &utilityChannelAuthorityFake{member: true, bits: uint64(utilityPollSendPermission)}
+	auth := &utilityChannelAuthorityFake{member: true, bits: utilityPollSendPermission}
 	poll := utilityPoll()
 	if err := newPublisherTest(state, coord, auth).PublishPoll(context.Background(), poll); err == nil {
 		t.Fatal("expected first send to fail")
@@ -314,7 +314,7 @@ func TestPollPublisherRechecksCreatorCurrentAccessBeforeRetry(t *testing.T) {
 func TestPollPublisherKeepsOriginalGroupForPreparedAttemptAcrossDiscoveryChange(t *testing.T) {
 	state := newUtilityStateFake()
 	coord := &utilityCoordinatorFake{preflightErr: errors.New("pause after durable preparation")}
-	auth := &utilityChannelAuthorityFake{member: true, bits: uint64(utilityPollSendPermission)}
+	auth := &utilityChannelAuthorityFake{member: true, bits: utilityPollSendPermission}
 	poll := utilityPoll()
 	p := newPublisherTest(state, coord, auth)
 	if err := p.PublishPoll(context.Background(), poll); err == nil {
@@ -341,7 +341,7 @@ func TestPollPublicationBodyMarkerAndThreadAreBound(t *testing.T) {
 	// ends with the exact stable poll marker and preserves the thread root.
 	state := newUtilityStateFake()
 	coord := &utilityCoordinatorFake{}
-	auth := &utilityChannelAuthorityFake{member: true, bits: uint64(utilityPollSendPermission)}
+	auth := &utilityChannelAuthorityFake{member: true, bits: utilityPollSendPermission}
 	poll := utilityPoll()
 	thread := utilityID(10)
 	poll.ThreadID = &thread
@@ -633,7 +633,7 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	operations, ok := capabilityData[4].([]any)
-	if !ok || !hasOperation(operations, protocol.OpPollCreate) || !hasOperation(operations, protocol.OpReminderCreate) || hasOperation(operations, protocol.OpMusicProvidersStatus) {
+	if !ok || !hasOperation(operations, protocol.OpCapabilities) || !hasOperation(operations, protocol.OpPollCreate) || !hasOperation(operations, protocol.OpReminderCreate) || hasOperation(operations, protocol.OpMusicProvidersStatus) {
 		t.Fatalf("ordinary member op3 operations=%v", capabilityData)
 	}
 	session.mu.Lock()
@@ -765,18 +765,6 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	}
 }
 
-func dispatcherResponse(t *testing.T, d *service.InteractionDispatcher, event native.GroupEvent) protocol.Response {
-	t.Helper()
-	body, err := d.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := protocol.DecodeResponse(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
 func u64ptr(v uint64) *uint64 { return &v }
 func hasOperation(operations []any, want protocol.Operation) bool {
 	for _, v := range operations {
@@ -785,4 +773,10 @@ func hasOperation(operations []any, want protocol.Operation) bool {
 		}
 	}
 	return false
+}
+
+func TestRuntimeUtilityDispatcherRejectsOverflowCapabilities(t *testing.T) {
+	if _, err := newRuntimeUtilityDispatcher(nil, nil, nil, nil, utilityID(1), utilityID(2), utilityID(3), 256, nil, nil); err == nil {
+		t.Fatal("oversized capabilities were truncated")
+	}
 }

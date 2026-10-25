@@ -237,7 +237,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       return utilitySuggest(commandId, option, query, binding, values);
     if (botHandlers[commandId] !== undefined)
       return botSuggest(commandId, option, query, binding, values);
-    return suppliedSuggest?.(commandId, option, query, binding, values) ?? Promise.resolve([]);
+    return suppliedSuggest?.(commandId, option, query, binding, values) ?? Promise.resolve(undefined);
   }, [botHandlers, botSuggest, suppliedHandlers, suppliedSuggest, utilityHandlers, utilitySuggest]);
 
   // An empty id names a slice that never exists, so it reads undefined.

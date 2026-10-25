@@ -153,3 +153,13 @@ describe('command registry', () => {
     expect(searchCommands('', 100)).toHaveLength(Math.min(COMMANDS.length, 25));
   });
 });
+
+
+describe('seek position grammar', () => {
+  it.each(['0', '90', '1:02', '1:02:03'])('accepts %s', position => {
+    expect(validateCommandArgs(commandById('seek')!, { position }).valid).toBe(true);
+  });
+  it.each(['1m', '2026-10-26T12:00', '-1', '1:60', '1:02:60', '1.5', '1::2', '9007199254740991'])('rejects %s', position => {
+    expect(validateCommandArgs(commandById('seek')!, { position }).valid).toBe(false);
+  });
+});

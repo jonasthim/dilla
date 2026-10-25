@@ -1947,3 +1947,17 @@ describe('the channel header actions (web3.9)', () => {
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });
 });
+
+
+it('selects a builtin member through the shipping Shell provider and executes dm', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: core => {
+    core.set(`timeline:${GEN}`, timeline());
+    core.handler = command => command.m === 'openDm' ? Promise.resolve({ channelId: 'ac'.repeat(16) }) : Promise.resolve(null);
+  } });
+  fireEvent.change(composer(), { target: { value: '/dm' } });
+  const member = await screen.findByRole('combobox', { name: 'user' });
+  await user.type(member, 'bob');
+  await user.click(await screen.findByRole('option', { name: 'bob' }));
+  await user.click(screen.getByRole('button', { name: /run command/i }));
+  await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
+});

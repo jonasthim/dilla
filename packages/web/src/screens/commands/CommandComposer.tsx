@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { commandById, parseCommand, searchCommands, validateCommandArgs, type CommandDefinition, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
 import { commandComposerCopy as copy } from './copy.ts';
+import type { CommandSuggestionList } from './command-types.ts';
 import './CommandComposer.css';
 
 export interface CommandSuggestion { id: string; label: string; description?: string; value: string }
@@ -11,7 +12,7 @@ export interface CommandComposerProps {
   onExecute: (invocation: CommandInvocation) => Promise<CommandResult>;
   onCancel: (text: string) => void;
   onSendLiteral: (text: string) => void;
-  suggest: (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>) => Promise<readonly CommandSuggestion[]>;
+  suggest: (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>) => Promise<CommandSuggestionList>;
   contextKey: string;
   disabledReason?: string;
   onDraftChange?: (text: string) => void;
@@ -20,7 +21,7 @@ export interface CommandComposerProps {
 interface FieldState {
   text: string;
   selected?: CommandSuggestion;
-  suggestions: readonly CommandSuggestion[];
+  suggestions: CommandSuggestionList;
 }
 
 const ENTITY_KINDS = new Set(['user', 'channel', 'role', 'message', 'queue-item', 'poll', 'announcement', 'reminder']);
@@ -352,6 +353,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
             </select> : option.kind === 'number' ? <input id={`${pickerId}-${option.name}-input`} aria-label={option.name} type="number" min={option.min} max={option.max} value={field.text} aria-invalid={Boolean(error && submitted)} aria-describedby={`${pickerId}-${option.name}-hint`} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />
               : option.freeText ? <textarea ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} role="combobox" aria-autocomplete="list" aria-expanded={popup === option.name && field.suggestions.length > 0} aria-controls={listId} aria-activedescendant={popup === option.name && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined} aria-describedby={`${pickerId}-${option.name}-hint`} aria-invalid={Boolean(error && submitted)} value={field.text} onFocus={() => { if (field.suggestions.length) setPopup(option.name); }} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />
                 : <input ref={node => { if (node) fieldRefs.current.set(option.name, node); else fieldRefs.current.delete(option.name); }} id={`${pickerId}-${option.name}-input`} aria-label={option.name} role="combobox" aria-autocomplete="list" aria-expanded={popup === option.name && field.suggestions.length > 0} aria-controls={listId} aria-activedescendant={popup === option.name && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined} aria-describedby={`${pickerId}-${option.name}-hint`} aria-invalid={Boolean(error && submitted)} value={field.text} onFocus={() => { if (field.suggestions.length) setPopup(option.name); }} onChange={event => updateField(option, event.currentTarget.value)} onKeyDown={event => keyDown(event, option)} />}
+            {field.suggestions.notice && <p className="d-command-composer__notice" role="note">{field.suggestions.notice}</p>}
             {popup === option.name && field.suggestions.length > 0 && <ul className="d-command-composer__list" id={listId} role="listbox" aria-label={`${option.name} suggestions`}>
               {field.suggestions.map((candidate, index) => <li id={`${listId}-${index}`} role="option" aria-selected={index === activeIndex} key={candidate.id} onMouseDown={event => event.preventDefault()} onClick={() => chooseSuggestion(option, candidate)} onKeyDown={event => { if (event.key === 'Enter') chooseSuggestion(option, candidate); }}>
                 <span>{candidate.label}</span>{candidate.description && <small>{candidate.description}</small>}

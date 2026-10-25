@@ -19,6 +19,8 @@ function mutationError(error: unknown): CommandResult {
 const targetThread = (binding: Readonly<Binding>) => binding.threadId === undefined ? {} : { threadId: binding.threadId };
 const encodedSize = (value: string) => new TextEncoder().encode(value).length;
 const uncertainPublications = new Set<string>();
+interface TimeoutAttempt { communityId: string; userId: string; expires: string; seconds: number; sent: boolean; settled: boolean }
+const timeoutAttempts = new WeakMap<CoreClient, Map<string, TimeoutAttempt>>();
 
 function helpText(id: string): string | null {
   const definition = commandById(id.trim());
@@ -204,9 +206,35 @@ const entries: Record<string, CommandHandler> = {
     const seconds = durationSeconds(invocation.args.duration);
     if (!member) return failure('This member cannot be timed out with your current permissions and rank.')
     if (seconds === null || seconds < 60 || seconds > 2_419_200) return failure('Timeout duration must be from 1m to 28d.');
+    let attempts = timeoutAttempts.get(context.client);
+    if (attempts === undefined) { attempts = new Map(); timeoutAttempts.set(context.client, attempts); }
+    const account = context.client.get('account');
+    const key = `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}:${context.requestId}`;
+    let attempt = attempts.get(key);
+    if (attempt !== undefined && (attempt.communityId !== communityId || attempt.userId !== member.userId || attempt.seconds !== seconds))
+      return failure('This timeout request ID already belongs to a different timeout.');
+    if (attempt?.sent) {
+      // This endpoint does not deduplicate request IDs. An uncertain write is read-only forever:
+      // even a missing timeout could be a later moderator removal, so it cannot justify replay.
+      const expires = await context.client.call({ m: 'getMemberTimeout', communityId, userId: member.userId });
+      if (expires === attempt.expires) { attempt.settled = true; return success(`${member.name} was timed out.`); }
+      return result('uncertain', 'The current timeout differs from this attempt. It may have expired or another moderator may have changed it. Review the current timeout before starting a new command.');
+    }
     if (!await context.confirm(`Timeout ${member.name}?`, `Restrict this member for ${invocation.args.duration}.`)) return failure('Cancelled.');
     if (!context.isCurrent() || !moderationTarget(context, member.userId, 'timeout')) return failure('Your permissions or the member’s rank changed.');
-    await context.client.call({ m: 'setMemberTimeout', communityId, userId: member.userId, requestId: context.requestId, expires: String(Math.floor(Date.now() / 1000) + seconds) });
+    if (attempts.size >= 128) {
+      for (const [oldKey, old] of attempts) { if (old.settled) attempts.delete(oldKey); if (attempts.size < 128) break; }
+      if (attempts.size >= 128) return failure('Reconcile a pending timeout before starting another timeout command.');
+    }
+    attempt = { communityId, userId: member.userId, expires: String(Math.floor(Date.now() / 1000) + seconds), seconds, sent: true, settled: false };
+    attempts.set(key, attempt);
+    try {
+      await context.client.call({ m: 'setMemberTimeout', communityId, userId: member.userId, requestId: context.requestId, expires: attempt.expires });
+      attempt.settled = true;
+    } catch (error) {
+      if (mutationError(error).status === 'failure') attempts.delete(key);
+      throw error;
+    }
     return success(`${member.name} was timed out.`);
   }),
   untimeout: handler(async (invocation, context) => {
