@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/polls"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -86,6 +87,10 @@ func pollFingerprint(r protocol.Request) ([32]byte, bool) {
 	return sha256.Sum256([]byte(s)), true
 }
 func pollResultStatus(e error) uint64 {
+	var nativeStatus *helper.StatusError
+	if errors.As(e, &nativeStatus) && nativeStatus.Status == 4 {
+		return interactionStatusConflict
+	}
 	switch {
 	case errors.Is(e, polls.ErrForbidden):
 		return interactionStatusForbidden
@@ -305,23 +310,46 @@ func (h PollInteractions) list(ctx context.Context, actor InteractionActor, r pr
 		return InteractionResult{Status: pollResultStatus(e)}, nil
 	}
 	summaries := make([]any, 0, len(rows))
-	for _, p := range rows {
-		_, my, e := h.Store.Counts(ctx, p.ID, actor.User)
+	var data []byte
+	included := 0
+	for i, p := range rows {
+		_, my, countErr := h.Store.Counts(ctx, p.ID, actor.User)
+		if countErr != nil {
+			return InteractionResult{}, countErr
+		}
+		candidate := append(append([]any(nil), summaries...), pollSummary(h.present(p), my))
+		more := i < len(rows)-1 || next != ""
+		var candidateCursor any
+		if more {
+			cursor, cursorErr := h.Store.ListCursor(ctx, ch, th, p.ID)
+			if cursorErr != nil {
+				return InteractionResult{}, cursorErr
+			}
+			raw, cursorErr := base64.RawURLEncoding.DecodeString(cursor)
+			if cursorErr != nil {
+				return InteractionResult{}, cursorErr
+			}
+			candidateCursor = raw
+		}
+		candidateData, marshalErr := pollData([]any{uint64(1), candidate, candidateCursor})
+		if marshalErr != nil {
+			if included == 0 {
+				return InteractionResult{Status: interactionStatusUnavailable}, nil
+			}
+			break
+		}
+		summaries = candidate
+		data = candidateData
+		included = i + 1
+	}
+	if len(rows) > 0 && included == 0 {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	if included == 0 {
+		data, e = pollData([]any{uint64(1), []any{}, nil})
 		if e != nil {
 			return InteractionResult{}, e
 		}
-		summaries = append(summaries, pollSummary(h.present(p), my))
-	}
-	var nextValue any
-	if next != "" {
-		nextValue, e = base64.RawURLEncoding.DecodeString(next)
-		if e != nil {
-			return InteractionResult{}, e
-		}
-	}
-	data, e := pollData([]any{uint64(1), summaries, nextValue})
-	if e != nil {
-		return InteractionResult{}, e
 	}
 	return InteractionResult{Data: data}, nil
 }
@@ -387,7 +415,8 @@ func (h PollInteractions) close(ctx context.Context, actor InteractionActor, r p
 	if e != nil {
 		return InteractionResult{}, e
 	}
-	if actor.Kind != 0 || !member || (actor.User != p.CreatorID && bits&pollPermManageMessages == 0) {
+	channelAccess := pollPermView | pollPermReadHistory
+	if actor.Kind != 0 || !member || bits&channelAccess != channelAccess || (actor.User != p.CreatorID && bits&pollPermManageMessages == 0) {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	fp, _ := pollFingerprint(r)
@@ -432,12 +461,13 @@ func (h PollInteractions) voters(ctx context.Context, actor InteractionActor, r 
 		if !ok || len(b) > 256 {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
-		raw, e := base64.RawURLEncoding.DecodeString(string(b))
-		if e != nil {
+		var a []any
+		if cborx.Unmarshal(b, &a) != nil || len(a) != 4 || a[0] != uint64(1) {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
-		var a []any
-		if cborx.Unmarshal(raw, &a) != nil || len(a) != 4 || a[0] != uint64(1) || a[1] != p.ID || a[2] != option {
+		cursorPoll, validID := pollIDValue(a[1])
+		cursorOption, validOption := a[2].(uint64)
+		if !validID || cursorPoll != p.ID || !validOption || cursorOption != option {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		after, ok = a[3].([]byte)

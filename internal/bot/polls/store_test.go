@@ -7,19 +7,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
 type testState struct {
-	mu   sync.Mutex
-	rows map[string]native.StateEntry
+	mu          sync.Mutex
+	rows        map[string]native.StateEntry
+	getFailures map[string]int
+	txErr       error
 }
 
 func newTestState() *testState { return &testState{rows: map[string]native.StateEntry{}} }
 func (s *testState) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.getFailures != nil && s.getFailures[string(key)] > 0 {
+		s.getFailures[string(key)]--
+		return native.StateValue{}, errors.New("injected StateGet failure")
+	}
 	e, ok := s.rows[string(key)]
 	if !ok {
 		return native.StateValue{}, nil
@@ -51,6 +58,11 @@ func (s *testState) StateScan(_ context.Context, _ uint64, after []byte, limit u
 func (s *testState) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.txErr != nil {
+		e := s.txErr
+		s.txErr = nil
+		return nil, e
+	}
 	for _, c := range changes {
 		e := s.rows[string(c.Key)]
 		if e.Revision != c.ExpectedRevision {
@@ -346,5 +358,68 @@ func TestSingleChoiceRejectsMultipleSelections(t *testing.T) {
 	}
 	if _, e := s.Vote(ctx, p.ID, pid(5), pid(6), [32]byte{2}, []uint64{0, 1}, 1, now); !errors.Is(e, ErrInvalid) {
 		t.Fatalf("multiple selections on single choice=%v", e)
+	}
+}
+
+func TestVoteReplacementFailsClosedOnPreviousVoteReadError(t *testing.T) {
+	ctx := context.Background()
+	state := newTestState()
+	s := NewStore(state, pid(1))
+	now := time.Unix(1000, 0)
+	p := Poll{ID: pid(2), CommunityID: pid(1), ChannelID: pid(3), CreatorID: pid(4), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
+	if _, e := s.Create(ctx, p.ID, [32]byte{1}, p, now); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.Vote(ctx, p.ID, pid(5), pid(6), [32]byte{2}, []uint64{0}, 1, now); e != nil {
+		t.Fatal(e)
+	}
+	key := voteKey(p.ID, pid(5))
+	state.mu.Lock()
+	state.getFailures = map[string]int{string(key): 1}
+	state.mu.Unlock()
+	if _, e := s.Vote(ctx, p.ID, pid(5), pid(7), [32]byte{3}, []uint64{1}, 2, now); e == nil {
+		t.Fatal("replacement hid transient previous-vote read failure")
+	}
+	counts, choices, e := s.Counts(ctx, p.ID, pid(5))
+	if e != nil || counts[0] != 1 || counts[1] != 0 || len(choices) != 1 || choices[0] != 0 {
+		t.Fatalf("after failed read counts=%v choices=%v err=%v", counts, choices, e)
+	}
+}
+
+func TestVoteReplacementFailsClosedOnCorruptPreviousVote(t *testing.T) {
+	ctx := context.Background()
+	state := newTestState()
+	s := NewStore(state, pid(1))
+	now := time.Unix(1000, 0)
+	p := Poll{ID: pid(2), CommunityID: pid(1), ChannelID: pid(3), CreatorID: pid(4), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
+	if _, e := s.Create(ctx, p.ID, [32]byte{1}, p, now); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.Vote(ctx, p.ID, pid(5), pid(6), [32]byte{2}, []uint64{0}, 1, now); e != nil {
+		t.Fatal(e)
+	}
+	state.mu.Lock()
+	row := state.rows[string(voteKey(p.ID, pid(5)))]
+	row.Value = []byte{0xff}
+	state.rows[string(row.Key)] = row
+	state.mu.Unlock()
+	if _, e := s.Vote(ctx, p.ID, pid(5), pid(7), [32]byte{3}, []uint64{1}, 2, now); !errors.Is(e, ErrCorruptVote) {
+		t.Fatalf("corrupt prior vote error=%v", e)
+	}
+	poll, e := s.Get(ctx, p.ID)
+	if e != nil || poll.Counts[0] != 1 || poll.Counts[1] != 0 {
+		t.Fatalf("corrupt vote changed tally=%v err=%v", poll.Counts, e)
+	}
+}
+
+func TestNativeStatusConflictNormalizesAtStoreBoundary(t *testing.T) {
+	ctx := context.Background()
+	state := newTestState()
+	state.txErr = &helper.StatusError{Status: 4}
+	s := NewStore(state, pid(1))
+	now := time.Unix(1000, 0)
+	p := Poll{ID: pid(2), CommunityID: pid(1), ChannelID: pid(3), CreatorID: pid(4), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
+	if _, e := s.Create(ctx, p.ID, [32]byte{1}, p, now); !errors.Is(e, ErrConflict) {
+		t.Fatalf("helper status4 error=%v", e)
 	}
 }

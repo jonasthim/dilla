@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -29,6 +30,7 @@ const (
 
 var (
 	ErrConflict           = errors.New("poll state conflict")
+	ErrCorruptVote        = errors.New("corrupt poll vote state")
 	ErrNotFound           = errors.New("poll not found")
 	ErrClosed             = errors.New("poll is closed")
 	ErrMutationIDConflict = errors.New("poll request ID reused with different input")
@@ -72,6 +74,16 @@ func receiptKey(a, r id.ID) []byte             { return []byte(receiptPrefix + i
 func quotaKey(c id.ID) []byte                  { return []byte(pollPrefix + "open/" + idhex(c)) }
 func (s *Store) get(ctx context.Context, key []byte) (native.StateValue, error) {
 	return s.state.StateGet(ctx, stateArea, key)
+}
+func (s *Store) transact(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	revisions, err := s.state.StateTransaction(ctx, tx, changes)
+	if err != nil {
+		var status *helper.StatusError
+		if errors.As(err, &status) && status.Status == 4 {
+			return nil, ErrConflict
+		}
+	}
+	return revisions, err
 }
 func encodePoll(p Poll) ([]byte, error) {
 	v := []any{uint64(1), p.ID, p.CommunityID, p.ChannelID, p.ThreadID, p.CreatorID, p.Question, p.Answers, boolU(p.Multi), p.CreatedAt, p.DueAt, boolU(p.Closed), p.Counts, p.Revision, boolU(p.Published)}
@@ -322,7 +334,7 @@ func (s *Store) Create(ctx context.Context, request id.ID, fp [32]byte, p Poll, 
 	if e != nil {
 		return Poll{}, e
 	}
-	revs, e := s.state.StateTransaction(ctx, request, []native.StateChange{{Area: 8, Key: quotaKey(s.community), ExpectedRevision: qv.Revision, Value: qb}, {Area: 8, Key: pollKey(p.ID), ExpectedRevision: 0, Value: pb}, {Area: 8, Key: rkey, ExpectedRevision: rv.Revision, Value: rb}})
+	revs, e := s.transact(ctx, request, []native.StateChange{{Area: 8, Key: quotaKey(s.community), ExpectedRevision: qv.Revision, Value: qb}, {Area: 8, Key: pollKey(p.ID), ExpectedRevision: 0, Value: pb}, {Area: 8, Key: rkey, ExpectedRevision: rv.Revision, Value: rb}})
 	if e != nil {
 		return Poll{}, e
 	}
@@ -378,7 +390,7 @@ func (s *Store) Get(ctx context.Context, pid id.ID) (Poll, error) {
 	}
 	return p, e
 }
-func (s *Store) mutation(ctx context.Context, pid, actor, request id.ID, fp [32]byte, expected uint64, now time.Time, op func(Poll) (Poll, []uint64, error)) (Outcome, error) {
+func (s *Store) mutation(ctx context.Context, pid, actor, request id.ID, fp [32]byte, expected uint64, now time.Time, op func(Poll) (Poll, []uint64, error), voteSnapshot *native.StateValue) (Outcome, error) {
 	if out, ok, e := s.replay(ctx, actor, request, fp); ok {
 		return out, e
 	}
@@ -421,25 +433,25 @@ func (s *Store) mutation(ctx context.Context, pid, actor, request id.ID, fp [32]
 	changes := []native.StateChange{{Area: 8, Key: pollKey(pid), ExpectedRevision: v.Revision, Value: pb}, {Area: 8, Key: rkey, ExpectedRevision: rv.Revision, Value: rb}}
 	var voteChange *native.StateChange
 	if choice != nil {
-		key := voteKey(pid, actor)
-		vv, e := s.get(ctx, key)
-		if e != nil {
-			return Outcome{}, e
+		if voteSnapshot == nil {
+			return Outcome{}, ErrInvalid
 		}
+		key := voteKey(pid, actor)
 		body, e := cborx.Marshal(choice)
 		if e != nil {
 			return Outcome{}, e
 		}
-		ch := native.StateChange{Area: 8, Key: key, ExpectedRevision: vv.Revision, Value: body}
+		ch := native.StateChange{Area: 8, Key: key, ExpectedRevision: voteSnapshot.Revision, Value: body}
 		voteChange = &ch
 	}
 	if voteChange != nil {
 		changes = append(changes, *voteChange)
 	}
-	_, e = s.state.StateTransaction(ctx, request, changes)
+	_, e = s.transact(ctx, request, changes)
 	return out, e
 }
 func (s *Store) Vote(ctx context.Context, pid, actor, request id.ID, fp [32]byte, choices []uint64, expected uint64, now time.Time) (Outcome, error) {
+	var voteSnapshot native.StateValue
 	out, e := s.mutation(ctx, pid, actor, request, fp, expected, now, func(p Poll) (Poll, []uint64, error) {
 		if p.Closed || uint64(now.Unix()) >= p.DueAt {
 			return p, nil, ErrClosed
@@ -454,12 +466,28 @@ func (s *Store) Vote(ctx context.Context, pid, actor, request id.ID, fp [32]byte
 		if !p.Multi && len(choices) > 1 {
 			return p, nil, ErrInvalid
 		}
-		v, _ := s.get(ctx, voteKey(pid, actor))
+		v, readErr := s.get(ctx, voteKey(pid, actor))
+		if readErr != nil {
+			return p, nil, readErr
+		}
+		voteSnapshot = v
 		var old []uint64
 		if v.Revision > 0 && !v.Tombstone {
-			var a []uint64
-			if cborx.Unmarshal(v.Value, &a) == nil {
-				old = a
+			var a []any
+			if decodeErr := cborx.Unmarshal(v.Value, &a); decodeErr != nil {
+				return p, nil, ErrCorruptVote
+			}
+			seenOld := make(map[uint64]bool, len(a))
+			if len(a) > len(p.Answers) || (!p.Multi && len(a) > 1) {
+				return p, nil, ErrCorruptVote
+			}
+			for _, item := range a {
+				choice, ok := item.(uint64)
+				if !ok || choice >= uint64(len(p.Answers)) || seenOld[choice] {
+					return p, nil, ErrCorruptVote
+				}
+				seenOld[choice] = true
+				old = append(old, choice)
 			}
 		}
 		for _, i := range old {
@@ -471,7 +499,7 @@ func (s *Store) Vote(ctx context.Context, pid, actor, request id.ID, fp [32]byte
 			p.Counts[i]++
 		}
 		return p, append([]uint64{}, choices...), nil
-	})
+	}, &voteSnapshot)
 	return out, e
 }
 func (s *Store) Close(ctx context.Context, pid, actor, request id.ID, fp [32]byte, expected uint64, now time.Time, manage bool) (Poll, error) {
@@ -539,7 +567,7 @@ func (s *Store) Close(ctx context.Context, pid, actor, request id.ID, fp [32]byt
 	if e != nil {
 		return Poll{}, e
 	}
-	_, e = s.state.StateTransaction(ctx, request, []native.StateChange{{Area: 8, Key: pollKey(pid), ExpectedRevision: v.Revision, Value: pb}, {Area: 8, Key: qkey, ExpectedRevision: qv.Revision, Value: qb}, {Area: 8, Key: rkey, ExpectedRevision: rv.Revision, Value: rb}})
+	_, e = s.transact(ctx, request, []native.StateChange{{Area: 8, Key: pollKey(pid), ExpectedRevision: v.Revision, Value: pb}, {Area: 8, Key: qkey, ExpectedRevision: qv.Revision, Value: qb}, {Area: 8, Key: rkey, ExpectedRevision: rv.Revision, Value: rb}})
 	return p, e
 }
 
@@ -571,11 +599,11 @@ func (s *Store) Voters(ctx context.Context, pid id.ID, option uint64, after []by
 	}
 	prefix := []byte(votePrefix + idhex(pid) + "/")
 	cursor := after
+	if cursor != nil && (len(cursor) != len(prefix)+32 || !strings.HasPrefix(string(cursor), string(prefix))) {
+		return nil, nil, ErrInvalid
+	}
 	if cursor == nil {
 		cursor = prefix
-	}
-	if cursor != nil && !strings.HasPrefix(string(cursor), string(prefix)) {
-		return nil, nil, ErrInvalid
 	}
 	var ids []id.ID
 	var next []byte
@@ -728,6 +756,26 @@ func (s *Store) List(ctx context.Context, channel id.ID, thread *id.ID, cursor s
 	}
 	return rows, "", nil
 }
+
+// ListCursor returns an opaque cursor scoped to a list position. The poll must belong to that list.
+func (s *Store) ListCursor(ctx context.Context, channel id.ID, thread *id.ID, afterPoll id.ID) (string, error) {
+	p, err := s.Get(ctx, afterPoll)
+	if err != nil {
+		return "", err
+	}
+	if p.ChannelID != channel || !sameThread(p.ThreadID, thread) {
+		return "", ErrInvalid
+	}
+	raw, err := cborx.Marshal([]any{uint64(1), s.community, channel, thread, pollKey(afterPoll)})
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > 256 {
+		return "", ErrInvalid
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
 func sameThread(a, b *id.ID) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -756,7 +804,7 @@ func (s *Store) MarkPublished(ctx context.Context, pid id.ID) error {
 	if e != nil {
 		return e
 	}
-	_, e = s.state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: 8, Key: pollKey(pid), ExpectedRevision: v.Revision, Value: b}})
+	_, e = s.transact(ctx, id.New(), []native.StateChange{{Area: 8, Key: pollKey(pid), ExpectedRevision: v.Revision, Value: b}})
 	return e
 }
 
@@ -846,7 +894,7 @@ func (s *Store) releaseQuota(ctx context.Context, pid id.ID) error {
 		if e != nil {
 			return e
 		}
-		_, e = s.state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: 8, Key: key, ExpectedRevision: v.Revision, Value: body}})
+		_, e = s.transact(ctx, id.New(), []native.StateChange{{Area: 8, Key: key, ExpectedRevision: v.Revision, Value: body}})
 		if e == nil {
 			return nil
 		}

@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"testing"
@@ -16,8 +19,9 @@ import (
 )
 
 type pollTestState struct {
-	mu   sync.Mutex
-	rows map[string]native.StateEntry
+	mu    sync.Mutex
+	rows  map[string]native.StateEntry
+	txErr error
 }
 
 func (s *pollTestState) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
@@ -56,6 +60,11 @@ func (s *pollTestState) StateTransaction(_ context.Context, _ id.ID, changes []n
 	defer s.mu.Unlock()
 	if s.rows == nil {
 		s.rows = map[string]native.StateEntry{}
+	}
+	if s.txErr != nil {
+		e := s.txErr
+		s.txErr = nil
+		return nil, e
 	}
 	for _, c := range changes {
 		if s.rows[string(c.Key)].Revision != c.ExpectedRevision {
@@ -177,5 +186,182 @@ func TestPollReadsRejectWrongCommunityAndNonHumanActors(t *testing.T) {
 	res, _ = h.get(context.Background(), InteractionActor{User: pollServiceID(2), Kind: 1}, r)
 	if res.Status != interactionStatusForbidden || auth.calls != 0 {
 		t.Fatalf("nonhuman read=%+v permission calls=%d", res, auth.calls)
+	}
+}
+
+func TestPollListHandlerPaginatesByEncodedBytes(t *testing.T) {
+	ctx := context.Background()
+	state := &pollTestState{}
+	store := polls.NewStore(state, pollServiceID(1))
+	now := time.Unix(1000, 0)
+	channel := pollServiceID(4)
+	question := strings.Repeat("Q", 300)
+	answers := make([]string, 10)
+	for i := range answers {
+		answers[i] = strings.Repeat(string(rune('a'+i)), 100)
+	}
+	ids := []id.ID{pollServiceID(20), pollServiceID(21)}
+	for _, pid := range ids {
+		p := polls.Poll{ID: pid, CommunityID: pollServiceID(1), ChannelID: channel, CreatorID: pollServiceID(2), Question: question, Answers: answers, CreatedAt: 1000, DueAt: 4600}
+		if _, e := store.Create(ctx, pid, [32]byte{pid[15]}, p, now); e != nil {
+			t.Fatal(e)
+		}
+	}
+	h := PollInteractions{Store: store, Authority: &pollAuthorityFake{bits: pollPermView | pollPermReadHistory, member: true}, CommunityID: pollServiceID(1), Now: func() time.Time { return now }}
+	actor := InteractionActor{User: pollServiceID(2)}
+	cursor := any(nil)
+	var seen []id.ID
+	for pageNo := 0; pageNo < 3; pageNo++ {
+		result, e := h.list(ctx, actor, protocol.Request{CommunityID: pollServiceID(1), Operation: protocol.OpPollList, Args: []any{channel, nil, cursor}})
+		if e != nil || result.Status != 0 || len(result.Data) > 2400 {
+			t.Fatalf("page %d result=%+v err=%v", pageNo, result, e)
+		}
+		var response []any
+		if e = cborx.Unmarshal(result.Data, &response); e != nil {
+			t.Fatal(e)
+		}
+		rows := response[1].([]any)
+		for _, item := range rows {
+			summary := item.([]any)
+			b := summary[0].([]byte)
+			var got id.ID
+			copy(got[:], b)
+			seen = append(seen, got)
+		}
+		cursor = response[2]
+		if cursor == nil {
+			break
+		}
+		if pageNo == 2 {
+			t.Fatal("pagination did not terminate")
+		}
+	}
+	if len(seen) != 2 || seen[0] != ids[0] || seen[1] != ids[1] {
+		t.Fatalf("listed poll IDs=%v", seen)
+	}
+}
+
+func TestPollVoterHandlerCursorRoundTripsAndChecksScope(t *testing.T) {
+	ctx := context.Background()
+	store := polls.NewStore(&pollTestState{}, pollServiceID(1))
+	now := time.Unix(1000, 0)
+	pid := pollServiceID(3)
+	p := polls.Poll{ID: pid, CommunityID: pollServiceID(1), ChannelID: pollServiceID(4), CreatorID: pollServiceID(2), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
+	if _, e := store.Create(ctx, pid, [32]byte{1}, p, now); e != nil {
+		t.Fatal(e)
+	}
+	for i := byte(10); i < 31; i++ {
+		current, e := store.Get(ctx, pid)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = store.Vote(ctx, pid, pollServiceID(i), pollServiceID(i+40), [32]byte{i}, []uint64{0}, current.Revision, now); e != nil {
+			t.Fatal(e)
+		}
+	}
+	h := PollInteractions{Store: store, Authority: &pollAuthorityFake{bits: pollPermView | pollPermReadHistory, member: true}, CommunityID: pollServiceID(1), Now: func() time.Time { return now }}
+	actor := InteractionActor{User: pollServiceID(2)}
+	req := protocol.Request{CommunityID: pollServiceID(1), Operation: protocol.OpPollVoters, Args: []any{pid, uint64(0), nil}}
+	first, e := h.voters(ctx, actor, req)
+	if e != nil || first.Status != 0 {
+		t.Fatalf("first page=%+v err=%v", first, e)
+	}
+	var a []any
+	if e = cborx.Unmarshal(first.Data, &a); e != nil {
+		t.Fatal(e)
+	}
+	cursor, ok := a[2].([]byte)
+	if !ok || len(cursor) == 0 || len(cursor) > 256 {
+		t.Fatalf("cursor type/size=%T %d", a[2], len(cursor))
+	}
+	req.Args[2] = cursor
+	second, e := h.voters(ctx, actor, req)
+	if e != nil || second.Status != 0 {
+		t.Fatalf("cursor round trip status=%d err=%v", second.Status, e)
+	}
+	var b []any
+	if e = cborx.Unmarshal(second.Data, &b); e != nil {
+		t.Fatal(e)
+	}
+	secondIDs := b[1].([]any)
+	if len(secondIDs) != 1 || b[2] != nil {
+		t.Fatalf("second page=%v", b)
+	}
+	req.Args[1] = uint64(1)
+	wrong, e := h.voters(ctx, actor, req)
+	if e != nil || wrong.Status != interactionStatusUnavailable {
+		t.Fatalf("cursor accepted for wrong option: %+v err=%v", wrong, e)
+	}
+}
+
+func TestCreatorCloseRequiresCurrentChannelReadAccess(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0)
+	state := &pollTestState{}
+	store := polls.NewStore(state, pollServiceID(1))
+	pid := pollServiceID(3)
+	p := polls.Poll{ID: pid, CommunityID: pollServiceID(1), ChannelID: pollServiceID(4), CreatorID: pollServiceID(2), Question: "private", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
+	if _, e := store.Create(ctx, pid, [32]byte{1}, p, now); e != nil {
+		t.Fatal(e)
+	}
+	auth := &pollAuthorityFake{bits: 0, member: true}
+	h := PollInteractions{Store: store, Authority: auth, CommunityID: pollServiceID(1), Now: func() time.Time { return now }}
+	rev, expiry := uint64(1), uint64(1030)
+	result, e := h.close(ctx, InteractionActor{User: p.CreatorID}, protocol.Request{RequestID: pollServiceID(9), CommunityID: pollServiceID(1), Operation: protocol.OpPollClose, Revision: &rev, Expires: &expiry, Args: []any{pid}})
+	if e != nil || result.Status != interactionStatusForbidden || len(result.Data) != 0 {
+		t.Fatalf("revoked creator close=%+v err=%v", result, e)
+	}
+	stored, e := store.Get(ctx, pid)
+	if e != nil || stored.Closed {
+		t.Fatalf("revoked close mutated poll=%+v err=%v", stored, e)
+	}
+}
+
+func TestPollHandlersMapNativeCASStatusFourToConflict(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0)
+	for _, op := range []protocol.Operation{protocol.OpPollCreate, protocol.OpPollVote, protocol.OpPollClose} {
+		t.Run(fmt.Sprint(op), func(t *testing.T) {
+			state := &pollTestState{}
+			store := polls.NewStore(state, pollServiceID(1))
+			auth := &pollAuthorityFake{bits: pollPermView | pollPermSend | pollPermReadHistory | pollPermManageMessages, member: true}
+			h := PollInteractions{Store: store, Authority: auth, CommunityID: pollServiceID(1), Now: func() time.Time { return now }, Publisher: &pollPublisherFake{}}
+			actor := InteractionActor{User: pollServiceID(2)}
+			pid := pollServiceID(3)
+			rev, expiry := uint64(1), uint64(1030)
+			var req protocol.Request
+			if op == protocol.OpPollCreate {
+				channel := pollServiceID(4)
+				payload, _ := cborx.Marshal([]any{uint64(1), channel[:], nil, "Q", []any{"A", "B"}, uint64(0), uint64(3600)})
+				zero := uint64(0)
+				req = protocol.Request{RequestID: pid, CommunityID: pollServiceID(1), Operation: op, Revision: &zero, Expires: &expiry, Args: []any{payload}}
+			} else {
+				if _, e := store.Create(ctx, pid, [32]byte{1}, polls.Poll{ID: pid, CommunityID: pollServiceID(1), ChannelID: pollServiceID(4), CreatorID: actor.User, Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}, now); e != nil {
+					t.Fatal(e)
+				}
+				if op == protocol.OpPollVote {
+					selection, _ := cborx.Marshal([]any{uint64(0)})
+					req = protocol.Request{RequestID: pollServiceID(8), CommunityID: pollServiceID(1), Operation: op, Revision: &rev, Expires: &expiry, Args: []any{pid, selection}}
+				} else {
+					req = protocol.Request{RequestID: pollServiceID(9), CommunityID: pollServiceID(1), Operation: op, Revision: &rev, Expires: &expiry, Args: []any{pid}}
+				}
+			}
+			state.mu.Lock()
+			state.txErr = &helper.StatusError{Status: 4}
+			state.mu.Unlock()
+			var result InteractionResult
+			var e error
+			switch op {
+			case protocol.OpPollCreate:
+				result, e = h.create(ctx, actor, req)
+			case protocol.OpPollVote:
+				result, e = h.vote(ctx, actor, req)
+			case protocol.OpPollClose:
+				result, e = h.close(ctx, actor, req)
+			}
+			if e != nil || result.Status != interactionStatusConflict {
+				t.Fatalf("native CAS status result=%+v err=%v", result, e)
+			}
+		})
 	}
 }
