@@ -91,6 +91,21 @@ it('checkpoints an unsent draft before refreshing to a new UI build', async () =
   expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
 });
 
+it('keeps the reminder inbox entry mounted from DM and root routes without a selected community', async () => {
+  const { user, view } = setup('/', { communities: [] });
+  expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Reminders' }));
+  expect(await screen.findByRole('dialog', { name: 'Your reminders' })).toBeInTheDocument();
+  view.unmount();
+  replaceHistoryState(null, '', `/dm/${'ab'.repeat(16)}`);
+  const fake = new FakeClient();
+  fake.set('account', account()); fake.set('connection', { status: 'online', generation: '7' }); fake.set('communities', []);
+  fake.set('dms', []);
+  const dmView = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+  dmView.unmount();
+});
+
 it('shows my text timeout expiry and blocks the channel composer', async () => {
   const expires = NOW + 600;
   const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
@@ -1466,6 +1481,8 @@ describe('keyboard', () => {
     await user.tab();
     // The fold menu is a stop only below 36rem of header width (CSS hides it above); jsdom has no layout.
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Reminders' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();

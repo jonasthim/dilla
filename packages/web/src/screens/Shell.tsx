@@ -37,7 +37,7 @@ import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
 import { ChannelEditFlow } from './admin/ChannelEditFlow.tsx';
 import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
-import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
+import { requestThread, takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
 import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
@@ -47,6 +47,8 @@ import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } fr
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
 import type { CommandProviderHandlers, CommandSuggestionProvider } from './commands/command-types.ts';
+import { useBotCommandProvider } from './commands/bot-handlers.ts';
+import { useUtilityCommandProvider } from './commands/UtilityCommandProvider.tsx';
 
 const DRAFT_MEMORY_LIMIT = 128;
 function rememberDraft(map: Map<string, string>, key: string, value: string): void {
@@ -157,6 +159,7 @@ function restoredConversationUi(value: unknown): ConversationUi | null {
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
 export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; commandHandlers?: CommandProviderHandlers; commandSuggest?: CommandSuggestionProvider } = {}): React.JSX.Element {
+  const { commandHandlers: suppliedHandlers, commandSuggest: suppliedSuggest } = props;
   const client = useCore();
   const phone = usePhoneLayout();
   useVisualViewportHeight(phone);
@@ -214,6 +217,28 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const fallbackCommunity = lastCommunity !== null && communities?.some(c => c.id === lastCommunity) === true
     ? lastCommunity : communities?.[0]?.id ?? null;
   const communityId = routeCommunity ?? (dmId !== null || base.name === 'dms' ? fallbackCommunity : null);
+  const navigateToUtilitySource = useCallback((sourceCommunityId: string, sourceChannelId: string, sourceThreadId: string | null) => {
+    if (sourceThreadId !== null) requestThread(sourceChannelId, sourceThreadId);
+    void navigate({ name: 'channel', communityId: sourceCommunityId, channelId: sourceChannelId });
+  }, [navigate]);
+  const botCommands = useBotCommandProvider(client, communityId);
+  const utilityCommands = useUtilityCommandProvider(client, communityId, navigateToUtilitySource);
+  const { handlers: botHandlers, suggest: botSuggest } = botCommands;
+  const { handlers: utilityHandlers, suggest: utilitySuggest } = utilityCommands;
+  const commandHandlers = useMemo<CommandProviderHandlers>(() => ({
+    ...botHandlers,
+    ...utilityHandlers,
+    ...suppliedHandlers,
+  }), [botHandlers, utilityHandlers, suppliedHandlers]);
+  const commandSuggest = useCallback<NonNullable<CommandSuggestionProvider>>((commandId, option, query, binding, values) => {
+    if (suppliedHandlers?.[commandId] !== undefined && suppliedSuggest !== undefined)
+      return suppliedSuggest(commandId, option, query, binding, values);
+    if (utilityHandlers[commandId] !== undefined)
+      return utilitySuggest(commandId, option, query, binding, values);
+    if (botHandlers[commandId] !== undefined)
+      return botSuggest(commandId, option, query, binding, values);
+    return suppliedSuggest?.(commandId, option, query, binding, values) ?? Promise.resolve([]);
+  }, [botHandlers, botSuggest, suppliedHandlers, suppliedSuggest, utilityHandlers, utilitySuggest]);
 
   // An empty id names a slice that never exists, so it reads undefined.
   const channels = useSlice(`channels:${communityId ?? ''}`);
@@ -1735,8 +1760,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
   const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} /> : adminPage;
   return (
-    <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate: route => { void navigate(route); }, openThread, openSearch: openCommandSearch }} handlers={props.commandHandlers} suggest={props.commandSuggest}>
+    <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate: route => { void navigate(route); }, openThread, openSearch: openCommandSearch }} handlers={commandHandlers} suggest={commandSuggest}>
     <>
+      {botCommands.dialogs}
+      {utilityCommands.dialogs}
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
             {t('update.noStorage')}</Banner> : null}
@@ -1780,6 +1807,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
           <p className="d-sr-only dw-voice-lasting" role="status">{call.lasting}</p>
           {header}
+          {utilityCommands.inbox}
         </>}
         composer={composer === null ? null : <>
           {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}

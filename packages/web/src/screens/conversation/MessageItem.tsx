@@ -7,6 +7,8 @@ import { formatTime, t, type StringKey } from '../../strings/index.ts';
 import { authorName, knownName, markdownParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
+import type { CoreClient } from '@dilla/client-core';
+import { PollCard, finalPollMarker } from '../commands/PollCard.tsx';
 
 const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
   ok: null, pending: 'shell.message.pending', failed: 'shell.message.failed',
@@ -48,7 +50,8 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   grouped?: boolean;
   /** Phone only (R30): whether this row's toolbar is shown, and the row's ask to show or hide it. Absent: the toolbar is always shown. */
   revealed?: boolean;
-  onReveal?: (on: boolean) => void }
+  onReveal?: (on: boolean) => void;
+  client?: CoreClient; communityId?: string | null; threadId?: string | null }
 
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
@@ -113,12 +116,17 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   };
   // In the gutter the time stands alone: the day divider above the run names the day.
   const time = messageTime(item.ts, p.now);
+  const marker = item.bot ? finalPollMarker(item.body) : null;
+  const displayBody = shown ? markdownParts(marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, ''), p.book, item.mention) : '';
+  const card = marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
+    body={item.body} authorId={item.senderUser} bot={item.bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
+    onOpenThread={p.onOpenThread} /> : undefined;
   const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} gutterTime={gutterTime}
     authorId={item.senderUser ?? undefined}
     onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
-      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={shown ? markdownParts(item.body, p.book, item.mention) : ''}
+      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={displayBody} card={card}
     grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
