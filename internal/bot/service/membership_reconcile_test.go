@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -114,6 +115,7 @@ type membershipFakeSession struct {
 	ackErr                 error
 	channelsCalls          int
 	groupInfo              client.GroupInfo
+	groupInfoErr           error
 	groupPageErr           error
 	groupPageCalls         int
 	removeOnSecond         bool
@@ -166,7 +168,7 @@ func (s *membershipFakeSession) AcknowledgeWelcome(_ context.Context, w uint64) 
 }
 func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
 	if s.groupInfo.NextSequence != 0 {
-		return s.groupInfo, nil
+		return s.groupInfo, s.groupInfoErr
 	}
 	return client.GroupInfo{NextSequence: 1}, nil
 }
@@ -471,6 +473,44 @@ func TestMembershipTreatsNonmemberCallGroupSourceAsPending(t *testing.T) {
 				t.Fatalf("group page calls = %d, want 1", s.groupPageCalls)
 			}
 		})
+	}
+}
+
+func TestUnavailableCallSourceDoesNotBlockInstallationReconciliation(t *testing.T) {
+	for _, kind := range []uint64{0, 1} {
+		for _, source := range []string{"info", "page"} {
+			t.Run(fmt.Sprintf("kind=%d/%s", kind, source), func(t *testing.T) {
+				r, n, s, community, channel, group := membershipFixture(t)
+				s.channels = []client.Channel{{ID: channel, CommunityID: community, Kind: kind}}
+				if kind == 0 {
+					s.channels[0].TextGroupID = &group
+				}
+				info := native.GroupInfo{ID: group, Kind: kind, Community: &community, Target: channel, State: 2, NextSequence: 1}
+				n.groups, n.inspected = []native.GroupInfo{info}, info
+				s.groupInfo = client.GroupInfo{NextSequence: 2}
+				refusal := &client.APIError{Status: 403, Code: "E_FORBIDDEN"}
+				if source == "info" {
+					s.groupInfoErr = refusal
+				} else {
+					s.groupPageErr = refusal
+				}
+				for range 2 {
+					result, err := r.reconcileOnce(context.Background(), s)
+					if kind == 1 && err != nil {
+						t.Fatalf("unavailable call blocked installation reconciliation: %v", err)
+					}
+					if kind == 0 && !errors.Is(err, refusal) {
+						t.Fatalf("text refusal must remain terminal: %v", err)
+					}
+					if result.GroupsSynced != 0 {
+						t.Fatal("denied source was counted as synchronized")
+					}
+				}
+				if n.genericApplyCalls != 0 || n.genericAckCalls != 0 {
+					t.Fatal("denied call altered native source progress")
+				}
+			})
+		}
 	}
 }
 
