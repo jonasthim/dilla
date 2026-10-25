@@ -77,7 +77,7 @@ const meta = {
   args: {
     name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })],
     labels: {
-      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
+      open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
@@ -130,8 +130,8 @@ export const EveryState: Story = {
       person('dee', { state: 'connecting' }), person('eli', { state: 'not-heard' }), person('fay', { state: 'unverified' })],
   },
 };
-/** A bot in voice: the bot tag and `can hear`, visible before anyone joins (brief, trust facts). */
-export const BotCanHear: Story = { args: { participants: [person('ada', { speaking: true }), person('relay', { bot: true, web: false })] } };
+/** A bot in voice: the bot tag and `playback only`, visible before anyone joins (brief, trust facts). */
+export const BotPlaybackOnly: Story = { args: { participants: [person('ada', { speaking: true }), person('relay', { bot: true, web: false })] } };
 /** A voice channel readable by this server keeps its readable glyph. */
 export const Readable: Story = { args: { readable: true } };
 /** A long name truncates before its glyphs: they stay on its line, and nothing wraps (R29). */

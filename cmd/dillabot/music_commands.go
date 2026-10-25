@@ -58,7 +58,7 @@ type musicChatCommands struct {
 	replayReceivedThrough uint64
 }
 
-const musicCommandHelp = "Music commands: /play <YouTube search or YouTube/Spotify URL>, /pause, /resume, /skip, /queue, /stop. Join a voice channel first. Playback controls require a configured DJ role."
+const musicCommandHelp = "Music commands: /play <YouTube search or YouTube/Spotify URL>, /pause, /resume, /skip, /queue, /stop. Join a voice channel first. Owners, administrators, and members with a configured DJ role can control playback."
 
 func (h *musicChatCommands) HandleGroupEvent(ctx context.Context, e native.GroupEvent) error {
 	return h.HandleModeratedGroupEvent(ctx, e, true)
@@ -325,7 +325,7 @@ func (h *musicChatCommands) execute(ctx context.Context, e native.GroupEvent, co
 func musicCommandFailure(status uint64) string {
 	switch status {
 	case 2:
-		return "You need a configured DJ role and must be in the voice channel to control music."
+		return "To control music, join the voice channel and be a server owner, administrator, or member with a configured DJ role."
 	case 3:
 		return "The music command expired. Try again."
 	case 4:

@@ -1262,7 +1262,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 - **The token.** `token` is a LiveKit room-join JWT for the call's room whose identity is the device
   id. It carries the **base grant** only: subscribe, never data, and publish for the microphone when
   the device holds `speak` — never the camera or the screen, even for a device that holds a sharing
-  slot. A device without `speak` is listen-only. The camera and screen sources (`video` the camera,
+  slot. A human device without `speak` is listen-only. Managed Bot devices never receive the
+  subscribe grant and cannot receive other participants' media; their current permission updates
+  remain limited to microphone publication, and lookup failures never restore subscription.
+  The camera and screen sources (`video` the camera,
   `screen_share` the screen and its audio) reach a session only as the permission the instance pushes
   after `POST …/share` (below), so a token can never be replayed for video after the device stopped
   sharing; a client that reconnects with a fresh token while it shares POSTs `…/share` again, which

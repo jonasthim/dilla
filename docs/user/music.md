@@ -1,9 +1,18 @@
 # Music in chat
 
 Enable the bot's Music capability in **Server settings → Bot**, and approve the
-roles allowed to act as DJs. The bot needs permission to connect and speak in
+roles allowed to act as DJs. Owners and administrators can control playback
+without a separate DJ-role grant. The bot needs permission to connect and speak in
 the voice channel. Spotify account linking stays in these settings; YouTube
 requires the host's yt-dlp playback tools.
+
+To let another member control music without making them an administrator:
+
+1. Create a normal **DJ** role under **Server settings → Roles**.
+2. Assign that role to the member.
+3. Under **Server settings → Bot → Music → DJ roles**, select **DJ** and save.
+
+DJ access is a bot role approval, not a checkbox in the role's permission list.
 
 Join a voice channel, then send commands in a server text channel:
 
@@ -20,9 +29,15 @@ Join a voice channel, then send commands in a server text channel:
 
 The bot answers in the same text channel, visible to everyone who can read it.
 Commands target the voice channel the requester has joined. Playback changes
-require a configured DJ role; an owner or administrator can also issue an
-emergency stop. `/queue` is available to members with access to the call.
+require current owner/admin authority or a configured DJ role, and presence in
+that voice channel. Owners and administrators retain emergency stop without
+being in the call. `/queue` is available to members with access to the call.
 Commands in threads and edits to previous messages do not execute commands.
+
+The bot's voice connection is for audio output only. It cannot subscribe to
+people's microphone or screen-share tracks; the voice list labels it
+**playback only**. This restriction is enforced by the server as well as the
+music publisher.
 
 Commands and replies use the existing encrypted text transport. Bot-generated
 messages never trigger commands. The daemon retains command receipts in its

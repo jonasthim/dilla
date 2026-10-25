@@ -12,7 +12,7 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   video: false, screen: false, web: true, bot: false, ...more,
 });
 const labels: VoiceChannelRowProps['labels'] = {
-  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
+  open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
@@ -167,10 +167,10 @@ describe('VoiceChannelRow', () => {
     expect(screen.getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
 
-  it('shows a bot in voice with the bot tag and can hear before anyone joins (I5)', () => {
+  it('shows a bot in voice with the bot tag and playback only before anyone joins (I5)', () => {
     render(<VoiceChannelRow {...base} participants={[person('relay', { bot: true, web: false })]} />);
     const row = screen.getByRole('listitem');
-    expect(spoken(row)).toBe('relay bot can hear');
+    expect(spoken(row)).toBe('relay bot playback only');
   });
 
   // web3.8 (R29): muted, deafened, camera and screen are 14px icons, speaking the ring alone (its word sr-only); each is a named image with no text.

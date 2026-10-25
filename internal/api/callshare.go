@@ -10,6 +10,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/sfu"
@@ -535,6 +536,15 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
+	bot, err := botaccess.IsBotUser(ctx, h.repo, s.UserID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if bot {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bots cannot share camera or screen"))
+		return
+	}
 	limit := h.maxPublishers()
 	taken, already := h.leases.take(cur.CallID, cur.LivekitRoom, s.DeviceID, limit, h.clk.Now().Unix())
 	if !taken {
@@ -544,8 +554,16 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeCallSharersFull, "%d devices of this call are already sharing", limit))
 		return
 	}
+	perm, err := h.grantFor(ctx, bits, cur, s.DeviceID)
+	if err != nil {
+		if !already {
+			h.leases.release(cur.CallID, s.DeviceID)
+		}
+		server.WriteError(w, err)
+		return
+	}
 	pctx, cancel := sfuCtx(ctx)
-	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(ctx, bits, cur, s.DeviceID))
+	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), perm)
 	cancel()
 	if err != nil {
 		if errors.Is(err, sfu.ErrNoParticipant) {

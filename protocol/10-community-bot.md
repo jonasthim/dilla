@@ -859,6 +859,21 @@ re-enrolling. Explicitly enabling that same installation and returning it to
 ready makes the saved approvals available again. Permanent removal tombstones
 the old installation; a later installation does not inherit its policy.
 
+Music playback controls require current community owner/administrator authority
+or an approved DJ role, plus membership in the target's current voice call. The
+Bot must retain connect and speak permissions and an active, ready Music-enabled
+installation. These checks run again before a queue mutation is committed,
+including after provider lookup. Owners and administrators may additionally
+issue an emergency stop without being in the call. Instance-admin status alone
+does not grant community music control.
+
+Managed Bot voice access is publication-only: tokens and current SFU permission
+updates prohibit media subscription and permit only microphone-source audio
+publication when Speak is granted. Camera, screen, data and receiving other
+participants' tracks are unavailable. Admission checks reject older tokens
+that grant subscription; grant reconciliation and fallback demotion cannot
+restore that right. The music publisher also disables automatic subscriptions.
+
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |
 | `GET /v1/communities/{community}/bot` | E, manage_community | — | installation or CBOR null when absent |
