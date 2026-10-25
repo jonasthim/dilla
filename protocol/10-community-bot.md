@@ -865,7 +865,8 @@ Bot must retain connect and speak permissions and an active, ready Music-enabled
 installation. These checks run again before a queue mutation is committed,
 including after provider lookup. Owners and administrators may additionally
 issue an emergency stop without being in the call. Instance-admin status alone
-does not grant community music control.
+does not grant community music control. Text-chat commands require a joined
+voice channel to select their target, including for `/stop`.
 
 Managed Bot voice access is publication-only: tokens and current SFU permission
 updates prohibit media subscription and permit only microphone-source audio

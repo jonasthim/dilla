@@ -30,8 +30,8 @@ Join a voice channel, then send commands in a server text channel:
 The bot answers in the same text channel, visible to everyone who can read it.
 Commands target the voice channel the requester has joined. Playback changes
 require current owner/admin authority or a configured DJ role, and presence in
-that voice channel. Owners and administrators retain emergency stop without
-being in the call. `/queue` is available to members with access to the call.
+that voice channel. Chat commands, including `/stop`, require a joined voice
+channel to select their target. `/queue` is available to members with access to the call.
 Commands in threads and edits to previous messages do not execute commands.
 
 The bot's voice connection is for audio output only. It cannot subscribe to
