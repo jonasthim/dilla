@@ -1563,3 +1563,11 @@ unavailable while configuration and linking remain usable.
 
 Participant volume and screen-share volume remain beside the participant/share.
 Channel collapse and conversation-search scope remain in their contextual controls.
+
+![Fullscreen Profile with grouped desktop navigation](screenshots/fullscreen-settings-profile-desktop-mesh.png)
+
+On a phone, **Back to settings** returns to the index; **Close settings** on that
+index returns to your conversation. Settings covers the app tab bar while your
+ongoing call stays connected.
+
+![Profile on a phone](screenshots/fullscreen-settings-profile-phone-mesh.png)

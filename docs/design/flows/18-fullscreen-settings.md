@@ -110,3 +110,18 @@ Unsupported/offline bots show unavailable and Refresh while configuration stays 
 Operation-filtered acknowledgements cannot consume other features' responses.
 
 Real Spotify playback acceptance is separate from automated status-contract tests.
+
+## Integrated browser evidence
+
+The screenshots below come from the running testhost with real test accounts and a
+server. They show the Mesh desktop workspace, phone section layout, and guarded
+navigation; the screenshot script also captures light/high-contrast, tablet, narrow,
+short-viewport, Sign-in, Voice, Members, Music, Automoderation and search states.
+
+![Desktop Profile workspace](../../user/screenshots/fullscreen-settings-profile-desktop-mesh.png)
+![Phone Profile section](../../user/screenshots/fullscreen-settings-profile-phone-mesh.png)
+![Draft confirmation inside settings](../../user/screenshots/fullscreen-settings-dirty-draft-confirmation.png)
+
+The Music/Automoderation captures show the unavailable or missing-installation state;
+they are not evidence of a linked Spotify account or successful playback. Automated
+runtime protocol tests establish status semantics separately from these UI captures.

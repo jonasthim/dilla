@@ -31,7 +31,7 @@ it('polls on a timer and waits for runtime acknowledgement even when waiting beg
     return Promise.resolve(null);
   };
   render(<CoreProvider client={client}><BotSettingsProvider communityId={communityId}><Fixture /></BotSettingsProvider></CoreProvider>);
-  await act(() => { fireEvent.click(screen.getByRole('button', { name: 'Start' })); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start' })); await Promise.resolve(); });
   expect(screen.getByText('pending')).toBeInTheDocument();
   expect(client.callsOf('readBotInteractionResponses')).toHaveLength(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(749); });
