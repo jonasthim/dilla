@@ -46,7 +46,7 @@ describe('App', () => {
       instanceId: account().instance!.id, userId: account().user!.id, deviceId: account().deviceId }));
     window.history.replaceState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
+    expect(await screen.findByText(/authorization delivered to the bot/i)).toBeInTheDocument();
     expect(fake.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);
   });
 
@@ -82,7 +82,7 @@ describe('App', () => {
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
     await user.click(screen.getByRole('button', { name: 'Add this browser' }));
     await user.click(screen.getByRole('button', { name: 'Open dilla' }));
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
+    expect(await screen.findByText(/authorization delivered to the bot/i)).toBeInTheDocument();
     expect(window.location.pathname).toBe('/settings/bot/music/spotify/callback');
     expect(fake.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);
   });
