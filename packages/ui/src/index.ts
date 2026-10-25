@@ -171,3 +171,4 @@ export type { LinkBannerProps } from './LinkBanner/LinkBanner.tsx';
 export { KeyboardTable } from './KeyboardTable/KeyboardTable.tsx';
 export type { KeyboardTableProps } from './KeyboardTable/KeyboardTable.tsx';
 export { SettingsFooter } from './SettingsFrame/SettingsFooter.tsx';
+export { PhoneLayoutProvider } from './internal/phoneLayout.ts';

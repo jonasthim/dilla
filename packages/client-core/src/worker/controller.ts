@@ -747,7 +747,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 23 || operation === 31
+      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 24 || operation === 31
         || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
         || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
@@ -788,7 +788,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
     || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 1 || op === 2 || op === 3 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52
+    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52
       || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
     || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined

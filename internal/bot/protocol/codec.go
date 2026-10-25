@@ -52,6 +52,7 @@ const (
 	OpMusicRemove            Operation = 21
 	OpMusicMove              Operation = 22
 	OpMusicClear             Operation = 23
+	OpMusicProvidersStatus   Operation = 24
 	OpWelcomePreview         Operation = 30
 	OpRolePanelPublish       Operation = 31
 	OpRolesList              Operation = 40
@@ -235,7 +236,7 @@ func validateRequest(r Request) error {
 }
 func requestShape(op Operation) (mutation, channel bool, count int) {
 	switch op {
-	case OpOverviewGet, OpCapabilities:
+	case OpOverviewGet, OpCapabilities, OpMusicProvidersStatus:
 		return false, false, 0
 	case OpMusicState:
 		return false, true, 0
@@ -306,7 +307,7 @@ func validateArgs(op Operation, a []any) error {
 		return ok && len(v) >= minimum && len(v) <= maximum && validArray(v)
 	}
 	switch op {
-	case OpOverviewGet, OpCapabilities, OpMusicState, OpMusicPause, OpMusicResume, OpMusicSkip, OpMusicStop, OpMusicShuffle, OpMusicClear:
+	case OpOverviewGet, OpCapabilities, OpMusicState, OpMusicProvidersStatus, OpMusicPause, OpMusicResume, OpMusicSkip, OpMusicStop, OpMusicShuffle, OpMusicClear:
 		return nil
 	case OpSettingsGet:
 		return boolErr(u(0, 5))

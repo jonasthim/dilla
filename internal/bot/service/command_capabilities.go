@@ -13,10 +13,6 @@ import (
 
 const commandCapabilitiesDataLimit = 2400
 
-// commandOpMusicProvidersStatus is op 24, registered by the fullscreen music
-// settings surface. The protocol constant lands with its runtime integration.
-const commandOpMusicProvidersStatus protocol.Operation = 24
-
 const (
 	commandCapMusic         uint8 = 1 << 0
 	commandCapWelcome       uint8 = 1 << 1
@@ -105,7 +101,7 @@ func commandOperationAllowed(operation protocol.Operation, capabilities uint8, a
 		protocol.OpMusicSeek, protocol.OpMusicVolume, protocol.OpMusicShuffle, protocol.OpMusicRepeat,
 		protocol.OpMusicRemove, protocol.OpMusicMove, protocol.OpMusicClear:
 		return capabilities&commandCapMusic != 0
-	case commandOpMusicProvidersStatus:
+	case protocol.OpMusicProvidersStatus:
 		return capabilities&commandCapMusic != 0 && (actor.Owner || actor.Administrator || actor.EffectiveBits&manager != 0)
 	case protocol.OpRolePanelPublish:
 		return capabilities&commandCapRoles != 0 && actor.EffectiveBits&commandPermManageRoles != 0

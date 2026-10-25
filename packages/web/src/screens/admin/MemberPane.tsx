@@ -20,6 +20,8 @@ export interface MemberPaneProps {
   messageCard?: OpenCard | null;
   /** The pane opened a card from a row: the shell closes its message card. */
   onCardOpen?: () => void;
+  /** Namespaces focus restoration to a settings workspace instead of the covered application shell. */
+  focusScope?: string;
 }
 
 export function MemberPane(props: MemberPaneProps): React.JSX.Element {
@@ -49,7 +51,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     if (old === null || old.isConnected) return;
     const active = document.activeElement;
     if (active !== document.body && active !== region.current) return;
-    const target = focusReturnTarget(old);
+    const target = focusReturnTarget(old, undefined, props.focusScope ? region.current : undefined);
     if (target !== null) {
       target.focus();
       focusedRow.current = target;
@@ -81,7 +83,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   };
 
   return (
-    <div ref={region} tabIndex={-1} onFocusCapture={event => {
+    <div ref={region} tabIndex={-1} data-member-focus-scope={props.focusScope} onFocusCapture={event => {
       if (event.target instanceof HTMLElement && event.target.dataset.focusKey?.startsWith('member:')) focusedRow.current = event.target;
     }}>
       {/* The shell's aside carries the name "members of {server}"; the list's own 48 bar (S3) is the word "members", on the header's hairline.
@@ -90,7 +92,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} presenceLabels={presenceLabels()}
         ownerLabel={t('layout.profile.owner')} botLabel={t('layout.profile.bot')} openId={card?.id ?? null} onOpen={onOpen} />
       <MemberCardHost communityId={communityId} selfId={selfId} card={card} onCard={setCard} onMessage={props.onMessage} onCompare={props.onCompare}
-        announce={props.announce} fallbackFocus={() => region.current} />
+        announce={props.announce} fallbackFocus={() => region.current} focusScope={props.focusScope ? region.current ?? undefined : undefined} />
     </div>
   );
 }

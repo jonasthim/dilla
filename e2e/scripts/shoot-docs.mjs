@@ -111,6 +111,14 @@ const PEOPLE = {
   bjorn: { username: 'bjorn', display: 'Björn' },
   mira: { username: 'mira', display: 'Mira' },
 };
+const WORKSPACE_SETTINGS = {
+  profile: 'workspace.profile', signin: 'workspace.signin', devices: 'workspace.devices',
+  notifications: 'workspace.notifications', appearance: 'workspace.appearance', voice: 'workspace.voice',
+  privacy: 'workspace.privacy', keyboard: 'workspace.keyboard', diagnostics: 'workspace.diagnostics',
+};
+const WORKSPACE_SERVER_SETTINGS = {
+  overview: 'workspace.overview', channels: 'workspace.channels', invites: 'workspace.invites',
+};
 const MIRA_PASSWORD = 'docs-mira-password';
 // [who, body]: the conversation in #general, in order.
 const CONVERSATION = [
@@ -148,6 +156,8 @@ export function parseArgs(argv) {
       out.outDir = path.resolve(process.cwd(), value);
     } else if (flag === '--ui-out') {
       out.uiOut = path.resolve(process.cwd(), value);
+    } else if (flag === '--fullscreen-settings-out') {
+      out.fullscreenSettingsOut = path.resolve(process.cwd(), value);
     } else {
       throw new Error(`unknown flag ${flag}`);
     }
@@ -626,11 +636,11 @@ async function main(argv) {
     await byText(ada, 'button', 'admin.open').click();
     const prepDialog = byText(ada, 'dialog', 'admin.title');
     const prepNav = prepDialog.getByRole('navigation', { name: t('admin.nav'), exact: true });
-    await prepNav.getByRole('button', { name: t('admin.nav.overview'), exact: true }).click();
+    await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.overview), exact: true }).click();
     await prepDialog.getByRole('combobox', { name: t('afk.timeout.label'), exact: true }).and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
     await settle(ada);
     await shootAda('afk-settings-desktop');
-    await prepNav.getByRole('button', { name: t('admin.nav.channels'), exact: true }).click();
+    await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.channels), exact: true }).click();
     for (const category of ['Raids', 'Boats']) {
       await prepDialog.getByRole('button', { name: t('admin.channels.newCategory'), exact: true }).click();
       const categoryDialog = byText(ada, 'dialog', 'admin.category.title', { server: SERVER });
@@ -662,7 +672,7 @@ async function main(argv) {
     await byText(ada, 'button', 'admin.open').click();
     const settingsDialog = byText(ada, 'dialog', 'admin.title');
     await settingsDialog.getByRole('navigation', { name: t('admin.nav'), exact: true })
-      .getByRole('button', { name: t('admin.nav.invites'), exact: true }).click();
+      .getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.invites), exact: true }).click();
     await settingsDialog.getByRole('button', { name: t('admin.invites.create'), exact: true }).click();
     const inviteDialog = byText(ada, 'dialog', 'invite.title', { server: SERVER });
     const linkField = inviteDialog.getByRole('textbox', { name: t('invite.link'), exact: true });
@@ -893,28 +903,30 @@ async function main(argv) {
 
     // Mira's original browser shows both signed-in devices and the notification opt-in.
     await gear(mira).click();
+    await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(WORKSPACE_SETTINGS.devices), exact: true }).click();
     await byText(mira, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await mira.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-devices');
     // The sign-out dialog of the second browser, opened and closed again without sending anything.
     await gear(second).click();
+    await byText(second, 'navigation', 'settings.nav.label').getByRole('button', { name: t(WORKSPACE_SETTINGS.devices), exact: true }).click();
     await byText(second, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await second.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
-    await byText(second, 'button', 'devices.signOut').click();
+    await second.locator('.d-settings-frame__body .d-settings-row__control').getByRole('button', { name: t('devices.signOut'), exact: true }).click();
     await byText(second, 'heading', 'devices.signOutTitle').waitFor({ timeout: WAIT });
     await settle(second, { keepFocus: true });
     await shootSecond('settings-devices-signout');
     await second.keyboard.press('Escape');
     await byText(second, 'heading', 'devices.signOutTitle').waitFor({ state: 'hidden', timeout: WAIT });
     await byText(second, 'button', 'settings.close').click();
-    await byText(mira, 'button', 'settings.nav.notifications').click();
+    await byText(mira, 'button', WORKSPACE_SETTINGS.notifications).click();
     await byText(mira, 'heading', 'notify.title').waitFor({ timeout: WAIT });
     await byText(mira, 'button', 'notify.permission.ask').waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-notifications');
     // web3.6: Settings -> Sign-in lists the factors mira set up at sign-up.
-    await byText(mira, 'button', 'factorSettings.nav').click();
+    await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(WORKSPACE_SETTINGS.signin), exact: true }).click();
     await byText(mira, 'heading', 'factorSettings.title').waitFor({ timeout: WAIT });
     await byText(mira, 'button', 'factorSettings.codes.make').waitFor({ timeout: WAIT });
     await settle(mira);
@@ -1024,10 +1036,19 @@ async function main(argv) {
         await mira.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
         await phoneTab('nav.tab.you').click();
-        await mira.locator('[data-settings-section="devices"]').click();
-        await mira.getByRole('dialog', { name: t('settings.title'), exact: true }).waitFor({ timeout: WAIT });
-        await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
-        await ui('phone-settings-tabbar', theme);
+        await mira.getByRole('button', { name: t('workspace.open'), exact: true }).click();
+        const settings = mira.getByRole('dialog', { name: t('settings.title'), exact: true });
+        await settings.waitFor({ timeout: WAIT });
+        await phoneTabs.waitFor({ state: 'hidden', timeout: WAIT });
+        await ui('phone-settings-index', theme);
+        await settings.getByRole('navigation', { name: t('settings.nav.label'), exact: true })
+          .getByRole('button', { name: t(WORKSPACE_SETTINGS.privacy), exact: true }).click();
+        await mira.waitForURL(/\/settings\/privacy$/);
+        await ui('phone-settings-privacy', theme);
+        await settings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+        await mira.waitForURL(/\/settings$/);
+        await settings.getByRole('button', { name: t('settings.close'), exact: true }).click();
+        await settings.waitFor({ state: 'hidden', timeout: WAIT });
         await phoneBack.click();
         await phoneTab('home.tab').click();
         await composer(mira, 'general').waitFor({ timeout: WAIT });
@@ -1086,12 +1107,137 @@ async function main(argv) {
     };
     const openSettings = async (section) => {
       await gear(mira).click();
-      await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(`settings.nav.${section}`), exact: true }).click();
+      const key = WORKSPACE_SETTINGS[section];
+      if (key === undefined) throw new Error(`unknown user settings section ${section}`);
+      await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(key), exact: true }).click();
     };
     const closeSettings = () => byText(mira, 'button', 'settings.close').click();
 
+    // The fullscreen settings acceptance set is opt-in and captures the live, integrated testhost state. It adds screenshots
+    // only after the real users, server and channels above exist; no content is mocked for these images.
+    if (o.fullscreenSettingsOut !== undefined) {
+      mkdirSync(o.fullscreenSettingsOut, { recursive: true });
+      const capture = async (page, name) => {
+        await settle(page, { keepFocus: true });
+        const outFile = path.join(o.fullscreenSettingsOut, `fullscreen-settings-${name}.png`);
+        await page.screenshot({ path: outFile });
+        written.push(outFile);
+      };
+      await mira.setViewportSize({ width: 1440, height: 900 });
+      await openSettings('profile');
+      const userSettings = mira.getByRole('dialog', { name: t('settings.title'), exact: true });
+      await userSettings.waitFor({ timeout: WAIT });
+      await capture(mira, 'profile-desktop-mesh');
+      for (const [section, name] of [
+        ['signin', 'signin'], ['devices', 'devices'], ['notifications', 'notifications'],
+        ['voice', 'voice'], ['privacy', 'privacy'], ['diagnostics', 'diagnostics'],
+      ]) {
+        await byText(mira, 'navigation', 'settings.nav.label')
+          .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
+        await mira.waitForURL(new RegExp(`/settings/${section}$`));
+        await capture(mira, `${name}-desktop-mesh`);
+      }
+      const search = userSettings.getByRole('searchbox', { name: t('workspace.search'), exact: true });
+      await search.fill('microphone test');
+      await userSettings.getByRole('button', { name: /Voice.*Preferences \/ Voice/u }).waitFor({ timeout: WAIT });
+      await capture(mira, 'search-result');
+      await search.fill('');
+      await byText(mira, 'navigation', 'settings.nav.label')
+        .getByRole('button', { name: t(WORKSPACE_SETTINGS.profile), exact: true }).click();
+      await mira.waitForURL(/\/settings\/profile$/);
+      const display = userSettings.getByRole('textbox', { name: t('profile.display.label'), exact: true });
+      await display.fill('Unsaved fullscreen settings draft');
+      await byText(mira, 'navigation', 'settings.nav.label')
+        .getByRole('button', { name: t(WORKSPACE_SETTINGS.signin), exact: true }).click();
+      const discard = mira.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
+      await discard.waitFor({ timeout: WAIT });
+      await capture(mira, 'dirty-draft-confirmation');
+      await discard.getByRole('button', { name: 'Keep editing', exact: true }).click();
+      await byText(mira, 'navigation', 'settings.nav.label')
+        .getByRole('button', { name: t(WORKSPACE_SETTINGS.signin), exact: true }).click();
+      await discard.waitFor({ timeout: WAIT });
+      await discard.getByRole('button', { name: 'Discard changes', exact: true }).click();
+      await userSettings.getByRole('navigation', { name: t('settings.nav.label'), exact: true })
+        .getByRole('button', { name: t(WORKSPACE_SETTINGS.profile), exact: true }).click();
+      await mira.waitForURL(/\/settings\/profile$/);
+      for (const [theme, width, height, name] of [
+        ['light', 1440, 900, 'profile-desktop-light'], ['high-contrast', 1440, 900, 'profile-desktop-high-contrast'],
+        ['mesh', 1024, 768, 'profile-tablet-mesh'], ['mesh', 390, 844, 'profile-phone-mesh'],
+        ['mesh', 320, 740, 'profile-narrow-mesh'], ['mesh', 844, 390, 'profile-short-wide-mesh'],
+        ['mesh', 720, 450, 'profile-short-viewport-mesh'],
+      ]) {
+        await mira.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+        await mira.setViewportSize({ width, height });
+        await mira.waitForTimeout(250);
+        await capture(mira, name);
+      }
+      await mira.evaluate(() => { document.documentElement.dataset.theme = 'mesh'; });
+      await mira.setViewportSize(PHONE_APP);
+      await mira.waitForTimeout(250);
+      await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+      await mira.waitForURL(/\/settings$/);
+      await capture(mira, 'phone-index');
+      for (const section of ['privacy', 'diagnostics']) {
+        await userSettings.getByRole('navigation', { name: t('settings.nav.label'), exact: true })
+          .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
+        await mira.waitForURL(new RegExp(`/settings/${section}$`));
+        await capture(mira, `${section}-phone`);
+        await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+        await mira.waitForURL(/\/settings$/);
+      }
+      await userSettings.getByRole('button', { name: t('settings.close'), exact: true }).click();
+      await userSettings.waitFor({ state: 'hidden', timeout: WAIT });
+      await mira.setViewportSize(DESKTOP);
+
+      const adaPage = pages.ada;
+      await adaPage.setViewportSize({ width: 1440, height: 900 });
+      await railServer(adaPage, SERVER).click();
+      await byText(adaPage, 'button', 'admin.open').click();
+      const serverSettings = adaPage.getByRole('dialog', { name: t('admin.title'), exact: true });
+      await serverSettings.waitFor({ timeout: WAIT });
+      for (const [section, name] of [
+        ['overview', 'overview'], ['members', 'members'], ['music', 'music'], ['automoderation', 'automod'],
+      ]) {
+        await serverSettings.getByRole('navigation', { name: t('admin.nav'), exact: true })
+          .getByRole('button', { name: t(`workspace.${section}`), exact: true }).click();
+        await adaPage.waitForURL(new RegExp(`/c/[0-9a-f]{32}/settings/${section}$`));
+        await serverSettings.locator('.d-settings-frame__body > section').waitFor({ state: 'visible', timeout: WAIT });
+        if (name === 'music') {
+          const closeButton = serverSettings.locator('.d-settings-frame__bar').getByRole('button');
+          await closeButton.waitFor({ state: 'visible', timeout: WAIT });
+          const geometry = await serverSettings.evaluate(dialog => {
+            const panel = dialog.querySelector('.d-settings-frame__panel');
+            const body = dialog.querySelector('.d-settings-frame__body');
+            const bar = dialog.querySelector('.d-settings-frame__bar');
+            const button = bar?.querySelector('button');
+            const rect = (element) => {
+              if (!(element instanceof HTMLElement)) return null;
+              const box = element.getBoundingClientRect();
+              return { top: box.top, bottom: box.bottom, left: box.left, right: box.right };
+            };
+            return { frameScrollTop: dialog.scrollTop, panelScrollTop: panel?.scrollTop ?? null, bodyScrollTop: body?.scrollTop ?? null,
+              frame: rect(dialog), bar: rect(bar), closeButton: rect(button), viewportHeight: window.innerHeight };
+          });
+          console.log(`shoot-docs: music settings geometry ${JSON.stringify(geometry)}`);
+          if (geometry.frameScrollTop !== 0 || geometry.closeButton === null || geometry.bar === null
+            || geometry.closeButton.top < 0 || geometry.closeButton.bottom > geometry.viewportHeight
+            || geometry.bar.top < 0 || geometry.bar.bottom > geometry.viewportHeight) {
+            throw new Error(`music settings frame scrolled or close control is outside the viewport: ${JSON.stringify(geometry)}`);
+          }
+        }
+        await capture(adaPage, `${name}-desktop`);
+      }
+      await serverSettings.locator('.d-settings-frame__bar').getByRole('button').click();
+      await serverSettings.waitFor({ state: 'hidden', timeout: WAIT });
+      await mira.setViewportSize(DESKTOP);
+      await mira.emulateMedia({ reducedMotion: 'reduce' });
+    }
+
     // web-3 (L-DOC-24). Ada calls Mira from their DM: Mira's banner rings (30 s from its arrival, time enough for both
     // shots); she declines, and Ada, alone in the call, leaves, which ends it.
+    await homeTile(pages.ada).click();
+    await pages.ada.getByRole('button', { name: new RegExp(`^${PEOPLE.mira.display}`) }).click();
+    await pages.ada.getByRole('textbox', { name: t('shell.dm.composer', { name: PEOPLE.mira.display }), exact: true }).waitFor({ timeout: WAIT });
     await pages.ada.locator('.d-channel-header').getByRole('button', { name: t('call.start'), exact: true }).click();
     await connected(pages.ada);
     const ring = mira.locator('.d-ring-banner__ring');

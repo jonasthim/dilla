@@ -15,7 +15,8 @@ import { nextCode } from './support/totp';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
-const HOST: HostConfig = { port: 8505, control: 8506, webRoot: 'packages/web/dist' };
+const PHONE_PORT = Number(process.env.DILLA_E2E_PHONE_PORT ?? 8557);
+const HOST: HostConfig = { port: PHONE_PORT, control: PHONE_PORT + 1, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
 /** A phone on its side (web3.8 R9): wide, but 390 px tall with a coarse pointer, so it still gets the phone layout. */
@@ -446,30 +447,45 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectAccessible(page, 'You');
     });
 
-    // Settings from You, and back to the section's row.
-    await test.step('back from Settings lands on the section row', async () => {
-      const row = page.locator('[data-settings-section="privacy"]');
+    // The You tab has one settings entry. The modal index selects a section, and Back returns to the index.
+    await test.step('phone settings follows index → section → index', async () => {
+      const row = page.locator('[data-settings-section="index"]');
+      await expect(row).toContainText(copy('workspace.open'));
       await row.tap();
+      const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
+      await expect(settings).toBeVisible({ timeout: WAIT });
+      await expect(page).toHaveURL('/settings', { timeout: WAIT });
+      await expect(settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
+      const privacy = settings.getByRole('button', { name: copy('workspace.privacy'), exact: true });
+      await expect(privacy).toBeVisible({ timeout: WAIT });
+      await privacy.tap();
       await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
-      await expect(back(page)).toBeVisible();
-      await expect(tabBar(page)).toBeVisible();
-      await expectAbove(page.getByRole('dialog', { name: copy('settings.title'), exact: true }), tabBar(page), 'Settings');
-      await back(page).click();
-      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(settings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+      await expect(tabBar(page)).toHaveCount(0);
+      await settings.getByRole('button', { name: copy('workspace.back'), exact: true }).tap();
+      await expect(page).toHaveURL('/settings', { timeout: WAIT });
+      await expect(settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(settings).toBeHidden({ timeout: WAIT });
       await expect(row).toBeFocused();
     });
 
-    // Server settings is a page under the tabs too, and Escape closes it.
-    await test.step('server settings keeps the tab bar and closes on Escape', async () => {
+    // Server settings is a fullscreen modal; section URLs are scoped under the community.
+    await test.step('server settings follows index → section and closes on Escape', async () => {
       await tab(page, 'home.tab').tap();
       await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
-      await expect(tabBar(page)).toBeVisible();
-      await expectAbove(dialog, tabBar(page), 'server settings');
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
+      await expect(tabBar(page)).toHaveCount(0);
+      await dialog.getByRole('button', { name: copy('workspace.overview'), exact: true }).tap();
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings\/overview$/, { timeout: WAIT });
+      await expect(dialog.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+      await dialog.getByRole('button', { name: copy('workspace.back'), exact: true }).tap();
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden({ timeout: WAIT });
-      await expect(tabBar(page)).toBeVisible();
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
     });
 
     // A deep link to /dm is Home with the @ tile selected, on a fresh page.
@@ -496,23 +512,23 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       // WebKit can report an offline fetch after this step ends. Clear the known browser wording after closing the context.
     });
 
-    // web3.8: Settings is in the shell's page slot, so the link banner stays the hit target above it (it was covered when
-    // Settings rendered after the shell).
-    await test.step('the link banner is the hit target over phone Settings', async () => {
+    // A full-screen settings modal covers the phone tab bar and shell; the offline state remains announced to the user.
+    await test.step('offline state remains available while fullscreen Settings is open', async () => {
       await tab(page, 'nav.tab.you').tap();
-      await page.locator('[data-settings-section="privacy"]').tap();
+      await page.locator('[data-settings-section="index"]').tap();
+      const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
+      await settings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).tap();
       await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
       await context.setOffline(true);
-      const text = page.getByText(copy('nav.link.offline'), { exact: true });
+      const text = settings.getByRole('status').filter({ hasText: copy('nav.link.offline') });
       await expect(text).toBeVisible({ timeout: WAIT });
-      const box = (await text.boundingBox())!;
-      const hit = await page.evaluate(({ x, y }) => {
-        const el = document.elementFromPoint(x, y);
-        return { inBanner: el?.closest('.d-link-banner') != null, inSettings: el?.closest('.d-settings-frame') != null };
-      }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
-      expect(hit, 'the banner, not Settings, is under the point').toEqual({ inBanner: true, inSettings: false });
+      await expect(settings).toHaveAttribute('aria-modal', 'true');
+      await expect(settings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+      await expect(tabBar(page)).toHaveCount(0);
       await context.setOffline(false);
       await expect(text).toBeHidden({ timeout: WAIT });
+      await page.keyboard.press('Escape');
+      await expect(settings).toBeHidden({ timeout: WAIT });
       await tab(page, 'home.tab').tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });

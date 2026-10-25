@@ -3,6 +3,7 @@ package music
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"time"
 
@@ -32,20 +33,21 @@ type QueueStore interface {
 // Supervisor owns the persisted queue and at most one active track for a voice
 // channel. Loading restores metadata only; audio begins only on OpResume.
 type Supervisor struct {
-	mu         sync.Mutex
-	ctx        context.Context
-	channel    id.ID
-	store      QueueStore
-	starter    TrackStarter
-	state      State
-	revision   uint64
-	playback   Playback
-	closed     bool
-	changed    chan struct{}
-	emptyTimer Timer
-	grace      time.Duration
-	afterFunc  func(time.Duration, func()) Timer
-	onEmpty    func()
+	mu           sync.Mutex
+	ctx          context.Context
+	channel      id.ID
+	store        QueueStore
+	starter      TrackStarter
+	state        State
+	revision     uint64
+	playback     Playback
+	closed       bool
+	changed      chan struct{}
+	emptyTimer   Timer
+	grace        time.Duration
+	afterFunc    func(time.Duration, func()) Timer
+	onEmpty      func()
+	stopLifetime func() bool
 }
 
 type Timer interface{ Stop() bool }
@@ -80,6 +82,10 @@ func NewSupervisor(ctx context.Context, channel id.ID, store QueueStore, starter
 			option(s)
 		}
 	}
+	// Retained call resources belong to this supervisor even while playback is paused.
+	s.mu.Lock()
+	s.stopLifetime = context.AfterFunc(ctx, func() { _ = s.Close() })
+	s.mu.Unlock()
 	return s, nil
 }
 
@@ -111,8 +117,8 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 	if op.Kind == OpPause || op.Kind == OpStop || op.Kind == OpClear || op.Kind == OpSkip {
 		s.closePlaybackLocked()
 	}
-	if !s.state.Paused && s.state.Current != nil && (s.playback == nil || op.Kind == OpResume || op.Kind == OpSkip) {
-		if err := s.startLocked(ctx); err != nil {
+	if !s.state.Paused && s.state.Current != nil && s.playback == nil {
+		if err := s.startLocked(ctx, op.Kind == OpResume || op.Kind == OpSkip); err != nil {
 			_ = s.pauseLocked(ctx)
 			s.signalLocked()
 			return cloneState(s.state), err
@@ -160,7 +166,7 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	}
 	s.state, s.revision = cloneState(state), revision
 	if startPlayback && !state.Paused && state.Current != nil && s.playback == nil {
-		if err := s.startLocked(s.ctx); err != nil {
+		if err := s.startLocked(s.ctx, true); err != nil {
 			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), 5*time.Second)
 			_ = s.pauseLocked(pauseCtx)
 			cancel()
@@ -172,11 +178,21 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	return s.revision, nil
 }
 
-func (s *Supervisor) startLocked(ctx context.Context) error {
+func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
 	if s.state.Paused || s.state.Current == nil {
 		return nil
 	}
-	p, err := s.starter.Start(ctx, *s.state.Current)
+	var p Playback
+	var err error
+	// Automatic EOF advancement may reuse a live connection, but must never
+	// authorize a replacement after the server removed or expired that connection.
+	if starter, ok := s.starter.(interface {
+		StartExplicit(context.Context, Track) (Playback, error)
+	}); explicit && ok {
+		p, err = starter.StartExplicit(ctx, *s.state.Current)
+	} else {
+		p, err = s.starter.Start(ctx, *s.state.Current)
+	}
 	if err != nil {
 		return err
 	}
@@ -219,7 +235,7 @@ func (s *Supervisor) monitor(p Playback) {
 	}
 	s.state, s.revision = next, revision
 	if !s.state.Paused && s.state.Current != nil {
-		if err := s.startLocked(s.ctx); err != nil {
+		if err := s.startLocked(s.ctx, false); err != nil {
 			_ = s.pauseLocked(s.ctx)
 		}
 	}
@@ -316,11 +332,18 @@ func (s *Supervisor) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.stopLifetime != nil {
+		s.stopLifetime()
+	}
 	if s.emptyTimer != nil {
 		s.emptyTimer.Stop()
 		s.emptyTimer = nil
 	}
 	s.closePlaybackLocked()
+	var err error
+	if closer, ok := s.starter.(io.Closer); ok {
+		err = closer.Close()
+	}
 	s.signalLocked()
-	return nil
+	return err
 }

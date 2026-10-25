@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { A, callState, CHANNELS, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
+import { pushHistoryState, replaceHistoryState } from '../router.ts';
 
 /** A window of the given kind: only the phone query matches, so the wide-window defaults (the members column) stay off. */
 function media(phone: boolean) {
@@ -13,6 +14,8 @@ function media(phone: boolean) {
   })) as unknown as typeof window.matchMedia;
 }
 afterEach(() => {
+  cleanup();
+  replaceHistoryState(null, '', '/');
   Reflect.deleteProperty(window, 'matchMedia');
   // eslint-disable-next-line no-restricted-properties -- clears the tab memory the shell writes
   window.sessionStorage.clear();
@@ -28,10 +31,7 @@ const tabs = () => screen.queryByRole('navigation', { name: t('nav.tabs.label') 
 const tab = (name: string) => within(tabs()!).getByRole('link', { name });
 const homeTile = () => within(screen.getByRole('navigation', { name: t('shell.rail.label') })).getByRole('button', { name: t('home.tile') });
 const goto = (path: string, state: unknown = null) => {
-  act(() => {
-    window.history.pushState(state, '', path);
-    window.dispatchEvent(new PopStateEvent('popstate'));
-  });
+  act(() => pushHistoryState(state, '', path));
 };
 const here = () => window.location.pathname;
 const manage = (fake: ReturnType<typeof renderVoiceShell>['client']) =>
@@ -64,7 +64,7 @@ describe('the phone shell: the servers list', () => {
     expect(screen.getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
     await user.click(gear);
     const dialog = await screen.findByRole('dialog', { name: t('admin.title') });
-    expect(within(dialog).getByRole('button', { name: t('admin.nav.leave') })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: t('workspace.danger') })).toBeInTheDocument();
   });
 
   it('has one "+" tile on the rail and no captions; it opens the add dialog', async () => {
@@ -303,14 +303,12 @@ describe('the phone shell: tabs', () => {
     expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined();
   });
 
-  it('a tab tap closes server settings too', async () => {
+  it('hides the tab bar while server settings is open', async () => {
     const { user } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: t('admin.open') }));
     expect(await screen.findByRole('dialog', { name: t('admin.title') })).toBeInTheDocument();
-    await user.click(tab('you'));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: t('admin.title') })).toBeNull());
-    expect(here()).toBe('/you');
-    expect(document.querySelector('main')).not.toHaveAttribute('inert');
+    expect(tabs()).toBeNull();
+    expect(here()).toBe(`/c/${A}/settings`);
   });
 
   it('two quick taps on a tab with a sheet open pop the sheet entry once', async () => {
@@ -346,27 +344,15 @@ describe('the phone shell: tabs', () => {
   });
 
   describe('the system forward button (N5, R-c)', () => {
-    /** history.back() that lands on the DMs list, as it does when the person went forward onto this view. */
-    const backToDms = () => {
-      let pop: () => void = () => undefined;
-      const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
-        pop = () => {
-          window.history.replaceState(null, '', '/dm');
-          window.dispatchEvent(new PopStateEvent('popstate'));
-        };
-      });
-      return { back, pop: () => pop() };
-    };
-
     it('lands the current tab on its own list when back would land on another view', async () => {
       const { user } = phone({ path: '/dm' });
       await screen.findByRole('navigation', { name: t('shell.dms.label') });
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
-      const { back, pop } = backToDms();
+      const originalBack = window.history.back.bind(window.history);
+      const back = vi.spyOn(window.history, 'back').mockImplementation(() => originalBack());
       await user.click(tab('home'));
       expect(back).toHaveBeenCalledTimes(1);
-      act(() => pop());
       await waitFor(() => expect(here()).toBe(`/c/${A}`));
     });
 
@@ -375,36 +361,21 @@ describe('the phone shell: tabs', () => {
       await screen.findByRole('navigation', { name: t('shell.channels.label') });
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
-      const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
-        window.history.replaceState(null, '', `/c/${A}`);
-        window.dispatchEvent(new PopStateEvent('popstate'));
-      });
-      const replace = vi.spyOn(window.history, 'replaceState');
+      const originalBack = window.history.back.bind(window.history);
+      const back = vi.spyOn(window.history, 'back').mockImplementation(() => originalBack());
       await user.click(tab('home'));
       expect(back).toHaveBeenCalledTimes(1);
-      expect(replace).toHaveBeenCalledTimes(1); // the mock's own
-      expect(here()).toBe(`/c/${A}`);
+      await waitFor(() => expect(here()).toBe(`/c/${A}`));
     });
 
-    it('a second tap before the pop removes the first tap’s popstate listener, and the shell going away removes the last', async () => {
-      const { user, view } = phone({ path: '/dm' });
+    it('two quick Home taps from a forward entry land on the Home list', async () => {
+      const { user } = phone({ path: '/dm' });
       await screen.findByRole('navigation', { name: t('shell.dms.label') });
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
-      backToDms();
-      const added = vi.spyOn(window, 'addEventListener');
-      const removed = vi.spyOn(window, 'removeEventListener');
-      const popstate = (spy: typeof added) => spy.mock.calls.filter(c => c[0] === 'popstate').length;
       await user.click(tab('home'));
-      const afterFirst = { added: popstate(added), removed: popstate(removed) };
-      expect(afterFirst.added).toBeGreaterThan(0);
       await user.click(tab('home'));
-      // The second tap adds its own listener and first removes the one the first tap left.
-      expect(popstate(added)).toBeGreaterThan(afterFirst.added);
-      expect(popstate(removed)).toBeGreaterThan(afterFirst.removed);
-      const beforeUnmount = popstate(removed);
-      view.unmount();
-      expect(popstate(removed)).toBeGreaterThan(beforeUnmount);
+      await waitFor(() => expect(here()).toBe(`/c/${A}`));
     });
   });
 
@@ -453,7 +424,8 @@ describe('the phone shell: history', () => {
     await user.click(tab('you'));
     await user.click(tab('home'));
     expect(window.history.length).toBe(before);
-    expect(window.history.state).toBeNull();
+    const state = window.history.state as { dillaHistoryIndex?: unknown };
+    expect(Number.isSafeInteger(state.dillaHistoryIndex)).toBe(true);
   });
 
   it('goes back to the list from a view a tab restored', async () => {
@@ -489,13 +461,12 @@ describe('the phone shell: history', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'gen' })).toHaveFocus());
   });
 
-  it('closes Settings with Escape the way the header back does, with no duplicate entry', async () => {
-    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
+  it('closes a direct Settings link with Escape without adding history', async () => {
     const { user } = phone({ path: '/settings/devices', withSettings: true });
-    await waitFor(() => expect(document.querySelector('.d-phone-header')).not.toBeNull());
+    await screen.findByRole('dialog', { name: t('settings.title') });
     const before = window.history.length;
     await user.keyboard('{Escape}');
-    expect(here()).toBe('/you');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: t('settings.title') })).toBeNull());
     expect(window.history.length).toBe(before);
   });
 
@@ -545,71 +516,48 @@ describe('the phone shell: the call bar', () => {
 });
 
 describe('the phone shell: settings', () => {
-  it('opens from You as a pushed view of the You tab, with a header and the tab bar under it', async () => {
+  it('opens a modal index from You, hides tabs, and pushes individual sections', async () => {
     const { user } = phone({ path: '/you', withSettings: true });
-    await user.click(await screen.findByRole('button', { name: t('settings.nav.devices') }));
-    expect(here()).toBe('/settings/devices');
-    expect(window.history.state).toMatchObject({ phoneBack: true, settingsFrom: '/you' });
-    const header = document.querySelector('.d-phone-header') as HTMLElement;
-    expect(within(header).getByRole('heading', { level: 2 })).toHaveTextContent(t('settings.nav.devices'));
-    expect(within(header).getByRole('button', { name: t('nav.back') })).toBeInTheDocument();
-    expect(tabs()).not.toBeNull();
-    expect(screen.queryByRole('navigation', { name: t('settings.nav.label') })).toBeNull();
-    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-    await user.click(within(header).getByRole('button', { name: t('nav.back') }));
-    expect(back).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps the tab bar under Settings, and a tab leaves Settings', async () => {
-    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
-    const { user } = phone({ path: '/settings/devices', withSettings: true });
-    await waitFor(() => expect(document.querySelector('.d-phone-header')).not.toBeNull());
-    expect(tabs()).not.toBeNull();
-    expect(screen.getByRole('dialog', { name: t('settings.title') })).not.toHaveAttribute('aria-modal');
-    await user.click(tab('home'));
-    expect(here()).toBe(`/c/${A}`);
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: t('settings.title') })).toBeNull());
-  });
-
-  it('puts Settings inside the shell, in tab order: its title, then its controls, then the tab bar', async () => {
-    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
-    const { user } = phone({ path: '/settings/devices', withSettings: true });
-    const header = await waitFor(() => { const h = document.querySelector<HTMLElement>('.d-phone-header'); expect(h).not.toBeNull(); return h!; });
+    await user.click(await screen.findByRole('button', { name: t('workspace.open') }));
+    expect(here()).toBe('/settings');
     const dialog = screen.getByRole('dialog', { name: t('settings.title') });
-    expect(dialog.closest('.d-app-shell__page')).not.toBeNull();
-    const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    const title = within(header).getByRole('heading', { level: 2 });
-    const back = within(header).getByRole('button', { name: t('nav.back') });
-    expect(follows(title, back) || follows(back, title)).toBe(true);
-    expect(follows(dialog, tabs()!)).toBe(true);
-    // Walk the real Tab order from the top: every stop in the page comes before the first stop in the tab bar.
-    const where: string[] = [];
-    for (let i = 0; i < 60; i += 1) {
-      await user.tab();
-      const el = document.activeElement;
-      where.push(el !== null && dialog.contains(el) ? 'page' : el !== null && tabs()!.contains(el) ? 'tabs' : 'other');
-    }
-    expect(where).toContain('page');
-    expect(where).toContain('tabs');
-    expect(where.indexOf('tabs')).toBeGreaterThan(where.lastIndexOf('page', where.indexOf('tabs')));
-    expect(where.slice(0, where.indexOf('tabs')).every(w => w !== 'other')).toBe(true);
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(tabs()).toBeNull();
+    const before = history.length;
+    await user.click(within(dialog).getByRole('button', { name: 'Devices' }));
+    expect(here()).toBe('/settings/devices');
+    expect(history.length).toBe(before + 1);
+    expect(history.state).toMatchObject({ settingsFrom: '/you' });
+    await user.click(within(dialog).getByRole('button', { name: t('workspace.back') }));
+    await waitFor(() => expect(here()).toBe('/settings'));
+    const settingsDialog = screen.getByRole('dialog', { name: t('settings.title') });
+    await within(settingsDialog).findByRole('button', { name: t('settings.close') });
+    await user.click(within(settingsDialog).getByRole('button', { name: t('settings.close') }));
+    await waitFor(() => expect(here()).toBe('/you'));
   });
-
-  it('makes the shell behind a phone Settings inert, except the tab bar', async () => {
-    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
-    phone({ path: '/settings/devices', withSettings: true });
-    await waitFor(() => expect(document.querySelector('.d-phone-header')).not.toBeNull());
-    expect(document.querySelector('main')).toHaveAttribute('inert');
-    expect(tabs()!.closest('.d-app-shell__tabbar')).not.toHaveAttribute('inert');
-    expect(tabs()!.closest('[inert]')).toBeNull();
-  });
-
-  it('replaces a deep-linked settings route with You on back', async () => {
-    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
+  it('direct section links return to the settings index', async () => {
     const { user } = phone({ path: '/settings/devices', withSettings: true });
-    const header = await waitFor(() => { const h = document.querySelector<HTMLElement>('.d-phone-header'); expect(h).not.toBeNull(); return h!; });
-    await user.click(within(header).getByRole('button', { name: t('nav.back') }));
-    expect(here()).toBe('/you');
+    await screen.findByRole('dialog', { name: t('settings.title') });
+    const dialog = screen.getByRole('dialog', { name: t('settings.title') });
+    await user.click(within(dialog).getByRole('button', { name: t('workspace.back') }));
+    await waitFor(() => expect(here()).toBe('/settings'));
+    const indexDialog = screen.getByRole('dialog', { name: t('settings.title') });
+    await within(indexDialog).findByRole('navigation', { name: t('settings.nav.label') });
+    expect(within(indexDialog).getByRole('navigation', { name: t('settings.nav.label') })).toBeVisible();
+    expect(tabs()).toBeNull();
+  });
+  it('keeps the voice session running when settings opens and returns to the call', async () => {
+    const app = phone({ path: `/c/${A}/${GENV}` });
+    await app.user.click(await screen.findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    act(() => app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV })));
+    goto('/settings', { settingsFrom: `/c/${A}/${GENV}` });
+    const dialog = await screen.findByRole('dialog', { name: t('settings.title') });
+    expect(app.session.leave).not.toHaveBeenCalled();
+    await app.user.click(within(dialog).getByRole('button', { name: t('workspace.returnCall') }));
+    await waitFor(() => expect(here()).toBe(`/c/${A}/${GENV}`));
+    expect(app.sessions).toHaveLength(1);
+    expect(app.session.leave).not.toHaveBeenCalled();
   });
 });
 
@@ -702,10 +650,10 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
 });
 
 describe('the desktop keeps its shell', () => {
-  it('turns /you into Settings → devices and /activity into the server list', async () => {
+  it('turns /you into the Settings root and /activity into the server list', async () => {
     media(false);
     renderVoiceShell({ path: '/you', withSettings: true });
-    await waitFor(() => expect(here()).toBe('/settings/devices'));
+    await waitFor(() => expect(here()).toBe('/settings'));
     expect(window.history.state).toMatchObject({ settingsFrom: null });
   });
 

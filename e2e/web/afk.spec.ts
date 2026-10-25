@@ -463,7 +463,8 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   const saves = dialogOf(a.page, 'admin.title').getByRole('button', { name: copy('admin.overview.save'), exact: true });
   await expect(saves).toHaveCount(1);
   await saves.click();
-  await expect(dialogOf(a.page, 'admin.title').getByText(copy('admin.overview.saved'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(dialogOf(a.page, 'admin.title').locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true }))
+    .toHaveCount(0, { timeout: WAIT });
   await expectAccessible(a.page, 'server settings with the inactive timeout');
   await closeServerSettings(a.page);
   await expect.poll(async () => (await afkSnapshot(a)).timeout, { timeout: WAIT }).toBe(60);

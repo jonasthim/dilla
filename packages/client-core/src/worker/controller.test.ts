@@ -434,6 +434,29 @@ describe('Controller', () => {
     expect(w.routes.getBotInstallation).not.toHaveBeenCalled();
   });
 
+  it('reads operation 0 and music provider status 24 through exact request IDs and selected ACK leases', async () => {
+    const w = world(); await toReady(w);
+    const capabilityRequest = new Uint8Array(16).fill(0x69);
+    const statusRequest = new Uint8Array(16).fill(0x6a);
+    const event = (deliveryId: bigint, requestId: Uint8Array, operation: number) => ({
+      deliveryId, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: deliveryId, epoch: 1n,
+      receivedAt: 1n, senderUser: USER, senderDevice: DEVICE, messageId: requestId,
+      body: encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1n]) }),
+      operation, channelId: null,
+    });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [event(1n, capabilityRequest, 0), event(2n, statusRequest, 24)], next: 2n, highWater: 2n });
+    w.call(10_174, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [0, 24],
+      requestIds: [toHex(capabilityRequest), toHex(statusRequest)] });
+    await vi.waitFor(() => expect(w.ret(10_174)).toMatchObject({ ok: true, value: {
+      responses: [{ operation: 0, requestId: toHex(capabilityRequest), channelId: null }, { operation: 24, requestId: toHex(statusRequest), channelId: null }],
+      through: expect.stringMatching(/^[0-9a-f]{32}$/u),
+    } }));
+    const lease = (w.ret(10_174) as { ok: true; value: { through: string } }).value.through;
+    w.call(10_173, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
+    await vi.waitFor(() => expect(w.ret(10_173)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([1n, 2n]);
+  });
+
   it('invalidates read-bound ACK capabilities when the worker forgets an account/core', async () => {
     const w = world(); await toReady(w);
     const requestId = new Uint8Array(16).fill(0x5a);

@@ -779,6 +779,7 @@ func TestEveryRequestOperationShape(t *testing.T) {
 		{"music_remove", OpMusicRemove, []any{fixtureID(7)}, true, true},
 		{"music_move", OpMusicMove, []any{fixtureID(7), nil}, true, true},
 		{"music_clear", OpMusicClear, nil, true, true},
+		{"music_providers_status", OpMusicProvidersStatus, nil, false, false},
 		{"welcome_preview", OpWelcomePreview, []any{"hello"}, false, false},
 		{"role_panel_publish", OpRolePanelPublish, []any{fixtureID(10), mustCBOR(t, []any{[]any{"🎮", fixtureID(11), "Gamers"}})}, true, false},
 		{"roles_list", OpRolesList, []any{uint64(0)}, false, false},

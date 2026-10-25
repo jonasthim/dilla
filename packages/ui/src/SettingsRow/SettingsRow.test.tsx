@@ -81,11 +81,10 @@ describe('SettingsRow grammar (R17)', () => {
     expect(button).toMatch(/min-height: 1\.75rem;/);
   });
 
-  it('stacks the label over a full-width control on a phone layout and when the frame is narrow', () => {
+  it('stacks the label over a full-width control only in the app-provided phone layout', () => {
     const phone = /\.d-settings-frame\[data-layout="phone"\] \.d-settings-row[^{]*\{([^}]*)\}/.exec(base)?.[1] ?? '';
     expect(phone).toMatch(/grid-template-columns: minmax\(0, 1fr\);/);
     expect(base).toMatch(/\[data-phone\] \.d-settings-row/);
-    const narrow = /@container d-settings \(max-width: 44\.99rem\) \{([\s\S]*?)\n\}/.exec(base)?.[1] ?? '';
-    expect(narrow).toMatch(/\.d-settings-row \{ grid-template-columns: minmax\(0, 1fr\);/);
+    expect(base).not.toContain('@container d-settings');
   });
 });

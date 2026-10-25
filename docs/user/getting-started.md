@@ -167,7 +167,7 @@ are disconnected and listed as away in AFK. Phones are not disconnected."). Choo
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 
-![Server settings → overview: the server name and the "inactive timeout" set to 5 minutes](screenshots/afk-settings-desktop.png)
+![Server settings → Overview with server name and inactive timeout](screenshots/fullscreen-settings-overview-desktop.png)
 
 The field says why when saving did not work: "Someone else changed the server at the same time. Check the name and save
 again." means you should look at the name that is there now and save again.
@@ -541,7 +541,7 @@ The factor guards signing in on a **new** browser, not message content.
 
 ### Settings → Sign-in
 
-![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/settings-signin.png)
+![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-mesh.png)
 
 Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
 Browsers that are already set up, like this one, do not ask again." The rows are:
@@ -902,7 +902,7 @@ On a phone, tap a message to show what you can do with it (**react**, **reply** 
 
 Sheets (the member list, a thread, a pin list) open over the screen too, above the tabs, and the phone's back button
 closes the sheet first. Tapping a tab closes the sheet and opens that tab. Escape closes a sheet with a keyboard.
-Settings, and a server's settings, are pages above the tabs as well; **back** or a tab leaves them.
+User and server settings fill the window and hide the tabs. Choose a section from the grouped settings index; **Back to settings** returns to that index, and **Close settings** returns to the screen you came from. An ongoing voice session continues, with incoming-call controls and **Return to call** inside settings.
 
 ### The call bar
 
@@ -1061,7 +1061,7 @@ are using. "not yet in the device list" marks a device that signed in with your 
 added; "removed" marks one that was removed. **refresh** reads the list again.
 
 ![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
-remove this browser" and "forget this browser"](screenshots/settings-devices.png)
+remove this browser" and "forget this browser"](screenshots/fullscreen-settings-devices-desktop-mesh.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1099,8 +1099,7 @@ goes to this list. There is nothing to compare for your own account: the warning
 If you changed your account's identity key from another device, a device still on the old key must sign in again
 (section 6).
 
-Settings works at phone width and at high zoom: the sections stack above their content and the whole panel
-scrolls as one column.
+Settings uses a grouped index on phones and at narrow layouts. Selecting a section opens its page, with **Back to settings** above it. On desktop, the sidebar and content scroll independently. Save/Reset stays reachable above the software keyboard.
 
 ## 8. Badges, direct messages and notifications
 
@@ -1128,7 +1127,7 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 "all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge. "Servers" sets
 the same for a whole server ([Notifications for a server](#notifications-for-a-server)).
 
-![Notification permission before opt-in](screenshots/settings-notifications.png)
+![Notification permission before opt-in](screenshots/fullscreen-settings-notifications-desktop-mesh.png)
 
 ## 9. Saying more
 
@@ -1260,7 +1259,7 @@ with the message. When a message with files is deleted, its files are deleted fr
 
 ### GIFs
 
-When the server's managers have entered a Giphy key (server settings → overview, "GIFs (Giphy)"), a **gif** button
+When the server's managers have entered a Giphy key (server settings → GIFs, "GIFs (Giphy)"), a **gif** button
 (named "add a gif") sits next to **attach files** in that server's channels. It opens a small picker above the message
 field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
 press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
@@ -1275,7 +1274,7 @@ field; press Enter to send it, with or without text, or **remove** it. Nothing i
 
 Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
 
-For a server manager: in server settings → overview, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
+For a server manager: in server settings → GIFs, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
 developers.giphy.com). Type it, press **save**, and it shows as dots from then on: the key is never shown again, only
 **replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
 
@@ -1317,7 +1316,7 @@ Other people's changes show in your member list the next time it is read, which 
 
 ### Contacts and safety numbers
 
-![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/trust-privacy-desktop.png)
+![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/fullscreen-settings-privacy-desktop-mesh.png)
 
 Before this browser shows a message, it checks that the device which sent it is on its owner's signed device list.
 The first key it sees for a person is kept as that person's key. **Settings → privacy** lists the people you share
@@ -1353,7 +1352,7 @@ the new number." and approves nothing.
 A number needs a conversation you share: for someone you share none with, Privacy says "Open a conversation with
 this person to compare numbers." and shows no number.
 
-![Settings → Privacy at 360 pixels wide](screenshots/trust-privacy-phone.png)
+![Settings → Privacy at 390 pixels wide](screenshots/fullscreen-settings-privacy-phone.png)
 
 ### When a contact's identity changes
 
@@ -1411,7 +1410,7 @@ There are no single-key shortcuts.
 
 ### Diagnostics
 
-![Settings → Diagnostics](screenshots/settings-diagnostics-desktop.png)
+![Settings → Diagnostics](screenshots/fullscreen-settings-diagnostics-desktop-mesh.png)
 
 **Settings → diagnostics** shows the connection (online, connecting or offline), the instance's generation, the
 instance's name and the number of your devices. A wide screen has no status bar, so these facts live here, and the line
@@ -1422,7 +1421,7 @@ them into a report.
 `E_MEDIA_MISROUTE` among them means a person's audio in a call was briefly lost in Firefox and was reconnected
 automatically: you heard them again about four seconds after they joined or came back.
 
-![Diagnostics at 360 pixels wide](screenshots/settings-diagnostics-phone.png)
+![Diagnostics at 390 pixels wide](screenshots/fullscreen-settings-diagnostics-phone.png)
 
 ### Typing
 
@@ -1536,3 +1535,43 @@ LiveKit on 7888 and 7890, and writes
 
 Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when
 `TMPDIR` is a long path, run it with `TMPDIR=/tmp`.
+
+
+## Fullscreen settings and drafts
+
+Open the gear beside your account on desktop, or **You → Open settings** on a phone.
+Search within settings by setting name or a related word such as microphone, password
+or Spotify. Search only lists sections you are allowed to use; it does not search
+member names, account data or configuration values.
+
+Theme, density, reduced motion, notifications, voice preferences and personal roles
+apply immediately. Configuration forms use **Save** and **Reset**. If you leave a
+changed form, choose **Keep editing** or **Discard changes**. Reset uses the latest
+confirmed values. If part of a server save fails, only the failed part remains to
+save. A pending bot request can continue after you leave; acceptance is not a
+confirmation that the bot has applied it.
+
+Server settings group server configuration, people, automation and moderation.
+Music contains DJ roles, Spotify application configuration and linking, and provider
+status. **Authorization received; waiting for the bot** means the authorization
+was delivered. **Linked** appears only when the bot reports valid stored credentials
+for this installation. It does not confirm Spotify Premium, current token acceptance
+or successful playback. Spotify and YouTube playback setup separately report
+**Configured**, **Missing requirements** or **Unknown**. Refresh reads the runtime;
+observations older than a minute are stale. An older or offline bot may leave status
+unavailable while configuration and linking remain usable.
+
+Playback uses text-chat commands: join a voice channel, then use `/play`, `/pause`,
+`/resume`, `/skip`, `/queue`, or `/stop` in a text channel. See [Music](music.md)
+for command syntax and DJ-role requirements.
+
+Participant volume and screen-share volume remain beside the participant/share.
+Channel collapse and conversation-search scope remain in their contextual controls.
+
+![Fullscreen Profile with grouped desktop navigation](screenshots/fullscreen-settings-profile-desktop-mesh.png)
+
+On a phone, **Back to settings** returns to the index; **Close settings** on that
+index returns to your conversation. Settings covers the app tab bar while your
+ongoing call stays connected.
+
+![Profile on a phone](screenshots/fullscreen-settings-profile-phone-mesh.png)

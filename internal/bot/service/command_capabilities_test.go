@@ -97,10 +97,10 @@ func TestCommandOperationAllowedUsesInstallationCapabilitiesAndActorPermissions(
 	if !commandOperationAllowed(protocol.OpMusicSearch, commandCapMusic, client.ActorAuthority{}) {
 		t.Fatal("music operation hidden without a target-independent community permission")
 	}
-	if commandOperationAllowed(commandOpMusicProvidersStatus, commandCapMusic, client.ActorAuthority{}) {
+	if commandOperationAllowed(protocol.OpMusicProvidersStatus, commandCapMusic, client.ActorAuthority{}) {
 		t.Fatal("music provider status exposed without current manager permission")
 	}
-	if !commandOperationAllowed(commandOpMusicProvidersStatus, commandCapMusic, client.ActorAuthority{EffectiveBits: manageCommunityBit}) {
+	if !commandOperationAllowed(protocol.OpMusicProvidersStatus, commandCapMusic, client.ActorAuthority{EffectiveBits: manageCommunityBit}) {
 		t.Fatal("music provider status hidden from a current manager with approved music capability")
 	}
 }

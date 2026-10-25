@@ -8,7 +8,7 @@ import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { formatTime } from '../strings/index.ts';
 import { en } from '../strings/en.ts';
-import { joinErrorState } from '../router.ts';
+import { joinErrorState, replaceHistoryState } from '../router.ts';
 import { browser } from '../browser.ts';
 import { Shell } from './Shell.tsx';
 import type { ShellUpdateDeps } from './Shell.tsx';
@@ -50,7 +50,7 @@ function timeline(over: Partial<TimelineState> = {}): TimelineState {
 // `state` is the history entry's state (task 23 carries a refused join in it, pre-flight ruling (g)).
 function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string; owner: string }[]; state?: unknown; before?(fake: FakeClient): void;
   update?: ShellUpdateDeps } = {}) {
-  window.history.replaceState(opts.state ?? null, '', path);
+  replaceHistoryState(opts.state ?? null, '', path);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
@@ -682,8 +682,10 @@ it('leaves the changed alert to Privacy while Settings covers the conversation',
     client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
       changedUmk: 'cc'.repeat(32) }]);
   } });
-  expect(screen.queryByRole('alert')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Compare with bob' })).toBeNull();
+  const settings = screen.getByRole('dialog', { name: /settings/i });
+  expect(within(settings).getByRole('alert')).toHaveTextContent('This contact’s identity changed.');
+  expect(within(settings).getByRole('button', { name: 'Compare with bob' })).toBeInTheDocument();
+  expect(document.querySelector('.dw-trust-alerts')).toBeNull();
 });
 
 it('stands no changed alert where a validated Remove restored sending', () => {
@@ -798,7 +800,7 @@ describe('selection', () => {
 
 // A shell whose calls are answered by `handler` from the first render on, on /c/A with no channels yet.
 function setupWith(handler: FakeClient['handler']) {
-  window.history.replaceState(null, '', `/c/${A}`);
+  replaceHistoryState(null, '', `/c/${A}`);
   const fake = new FakeClient();
   fake.handler = handler;
   fake.set('account', account());
@@ -1263,7 +1265,7 @@ describe('servers and the join dialog', () => {
     expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveValue('ABCD');
     expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveAccessibleDescription(expect.stringContaining('This invite is expired, used up or unknown.'));
     expect(path()).toBe('/');
-    expect(window.history.state).toBeNull();
+    expect(window.history.state).not.toHaveProperty('joinError');
   });
 });
 
@@ -1510,7 +1512,9 @@ describe('sidebar actions and pane widths (web3.8)', () => {
       banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
     await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
-    expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Invites' }));
+    expect(within(dialog).getByRole('button', { name: 'Invites', current: 'page' })).toBeInTheDocument();
   });
 
   it('ArrowRight on the sidebar separator writes dilla.paneWidths, and a remount reads it back', async () => {
@@ -1863,8 +1867,9 @@ describe('devices and settings', () => {
   it('opens settings from the user panel’s gear, remembering the channel', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
     await user.click(screen.getByRole('button', { name: 'user settings' }));
-    expect(path()).toBe('/settings/devices');
-    expect(window.history.state).toEqual({ settingsFrom: `/c/${A}/${GEN}` });
+    expect(path()).toBe('/settings');
+    expect(window.history.state).toMatchObject({ settingsFrom: `/c/${A}/${GEN}` });
+    expect(typeof (window.history.state as Record<string, unknown>).dillaHistoryIndex).toBe('number');
   });
   it('keeps the shell where it was while settings is open over it', () => {
     const { fake } = setup('/settings/notifications', { state: { settingsFrom: `/c/${A}/${RAND}` } });

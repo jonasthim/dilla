@@ -640,9 +640,17 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 							}
 							var musicInteractions *service.MusicInteractions
+							var musicProviderStatus service.MusicProviderStatusInteractions
 							var spotifyPCM session.PCMStarter
 							var spotifyCatalogResolver service.SpotifyMusicTrackResolver
 							if result.Installation.Capabilities&botMusicCapability != 0 {
+								statusReader, statusErr := service.NewSpotifyCredentialStatusReader(runtime, nativeClient, spotifyGuard)
+								statusConfig := cfg
+								statusConfig.SpotifyClientID, statusConfig.SpotifyRedirectURL = spotifyClientID, spotifyRedirectURL
+								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session, statusReader, statusConfig)
+								if statusErr != nil {
+									logger.Info("bot provider status will report Spotify credentials as unavailable", "installation_id", installation.ID.String())
+								}
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
 									var spotifyCredentials *service.SpotifyCredentials
@@ -743,6 +751,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														autoModerationState.ConfigRuntime(nativeClient, installation.ID, installation.CommunityID, func(cfg moderation.Config) (service.ModerationActorAuthority, service.ModerationActionSink, error) {
 															return prepareAutoModerationDependencies(nativeClient, result.Session, installation.CommunityID, cfg)
 														}),
+														musicProviderStatus,
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,

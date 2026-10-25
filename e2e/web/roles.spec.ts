@@ -53,6 +53,8 @@ const groupHeading = (page: Page, count: number) =>
   membersRegion(page).getByRole('heading', { name: copy('members.group', { name: ROLE, count }), exact: true });
 /** The shell's polite live region: it holds the latest announcement until the next one replaces it. */
 const announcer = (page: Page) => page.getByTestId('shell-announcer');
+/** Server settings owns a separate live region while its modal is open. */
+const settingsAnnouncer = (settings: Locator) => settings.locator('p.d-sr-only[role="status"][aria-live="polite"]');
 const switchOf = (scope: Locator, key: string) => scope.getByRole('switch', { name: copy(key), exact: true });
 
 /** Opens "server settings" in the sidebar and returns the dialog, with the permissions read. */
@@ -179,7 +181,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expectAccessible(page, 'the role editor');
     await button(editor, 'roles.editor.create').click();
     await expect(editor).toBeHidden({ timeout: WAIT });
-    await expect(announcer(page)).toHaveText(copy('roles.editor.created', { name: ROLE }), { timeout: WAIT });
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.editor.created', { name: ROLE }), { timeout: WAIT });
     await expect(newRole).toBeFocused();
     await expect(roleRow(settings, ROLE)).toContainText(copy('roles.row.other', { count: 0 }));
     await closeSettings(page);
@@ -284,7 +286,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await setSwitch(switchOf(editor, 'perm.pin'), false);
     await button(editor, 'roles.editor.save').click();
     await expect(editor).toBeHidden({ timeout: WAIT });
-    await expect(announcer(page)).toHaveText(copy('roles.editor.saved', { name: ROLE }), { timeout: WAIT });
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.editor.saved', { name: ROLE }), { timeout: WAIT });
     await expect(roleRow(settings, ROLE).getByRole('button', { name: copy('roles.editLabel', { name: ROLE }), exact: true })).toBeFocused();
     await closeSettings(page);
     await expect(mine).not.toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
@@ -330,7 +332,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(confirm).toBeVisible({ timeout: WAIT });
     await button(confirm, 'roles.deleteConfirm').click();
     await expect(confirm).toBeHidden({ timeout: WAIT });
-    await expect(announcer(page)).toHaveText(copy('roles.deleted', { name: ROLE }), { timeout: WAIT });
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.deleted', { name: ROLE }), { timeout: WAIT });
     await expect(button(settings, 'roles.new')).toBeFocused();
     await expect(roleRow(settings, ROLE)).toHaveCount(0);
     await closeSettings(page);

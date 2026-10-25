@@ -15,7 +15,7 @@ The mobile app shell on phones (390px and narrower): a navigation tab bar at the
 | 7. Activity tab, mentions and DMs | The Activity tab is selected. Shows mentions and direct messages. Title is `activity.title`, with items for mentions (`activity.mention`), direct messages (`activity.dm`), and unread from elsewhere (`activity.elsewhere`). | `activity.title`, `activity.mention`, `activity.dm`, `activity.elsewhere`, `activity.since` |
 | 8. Activity empty | No mentions or DMs. Shows the empty message. | `activity.empty` |
 | 9. Activity unread elsewhere | A row or banner indicating unread activity in channels. | `activity.elsewhere` |
-| 10. You tab | The You tab is selected. Shows status information, device info, and settings. Title is `you.title`, status is `you.status` (this device), settings link is `you.settings`. Also reuses keys from other flows: `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, and `devices.signOut`. | `you.title`, `you.status`, `you.settings`, `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, `devices.signOut` |
+| 10. You tab | The You tab is selected. Shows identity, presence, connection/device information and one entry to the grouped settings index. Title is `you.title`, status is `you.status` (this device), settings link is `you.settings`. Also reuses keys from other flows: `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, and `devices.signOut`. | `you.title`, `you.status`, `you.settings`, `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, `devices.signOut` |
 | 11. Offline | An offline banner shows: `nav.link.offline`. | `nav.link.offline` |
 | 12. Connecting | A connecting banner shows: `nav.link.connecting` with the node name. | `nav.link.connecting` |
 | 13. Call bar | A mini call bar at the bottom with open call status and controls. Shows `nav.call.open` with the location where the call is (e.g., the server or channel name), and reuses keys `voice.mute` and `voice.leave`. | `nav.call.open`, `voice.mute`, `voice.leave` |
@@ -74,3 +74,15 @@ The link banner (`nav.link.offline`, `nav.link.connecting`) is `role="status"`. 
 - `you.status='this device'`
 - `you.settings='settings'`
 - `signIn.key.isBackupCode='That looks like a backup code, not the recovery key. This step needs the 52-character recovery key you saved when you created the account.'`
+
+
+## Fullscreen settings
+
+User and server settings use the existing phone-layout breakpoint, including
+landscape/coarse-pointer handling. They are native modal workspaces; the app tab
+bar is hidden. The grouped index opens a section with Back to the index. Close
+returns to the originating screen. A direct section URL has an index fallback.
+The shell and active voice session stay mounted. Incoming-call controls are inside
+settings; Return to call uses the same unsaved-draft guard as every other exit.
+Visual viewport sizing and safe areas keep the Save/Reset footer above the keyboard.
+See [the complete settings contract](18-fullscreen-settings.md).

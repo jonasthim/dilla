@@ -10,6 +10,7 @@ import { PHONE_QUERY } from '../layout.ts';
 import { en, formatTime, t } from '../strings/index.ts';
 import { Shell } from './Shell.tsx';
 import { ComposerArea } from './conversation/ComposerArea.tsx';
+import { replaceHistoryState } from '../router.ts';
 
 // Every composer renders as before; the spy records the props the shell (and the thread view) hand it.
 vi.mock('./conversation/ComposerArea.tsx', async importOriginal => {
@@ -59,7 +60,7 @@ afterEach(() => {
 
 function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: string | null } = {}) {
   media(o.phone === true);
-  window.history.replaceState(null, '', o.path ?? `/c/${A}/${GEN}`);
+  replaceHistoryState(null, '', o.path ?? `/c/${A}/${GEN}`);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });

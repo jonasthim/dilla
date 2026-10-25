@@ -151,6 +151,7 @@ export const admin = {
   'admin.bot.welcomeSettings.configured': 'The bot will post this message for future joins.',
   'admin.bot.welcomeSettings.waiting': 'Request uploaded. Waiting for the bot response; changes are not saved yet.',
   'admin.bot.welcomeSettings.uploadUncertain': 'Upload status is uncertain. Waiting for the bot response.',
+  'admin.bot.welcomeSettings.retry': 'Retry the same welcome settings request',
   'admin.bot.welcomeSettings.uploadFailed': 'Could not upload the welcome settings request.',
   'admin.bot.welcomeSettings.responseFailed': 'The bot could not apply this welcome settings request.',
   'admin.bot.welcomeSettings.conflict': 'Welcome settings changed elsewhere. Reload before saving again.',
