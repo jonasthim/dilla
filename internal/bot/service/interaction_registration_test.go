@@ -321,6 +321,24 @@ func TestInteractionRegistrationReadmissionRefusesChangedOrMissingAuthority(t *t
 	}
 }
 
+func TestInteractionRegistrationReadmissionAcceptsLateOriginalReceipt(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.dropRegistrationResponse = true
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationOutcomeUnknown) {
+		t.Fatalf("initial outcome = %v", err)
+	}
+	f.s.currentTime = 131
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+		t.Fatalf("manual recovery = %v", err)
+	}
+	f.s.dropRegistrationResponse = false
+	f.s.originalCommitsDuringReadmission = true
+	result, err := f.coordinator.ReadmitInteractionRegistration(context.Background(), f.request.Group)
+	if err != nil || result.Receipt.OperationID != f.s.lastOperation || f.s.registerCalls != 2 || f.n.registered != 1 {
+		t.Fatalf("late original receipt was not resolved: result=%+v err=%v posts=%d native=%d", result, err, f.s.registerCalls, f.n.registered)
+	}
+}
+
 func TestInteractionRegistrationManualRecoveryRemainsRetryableAfterNativeFailure(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	intent := pendingInteractionRecoveryIntent(f, []byte{7, 8, 9})
@@ -868,29 +886,31 @@ func (d *interactionRegistrationDiscoveryFake) Discover(context.Context) (client
 }
 
 type interactionRegistrationSessionFake struct {
-	admission                   []byte
-	registerCalls, receiptCalls uint64
-	storeThenLoseResponse       bool
-	dropRegistrationResponse    bool
-	lateCommitAfterAbsence      bool
-	lastOperation               id.ID
-	lateReceipt                 *client.BotGroupRegistrationReceipt
-	hideReceiptCalls            uint64
-	receipt                     *client.BotGroupRegistrationReceipt
-	ignoreReceiptOperation      bool
-	requestIDs                  []id.ID
-	expected                    []any
-	currentEpisode              id.ID
-	candidates                  []id.ID
-	registeredGroups            []id.ID
-	admissionErr                error
-	currentTime                 uint64
-	minimumRevision             uint64
-	admissions                  map[id.ID]uint64
-	keyPackage                  []byte
-	keyPackageErr               error
-	keyPackageCalls             uint64
-	keyPackageFailures          uint64
+	admission                        []byte
+	registerCalls, receiptCalls      uint64
+	storeThenLoseResponse            bool
+	dropRegistrationResponse         bool
+	lateCommitAfterAbsence           bool
+	originalCommitsDuringReadmission bool
+	firstSubmission                  *client.BotGroupRegistrationReceipt
+	lastOperation                    id.ID
+	lateReceipt                      *client.BotGroupRegistrationReceipt
+	hideReceiptCalls                 uint64
+	receipt                          *client.BotGroupRegistrationReceipt
+	ignoreReceiptOperation           bool
+	requestIDs                       []id.ID
+	expected                         []any
+	currentEpisode                   id.ID
+	candidates                       []id.ID
+	registeredGroups                 []id.ID
+	admissionErr                     error
+	currentTime                      uint64
+	minimumRevision                  uint64
+	admissions                       map[id.ID]uint64
+	keyPackage                       []byte
+	keyPackageErr                    error
+	keyPackageCalls                  uint64
+	keyPackageFailures               uint64
 }
 
 func (s *interactionRegistrationSessionFake) KeyPackage(context.Context, id.ID) ([]byte, error) {
@@ -970,6 +990,13 @@ func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionReques
 	s.registeredGroups = append(s.registeredGroups, group)
 	s.lastOperation = op
 	r := client.BotGroupRegistrationReceipt{OperationID: op, GroupID: group, RegistrationSHA256: interactionRegistrationHash(body), AcceptedGeneration: generation, InitialEpoch: 1, NextSequence: 1}
+	if s.registerCalls == 1 {
+		s.firstSubmission = &r
+	}
+	if s.registerCalls == 2 && s.originalCommitsDuringReadmission {
+		s.receipt = s.firstSubmission
+		return client.BotGroupRegistrationReceipt{}, errors.New("original submission committed before readmission")
+	}
 	if s.dropRegistrationResponse {
 		if s.lateCommitAfterAbsence {
 			s.lateReceipt = &r
