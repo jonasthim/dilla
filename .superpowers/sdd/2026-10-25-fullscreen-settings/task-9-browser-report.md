@@ -36,6 +36,14 @@ The Music view was measured on the final Close-label build at 1440×900: setting
 
 Actual 200% browser zoom and a physical mobile keyboard were not exercised. The 720×450 viewport is the tested short-height/keyboard-height case.
 
+## Integration with updated main
+
+After merging main's music chat commands and connectivity fixes (`1d50f59c`), the
+focused Chromium batch passed all four cases: music chat commands, Bot response
+recovery across restarts/devices, Automod, and fullscreen layout grammar. Only the
+Music screenshot was refreshed to include chat-command guidance alongside provider
+status; it retains the testhost's truthful unavailable state.
+
 ## Final CI
 
 The complete browser suite is still required in CI after the fixture commit. Focused tests are not a substitute for that matrix.

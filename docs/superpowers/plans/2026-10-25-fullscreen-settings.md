@@ -3,6 +3,11 @@
 Approved implementation plan supplied by the user on 2026-10-25. Baseline:
 fresh `origin/main`, `4b5ca243`. Deliver one reviewed PR; no merge or deployment.
 
+During acceptance the user also approved repairing the reproduced music playback
+reconnect failure. The implementation incorporates main's subsequent music chat
+commands and connectivity changes (`1d50f59c`), then verifies provider observations
+and actual playback together. Spotify playback remains a separate acceptance check.
+
 ## Binding design
 
 Evolve SettingsFrame/SettingsNav into native fullscreen modal workspaces. Keep

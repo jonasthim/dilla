@@ -24,6 +24,16 @@ No database migration was added.
 
 `MusicProviderStatusSnapshot` has `version`, `installationId`, `observedAt`, `spotifyAccount`, `spotifyAccountReason`, `spotifyPlayback`, `spotifyPlaybackReason`, `youtubePlayback`, and `youtubePlaybackReason`. The TypeScript decoder accepts the CBOR response bytes and returns typed enums.
 
-## Coordination note
+## Final integration
 
-The task brief requires live manageCommunity authorization for operation 24. The settings registry instruction separately gates visibility on `loaded && access.viewAuditLog === true`. These permissions differ; a member with only `viewAuditLog` can see the registry entry but the status operation returns forbidden. Primary should align those two gates if that is not the intended policy.
+The registry gates Music with `manageCommunity`; `viewAuditLog` gates only the
+separate Moderation log section. Runtime authorization remains authoritative.
+
+Live-browser acceptance found that the Rust human response journal still excluded
+both overview operation 0 and provider-status operation 24. The response allowlist
+now admits their exact read-only shapes while retaining request/community matching
+and the existing authenticated-sender checks. A regression failed before the fix.
+Unit tests and encrypted round-trip fixtures cover both operations, including
+journal persistence, replay deduplication and acknowledgement after a core restart.
+The music browser fixture now requires a fresh runtime observation (Spotify Not
+linked and YouTube Configured for its clean installation) before testing playback.
