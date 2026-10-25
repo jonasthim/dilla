@@ -93,6 +93,7 @@ browser keeps, the app and its keyboard, the app on a phone, slow mode, announce
 pins, mentions, images and files), comparing safety numbers, search, settings, typing and a second tab, and the
 known limits. [Voice, calls and media files](docs/user/voice.md) covers voice channels, the stage, DM calls and ringing,
 camera and screen share, push to talk, the call code, AFK channels, sounds, and audio and video files.
+[Music commands](docs/user/music.md) explains `/play`, `/pause`, `/resume`, `/skip`, `/queue`, and `/stop` in text chat.
 
 ![The app on a phone: the servers tab](docs/user/screenshots/phone-home.png)
 
