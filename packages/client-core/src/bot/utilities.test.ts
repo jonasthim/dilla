@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CoreClient } from '../bridge';
 import { BotInteractionUncertainError } from './interactions.ts';
-import { encode } from '../cbor/index.ts';
+import { decode, encode } from '../cbor/index.ts';
 import {
-  BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, createBotUtilities, decodeBotUtilityCapabilities, decodePollClose, decodePollGet, decodePollListPage, decodePollResponse, decodePollVote,
+  BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, createBotUtilities, decodeBotUtilityCapabilities, decodePollClose, decodePollCreate, decodePollGet, decodePollListPage, decodePollResponse, decodePollVote,
   decodePollVotersPage, decodeReminderCancel, decodeReminderCreate, decodeReminderDismiss, decodeReminderListPage,
   encodePollCreatePayload, encodePollSelection, encodeReminderCreatePayload,
   type PollSummary,
 } from './utilities.ts';
+import { normalizeReminderTimezone } from './utility-time.ts';
 
 const id = (byte: number) => new Uint8Array(16).fill(byte);
 const hex = (byte: number) => byte.toString(16).padStart(2, '0').repeat(16);
@@ -81,6 +82,17 @@ describe('utility request payloads', () => {
     expect(() => encodeReminderCreatePayload({ whenKind: 0, when: 60, text: 'x', timezone: 'UTC', sourceThreadId: hex(5) })).toThrow(BotUtilitiesError);
   });
 
+  it('canonicalizes valid timezone aliases and rejects fixed offsets before encoding', () => {
+    expect(normalizeReminderTimezone('europe/stockholm')).toBe('Europe/Stockholm');
+    expect(normalizeReminderTimezone('PST')).toBe('America/Los_Angeles');
+    expect(normalizeReminderTimezone('UTC')).toBe('UTC');
+    for (const timezone of ['+01:00', '-0530', '+05']) {
+      expect(() => encodeReminderCreatePayload({ whenKind: 0, when: 60, text: 'x', timezone })).toThrow(BotUtilitiesError);
+    }
+    const payload = encodeReminderCreatePayload({ whenKind: 0, when: 60, text: 'x', timezone: 'europe/stockholm' });
+    expect(decode(payload)).toEqual([1n, 0n, 60n, 'x', 'Europe/Stockholm', null, null]);
+  });
+
   it('encodes unique bounded poll selections and permits withdrawal as an empty selection', () => {
     expect(encodePollSelection([3, 0, 2])).toEqual(encode([3n, 0n, 2n]));
     expect(encodePollSelection([])).toEqual(encode([]));
@@ -115,6 +127,14 @@ describe('utility response decoders', () => {
     expect(decodePollVote(data([1n, pollSummary({ 11: [0n] })]), { pollId: hex(1), choices: [0], responseRevision: 1n }).myChoices).toEqual([0]);
     expect(() => decodePollVote(data([1n, pollSummary()]), { pollId: hex(1), choices: [0] })).toThrow(BotUtilitiesError);
     expect(() => decodePollClose(data([1n, pollSummary({ 9: 1n })]), { pollId: hex(1) })).not.toThrow();
+  });
+
+  it('accepts the Go poll-create empty-array choice shape and rejects null', () => {
+    // Go pollSummary(nil) uses uintsToAny(nil), whose verified CBOR wire shape is 0x80 ([]).
+    const goPollCreateFixture = data([1n, pollSummary({ 11: [] })]);
+    expect(decodePollCreate(goPollCreateFixture, hex(1), { channelId: hex(2), responseRevision: '1' }).myChoices).toEqual([]);
+    expect(() => decodePollCreate(data([1n, pollSummary({ 11: null })]), hex(1), { channelId: hex(2), responseRevision: '1' }))
+      .toThrow(BotUtilitiesError);
   });
 
   it('rejects inconsistent poll summaries including count length, IDs, states, and revision', () => {
@@ -191,8 +211,10 @@ function fakeUtilityCore(options: {
   status?: () => unknown;
   response?: (operation: number, requestId: string, command: Record<string, unknown>) => { status?: number; revision?: string | null; data: Uint8Array };
   upload?: (command: Record<string, unknown>) => string;
+  enforceRequestIdentity?: boolean;
 }) {
   const calls: Record<string, unknown>[] = [];
+  const identities = new Map<string, string>();
   const client = {
     get: (name: string) => name === 'account' ? { phase: 'ready', user: { id: USER, username: 'member' }, deviceId: hex(5) }
       : name === 'communities' ? [{ id: COMMUNITY }] : name === `permissions:${COMMUNITY}` ? { loaded: true } : undefined,
@@ -200,7 +222,16 @@ function fakeUtilityCore(options: {
     call: vi.fn((command: Record<string, unknown>) => {
       calls.push(command);
       if (command.m === 'getBotCommandStatus') return options.status?.() ?? statusRow();
-      if (command.m === 'humanInteractionRequest') return { requestId: command.requestId, upload: options.upload?.(command) ?? 'accepted' };
+      if (command.m === 'humanInteractionRequest') {
+        if (options.enforceRequestIdentity) {
+          const requestId = String(command.requestId);
+          const fingerprint = JSON.stringify([command.operation, command.channelId, command.args, command.revision]);
+          const prior = identities.get(requestId);
+          if (prior !== undefined && prior !== fingerprint) throw new Error('request ID reused for a different operation body');
+          identities.set(requestId, fingerprint);
+        }
+        return { requestId: command.requestId, upload: options.upload?.(command) ?? 'accepted' };
+      }
       if (command.m === 'readBotInteractionResponses') {
         const operation = (command.operations as number[])[0];
         const requestId = (command.requestIds as string[])[0];
@@ -251,10 +282,35 @@ describe('createBotUtilities facade', () => {
     expect(api.binding).toBeNull();
   });
 
+  it('does not dispatch an operation when the live installation changes after its capability check', async () => {
+    let statusReads = 0;
+    const f = fakeUtilityCore({
+      status: () => statusRow(++statusReads <= 4 ? INSTALLATION : hex(11)),
+      response: operation => ({ data: operation === 3 ? capabilityData() : pollSummaryForId(hex(1)), revision: operation === 3 ? null : '1' }),
+    });
+    const api = createBotUtilities(f.client, COMMUNITY);
+    await expect(api.pollGet(hex(1), { channelId: hex(2) })).rejects.toMatchObject({ code: 'binding-mismatch' });
+    expect(statusReads).toBe(5);
+    expect(api.binding).toBeNull();
+    expect(f.calls.some(call => call.m === 'humanInteractionRequest' && call.operation === 71)).toBe(false);
+  });
+
+  it('withholds a read result and clears its card binding when installation changes after dispatch', async () => {
+    let statusReads = 0;
+    const f = fakeUtilityCore({
+      status: () => statusRow(++statusReads <= 5 ? INSTALLATION : hex(11)),
+      response: operation => ({ data: operation === 3 ? capabilityData() : pollSummaryForId(hex(1), hex(2), null, []), revision: operation === 3 ? null : '1' }),
+    });
+    const api = createBotUtilities(f.client, COMMUNITY);
+    await expect(api.pollGet(hex(1), { channelId: hex(2) })).rejects.toMatchObject({ constructor: BotInteractionUncertainError });
+    expect(statusReads).toBe(6);
+    expect(api.binding).toBeNull();
+  });
+
   it('creates a poll with the exact payload, stable request ID, revision zero, and correlated channel/thread', async () => {
     const thread = hex(12);
     const f = fakeUtilityCore({ response: (operation, requestId) => ({
-      data: operation === 3 ? capabilityData() : pollSummaryForId(requestId, hex(2), thread), revision: operation === 3 ? null : '1',
+      data: operation === 3 ? capabilityData() : pollSummaryForId(requestId, hex(2), thread, []), revision: operation === 3 ? null : '1',
     }) });
     const api = createBotUtilities(f.client, COMMUNITY);
     await expect(api.pollCreate({ requestId: REQUEST_ID, channelId: hex(2), threadId: thread, question: 'Lunch?', answers: ['Soup', 'Salad'], multi: false, durationSeconds: 3600 }))
@@ -295,10 +351,14 @@ describe('createBotUtilities facade', () => {
   it('passes uncertain request identity through and never resends after an uncertain upload', async () => {
     const f = fakeUtilityCore({ upload: command => command.operation === 73 ? 'pending' : 'accepted' });
     const api = createBotUtilities(f.client, COMMUNITY);
-    await expect(api.pollVote({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), choices: [0], revision: '1' }))
-      .rejects.toMatchObject({ requestId: REQUEST_ID, constructor: BotInteractionUncertainError });
-    await expect(api.pollVote({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), choices: [0], revision: '1' }))
-      .rejects.toMatchObject({ requestId: REQUEST_ID, constructor: BotInteractionUncertainError });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await api.pollVote({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), choices: [0], revision: '1' }).catch((value: unknown): unknown => value);
+      expect(error).toBeInstanceOf(BotUtilitiesUncertainMutationError);
+      if (error instanceof BotUtilitiesUncertainMutationError) {
+        expect(error.requestId).toBe(REQUEST_ID);
+        expect(error.cause).toBeInstanceOf(BotInteractionUncertainError);
+      }
+    }
     expect(f.calls.filter(call => call.m === 'humanInteractionRequest' && call.operation === 73)).toHaveLength(1);
   });
 
@@ -334,14 +394,48 @@ describe('createBotUtilities facade', () => {
 
   it('checks backing poll context before returning named voters', async () => {
     const voterPage = data([1n, [id(4)], null]);
-    const f = fakeUtilityCore({ response: (operation) => ({
+    const f = fakeUtilityCore({ enforceRequestIdentity: true, response: (operation) => ({
       data: operation === 3 ? capabilityData() : operation === 71 ? pollSummaryForId(hex(1), hex(2), null, []) : voterPage,
       revision: operation === 3 || operation === 75 ? null : '1',
     }) });
-    await expect(createBotUtilities(f.client, COMMUNITY).pollVoters({ pollId: hex(1), channelId: hex(2), option: 1 }))
+    await expect(createBotUtilities(f.client, COMMUNITY).pollVoters({ pollId: hex(1), channelId: hex(2), option: 1, requestId: REQUEST_ID }))
       .resolves.toEqual({ voters: [hex(4)], nextCursor: null });
-    expect(f.calls.some(call => call.m === 'humanInteractionRequest' && call.operation === 71)).toBe(true);
-    expect(f.calls.find(call => call.m === 'humanInteractionRequest' && call.operation === 75)).toMatchObject({ args: [id(1), 1, null] });
+    const backing = f.calls.find(call => call.m === 'humanInteractionRequest' && call.operation === 71)!;
+    const voters = f.calls.find(call => call.m === 'humanInteractionRequest' && call.operation === 75)!;
+    expect(backing.requestId).not.toBe(REQUEST_ID);
+    expect(voters).toMatchObject({ requestId: REQUEST_ID, args: [id(1), 1, null] });
+    const fingerprints = new Map<string, string>();
+    for (const call of [backing, voters]) {
+      const requestId = call.requestId as string;
+      const fingerprint = JSON.stringify([call.operation, call.channelId, call.args, call.revision]);
+      if (fingerprints.has(requestId)) expect(fingerprints.get(requestId)).toBe(fingerprint);
+      fingerprints.set(requestId, fingerprint);
+    }
+  });
+
+  it.each([
+    ['poll create', 70], ['poll vote', 73], ['poll close', 74],
+    ['reminder create', 80], ['reminder cancel', 82], ['reminder dismiss', 83],
+  ])('reports accepted malformed %s result as uncertain with original identity', async (_label, operation) => {
+    const f = fakeUtilityCore({ response: op => ({
+      data: op === 3 ? capabilityData() : new Uint8Array([0xff]), revision: op === 3 ? null : '2',
+    }) });
+    const api = createBotUtilities(f.client, COMMUNITY);
+    const methods: Record<number, () => Promise<unknown>> = {
+      70: () => api.pollCreate({ requestId: REQUEST_ID, channelId: hex(2), question: 'Q', answers: ['A', 'B'], multi: false, durationSeconds: 3600 }),
+      73: () => api.pollVote({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), choices: [0], revision: '1' }),
+      74: () => api.pollClose({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), revision: '1' }),
+      80: () => api.reminderCreate({ requestId: REQUEST_ID, whenKind: 0, when: 60, text: 'Call', timezone: 'UTC' }),
+      82: () => api.reminderCancel({ requestId: REQUEST_ID, reminderId: hex(1), revision: '1' }),
+      83: () => api.reminderDismiss({ requestId: REQUEST_ID, reminderId: hex(1), revision: '1' }),
+    };
+    const error = await methods[operation]().catch((value: unknown): unknown => value);
+    expect(error).toBeInstanceOf(BotUtilitiesUncertainMutationError);
+    if (error instanceof BotUtilitiesUncertainMutationError) {
+      expect(error).toMatchObject({ uncertain: true, requestId: REQUEST_ID, operation, status: 0 });
+      expect(error.cause).toBeInstanceOf(Error);
+    }
+    expect(f.calls.filter(call => call.m === 'humanInteractionRequest' && call.operation === operation)).toHaveLength(1);
   });
 
   it('lists, cancels, dismisses and pages due reminders with account-scoped ownership', async () => {
@@ -377,9 +471,10 @@ describe('createBotUtilities facade', () => {
       data: operation === 3 ? capabilityData() : data([1n, [bytesFromHexForTest(requestId), 'Call', 1_800_000_060n, 'UTC', id(13), null, 0n, 1n]]),
       revision: operation === 3 ? null : '1',
     }) });
-    await expect(createBotUtilities(wrongSource.client, COMMUNITY).reminderCreate({
+    const rejected = await createBotUtilities(wrongSource.client, COMMUNITY).reminderCreate({
       requestId: REQUEST_ID, whenKind: 0, when: 60, text: 'Call', timezone: 'UTC', sourceChannelId: hex(2),
-    })).rejects.toMatchObject({ code: 'context-mismatch' });
+    }).catch((error: unknown): unknown => error);
+    expect(rejected).toMatchObject({ code: 'uncertain-mutation', operation: 80, requestId: REQUEST_ID });
 
     const redacted = fakeUtilityCore({ response: (operation, requestId) => ({
       data: operation === 3 ? capabilityData() : reminderSummaryForId(requestId), revision: operation === 3 ? null : '1',

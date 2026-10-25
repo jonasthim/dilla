@@ -11,12 +11,19 @@ describe('parseReminderTime', () => {
     });
     expect(parseReminderTime('1.5m', 'Asia/Kathmandu', now)).toEqual({
       kind: 'valid', mode: 'relative', seconds: 90,
-      preview: '2026-01-01 05:46:30 (Asia/Kathmandu, UTC+05:45)',
+      preview: '2026-01-01 05:46:30 (Asia/Katmandu, UTC+05:45)',
     });
     expect(parseReminderTime('365d', 'UTC', now)).toEqual({
       kind: 'valid', mode: 'relative', seconds: 31_536_000,
       preview: '2027-01-01 00:00:00 (UTC, UTC+00:00)',
     });
+  });
+
+  it('canonicalizes IANA aliases for previews and rejects fixed-offset zones', () => {
+    const alias = parseReminderTime('1m', 'europe/stockholm', now);
+    expect(alias.kind).toBe('valid');
+    if (alias.kind === 'valid') expect(alias.preview).toContain('(Europe/Stockholm,');
+    expect(parseReminderTime('1m', '+01:00', now)).toMatchObject({ kind: 'invalid', reason: 'invalid-timezone' });
   });
 
   it.each(['59s', '366d', '1.001s', '1ms', ''])('rejects out-of-policy or subsecond duration %j', (input) => {
@@ -90,7 +97,7 @@ describe('parseReminderTime', () => {
   it('resolves a non-hour base offset without host-local Date parsing', () => {
     expect(parseReminderTime('2026-01-01T12:30', 'Asia/Kathmandu', now)).toEqual({
       kind: 'valid', mode: 'absolute', unixSeconds: 1_767_249_900,
-      preview: '2026-01-01 12:30:00 (Asia/Kathmandu, UTC+05:45)',
+      preview: '2026-01-01 12:30:00 (Asia/Katmandu, UTC+05:45)',
     });
   });
 

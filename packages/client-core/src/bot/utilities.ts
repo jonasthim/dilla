@@ -1,6 +1,7 @@
 import { decode, encode, type CborValue } from '../cbor/index.ts';
 import type { CoreClient } from '../bridge';
-import { createBotInteractionClient, type BotInteractionClient, type BotInteractionResult } from './interactions.ts';
+import { BotInteractionBindingMismatchError, BotInteractionUncertainError, createBotInteractionClient, type BotInteractionClient, type BotInteractionResult, type BotInteractionScope } from './interactions.ts';
+import { normalizeReminderTimezone } from './utility-time.ts';
 
 const MAX_UINT = (1n << 64n) - 1n;
 const MAX_UNIX_SECONDS = 253_402_300_799n;
@@ -30,10 +31,19 @@ export class BotUtilitiesProviderUnavailableError extends BotUtilitiesError {
 }
 export class BotUtilitiesUncertainMutationError extends BotUtilitiesError {
   readonly uncertain = true;
-  constructor(readonly operation: number, readonly status: number, readonly requestId: string) {
-    super('uncertain-mutation', 'The Bot returned unavailable after a mutation request. Reconcile using the same request ID before trying again.');
+  constructor(readonly operation: number, readonly status: number | null, readonly requestId: string, readonly cause?: unknown) {
+    super('uncertain-mutation', 'The mutation may have been accepted. Reconcile using the same request ID before trying again.');
     this.name = 'BotUtilitiesUncertainMutationError';
   }
+}
+
+function uncertainMutation<T>(operation: number, requestId: string, cause: unknown, status: number | null = 0): T {
+  throw new BotUtilitiesUncertainMutationError(operation, status, requestId, cause);
+}
+
+function decodeAcceptedMutation<T>(operation: number, requestId: string, decodeResult: () => T): T {
+  try { return decodeResult(); }
+  catch (cause) { return uncertainMutation(operation, requestId, cause); }
 }
 export class BotUtilitiesStatusError extends BotUtilitiesError {
   constructor(readonly operation: number, readonly status: number, readonly requestId: string, readonly revision: string | null) {
@@ -206,16 +216,13 @@ export function encodeReminderCreatePayload(input: ReminderCreatePayloadInput): 
   const text = input.text;
   if (typeof text !== 'string' || encoder.encode(text).length < 1 || encoder.encode(text).length > 1500) fail('invalid-reminder-text');
   if (encode(text).length === 0) fail('invalid-reminder-text');
+  const timezone = normalizeReminderTimezone(input.timezone);
   if (typeof input.timezone !== 'string' || encoder.encode(input.timezone).length < 1 || encoder.encode(input.timezone).length > 100
-    || input.timezone === 'Local' || !isTimezone(input.timezone)) fail('invalid-reminder-timezone');
+    || timezone === null) fail('invalid-reminder-timezone');
   const sourceChannel = input.sourceChannelId == null ? null : bytesFromHex(input.sourceChannelId);
   const sourceThread = input.sourceThreadId == null ? null : bytesFromHex(input.sourceThreadId);
   if (sourceThread !== null && sourceChannel === null) fail('invalid-reminder-source');
-  return encodePayload([1n, BigInt(input.whenKind), when, text, input.timezone, sourceChannel, sourceThread]);
-}
-function isTimezone(timezone: string): boolean {
-  try { new Intl.DateTimeFormat('en', { timeZone: timezone }).format(0); return true; }
-  catch { return false; }
+  return encodePayload([1n, BigInt(input.whenKind), when, text, timezone, sourceChannel, sourceThread]);
 }
 
 export function decodeBotUtilityCapabilities(data: Uint8Array, expected?: Partial<UtilityBinding>): UtilityCapabilities {
@@ -319,7 +326,7 @@ export function decodePollCreate(data: Uint8Array, requestId: string, expected?:
     const summary = summaryEnvelope(data, requestId);
     expectedPoll(summary, expected);
     checkRevision(summary.revision, expected?.responseRevision);
-    if (summary.myChoices !== null) fail('invalid-response');
+    if (summary.myChoices === null || summary.myChoices.length !== 0) fail('invalid-response');
     return summary;
   });
 }
@@ -406,8 +413,9 @@ function readReminderSummary(value: unknown): ReminderSummary {
   const id = readId(tuple[0]);
   const text = readText(tuple[1], 1, 1500);
   const dueUnixSeconds = uint(tuple[2], 1n, MAX_UNIX_SECONDS);
-  const timezone = readText(tuple[3], 1, 100);
-  if (timezone === 'Local' || !isTimezone(timezone)) fail('invalid-response');
+  const rawTimezone = readText(tuple[3], 1, 100);
+  const timezone = normalizeReminderTimezone(rawTimezone);
+  if (timezone === null) fail('invalid-response');
   const sourceChannelId = readNullableId(tuple[4]);
   const sourceThreadId = readNullableId(tuple[5]);
   if (sourceChannelId === null && sourceThreadId !== null) fail('invalid-response');
@@ -554,6 +562,9 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
   const community = idText(communityId);
   const transport: BotInteractionClient = createBotInteractionClient(client, community);
   let lastBinding: UtilityBinding | null = null;
+  let lastCapabilityScope: BotInteractionScope | null = null;
+  const sameScope = (left: BotInteractionScope, right: BotInteractionScope): boolean => left.installationId === right.installationId
+    && left.botUserId === right.botUserId && left.revision === right.revision;
 
   const statusBinding = async (): Promise<UtilityBinding & { revision: string }> => {
     const status = await client.call({ m: 'getBotCommandStatus', communityId: community }) as {
@@ -569,34 +580,66 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
   };
   const capabilities = async (): Promise<UtilityCapabilities> => {
     lastBinding = null;
+    lastCapabilityScope = null;
     const before = await statusBinding();
-    const result = await transport.request({ operation: 3, args: [] });
+    const expectedScope: BotInteractionScope = before;
+    const result = await transport.request({ operation: 3, args: [], expectedScope });
     responseRequest(result, result.requestId, 3);
     checkNoRevision(result);
     const caps = decodeBotUtilityCapabilities(result.data, before);
     if (!caps.supportedOperations.includes(3)) fail('invalid-response');
     const after = await statusBinding();
-    if (before.installationId !== after.installationId || before.botUserId !== after.botUserId || before.revision !== after.revision) {
+    if (!sameScope(result.scope, before) || !sameScope(before, after)) {
       lastBinding = null;
       throw new BotUtilitiesProviderUnavailableError(3, result.requestId, 'The Bot installation changed while capabilities were loading.');
     }
     lastBinding = { installationId: caps.installationId, botUserId: caps.botUserId };
+    lastCapabilityScope = result.scope;
     return caps;
   };
-  const authorizeOperation = async (operation: number): Promise<void> => {
+  const authorizeOperation = async (operation: number): Promise<BotInteractionScope> => {
     const caps = await capabilities();
     const supported = operation >= 70 && operation <= 75 ? isPollOperationSupported(caps, operation)
       : operation >= 80 && operation <= 84 ? isReminderOperationSupported(caps, operation) : false;
     if (!supported) throw new BotUtilitiesProviderUnavailableError(operation);
+    if (lastCapabilityScope === null) fail('binding-mismatch');
+    return { ...lastCapabilityScope };
   };
   const send = async (operation: number, args: readonly (string | number | Uint8Array | null)[], options: {
     requestId?: string; revision?: string | bigint | null;
   } = {}): Promise<BotInteractionResult> => {
     const requestId = requestIdOrGenerate(options.requestId);
-    await authorizeOperation(operation);
+    const expectedScope = await authorizeOperation(operation);
     const revision = options.revision === undefined || options.revision === null ? null : revisionString(options.revision, options.revision !== 0n && options.revision !== '0');
-    const result = await transport.request({ operation, requestId, channelId: null, args, revision });
-    responseRequest(result, requestId, operation);
+    let result: BotInteractionResult;
+    try {
+      result = await transport.request({ operation, requestId, channelId: null, args, revision, expectedScope });
+    } catch (cause) {
+      if (cause instanceof BotInteractionBindingMismatchError) {
+        lastBinding = null;
+        lastCapabilityScope = null;
+        fail('binding-mismatch');
+      }
+      if (cause instanceof BotInteractionUncertainError) {
+        lastBinding = null;
+        lastCapabilityScope = null;
+      }
+      if (MUTATION_OPERATIONS.has(operation) && cause instanceof BotInteractionUncertainError) {
+        return uncertainMutation(operation, requestId, cause, null);
+      }
+      throw cause;
+    }
+    if (!sameScope(result.scope, expectedScope)) {
+      lastBinding = null;
+      lastCapabilityScope = null;
+      if (MUTATION_OPERATIONS.has(operation) && result.status === 0) return uncertainMutation(operation, requestId, 'installation changed after mutation acceptance');
+      fail('binding-mismatch');
+    }
+    try { responseRequest(result, requestId, operation); }
+    catch (cause) {
+      if (MUTATION_OPERATIONS.has(operation) && result.status === 0) return uncertainMutation(operation, requestId, cause);
+      throw cause;
+    }
     return result;
   };
   const ownerId = (): string => currentUserId(client);
@@ -615,7 +658,7 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const requestId = validateRequestId(input.requestId);
       const payload = encodePollCreatePayload(input);
       const result = await send(70, [payload], { requestId, revision: 0n });
-      return decodePollCreate(result.data, requestId, { channelId: input.channelId, threadId: input.threadId ?? null, responseRevision: result.revision });
+      return decodeAcceptedMutation(70, requestId, () => decodePollCreate(result.data, requestId, { channelId: input.channelId, threadId: input.threadId ?? null, responseRevision: result.revision }));
     },
     pollGet: async (pollId, options) => {
       const targetId = idText(pollId);
@@ -640,14 +683,14 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const context = { channelId: idText(input.channelId), threadId: input.threadId ?? null };
       if (context.threadId !== null) idText(context.threadId);
       const result = await send(73, [bytesFromHex(pollId), encodePollSelection(input.choices)], { requestId: input.requestId, revision: revisionString(input.revision) });
-      return decodePollVote(result.data, { pollId, choices: input.choices, responseRevision: result.revision, ...context });
+      return decodeAcceptedMutation(73, input.requestId, () => decodePollVote(result.data, { pollId, choices: input.choices, responseRevision: result.revision, ...context }));
     },
     pollClose: async (input) => {
       const pollId = idText(input.pollId);
       const context = { channelId: idText(input.channelId), threadId: input.threadId ?? null };
       if (context.threadId !== null) idText(context.threadId);
       const result = await send(74, [bytesFromHex(pollId)], { requestId: input.requestId, revision: revisionString(input.revision) });
-      return decodePollClose(result.data, { pollId, responseRevision: result.revision, ...context });
+      return decodeAcceptedMutation(74, input.requestId, () => decodePollClose(result.data, { pollId, responseRevision: result.revision, ...context }));
     },
     pollVoters: async (input) => {
       const pollId = idText(input.pollId);
@@ -655,7 +698,7 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const threadId = input.threadId ?? null;
       if (threadId !== null) idText(threadId);
       if (!Number.isInteger(input.option) || input.option < 0 || input.option > 9) fail('invalid-payload');
-      const backing = await send(71, [bytesFromHex(pollId)], { requestId: input.requestId });
+      const backing = await send(71, [bytesFromHex(pollId)], { requestId: generatedRequestId() });
       const poll = decodePollGet(backing.data, { pollId, channelId, threadId, responseRevision: backing.revision });
       if (!Number.isInteger(input.option) || input.option < 0 || input.option >= poll.answers.length) fail('invalid-payload');
       const cursor = normalizeCursor(input.cursor);
@@ -668,9 +711,11 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const requestId = validateRequestId(input.requestId);
       const payload = encodeReminderCreatePayload(input);
       const result = await send(80, [payload], { requestId, revision: 0n });
-      const summary = decodeReminderCreate(result.data, { reminderId: requestId, responseRevision: result.revision });
-      checkReminderSource(summary, input);
-      return summary;
+      return decodeAcceptedMutation(80, requestId, () => {
+        const summary = decodeReminderCreate(result.data, { reminderId: requestId, responseRevision: result.revision });
+        checkReminderSource(summary, input);
+        return summary;
+      });
     },
     reminderList: async (cursorInput = null, requestIdInput) => {
       const owner = ownerId();
@@ -683,12 +728,12 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
     reminderCancel: async (input) => {
       const reminderId = idText(input.reminderId);
       const result = await send(82, [bytesFromHex(reminderId)], { requestId: input.requestId, revision: revisionString(input.revision) });
-      return decodeReminderCancel(result.data, reminderId, result.revision);
+      return decodeAcceptedMutation(82, input.requestId, () => decodeReminderCancel(result.data, reminderId, result.revision));
     },
     reminderDismiss: async (input) => {
       const reminderId = idText(input.reminderId);
       const result = await send(83, [bytesFromHex(reminderId)], { requestId: input.requestId, revision: revisionString(input.revision) });
-      return decodeReminderDismiss(result.data, reminderId, result.revision);
+      return decodeAcceptedMutation(83, input.requestId, () => decodeReminderDismiss(result.data, reminderId, result.revision));
     },
     reminderDue: async (cursorInput = null, requestIdInput) => {
       const owner = ownerId();

@@ -8,7 +8,7 @@ const INSTALLATION = 'aa'.repeat(16);
 const user = { id: '33'.repeat(16), username: 'member' };
 const response = (status = 0) => ({ deliveryId: '7', requestId: REQUEST, operation: 70, status, revision: '3', data: new Uint8Array([9]) });
 
-function fake(handler: (command: { m: string; [key: string]: unknown }) => unknown | Promise<unknown>) {
+function fake(handler: (command: { m: string; [key: string]: unknown }) => unknown) {
   const calls: { m: string; [key: string]: unknown }[] = [];
   const client = { get: (name: string) => name === 'account' ? { phase: 'ready', user, deviceId: '44'.repeat(16) }
     : name === 'communities' ? [{ id: COMMUNITY }] : name === `permissions:${COMMUNITY}` ? { loaded: true } : undefined,
@@ -30,7 +30,8 @@ it('sends once, reads only the exact pending request and returns domain status c
   });
   const api = createBotInteractionClient(f.client, COMMUNITY);
   const result = await api.request({ requestId: REQUEST, operation: 70, args: [new Uint8Array([1])] });
-  expect(result).toEqual({ requestId: REQUEST, status: 4, revision: '3', data: new Uint8Array([9]) });
+  expect(result).toEqual({ requestId: REQUEST, status: 4, revision: '3', data: new Uint8Array([9]),
+    scope: { installationId: INSTALLATION, botUserId: null, revision: '1' } });
   expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
   expect(f.calls.filter(call => call.m === 'readBotInteractionResponses').every(call =>
     call.requestIds instanceof Array && call.requestIds[0] === REQUEST)).toBe(true);
@@ -42,7 +43,15 @@ it('exposes same-id reload reconciliation without sending another mutation', asy
     : command.m === 'readBotInteractionResponses' ? { responses: [response()], through: 'b'.repeat(32) } : null);
   const result = await createBotInteractionClient(f.client, COMMUNITY).read(REQUEST, 70);
   expect(result?.requestId).toBe(REQUEST);
+  expect(result?.scope).toEqual({ installationId: INSTALLATION, botUserId: null, revision: '1' });
   expect(f.calls.map(call => call.m)).toEqual(['getBotCommandStatus', 'readBotInteractionResponses', 'ackBotInteractionResponses', 'getBotCommandStatus']);
+});
+
+it('rejects a capability scope mismatch before dispatching the requested operation', async () => {
+  const f = fake(command => command.m === 'getBotCommandStatus' ? { installationId: 'bb'.repeat(16), botUserId: null, state: 3, revision: '2' } : null);
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 71, args: [],
+    expectedScope: { installationId: INSTALLATION, botUserId: null, revision: '1' } })).rejects.toThrow('capability binding changed');
+  expect(f.calls.some(call => call.m === 'humanInteractionRequest')).toBe(false);
 });
 
 it('shares one client per core/community and coalesces concurrent requests and reads for the same id', async () => {

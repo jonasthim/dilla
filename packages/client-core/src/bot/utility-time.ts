@@ -21,7 +21,9 @@ type LocalParts = { year: number; month: number; day: number; hour: number; minu
 /** Parse a reminder duration or datetime without consulting the host's local timezone. */
 export function parseReminderTime(input: string, timezone: string, now: Date): ReminderTimeResult {
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return invalid('invalid-now');
-  const formatter = makeFormatter(timezone);
+  const zone = normalizeReminderTimezone(timezone);
+  if (zone === null) return invalid('invalid-timezone');
+  const formatter = makeFormatter(zone);
   if (!formatter) return invalid('invalid-timezone');
 
   const trimmed = input.trim();
@@ -30,7 +32,7 @@ export function parseReminderTime(input: string, timezone: string, now: Date): R
     if (durationSeconds < MIN_REMINDER_SECONDS || durationSeconds > MAX_REMINDER_SECONDS) return invalid('outside-range');
     const dueSeconds = Math.floor(now.getTime() / 1000) + durationSeconds;
     if (dueSeconds < 1 || dueSeconds > MAX_UNIX_SECONDS) return invalid('outside-range');
-    return { kind: 'valid', mode: 'relative', seconds: durationSeconds, preview: formatPreview(dueSeconds, timezone, formatter) };
+    return { kind: 'valid', mode: 'relative', seconds: durationSeconds, preview: formatPreview(dueSeconds, zone, formatter) };
   }
 
   const parsed = parseDateTime(trimmed);
@@ -44,7 +46,7 @@ export function parseReminderTime(input: string, timezone: string, now: Date): R
     if (!Number.isInteger(unixSeconds) || unixSeconds < 1 || unixSeconds > MAX_UNIX_SECONDS) return invalid('outside-range');
     const range = checkFutureWindow(unixSeconds, now);
     if (range) return invalid(range);
-    return { kind: 'valid', mode: 'absolute', unixSeconds, preview: formatPreview(unixSeconds, timezone, formatter) };
+    return { kind: 'valid', mode: 'absolute', unixSeconds, preview: formatPreview(unixSeconds, zone, formatter) };
   }
 
   const matches = findLocalCandidates(parts, baseMillis, timezone, formatter);
@@ -53,14 +55,25 @@ export function parseReminderTime(input: string, timezone: string, now: Date): R
     const [first, second] = matches.slice(0, 2);
     return {
       kind: 'ambiguous',
-      candidates: [candidate(first, timezone, formatter), candidate(second, timezone, formatter)],
+      candidates: [candidate(first, zone, formatter), candidate(second, zone, formatter)],
     };
   }
   const unixSeconds = matches[0];
   if (unixSeconds < 1 || unixSeconds > MAX_UNIX_SECONDS) return invalid('outside-range');
   const range = checkFutureWindow(unixSeconds, now);
   if (range) return invalid(range);
-  return { kind: 'valid', mode: 'absolute', unixSeconds, preview: formatPreview(unixSeconds, timezone, formatter) };
+  return { kind: 'valid', mode: 'absolute', unixSeconds, preview: formatPreview(unixSeconds, zone, formatter) };
+}
+
+/** Return an Intl canonical IANA name that Go's time.LoadLocation can accept. */
+export function normalizeReminderTimezone(timezone: string): string | null {
+  if (typeof timezone !== 'string' || timezone.length < 1 || timezone.length > 100 || timezone === 'Local'
+    || /^[+-]\d{2}(?::?\d{2})?$/u.test(timezone)) return null;
+  try {
+    return new Intl.DateTimeFormat('en', { timeZone: timezone }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
 }
 
 function invalid(reason: string): ReminderTimeResult { return { kind: 'invalid', reason }; }
@@ -116,10 +129,11 @@ function localAsUtcMillis(parts: LocalParts): number {
 }
 
 function makeFormatter(timezone: string): Intl.DateTimeFormat | null {
-  if (typeof timezone !== 'string' || timezone.length < 1 || timezone.length > 100 || timezone === 'Local') return null;
+  const canonical = normalizeReminderTimezone(timezone);
+  if (canonical === null) return null;
   try {
     return new Intl.DateTimeFormat('en-GB-u-ca-gregory-nu-latn', {
-      timeZone: timezone,
+      timeZone: canonical,
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
       hourCycle: 'h23',
     });
