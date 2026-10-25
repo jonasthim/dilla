@@ -148,6 +148,8 @@ reconcile_interval = "30s"
 CONFIG
 )" ] || fail "Bot config content differs from expected"
 cmp -s "$HERE/dillabot.service" "$ROOT/etc/systemd/system/dillabot.service" || fail "installed systemd unit differs from deploy/dillabot.service"
+grep -q '^DevicePolicy=closed$' "$ROOT/etc/systemd/system/dillabot.service" || fail "Bot unit does not restrict device access"
+if grep -Eq '^(PrivateDevices|RestrictSUIDSGID)=yes$' "$ROOT/etc/systemd/system/dillabot.service"; then fail "Bot unit blocks the nested YouTube sandbox"; fi
 grep -q '^dillad admin bot-runtime create --config=' "$LOG" || fail "runtime credential was not created via dillad admin"
 grep -q '^systemctl enable --now dillabot$' "$LOG" || fail "service was not enabled"
 if grep -q 'dbr_' "$LOG" "$TMP/err" "$TMP/out"; then fail "runtime credential leaked to output"; fi
