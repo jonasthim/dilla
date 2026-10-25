@@ -859,6 +859,8 @@ jobs:
         run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
         env:
           GORACE: halt_on_error=1
+      - name: TURN permission timer backport regression
+        run: go test -race github.com/pion/turn/v5/internal/allocation -run '^TestAddPermissionPublishesInitializedTimer$' -count=20
       # I8: these five video publishing tests are gated out of -race due to the pinned LiveKit race.
       # scripts/check-ci-workflow.mjs finds every raceEnabled-gated test and requires it here.
       - name: Video publishing tests without the upstream LiveKit race detector conflict

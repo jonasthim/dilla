@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
@@ -59,6 +60,32 @@ type OptionsForTrack func(context.Context, music.Track) (Options, error)
 type QueueStarter struct{ OptionsFor OptionsForTrack }
 
 func (s QueueStarter) Start(ctx context.Context, track music.Track) (music.Playback, error) {
+	if ctx == nil || s.OptionsFor == nil {
+		return nil, ErrInvalid
+	}
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		playback, err := s.startOnce(ctx, track)
+		// A previous publisher's departure can remove the replacement during
+		// its handshake. No source was published successfully: close resources
+		// and re-read membership, call credentials and epoch on a bounded retry.
+		if err == nil || ctx.Err() != nil || attempt >= 2 ||
+			(!errors.Is(err, context.Canceled) && !errors.Is(err, livekit.ErrEpochChanged) && !errors.Is(err, livekit.ErrRoomConnection)) {
+			return playback, err
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.Playback, error) {
 	if s.OptionsFor == nil {
 		return nil, ErrInvalid
 	}

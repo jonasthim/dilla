@@ -1563,11 +1563,14 @@ export class Controller {
     const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
       && row.communityId !== null && toHex(row.communityId) === communityHex);
     let rows = activeGroups();
-    for (let attempt = 0; rows.length === 0 && attempt < 8; attempt++) {
+    // Registration follows the daemon's 30-second reconciliation interval. Keep
+    // the original request pending while its per-device Welcome is being issued.
+    const welcomeAttempts = 90;
+    for (let attempt = 0; rows.length === 0 && attempt < welcomeAttempts; attempt++) {
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       await sync.pollWelcomes();
       rows = activeGroups();
-      if (rows.length === 0 && attempt < 7) await this.deps.sleep(500);
+      if (rows.length === 0 && attempt + 1 < welcomeAttempts) await this.deps.sleep(500);
     }
     return rows;
   }
