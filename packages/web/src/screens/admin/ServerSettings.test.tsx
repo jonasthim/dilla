@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { PhoneLayoutProvider } from '@dilla/ui';
+import * as layout from '../../layout.ts';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
 import { encode, fromHex } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
@@ -25,7 +27,7 @@ const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: 
   banMembers: false, createInvite: false, manageRoles: false };
 
 function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab | null; members?: MemberSummary[] | null;
-  missingCommunity?: boolean;
+  missingCommunity?: boolean; phone?: boolean;
   selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[] | ((communityId: string) => { id: string; name: string; position: number; selfSelected: boolean }[]);
   roles?: RoleSummary[]; channels?: ChannelSummary[]; installation?: FakeInstallation | null | ((communityId: string) => FakeInstallation | null);
   interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown';
@@ -63,9 +65,9 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
   const onTab = vi.fn();
   const announce = vi.fn();
   const user = userEvent.setup();
-  const view = render(<div className="d-root"><CoreProvider client={fake}>
+  const view = render(<div className="d-root"><PhoneLayoutProvider value={over.phone ?? false}><CoreProvider client={fake}>
     <ServerSettings communityId={SERVER} tab={over.tab === undefined ? 'overview' : over.tab} onTab={onTab} onClose={onClose} announce={announce} />
-  </CoreProvider></div>);
+  </CoreProvider></PhoneLayoutProvider></div>);
   return { fake, user, view, onClose, onTab, announce };
 }
 /** The pane beside the tab list: "delete server" is both a tab and a button, so a query for the button looks only here. */
@@ -73,6 +75,19 @@ const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame
 const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button').map(b => b.textContent);
 
 describe('ServerSettings tabs', () => {
+  it('keeps loading feedback and the live announcer accessible on the phone index', () => {
+    const phone = vi.spyOn(layout, 'usePhoneLayout').mockReturnValue(true);
+    try {
+      const { fake } = setup({ ...NONE, loaded: false }, { phone: true, tab: null });
+      const dialog = screen.getByRole('dialog', { name: en['admin.title'] });
+      expect(within(dialog).getByText(en['admin.loading'])).toBeVisible();
+      expect(within(dialog).getByRole('status').closest('[hidden]')).toBeNull();
+      expect(fake.callsOf('getBotInstallation')).toHaveLength(0);
+      act(() => fake.set(`permissions:${SERVER}`, NONE));
+      expect(within(dialog).queryByText(en['admin.loading'])).toBeNull();
+      expect(within(dialog).getByRole('button', { name: en['workspace.members'] })).toBeVisible();
+    } finally { phone.mockRestore(); }
+  });
   it('uses registry visibility for ordinary members and keeps the audit-log gate separate', () => {
     setup({ ...NONE, loaded: true, viewAuditLog: false });
     expect(navNames()).toContain('Members');

@@ -38,6 +38,7 @@ export function ServerSettings(props: ServerSettingsProps): React.JSX.Element {
 
 function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, activity, onMessage = () => undefined, onCompare = () => undefined }: ServerSettingsProps): React.JSX.Element {
   const phone = usePhoneLayout();
+  const phoneIndex = phone && tab === null;
   const communities = useSlice('communities');
   const community = communities?.find(c => c.id === communityId);
   const rawAccess = useSlice(`permissions:${communityId}`);
@@ -45,7 +46,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   const account = useSlice('account');
   const removals = useSlice('removals');
   const allowed = useMemo(() => availableSettings('server', access), [access]);
-  const active = phone && tab === null ? null
+  const active = phoneIndex ? null
     : (allowed.find(entry => entry.id === tab)?.id as ServerSettingsSection | undefined)
       ?? (tab === null || access?.loaded === true ? (allowed[0]?.id as ServerSettingsSection | undefined) ?? null : null);
   const [closed, setClosed] = useState(false);
@@ -164,11 +165,13 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   return <>
     <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={close}
       identity={shown ? <span>{shown.name}</span> : undefined}
-      nav={<SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
-      footer={footer} phonePage={phone && tab === null ? 'index' : 'section'} sectionTitle={sectionTitle}
-      backLabel={t('workspace.back')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide} overlays={workspace?.confirmation} activity={activity}>
-      {!access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
-      <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p>
+      nav={phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p>
+        : <SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
+      footer={footer} phonePage={phoneIndex ? 'index' : 'section'} sectionTitle={sectionTitle}
+      backLabel={t('workspace.back')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide}
+      overlays={<>{workspace?.confirmation}{phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}</>} activity={activity}>
+      {!phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
+      {!phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}
       {content}
 
     </SettingsFrame>
