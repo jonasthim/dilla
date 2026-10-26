@@ -431,6 +431,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await expectBar(page, tag, 'the channel header', '.d-channel-header');
   if (size.width >= 1440) await expectBar(page, tag, 'the members head', '.d-member-list__bar');
   await expectNoOverflow(page, tag, 'a channel');
+  await expectReminderInbox(page, `channel at ${tag}`);
 
   // C1: at 1024 with the members aside open the header keeps its name and every action stays inside the header.
   if (size.width === 1024) {
@@ -458,6 +459,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the conversation header', '.d-channel-header');
   await expectNoOverflow(page, tag, 'a direct message');
+  await expectReminderInbox(page, `direct message at ${tag}`);
 
   // The voice stage (B1), opened by its path so that Ada does not join (a click on a desktop voice row joins).
   if (voicePath !== '') {
@@ -469,6 +471,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     const rowNames = await boxes(page, '.d-voice-row__name', '.d-channel-list__list');
     if (avatars.length > 0 && rowNames.length > 0) expectAt(`A7 a person's avatar starts at the names' x at ${tag}`, avatars[0].x, rowNames[0].x, TOL);
     await expectNoOverflow(page, tag, 'the voice stage');
+    await expectReminderInbox(page, `idle voice at ${tag}`);
   }
 
   // Settings is a full-screen modal at every viewport. On desktop/tablet its inner workspace is centered and
@@ -505,6 +508,24 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   }
   await page.keyboard.press('Escape');
   await expect(settings).toBeHidden({ timeout: WAIT });
+}
+
+/** The private inbox stays reachable when its one trigger moves between existing header slots. */
+async function expectReminderInbox(page: Page, state: string): Promise<void> {
+  await test.step(`reminder inbox on ${state}`, async () => {
+    const before = page.url();
+    const opener = page.getByRole('button', { name: 'Reminders', exact: true });
+    await expect(opener).toHaveCount(1);
+    await expect(opener).toBeVisible();
+    await opener.click();
+    const inbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
+    await expect(inbox).toHaveCount(1);
+    await expect(inbox).toBeVisible();
+    await inbox.getByRole('button', { name: 'Close reminders', exact: true }).click();
+    await expect(inbox).toBeHidden();
+    await expect(opener).toBeFocused();
+    await expect(page).toHaveURL(before);
+  });
 }
 
 /** Opens a path in the app without a click that would join a call. */
@@ -625,6 +646,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectSafeAreaBar(page, tag);
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
+  await expectReminderInbox(page, `channel at ${tag}`);
   await expectWrapsInLog(page, tag, 'a channel');
   await toList();
 
@@ -636,6 +658,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
     await expectBar(page, tag, 'the phone header (voice)', '.d-phone-header');
     await expectTargets(page, tag, 'the voice stage');
     await expectNoOverflow(page, tag, 'the voice stage');
+    await expectReminderInbox(page, `idle voice at ${tag}`);
     await toList();
   }
 
@@ -649,6 +672,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await pane('view');
   await expectBar(page, tag, 'the phone header (direct message)', '.d-phone-header');
   await expectNoOverflow(page, tag, 'a direct message');
+  await expectReminderInbox(page, `direct message at ${tag}`);
   await toList();
 
   // The activity and You tabs remain app destinations; You now has one settings entry point.
@@ -935,6 +959,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
+    await expectReminderInbox(cy, 'joined voice at 390x844');
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];
     const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
     expect.soft(tabs !== undefined && controls !== undefined, 'D4 the voice controls and tab bar are on screen').toBe(true);
