@@ -477,6 +477,7 @@ type utilityIntegrationSession struct {
 	uploadGroups          []id.ID
 	admissionCalls        int
 	snapshotCalls         int
+	closedUploads         int
 }
 
 func (s *utilityIntegrationSession) BotActorAuthority(_ context.Context, community, actor id.ID) (client.ActorAuthority, bool, error) {
@@ -515,9 +516,18 @@ func (s *utilityIntegrationSession) PostBotMessage(_ context.Context, community,
 	hash := sha256.Sum256(upload.PrivateMessage)
 	reply, _ := cborx.Marshal([]any{uint64(len(s.uploads) + 1), make([]byte, 32), uint64(2000)})
 	receipt := protocol.SendReceipt{OperationID: upload.OperationID, AttemptID: upload.AttemptID, PredecessorAttemptID: upload.PredecessorAttemptID, CommunityID: community, GroupID: group, ExpectedGeneration: upload.ExpectedGeneration, CiphertextHash: hash[:], Class: upload.Class, Outcome: protocol.ReceiptAccepted, Epoch: upload.Epoch, SendResponse: &protocol.OriginalSendResponse{Sequence: uint64(len(s.uploads) + 1), FrankingTag: make([]byte, 32), ReceiveTimestamp: 2000, Body: reply}}
+	closed := s.closedUploads > 0
+	if closed {
+		s.closedUploads--
+		receipt.Outcome = protocol.ReceiptClosedNotAccepted
+		receipt.SendResponse = nil
+	}
 	s.receipts[upload.AttemptID] = receipt
 	s.uploads = append(s.uploads, upload)
 	s.uploadGroups = append(s.uploadGroups, group)
+	if closed {
+		return protocol.SendReceipt{}, errors.New("upload failed; durable receipt closes this attempt")
+	}
 	return receipt, nil
 }
 func (s *utilityIntegrationSession) IssueBotInteractionAdmission(_ context.Context, installation, request, group, participant, device id.ID) ([]byte, error) {
@@ -787,7 +797,7 @@ func TestPrivateCapabilityRecoveryResumesClosedResponseThroughProductionAssembly
 	community, installation, bot, actor, device, group := utilityID(2), utilityID(3), utilityID(8), utilityID(6), utilityID(9), utilityID(10)
 	binding := native.InteractionGroupBinding{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, ParticipantUser: actor, ParticipantDevice: device, PolicyVersion: 1, E2EEVersion: 1}
 	n := &utilityIntegrationNative{utilityStateFake: state, groups: map[id.ID]native.GroupInfo{}, interaction: native.InteractionGroupDescriptor{Group: group, BotDevice: utilityID(14), Binding: binding, Epoch: 1, State: 2}, prepared: map[string]native.PreparedSend{}}
-	session := &utilityIntegrationSession{community: community, member: true, active: true, receipts: map[id.ID]protocol.SendReceipt{}}
+	session := &utilityIntegrationSession{community: community, member: true, active: true, closedUploads: 2, receipts: map[id.ID]protocol.SendReceipt{}}
 	discovery := utilityDiscoveryFake{instance: state.binding.Instance, generation: 9}
 	coordinator, err := service.NewSendCoordinatorWithAdapters(n, discovery)
 	if err != nil {
@@ -808,18 +818,15 @@ func TestPrivateCapabilityRecoveryResumesClosedResponseThroughProductionAssembly
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = outbox.Send(ctx, event, []byte(body), id.New(), id.New(), 1000, 9); err != nil {
-		t.Fatal(err)
+	initial, err := outbox.Send(ctx, event, []byte(body), id.New(), id.New(), 1000, 9)
+	if err != nil || initial.Outcome != protocol.ReceiptClosedNotAccepted || len(session.uploads) != 2 {
+		t.Fatalf("expected bounded closed attempts: outcome=%v err=%v uploads=%d", initial.Outcome, err, len(session.uploads))
 	}
 	saved, found, err := outbox.Lookup(ctx, event)
 	if err != nil || !found {
 		t.Fatal("missing original response")
 	}
-	// Model a durable v1 response whose exact attempt was definitively closed.
-	closed := session.receipts[saved.AttemptID]
-	closed.Outcome = protocol.ReceiptClosedNotAccepted
-	closed.SendResponse = nil
-	session.receipts[saved.AttemptID] = closed
+	// Both original attempts were closed from the outset; neither was accepted.
 	restarted, err := service.NewInteractionResponseOutboxWithAdapters(n, coordinator, session)
 	if err != nil {
 		t.Fatal(err)
@@ -832,7 +839,7 @@ func TestPrivateCapabilityRecoveryResumesClosedResponseThroughProductionAssembly
 	if err != nil || !found || string(after.Body) != body || after.OperationID != saved.OperationID || after.AttemptID == saved.AttemptID || after.PredecessorAttemptID == nil || *after.PredecessorAttemptID != saved.AttemptID {
 		t.Fatal("recovery changed response or failed to link successor")
 	}
-	if len(session.uploads) != 2 || session.admissionCalls != 2 || n.interactionPrepareCalls != 2 {
+	if len(session.uploads) != 3 || session.admissionCalls != 3 || n.interactionPrepareCalls != 3 {
 		t.Fatal("private successor bypassed proof-bound encryption or duplicated upload")
 	}
 }
