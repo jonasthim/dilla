@@ -25,9 +25,9 @@ func (s *Session) IssueBotInteractionAdmission(ctx context.Context, installation
 	if err != nil {
 		return nil, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost,
+	raw, err := s.interactionProofRequest(ctx,
 		"bot-runtime/installations/"+inst+"/interaction-admissions",
-		nil, request, maxInteractionAdmissionResponse, true)
+		request, maxInteractionAdmissionResponse, true)
 	if err != nil {
 		return nil, err
 	}
