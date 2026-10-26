@@ -110,6 +110,9 @@ func (i *Instance) Call(ctx context.Context, export string, req []byte) ([]byte,
 	if i.mod == nil {
 		return nil, ErrReleased
 	}
+	if i.poisoned {
+		return nil, ErrTrap
+	}
 	fn := i.mod.ExportedFunction(export)
 	if fn == nil {
 		return nil, fmt.Errorf("mlswasi: no export %q", export)

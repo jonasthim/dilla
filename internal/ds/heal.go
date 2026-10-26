@@ -377,7 +377,7 @@ func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h Heal
 			return errCommitInvalid("heal_state", "the group changed while this heal was being prepared")
 		}
 		if guard != nil {
-			if err := guard(ctx, tx, lockedRow); err != nil {
+			if err := withBorrowedDeviceListVerifier(ctx, d.opts.Wasm, inst, func(scoped context.Context) error { return guard(scoped, tx, lockedRow) }); err != nil {
 				return err
 			}
 		}

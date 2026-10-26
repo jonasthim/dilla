@@ -1278,7 +1278,8 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 	}{req.RequestID, installationID, req.ExpectedRevision})
 	now := d.Clock.Now().Unix()
 	var missingChannels []id.ID
-	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
+	err = d.withDeviceListTransaction(r.Context(), func(ctx context.Context, tx store.Repository) error {
+		r := r.WithContext(ctx)
 		if row.RuntimeID == nil {
 			return botConflict("installation has no runtime")
 		}
