@@ -1,11 +1,11 @@
-import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import type { Locator } from '@playwright/test';
 import {
   addServerVia, attachInput, channelRow, composerBox, completeSignUp, copy, logRegion, makeInviteLink, messageRow, newAccount, openChannel,
-  rowAction, rowToolbar, sendText, signIn, signUp, trayEntries,
+  rowAction, rowToolbar, sendText, signIn, signUp, trayEntries, type Guard,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
-import { test } from './support/second';
+import { test, type SecondBrowser } from './support/second';
 import { installWorkerPort, portCall } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
@@ -25,6 +25,16 @@ const VOICE_HOST: HostConfig = { ...HOST, sfu: { port: SFU_PORT, udpPort: SFU_PO
 test.use({ baseURL: `http://127.0.0.1:${String(PORT)}` });
 test.use({ actionTimeout: ACTION_TIMEOUT });
 test.describe.configure({ timeout: 360_000 });
+
+async function secondPersona(browser: Browser, browserName: string, persistent: { open(): Promise<SecondBrowser> },
+  guard: Guard, baseURL: string): Promise<{ context: BrowserContext; page: Page }> {
+  // WebKit's ephemeral context deliberately fails the shipping persistence probe. Use a normal
+  // second profile there; keep the already-qualified Chromium/Firefox context path unchanged.
+  if (browserName === 'webkit') return persistent.open();
+  const context = await browser.newContext({ baseURL });
+  await guard.attach(context);
+  return { context, page: await context.newPage() };
+}
 
 async function createCommunity(page: Page): Promise<void> {
   await addServerVia(page, 'create');
@@ -374,7 +384,7 @@ test('composer keeps private results private, publishes only explicit text, and 
   } finally { await stopAppBeforeHost(page, host); }
 });
 
-test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, second: secondBrowser, instanceName }, testInfo) => {
+test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, browser, browserName, guard, second: secondBrowser, instanceName }, testInfo) => {
   test.setTimeout(600_000); // Aggregate budget for serial authenticated create/vote/voter/close/re-enable round trips.
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
@@ -403,7 +413,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     await createCommunity(page);
     await enableBot(page, owner.password, ['roles']);
     const invite = await makeInviteLink(page, COMMUNITY);
-    const joined = await secondBrowser.open();
+    const joined = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = joined.context;
     const member = joined.page;
     await traceCoreWorker(member);
@@ -558,7 +568,7 @@ test('music snapshot and clear use the current SFU voice call and report private
   }
 });
 
-test('moderation requires confirmation and applies to a distinct joined member', async ({ page, second: secondBrowser, instanceName }) => {
+test('moderation requires confirmation and applies to a distinct joined member', async ({ page, browser, browserName, guard, second: secondBrowser, instanceName }) => {
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
@@ -567,7 +577,7 @@ test('moderation requires confirmation and applies to a distinct joined member',
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     const invite = await makeInviteLink(page, COMMUNITY);
-    const joined = await secondBrowser.open();
+    const joined = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = joined.context;
     const member = joined.page;
     await traceCoreWorker(member);
@@ -595,7 +605,7 @@ test('moderation requires confirmation and applies to a distinct joined member',
   }
 });
 
-test('reminders sync across devices and remain due after Bot restart and reload', async ({ page, second: secondBrowser, instanceName }) => {
+test('reminders sync across devices and remain due after Bot restart and reload', async ({ page, browser, browserName, guard, second: secondBrowser, instanceName }) => {
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
@@ -621,7 +631,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     const originalReceipt = await reminderReceipt(page, requestId);
     if (originalReceipt === null) throw new Error(`acknowledged reminder response ${requestId} disappeared from the worker trace`);
 
-    const signedIn = await secondBrowser.open();
+    const signedIn = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = signedIn.context;
     const second = signedIn.page;
     await signIn(second, owner, instanceName);
