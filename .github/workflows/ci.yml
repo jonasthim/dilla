@@ -666,9 +666,9 @@ jobs:
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
-    # The full browser suite now takes about 35–38 minutes on hosted runners (2026-10-24).
-    # Allow room for runner variance while retaining a bounded job.
-    timeout-minutes: 50
+    # 2026-10-26: the web suite reached 47m after core2.5m, then hit the50m job cap before voice/artifacts.
+    # Include slash acceptance/native preparation and reserve bounded diagnostic upload time.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -729,14 +729,26 @@ jobs:
       # no level, so the fake microphone's tone counts as speech and an idle desktop is never moved).
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
+        id: firefox-web-tests
+        timeout-minutes: 55
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
+      # Capture web/core failures before any later suite can consume the remaining job budget.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
+        timeout-minutes: 5
+        with:
+          name: browser-web-results-firefox
+          path: e2e/test-results
+          if-no-files-found: error
+      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
+        id: firefox-voice-tests
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      # These conditions are mutually exclusive with the earlier failure upload (artifact v4+).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure() && steps.firefox-web-tests.outcome == 'success' && steps.firefox-voice-tests.outcome == 'failure'
+        timeout-minutes: 5
         with:
           name: browser-web-results-firefox
           path: e2e/test-results
