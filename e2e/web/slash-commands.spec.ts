@@ -2,9 +2,10 @@ import { expect, type BrowserContext, type Page } from '@playwright/test';
 import type { Locator } from '@playwright/test';
 import {
   addServerVia, attachInput, channelRow, composerBox, completeSignUp, copy, logRegion, makeInviteLink, messageRow, newAccount, openChannel,
-  rowAction, rowToolbar, sendText, signIn, signUp, test, trayEntries,
+  rowAction, rowToolbar, sendText, signIn, signUp, trayEntries,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { test } from './support/second';
 import { installWorkerPort, portCall } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
@@ -373,7 +374,7 @@ test('composer keeps private results private, publishes only explicit text, and 
   } finally { await stopAppBeforeHost(page, host); }
 });
 
-test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, browser, guard, instanceName }, testInfo) => {
+test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, second: secondBrowser, instanceName }, testInfo) => {
   test.setTimeout(600_000); // Aggregate budget for serial authenticated create/vote/voter/close/re-enable round trips.
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
@@ -402,9 +403,9 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     await createCommunity(page);
     await enableBot(page, owner.password, ['roles']);
     const invite = await makeInviteLink(page, COMMUNITY);
-    secondContext = await browser.newContext({ baseURL: host.url });
-    await guard.attach(secondContext);
-    const member = await secondContext.newPage();
+    const joined = await secondBrowser.open();
+    secondContext = joined.context;
+    const member = joined.page;
     await traceCoreWorker(member);
     const bea = await joinAs(member, host, invite, instanceName, 'Bea');
     expect(bea.username).not.toBe(owner.username);
@@ -519,8 +520,8 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
       await expect(card).toHaveCount(0, { timeout: BOT_WAIT });
     }
   } finally {
-    await secondContext?.close();
-    await stopAppBeforeHost(page, host);
+    try { await secondContext?.close(); }
+    finally { await stopAppBeforeHost(page, host); }
   }
 });
 
@@ -557,7 +558,7 @@ test('music snapshot and clear use the current SFU voice call and report private
   }
 });
 
-test('moderation requires confirmation and applies to a distinct joined member', async ({ page, browser, guard, instanceName }) => {
+test('moderation requires confirmation and applies to a distinct joined member', async ({ page, second: secondBrowser, instanceName }) => {
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
@@ -566,9 +567,9 @@ test('moderation requires confirmation and applies to a distinct joined member',
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     const invite = await makeInviteLink(page, COMMUNITY);
-    secondContext = await browser.newContext({ baseURL: host.url });
-    await guard.attach(secondContext);
-    const member = await secondContext.newPage();
+    const joined = await secondBrowser.open();
+    secondContext = joined.context;
+    const member = joined.page;
     await traceCoreWorker(member);
     const bea = await joinAs(member, host, invite, instanceName, 'Bea');
     expect(bea.username).not.toBe(owner.username);
@@ -589,12 +590,12 @@ test('moderation requires confirmation and applies to a distinct joined member',
     await expect(member.getByRole('navigation', { name: copy('shell.rail.label'), exact: true }).getByRole('button', { name: COMMUNITY })).toHaveCount(0, { timeout: WAIT });
     await expect(region.getByRole('status')).toContainText('Bea was kicked.', { timeout: WAIT });
   } finally {
-    await secondContext?.close();
-    await stopAppBeforeHost(page, host);
+    try { await secondContext?.close(); }
+    finally { await stopAppBeforeHost(page, host); }
   }
 });
 
-test('reminders sync across devices and remain due after Bot restart and reload', async ({ page, browser, guard, instanceName }) => {
+test('reminders sync across devices and remain due after Bot restart and reload', async ({ page, second: secondBrowser, instanceName }) => {
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
@@ -620,9 +621,9 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     const originalReceipt = await reminderReceipt(page, requestId);
     if (originalReceipt === null) throw new Error(`acknowledged reminder response ${requestId} disappeared from the worker trace`);
 
-    secondContext = await browser.newContext({ baseURL: host.url });
-    await guard.attach(secondContext);
-    const second = await secondContext.newPage();
+    const signedIn = await secondBrowser.open();
+    secondContext = signedIn.context;
+    const second = signedIn.page;
     await signIn(second, owner, instanceName);
     await openChannel(second, COMMUNITY, GENERAL);
     await second.getByRole('button', { name: 'Reminders', exact: true }).click();
@@ -678,7 +679,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
         .filter(value => value.command?.m === 'humanInteractionRequest' && value.command.operation === 80).length ?? 0;
     })).toBe(0);
   } finally {
-    await secondContext?.close();
-    await stopAppBeforeHost(page, host);
+    try { await secondContext?.close(); }
+    finally { await stopAppBeforeHost(page, host); }
   }
 });
