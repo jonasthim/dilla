@@ -1,4 +1,4 @@
-import { canModerate, COMMANDS, commandById, PERM, resolveCommunity, topOf, type CommandContext as Binding, type CommandInvocation, type CommandResult, type RoleSummary, type TimelineItem } from '@dilla/client-core';
+import { canModerate, COMMANDS, commandById, formatClassicCommandMessage, PERM, resolveCommunity, topOf, type CommandContext as Binding, type CommandInvocation, type CommandResult, type RoleSummary, type TimelineItem } from '@dilla/client-core';
 import type { CoreClient } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandHandler, CommandProviderHandlers } from './command-types.ts';
 import { excerpt } from '../shell-model.ts';
@@ -69,9 +69,9 @@ const entries: Record<string, CommandHandler> = {
     return success(COMMANDS_HELP);
   }),
   me: handler((invocation, context) => publish(context, `_${invocation.args.text}_`)),
-  shrug: handler((invocation, context) => publish(context, `¯\\\\\\_(ツ)\\_/¯${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
-  tableflip: handler((invocation, context) => publish(context, `(╯°□°)╯︵ ┻━┻${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
-  unflip: handler((invocation, context) => publish(context, `┬─┬ ノ( ゜-゜ノ)${invocation.args.text ? ` ${invocation.args.text}` : ''}`)),
+  shrug: handler((invocation, context) => publish(context, formatClassicCommandMessage('shrug', invocation.args.text))),
+  tableflip: handler((invocation, context) => publish(context, formatClassicCommandMessage('tableflip', invocation.args.text))),
+  unflip: handler((invocation, context) => publish(context, formatClassicCommandMessage('unflip', invocation.args.text))),
   code: handler((invocation, context) => {
     const language = invocation.args.language.trim();
     if (!/^[\w+-]{1,32}$/.test(language)) return failure('Language must be 1 to 32 letters, digits, underscores, plus signs, or hyphens.');
@@ -264,7 +264,7 @@ const entries: Record<string, CommandHandler> = {
   'selfrole list': handler(async (_invocation, context) => {
     const communityId = requireCommunity(context);
     const rows = await context.client.call({ m: 'listSelfRoles', communityId }) as { id: string; name: string; selfSelected: boolean }[];
-    return success(rows.length ? rows.map(row => `${row.selfSelected ? '✓' : '○'} ${row.name}`).join(' · ') : 'No self-assignable roles are available.');
+    return success(rows.length ? rows.map(row => `${row.selfSelected ? '[x]' : '[ ]'} ${row.name}`).join(' · ') : 'No self-assignable roles are available.');
   }),
   'selfrole add': handler(async (invocation, context) => selfRole(invocation, context, true)),
   'selfrole remove': handler(async (invocation, context) => selfRole(invocation, context, false)),

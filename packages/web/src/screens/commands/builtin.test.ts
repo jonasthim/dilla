@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { COMMANDS, PERM, type ChannelSummary, type Command, type TimelineItem } from '@dilla/client-core';
+import { CLASSIC_COMMAND_PAYLOADS, COMMANDS, PERM, type ChannelSummary, type Command, type TimelineItem } from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import { builtinHandlers } from './builtin.ts';
 import type { CommandExecutionContext } from './command-types.ts';
@@ -258,9 +258,9 @@ describe('builtin handler safety regressions', () => {
     const core = new FakeClient();
     const threadId = 'ab'.repeat(16);
     const cases: { id: string; args: Record<string, string>; text: string }[] = [
-      { id: 'shrug', args: {}, text: '¯\\\\\\_(ツ)\\_/¯' },
-      { id: 'tableflip', args: {}, text: '(╯°□°)╯︵ ┻━┻' },
-      { id: 'unflip', args: {}, text: '┬─┬ ノ( ゜-゜ノ)' },
+      { id: 'shrug', args: {}, text: CLASSIC_COMMAND_PAYLOADS.shrug },
+      { id: 'tableflip', args: { text: 'after this' }, text: `${CLASSIC_COMMAND_PAYLOADS.tableflip} after this` },
+      { id: 'unflip', args: {}, text: CLASSIC_COMMAND_PAYLOADS.unflip },
       { id: 'code', args: { language: 'ts', text: 'let n = 1' }, text: '```ts\nlet n = 1\n```' },
     ];
     for (const testCase of cases) {
@@ -438,6 +438,17 @@ describe('builtin handler safety regressions', () => {
     expect(listed.message).toContain('Reader');
     expect(added.status).toBe('success');
     expect(core.callsOf('selectSelfRole')).toEqual([{ m: 'selectSelfRole', communityId: cid, roleId, requestId: context.requestId, enabled: true }]);
+  });
+
+  it('states selected and unselected self-roles in the private list', async () => {
+    const core = new FakeClient();
+    core.handler = command => command.m === 'listSelfRoles' ? Promise.resolve([
+      { id: 'ed'.repeat(16), name: 'Reader', selfSelected: true },
+      { id: 'ef'.repeat(16), name: 'Writer', selfSelected: false },
+    ]) : Promise.resolve(null);
+    expect(await builtinHandlers['selfrole list']!({ commandId: 'selfrole list', args: {} }, { ...context, client: core }))
+      .toEqual({ status: 'success', private: true, message: '[x] Reader · [ ] Writer' });
+    expect(core.callsOf('send')).toHaveLength(0);
   });
 
   it('removes only a currently selected self-role using the stable role ID and attempt ID', async () => {
