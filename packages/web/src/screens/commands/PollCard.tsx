@@ -87,9 +87,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     setStoredAttempt({ key: attemptKey, value: next });
   };
   const [voters, setVoters] = useState<{ option: number; ids: string[]; cursor: Uint8Array | null } | null>(null);
-  const ref = useRef<HTMLElement>(null); const generation = useRef(0);
+  const ref = useRef<HTMLElement>(null); const generation = useRef(0); const voterGeneration = useRef(0);
   const utilities = useMemo(() => createBotUtilities(props.client, props.communityId!), [props.client, props.communityId]);
-  const invalidate = useCallback(() => { setRecord(null); setVerifiedScope(null); setVoters(null); }, []);
+  const invalidate = useCallback(() => { voterGeneration.current++; setRecord(null); setVerifiedScope(null); setVoters(null); }, []);
   const refresh = useCallback(async (): Promise<PollSummary | null> => {
     const current = ++generation.current;
     try {
@@ -122,8 +122,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     observer.observe(node); return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (!active) { generation.current++; return; }
+    if (!active) { generation.current++; voterGeneration.current++; return; }
     const currentGeneration = generation;
+    const currentVoterGeneration = voterGeneration;
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
     let pending = false;
@@ -133,7 +134,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       try { await refresh(); } finally { pending = false; }
     };
     void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
-    return () => { window.clearInterval(timer); currentGeneration.current++; };
+    return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
   const canClose = poll !== null && (poll.creatorId === props.selfId || (props.bits !== null && (props.bits & PERM.manageMessages) !== 0));
@@ -218,13 +219,15 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     finally { setBusy(false); }
   };
   const loadVoters = async (option: number, cursor: Uint8Array | null = null) => {
-    const identity = owner; const installation = installationId; const source = scopeKey; const generationAtStart = generation.current;
+    // Record refreshes may complete while this authenticated page is loading.
+    // Only a newer voter query or a changed/invalidated context supersedes it.
+    const identity = owner; const installation = installationId; const source = scopeKey; const request = ++voterGeneration.current;
     try { const page = await utilities.pollVoters({ pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, option, cursor });
       const caps = await utilities.capabilities();
-      if (!isSameOwner() || identity !== owner || installationRef.current !== installation || scopeRef.current !== source || generation.current !== generationAtStart
-        || !sourceAccessibleRef.current || caps.installationId !== installation || caps.botUserId !== props.authorId) return;
+      if (!isSameOwner() || identity !== owner || installationRef.current !== installation || scopeRef.current !== source || voterGeneration.current !== request
+        || accessScopeRef.current !== accessScope || !sourceAccessibleRef.current || caps.installationId !== installation || caps.botUserId !== props.authorId) return;
       setVoters(previous => ({ option, ids: cursor !== null && previous?.option === option ? [...previous.ids, ...page.voters] : page.voters, cursor: page.nextCursor })); }
-    catch { if (scopeRef.current === source && isSameOwner()) setError(t('poll.readError')); }
+    catch { if (voterGeneration.current === request && scopeRef.current === source && isSameOwner()) setError(t('poll.readError')); }
   };
   const toggle = (index: number) => setSelected(current => {
     const selectedNow = current ?? poll.myChoices ?? [];
