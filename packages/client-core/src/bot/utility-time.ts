@@ -1,7 +1,6 @@
 const MIN_REMINDER_SECONDS = 60;
 const MAX_REMINDER_SECONDS = 365 * 24 * 60 * 60;
 const MAX_UNIX_SECONDS = 253_402_300_799;
-const DURATION_PART = /(\d+(?:\.\d+)?)(ms|s|m|h|d|w)/g;
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?$/;
 
 export type ReminderTimeCandidate = {
@@ -80,18 +79,35 @@ function invalid(reason: string): ReminderTimeResult { return { kind: 'invalid',
 
 function parseDurationSeconds(value: string): number | null {
   if (!value) return null;
-  const matches = [...value.matchAll(DURATION_PART)];
-  if (matches.length === 0 || matches.map((match) => match[0]).join('') !== value) return null;
   const scale: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
   let millis = 0;
-  for (const match of matches) {
-    const amount = Number(match[1]);
+  let index = 0;
+  // Consume each token at the current position; never retry an unterminated
+  // digit run at every suffix, which makes an unanchored regex quadratic.
+  while (index < value.length) {
+    const start = index;
+    while (isDurationDigit(value, index)) index++;
+    if (index === start) return null;
+    if (value[index] === '.') {
+      const fractionStart = ++index;
+      while (isDurationDigit(value, index)) index++;
+      if (index === fractionStart) return null;
+    }
+    const amount = Number(value.slice(start, index));
     if (!Number.isFinite(amount)) return null;
-    millis += amount * scale[match[2]];
+    let unit = value[index++];
+    if (unit === 'm' && value[index] === 's') { unit = 'ms'; index++; }
+    if (scale[unit] === undefined) return null;
+    millis += amount * scale[unit];
     if (!Number.isFinite(millis)) return null;
   }
   if (!Number.isInteger(millis / 1000)) return null;
   return millis / 1000;
+}
+
+function isDurationDigit(value: string, index: number): boolean {
+  const code = value.charCodeAt(index);
+  return code >= 48 && code <= 57;
 }
 
 function parseDateTime(value: string): { parts: LocalParts; offset: number | null } | null {

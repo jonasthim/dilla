@@ -19,6 +19,35 @@ describe('parseReminderTime', () => {
     });
   });
 
+  it.each([
+    ['00001m', 60],
+    ['00001.500m', 90],
+    ['0w0d0h1m0s0ms', 60],
+    ['1h30m', 5_400],
+    ['1m1h1m', 3_720],
+    ['0'.repeat(4_096) + '1m', 60],
+    ['500ms59s500ms', 60],
+    ['00060s', 60],
+    ['365d0ms', 31_536_000],
+    [' 1m ', 60],
+  ])('preserves duration grammar and unit arithmetic for %j', (input, seconds) => {
+    expect(parseReminderTime(input, 'UTC', now)).toMatchObject({ kind: 'valid', mode: 'relative', seconds });
+  });
+
+  it.each([
+    '0'.repeat(4_096) + 'x',
+    '0'.repeat(4_096) + '.x',
+    '0.' + '0'.repeat(4_096) + 'x',
+    '1m' + '0'.repeat(4_096) + 'x',
+    '1m 30s', '1m-30s', '1m.30s', '.5m', '1.m', '1.2.3m', '1M', '1m1', '1m30sx',
+  ])('rejects incomplete or noncontiguous duration tokens (case %#)', input => {
+    expect(parseReminderTime(input, 'UTC', now)).toEqual({ kind: 'invalid', reason: 'invalid-date' });
+  });
+
+  it.each(['0m', '59s999ms', '365d1s', '9'.repeat(400) + 'm'])('keeps duration bounds and numeric overflow checks for case %#', input => {
+    expect(parseReminderTime(input, 'UTC', now).kind).toBe('invalid');
+  });
+
   it('canonicalizes IANA aliases for previews and rejects fixed-offset zones', () => {
     const alias = parseReminderTime('1m', 'europe/stockholm', now);
     expect(alias.kind).toBe('valid');
