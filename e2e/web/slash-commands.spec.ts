@@ -373,6 +373,7 @@ test('composer keeps private results private, publishes only explicit text, and 
 });
 
 test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, browser, guard, instanceName }, testInfo) => {
+  test.setTimeout(600_000); // Aggregate budget for serial authenticated create/vote/voter/close/re-enable round trips.
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
