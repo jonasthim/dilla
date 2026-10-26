@@ -186,7 +186,7 @@ describe('welcome settings panel', () => {
     response = { requestId: requestB.requestId, operation: 1, status: 0, revision: '9', data: encodeWelcomeSettings(configB) };
 
     expect(await screen.findByDisplayValue(configB.template)).toBeInTheDocument();
-    expect(ackSpy).toHaveBeenCalledWith(communityB, '1');
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(communityB, '1'));
     expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2], [requestB.requestId]);
   });
 
