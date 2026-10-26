@@ -780,3 +780,59 @@ func TestRuntimeUtilityDispatcherRejectsOverflowCapabilities(t *testing.T) {
 		t.Fatal("oversized capabilities were truncated")
 	}
 }
+
+func TestPrivateCapabilityRecoveryResumesClosedResponseThroughProductionAssembly(t *testing.T) {
+	ctx := context.Background()
+	state := newUtilityStateFake()
+	community, installation, bot, actor, device, group := utilityID(2), utilityID(3), utilityID(8), utilityID(6), utilityID(9), utilityID(10)
+	binding := native.InteractionGroupBinding{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, ParticipantUser: actor, ParticipantDevice: device, PolicyVersion: 1, E2EEVersion: 1}
+	n := &utilityIntegrationNative{utilityStateFake: state, groups: map[id.ID]native.GroupInfo{}, interaction: native.InteractionGroupDescriptor{Group: group, BotDevice: utilityID(14), Binding: binding, Epoch: 1, State: 2}, prepared: map[string]native.PreparedSend{}}
+	session := &utilityIntegrationSession{community: community, member: true, active: true, receipts: map[id.ID]protocol.SendReceipt{}}
+	discovery := utilityDiscoveryFake{instance: state.binding.Instance, generation: 9}
+	coordinator, err := service.NewSendCoordinatorWithAdapters(n, discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := native.InteractionGroupExpected{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, BotDevice: utilityID(14), ParticipantUser: actor, ParticipantDevice: device, Group: group, PolicyVersion: 1}
+	snapshots := &utilityIntegrationSnapshot{expected: expected}
+	dispatcher, err := newRuntimeUtilityDispatcher(n, service.OverviewInteractions{Authority: session, CommunityID: community}.Handlers(), nil, session, community, installation, bot, 0, func() uint64 { return 1000 }, snapshots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := service.NewInteractionResponseOutboxWithAdapters(n, coordinator, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := integrationEvent(t, protocol.Request{RequestID: utilityID(20), CommunityID: community, Operation: protocol.OpCapabilities, Args: []any{}}, 1, community, group, actor, actor, device)
+	body, err := dispatcher.Dispatch(ctx, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = outbox.Send(ctx, event, []byte(body), id.New(), id.New(), 1000, 9); err != nil {
+		t.Fatal(err)
+	}
+	saved, found, err := outbox.Lookup(ctx, event)
+	if err != nil || !found {
+		t.Fatal("missing original response")
+	}
+	// Model a durable v1 response whose exact attempt was definitively closed.
+	closed := session.receipts[saved.AttemptID]
+	closed.Outcome = protocol.ReceiptClosedNotAccepted
+	closed.SendResponse = nil
+	session.receipts[saved.AttemptID] = closed
+	restarted, err := service.NewInteractionResponseOutboxWithAdapters(n, coordinator, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, found, err := restarted.ResumeWithPreflight(ctx, event, func(c context.Context) error { return dispatcher.ReauthorizeReadReplay(c, event) })
+	if err != nil || !found || receipt.Outcome != protocol.ReceiptAccepted {
+		t.Fatalf("private command remains blocked: found=%v outcome=%v err=%v", found, receipt.Outcome, err)
+	}
+	after, found, err := restarted.Lookup(ctx, event)
+	if err != nil || !found || string(after.Body) != body || after.OperationID != saved.OperationID || after.AttemptID == saved.AttemptID || after.PredecessorAttemptID == nil || *after.PredecessorAttemptID != saved.AttemptID {
+		t.Fatal("recovery changed response or failed to link successor")
+	}
+	if len(session.uploads) != 2 || session.admissionCalls != 2 || n.interactionPrepareCalls != 2 {
+		t.Fatal("private successor bypassed proof-bound encryption or duplicated upload")
+	}
+}
