@@ -7,6 +7,7 @@ import {
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { installWorkerPort, portCall } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
+import { leaveIfInCall } from '../voice/support/peer-browser';
 
 const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? 8581);
 const HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -550,7 +551,10 @@ test('music snapshot and clear use the current SFU voice call and report private
     await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
       .toContainText('Music queue cleared.', { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
-  } finally { await stopAppBeforeHost(page, host); }
+  } finally {
+    await leaveIfInCall(page);
+    await stopAppBeforeHost(page, host);
+  }
 });
 
 test('moderation requires confirmation and applies to a distinct joined member', async ({ page, browser, guard, instanceName }) => {
