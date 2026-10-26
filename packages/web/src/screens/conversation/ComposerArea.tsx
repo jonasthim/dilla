@@ -11,6 +11,7 @@ import { attachFiles, TrayList } from './Attachments.tsx';
 import { GifPickerPanel } from './GifPicker.tsx';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
 import { formatWait, spokenStep } from './slow.ts';
+import { CommandHost } from '../commands/CommandHost.tsx';
 
 export interface OutgoingMessage { raw: string; text: string; replyTo: string | null; attachments: readonly string[];
   /** The thread a send belongs to (the thread composer); absent for the channel's own composer. */
@@ -34,6 +35,10 @@ export interface ComposerAreaProps { channelId: string; label: string; placehold
 export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const client = useCore();
   const tray = useSlice(`tray:${p.channelId}`) ?? [];
+  const selfId = useSlice('account')?.user?.id ?? null;
+  const [commandMode, setCommandMode] = useState(false);
+  const [slashSubmission, setSlashSubmission] = useState<{ text: string; id: number } | null>(null);
+  const slashSubmissionId = useRef(0);
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number | null>(null);
@@ -49,6 +54,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const gifCommunity = route.name === 'channel' && p.threadId === undefined ? route.communityId : null;
   const [gifStatus, setGifStatus] = useState<{ communityId: string; on: boolean } | null>(null);
   const [gifOpen, setGifOpen] = useState(false);
+  const [gifQuery, setGifQuery] = useState('');
   const gifButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (gifCommunity === null) return;
@@ -142,7 +148,11 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     }
     return false;
   };
-  const send = (value: string) => {
+  const send = (value: string, explicitLiteral = false) => {
+    if (value.startsWith('/') && !explicitLiteral) {
+      setSlashSubmission({ text: value, id: ++slashSubmissionId.current });
+      return;
+    }
     if (tray.some(a => a.phase !== 'ready')) {
       p.dispatch({ type: 'trayError', text: t('shell.tray.notReady') });
       return;
@@ -162,9 +172,21 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     <span aria-hidden="true">{waitText}</span>{queued ? <span> {t('slow.queued')}</span> : null}
   </> : null;
   return <>
+    <CommandHost communityId={route.name === 'channel' ? route.communityId : null} channelId={p.channelId}
+      {...(p.threadId !== undefined ? { threadId: p.threadId } : {})} {...(bits !== null ? { bits } : {})}
+      items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
+      encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
+      onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={setCommandMode} slashSubmission={slashSubmission} />
+    {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery} dispatch={a => { p.dispatch(a); }}
+      {...(p.announce !== undefined ? { announce: p.announce } : {})}
+      onClose={reason => {
+        setGifOpen(false);
+        if (reason === 'escape') gifButton.current?.focus();
+        else if (reason === 'picked') textareaRef.current?.focus();
+      }} /> : null}
     <input ref={inputRef} className="dw-attach-input" type="file" multiple hidden
       onChange={e => { void attachFiles(client, p.channelId, Array.from(e.currentTarget.files ?? []), a => p.dispatch(a)); e.currentTarget.value = ''; }} />
-    <Composer label={p.label} placeholder={p.placeholder} maxLength={4000} value={p.draft}
+    {!commandMode ? <Composer label={p.label} placeholder={p.placeholder} maxLength={4000} value={p.draft}
       onChange={text => { p.onDraft(text); setActive(0);
         setCaret(textareaRef.current?.selectionStart ?? text.length); }}
       disabled={blocked !== null} disabledReason={blocked ?? undefined} onSend={send}
@@ -179,13 +201,6 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
           onCancel={() => { p.dispatch({ type: 'reply', reply: null }); textareaRef.current?.focus(); }} /> : null}
         <TrayList channelId={p.channelId} items={tray} onError={e => p.onError(e)} />
         {p.ui.trayError !== null ? <p className="dw-tray-error" role="alert">{p.ui.trayError}</p> : null}
-        {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} dispatch={a => { p.dispatch(a); }}
-          {...(p.announce !== undefined ? { announce: p.announce } : {})}
-          onClose={reason => {
-            setGifOpen(false);
-            if (reason === 'escape') gifButton.current?.focus();
-            else if (reason === 'picked') textareaRef.current?.focus();
-          }} /> : null}
         {open ? <MentionList id={listId} label={t('shell.composer.mentions')}
           options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary }))}
           activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}
@@ -198,7 +213,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
         if (item?.msgId) p.dispatch({ type: 'edit', msgId: item.msgId, value: editableText(item.body, p.book) });
       }}
       onPasteFiles={files => { void attachFiles(client, p.channelId, files, a => p.dispatch(a)); }} textareaRef={textareaRef}
-      canSendEmpty={tray.length > 0} />
+      canSendEmpty={tray.length > 0} /> : null}
     <p className="d-sr-only" role="status" data-slow="">{spoken.text}</p>
   </>;
 }

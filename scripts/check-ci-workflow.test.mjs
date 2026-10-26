@@ -334,13 +334,26 @@ jobs:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
+        id: firefox-web-tests
+        timeout-minutes: 55
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      # Capture web/core failures before any later suite can consume the remaining job budget.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
+        timeout-minutes: 5
+        with:
+          name: browser-web-results-firefox
+          path: e2e/test-results
+          if-no-files-found: error
+      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
+        id: firefox-voice-tests
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      # These conditions are mutually exclusive with the earlier failure upload (artifact v4+).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure() && steps.firefox-web-tests.outcome == 'success' && steps.firefox-voice-tests.outcome == 'failure'
+        timeout-minutes: 5
         with:
           name: browser-web-results-firefox
           path: e2e/test-results
@@ -1297,7 +1310,7 @@ for (const engine of ['chromium', 'firefox']) {
   });
   test(`a ${job} voice step without its own DILLA_TESTKIT env is reported, though the web step has one`, () => {
     const body = jobBody(job);
-    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+    const env = (engine === 'firefox' ? '        id: firefox-voice-tests\n' : '') + '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
     assert.ok(body.includes(voice + env), 'fixture sanity: the voice step and its env');
     const bare = body.replace(voice + env, voice);
     const problems = checkWorkflow(fixture(GOOD.replace(body, () => bare)));
@@ -1309,7 +1322,7 @@ test('a comment naming the audio server above the voice step does not stand in f
   const body = jobBody('firefox-web');
   const audio = '      - run: sh scripts/ci-audio-server.sh\n';
   const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
-  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+  const env = '        id: firefox-voice-tests\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
   assert.ok(body.includes(audio) && body.includes(voice + env), 'fixture sanity: the audio server, then the voice suite');
   const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice + env, `${voice}${env}${audio}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
@@ -1330,6 +1343,42 @@ test('the browser budgets cover observed hosted-runner durations', () => {
     assert.ok(timeout >= 50, `${job}: ${timeout}`);
   }
   assert.equal(BROWSER_WEB_JOBS['webkit-web'].voice, false);
+});
+
+test('Firefox reserves diagnostic headroom and rejects unbounded or duplicate failure uploads', () => {
+  const body = jobBody('firefox-web');
+  for (const changed of [
+    body.replace('        timeout-minutes: 55', '        timeout-minutes: 70'),
+    body.replace('        id: firefox-web-tests\n', ''),
+    body.replace('        id: firefox-voice-tests\n', ''),
+    body.replace('        timeout-minutes: 5', '        timeout-minutes: 15'),
+    body.replace("if: failure() && steps.firefox-web-tests.outcome == 'success' && steps.firefox-voice-tests.outcome == 'failure'", 'if: failure()'),
+  ]) {
+    assert.notEqual(changed, body);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => changed))).some(problem => problem.includes('firefox-web')
+      && /identified suites|diagnostic uploads/.test(problem)));
+  }
+});
+
+test('Firefox diagnostic uploads run once for core, web or voice failure and never on success', () => {
+  const steps = jobSteps(jobBody('firefox-web'));
+  const uploads = steps.filter(step => step.includes('name: browser-web-results-firefox'));
+  assert.equal(uploads.length, 2);
+  const conditions = uploads.map(step => step.find(line => line.startsWith('if: ')).slice(4));
+  const evaluate = (condition, failure, web, voice) => condition.split(' && ').every(term => ({
+    'failure()': failure,
+    "steps.firefox-web-tests.outcome == 'success'": web === 'success',
+    "steps.firefox-voice-tests.outcome == 'failure'": voice === 'failure',
+  })[term] === true);
+  for (const [core, web, voice, expected] of [
+    ['failure', 'skipped', 'skipped', 1], ['success', 'failure', 'skipped', 1],
+    ['success', 'success', 'failure', 1], ['success', 'success', 'success', 0],
+  ]) {
+    const earlyFailure = core === 'failure' || web === 'failure';
+    const count = Number(evaluate(conditions[0], earlyFailure, web, 'skipped'))
+      + Number(evaluate(conditions[1], earlyFailure || voice === 'failure', web, voice));
+    assert.equal(count, expected, `${core}/${web}/${voice}`);
+  }
 });
 
 test('two engine jobs uploading one artifact name are reported', () => {

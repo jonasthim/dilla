@@ -759,6 +759,8 @@ fn open_creates_app_schema_v12_and_reopens_idempotently() {
             "app_human_interaction_event_state",
             "app_human_interaction_events",
             "app_human_interaction_events_page",
+            "app_human_interaction_receipts",
+            "app_human_interaction_receipts_request",
             "app_human_interaction_response_claims",
             "app_manual_removal_evidence",
             "app_manual_removal_evidence_pending",

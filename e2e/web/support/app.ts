@@ -12,6 +12,7 @@ import { WebDriver, type PeerAttachRequest, type PeerAttached, type PeerDm, type
 export type { PeerAttachment, PeerAttachRequest, PeerAttached, PeerDm, PeerEnrolled, PeerFetched, PeerOpenedDm, PeerReceived, PeerSendOptions, PeerSetup } from './driver';
 import { runAxe } from './axe';
 import { nextCode } from './totp';
+import { peerSeed } from './peer-seed';
 import { ABORT_WINDOW_MS, isCancelledFetchLine, isNavigationAbortLine } from './abort-line';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
@@ -162,6 +163,8 @@ export function isPeerMessage(m: PeerReceived): m is PeerMessage {
 }
 interface SyncAnswer { epoch: number; members: number; received: PeerReceived[]; }
 
+let nextPeerSequence = 0;
+
 export class Peer {
   /** Every message the peer decrypted, across all syncs of this test. */
   readonly inbox: PeerReceived[] = [];
@@ -175,8 +178,9 @@ export class Peer {
   static async start(): Promise<Peer> {
     const invite = process.env.DILLA_TESTKIT_INVITE;
     if (!invite) throw new Error('DILLA_TESTKIT_INVITE is unset: the web global setup exports it from the test host banner');
-    const seed = randomInt(1, 0xff_ffff);
-    const driver = await WebDriver.start(PUBLIC_URL, { DILLA_TESTKIT_INVITE: invite, DILLA_TESTKIT_CONTROL: CONTROL_URL }, seed);
+    const seed = peerSeed(persistentTest.info().workerIndex, nextPeerSequence++);
+    const driver = await persistentTest.step(`Start native peer seed ${seed.toString(16)}`, () =>
+      WebDriver.start(PUBLIC_URL, { DILLA_TESTKIT_INVITE: invite, DILLA_TESTKIT_CONTROL: CONTROL_URL }, seed));
     return new Peer(driver, seed);
   }
 

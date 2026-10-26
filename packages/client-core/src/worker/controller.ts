@@ -198,6 +198,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'getBotCommandStatus',
   'getBotSpotifyConfig',
   'patchBotProfile',
   'listModerationCases',
@@ -387,6 +388,7 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  getBotCommandStatus: ['communityId'],
   getBotSpotifyConfig: ['communityId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
@@ -504,6 +506,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'getBotCommandStatus',
     'getBotSpotifyConfig',
     'patchBotProfile',
     'listModerationCases',
@@ -744,13 +747,16 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 0 || operation === 1 || operation === 2 || operation >= 10 && operation <= 24 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
+      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 24 || operation === 31
+        || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
+        || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
     const music = operation >= 10 && operation <= 23;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
     if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1
-      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 ? 2 : operation === 61 ? 3 : 0;
+    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
+      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
+        : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
     if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
     if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
     if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
@@ -773,18 +779,24 @@ function invalid(command: Record<string, unknown>): string | null {
       || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
     if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
     if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
+      || operation === 82 || operation === 83;
     const revision = command.revision;
     if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
       : revision !== null) return 'interaction revision is invalid';
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
-    || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 0 || op === 1 || op === 2 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
-  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
-    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
-  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
-    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
+    || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
+    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52
+      || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
+    || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+  if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined
+    && (!Array.isArray(command.requestIds) || command.requestIds.length < 1 || command.requestIds.length > 100
+      || command.requestIds.some((id: unknown) => typeof id !== 'string' || !ID.test(id))
+      || new Set(command.requestIds).size !== command.requestIds.length)) return 'response request ids are invalid';
+  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
+  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -956,15 +968,6 @@ const heldForTrust = (row: TimelineRow): boolean => row.status === 1 && HELD_REA
 /** A live row the core holds for its sender's trust, and when it was held (elapsed ms, R8). */
 type HeldLive = { groupId: Id; seq: bigint; heldAt: number };
 
-const OBSERVED_INTERACTION_CACHE_MAX = 64;
-const OBSERVED_INTERACTION_CACHE_TTL_MS = 60_000;
-const OBSERVED_INTERACTION_DRAIN_CHUNKS = 16;
-
-interface BotInteractionResponseView {
-  deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
-  status: number; revision: string | null; data: Uint8Array; sourceSeq: string;
-}
-
 export class Controller {
   private readonly parts: ControllerParts;
   /** The id of the last removal notice (web3.4 C4). */
@@ -998,10 +1001,9 @@ export class Controller {
   private core: CorePort | null = null;
   private readonly acceptedHumanInteractionSends = new Set<string>();
   private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
-  private readonly pendingHumanInteractionAcks = new Map<string, string>();
-  private readonly pendingBotInteractionAcks = new Map<string, string>();
-  private readonly observedInteractionResponses = new Map<string, { expiresAt: number; response: BotInteractionResponseView }>();
-  private acknowledgedInteractionThrough = 0n;
+  private readonly pendingHumanInteractionAcks = new Map<string, bigint[]>();
+  private readonly pendingBotInteractionAcks = new Map<string, bigint[]>();
+  private interactionAckLeaseGeneration = 0;
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1412,14 +1414,15 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
       case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
-      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations));
+      case 'readBotInteractionResponses': return this.readBotInteractionResponses(command.communityId, command.operations, command.requestIds);
       case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
-      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId);
+      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId, command.requestIds);
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
@@ -1556,6 +1559,13 @@ export class Controller {
     return row === null ? null : botInstallationView(row);
   }
 
+  private async getBotCommandStatus(communityId: string) {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotCommandStatus(fromHex(communityId));
+    return row === null ? null : { installationId: toHex(row.installationId),
+      botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
+  }
+
   private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     return this.routes.getBotSpotifyConfig(fromHex(communityId));
@@ -1607,10 +1617,16 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
-    const args: CborInput[] = command.args.map((value, index) =>
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
+      || operation === 82 || operation === 83;
+    const idArgument = (index: number): boolean =>
       (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
-        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0) && typeof value === 'string'
+        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
+        || operation === 71 && index === 0 || operation === 72 && (index === 0 || index === 1) || operation === 73 && index === 0
+        || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);
+    const args: CborInput[] = command.args.map((value, index) =>
+      idArgument(index) && typeof value === 'string'
         ? fromHex(value) : value);
     const sync = this.requireSync();
     return sync.runOnGroup(groupId, async () => {
@@ -1677,135 +1693,97 @@ export class Controller {
     });
   }
 
-  private expireObservedInteractionResponses(): void {
-    const now = this.deps.now();
-    for (const [deliveryId, cached] of this.observedInteractionResponses) {
-      if (cached.expiresAt <= now) this.observedInteractionResponses.delete(deliveryId);
-    }
-  }
-
-  private clearInteractionResponseState(): void {
-    this.observedInteractionResponses.clear();
-    this.pendingBotInteractionAcks.clear();
-    this.pendingHumanInteractionAcks.clear();
-  }
-
-  private cacheObservedInteractionResponse(event: HumanInteractionEvent): void {
-    try {
-      const response = decodeBotResponse(event.body);
-      validateBotResponseForRequest(response, event.communityId, event.requestId);
-      const deliveryId = String(event.deliveryId);
-      this.observedInteractionResponses.delete(deliveryId);
-      this.observedInteractionResponses.set(deliveryId, { expiresAt: this.deps.now() + OBSERVED_INTERACTION_CACHE_TTL_MS,
-        response: { deliveryId, requestId: toHex(event.requestId), communityId: toHex(event.communityId),
-          operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
-          status: response.status, revision: response.revision?.toString() ?? null, data: response.data.slice(),
-          sourceSeq: String(event.sourceSeq) } });
-      while (this.observedInteractionResponses.size > OBSERVED_INTERACTION_CACHE_MAX) {
-        const oldest = this.observedInteractionResponses.keys().next().value;
-        if (oldest === undefined) break;
-        this.observedInteractionResponses.delete(oldest);
-      }
-    } catch {
-      // Operation 0/24 is observational. An invalid envelope is omitted, then the event can be
-      // acknowledged so it cannot pin the shared journal ahead of later mutation responses.
-    }
-  }
-
-  /** Drain only the global journal's contiguous operation-0/24 prefix. Cache before ack so a
-   *  transient page/unmount cannot lose an observation when the prefix is successfully consumed. */
-  private drainObservedInteractionPrefix(): void {
-    this.expireObservedInteractionResponses();
-    const core = this.core;
-    if (core === null) return;
-    for (let chunk = 0; chunk < OBSERVED_INTERACTION_DRAIN_CHUNKS; chunk++) {
-      let page: ReturnType<CorePort['humanInteractionEventsRead']>;
-      try { page = core.humanInteractionEventsRead(0n, 100); } catch { return; }
-      const prefix: HumanInteractionEvent[] = [];
-      for (const event of page.events) {
-        if (event.operation !== 0 && event.operation !== 24) break;
-        prefix.push(event);
-      }
-      if (prefix.length === 0) {
-        // Core may advance past a full page of stale or trust-invalid rows without exposing
-        // them as events. Its next cursor is still a safe, consumed prefix and must not strand
-        // a later live observation behind those suppressed rows.
-        if (page.events.length === 0 && page.next > this.acknowledgedInteractionThrough) {
-          try { core.humanInteractionEventsAck(page.next); } catch { return; }
-          this.acknowledgedInteractionThrough = page.next;
-          continue;
-        }
-        return;
-      }
-      for (const event of prefix) this.cacheObservedInteractionResponse(event);
-      const through = prefix[prefix.length - 1].deliveryId;
-      if (through <= this.acknowledgedInteractionThrough) return;
-      try { core.humanInteractionEventsAck(through); }
-      catch { return; }
-      this.acknowledgedInteractionThrough = through;
-      if (prefix.length < page.events.length) return;
-    }
-  }
-
-  private cachedObservedInteractionResponses(communityHex: string, allowed: ReadonlySet<number>): BotInteractionResponseView[] {
-    this.expireObservedInteractionResponses();
-    return [...this.observedInteractionResponses.values()]
-      .map(cached => cached.response)
-      .filter(response => response.communityId === communityHex && allowed.has(response.operation))
-      .map(response => ({ ...response, data: response.data.slice() }));
-  }
-
-  private acknowledgeInteractionEvents(core: CorePort, through: bigint): void {
-    if (through <= this.acknowledgedInteractionThrough) return;
-    core.humanInteractionEventsAck(through);
-    this.acknowledgedInteractionThrough = through;
-  }
-
-  private readBotInteractionResponses(communityHex: string, operations: readonly number[]): {
-    responses: BotInteractionResponseView[]; through: string | null; blocked: boolean;
-  } {
+  private async readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): Promise<{
+    responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
+      status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
+    through: string | null; blocked: boolean;
+  }> {
     if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const allowed = new Set(operations);
-    this.drainObservedInteractionPrefix();
-    const core = this.requireCore();
-    const page = core.humanInteractionEventsRead(0n, 100);
-    const responses = this.cachedObservedInteractionResponses(communityHex, allowed);
-    const seen = new Set(responses.map(response => response.deliveryId));
-    for (const event of page.events) {
-      if (toHex(event.communityId) !== communityHex || !allowed.has(event.operation)) continue;
+    const requested = requestIds === undefined ? null : new Set(requestIds);
+    const rows = this.readAllHumanInteractionEvents();
+    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
+    let archivedEvents: HumanInteractionEvent[] = [];
+    if (requestIds !== undefined && requestIds.length > 0) {
+      const status = await this.routes.getBotCommandStatus(fromHex(communityHex));
+      if (status === null || status.state !== 3 || status.botUserId === null) {
+        throw new Refusal('E_FORBIDDEN', 'current active Bot installation and community membership are required');
+      }
+      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
+        fromHex(communityHex), status.installationId, status.botUserId, requestIds.map(fromHex))
+        .filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+          && requested?.has(toHex(event.requestId)));
+    }
+    const byRequest = new Map<string, HumanInteractionEvent>();
+    for (const event of [...pendingEvents, ...archivedEvents]) {
+      const requestId = toHex(event.requestId);
+      const prior = byRequest.get(requestId);
+      if (prior !== undefined) {
+        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation
+          || toHex(prior.groupId) !== toHex(event.groupId)) {
+          throw new Refusal('E_CORE_STATE', 'contradictory duplicate Bot interaction receipts');
+        }
+        continue;
+      }
+      byRequest.set(requestId, event);
+    }
+    const events = [...byRequest.values()].slice(0, 100);
+    const mapResponse = (event: HumanInteractionEvent) => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
-      const deliveryId = String(event.deliveryId);
-      if (seen.has(deliveryId)) continue;
-      seen.add(deliveryId);
-      responses.push({ deliveryId, requestId: toHex(event.requestId), communityId: communityHex,
+      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
         operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
-        status: response.status, revision: response.revision?.toString() ?? null, data: response.data.slice(),
-        sourceSeq: String(event.sourceSeq) });
-    }
-    const firstBlocked = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !allowed.has(event.operation));
-    const ackable = firstBlocked < 0 ? page.events : page.events.slice(0, firstBlocked);
-    const throughValue = page.events.length === 0 ? 0n : firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
-    const through = throughValue > 0n ? String(throughValue) : null;
-    if (through !== null) {
-      this.pendingBotInteractionAcks.set(`${communityHex}:${through}`, through);
-      while (this.pendingBotInteractionAcks.size > 32) {
-        const oldest = this.pendingBotInteractionAcks.keys().next().value;
-        if (oldest === undefined) break;
-        this.pendingBotInteractionAcks.delete(oldest);
-      }
-    }
-    return { responses, through, blocked: firstBlocked >= 0 };
+        status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
+        sourceSeq: String(event.sourceSeq) };
+      };
+    const responses = events.map(mapResponse);
+    const through = this.issueInteractionAckLease(communityHex, pendingEvents
+      .filter(event => byRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId)
+      .map(event => event.deliveryId), this.pendingBotInteractionAcks);
+    return { responses, through, blocked: false };
   }
 
   private ackBotInteractionResponses(communityHex: string, through: string): null {
     const key = `${communityHex}:${through}`;
-    if (!this.listed(communityHex) || this.pendingBotInteractionAcks.get(key) !== through) {
+    const deliveryIds = this.pendingBotInteractionAcks.get(key);
+    if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
-    this.acknowledgeInteractionEvents(this.requireCore(), BigInt(through));
+    const core = this.requireCore();
+    core.humanInteractionEventsAckSelected(deliveryIds);
     this.pendingBotInteractionAcks.delete(key);
     return null;
+  }
+
+  private readAllHumanInteractionEvents(): HumanInteractionEvent[] {
+    const events: HumanInteractionEvent[] = [];
+    let cursor = 0n;
+    let targetHighWater: bigint | null = null;
+    for (let pageNo = 0; pageNo < 41; pageNo++) {
+      const page = this.requireCore().humanInteractionEventsRead(cursor, 100);
+      targetHighWater ??= page.highWater;
+      events.push(...page.events.filter(event => event.deliveryId <= targetHighWater!));
+      if (page.next <= cursor || page.next >= targetHighWater) break;
+      cursor = page.next;
+    }
+    return events;
+  }
+
+  private issueInteractionAckLease(communityHex: string, deliveryIds: bigint[], leases: Map<string, bigint[]>): string | null {
+    if (deliveryIds.length === 0) return null;
+    let token: string;
+    do {
+      token = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    } while (leases.has(`${communityHex}:${token}`));
+    const key = `${communityHex}:${token}`;
+    leases.set(key, deliveryIds);
+    while (leases.size > 128) {
+      const oldest = leases.keys().next().value;
+      if (oldest === undefined) break;
+      leases.delete(oldest);
+    }
+    return token;
   }
 
   /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
@@ -1878,7 +1856,7 @@ export class Controller {
       return { requestId: requestHex, status: 'accepted' };
     });
   }
-  private async readHumanInteractionResponses(communityHex: string): Promise<{
+  private async readHumanInteractionResponses(communityHex: string, requestIds?: readonly string[]): Promise<{
     authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
       cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
         reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean; nextCursor: string | null }[];
@@ -1892,17 +1870,35 @@ export class Controller {
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       return { authorized: false, responses: [], through: null, blocked: false };
     }
-    this.drainObservedInteractionPrefix();
-    const core = this.requireCore();
-    const page = core.humanInteractionEventsRead(0n, 100);
+    const requested = requestIds === undefined ? null : new Set(requestIds);
+    const rows = this.readAllHumanInteractionEvents();
     const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
-    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !isModerationRead(event.operation));
-    // The journal ack is global, so this screen may consume only the contiguous prefix for its
-    // community. Events for another server stay pending and are handled in that server's Bot tab.
-    // The journal is global and read pages are bounded. Show only this community's decoded
-    // responses even when another community occurs earlier in the page; only the contiguous
-    // current-community prefix is eligible for acknowledgement below.
-    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation));
+    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
+    let archivedEvents: HumanInteractionEvent[] = [];
+    if (requestIds !== undefined) {
+      const status = await this.routes.getBotCommandStatus(communityId);
+      if (status === null || status.state !== 3 || status.botUserId === null) {
+        return { authorized: false, responses: [], through: null, blocked: false };
+      }
+      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
+        communityId, status.installationId, status.botUserId, requestIds.map(fromHex))
+        .filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+          && requested?.has(toHex(event.requestId)));
+    }
+    const eventsByRequest = new Map<string, HumanInteractionEvent>();
+    for (const event of [...pendingEvents, ...archivedEvents]) {
+      const requestId = toHex(event.requestId);
+      const prior = eventsByRequest.get(requestId);
+      if (prior !== undefined) {
+        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation) {
+          throw new Refusal('E_CORE_STATE', 'contradictory duplicate moderation receipts');
+        }
+        continue;
+      }
+      eventsByRequest.set(requestId, event);
+    }
+    const visibleEvents = [...eventsByRequest.values()].slice(0, 100);
     const responses = visibleEvents.map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, communityId, event.requestId);
@@ -1949,31 +1945,27 @@ export class Controller {
       }
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
     });
-    const ackableEvents = firstOtherCommunity < 0 ? page.events : page.events.slice(0, firstOtherCommunity);
-    const throughValue = firstOtherCommunity < 0 ? page.next : ackableEvents.at(-1)?.deliveryId ?? 0n;
-    const through = throughValue > 0n ? String(throughValue) : null;
-    if (through !== null) {
-      const key = `${communityHex}:${through}`;
-      this.pendingHumanInteractionAcks.set(key, through);
-      while (this.pendingHumanInteractionAcks.size > 32) {
-        const oldest = this.pendingHumanInteractionAcks.keys().next().value;
-        if (oldest === undefined) break;
-        this.pendingHumanInteractionAcks.delete(oldest);
-      }
-    }
-    return { authorized: true, responses, through, blocked: firstOtherCommunity >= 0 };
+    const ackable = pendingEvents.filter(event => eventsByRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId);
+    const through = this.issueInteractionAckLease(communityHex, ackable.map(event => event.deliveryId), this.pendingHumanInteractionAcks);
+    return { authorized: true, responses, through, blocked: false };
   }
 
   private async ackHumanInteractionResponses(communityHex: string, through: string): Promise<null> {
     const key = `${communityHex}:${through}`;
-    if (!this.listed(communityHex) || this.pendingHumanInteractionAcks.get(key) !== through) {
+    const deliveryIds = this.pendingHumanInteractionAcks.get(key);
+    if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
+    const core = this.requireCore();
+    const generation = this.interactionAckLeaseGeneration;
     const permissions = await this.routes.getPermissions(fromHex(communityHex));
+    if (generation !== this.interactionAckLeaseGeneration || core !== this.core || this.pendingHumanInteractionAcks.get(key) !== deliveryIds) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement is stale');
+    }
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
     }
-    this.acknowledgeInteractionEvents(this.requireCore(), BigInt(through));
+    core.humanInteractionEventsAckSelected(deliveryIds);
     this.pendingHumanInteractionAcks.delete(key);
     return null;
   }
@@ -2209,8 +2201,7 @@ export class Controller {
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
-      if (core !== paused) this.acknowledgedInteractionThrough = 0n;
-      this.clearInteractionResponseState();
+      if (this.core !== core) this.clearInteractionAckLeases();
       this.core = core;
       this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
@@ -2496,7 +2487,6 @@ export class Controller {
     this.clearReauthTimer();
     this.clearHeldReads();
     this.clearPendingRolePanelActionRetries();
-    this.clearInteractionResponseState();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -4302,7 +4292,6 @@ export class Controller {
   private quiesce(): void {
     if (this.wiping) return;
     this.wiping = true;
-    this.clearInteractionResponseState();
     this.clearReauthTimer();
     this.clearPendingRolePanelActionRetries();
     this.typingOff();
@@ -4343,7 +4332,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
-    this.clearInteractionResponseState();
+    this.clearInteractionAckLeases();
     this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
@@ -4402,6 +4391,12 @@ export class Controller {
     this.calls.reset();
     this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfOffline = null;
     this.setConnection({ status: 'offline', generation: null });
+  }
+
+  private clearInteractionAckLeases(): void {
+    this.interactionAckLeaseGeneration++;
+    this.pendingBotInteractionAcks.clear();
+    this.pendingHumanInteractionAcks.clear();
   }
 
   // ---- channels and timelines ----
@@ -5149,7 +5144,6 @@ export class Controller {
     this.clearPendingRolePanelActionRetries();
     await this.barrier.close();
     this.clearReauthTimer();
-    this.clearInteractionResponseState();
     // L-TS-56 step 9: the call is left and the rings cleared before the store is released; the leave's round trips are
     // bounded, since the instance removes the leaf when the call ends anyway.
     let bound: number | null = null;

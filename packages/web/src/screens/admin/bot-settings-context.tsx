@@ -134,11 +134,14 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
     let timer: number | undefined;
     const poll = async (): Promise<void> => {
       const communities = [...new Set(waiting.map(item => item.communityId))];
-      const results = await Promise.allSettled(communities.map(async cid => ({ cid,
+      const results = await Promise.allSettled(communities.map(async cid => {
+        const owned = waiting.filter(item => item.communityId === cid);
+        const requestIds = [...new Set(owned.map(item => item.requestId))].slice(0, 100);
+        return { cid, requestIds, owned,
         page: await client.call({ m: 'readBotInteractionResponses', communityId: cid,
-          operations: [...new Set(waiting.filter(item => item.communityId === cid).map(item => item.operation))] }) as {
+          operations: [...new Set(owned.map(item => item.operation))], requestIds }) as {
           responses: BotInteractionResponse[]; through: string | null; blocked: boolean;
-        } })));
+        } }; }));
       if (canceled) return;
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index];
@@ -152,44 +155,41 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
           });
           continue;
         }
-        const { cid, page } = result.value;
-        const owned = waiting.filter(item => item.communityId === cid);
+        const { cid, page, requestIds, owned } = result.value;
         setOperations(current => {
           const next = { ...current };
           for (const item of owned) if (next[item.scope]?.requestId === item.requestId && next[item.scope].error === 'read')
             next[item.scope] = { ...next[item.scope], error: null };
           return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
         });
-        // A later response may belong to another feature while the worker still grants
-        // this leading prefix. Consume the granted prefix so that later reader can advance.
-        if (page.through === null) continue;
-        const delivered = page.responses.filter(row => BigInt(row.deliveryId) <= BigInt(page.through!));
-        // Operation numbers are owned by the Bot settings feature. The worker's
-        // ack is prefix based, so historical responses for the same operation
-        // must be consumed too; only the exact request ID may update UI state.
-        if (delivered.length === 0 || delivered.some(row => row.communityId !== cid
-          || !owned.some(item => item.operation === row.operation))) continue;
+        const delivered = page.responses.filter(row => requestIds.includes(row.requestId)
+          && row.communityId === cid && row.channelId === null
+          && owned.some(item => item.requestId === row.requestId && item.operation === row.operation));
+        if (delivered.length === 0) continue;
         setOperations(current => {
           const next = { ...current };
           for (const row of delivered) {
             const item = Object.values(current).find(candidate => candidate.requestId === row.requestId
-              && candidate.communityId === row.communityId && candidate.operation === row.operation && row.channelId === null);
+              && candidate.communityId === row.communityId && candidate.operation === row.operation);
             if (item !== undefined && item.response === null) next[item.scope] = { ...item, phase: 'response', response: row, acked: false };
           }
           return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
         });
+        // This is an opaque, read-bound ACK capability, never a delivery cursor.
+        // Persist exact request responses above before consuming selected rows.
+        if (page.through === null) continue;
         try {
           await client.call({ m: 'ackBotInteractionResponses', communityId: cid, through: page.through });
           setOperations(current => {
             const next = { ...current };
             for (const row of delivered) {
               const item = Object.values(current).find(candidate => candidate.requestId === row.requestId
-                && candidate.communityId === row.communityId && candidate.operation === row.operation && row.channelId === null);
-              if (item !== undefined && !item.acked && item.response?.deliveryId === row.deliveryId) next[item.scope] = { ...item, acked: true };
+                && candidate.communityId === row.communityId && candidate.operation === row.operation);
+              if (item !== undefined && !item.acked && item.response?.requestId === row.requestId) next[item.scope] = { ...item, acked: true };
             }
             return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
           });
-        } catch { /* retry the same owned prefix on the next poll */ }
+        } catch { /* re-read the same request IDs and retry with a fresh lease */ }
       }
       if (!canceled) timer = window.setTimeout(() => { void poll(); }, 750);
     };

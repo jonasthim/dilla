@@ -1997,6 +1997,21 @@ describe('managed community bot installation routes', () => {
     await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 403 });
   });
 
+  it('reads member-safe command status without exposing installation configuration', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [1, BOT, USER, 3, 9]));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).resolves.toEqual({
+      installationId: BOT, botUserId: USER, state: 3, revision: 9n,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/command-status` });
+    t.replies.push(cborReply(200, null));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).resolves.toBeNull();
+    t.replies.push(cborReply(200, [1, BOT, null, 4, 10]));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).resolves.toMatchObject({ state: 4, botUserId: null });
+    t.replies.push(cborReply(200, [2, BOT, USER, 3, 9]));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+  });
+
   it('sends exact request ID, revision, capabilities and step-up for configure', async () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(201, installation));

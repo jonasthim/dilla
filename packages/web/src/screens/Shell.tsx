@@ -37,7 +37,7 @@ import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
 import { ChannelEditFlow } from './admin/ChannelEditFlow.tsx';
 import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
-import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
+import { requestThread, takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
 import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
@@ -45,6 +45,16 @@ import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
+import { CommandProvider } from './commands/CommandContext.tsx';
+import type { CommandProviderHandlers, CommandSuggestionProvider } from './commands/command-types.ts';
+import { useBotCommandProvider } from './commands/bot-handlers.ts';
+import { useUtilityCommandProvider } from './commands/UtilityCommandProvider.tsx';
+
+const DRAFT_MEMORY_LIMIT = 128;
+function rememberDraft(map: Map<string, string>, key: string, value: string): void {
+  map.delete(key); map.set(key, value);
+  while (map.size > DRAFT_MEMORY_LIMIT) map.delete(map.keys().next().value!);
+}
 
 export interface ShellUpdateDeps {
   currentEntry: string;
@@ -148,7 +158,8 @@ function restoredConversationUi(value: unknown): ConversationUi | null {
  * under a settings route the shell shows the route Settings was opened over and never navigates (L-TS-27). The
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
-export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}): React.JSX.Element {
+export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; commandHandlers?: CommandProviderHandlers; commandSuggest?: CommandSuggestionProvider } = {}): React.JSX.Element {
+  const { commandHandlers: suppliedHandlers, commandSuggest: suppliedSuggest } = props;
   const client = useCore();
   const phone = usePhoneLayout();
   useVisualViewportHeight(phone);
@@ -206,6 +217,28 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const fallbackCommunity = lastCommunity !== null && communities?.some(c => c.id === lastCommunity) === true
     ? lastCommunity : communities?.[0]?.id ?? null;
   const communityId = routeCommunity ?? (dmId !== null || base.name === 'dms' ? fallbackCommunity : null);
+  const navigateToUtilitySource = useCallback((sourceCommunityId: string, sourceChannelId: string, sourceThreadId: string | null) => {
+    if (sourceThreadId !== null) requestThread(sourceChannelId, sourceThreadId);
+    void navigate({ name: 'channel', communityId: sourceCommunityId, channelId: sourceChannelId });
+  }, [navigate]);
+  const botCommands = useBotCommandProvider(client, communityId);
+  const utilityCommands = useUtilityCommandProvider(client, communityId, navigateToUtilitySource);
+  const { handlers: botHandlers, suggest: botSuggest } = botCommands;
+  const { handlers: utilityHandlers, suggest: utilitySuggest } = utilityCommands;
+  const commandHandlers = useMemo<CommandProviderHandlers>(() => ({
+    ...botHandlers,
+    ...utilityHandlers,
+    ...suppliedHandlers,
+  }), [botHandlers, utilityHandlers, suppliedHandlers]);
+  const commandSuggest = useCallback<NonNullable<CommandSuggestionProvider>>((commandId, option, query, binding, values) => {
+    if (suppliedHandlers?.[commandId] !== undefined && suppliedSuggest !== undefined)
+      return suppliedSuggest(commandId, option, query, binding, values);
+    if (utilityHandlers[commandId] !== undefined)
+      return utilitySuggest(commandId, option, query, binding, values);
+    if (botHandlers[commandId] !== undefined)
+      return botSuggest(commandId, option, query, binding, values);
+    return suppliedSuggest?.(commandId, option, query, binding, values) ?? Promise.resolve(undefined);
+  }, [botHandlers, botSuggest, suppliedHandlers, suppliedSuggest, utilityHandlers, utilitySuggest]);
 
   // An empty id names a slice that never exists, so it reads undefined.
   const channels = useSlice(`channels:${communityId ?? ''}`);
@@ -232,6 +265,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // The composer is controlled: the text of the channel or DM it was typed in.
   // `typed`: only a draft edited in this page sends typing; a restored update checkpoint cannot clear AFK.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string; typed?: true }>({ channelId: null, text: '' });
+  const ordinaryDrafts = useRef(new Map<string, string>());
   const [selfTimeout, setSelfTimeout] = useState<{ communityId: string; expires: number } | null>(null);
   const selfUserId = account?.user?.id;
   useEffect(() => {
@@ -299,6 +333,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
   const [threadDraft, setThreadDraft] = useState<{ channelId: string; rootMsgId: string; text: string } | null>(null);
+  const threadDrafts = useRef(new Map<string, string>());
+  const threadDraftKey = (channelId: string, rootMsgId: string) => `${channelId}/${rootMsgId}`;
   useEffect(() => { setSide(current => (current !== null && current.channelId !== channelId ? null : current)); }, [channelId]);
   const toggleMembers = () => {
     const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
@@ -814,6 +850,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     target.focus();
     refocus.current = null;
   });
+  const liveCall = useRef(call);
+  liveCall.current = call;
 
   // When the join dialog closes, focus goes to the composer (after the dialog returned it to its opener).
   const wasJoinOpen = useRef(false);
@@ -907,7 +945,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     const withTray = m.attachments.length > 0;
     if (withTray && sending.current.has(id)) return;
     if (withTray) sending.current.add(id);
-    setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
+    setDraft(d => {
+      if (ordinaryDrafts.current.get(id) !== m.raw) return d;
+      rememberDraft(ordinaryDrafts.current, id, '');
+      return d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : { ...d };
+    });
     const run = async () => {
       try {
         await client.call({ m: 'send', channelId: id, text: m.text,
@@ -916,7 +958,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         if (m.replyTo !== null) dispatch({ type: 'replySent', msgId: m.replyTo });
       } catch (e) {
         // A refused send gives the text back, unless something new has been typed since.
-        setDraft(d => (d.channelId === id && d.text === '' ? { channelId: id, text: m.raw } : d));
+        setDraft(d => {
+          if (ordinaryDrafts.current.get(id) !== '') return d;
+          rememberDraft(ordinaryDrafts.current, id, m.raw);
+          return d.channelId === id && d.text === '' ? { channelId: id, text: m.raw } : { ...d };
+        });
         const error = errorOf(e);
         if (TRUST_BLOCKS.has(error.code)) setRefusedSend({ channelId: id, code: error.code as TrustBlock, gate: client.get('sendBlocks') });
         else report(e);
@@ -1075,6 +1121,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
     // E2: a touch device has no Control+K, so its list heads carry search, Home's too: the phone layout, and a desktop window
     // whose pointer is coarse (a touch tablet). A fine pointer keeps the desktop heads as they were (the gear alone on a server).
+    // Voice on desktop has its own stage bar; list routes have no conversation
+    // header. Keep their inbox entry in the existing sidebar title row.
+    const inboxInSidebar = (voiceChannel !== null && !phone) || (channel === null && dm === null);
     // The "+" and the gear stay a server's.
     const touchHere = phone || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
     const headerAction = onDms ? (
@@ -1100,7 +1149,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        headerAction={headerAction}
+        headerAction={inboxInSidebar ? <>{headerAction}{utilityCommands.inbox}</> : headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.
         categories={onDms ? undefined : categoryRows}
@@ -1156,8 +1205,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
       blocked={reason} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
-      items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
-      onDraft={text => setDraft({ channelId: targetId, text, typed: true })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
+      items={timeline?.items ?? []} book={book} draft={ordinaryDrafts.current.get(targetId) ?? (draft.channelId === targetId ? draft.text : '')}
+      onDraft={text => { rememberDraft(ordinaryDrafts.current, targetId, text); setDraft({ channelId: targetId, text, typed: true }); }} ui={ui} dispatch={dispatch} onSend={send} onError={report}
       {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
       announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
   );
@@ -1262,10 +1311,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
-    actions={<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} />} /> : null) : channel !== null
+    actions={<>{utilityCommands.inbox}<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /></>} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
-      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
+      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
+        {utilityCommands.inbox}
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
           onSelect={id => {
@@ -1275,8 +1325,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
             else if (id === 'edit') setEditChannelId(channel.id);
             else if (!membersOpen) toggleMembers();
           }} />
-      ) } : undefined}
+      </>) } : undefined}
       actions={<>
+        {utilityCommands.inbox}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
         {openId !== null ? <IconButton data-foldable="" data-thread-list-toggle="" icon="messages-square" label={t('thread.list')}
           pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())} /> : null}
@@ -1293,11 +1344,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         } }} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
+        {utilityCommands.inbox}
         {dmCall === null ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
       </>) } : undefined}
       actions={<>
+        {utilityCommands.inbox}
         {/* N1: on a desktop the call is an icon in the header, as on a phone (there it sits in the menu slot). */}
         {dmCall === null || phone ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
@@ -1581,6 +1634,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         if (saved.draft !== undefined && (saved.draft.channelId === null || typeof saved.draft.channelId === 'string')
           && typeof saved.draft.text === 'string') {
           setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
+          if (saved.draft.channelId !== null) rememberDraft(ordinaryDrafts.current, saved.draft.channelId, saved.draft.text);
         }
         if (saved.side?.channelId === channelId && (saved.side.view === 'list'
           || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
@@ -1588,6 +1642,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
           && typeof saved.threadDraft.text === 'string') {
           setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
+          rememberDraft(threadDrafts.current, threadDraftKey(channelId, saved.threadDraft.rootMsgId), saved.threadDraft.text);
         }
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
         const view = validViewPlace(saved.view);
@@ -1689,6 +1744,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     })();
   }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, homeSelected,
     searchOpen, searchQuery, searchScope, searchId, call, recentUpdateCall]);
+  const openCommandSearch = (query: string, scope: 'channel' | 'community' | 'all') => {
+    const id = scope === 'channel' ? targetId : scope === 'community' ? communityId : null;
+    if (scope !== 'all' && id === null) return;
+    setSearchScope(scope); setSearchQuery(query); setSearchOpen(true); issueSearch(query, scope, id);
+  };
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
@@ -1708,7 +1768,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
   const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} activityVisible={settingsActivityVisible} /> : adminPage;
   return (
+    <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate: route => { void navigate(route); }, openThread, openSearch: openCommandSearch }} handlers={commandHandlers} suggest={commandSuggest}>
     <>
+      {botCommands.dialogs}
+      {utilityCommands.dialogs}
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
             {t('update.noStorage')}</Banner> : null}
@@ -1768,9 +1831,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
             blocked={timeoutReason}
-            initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
+            initialDraft={threadDrafts.current.get(threadDraftKey(channel.id, sideNow.rootMsgId)) ?? (threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
-            onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />
+            onDraftChange={text => { rememberDraft(threadDrafts.current, threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
               <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />
@@ -1825,6 +1888,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
       <PhoneLayoutProvider value={phone}>{settingsPage}{props.page}</PhoneLayoutProvider>
     </>
+    </CommandProvider>
   );
 }
 

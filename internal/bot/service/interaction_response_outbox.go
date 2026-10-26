@@ -28,11 +28,15 @@ var (
 	ErrInteractionResponseState    = errors.New("interaction response outbox state is invalid or changed")
 )
 
-type interactionResponseOutboxNative interface {
+// InteractionResponseNative is the durable native state boundary for private
+// interaction replies.
+type InteractionResponseNative interface {
 	Binding() native.Binding
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
 }
+
+type interactionResponseOutboxNative = InteractionResponseNative
 
 // InteractionResponseOutbox durably records an event's exact response body and
 // send identity before invoking the send coordinator. Callers must still make
@@ -51,7 +55,13 @@ func NewInteractionResponseOutbox(n *native.Client, coordinator *SendCoordinator
 	return newInteractionResponseOutboxWithCoordinator(n, coordinator, session)
 }
 
-func newInteractionResponseOutboxWithCoordinator(n interactionResponseOutboxNative, coordinator *SendCoordinator, session *client.Session) (*InteractionResponseOutbox, error) {
+// NewInteractionResponseOutboxWithAdapters wires the production outbox and
+// coordinator around testable native and transport boundaries.
+func NewInteractionResponseOutboxWithAdapters(n InteractionResponseNative, coordinator *SendCoordinator, session SendSession) (*InteractionResponseOutbox, error) {
+	return newInteractionResponseOutboxWithCoordinator(n, coordinator, session)
+}
+
+func newInteractionResponseOutboxWithCoordinator(n interactionResponseOutboxNative, coordinator *SendCoordinator, session SendSession) (*InteractionResponseOutbox, error) {
 	if n == nil || coordinator == nil || session == nil {
 		return nil, errors.New("missing interaction response outbox dependency")
 	}
@@ -63,7 +73,7 @@ func newInteractionResponseOutboxWithCoordinator(n interactionResponseOutboxNati
 		return nil, err
 	}
 	o.sendFn = func(ctx context.Context, in SendInput) (protocol.SendReceipt, error) {
-		return coordinator.Send(ctx, session, in)
+		return coordinator.send(ctx, session, in)
 	}
 	o.resumeFn = func(ctx context.Context, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
 		return coordinator.sendWithPreflight(ctx, session, in, preflight)

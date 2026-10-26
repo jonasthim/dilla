@@ -525,42 +525,22 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 					logger.Warn("bot gateway startup unavailable", "installation_id", installation.ID.String())
 				}
 			}
-			reconcileStage = "interaction_restore"
-			if result.Session == nil {
-				ensureErr = errors.New("identity lifecycle returned no scoped device session")
-			} else {
-				var healed int
-				healed, ensureErr = healRestoredInteractionGroups(ctx, nativeClient, result.Session)
-				if ensureErr == nil && healed > 0 {
-					logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
-				}
-			}
+			reconcileStage = "membership_source_sync"
+			var membership *service.MembershipReconciler
+			membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 			if ensureErr == nil {
-				reconcileStage = "membership_source_sync"
-				var membership *service.MembershipReconciler
-				membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
+				var trust *service.SourceTrust
+				trust, ensureErr = service.NewSourceTrust(nativeClient)
 				if ensureErr == nil {
-					_, ensureErr = membership.ReconcileOnce(ctx, result.Session)
-					if ensureErr == nil {
-						reconcileStage = "membership_trust"
-						// Newly joined MLS members are not actionable until their
-						// signed device-list history has been checked by the core.
-						var trust *service.SourceTrust
-						trust, ensureErr = service.NewSourceTrust(nativeClient)
-						if ensureErr == nil {
-							_, ensureErr = trust.TrustPendingLeaves(ctx, result.Session)
-						}
+					var healed int
+					ready, healed, reconcileStage, ensureErr = reconcileMembershipReadiness(ctx, result.Installation, nativeClient, result.Session, membership, trust)
+					if ensureErr == nil && healed > 0 {
+						logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
 					}
 					if ensureErr == nil {
-						reconcileStage = "interaction_source_sync"
-						_, ensureErr = membership.ReconcileInteractionGroupsOnce(ctx, result.Session)
-					}
-					if ensureErr == nil {
-						reconcileStage = "readiness"
-						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
 						// A 409 means required MLS joins are still pending. Keep
 						// reconciling membership, but do not call Ready-only bot APIs.
-						if ensureErr == nil && ready {
+						if ready {
 							reconcileStage = "structural_events_and_registration"
 							membershipReady = true
 							if groups, err := nativeClient.Groups(ctx); err == nil {
@@ -712,10 +692,18 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							}
 							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
 							var scheduler *announcements.Scheduler
+							var utilities *utilityRuntime
 							var scheduleErr error
 							scheduler, scheduleErr = service.NewAnnouncementScheduler(nativeClient, result.Session, api)
 							if scheduleErr != nil {
 								interactionErr = errors.Join(interactionErr, scheduleErr)
+							}
+							if interactionErr == nil {
+								var utilitySetupErr error
+								utilities, utilitySetupErr = newUtilityRuntime(nativeClient, result.Session, api, installation.CommunityID, installation.ID, time.Now)
+								if utilitySetupErr != nil {
+									logger.Warn("bot utility handlers unavailable", "installation_id", installation.ID.String(), "error", utilitySetupErr.Error())
+								}
 							}
 							if interactionErr == nil {
 								var coordinator *service.SendCoordinator
@@ -760,13 +748,18 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													}) {
 														handlers[operation] = handler
 													}
-													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-														handlers, func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
+													botUser := id.ID{}
+													if result.Installation.BotUser != nil {
+														botUser = *result.Installation.BotUser
+													}
+													dispatcher, interactionErr = newRuntimeUtilityDispatcher(nativeClient, handlers, utilities, result.Session,
+														installation.CommunityID, installation.ID, botUser, result.Installation.Capabilities,
+														func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
 												}
 											}
 											if interactionErr == nil {
 												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
-												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicChatCommands(installation.CommunityID, nativeClient, result.Session, api, coordinator, musicInteractions, gateways.startedAt))
+												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicReplyRecovery(installation.CommunityID, nativeClient, result.Session, api, coordinator))
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if musicInteractions != nil && (retainedNative || musicOwnedNative) {
 													gateways.SetTextPoller(installation.ID, func(pollCtx context.Context) error {
@@ -818,11 +811,19 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								reconcileStage = "scheduled_services"
 								scheduleErr = scheduler.RunDue(ctx)
 							}
+							var utilityErr error
+							if utilities != nil {
+								reconcileStage = "utility_services"
+								utilityErr = utilities.maintain(ctx)
+								if utilityErr != nil {
+									logger.Error("bot utility maintenance paused", "installation_id", installation.ID.String(), "error", utilityErr.Error())
+								}
+							}
 							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, nil, time.Now)
 							if caseErr == nil {
 								caseErr = maintainModerationEvidence(ctx, logger, installation.ID, caseSink)
 							}
-							ensureErr = errors.Join(ensureErr, scheduleErr, caseErr)
+							ensureErr = errors.Join(ensureErr, scheduleErr, utilityErr, caseErr)
 						}
 					}
 				}

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '../voice/support/peer-browser';
 import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, voiceRow, WAIT } from '../voice/support/voice';
-import { addServerVia, channelRow, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, signUp } from '../web/support/app';
+import { addServerVia, channelRow, completeSignUp, composerBox, copy, makeInviteLink, newAccount, openChannel, railItem, signUp } from '../web/support/app';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const SERVER = 'Music acceptance A';
@@ -57,6 +57,8 @@ const memberRow = (page: import('@playwright/test').Page, server: string, name: 
     .getByRole('listitem').filter({ hasText: name });
 
 test('two communities run isolated YouTube playback with independent Bot identities and SFrame keys', async ({ peerBrowser }) => {
+  // The full playback/isolation/restart flow includes many serial authenticated command round trips.
+  test.setTimeout(720_000);
   const owner = await peerBrowser.open('owner');
   const dj = await peerBrowser.open('dj');
   const djTwo = await peerBrowser.open('dj-two');
@@ -194,22 +196,39 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   await joinVoice(djPage, SERVER, 'general');
   await joinVoice(djTwoPage, SERVER_TWO, 'general');
-  const command = async (musicPage: typeof page, server: string, text: string, expected: RegExp) => {
+  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp) => {
     await openChannel(musicPage, server, 'general');
-    const replies = messageRow(musicPage, 'general', '').filter({ hasText: expected })
-      .filter({ has: musicPage.locator('[data-kind="bot"]') });
-    const before = await replies.count();
+    const commandId = commandText.slice(1).split(/\s/u, 1)[0] ?? '';
+    const argument = commandText.slice(commandId.length + 2).trim();
     const composer = composerBox(musicPage, 'general');
-    await composer.fill(text);
-    await composer.press('Enter');
-    await expect(replies).toHaveCount(before + 1, { timeout: 90_000 });
-    const reply = await replies.nth(before).innerText();
+    await composer.fill('/');
+    const region = musicPage.getByRole('region', { name: 'Command composer', exact: true });
+    const picker = region.getByRole('combobox', { name: 'Command', exact: true });
+    await picker.fill(commandId);
+    const option = region.getByRole('option').filter({ has: musicPage.getByText(`/${commandId}`, { exact: true }) });
+    await expect(option).toBeVisible({ timeout: WAIT });
+    await picker.press('ArrowDown');
+    await picker.press('Enter');
+    if (commandId === 'play') {
+      const query = region.getByRole('combobox', { name: 'query-or-url', exact: true });
+      await query.fill(argument);
+      await expect(query).toHaveValue(argument);
+    }
+    const log = musicPage.getByRole('log', { name: 'messages in #general', exact: true });
+    const publicBotMessages = log.locator('[data-kind="bot"]');
+    const publicCount = await publicBotMessages.count();
+    await region.getByRole('button', { name: 'Run command', exact: true }).click();
+    const status = region.getByRole('status');
+    await expect(status).toContainText(expected, { timeout: 90_000 });
+    const result = await status.innerText();
+    await expect(publicBotMessages).toHaveCount(publicCount);
+    await region.getByRole('button', { name: 'Cancel', exact: true }).click();
     await voiceRow(musicPage, 'general').click();
-    return reply;
+    return result;
   };
-  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Playing music/);
-  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Playing music/);
-  await command(djPage, SERVER, `/play ${YOUTUBE_SAMPLE}`, /Added to the music queue/);
+  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Track added to the music queue\./);
+  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
+  await command(djPage, SERVER, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
   const queueA = await command(djPage, SERVER, '/queue', /Now playing:/);
   expect(queueA).toContain('Deep Learning State of the Art (2020)');
   expect(queueA).toContain('Deep Learning Basics: Introduction and Overview');

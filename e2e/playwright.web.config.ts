@@ -29,6 +29,8 @@ export default defineConfig({
     // channel-list.spec starts an SFU and grants the `microphone` permission to a fake-microphone context; both are
     // Chromium-only (Firefox rejects "Unknown permission: microphone"), so Firefox does not load it.
     { name: 'firefox-web', testIgnore: /(^|\/)(support|core-worker|spike-joinall|channel-list)\.spec\.ts$/, use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout|search-settings|reload-mid-sync)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
+    // Keep the WebKit set explicit: these specs use the shipping web client without enabling
+    // microphone-only Chromium fixtures, and slash commands are part of the cross-engine contract.
+    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout|search-settings|reload-mid-sync|slash-commands)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
   ],
 });

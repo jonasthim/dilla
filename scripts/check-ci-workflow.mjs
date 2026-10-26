@@ -83,12 +83,13 @@ export const NON_RACE_STEP =
 /**
  * Browser suites run in parallel, one job per Playwright engine. Hosted Chromium and Firefox
  * jobs took about 35–38 minutes on 2026-10-24, and one Firefox job reached the old 38-minute
- * cap during its voice step. Allow 50 minutes for runner variance. WebKit runs fewer suites and
+ * cap during its voice step. Chromium retains50 minutes; Firefox includes added slash/native
+ * preparation and diagnostic headroom within70 minutes after a measured50-minute cancel. WebKit runs fewer suites and
  * retains its 30-minute cap. `core` and `voice` identify the suites each engine runs.
  */
 export const BROWSER_WEB_JOBS = {
   'chromium-web': { engine: 'chromium', timeout: 50, core: true, voice: true },
-  'firefox-web': { engine: 'firefox', timeout: 50, core: true, voice: true },
+  'firefox-web': { engine: 'firefox', timeout: 70, core: true, voice: true },
   'webkit-web': { engine: 'webkit', timeout: 30, core: false, voice: false },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 30;
@@ -636,6 +637,26 @@ function checkVoiceSteps(jobs, problems) {
   }
 }
 
+/** Keep Firefox web failures inside the outer job budget and preserve evidence before voice. */
+function checkFirefoxDiagnosticBudget(jobs, problems) {
+  if (!jobs['firefox-web']) return;
+  const steps = jobSteps(jobs['firefox-web']);
+  const web = steps.findIndex(step => step[0] === 'run: npm run test:e2e:web:firefox -w @dilla/e2e');
+  const voice = steps.findIndex(step => step[0] === 'run: npm run test:e2e:voice:firefox -w @dilla/e2e');
+  if (!steps[web]?.includes('id: firefox-web-tests') || !steps[web]?.includes('timeout-minutes: 55')
+    || !steps[voice]?.includes('id: firefox-voice-tests')) {
+    problems.push('ci.yml: job "firefox-web" requires identified suites and a55-minute web step inside its70-minute job');
+  }
+  const uploads = steps.map((step, index) => ({ step, index })).filter(({ step }) =>
+    step.some(line => line.startsWith('uses: actions/upload-artifact@')));
+  const late = "if: failure() && steps.firefox-web-tests.outcome == 'success' && steps.firefox-voice-tests.outcome == 'failure'";
+  if (uploads.length !== 2 || uploads[0].index <= web || uploads[0].index >= voice || uploads[1].index <= voice
+    || !uploads[0].step.includes('if: failure()') || !uploads[1].step.includes(late)
+    || uploads.some(({ step }) => !step.includes('timeout-minutes: 5') || !step.includes('name: browser-web-results-firefox'))) {
+    problems.push('ci.yml: job "firefox-web" requires mutually exclusive5-minute diagnostic uploads named browser-web-results-firefox immediately afterweb and aftervoice');
+  }
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -836,6 +857,7 @@ export function checkWorkflow(root) {
   }
 
   checkVoiceSteps(jobs, problems);
+  checkFirefoxDiagnosticBudget(jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [

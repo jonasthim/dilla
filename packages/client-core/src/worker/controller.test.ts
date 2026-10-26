@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode } from '../cbor';
-import { encodeBotResponse, encodeRemovalProof } from '../bot/protocol';
+import { encodeBotRequestBytes, encodeBotResponse, encodeRemovalProof, validateBotContext } from '../bot/protocol';
 import { Enrol } from '../account/enrol';
 import { FakeCore } from '../testing/fake-core';
 import { FakeServer, NOW_S as FAKE_NOW_S, sessionFor } from '../testing/fake-server';
 import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/crypto';
-import { CoreError, type ThreadRow, type ActivityRow, type ApplyResult, type CorePort, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ThreadRow, type ActivityRow, type ApplyResult, type CorePort, type HumanInteractionEvent, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, type GatewayEvent } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
 import { toHex } from '../hex';
@@ -18,12 +18,14 @@ import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
-const interactionResponseEvent = (deliveryId: bigint, operation: number, communityId = COMMUNITY,
-  requestId = new Uint8Array(16).fill(Number(deliveryId % 255n) || 1), data = encode([])) => ({
-  deliveryId, groupId: GROUP, communityId, requestId, sourceSeq: deliveryId, epoch: 1n, receivedAt: NOW_S,
-  senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(Number(deliveryId % 255n) || 1),
-  body: encodeBotResponse({ requestId, communityId, status: 0, revision: null, data }), operation, channelId: null,
-});
+function interactionLease(w: World, id: number): string {
+  const result = w.ret(id);
+  if (result?.t !== 'ret' || !result.ok || typeof result.value !== 'object' || result.value === null
+    || !('through' in result.value)) throw new Error('expected a successful response with an ACK lease');
+  const lease = result.value.through;
+  if (typeof lease !== 'string' || !/^[0-9a-f]{32}$/u.test(lease)) throw new Error('expected a 32-byte hexadecimal ACK lease');
+  return lease;
+}
 
 describe('Controller', () => {
   it('resumes accepted removal evidence after restart without posting another removal', async () => {
@@ -322,181 +324,6 @@ describe('Controller', () => {
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
-  it('sends and reads channel-free music provider status operation 24', async () => {
-    const w = world(); await toReady(w);
-    const groupId = new Uint8Array(16).fill(0x52), requestId = new Uint8Array(16).fill(0x54);
-    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
-    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'request', type: 0, replyTo: null, attachments: [] });
-    w.call(10_187, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null, requestId: toHex(requestId), operation: 24, args: [], revision: null });
-    await vi.waitFor(() => expect(w.ret(10_187)).toMatchObject({ ok: true, value: { upload: 'accepted' } }));
-    expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual([1n, requestId, COMMUNITY, null, 24n, null, null, []]);
-    w.call(10_188, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_188)).toMatchObject({ ok: true }));
-  });
-
-  it('accepts and caches channel-free overview operation zero', async () => {
-    const w = world(); await toReady(w);
-    const groupId = new Uint8Array(16).fill(0x52), requestId = new Uint8Array(16).fill(0x54);
-    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
-    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'overview', type: 0, replyTo: null, attachments: [] });
-    w.call(10_186, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null,
-      requestId: toHex(requestId), operation: 0, args: [], revision: null });
-    await vi.waitFor(() => expect(w.ret(10_186)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
-    const event = interactionResponseEvent(1n, 0, COMMUNITY, requestId, encode([1n]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [event], next: 1n, highWater: 1n }))
-      .mockImplementationOnce(() => ({ events: [], next: 1n, highWater: 1n }));
-    w.call(10_185, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [0] });
-    await vi.waitFor(() => expect(w.ret(10_185)).toMatchObject({ ok: true, value: { through: null, blocked: false,
-      responses: [{ deliveryId: '1', operation: 0, requestId: toHex(requestId), data: encode([1n]) }] } }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(1n);
-  });
-
-  it('auto-acks leading provider-status responses while retaining them for a later reader', async () => {
-    const w = world(); await toReady(w);
-    const event = interactionResponseEvent(2n, 24, COMMUNITY, new Uint8Array(16).fill(0x57), encode([1n]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [event], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }));
-    w.call(10_188, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_188)).toMatchObject({ ok: true, value: { through: null, blocked: false,
-      responses: [{ deliveryId: '2', operation: 24, data: encode([1n]) }] } }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
-  });
-
-  it('keeps cached observations idempotent when the automatic journal ack fails', async () => {
-    const w = world(); await toReady(w);
-    const event = interactionResponseEvent(2n, 24, COMMUNITY, new Uint8Array(16).fill(0x59), encode([1n]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [event], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [event], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }));
-    w.core.humanInteractionEventsAck.mockImplementationOnce(() => { throw new Error('transient ack failure'); });
-    w.call(10_181, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_181)).toMatchObject({ ok: true, value: { through: '2',
-      responses: [{ deliveryId: '2', operation: 24 }] } }));
-    w.call(10_180, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
-    await vi.waitFor(() => expect(w.ret(10_180)).toMatchObject({ ok: true, value: null }));
-    w.call(10_179, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_179)).toMatchObject({ ok: true, value: { through: null,
-      responses: [{ deliveryId: '2', operation: 24 }] } }));
-    const returned = (w.ret(10_179) as { ok: true; value: { responses: { data: Uint8Array }[] } }).value.responses[0].data;
-    returned.fill(0);
-    w.call(10_178, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_178)).toMatchObject({ ok: true, value: {
-      responses: [{ deliveryId: '2', operation: 24, data: encode([1n]) }] } }));
-    expect(w.core.humanInteractionEventsAck.mock.calls.map(([through]) => through)).toEqual([2n, 2n]);
-  });
-
-  it('caches leading observations across communities but returns only the requested community', async () => {
-    const w = world(); await toReady(w);
-    const other = interactionResponseEvent(1n, 24, NEW_COMMUNITY, new Uint8Array(16).fill(0x5a), encode([2n]));
-    const own = interactionResponseEvent(2n, 24, COMMUNITY, new Uint8Array(16).fill(0x5b), encode([1n]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [other, own], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }));
-    w.call(10_177, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_177)).toMatchObject({ ok: true, value: { through: null,
-      responses: [{ communityId: toHex(COMMUNITY), deliveryId: '2', data: encode([1n]) }] } }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
-  });
-
-  it('expires cached observations after sixty seconds', async () => {
-    let now = 1_700_000_000_000;
-    const w = world({ now: () => now }); await toReady(w);
-    const event = interactionResponseEvent(2n, 24, COMMUNITY, new Uint8Array(16).fill(0x5c), encode([1n]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [event], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }));
-    w.call(10_176, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_176)).toMatchObject({ ok: true, value: { responses: [{ operation: 24 }] } }));
-    now += 60_001;
-    w.call(10_175, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_175)).toMatchObject({ ok: true, value: { through: null, responses: [] } }));
-  });
-
-  it('omits malformed observational envelopes but still releases their journal prefix', async () => {
-    const w = world(); await toReady(w);
-    const malformed = { ...interactionResponseEvent(2n, 24), body: 'not a Bot envelope' };
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [malformed], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [], next: 2n, highWater: 2n }));
-    w.call(10_174, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_174)).toMatchObject({ ok: true, value: { through: null, responses: [] } }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
-  });
-
-  it('accepts an already-issued overlapping ack below the journal high-water without a backwards core ack', async () => {
-    const w = world(); await toReady(w);
-    const events = [interactionResponseEvent(1n, 13), interactionResponseEvent(2n, 24)];
-    w.core.humanInteractionEventsRead.mockReturnValue({ events, next: 2n, highWater: 2n });
-    w.call(10_173, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
-    await vi.waitFor(() => expect(w.ret(10_173)).toMatchObject({ ok: true, value: { through: '1' } }));
-    w.call(10_172, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13, 24] });
-    await vi.waitFor(() => expect(w.ret(10_172)).toMatchObject({ ok: true, value: { through: '2' } }));
-    w.call(10_171, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
-    await vi.waitFor(() => expect(w.ret(10_171)).toMatchObject({ ok: true, value: null }));
-    w.call(10_170, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '1' });
-    await vi.waitFor(() => expect(w.ret(10_170)).toMatchObject({ ok: true, value: null }));
-    w.call(10_169, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '3' });
-    await vi.waitFor(() => expect(w.ret(10_169)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
-    expect(w.core.humanInteractionEventsAck.mock.calls.map(([through]) => through)).toEqual([2n]);
-  });
-
-  it('preserves a leading mutation barrier before interleaved observations and music replies', async () => {
-    const w = world(); await toReady(w);
-    const events = [interactionResponseEvent(1n, 1), interactionResponseEvent(2n, 24), interactionResponseEvent(3n, 13)];
-    w.core.humanInteractionEventsRead.mockReturnValue({ events, next: 3n, highWater: 3n });
-    w.call(10_185, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13, 24] });
-    await vi.waitFor(() => expect(w.ret(10_185)).toMatchObject({ ok: true, value: { through: null, blocked: true,
-      responses: [{ deliveryId: '2', operation: 24 }, { deliveryId: '3', operation: 13 }] } }));
-    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
-  });
-
-  it('drains provider status before an authorized moderation read and preserves its audit response ack', async () => {
-    const w = world(); await toReady(w);
-    const status = interactionResponseEvent(1n, 24, COMMUNITY, new Uint8Array(16).fill(0x57), encode([1n]));
-    const moderation = interactionResponseEvent(2n, 60, COMMUNITY, new Uint8Array(16).fill(0x58), encode([1n, [], null]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [status, moderation], next: 2n, highWater: 2n }))
-      .mockImplementationOnce(() => ({ events: [moderation], next: 2n, highWater: 2n }));
-    w.call(10_184, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(10_184)).toMatchObject({ ok: true, value: { authorized: true, through: '2',
-      responses: [{ deliveryId: '2', requestId: toHex(moderation.requestId), cases: [] }] } }));
-    expect(w.routes.getPermissions.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionEventsRead.mock.invocationCallOrder[0]);
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledTimes(1);
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(1n);
-    w.call(10_183, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
-    await vi.waitFor(() => expect(w.ret(10_183)).toMatchObject({ ok: true, value: null }));
-    expect(w.core.humanInteractionEventsAck.mock.calls.map(([through]) => through)).toEqual([1n, 2n]);
-  });
-
-  it('drains more than one hundred leading observations while retaining only a bounded cache', async () => {
-    const w = world(); await toReady(w);
-    const events = Array.from({ length: 101 }, (_, index) => interactionResponseEvent(BigInt(index + 1), 24,
-      COMMUNITY, new Uint8Array(16).fill(index % 255 + 1), encode([BigInt(index)])));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: events.slice(0, 100), next: 100n, highWater: 101n }))
-      .mockImplementationOnce(() => ({ events: events.slice(100), next: 101n, highWater: 101n }))
-      .mockImplementationOnce(() => ({ events: [], next: 101n, highWater: 101n }))
-      .mockImplementationOnce(() => ({ events: [], next: 101n, highWater: 101n }));
-    w.call(10_182, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [24] });
-    await vi.waitFor(() => expect(w.ret(10_182)).toMatchObject({ ok: true, value: { through: null } }));
-    const responses = (w.ret(10_182) as { ok: true; value: { responses: { deliveryId: string }[] } }).value.responses;
-    expect(responses).toHaveLength(64);
-    expect(responses[0].deliveryId).toBe('38');
-    expect(responses.at(-1)?.deliveryId).toBe('101');
-    expect(w.core.humanInteractionEventsAck.mock.calls.map(([through]) => through)).toEqual([100n, 101n]);
-  });
-
-  it('advances past suppressed journal rows before draining later provider and music responses', async () => {
-    const w = world(); await toReady(w);
-    const status = interactionResponseEvent(101n, 24, COMMUNITY, new Uint8Array(16).fill(0x5d), encode([1n]));
-    const music = interactionResponseEvent(102n, 13, COMMUNITY, new Uint8Array(16).fill(0x5e), encode([]));
-    w.core.humanInteractionEventsRead.mockImplementationOnce(() => ({ events: [], next: 100n, highWater: 102n }))
-      .mockImplementationOnce(() => ({ events: [status, music], next: 102n, highWater: 102n }))
-      .mockImplementationOnce(() => ({ events: [music], next: 102n, highWater: 102n }));
-    w.call(10_168, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
-    await vi.waitFor(() => expect(w.ret(10_168)).toMatchObject({ ok: true, value: { through: '102', blocked: false,
-      responses: [{ deliveryId: '102', operation: 13 }] } }));
-    expect(w.core.humanInteractionEventsAck.mock.calls.map(([through]) => through)).toEqual([100n, 101n]);
-  });
-
   it('arms a step-up grant with only the deterministic config digest and binds op 63 to the same group and request', async () => {
     const w=world(); await toReady(w);
     const groupId=new Uint8Array(16).fill(0x52), requestId=new Uint8Array(16).fill(0x54);
@@ -578,7 +405,7 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(10_185)).toMatchObject({ ok: true }));
   });
 
-  it('reads generic Bot responses and offers acknowledgement only for the requested contiguous prefix', async () => {
+  it('reads matching Bot responses and leases acknowledgements to only those delivery ids', async () => {
     const w = world();
     await toReady(w);
     const requestId = new Uint8Array(16).fill(0x54);
@@ -589,20 +416,169 @@ describe('Controller', () => {
       body: responseBody, operation: 13, channelId };
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [musicEvent], next: 2n, highWater: 2n });
     w.call(10_192, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
-    await vi.waitFor(() => expect(w.ret(10_192)).toMatchObject({ ok: true, value: { through: '2', blocked: false,
+    await vi.waitFor(() => expect(w.ret(10_192)).toMatchObject({ ok: true, value: { blocked: false,
       responses: [{ requestId: toHex(requestId), operation: 13, channelId: toHex(channelId), status: 0, revision: '8', data: encode([]) }] } }));
-    w.call(10_191, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    const leaseA = interactionLease(w, 10_192);
+    w.call(10_191, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: leaseA });
     await vi.waitFor(() => expect(w.ret(10_191)).toMatchObject({ ok: true, value: null }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+    expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([2n]);
 
     const moderationEvent = { ...musicEvent, deliveryId: 3n, operation: 60, channelId: null };
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [moderationEvent, { ...musicEvent, deliveryId: 4n }], next: 4n, highWater: 4n });
     w.call(10_190, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13] });
-    await vi.waitFor(() => expect(w.ret(10_190)).toMatchObject({ ok: true, value: { through: null, blocked: true,
+    await vi.waitFor(() => expect(w.ret(10_190)).toMatchObject({ ok: true, value: { blocked: false,
       responses: [{ requestId: toHex(requestId), operation: 13 }] } }));
-    w.call(10_189, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '4' });
+    interactionLease(w, 10_190);
+    w.call(10_189, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: '4'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(10_189)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledTimes(1);
+    expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers an exact archived receipt after worker recreation without creating an ACK lease', async () => {
+    const w = world(); await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5c);
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: 4n, data: encode([1n]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [], next: 0n, highWater: 9n });
+    const archivedEvent: HumanInteractionEvent = { deliveryId: 9n, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: 8n, epoch: 2n, receivedAt: 30n, senderUser: USER, senderDevice: DEVICE,
+      messageId: new Uint8Array(16).fill(0x5d), body, operation: 84, channelId: null };
+    w.core.humanInteractionReceiptsRead.mockReturnValue([archivedEvent]);
+    w.call(10_188, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [84], requestIds: [toHex(requestId)] });
+    await vi.waitFor(() => expect(w.ret(10_188)).toMatchObject({ ok: true, value: {
+      through: null, responses: [{ deliveryId: '9', requestId: toHex(requestId), operation: 84, revision: '4', data: encode([1n]) }],
+    } }));
+    expect(w.core.humanInteractionReceiptsRead).toHaveBeenCalledWith(COMMUNITY, new Uint8Array(16).fill(0x73), USER, [requestId]);
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
+  });
+
+  it('does not query archived receipts when the current Bot installation is disabled', async () => {
+    const w = world(); await toReady(w);
+    w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 4, revision: 2n });
+    w.call(10_187, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [84], requestIds: ['5c'.repeat(16)] });
+    await vi.waitFor(() => expect(w.ret(10_187)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
+    expect(w.core.humanInteractionReceiptsRead).not.toHaveBeenCalled();
+  });
+
+  it('reads member-safe Bot command status without requiring management settings authority', async () => {
+    const w = world(); await toReady(w);
+    w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 9n });
+    w.call(10_176, { m: 'getBotCommandStatus', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_176)).toMatchObject({ ok: true, value: {
+      installationId: '73'.repeat(16), botUserId: toHex(USER), state: 3, revision: '9',
+    } }));
+    expect(w.routes.getBotInstallation).not.toHaveBeenCalled();
+  });
+
+  it('reads operation 0 and music provider status 24 through exact request IDs and selected ACK leases', async () => {
+    const w = world(); await toReady(w);
+    const capabilityRequest = new Uint8Array(16).fill(0x69);
+    const statusRequest = new Uint8Array(16).fill(0x6a);
+    const event = (deliveryId: bigint, requestId: Uint8Array, operation: number) => ({
+      deliveryId, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: deliveryId, epoch: 1n,
+      receivedAt: 1n, senderUser: USER, senderDevice: DEVICE, messageId: requestId,
+      body: encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1n]) }),
+      operation, channelId: null,
+    });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [event(1n, capabilityRequest, 0), event(2n, statusRequest, 24)], next: 2n, highWater: 2n });
+    w.call(10_174, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [0, 24],
+      requestIds: [toHex(capabilityRequest), toHex(statusRequest)] });
+    await vi.waitFor(() => expect(w.ret(10_174)).toMatchObject({ ok: true, value: {
+      responses: [{ operation: 0, requestId: toHex(capabilityRequest), channelId: null }, { operation: 24, requestId: toHex(statusRequest), channelId: null }],
+    } }));
+    const lease = interactionLease(w, 10_174);
+    w.call(10_173, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
+    await vi.waitFor(() => expect(w.ret(10_173)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([1n, 2n]);
+  });
+
+  it('invalidates read-bound ACK capabilities when the worker forgets an account/core', async () => {
+    const w = world(); await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5a);
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 9n, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: 9n, epoch: 1n, receivedAt: 1n, senderUser: USER, senderDevice: DEVICE,
+      messageId: requestId, body, operation: 3, channelId: null }], next: 9n, highWater: 9n });
+    w.call(10_177, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [3], requestIds: [toHex(requestId)] });
+    await vi.waitFor(() => expect(w.ret(10_177)).toMatchObject({ ok: true, value: {} }));
+    const lease = interactionLease(w, 10_177);
+    (w.controller as unknown as { forgetAccount: () => void }).forgetAccount();
+    w.call(10_178, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
+    await vi.waitFor(() => expect(w.ret(10_178)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
+  });
+
+  it('normalizes and sends a poll mutation through the real worker request path with its fixed 30-second expiry', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x71);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const channelId = new Uint8Array(16).fill(0x73);
+    const payload = encode([1n, channelId, null, 'Lunch?', ['Pizza', 'Salad'], 0n, 3600n]);
+    expect(() => encodeBotRequestBytes({ requestId, communityId: COMMUNITY, channelId: null, operation: 70,
+      revision: 0n, expires: NOW_S + 30n, args: [payload] })).not.toThrow();
+    expect(() => validateBotContext({ requestId, communityId: COMMUNITY, channelId: null, operation: 70,
+      revision: 0n, expires: NOW_S + 30n, args: [payload] }, { community: COMMUNITY, now: NOW_S })).not.toThrow();
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x74) });
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'poll request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(10_181, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null,
+      requestId: toHex(requestId), operation: 70, args: [payload], revision: '0' });
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(w.ret(10_181)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }));
+    expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual(
+      [1n, requestId, COMMUNITY, null, 70n, 0n, NOW_S + 30n, [payload]]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
+  it.each([['threaded', '76'.repeat(16), new Uint8Array(16).fill(0x76)], ['unthreaded', null, null]])(
+    'normalizes op72 %s request IDs through the real worker path', async (_label, threadText, threadBytes) => {
+      const w = world(); await toReady(w);
+      const groupId = new Uint8Array(16).fill(0x52);
+      const channelId = new Uint8Array(16).fill(0x75);
+      const requestId = new Uint8Array(16).fill(threadText === null ? 0x78 : 0x77);
+      w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x74) });
+      w.core.humanInteractionSendPrepare.mockImplementation(rid => {
+        w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'poll list', type: 0, replyTo: null, attachments: [] });
+        return rid;
+      });
+      w.call(10_175, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: null,
+        requestId: toHex(requestId), operation: 72, args: [toHex(channelId), threadText, null], revision: null });
+      await vi.waitFor(() => expect(w.ret(10_175)).toMatchObject({ ok: true, value: { upload: 'accepted' } }));
+      expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual(
+        [1n, requestId, COMMUNITY, null, 72n, null, null, [channelId, threadBytes, null]]);
+    });
+
+  it('finds exact same-operation requests beyond the first hundred rows and gives concurrent consumers separate leases', async () => {
+    const w = world();
+    await toReady(w);
+    const requestA = new Uint8Array(16).fill(0xa1);
+    const requestB = new Uint8Array(16).fill(0xb2);
+    const channelId = new Uint8Array(16).fill(0x55);
+    const noise = Array.from({ length: 100 }, (_, i) => ({ deliveryId: BigInt(i + 1), groupId: GROUP,
+      communityId: NEW_COMMUNITY, requestId: new Uint8Array(16).fill(i + 1), sourceSeq: BigInt(i + 1), epoch: 1n,
+      receivedAt: 1n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61),
+      body: 'opaque', operation: 13, channelId }));
+    const event = (deliveryId: bigint, requestId: Uint8Array) => ({ deliveryId, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: deliveryId, epoch: 1n, receivedAt: 1n, senderUser: USER, senderDevice: DEVICE,
+      messageId: new Uint8Array(16).fill(Number(deliveryId)),
+      body: encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([]) }),
+      operation: 13, channelId });
+    w.core.humanInteractionEventsRead.mockImplementation((after) => after === 0n
+      ? { events: noise, next: 100n, highWater: 102n }
+      : { events: [event(101n, requestA), event(102n, requestB)], next: 102n, highWater: 102n });
+    w.call(10_182, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13], requestIds: [toHex(requestA)] });
+    await vi.waitFor(() => expect(w.ret(10_182)).toMatchObject({ ok: true, value: { responses: [{ deliveryId: '101', requestId: toHex(requestA) }] } }));
+    const leaseA = interactionLease(w, 10_182);
+    w.call(10_183, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [13], requestIds: [toHex(requestB)] });
+    await vi.waitFor(() => expect(w.ret(10_183)).toMatchObject({ ok: true, value: { responses: [{ deliveryId: '102', requestId: toHex(requestB) }] } }));
+    const leaseB = interactionLease(w, 10_183);
+    expect(w.core.humanInteractionEventsRead.mock.calls.filter(([after]) => after === 100n)).toHaveLength(2);
+    w.call(10_184, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: leaseA });
+    w.call(10_185, { m: 'ackBotInteractionResponses', communityId: toHex(COMMUNITY), through: leaseB });
+    await vi.waitFor(() => expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledTimes(2));
+    expect(w.core.humanInteractionEventsAckSelected.mock.calls).toEqual([[[101n]], [[102n]]]);
   });
 
   it.each([
@@ -648,30 +624,28 @@ describe('Controller', () => {
     w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 2n, groupId, communityId: COMMUNITY,
       requestId, sourceSeq: 4n, epoch: 1n, receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE,
       messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null }], next: 2n, highWater: 2n });
-    w.call(90, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(90)).toMatchObject({ ok: true, value: { authorized: true, through: '2', responses: [
+    w.call(90, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY), requestIds: [toHex(requestId)] });
+    await vi.waitFor(() => expect(w.ret(90)).toMatchObject({ ok: true, value: { authorized: true, responses: [
       { deliveryId: '2', requestId: toHex(requestId), status: 0, hasMore: false,
         cases: [{ messageId: 'e5'.repeat(16), revision: '7', excerpt: 'bounded excerpt' }] },
     ] } }));
     expect(w.routes.getPermissions.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionEventsRead.mock.invocationCallOrder[0]);
-    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
-    w.call(91, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
+    const lease = interactionLease(w, 90);
+    w.call(91, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(91)).toMatchObject({ ok: true, value: null }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+    expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([2n]);
     expect(w.routes.getPermissions.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('does not read or acknowledge moderation response bodies without a fresh audit permission', async () => {
     const w = world();
     await toReady(w);
-    const status = interactionResponseEvent(1n, 24);
-    const moderation = interactionResponseEvent(2n, 60);
-    w.core.humanInteractionEventsRead.mockReturnValue({ events: [status, moderation], next: 2n, highWater: 2n });
     w.routes.getPermissions.mockResolvedValue({ bits: 0n, top: 0 });
     w.call(92, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { authorized: false, responses: [], through: null } }));
     expect(w.core.humanInteractionEventsRead).not.toHaveBeenCalled();
-    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
   });
 
   it('decodes op64 manual evidence rows and returns the continuation cursor', async () => {
@@ -730,7 +704,7 @@ describe('Controller', () => {
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
-  it('only acknowledges the authorized contiguous prefix before a different community event', async () => {
+  it('selectively acknowledges this community response while preserving another community response', async () => {
     const w = world();
     await toReady(w);
     const requestId = new Uint8Array(16).fill(0x54);
@@ -743,19 +717,20 @@ describe('Controller', () => {
       { deliveryId: 3n, groupId: GROUP, communityId: NEW_COMMUNITY, requestId, sourceSeq: 5n, epoch: 1n,
         receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x62), body, operation: 60, channelId: null },
     ], next: 3n, highWater: 3n });
-    w.call(93, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(93)).toMatchObject({ ok: true, value: { blocked: true, through: '2', responses: [{
+    w.call(93, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY), requestIds: [toHex(requestId)] });
+    await vi.waitFor(() => expect(w.ret(93)).toMatchObject({ ok: true, value: { blocked: false, responses: [{
       cases: [{ excerpt: 'bounded excerpt' }],
     }] } }));
-    w.call(94, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3' });
+    const lease = interactionLease(w, 93);
+    w.call(94, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
-    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
-    w.call(95, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '2' });
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
+    w.call(95, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(95)).toMatchObject({ ok: true, value: null }));
-    expect(w.core.humanInteractionEventsAck).toHaveBeenCalledWith(2n);
+    expect(w.core.humanInteractionEventsAckSelected).toHaveBeenCalledWith([2n]);
   });
 
-  it('shows this community response after another community event without consuming either event', async () => {
+  it('finds this community response after another community event with an exact read lease', async () => {
     const w = world();
     await toReady(w);
     const requestId = new Uint8Array(16).fill(0x54);
@@ -768,26 +743,31 @@ describe('Controller', () => {
       { deliveryId: 3n, groupId: GROUP, communityId: COMMUNITY, requestId, sourceSeq: 5n, epoch: 1n,
         receivedAt: 1_800_000_000n, senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x61), body, operation: 60, channelId: null },
     ], next: 3n, highWater: 3n });
-    w.call(97, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true, value: { blocked: true, through: null, responses: [
+    w.call(97, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY), requestIds: [toHex(requestId)] });
+    await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true, value: { blocked: false, responses: [
       { deliveryId: '3', cases: [{ excerpt: 'bounded excerpt' }] },
     ] } }));
-    w.call(98, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3' });
+    interactionLease(w, 97);
+    w.call(98, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '3'.padStart(32, '0') });
     await vi.waitFor(() => expect(w.ret(98)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
-    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
   });
 
   it('refuses to acknowledge a previously authorized range after the server revokes audit access', async () => {
     const w = world();
     await toReady(w);
-    const moderation = interactionResponseEvent(5n, 60, COMMUNITY, new Uint8Array(16).fill(0x5f), encode([1n, [], null]));
-    w.core.humanInteractionEventsRead.mockReturnValue({ events: [moderation], next: 5n, highWater: 5n });
+    const requestId = new Uint8Array(16).fill(0x66);
+    const body = encodeBotResponse({ requestId, communityId: COMMUNITY, status: 0, revision: null, data: encode([1, [], null]) });
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [{ deliveryId: 5n, groupId: GROUP, communityId: COMMUNITY,
+      requestId, sourceSeq: 1n, epoch: 1n, receivedAt: 1n,
+      senderUser: USER, senderDevice: DEVICE, messageId: new Uint8Array(16).fill(0x67), body, operation: 60, channelId: null }], next: 5n, highWater: 5n });
     w.call(96, { m: 'readHumanInteractionResponses', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true, through: '5' } }));
+    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true, value: { authorized: true } }));
+    const lease = interactionLease(w, 96);
     w.routes.getPermissions.mockResolvedValue({ bits: 0n, top: 0 });
-    w.call(97, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: '5' });
+    w.call(97, { m: 'ackHumanInteractionResponses', communityId: toHex(COMMUNITY), through: lease });
     await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
-    expect(w.core.humanInteractionEventsAck).not.toHaveBeenCalled();
+    expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
   });
 
   it('signs a sequence confirmed in the active community timeline and preserves server moderation refusals', async () => {

@@ -43,6 +43,23 @@ describe('welcome settings panel', () => {
     await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(COMMUNITY, '1'));
   });
 
+  it('treats the ACK lease as opaque when delivery ids have advanced', async () => {
+    let requestId: string | null = null;
+    const ack = vi.fn(() => Promise.resolve(null));
+    const gateway: WelcomeSettingsGateway = {
+      request: input => { const id = input.requestId; requestId = id; return Promise.resolve({ requestId: id, upload: 'accepted' }); },
+      read: () => Promise.resolve({ responses: requestId === null ? [] : [{ deliveryId: '101', sourceSeq: '101', communityId: COMMUNITY,
+        channelId: null, requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) }],
+        through: requestId === null ? null : '1', blocked: false }),
+      ack,
+    };
+    render(<WelcomeSettingsPanel communityId={COMMUNITY} serverName="Midgard" channels={[{ id: CHANNEL, name: 'general' }]}
+      enabled canManage gateway={gateway} />);
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await screen.findByDisplayValue(CONFIG.template);
+    await waitFor(() => expect(ack).toHaveBeenCalledWith(COMMUNITY, '1'));
+  });
+
   it('does not report a save as complete until the exact request receives a successful revised response', async () => {
     const { requestSpy, ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
@@ -169,8 +186,8 @@ describe('welcome settings panel', () => {
     response = { requestId: requestB.requestId, operation: 1, status: 0, revision: '9', data: encodeWelcomeSettings(configB) };
 
     expect(await screen.findByDisplayValue(configB.template)).toBeInTheDocument();
-    expect(ackSpy).toHaveBeenCalledWith(communityB, '1');
-    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2]);
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(communityB, '1'));
+    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2], [requestB.requestId]);
   });
 
   it('never acknowledges a pending response cursor against a newly selected community', async () => {

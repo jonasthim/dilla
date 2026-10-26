@@ -60,6 +60,7 @@ export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signat
 export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
 /** Opaque current-interaction-context proof; only the core can verify or interpret its signed payload. */
 export interface InteractionAdmissionContextProof { payload: Uint8Array; signature: Uint8Array; }
+export interface BotCommandStatusRow { installationId: Uint8Array; botUserId: Uint8Array | null; state: number; revision: bigint; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
 export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number;
@@ -586,6 +587,19 @@ export class Routes {
     const path = `/v1/communities/${id('communityId', communityId)}/bot`;
     const row = decode(await this.body('GET', path, 'read', true));
     return row === null ? null : botInstallationRow(row, communityId);
+  }
+  /** Member-safe status for deciding whether to show the shared Bot command transport. */
+  async getBotCommandStatus(communityId: Uint8Array): Promise<BotCommandStatusRow | null> {
+    const path = `/v1/communities/${id('communityId', communityId)}/bot/command-status`;
+    const value = decode(await this.body('GET', path, 'read', true));
+    if (value === null) return null;
+    const a = arr(value, 5);
+    if (a[0] !== 1n) throw new CborError('E_CBOR_SHAPE', 'unsupported Bot command status version');
+    const installationId = bin(a[1], 16);
+    const botUserId = opt(a[2], value => bin(value, 16));
+    const state = u53(a[3]);
+    if (state < 1 || state > 4) throw new CborError('E_CBOR_RANGE', 'invalid Bot installation state');
+    return { installationId, botUserId, state, revision: u64(a[4]) };
   }
   async patchBotProfile(communityId: Uint8Array, display: string): Promise<string> {
     const normalized = checkedProfile('display', display, DISPLAY_MAX_CHARS);

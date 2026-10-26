@@ -14,49 +14,28 @@ To let another member control music without making them an administrator:
 
 DJ access is a bot role approval, not a checkbox in the role's permission list.
 
-Join a voice channel, then send commands in a server text channel:
+Join a voice channel and open the command picker by typing `/` at the start of a
+community message. Choose a music command and fill its named fields, such as the
+search query or URL for `play`. The composer validates required arguments and
+permissions before sending. The complete music command list is in
+[Bot commands](bot-commands.md).
 
-| Command | Result |
-| --- | --- |
-| `/play <song name>` | Queues the first YouTube search result and starts a paused queue. |
-| `/play <YouTube or Spotify URL>` | Queues the track or playlist; starts a paused queue. |
-| `/pause` | Pauses playback. |
-| `/resume` | Resumes playback. |
-| `/skip` | Advances to the next track. |
-| `/queue` | Shows the current track and up to ten upcoming songs. |
-| `/stop` | Stops playback. |
-| `/music` | Shows command help. |
+Music results are private to the requester. Playback itself is heard in the voice
+channel. Commands target the voice channel the requester joined. Playback changes
+require current owner/admin authority or a configured DJ role, and presence in that
+voice channel. The bot needs permission to connect and speak. Polls, reminders, and
+other command results follow their own visibility rules in [Bot commands](bot-commands.md).
 
-The bot answers in the same text channel, visible to everyone who can read it.
-Commands target the voice channel the requester has joined. Playback changes
-require current owner/admin authority or a configured DJ role, and presence in
-that voice channel. Chat commands, including `/stop`, require a joined voice
-channel to select their target. `/queue` is available to members with access to the call.
-Commands in threads and edits to previous messages do not execute commands.
+Typing `/play` or another slash expression into an ordinary message does not run
+it. Use the command picker; to post slash text literally, choose **Send as text**
+or prefix it with `//`. Edits, history replay, and bot-authored messages never run
+music actions. Existing pending informational replies can still be recovered after
+a bot restart, but old text commands are not resumed.
 
 The bot's voice connection is for audio output only. It cannot subscribe to
 people's microphone or screen-share tracks; the voice list labels it
 **playback only**. This restriction is enforced by the server as well as the
 music publisher.
-
-Commands and replies use the existing encrypted text transport. Bot-generated
-messages never trigger commands. The daemon retains command receipts in its
-encrypted native store: a failed reply upload retries the same response without
-executing the command again. If the bot is interrupted during an action, it
-reports the uncertain result and asks the user to inspect `/queue`; it does not
-repeat an uncertain playback action automatically. Old commands from source
-history do not restart playback.
-
-An informational reply whose delivery becomes unknown after a server restore is
-retained as uncertain and is not sent again; `/queue` can inspect the current
-state. A send attempt definitively rejected after an encryption epoch change
-gets a fresh attempt only after its closed receipt has been recorded.
-
-The bot checks permission to reply in the text channel before executing a new
-command. Definitive reply refusals are consumed durably so one channel cannot
-block command intake elsewhere. Recently received commands from before the bot
-started do not resume restored playback; pending replies for commands already
-accepted before the restart can still finish.
 
 Pause and Stop release the audio stream and its provider resources. The Bot can
 remain silently in the voice channel so the next track does not disconnect and

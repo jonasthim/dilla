@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { encode } from '../cbor';
 import type { CoreClient } from '../bridge';
-import { createVoiceMusicAdapter, voiceMusicAdapter } from './music.ts';
+import { createVoiceMusicAdapter, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter } from './music.ts';
 
 const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
@@ -24,11 +24,13 @@ function fixture() {
   const client = {
     call: vi.fn((command: Record<string, unknown>) => {
       commands.push(command);
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ upload: 'accepted' });
+      if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
+      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
       if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: events.splice(0), through: null, blocked: false });
       return Promise.resolve(null);
     }),
-    get: () => undefined,
+    get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: 'cd'.repeat(16) }, deviceId: 'ef'.repeat(16), instance: { id: '12'.repeat(16) } }
+      : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { viewChannel: true } : undefined,
     subscribe: () => () => undefined,
     onCallKeys: () => () => undefined,
     dispose: () => undefined,
@@ -50,6 +52,7 @@ describe('authenticated voice music adapter', () => {
       const f = fixture();
       f.client.call = vi.fn((command: Record<string, unknown>) => {
         f.commands.push(command);
+        if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
         if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('private group not ready'));
         return Promise.resolve({ responses: [], through: null, blocked: false });
       });
@@ -113,6 +116,34 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
+  it('uses the command attempt ID for one enqueue mutation and clears the queue with operation 23', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+
+    const attemptId = '12'.repeat(16);
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://www.youtube.com/watch?v=abcdefghijk', { requestId: attemptId });
+    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
+    expect(f.getRequest(12).requestId).toBe(attemptId);
+    f.answer(f.getRequest(12), 0, '2', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
+    let reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[1], 0, '2', snapshot(2n, false));
+    await enqueue;
+
+    const clear = f.adapter.clearQueue(CHANNEL, { requestId: '34'.repeat(16) });
+    await vi.waitFor(() => expect(f.getRequest(23)).toBeDefined());
+    expect(f.getRequest(23)).toMatchObject({ requestId: '34'.repeat(16), args: [], revision: '2' });
+    f.answer(f.getRequest(23), 0, '3', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
+    reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[2], 0, '3', snapshot(3n, false));
+    await clear;
+    unsubscribe();
+  });
+
   it('passes Spotify links and URIs unchanged through operation 12', async () => {
     for (const input of [
       'https://open.spotify.com/track/1234567890123456789012',
@@ -140,7 +171,7 @@ describe('authenticated voice music adapter', () => {
     }
   });
 
-  it('explains that Spotify is unavailable when the linked account or provider cannot resolve a link', async () => {
+  it('keeps a Spotify status 5 outcome uncertain because the mutation may have persisted', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
@@ -150,7 +181,7 @@ describe('authenticated voice music adapter', () => {
     const enqueue = f.adapter.enqueue(CHANNEL, 'spotify:track:1234567890123456789012');
     await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
     f.answer(f.getRequest(12), 5, '1', encode([]));
-    await expect(enqueue).rejects.toThrow(/Spotify.*available|link.*Spotify/i);
+    await expect(enqueue).rejects.toBeInstanceOf(VoiceMusicAcceptedUnconfirmedError);
     unsubscribe();
   });
 

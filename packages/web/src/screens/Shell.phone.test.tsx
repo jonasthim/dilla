@@ -54,7 +54,7 @@ describe('the phone shell: the servers list', () => {
     const gear = await screen.findByRole('button', { name: t('admin.open') });
     const search = screen.getByRole('button', { name: t('search.open') });
     const head = gear.closest('.d-channel-list__head') as HTMLElement;
-    expect(within(head).getAllByRole('button')).toEqual([search, gear]);
+    expect(within(head).getAllByRole('button')).toEqual([search, gear, screen.getByRole('button', { name: 'Reminders' })]);
     expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
     expect(search.querySelector('svg[data-icon="search"]')).not.toBeNull();
     expect(screen.queryByRole('button', { name: t('nav.server.menu') })).toBeNull();
@@ -788,3 +788,21 @@ describe('search on a touch tablet, focus return and a server that did not load 
     await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
   });
 });
+
+for (const [label, path, slot] of [
+  ['channel', `/c/${A}/${TEXT}`, '.d-phone-header__actions'],
+  ['DM', `/dm/${DM}`, '.d-phone-header__actions'],
+  ['voice', `/c/${A}/${GENV}`, '.d-phone-header__actions'],
+  ['channel list', `/c/${A}`, '.d-channel-list__head'],
+  ['DM list', '/dm', '.d-channel-list__head'],
+] as const) {
+  it(`keeps the reminder inbox accessible in the existing phone ${label} action row`, async () => {
+    const { user } = phone({ path });
+    const trigger = await screen.findByRole('button', { name: 'Reminders' });
+    expect(trigger.closest(slot)).not.toBeNull();
+    await user.click(trigger);
+    expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Close reminders' }));
+    expect(trigger).toHaveFocus();
+  });
+}

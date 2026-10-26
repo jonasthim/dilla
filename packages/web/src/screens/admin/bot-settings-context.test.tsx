@@ -15,7 +15,7 @@ function Fixture() {
   }}>Start</button><p>{result}</p></>;
 }
 afterEach(() => vi.useRealTimers());
-it.each([false, true])('polls and acknowledges its owned prefix even with later responses blocked=%s', async blocked => {
+it.each([false, true])('reads exact pending request IDs and ACKs an opaque lease blocked=%s', async blocked => {
   vi.useFakeTimers();
   const client = new FakeClient();
   client.set(`permissions:${communityId}`, { loaded: true, manageCommunity: true, manageRoles: false, manageChannels: false,
@@ -23,7 +23,7 @@ it.each([false, true])('polls and acknowledges its owned prefix even with later 
   let response = false; let rejectAck = true;
   client.handler = command => {
     if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-    if (command.m === 'readBotInteractionResponses') return Promise.resolve(response ? { through: '1', blocked, responses: [{
+    if (command.m === 'readBotInteractionResponses') return Promise.resolve(response ? { through: 'f'.repeat(32), blocked, responses: [{
       deliveryId: '1', requestId: client.callsOf('humanInteractionRequest')[0].requestId, communityId, operation: 2,
       channelId: null, revision: '1', status: 0, data: new Uint8Array(),
     }] } : { through: null, blocked: false, responses: [] });
@@ -34,6 +34,7 @@ it.each([false, true])('polls and acknowledges its owned prefix even with later 
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start' })); await Promise.resolve(); });
   expect(screen.getByText('pending')).toBeInTheDocument();
   expect(client.callsOf('readBotInteractionResponses')).toHaveLength(1);
+  expect(client.callsOf('readBotInteractionResponses')[0].requestIds).toEqual([client.callsOf('humanInteractionRequest')[0].requestId]);
   await act(async () => { await vi.advanceTimersByTimeAsync(749); });
   expect(client.callsOf('readBotInteractionResponses')).toHaveLength(1);
   response = true;
@@ -42,4 +43,5 @@ it.each([false, true])('polls and acknowledges its owned prefix even with later 
   rejectAck = false;
   await act(async () => { await vi.advanceTimersByTimeAsync(750); });
   expect(screen.getByText('confirmed')).toBeInTheDocument();
+  expect(client.callsOf('ackBotInteractionResponses').every(call => call.through === 'f'.repeat(32))).toBe(true);
 });

@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { BROWSER_ATTACHMENT_CAP, type TrayItem } from '@dilla/client-core';
 import { refusal } from '../../test/fake-client.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
+import { clearCommandDraftMemory } from '../commands/CommandHost.tsx';
 import { GEN, O1, O2, P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
 
 const box = (name = 'message #general') => screen.getByRole('textbox', { name });
@@ -16,7 +17,40 @@ const input = () => {
 const entry = (id: string, phase: TrayItem['phase'], over: Partial<TrayItem> = {}): TrayItem =>
   ({ id, name: `${id}.txt`, size: 5, mime: 'text/plain', image: false, phase, reason: '', ...over });
 
+beforeEach(() => clearCommandDraftMemory());
+
 describe('mentions in the composer (L-TS-37)', () => {
+  it('renders the GIF search picker while a slash command is active', async () => {
+    const { fake, user } = renderConversation({ handler: command => {
+      if (command.m === 'gifStatus') return Promise.resolve({ on: true });
+      if (command.m === 'gifSearch') return Promise.resolve({ items: [], next: null });
+      return Promise.resolve(null);
+    } });
+    await waitFor(() => expect(fake.callsOf('gifStatus')).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'add a gif' })).toBeInTheDocument());
+    fireEvent.change(box(), { target: { value: '/giphy cats' } });
+    await user.click(await screen.findByRole('button', { name: /run/i }));
+    expect(await screen.findByRole('dialog', { name: 'gifs' })).toBeInTheDocument();
+    expect(fake.callsOf('gifSearch')).toContainEqual(expect.objectContaining({ m: 'gifSearch', q: 'cats' }));
+  });
+  it('does not publish a canceled slash draft through ordinary Send', async () => {
+    const { fake, user } = renderConversation();
+    fireEvent.change(box(), { target: { value: '/secret-command' } });
+    await user.keyboard('{Escape}{Escape}');
+    expect(box()).toHaveValue('/secret-command');
+    await user.click(screen.getByRole('button', { name: 'send' }));
+    expect(await screen.findByRole('button', { name: /send as text/i })).toBeInTheDocument();
+    expect(fake.callsOf('send')).toEqual([]);
+    await user.click(screen.getByRole('button', { name: /send as text/i }));
+    await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: '/secret-command' }]));
+  });
+  it('reopens command mode after a canceled slash draft is edited to a new slash command', async () => {
+    const { user } = renderConversation();
+    fireEvent.change(box(), { target: { value: '/me first' } });
+    await user.click(await screen.findByRole('button', { name: /cancel/i }));
+    fireEvent.change(box(), { target: { value: '/search second' } });
+    expect(await screen.findByRole('combobox', { name: 'query' })).toHaveValue('second');
+  });
   it('opens a fresh @ query at the same position after Escape and deletion', async () => {
     const { user } = renderConversation();
     await user.type(box(), '@b');

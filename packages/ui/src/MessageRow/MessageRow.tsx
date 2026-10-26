@@ -45,6 +45,8 @@ export interface MessageRowProps {
     onJumpPointerDown?(e: PointerEvent<HTMLButtonElement>): void;
   };
   attachments?: ReactNode;
+  /** A verified interactive payload such as a poll, rendered inside the message's main column. */
+  card?: ReactNode;
   reactions?: ReactNode;
   /** A public thread's summary under the body: a chip button named by `label` ("2 replies") that opens it. */
   thread?: { label: string; onOpen(): void };
@@ -139,7 +141,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  * and Escape on the row itself, goes to `onKeyDown`.
  */
 export function MessageRow({
-  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
+  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments, card,
   reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
@@ -211,6 +213,7 @@ export function MessageRow({
         {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
         {editor !== undefined ? editor : showBody ? <div className="d-message-row__body">{bodyChildren(body, profileTab, onOpenProfile)}</div> : null}
+        {card !== undefined ? <div className="d-message-row__attachments d-message-row__card">{card}</div> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (

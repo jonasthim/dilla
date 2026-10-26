@@ -338,7 +338,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}>
       {items.map((item, index) => <Fragment key={item.key}>
         {startsDay(items[index - 1], item) ? <DateDivider label={dayLabel(item.ts, now)} /> : null}
-        <MessageItem item={item} channelId={p.channelId} book={p.book} now={now} bits={bits}
+        <MessageItem item={item} channelId={p.channelId} book={p.book} now={now} bits={bits} client={client} communityId={communityId} threadId={null}
         grouped={groupedWithAbove(items[index - 1], item)} revealed={item.key === revealedKey} onReveal={on => reveal(item.key, on)}
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
         editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentionsFor(item.body))).length}

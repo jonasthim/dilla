@@ -107,8 +107,8 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       const result = await client.call({ m: 'humanInteractionRequest', ...input });
       return result as Awaited<ReturnType<WelcomeSettingsGateway['request']>>;
     },
-    read: async (id, operations) => {
-      const page = await client.call({ m: 'readBotInteractionResponses', communityId: id, operations });
+    read: async (id, operations, requestIds) => {
+      const page = await client.call({ m: 'readBotInteractionResponses', communityId: id, operations, requestIds });
       return page as Awaited<ReturnType<WelcomeSettingsGateway['read']>>;
     },
     ack: async (id, through) => { await client.call({ m: 'ackBotInteractionResponses', communityId: id, through }); return null; },

@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { decodeMusicProviderCapability, decodeMusicProviderStatus, toHex, type MusicProviderStatusSnapshot } from '@dilla/client-core';
+import { createBotInteractionClient, decodeMusicProviderCapability, decodeMusicProviderStatus, toHex, type MusicProviderStatusSnapshot } from '@dilla/client-core';
 import { Button } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { spotifyReturnDeadline } from '../../settings/spotify-return.ts';
 
-interface Response { requestId: string; communityId: string; operation: number; status: number; data: Uint8Array }
-interface Page { responses: Response[]; through: string | null; blocked: boolean }
 const labels: Record<string, StringKey> = {
   unknown: 'workspace.providers.unknown', not_linked: 'workspace.providers.notLinked', linked: 'workspace.providers.linked',
   needs_attention: 'workspace.providers.attention', configured: 'workspace.providers.configured', missing_requirements: 'workspace.providers.missing',
@@ -46,6 +44,7 @@ export function MusicProviderStatus({ communityId, installationId }: { community
       if (timer !== undefined) window.clearTimeout(timer);
       setPhase('unavailable');
     }, Math.max(0, deadline - Date.now()));
+    const interactions = createBotInteractionClient(client, communityId);
     let requestId = newRequestId();
     // Ask an operation understood by older bots before sending the new status operation.
     let operation: 0 | 24 = 0;
@@ -54,40 +53,28 @@ export function MusicProviderStatus({ communityId, installationId }: { community
       if (Date.now() >= deadline) { setPhase('unavailable'); return; }
       timer = window.setTimeout(() => void work(), 1000);
     };
-    const poll = async (): Promise<void> => {
+    const request = async (): Promise<void> => {
       if (!canRead()) return;
       try {
-        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [operation] }) as Page;
+        const response = await interactions.request({ requestId, operation, args: [], revision: null, channelId: null });
         if (!canRead()) return;
-        const response = page.responses.find(row => row.requestId === requestId && row.communityId === communityId && row.operation === operation);
-        // The worker owns disposable observation acknowledgements, including after this page unmounts.
-        if (!response) { later(poll); return; }
         if (response.status !== 0) { setPhase('unavailable'); return; }
         if (operation === 0) {
           if (!decodeMusicProviderCapability(response.data)) { setPhase('unavailable'); return; }
           operation = 24;
           requestId = newRequestId();
-          await send();
+          await request();
           return;
         }
         const observed = decodeMusicProviderStatus(response.data);
         if (toHex(observed.installationId) !== installationId || observed.observedAt > BigInt(Math.floor(Date.now() / 1000) + 5)) throw new Error('invalid observation');
         setSnapshot(observed); setNow(Date.now()); setPhase('known');
         if (oauthDeadline !== null && observed.spotifyAccount !== 'linked' && Date.now() < deadline) {
-          requestId = newRequestId(); later(send);
+          requestId = newRequestId(); later(request);
         } else window.clearTimeout(timeout);
       } catch { if (canRead()) setPhase('unavailable'); }
     };
-    const send = async (): Promise<void> => {
-      if (!canRead()) return;
-      try {
-        const sent = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId, operation, args: [], revision: null }) as { upload: string };
-        if (!canRead()) return;
-        if (sent?.upload === 'rejected') { setPhase('unavailable'); return; }
-        await poll();
-      } catch { if (canRead()) setPhase('unavailable'); }
-    };
-    void send();
+    void request();
     return () => { stopped = true; window.clearTimeout(timeout); if (timer !== undefined) window.clearTimeout(timer); };
   }, [client, communityId, installationId, authorized, generation]);
   const shown = authorized ? snapshot : null;

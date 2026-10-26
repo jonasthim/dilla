@@ -76,7 +76,7 @@ export function ModerationLog({ communityId, showHeading = true }: { communityId
     let canceled = false;
     let timer: number | undefined;
     const poll = (): void => {
-      void Promise.resolve(client.call({ m: 'readHumanInteractionResponses', communityId })).then(value => {
+      void Promise.resolve(client.call({ m: 'readHumanInteractionResponses', communityId, requestIds: [request] })).then(value => {
         if (canceled || id !== generation.current) return;
         const page = value as ReadResult;
         if (!page.authorized) {

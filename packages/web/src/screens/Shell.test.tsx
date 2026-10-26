@@ -91,6 +91,21 @@ it('checkpoints an unsent draft before refreshing to a new UI build', async () =
   expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
 });
 
+it('keeps the reminder inbox entry mounted from DM and root routes without a selected community', async () => {
+  const { user, view } = setup('/', { communities: [] });
+  expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Reminders' }));
+  expect(await screen.findByRole('dialog', { name: 'Your reminders' })).toBeInTheDocument();
+  view.unmount();
+  replaceHistoryState(null, '', `/dm/${'ab'.repeat(16)}`);
+  const fake = new FakeClient();
+  fake.set('account', account()); fake.set('connection', { status: 'online', generation: '7' }); fake.set('communities', []);
+  fake.set('dms', []);
+  const dmView = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+  dmView.unmount();
+});
+
 it('shows my text timeout expiry and blocks the channel composer', async () => {
   const expires = NOW + 600;
   const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
@@ -402,6 +417,19 @@ it('sends typing off when leaving the visible channel', async () => {
   await user.type(composer(), 'draft');
   await user.click(screen.getByRole('button', { name: 'random' }));
   await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: false }));
+});
+it('keeps ordinary drafts separate while switching between channels', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND }));
+  } });
+  await user.type(composer(), 'general draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  await user.type(composer('random'), 'random draft');
+  await user.click(screen.getByRole('button', { name: 'general' }));
+  expect(composer()).toHaveValue('general draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  expect(composer('random')).toHaveValue('random draft');
 });
 it('returns focus to where search was opened when Escape closes it', async () => {
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
@@ -1414,7 +1442,7 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, channels, status, the pins button, the active row and the composer in that order', async () => {
+  it('tabs through skip link, rail, channels, status, the header actions, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
@@ -1441,6 +1469,8 @@ describe('keyboard', () => {
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'Reminders' }));
+    await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
     await user.tab();
     // web3.7: the thread list sits after pins and before the members toggle.
@@ -1917,3 +1947,36 @@ describe('the channel header actions (web3.9)', () => {
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });
 });
+
+
+it('selects a builtin member through the shipping Shell provider and executes dm', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: core => {
+    core.set(`timeline:${GEN}`, timeline());
+    core.handler = command => command.m === 'openDm' ? Promise.resolve({ channelId: 'ac'.repeat(16) }) : Promise.resolve(null);
+  } });
+  fireEvent.change(composer(), { target: { value: '/dm' } });
+  const member = await screen.findByRole('combobox', { name: 'user' });
+  await user.type(member, 'bob');
+  await user.click(await screen.findByRole('option', { name: 'bob' }));
+  await user.click(screen.getByRole('button', { name: /run command/i }));
+  await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
+});
+
+for (const [label, route, slot] of [
+  ['channel', `/c/${A}/${GEN}`, '.d-channel-header__actions'],
+  ['DM', `/dm/${DM}`, '.d-channel-header__actions'],
+  ['desktop voice', `/c/${A}/${VOICE}`, '.d-channel-list__head'],
+  ['channel list', `/c/${A}`, '.d-channel-list__head'],
+  ['DM list', '/dm', '.d-channel-list__head'],
+] as const) {
+  it(`keeps the reminder inbox in the existing ${label} action row`, async () => {
+    const { user } = setup(route, { before: fake => { withDms(fake); if (label === 'channel list') fake.set(`channels:${A}`, []); } });
+    const trigger = await screen.findByRole('button', { name: 'Reminders' });
+    expect(trigger.closest(slot)).not.toBeNull();
+    expect(trigger.parentElement).not.toBe(document.querySelector('.d-app-shell__main'));
+    await user.click(trigger);
+    expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Close reminders' }));
+    expect(trigger).toHaveFocus();
+  });
+}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -54,12 +55,14 @@ func (h *Groups) botInteractionGroupRead(w http.ResponseWriter, r *http.Request,
 			current.Registration.UserID != session.UserID || current.Registration.DeviceID != session.DeviceID {
 			return errors.New("interaction group does not match the current Bot session")
 		}
-		now := h.Deps.Clock.Now().Unix()
-		if _, err := h.Deps.verifyCurrentInteractionLiveState(r.Context(), current, now, installationID, session.Bot.CommunityID,
-			session.UserID, session.DeviceID, current.Binding.ParticipantUserID, current.Binding.ParticipantDeviceID, true, tx); err != nil {
-			return err
-		}
-		return fn(current, tx, session, groupID)
+		return current.WithDeviceListVerification(r.Context(), func(ctx context.Context) error {
+			now := h.Deps.Clock.Now().Unix()
+			if _, err := h.Deps.verifyCurrentInteractionLiveState(ctx, current, now, installationID, session.Bot.CommunityID,
+				session.UserID, session.DeviceID, current.Binding.ParticipantUserID, current.Binding.ParticipantDeviceID, true, tx); err != nil {
+				return err
+			}
+			return fn(current, tx, session, groupID)
+		})
 	})
 	if err != nil {
 		var apiErr *server.Error

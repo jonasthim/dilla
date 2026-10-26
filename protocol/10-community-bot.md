@@ -57,6 +57,18 @@ Operation, arguments, channel requirement, mutation:
 - 62 automod.config.get: [], no channel, read
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
+- 3 capabilities: [], no channel, read
+- 70 poll.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, channel_id, thread_id|null, question, answers, multi, duration_seconds]`; channel_id is required bstr16, question is 1..300 Unicode scalar values, answers are 2..10 unique nonblank strings of 1..100 Unicode scalar values, multi is 0 or 1, and duration is one of 3600, 14400, 28800, 86400, 259200, 604800 seconds. The encoded payload is capped at 1800 bytes so a result fits the response cap.
+- 71 poll.get: [poll_id], no channel, read
+- 72 poll.list: [channel_id, thread_id|null, cursor bstr(1..256)|null], no channel, read
+- 73 poll.vote: [poll_id, selected bstr], no channel, mutation. selected is canonical CBOR array of up to 10 unique option indexes 0..9; empty withdraws. The handler checks indexes against actual choices and enforces single choice.
+- 74 poll.close: [poll_id], no channel, mutation
+- 75 poll.voters: [poll_id, option 0..9, cursor bstr(1..256)|null], no channel, read
+- 80 reminder.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, when_kind, when, text, timezone, source_channel_id|null, source_thread_id|null]`; kind 0 is relative seconds 60..31536000, kind 1 is Unix seconds 1..253402300799; text is 1..1500 UTF8 bytes, timezone 1..100 UTF8 bytes, and a thread requires its source channel. Encoded payload is capped at 2200 bytes.
+- 81 reminder.list: [cursor bstr(1..256)|null], no channel, read
+- 82 reminder.cancel: [reminder_id], no channel, mutation
+- 83 reminder.dismiss: [reminder_id], no channel, mutation
+- 84 reminder.due: [cursor bstr(1..256)|null], no channel, read
 
 Before requesting operation 24, clients negotiate through operation 0. Its legacy
 response is `[1, actor_id, effective_permission_bits, owner, administrator]`.
@@ -81,13 +93,23 @@ state_directory_unavailable`, `8 dependencies_missing`, `9 unsupported_bot`, and
 errors, tokens, or OAuth codes. The handler checks the actor's current
 `manage_community` authority and recomputes the response on an exact replay.
 
-Client workers own disposable observation responses for operations 0 and 24.
-Before an authorized journal read, they cache and acknowledge only a contiguous
-leading observation prefix, never a mutation or another feature's response.
-The in-memory cache holds at most 64 cloned responses for 60 seconds and clears
-with the session. Reads retain their ordinary live authorization checks. This lets
-later readers drain observations after the originating settings page closes,
-without losing another feature's response or treating cached data as fresh evidence.
+The native client keeps unconsumed responses in its encrypted journal, with a
+separate 4096-entry encrypted archive for consumed receipts. A selected ACK copies
+the exact response and its source provenance into that archive and consumes the
+journal row in one storage transaction. If that transaction fails, the journal row
+stays pending. The archive evicts only its oldest consumed receipts when full; it
+never evicts pending journal data. A read names the exact request IDs and operation
+codes it expects; generic pagination never includes archived history. Exact-request
+recovery rechecks the current owner/device, community membership, active Bot
+installation and identity, original source message, and current cryptographic trust
+before returning archived bytes. Revoked or replaced contexts receive no old result.
+
+Pending journal reads return an opaque, read-bound ACK lease for the selected
+delivery IDs. The client acknowledges only after processing the exact response,
+and the lease cannot be used as a delivery cursor or to acknowledge an unselected
+prefix. Leases expire when their read context is forgotten. A stale or mismatched
+lease is rejected. Reads keep their normal live authorization checks; a cached
+response is not new evidence of current permissions or provider state.
 
 Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
 
@@ -907,8 +929,8 @@ Bot must retain connect and speak permissions and an active, ready Music-enabled
 installation. These checks run again before a queue mutation is committed,
 including after provider lookup. Owners and administrators may additionally
 issue an emergency stop without being in the call. Instance-admin status alone
-does not grant community music control. Text-chat commands require a joined
-voice channel to select their target, including for `/stop`.
+does not grant community music control. Structured music commands target the
+caller's joined voice channel, including an emergency stop.
 
 Managed Bot voice access is publication-only: tokens and current SFU permission
 updates prohibit media subscription and permit only microphone-source audio

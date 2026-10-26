@@ -110,7 +110,19 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	m.Handle("PUT /v1/communities/{community}/bot", botSession("PUT /v1/communities/{community}/bot", http.HandlerFunc(d.ConfigureBotInstallation)))
 	m.Handle("POST /v1/communities/{community}/bot/disable", botSession("POST /v1/communities/{community}/bot/disable", http.HandlerFunc(d.DisableBotInstallation)))
 	m.Handle("DELETE /v1/communities/{community}/bot", botSession("DELETE /v1/communities/{community}/bot", http.HandlerFunc(d.RemoveBotInstallation)))
+	commandStatusPath := "GET /v1/communities/{community}/bot/command-status"
+	commandStatus := SessionRoute(d.Sessions, d.Limiter)(commandStatusPath, http.HandlerFunc(d.GetBotCommandStatus))
+	m.Handle(commandStatusPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		commandStatus.ServeHTTP(w, r)
+	}))
 	m.Handle("GET /v1/communities/{community}/bot/actors/{actor}/authority", botSession("GET /v1/communities/{community}/bot/actors/{actor}/authority", http.HandlerFunc(d.GetBotActorAuthority)))
+	channelAuthorityPath := "GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority"
+	channelAuthority := botSession(channelAuthorityPath, http.HandlerFunc(d.GetBotActorChannelAuthority))
+	m.Handle(channelAuthorityPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		channelAuthority.ServeHTTP(w, r)
+	}))
 	m.Handle("POST /v1/communities/{community}/bot/join-role-grants", botSession("POST /v1/communities/{community}/bot/join-role-grants", http.HandlerFunc(d.GrantBotJoinRole)))
 	m.Handle("GET /v1/communities/{community}/bot/members/{member}/episode", botSession("GET /v1/communities/{community}/bot/members/{member}/episode", http.HandlerFunc(d.GetBotMemberEpisode)))
 	m.HandleFunc("GET /v1/bot-runtime/installations", d.ListRuntimeInstallations)
@@ -1266,7 +1278,8 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 	}{req.RequestID, installationID, req.ExpectedRevision})
 	now := d.Clock.Now().Unix()
 	var missingChannels []id.ID
-	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
+	err = d.withDeviceListTransaction(r.Context(), func(ctx context.Context, tx store.Repository) error {
+		r := r.WithContext(ctx)
 		if row.RuntimeID == nil {
 			return botConflict("installation has no runtime")
 		}

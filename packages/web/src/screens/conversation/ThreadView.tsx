@@ -200,7 +200,7 @@ export function ThreadView(p: {
     if (next !== undefined) { e.preventDefault(); rowEls.current.get(next.key)?.focus(); }
   };
   const row = (item: TimelineItem, key: string, isActive: boolean) => (
-    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} active={isActive} flash={false} onOpenProfile={p.onOpenProfile}
+    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} client={client} communityId={communityId} threadId={p.rootMsgId} active={isActive} flash={false} onOpenProfile={p.onOpenProfile}
       editing={ui.editing?.msgId === item.msgId ? ui.editing.value : null}
       editMeasure={v => new TextEncoder().encode(encodeMentions(v, encodeWith, broadcast, roleMentionsFor(item.body))).length} rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
       onJumpPointerDown={e => e.preventDefault()} onEvent={onRow} onEditChange={value => dispatch({ type: 'editChange', value })}

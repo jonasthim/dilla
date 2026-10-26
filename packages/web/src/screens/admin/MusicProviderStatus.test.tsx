@@ -3,23 +3,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encode, encodeMusicProviderStatus, fromHex } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
+import { account, ME } from '../../test/fixtures.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
 import { noteSpotifyReturn } from '../../settings/spotify-return.ts';
 
 const cid = '11'.repeat(16); const installationId = '22'.repeat(16);
 function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, linked = true, pending?: 'send' | 'read') {
   const fake = new FakeClient();
+  fake.set('account', account());
+  fake.set('communities', [{ id: cid, name: 'Music test', owner: ME.id }]);
   fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
   let requestId = '';
   let operation = 0;
   fake.handler = command => Promise.resolve((() => {
     if (pending === 'send' && command.m === 'humanInteractionRequest' || pending === 'read' && command.m === 'readBotInteractionResponses') return new Promise<never>(() => {});
+    if (command.m === 'getBotCommandStatus') return { installationId, botUserId: null, state: 3, revision: '1' };
     if (command.m === 'humanInteractionRequest') { requestId = command.requestId; operation = command.operation; return { requestId, upload: 'accepted' }; }
-    if (command.m === 'readBotInteractionResponses') return { responses: empty ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', revision: null,
+    if (command.m === 'readBotInteractionResponses') return { responses: empty ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', channelId: null, revision: null,
       data: operation === 0 ? capabilityData ?? encode(legacy ? [1, fromHex('44'.repeat(16)), 0, 1, 0] : [2, fromHex('44'.repeat(16)), 0, 1, 0, [24]])
         : encodeMusicProviderStatus({ version: 1, installationId: fromHex(wrongInstallation ? '33'.repeat(16) : installationId), observedAt: BigInt(Math.floor(Date.now() / 1000) - age),
         spotifyAccount: linked ? 'linked' : 'not_linked', spotifyAccountReason: linked ? 'none' : 'missing_credentials', spotifyPlayback: 'missing_requirements', spotifyPlaybackReason: 'helper_missing',
-        youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) }], through: null, blocked: true };
+        youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) }], through: 'ee'.repeat(16), blocked: false };
+    if (command.m === 'ackBotInteractionResponses') return null;
     return null;
   })());
   const view = render(<CoreProvider client={fake}><MusicProviderStatus communityId={cid} installationId={installationId} /></CoreProvider>);
@@ -27,12 +32,14 @@ function setup(status = 0, wrongInstallation = false, age = 0, empty = false, le
 }
 afterEach(() => vi.useRealTimers());
 describe('music provider status', () => {
-  it('uses runtime evidence and never acknowledges another operation blocking its response', async () => {
+  it('uses runtime evidence and acknowledges the exact leased capability and status responses', async () => {
     const { fake } = setup();
     expect(await screen.findByText('Linked')).toBeVisible();
     expect(screen.getByText('Missing requirements')).toBeVisible();
-    expect(fake.callsOf('readBotInteractionResponses').map(call => call.operations)).toEqual([[0], [24]]);
-    expect(fake.callsOf('ackBotInteractionResponses')).toEqual([]);
+    expect(fake.callsOf('readBotInteractionResponses').map(call => [call.operations, call.requestIds])).toEqual([
+      [[0], [fake.callsOf('humanInteractionRequest')[0].requestId]], [[24], [fake.callsOf('humanInteractionRequest')[1].requestId]],
+    ]);
+    expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(2);
     expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0, 24]);
     expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ operation: 24, args: [], revision: null, channelId: null });
   });
@@ -40,7 +47,7 @@ describe('music provider status', () => {
     const { fake } = setup(0, false, 0, false, true);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
     expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0]);
-    expect(fake.callsOf('ackBotInteractionResponses')).toEqual([]);
+    expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1);
     expect(screen.queryByText('Linked')).not.toBeInTheDocument();
   });
   it('rejects malformed capability evidence before requesting provider status', async () => {
