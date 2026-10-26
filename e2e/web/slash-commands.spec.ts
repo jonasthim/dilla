@@ -4,7 +4,7 @@ import {
   addServerVia, attachInput, channelRow, composerBox, completeSignUp, copy, logRegion, makeInviteLink, messageRow, newAccount, openChannel,
   rowAction, rowToolbar, sendText, signIn, signUp, trayEntries, type Guard,
 } from './support/app';
-import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { test, type SecondBrowser } from './support/second';
 import { installWorkerPort, portCall } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
@@ -25,6 +25,13 @@ const VOICE_HOST: HostConfig = { ...HOST, sfu: { port: SFU_PORT, udpPort: SFU_PO
 test.use({ baseURL: `http://127.0.0.1:${String(PORT)}` });
 test.use({ actionTimeout: ACTION_TIMEOUT });
 test.describe.configure({ timeout: 360_000 });
+
+// Build real native prerequisites once, outside the scenario's authenticated UI budget.
+// WebKit's explicit suite reaches its first managed Bot here, so its CI cache can be cold.
+test.beforeAll(async () => {
+  test.setTimeout(360_000);
+  await prepareBotRuntimeBinaries();
+});
 
 async function secondPersona(browser: Browser, browserName: string, persistent: { open(): Promise<SecondBrowser> },
   guard: Guard, baseURL: string): Promise<{ context: BrowserContext; page: Page }> {
@@ -537,6 +544,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
 
 test('music snapshot and clear report privately or explain unavailable encrypted voice', async ({ page, instanceName }, testInfo) => {
   let host: StartedHost | null = null;
+  let primaryFailure: unknown;
   try {
     host = await startTestHost(VOICE_HOST);
     await traceCoreWorker(page);
@@ -602,9 +610,31 @@ test('music snapshot and clear report privately or explain unavailable encrypted
     await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
       .toContainText('Music queue cleared.', { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
+  } catch (error) {
+    primaryFailure = error;
+    const evidence = await page.evaluate(() => {
+      const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[]; events: unknown[] } }).__slashWorkerTrace;
+      const methods = /call|voice|sfu|account|diagnostics|connection/iu;
+      return {
+        url: location.pathname,
+        call: document.querySelector('[data-call-phase]')?.getAttribute('data-call-phase'),
+        dock: document.querySelector('.d-voice-dock')?.getAttribute('data-phase'),
+        calls: trace?.calls.filter(value => methods.test(JSON.stringify(value))).slice(-40),
+        events: trace?.events.filter(value => methods.test(JSON.stringify(value))).slice(-60),
+      };
+    }).catch(captureError => ({ captureError: String(captureError) }));
+    await testInfo.attach('slash-music-failure.json', {
+      body: Buffer.from(JSON.stringify({ error: String(error), evidence }, null, 2)), contentType: 'application/json',
+    });
+    throw error;
   } finally {
-    try { await leaveIfInCall(page); }
-    finally { await stopAppBeforeHost(page, host); }
+    const cleanupFailures: unknown[] = [];
+    try { await leaveIfInCall(page); } catch (error) { cleanupFailures.push(error); }
+    try { await stopAppBeforeHost(page, host); } catch (error) { cleanupFailures.push(error); }
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(primaryFailure === undefined ? cleanupFailures : [primaryFailure, ...cleanupFailures],
+        'Music scenario and voice cleanup failures');
+    }
   }
 });
 
