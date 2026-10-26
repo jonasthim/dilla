@@ -5,6 +5,8 @@ This matrix is checked against `packages/client-core/src/commands/registry.ts`.
 client/adapter and its result or mutation is asserted. It is not browser evidence.
 The shipping-browser evidence is limited to the rows named in
 `e2e/web/slash-commands.spec.ts`; other commands remain unit/integration covered.
+Passing focused evidence recorded below is Chromium only; the final Firefox and
+WebKit matrix is reported separately in the acceptance run report.
 
 The catalog guards in `builtin.test.ts` and `bot-handlers.test.tsx` assert that
 every built-in and bot catalog entry has a handler. `registry.test.ts` covers
@@ -70,10 +72,10 @@ covered.
 | `announcement create` | bot announcement handler | `bot-handlers.test.tsx`: valid dialog submission only; immutable body, current permission and uncertain receipt regressions | Private result; scheduled action | Not claimed |
 | `announcement edit` | bot announcement handler | `bot-handlers.test.tsx`: stable-ID suggestion, current revision and recurrence preservation | Private result; scheduled action | Not claimed |
 | `announcement delete` | bot announcement handler | `bot-handlers.test.tsx`: explicit confirmation and revision-bound delete | Private confirmation/result; scheduled action | Not claimed |
-| `poll create` | utility provider | `UtilityCommandProvider.test.tsx`: dialog adapter publication; edited payload survives uncertainty; send permission rechecked | One authenticated public card; private command status | Not claimed; browser attempt currently fails before the creation dialog because utility capability preflight rejects the response |
-| `poll vote` | utility provider | `UtilityCommandProvider.test.tsx`: answer replacement, withdrawal, real nonempty selection/retry, voters and close behavior | Private command status; authenticated card mutation | Not claimed; the card UI flow is not reached in the current browser run |
-| `poll results` | utility provider | provider tests cover authenticated snapshot/result and bad marker/refused binding | Private result | Not claimed; the card UI flow is not reached in the current browser run |
-| `poll close` | utility provider | provider tests cover creator/moderator authorization, close outcome, conflict refresh and uncertain recovery | Private status; closes authenticated card | Not claimed; the card UI flow is not reached in the current browser run |
+| `poll create` | utility provider | `UtilityCommandProvider.test.tsx`: dialog adapter publication; edited payload survives uncertainty; send permission rechecked | One authenticated public card; private command status | Slash E2E: channel and thread creation dialogs, authenticated published cards, and same-identity closed-card recovery after disable/re-enable (Chromium focused pass) |
+| `poll vote` | utility provider | `UtilityCommandProvider.test.tsx`: answer replacement, withdrawal, real nonempty selection/retry, voters and close behavior | Private command status; authenticated card mutation | Not claimed for this slash handler; Chromium focused card UI passes real selection, accepted vote, replacement and withdrawal |
+| `poll results` | utility provider | provider tests cover authenticated snapshot/result and bad marker/refused binding | Private result | Not claimed for this slash handler; Chromium focused card UI passes authenticated results and named Bea voter display |
+| `poll close` | utility provider | provider tests cover creator/moderator authorization, close outcome, conflict refresh and uncertain recovery | Private status; closes authenticated card | Not claimed for this slash handler; Chromium focused card UI passes creator close and closed-state recovery after re-enable |
 | `remind` | utility provider | `UtilityCommandProvider.test.tsx`: create dialog, IANA timezone/DST fold, private account ownership and uncertainty | Private result; account-owned durable reminder | Slash E2E: creates a real reminder through its dialog; two-device due/dismiss lifecycle and post-ACK same-device archive recovery pass in Chromium |
 | `reminders list` | utility provider | provider tests cover due list, multi-page limit and owner-change redaction | Private list | Not claimed for this slash handler; shipping inbox list/dismiss UI passes in Chromium |
 | `reminders cancel` | utility provider | provider tests cover scheduled/due cancel and source-access revocation | Private result; cancels personal record | Not claimed |
@@ -87,7 +89,8 @@ deterministic adapter/unit fixture; browser coverage proves the current joined
 voice context, authenticated state read, and private result. Announcement slash
 handlers and most moderation/role handlers likewise remain covered by focused
 handler tests, while the browser runs a real two-user moderation confirmation
-and shipping composer/poll/reminder paths.
+and shipping composer/poll/reminder paths. External provider playback acceptance
+is reported separately; this matrix does not claim a full external playback pass.
 
 ## Shared composer interactions
 

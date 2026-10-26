@@ -57,6 +57,8 @@ const memberRow = (page: import('@playwright/test').Page, server: string, name: 
     .getByRole('listitem').filter({ hasText: name });
 
 test('two communities run isolated YouTube playback with independent Bot identities and SFrame keys', async ({ peerBrowser }) => {
+  // The full playback/isolation/restart flow includes many serial authenticated command round trips.
+  test.setTimeout(720_000);
   const owner = await peerBrowser.open('owner');
   const dj = await peerBrowser.open('dj');
   const djTwo = await peerBrowser.open('dj-two');
