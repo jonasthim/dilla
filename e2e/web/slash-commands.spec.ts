@@ -6,7 +6,7 @@ import {
 } from './support/app';
 import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { test, type SecondBrowser } from './support/second';
-import { installWorkerPort, portCall } from './support/worker-port';
+import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
 import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
@@ -446,7 +446,8 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
-    host = await startTestHost(HOST);
+    // Production uses 30 seconds: command delivery must wake independently of reconciliation.
+    host = await startTestHost({ ...HOST, botReconcileInterval: '30s' });
     await installWorkerPort(page.context());
     await traceCoreWorker(page);
     await page.addInitScript(() => {
@@ -469,6 +470,28 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['roles']);
+    // Two sequential round trips in less than one full interval cannot both be
+    // served by periodic reconciliation, regardless of where its next tick lands.
+    const communities = await portSlice<{ id: string; name: string }[]>(page, 'communities');
+    const probeCommunity = communities?.find(row => row.name === COMMUNITY)?.id;
+    expect(probeCommunity).toMatch(/^[0-9a-f]{32}$/u);
+    let probeDeadline = 0;
+    for (let index = 0; index < 3; index++) {
+      // Prime group registration before timing two fresh requests, including uploads.
+      if (index === 1) probeDeadline = Date.now() + 25_000;
+      const probeRequest = crypto.randomUUID().replaceAll('-', '');
+      const upload = await portCall(page, { m: 'humanInteractionRequest', communityId: probeCommunity,
+        channelId: null, requestId: probeRequest, operation: 3, args: [], revision: null });
+      expect(upload).toMatchObject({ ok: true, value: { upload: 'accepted' } });
+      await expect.poll(async () => {
+        const read = await portCall(page, { m: 'readBotInteractionResponses', communityId: probeCommunity,
+          operations: [3], requestIds: [probeRequest] });
+        if (!read.ok) return false;
+        const value = read.value as { responses: { requestId: string; status: number }[] };
+        return value.responses.some(response => response.requestId === probeRequest && response.status === 0);
+      }, { timeout: index === 0 ? BOT_WAIT : Math.max(1, probeDeadline - Date.now()), message: 'gateway intake serves sequential private requests before the next full interval' }).toBe(true);
+    }
+    expect(Date.now()).toBeLessThan(probeDeadline);
     const invite = await makeInviteLink(page, COMMUNITY);
     const joined = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = joined.context;

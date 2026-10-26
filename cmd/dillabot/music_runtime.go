@@ -441,13 +441,15 @@ type musicRuntimeNative interface {
 }
 
 type retainedMusicRuntime struct {
-	community id.ID
-	queues    *musicQueueRuntime
-	native    musicRuntimeNative
+	community    id.ID
+	queues       *musicQueueRuntime
+	native       musicRuntimeNative
+	interactions bool
 }
 
 // musicQueueRegistry keeps queue supervisors attached to the native helper
-// that backs their persistence store across reconciliation iterations.
+// that backs their persistence store across reconciliation iterations. Private command
+// intake also retains that helper when music is disabled.
 type musicQueueRegistry struct {
 	mu       sync.Mutex
 	runtimes map[id.ID]*retainedMusicRuntime
@@ -472,6 +474,41 @@ func (r *musicQueueRegistry) Native(installation, community id.ID) musicRuntimeN
 		return nil
 	}
 	return retained.native
+}
+
+// RetainInteractions keeps the helper alive for gateway-driven private command intake,
+// including installations without the music capability.
+func (r *musicQueueRegistry) RetainInteractions(installation, community id.ID, source musicRuntimeNative) error {
+	if r == nil || source == nil || installation.IsZero() || community.IsZero() {
+		return errors.New("interaction runtime dependencies unavailable")
+	}
+	binding := source.Binding()
+	if binding.Installation != installation || binding.Community != community {
+		return errors.New("interaction native binding does not match installation")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current := r.runtimes[installation]; current != nil {
+		if current.community != community || current.native != source {
+			return errors.New("interaction runtime differs from retained helper")
+		}
+		current.interactions = true
+	} else {
+		r.runtimes[installation] = &retainedMusicRuntime{community: community, native: source, interactions: true}
+	}
+	return nil
+}
+
+func (r *musicQueueRegistry) DisableMusic(installation id.ID) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current := r.runtimes[installation]; current != nil && current.interactions {
+		return r.pauseMusicLocked(installation)
+	}
+	return r.disableLocked(installation)
 }
 
 func (r *musicQueueRegistry) QueueStore(installation, community id.ID) (*persistence.Store, bool) {
@@ -532,6 +569,9 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if capabilities&botMusicCapability == 0 {
+		if existing := r.runtimes[installation]; existing != nil && existing.interactions {
+			return false, r.pauseMusicLocked(installation)
+		}
 		return false, r.disableLocked(installation)
 	}
 	if binding := nativeClient.Binding(); binding.Installation != installation || binding.Community != community {

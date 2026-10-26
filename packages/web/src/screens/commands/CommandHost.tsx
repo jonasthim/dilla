@@ -141,6 +141,13 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   }, [slashSubmission, open]);
   useEffect(() => {
     const saved = memory.get(key);
+    // Suppress only the canceled draft itself. Once the user clears it or types
+    // ordinary text, a new slash must open the picker again.
+    if (!active && !draft.startsWith('/')) {
+      suppress.current = null;
+      if (saved?.mode === 'canceled') remember(memory, key, { ...saved, text: draft, mode: 'consumed' });
+      return;
+    }
     const canceledDraft = saved?.mode === 'canceled' ? saved.text : null;
     if (!active && draft.startsWith('/') && suppress.current !== draft && canceledDraft !== draft) open(draft);
   }, [active, draft, open, memory, key]);

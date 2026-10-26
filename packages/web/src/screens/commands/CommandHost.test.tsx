@@ -267,3 +267,17 @@ it.each([true, false])('preserves suggestion ownership when a provider handles t
   await user.type(await screen.findByRole('combobox', { name: 'user' }), 'known');
   await waitFor(() => expect(screen.queryByRole('option', { name: 'known member' }) !== null).toBe(!handled));
 });
+
+
+it('reopens autocomplete after canceling and clearing the slash draft', async () => {
+  const { user } = hostHarness();
+  const message = screen.getByRole('textbox', { name: 'message' });
+  fireEvent.change(message, { target: { value: '/' } });
+  const picker = await screen.findByRole('combobox', { name: 'Command' });
+  picker.focus();
+  await user.keyboard('{Escape}{Escape}');
+  expect(screen.queryByRole('combobox', { name: 'Command' })).not.toBeInTheDocument();
+  fireEvent.change(message, { target: { value: '' } });
+  fireEvent.change(message, { target: { value: '/' } });
+  await screen.findByRole('combobox', { name: 'Command' });
+});
