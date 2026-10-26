@@ -552,8 +552,8 @@ test('music snapshot and clear use the current SFU voice call and report private
       .toContainText('Music queue cleared.', { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
   } finally {
-    await leaveIfInCall(page);
-    await stopAppBeforeHost(page, host);
+    try { await leaveIfInCall(page); }
+    finally { await stopAppBeforeHost(page, host); }
   }
 });
 
