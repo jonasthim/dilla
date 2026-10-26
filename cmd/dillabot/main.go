@@ -714,7 +714,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											if moderationErr != nil {
 												logger.Warn("bot automatic moderation configuration unavailable; retaining the last active policy", "installation_id", installation.ID.String(), "error", moderationErr.Error())
 											}
-											caseReader, interactionErr := service.NewModerationCaseReader(caseSink, result.Session)
+											var caseReader *service.ModerationCaseReader
+											caseReader, interactionErr = service.NewModerationCaseReader(caseSink, result.Session)
 											if interactionErr == nil {
 												var announcementAuthority *service.CommunityActorAuthority
 												announcementAuthority, interactionErr = service.NewCommunityActorAuthority(result.Session, installation.CommunityID, nil)
