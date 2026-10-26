@@ -124,7 +124,15 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   useEffect(() => {
     if (!active) { generation.current++; return; }
     const currentGeneration = generation;
-    void refresh(); const timer = window.setInterval(() => { void refresh(); }, 30_000);
+    // A complete authenticated refresh can span several Bot gateway rounds. A
+    // cadence tick must not supersede that read before its record can be shown.
+    let pending = false;
+    const update = async () => {
+      if (pending) return;
+      pending = true;
+      try { await refresh(); } finally { pending = false; }
+    };
+    void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
     return () => { window.clearInterval(timer); currentGeneration.current++; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;

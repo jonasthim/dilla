@@ -345,6 +345,34 @@ describe('poll card binding', () => {
     await user.click(screen.getByRole('button', { name: 'Close poll' })); await waitFor(() => expect(f.poll.closed).toBe(true));
     expect(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).toHaveLength(2); expect(f.requests.some(row => row.operation === 74)).toBe(true);
   });
+  it('finishes an authenticated poll read when its next refresh tick arrives before the response', async () => {
+    const f = utilityFixture(); const base = f.client.handler;
+    let tick!: () => void; let firstRead: (() => void) | undefined; let firstRequest: string | undefined;
+    const setInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+      if (ms === 30_000) { tick = fn; return 900001; }
+      return setInterval(fn, ms);
+    }) as never);
+    f.client.handler = command => {
+      if (command.m === 'humanInteractionRequest' && command.operation === 71) firstRequest ??= command.requestId;
+      if (command.m === 'readBotInteractionResponses' && command.operations.includes(71)) {
+        return new Promise(resolve => {
+          if (command.requestIds?.includes(firstRequest!)) firstRead = () => { void base(command).then(resolve); };
+        });
+      }
+      return base(command);
+    };
+    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
+    await waitFor(() => expect(firstRead).toBeDefined());
+    // The real Bot can need several gateway rounds, exceeding the 30-second refresh cadence.
+    act(() => { tick(); });
+    act(() => { firstRead!(); });
+    expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
+    expect(f.requests.filter(row => row.operation === 71)).toHaveLength(1);
+    act(() => { tick(); });
+    await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
+  });
   it('retries an uncertain poll vote with the same request id', async () => {
     const user = userEvent.setup(); const f = utilityFixture();
     const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages | PERM.manageMessages } as const;
