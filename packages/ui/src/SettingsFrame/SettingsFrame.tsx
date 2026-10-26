@@ -28,6 +28,8 @@ export interface SettingsFrameProps {
   wide?: boolean;
   /** Persistent call controls displayed inside the modal workspace. */
   activity?: ReactNode;
+  /** Keeps idle connection announcements mounted without reserving visible header space. */
+  activityVisible?: boolean;
   /** Nested dialogs remain available when the phone index hides section content. */
   overlays?: ReactNode;
 }
@@ -48,7 +50,7 @@ function visibleFocusFallback(): HTMLElement | null {
 /** A native modal workspace for settings; browser modal behavior keeps the mounted app inert. */
 export function SettingsFrame({
   open, title, closeLabel, onClose, nav, children, footer, identity, search,
-  phonePage = 'section', sectionTitle, backLabel = 'Back', backText, onBack, contentRef, wide, activity, overlays,
+  phonePage = 'section', sectionTitle, backLabel = 'Back', backText, onBack, contentRef, wide, activity, activityVisible = true, overlays,
 }: SettingsFrameProps) {
   const phone = usePhoneLayout();
   const ref = useRef<HTMLDialogElement>(null);
@@ -125,7 +127,7 @@ export function SettingsFrame({
             <div className="d-settings-frame__bar">
               {phoneSection ? <Button data-settings-back variant="ghost" aria-label={backLabel} onClick={onBack}>{backText ?? backLabel}</Button> : null}
               {phoneSection ? <div className="d-settings-frame__section-title">{sectionTitle}</div> : null}
-              {activity ? <div className="d-settings-frame__activity">{activity}</div> : null}
+              {activity ? <div className="d-settings-frame__activity" data-visible={activityVisible}>{activity}</div> : null}
               {!phoneSection ? <Button variant="ghost" keyHint="esc" onClick={() => onCloseRef.current()}>{closeLabel}</Button> : null}
             </div>
             <div ref={contentRef} className={`d-settings-frame__body${wide ? ' d-settings-frame__body--wide' : ''}`} hidden={phoneIndex}>

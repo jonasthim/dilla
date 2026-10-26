@@ -37,20 +37,20 @@ function compareState(record: TrustSummary): 'first-seen' | 'changed' | 'verifie
   return record.unlisted === true ? 'unlisted' : record.verified ? 'verified' : 'first-seen';
 }
 
-export interface SettingsProps { activity?: ReactNode }
+export interface SettingsProps { activity?: ReactNode; activityVisible?: boolean }
 
 /** Section metadata shared with the phone's You tab. */
 export const NAV: readonly { id: SettingsSection; key: StringKey }[] = SETTINGS_REGISTRY.filter(entry => entry.scope === 'user')
   .map(entry => ({ id: entry.id as SettingsSection, key: entry.labelKey }));
 
 /** Full user settings workspace. Only the active section is mounted. */
-export function Settings({ activity }: SettingsProps = {}): React.JSX.Element {
+export function Settings({ activity, activityVisible }: SettingsProps = {}): React.JSX.Element {
   const [route] = useRoute();
   if (route.name !== 'settings') return <></>;
-  return <SettingsEditProvider><SettingsWorkspaceScreen activity={activity} /></SettingsEditProvider>;
+  return <SettingsEditProvider><SettingsWorkspaceScreen activity={activity} activityVisible={activityVisible} /></SettingsEditProvider>;
 }
 
-function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element {
+function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): React.JSX.Element {
   const [route, navigate] = useRoute();
   const phone = usePhoneLayout();
   const client = useCore();
@@ -140,7 +140,7 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
     nav={signOut} identity={identity} search={nav} phonePage={phoneIndex ? 'index' : 'section'}
     sectionTitle={t(`workspace.${activeSection}`)} backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={back}
     contentRef={contentRef} wide={activeSection === 'devices' || activeSection === 'privacy' || activeSection === 'diagnostics'}
-    overlays={workspace?.confirmation} activity={activity} footer={workspace?.footer}>
+    overlays={workspace?.confirmation} activity={activity} activityVisible={activityVisible} footer={workspace?.footer}>
     {sectionContent}
 
     <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}

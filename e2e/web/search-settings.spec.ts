@@ -110,6 +110,9 @@ test('Appearance controls fit desktop rows and the phone section header keeps it
       const title = settings.locator('.d-settings-frame__section-title');
       await expect(title).toHaveText(copy('workspace.appearance'));
       expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      await expect(settings.locator('.d-settings-frame__activity')).toHaveAttribute('data-visible', 'false');
+      expect((await settings.locator('.d-settings-frame__bar').boundingBox())!.height,
+        'idle phone headers do not reserve a second activity row').toBeLessThanOrEqual(72);
     }
   }
   await closeSettings(page);

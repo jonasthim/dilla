@@ -16,7 +16,8 @@ up to 32rem wide. GIF key status and replacement/removal actions have their own
 line; Bot identity/status, display-name editing and lifecycle actions have separate
 groups. Buttons keep their natural width. Phone Back retains its full accessible
 destination, uses the short visible label, and shares the first header row with
-the section title. Active-call controls occupy a second row.
+the section title. Active-call controls occupy a second row. When idle, that row
+takes no visible space; the connection live region remains mounted.
 
 ## Coverage inventory
 

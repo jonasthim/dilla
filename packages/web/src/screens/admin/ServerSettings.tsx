@@ -28,6 +28,7 @@ export interface ServerSettingsProps {
   onClose: () => void;
   announce: (message: string) => void;
   activity?: ReactNode;
+  activityVisible?: boolean;
   onMessage?: (userId: string) => void;
   onCompare?: (userId: string) => void;
 }
@@ -36,7 +37,7 @@ export function ServerSettings(props: ServerSettingsProps): React.JSX.Element {
   return <SettingsEditProvider><BotSettingsProvider communityId={props.communityId}><ServerSettingsWorkspace {...props} /></BotSettingsProvider></SettingsEditProvider>;
 }
 
-function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, activity, onMessage = () => undefined, onCompare = () => undefined }: ServerSettingsProps): React.JSX.Element {
+function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, activity, activityVisible, onMessage = () => undefined, onCompare = () => undefined }: ServerSettingsProps): React.JSX.Element {
   const phone = usePhoneLayout();
   const phoneIndex = phone && tab === null;
   const communities = useSlice('communities');
@@ -169,7 +170,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
         : <SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
       footer={footer} phonePage={phoneIndex ? 'index' : 'section'} sectionTitle={sectionTitle}
       backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide}
-      overlays={<>{workspace?.confirmation}{phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}</>} activity={activity}>
+      overlays={<>{workspace?.confirmation}{phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}</>} activity={activity} activityVisible={activityVisible}>
       {!phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {!phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}
       {content}

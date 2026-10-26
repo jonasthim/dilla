@@ -81,6 +81,17 @@ describe('SettingsFrame', () => {
     expect(onBack).toHaveBeenCalledOnce();
   });
 
+  it('keeps idle activity announcements mounted when their visible header space is removed', () => {
+    const p = props({ activity: <div role="status" />, activityVisible: false });
+    const { rerender } = render(<PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider>);
+    const region = screen.getByRole('status');
+    expect(region.closest('.d-settings-frame__activity')).toHaveAttribute('data-visible', 'false');
+    expect(region.closest('[hidden], [aria-hidden="true"]')).toBeNull();
+    rerender(<PhoneLayoutProvider value><SettingsFrame {...p} activityVisible /></PhoneLayoutProvider>);
+    expect(screen.getByRole('status')).toBe(region);
+    expect(region.closest('.d-settings-frame__activity')).toHaveAttribute('data-visible', 'true');
+  });
+
   it('moves focus between the selected section and Back across phone pages', () => {
     const onBack = vi.fn();
     const p = props({ phonePage: 'index', onBack });

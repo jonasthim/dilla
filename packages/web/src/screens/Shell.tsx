@@ -1701,11 +1701,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     {overlay ? ringFlow : null}
     {callTarget !== null ? <Button onClick={() => void navigate(callTarget)}>{t('workspace.returnCall')}</Button> : null}
   </div>;
+  const settingsActivityVisible = status !== 'online' || (rings?.length ?? 0) > 0 || callTarget !== null;
   const adminPage = adminFor !== null ? <ServerSettings key={adminFor} communityId={adminFor} tab={adminTab}
     onTab={section => void navigate({ name: 'serverSettings', communityId: adminFor, section, from: null }, !phone || section === null)}
-    onClose={closeSettings} announce={announce} activity={settingsActivity}
+    onClose={closeSettings} announce={announce} activity={settingsActivity} activityVisible={settingsActivityVisible}
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
-  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} /> : adminPage;
+  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} activityVisible={settingsActivityVisible} /> : adminPage;
   return (
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
