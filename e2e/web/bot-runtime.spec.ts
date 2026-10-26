@@ -6,6 +6,7 @@ import {
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { installWorkerPort, portCall } from './support/worker-port';
 
 const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? 8491);
 const HOST: HostConfig = { port: BOT_RUNTIME_PORT, control: BOT_RUNTIME_PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -248,9 +249,17 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
       return call?.command?.requestId ?? null;
     });
     expect(requestOneId).toMatch(/^[0-9a-f]{32}$/u);
+    const communityId = await page.evaluate(requestId => {
+      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
+      const request = trace?.calls.map(value => value as { command?: { m?: string; requestId?: string; communityId?: string } })
+        .find(value => value.command?.m === 'listModerationCases' && value.command.requestId === requestId);
+      return request?.command?.communityId;
+    }, requestOneId);
+    expect(communityId).toMatch(/^[0-9a-f]{32}$/u);
 
     const reopened = await relaunch();
     let deviceOne = reopened.page;
+    await installWorkerPort(reopened.context);
     await traceCoreWorker(deviceOne);
     await deviceOne.goto(host.url);
     await expect(deviceOne.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
@@ -262,13 +271,24 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
     await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
-    await expect.poll(async () => deviceOne.evaluate(requestId => {
-      const trace = (window as unknown as { __dillaWorkerTrace?: { returns: unknown[] } }).__dillaWorkerTrace;
-      return trace?.returns.some(value => {
-        const result = value as { t?: string; value?: { responses?: { requestId?: string }[] } };
-        return result.t === 'ret' && result.value?.responses?.some(response => response.requestId === requestId) === true;
+    // Consumers now read only their active request IDs. Ask the real reopened worker for
+    // the exact original ID; a fresh UI read has a different ID and cannot establish recovery.
+    type Receipt = { requestId: string; status: number; cases: unknown[]; hasMore: boolean; nextCursor: string | null };
+    let originalReceipt: Receipt | undefined;
+    await expect.poll(async () => {
+      const read = await portCall(deviceOne, { m: 'readHumanInteractionResponses', communityId: communityId!, requestIds: [requestOneId!] });
+      expect(read).toMatchObject({ ok: true, value: { authorized: true } });
+      originalReceipt = (read.value as { responses: Receipt[] }).responses.find(row => row.requestId === requestOneId);
+      return originalReceipt ?? null;
+    }, { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toMatchObject({ requestId: requestOneId, status: 0, cases: [], hasMore: false, nextCursor: null });
+    expect(originalReceipt!.cases).toEqual([]); // The worker strictly decodes the authenticated CBOR [1, [], null] body.
+    expect(await deviceOne.evaluate(requestId => {
+      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
+      return trace?.calls.some(value => {
+        const call = value as { command?: { m?: string; requestId?: string } };
+        return call.command?.m === 'listModerationCases' && call.command.requestId === requestId;
       }) ?? false;
-    }, requestOneId), { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toBe(true);
+    }, requestOneId)).toBe(false);
 
     // Device 2 enrolls from the same recovery key, gets its own per-device interaction group,
     // and proves that its own encrypted Bot request/response path is usable. This is not a claim
@@ -276,6 +296,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     secondPage = await secondContext.newPage();
+    await installWorkerPort(secondContext);
     await traceCoreWorker(secondPage);
     await signIn(secondPage, owner, instanceName);
     await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
@@ -299,6 +320,15 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
         return result.t === 'ret' && result.value?.responses?.some(response => response.requestId === requestId) === true;
       }) ?? false;
     }, secondRequestId), { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toBe(true);
+    const isolated = await portCall(secondPage, { m: 'readHumanInteractionResponses', communityId: communityId!, requestIds: [requestOneId!] });
+    expect(isolated).toMatchObject({ ok: true, value: { authorized: true } });
+    expect((isolated.value as { responses: Receipt[] }).responses).toEqual([]);
+    const ownRead = await portCall(secondPage, { m: 'readHumanInteractionResponses', communityId: communityId!, requestIds: [secondRequestId!] });
+    expect(ownRead).toMatchObject({ ok: true, value: { authorized: true } });
+    const ownResponses = (ownRead.value as { responses: Receipt[] }).responses;
+    expect(ownResponses).toHaveLength(1);
+    expect(ownResponses[0]).toMatchObject({ requestId: secondRequestId, status: 0, cases: [], hasMore: false, nextCursor: null });
+    expect(ownResponses[0]!.cases).toEqual(originalReceipt!.cases);
   } finally {
     await secondContext?.close();
     await host?.stop();

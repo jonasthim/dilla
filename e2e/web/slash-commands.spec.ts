@@ -190,6 +190,15 @@ async function pollFailureEvidence(page: Page, question: string): Promise<unknow
   }, question);
 }
 
+async function currentBotIdentity(page: Page, communityId: string): Promise<{ installationId: string; botUserId: string }> {
+  const response = await portCall(page, { m: 'getBotCommandStatus', communityId });
+  expect(response.ok).toBe(true);
+  expect(response.value).toMatchObject({ state: 3,
+    installationId: expect.stringMatching(/^[0-9a-f]{32}$/u), botUserId: expect.stringMatching(/^[0-9a-f]{32}$/u) });
+  const status = response.value as { installationId: string; botUserId: string };
+  return { installationId: status.installationId, botUserId: status.botUserId };
+}
+
 async function lastReminderRequestId(page: Page): Promise<string | null> {
   return page.evaluate(() => {
     const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
@@ -368,6 +377,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   let secondContext: BrowserContext | null = null;
   try {
     host = await startTestHost(HOST);
+    await installWorkerPort(page.context());
     await traceCoreWorker(page);
     await page.addInitScript(() => {
       const observed = { targets: [] as Element[], transitions: [] as { target: Element; intersecting: boolean }[], outTarget: null as Element | null };
@@ -484,10 +494,28 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await card.getByRole('button', { name: 'Close poll', exact: true }).click();
     await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
+    const communityId = await page.evaluate(() => {
+      const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
+      const request = trace?.calls.map(value => value as { command?: { m?: string; operation?: number; communityId?: string } })
+        .find(value => value.command?.m === 'humanInteractionRequest' && value.command.operation === 70);
+      return request?.command?.communityId;
+    });
+    expect(communityId).toMatch(/^[0-9a-f]{32}$/u);
+    const beforeDisable = await currentBotIdentity(page, communityId!);
     await disableBot(page);
     await expect(card).toHaveCount(0, { timeout: WAIT });
     await enableBot(page, owner.password, ['roles']);
-    await expect(logRegion(page, GENERAL).locator('.dw-poll-card').filter({ hasText: question })).toHaveCount(0, { timeout: WAIT });
+    const afterEnable = await currentBotIdentity(page, communityId!);
+    await testInfo.attach('slash-poll-installation-identity.json', {
+      body: Buffer.from(JSON.stringify({ beforeDisable, afterEnable }, null, 2)), contentType: 'application/json',
+    });
+    if (afterEnable.installationId === beforeDisable.installationId && afterEnable.botUserId === beforeDisable.botUserId) {
+      // Re-enabling the same authenticated installation keeps this closed backing poll valid.
+      await expect(card).toBeVisible({ timeout: BOT_WAIT });
+      await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
+    } else {
+      await expect(card).toHaveCount(0, { timeout: BOT_WAIT });
+    }
   } finally {
     await secondContext?.close();
     await stopAppBeforeHost(page, host);
