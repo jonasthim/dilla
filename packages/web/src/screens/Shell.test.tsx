@@ -1442,7 +1442,7 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, channels, status, the pins button, the active row and the composer in that order', async () => {
+  it('tabs through skip link, rail, channels, status, the header actions, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
@@ -1469,6 +1469,8 @@ describe('keyboard', () => {
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'Reminders' }));
+    await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
     await user.tab();
     // web3.7: the thread list sits after pins and before the members toggle.
@@ -1481,8 +1483,6 @@ describe('keyboard', () => {
     await user.tab();
     // The fold menu is a stop only below 36rem of header width (CSS hides it above); jsdom has no layout.
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Reminders' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();
@@ -1961,3 +1961,22 @@ it('selects a builtin member through the shipping Shell provider and executes dm
   await user.click(screen.getByRole('button', { name: /run command/i }));
   await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
 });
+
+for (const [label, route, slot] of [
+  ['channel', `/c/${A}/${GEN}`, '.d-channel-header__actions'],
+  ['DM', `/dm/${DM}`, '.d-channel-header__actions'],
+  ['desktop voice', `/c/${A}/${VOICE}`, '.d-channel-list__head'],
+  ['channel list', `/c/${A}`, '.d-channel-list__head'],
+  ['DM list', '/dm', '.d-channel-list__head'],
+] as const) {
+  it(`keeps the reminder inbox in the existing ${label} action row`, async () => {
+    const { user } = setup(route, { before: fake => { withDms(fake); if (label === 'channel list') fake.set(`channels:${A}`, []); } });
+    const trigger = await screen.findByRole('button', { name: 'Reminders' });
+    expect(trigger.closest(slot)).not.toBeNull();
+    expect(trigger.parentElement).not.toBe(document.querySelector('.d-app-shell__main'));
+    await user.click(trigger);
+    expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Close reminders' }));
+    expect(trigger).toHaveFocus();
+  });
+}

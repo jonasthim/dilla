@@ -764,3 +764,19 @@ describe('byte-bounded utility discovery and reconciliation', () => {
     mounted.unmount();
   });
 });
+
+it('keeps the reminder inbox dialog mounted when its trigger moves between action slots', async () => {
+  const f = utilityFixture(); const user = userEvent.setup();
+  function Relocating({ sidebar }: { sidebar: boolean }) {
+    const provider = useUtilityCommandProvider(f.client, sidebar ? null : COMMUNITY);
+    return <>{provider.dialogs}<header>{sidebar ? null : provider.inbox}</header><aside>{sidebar ? provider.inbox : null}</aside></>;
+  }
+  const mounted = render(<Relocating sidebar={false} />);
+  await user.click(screen.getByRole('button', { name: 'Reminders' }));
+  const dialog = screen.getByRole('dialog', { name: 'Your reminders' });
+  mounted.rerender(<Relocating sidebar />);
+  expect(screen.getByRole('dialog', { name: 'Your reminders' })).toBe(dialog);
+  expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
+  await user.click(screen.getByRole('button', { name: 'Close reminders' }));
+  expect(screen.getByRole('button', { name: 'Reminders' })).toHaveFocus();
+});

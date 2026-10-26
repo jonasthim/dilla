@@ -551,14 +551,16 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   }, [communityId, currentRecords, utilityFor]);
   const dueCount = currentRecords.filter(row => row.reminder.state === 'due').length;
   const visibleDialog = dialogScope?.client === client && dialogScope.owner === ownerKey && dialogScope.communityId === communityId ? dialog : null;
-  const inbox = <ReminderInbox client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={records?.client !== client || records?.owner !== ownerKey ? ownerKey !== '' : records.loading}
-    error={records?.client === client && records?.owner === ownerKey ? records.error : false} dueCount={dueCount} open={inboxOpen} onOpen={() => setInboxOpen(true)} onClose={() => setInboxOpen(false)}
+  // The dialog stays mounted here while its trigger moves between header slots.
+  const inboxDialog = <ReminderInbox client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={records?.client !== client || records?.owner !== ownerKey ? ownerKey !== '' : records.loading}
+    error={records?.client === client && records?.owner === ownerKey ? records.error : false} open={inboxOpen} onClose={() => setInboxOpen(false)}
     onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />;
-  return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog }), inbox, dueCount };
+  const inbox = <Button variant="ghost" aria-haspopup="dialog" data-focus-key="reminder-inbox" onClick={() => setInboxOpen(true)}>{copy('reminder.inbox')}{dueCount > 0 ? <span className="dw-reminder-badge" aria-label={copy('reminder.badge', { count: dueCount })}>{dueCount}</span> : null}</Button>;
+  return { handlers: commandHandlers, suggest, dialogs: <>{createElement(UtilityCommandDialogs, { dialog: visibleDialog })}{inboxDialog}</>, inbox, dueCount };
 }
 
-function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean; dueCount: number;
-  open: boolean; onOpen(): void; onClose(): void; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
+function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
+  open: boolean; onClose(): void; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState('');
   const attempts = inboxAttemptMap(props.client);
   const renderScope = useRef({ client: props.client, owner: props.ownerKey }); renderScope.current = { client: props.client, owner: props.ownerKey };
@@ -627,23 +629,20 @@ function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: Remi
     if (liveOwner !== props.ownerKey || !sourceAvailable(row) || row.reminder.sourceChannelId === null) return;
     props.onNavigate?.(row.communityId, row.reminder.sourceChannelId, row.reminder.sourceThreadId);
   };
-  return <>
-    <Button variant="ghost" aria-haspopup="dialog" onClick={() => props.onOpen()}>{copy('reminder.inbox')}{props.dueCount > 0 ? <span className="dw-reminder-badge" aria-label={copy('reminder.badge', { count: props.dueCount })}>{props.dueCount}</span> : null}</Button>
-    <Dialog open={props.open} title={copy('reminder.inboxTitle')} closeLabel={copy('reminder.close')} onClose={() => props.onClose()}>
-      <div className="dw-reminder-inbox">
-        {props.loading ? <p role="status">{copy('reminder.loading')}</p> : null}
-        {props.error ? <p role="alert">{copy('reminder.loadError')}</p> : null}
-        {error ? <p role="alert">{error}</p> : null}
-        {!props.loading && current.length === 0 ? <p>{copy('reminder.emptyInbox')}</p> : null}
-        {due.length ? <section aria-labelledby="dw-reminders-due"><h3 id="dw-reminders-due">{copy('reminder.due')}</h3><ul>
-          {due.map(row => <ReminderRow key={`${row.communityId}:${row.reminder.id}`} row={row} busy={busy !== null} canSource={sourceAvailable(row)} onSource={() => jump(row)} onCancel={() => void mutate(row, 'cancel')} onDismiss={() => void mutate(row, 'dismiss')} />)}
-        </ul></section> : null}
-        {scheduled.length ? <section aria-labelledby="dw-reminders-upcoming"><h3 id="dw-reminders-upcoming">{copy('reminder.upcoming')}</h3><ul>
-          {scheduled.map(row => <ReminderRow key={`${row.communityId}:${row.reminder.id}`} row={row} busy={busy !== null} canSource={sourceAvailable(row)} onSource={() => jump(row)} onCancel={() => void mutate(row, 'cancel')} onDismiss={() => void mutate(row, 'dismiss')} />)}
-        </ul></section> : null}
-      </div>
-    </Dialog>
-  </>;
+  return <Dialog open={props.open} title={copy('reminder.inboxTitle')} closeLabel={copy('reminder.close')} onClose={() => props.onClose()}>
+    <div className="dw-reminder-inbox">
+      {props.loading ? <p role="status">{copy('reminder.loading')}</p> : null}
+      {props.error ? <p role="alert">{copy('reminder.loadError')}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
+      {!props.loading && current.length === 0 ? <p>{copy('reminder.emptyInbox')}</p> : null}
+      {due.length ? <section aria-labelledby="dw-reminders-due"><h3 id="dw-reminders-due">{copy('reminder.due')}</h3><ul>
+        {due.map(row => <ReminderRow key={`${row.communityId}:${row.reminder.id}`} row={row} busy={busy !== null} canSource={sourceAvailable(row)} onSource={() => jump(row)} onCancel={() => void mutate(row, 'cancel')} onDismiss={() => void mutate(row, 'dismiss')} />)}
+      </ul></section> : null}
+      {scheduled.length ? <section aria-labelledby="dw-reminders-upcoming"><h3 id="dw-reminders-upcoming">{copy('reminder.upcoming')}</h3><ul>
+        {scheduled.map(row => <ReminderRow key={`${row.communityId}:${row.reminder.id}`} row={row} busy={busy !== null} canSource={sourceAvailable(row)} onSource={() => jump(row)} onCancel={() => void mutate(row, 'cancel')} onDismiss={() => void mutate(row, 'dismiss')} />)}
+      </ul></section> : null}
+    </div>
+  </Dialog>;
 }
 function ReminderRow(props: { row: ReminderInboxEntry; busy: boolean; canSource: boolean; onSource(): void; onCancel(): void; onDismiss(): void }): React.JSX.Element {
   const item = props.row.reminder;

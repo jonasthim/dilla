@@ -1121,6 +1121,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
     // E2: a touch device has no Control+K, so its list heads carry search, Home's too: the phone layout, and a desktop window
     // whose pointer is coarse (a touch tablet). A fine pointer keeps the desktop heads as they were (the gear alone on a server).
+    // Voice on desktop has its own stage bar; list routes have no conversation
+    // header. Keep their inbox entry in the existing sidebar title row.
+    const inboxInSidebar = (voiceChannel !== null && !phone) || (channel === null && dm === null);
     // The "+" and the gear stay a server's.
     const touchHere = phone || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
     const headerAction = onDms ? (
@@ -1146,7 +1149,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        headerAction={headerAction}
+        headerAction={inboxInSidebar ? <>{headerAction}{utilityCommands.inbox}</> : headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.
         categories={onDms ? undefined : categoryRows}
@@ -1308,10 +1311,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
-    actions={<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} />} /> : null) : channel !== null
+    actions={<>{utilityCommands.inbox}<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /></>} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
-      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
+      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
+        {utilityCommands.inbox}
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
           onSelect={id => {
@@ -1321,8 +1325,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             else if (id === 'edit') setEditChannelId(channel.id);
             else if (!membersOpen) toggleMembers();
           }} />
-      ) } : undefined}
+      </>) } : undefined}
       actions={<>
+        {utilityCommands.inbox}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
         {openId !== null ? <IconButton data-foldable="" data-thread-list-toggle="" icon="messages-square" label={t('thread.list')}
           pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())} /> : null}
@@ -1339,11 +1344,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         } }} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
+        {utilityCommands.inbox}
         {dmCall === null ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
       </>) } : undefined}
       actions={<>
+        {utilityCommands.inbox}
         {/* N1: on a desktop the call is an icon in the header, as on a phone (there it sits in the menu slot). */}
         {dmCall === null || phone ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
@@ -1807,7 +1814,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
           <p className="d-sr-only dw-voice-lasting" role="status">{call.lasting}</p>
           {header}
-          {utilityCommands.inbox}
         </>}
         composer={composer === null ? null : <>
           {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
