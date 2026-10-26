@@ -40,6 +40,7 @@ export const settingsWorkspace = {
   'workspace.search.clear': 'Clear search',
   'workspace.permissionChanged': 'Your access changed. These are the settings you can use now.',
   'workspace.back': 'Back to settings',
+  'workspace.backShort': 'Back',
   'workspace.returnCall': 'Return to call',
   'workspace.open': 'Open settings',
   'workspace.botRequired': 'Enable the bot and its required capability to use this setting.',

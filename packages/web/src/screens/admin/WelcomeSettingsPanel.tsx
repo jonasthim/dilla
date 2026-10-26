@@ -281,7 +281,7 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
           {channels.map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
         </select>
       </SettingsRow>
-      <SettingsRow id={`${base}-template`} label={t('admin.bot.welcomeSettings.template')}>
+      <SettingsRow id={`${base}-template`} label={t('admin.bot.welcomeSettings.template')} layout="stacked">
         <textarea aria-label={t('admin.bot.welcomeSettings.template')} value={template} maxLength={2000}
           disabled={unavailable || pending !== null || operationBusy} onChange={event => setTemplate(event.currentTarget.value)} />
         <p>{t('admin.bot.welcomeSettings.tokens')}</p>

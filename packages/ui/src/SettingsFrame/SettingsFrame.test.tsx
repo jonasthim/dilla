@@ -68,6 +68,19 @@ describe('SettingsFrame', () => {
     expect(onBack).toHaveBeenCalledOnce();
   });
 
+  it('keeps a short visible Back label and its full accessible destination alongside call controls', () => {
+    const onBack = vi.fn();
+    render(<PhoneLayoutProvider value><SettingsFrame {...props({
+      phonePage: 'section', sectionTitle: 'Appearance', backLabel: 'Back to settings', backText: 'Back', onBack,
+      activity: <button type="button">Return to call</button>,
+    })} /></PhoneLayoutProvider>);
+    const back = screen.getByRole('button', { name: 'Back to settings' });
+    expect(back).toHaveTextContent(/^Back$/);
+    expect(screen.getByRole('button', { name: 'Return to call' })).toBeVisible();
+    fireEvent.click(back);
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
   it('moves focus between the selected section and Back across phone pages', () => {
     const onBack = vi.fn();
     const p = props({ phonePage: 'index', onBack });

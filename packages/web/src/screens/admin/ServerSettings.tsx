@@ -168,7 +168,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
       nav={phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p>
         : <SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
       footer={footer} phonePage={phoneIndex ? 'index' : 'section'} sectionTitle={sectionTitle}
-      backLabel={t('workspace.back')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide}
+      backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide}
       overlays={<>{workspace?.confirmation}{phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}</>} activity={activity}>
       {!phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {!phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}

@@ -138,7 +138,7 @@ function SettingsWorkspaceScreen({ activity }: SettingsProps): React.JSX.Element
 
   return <PhoneLayoutProvider value={phone}><SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
     nav={signOut} identity={identity} search={nav} phonePage={phoneIndex ? 'index' : 'section'}
-    sectionTitle={t(`workspace.${activeSection}`)} backLabel={t('workspace.back')} onBack={back}
+    sectionTitle={t(`workspace.${activeSection}`)} backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={back}
     contentRef={contentRef} wide={activeSection === 'devices' || activeSection === 'privacy' || activeSection === 'diagnostics'}
     overlays={workspace?.confirmation} activity={activity} footer={workspace?.footer}>
     {sectionContent}

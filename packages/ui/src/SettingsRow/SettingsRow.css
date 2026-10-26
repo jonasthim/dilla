@@ -6,6 +6,12 @@
 .d-settings-row__label { display: block; margin: 0; font-size: var(--text-base); font-weight: var(--weight-label); color: var(--fg); }
 .d-settings-row__hint { margin: 0.125rem 0 0; max-width: 60ch; font-size: var(--text-sm); color: var(--fg-3); }
 .d-settings-row__control { min-width: 0; max-width: 100%; }
+/* A fullscreen workspace has room for balanced columns. Fit the content rather than
+   pinning an entire form to a 16rem rail; the grid naturally stacks in a narrow pane. */
+.d-settings-frame .d-settings-row { grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem 2rem; padding-block: 1.25rem; }
+.d-settings-row.d-settings-row--stacked { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 1rem; }
+.d-settings-row--stacked .d-settings-row__control { display: grid; gap: 1rem; justify-items: start; width: 100%; }
+.d-settings-row--stacked .d-text-field { width: min(100%, 32rem); }
 .d-settings-row__control .d-btn { height: auto; min-height: 1.75rem; max-width: 100%; padding-block: 0.25rem; text-align: start; }
 .d-settings-row__control .d-btn[data-size="sm"] { min-height: 1.5rem; padding-block: 0.125rem; }
 /* web3.9 AUDIT-2 (H4): these two rules beat Button.css by specificity, so a phone repeats the 44 tier here (the refresh button was 24). Selects in a row (Select.css draws them 36) get it too. */

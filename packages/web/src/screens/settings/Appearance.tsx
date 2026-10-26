@@ -56,7 +56,7 @@ export function Appearance(): React.JSX.Element {
       {/* Walk 23: the row's visible label is for the eye only; the radio group carries the name, so a screen reader hears "theme" once. */}
       <div className="d-settings-row">
         <div className="d-settings-row__text"><span className="d-settings-row__label" aria-hidden="true">{t('appearance.theme.label')}</span></div>
-        <div className="d-settings-row__control">
+        <div className="d-settings-row__control dw-appearance-theme">
           <Segmented id="appearance-theme" label={t('appearance.theme.label')} value={value} onChange={change}
             options={THEMES.map(o => ({ value: o.value, label: t(o.key) }))} />
         </div>
