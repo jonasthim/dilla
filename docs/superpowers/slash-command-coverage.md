@@ -92,6 +92,14 @@ handler tests, while the browser runs a real two-user moderation confirmation
 and shipping composer/poll/reminder paths. External provider playback acceptance
 is reported separately; this matrix does not claim a full external playback pass.
 
+The current WebKit runner lacks the native encrypted-media transform API and
+reaches the shipping “Voice does not work in this browser” gate. Its music
+scenario asserts that refusal, no joined call or accepted music transport,
+private slash-command prerequisites, and no implicit publication. Accepted SFU
+`/queue` and `/queue clear` evidence belongs to Chromium and Firefox; adding the
+missing WebKit media capability is outside the slash-command plan. The scenario
+checks actual native capabilities, so a future capable WebKit runs the SFU path.
+
 ## Shared composer interactions
 
 - `CommandComposer.test.tsx`: keyboard picker navigation and Tab selection,

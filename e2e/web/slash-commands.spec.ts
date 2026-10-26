@@ -535,13 +535,53 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   }
 });
 
-test('music snapshot and clear use the current SFU voice call and report privately', async ({ page, instanceName }) => {
+test('music snapshot and clear report privately or explain unavailable encrypted voice', async ({ page, instanceName }, testInfo) => {
   let host: StartedHost | null = null;
   try {
     host = await startTestHost(VOICE_HOST);
+    await traceCoreWorker(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['music']);
+    const voiceSupport = await page.evaluate(() => {
+      // Inspect native capabilities using the shipping packages/media/src/support.ts gate.
+      const scriptTransform = typeof (globalThis as { RTCRtpScriptTransform?: unknown }).RTCRtpScriptTransform !== 'undefined';
+      const insertableStreams = typeof RTCRtpSender !== 'undefined' && 'createEncodedStreams' in RTCRtpSender.prototype;
+      const chromium = /\bChrom(?:e|ium)\//u.test(navigator.userAgent) && !/\bCriOS\//u.test(navigator.userAgent);
+      return { scriptTransform, insertableStreams, chromium, supported: chromium ? insertableStreams : scriptTransform || insertableStreams };
+    });
+    await testInfo.attach('slash-music-native-voice-support.json', {
+      body: Buffer.from(JSON.stringify(voiceSupport, null, 2)), contentType: 'application/json',
+    });
+    if (!voiceSupport.supported) {
+      const row = voiceRow(page, GENERAL);
+      await row.hover();
+      await row.locator('xpath=ancestor::li[1]').getByRole('button', { name: copy('voice.join'), exact: true }).click();
+      const unsupported = page.getByRole('dialog', { name: copy('voice.unsupported.title'), exact: true });
+      await expect(unsupported).toBeVisible({ timeout: WAIT });
+      await expect(unsupported).toContainText(copy('voice.unsupported.body'));
+      await expect(page.locator('[data-call-phase]').first()).toHaveAttribute('data-call-phase', 'idle');
+      await expect(dock(page).locator('.d-voice-dock')).toHaveCount(0);
+      await unsupported.getByRole('button', { name: copy('voice.unsupported.close'), exact: true }).click();
+      await channelRow(page, GENERAL).click();
+      for (const command of ['/queue', '/queue clear']) {
+        await invoke(composerBox(page, GENERAL), page, command);
+        const region = page.getByRole('region', { name: 'Command composer', exact: true });
+        await expect(region.getByRole('alert')).toHaveText('Join a voice channel in this community before using music commands.');
+        await expect(region.getByRole('status')).toHaveText('');
+        await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
+        await leaveCommandMode(page);
+      }
+      expect(await page.evaluate(() => {
+        const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
+        return trace?.calls.filter(value => {
+          const call = value as { command?: { m?: string; operation?: number } };
+          return call.command?.m === 'callJoin' || call.command?.m === 'humanInteractionRequest'
+            && call.command.operation !== undefined && call.command.operation >= 10 && call.command.operation <= 23;
+        }) ?? [];
+      })).toEqual([]);
+      return;
+    }
     await joinVoice(page, COMMUNITY, GENERAL);
     await connected(page);
     // Keep the live voice session while returning to the text channel that hosts the command composer.
