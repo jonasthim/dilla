@@ -525,42 +525,22 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 					logger.Warn("bot gateway startup unavailable", "installation_id", installation.ID.String())
 				}
 			}
-			reconcileStage = "interaction_restore"
-			if result.Session == nil {
-				ensureErr = errors.New("identity lifecycle returned no scoped device session")
-			} else {
-				var healed int
-				healed, ensureErr = healRestoredInteractionGroups(ctx, nativeClient, result.Session)
-				if ensureErr == nil && healed > 0 {
-					logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
-				}
-			}
+			reconcileStage = "membership_source_sync"
+			var membership *service.MembershipReconciler
+			membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 			if ensureErr == nil {
-				reconcileStage = "membership_source_sync"
-				var membership *service.MembershipReconciler
-				membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
+				var trust *service.SourceTrust
+				trust, ensureErr = service.NewSourceTrust(nativeClient)
 				if ensureErr == nil {
-					_, ensureErr = membership.ReconcileOnce(ctx, result.Session)
-					if ensureErr == nil {
-						reconcileStage = "membership_trust"
-						// Newly joined MLS members are not actionable until their
-						// signed device-list history has been checked by the core.
-						var trust *service.SourceTrust
-						trust, ensureErr = service.NewSourceTrust(nativeClient)
-						if ensureErr == nil {
-							_, ensureErr = trust.TrustPendingLeaves(ctx, result.Session)
-						}
+					var healed int
+					ready, healed, reconcileStage, ensureErr = reconcileMembershipReadiness(ctx, result.Installation, nativeClient, result.Session, membership, trust)
+					if ensureErr == nil && healed > 0 {
+						logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
 					}
 					if ensureErr == nil {
-						reconcileStage = "interaction_source_sync"
-						_, ensureErr = membership.ReconcileInteractionGroupsOnce(ctx, result.Session)
-					}
-					if ensureErr == nil {
-						reconcileStage = "readiness"
-						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
 						// A 409 means required MLS joins are still pending. Keep
 						// reconciling membership, but do not call Ready-only bot APIs.
-						if ensureErr == nil && ready {
+						if ready {
 							reconcileStage = "structural_events_and_registration"
 							membershipReady = true
 							if groups, err := nativeClient.Groups(ctx); err == nil {
