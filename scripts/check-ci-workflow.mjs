@@ -645,7 +645,7 @@ function checkFirefoxDiagnosticBudget(jobs, problems) {
   const voice = steps.findIndex(step => step[0] === 'run: npm run test:e2e:voice:firefox -w @dilla/e2e');
   if (!steps[web]?.includes('id: firefox-web-tests') || !steps[web]?.includes('timeout-minutes: 55')
     || !steps[voice]?.includes('id: firefox-voice-tests')) {
-    problems.push('ci.yml: firefox-web requires identified suites and a55-minute web step inside its70-minute job');
+    problems.push('ci.yml: job "firefox-web" requires identified suites and a55-minute web step inside its70-minute job');
   }
   const uploads = steps.map((step, index) => ({ step, index })).filter(({ step }) =>
     step.some(line => line.startsWith('uses: actions/upload-artifact@')));
@@ -653,7 +653,7 @@ function checkFirefoxDiagnosticBudget(jobs, problems) {
   if (uploads.length !== 2 || uploads[0].index <= web || uploads[0].index >= voice || uploads[1].index <= voice
     || !uploads[0].step.includes('if: failure()') || !uploads[1].step.includes(late)
     || uploads.some(({ step }) => !step.includes('timeout-minutes: 5') || !step.includes('name: browser-web-results-firefox'))) {
-    problems.push('ci.yml: firefox-web requires mutually exclusive5-minute diagnostic uploads immediately afterweb and aftervoice');
+    problems.push('ci.yml: job "firefox-web" requires mutually exclusive5-minute diagnostic uploads named browser-web-results-firefox immediately afterweb and aftervoice');
   }
 }
 

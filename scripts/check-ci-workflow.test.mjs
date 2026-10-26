@@ -1310,7 +1310,7 @@ for (const engine of ['chromium', 'firefox']) {
   });
   test(`a ${job} voice step without its own DILLA_TESTKIT env is reported, though the web step has one`, () => {
     const body = jobBody(job);
-    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+    const env = (engine === 'firefox' ? '        id: firefox-voice-tests\n' : '') + '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
     assert.ok(body.includes(voice + env), 'fixture sanity: the voice step and its env');
     const bare = body.replace(voice + env, voice);
     const problems = checkWorkflow(fixture(GOOD.replace(body, () => bare)));
@@ -1322,7 +1322,7 @@ test('a comment naming the audio server above the voice step does not stand in f
   const body = jobBody('firefox-web');
   const audio = '      - run: sh scripts/ci-audio-server.sh\n';
   const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
-  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+  const env = '        id: firefox-voice-tests\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
   assert.ok(body.includes(audio) && body.includes(voice + env), 'fixture sanity: the audio server, then the voice suite');
   const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice + env, `${voice}${env}${audio}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
