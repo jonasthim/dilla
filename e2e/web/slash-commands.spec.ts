@@ -449,7 +449,9 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must reactivate the card on return' }).toBe(true);
     await (await pollOption(memberCard, 'Soup')).check();
     await memberCard.getByRole('button', { name: 'Submit vote', exact: true }).click();
-    await memberCard.getByRole('button', { name: /1 · Soup/ }).click();
+    const soupResults = memberCard.getByRole('button', { name: /1 · Soup/ });
+    await expect(soupResults).toBeVisible({ timeout: BOT_WAIT });
+    await soupResults.click();
     try { await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT }); }
     catch (error) {
       const evidence = { card: await memberCard.evaluate(element => (element as HTMLElement).outerHTML), worker: await pollFailureEvidence(member, question) };
@@ -458,7 +460,10 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     }
     await (await pollOption(memberCard, 'Soup')).uncheck();
     await (await pollOption(memberCard, 'Salad')).check();
-    await memberCard.getByRole('button', { name: 'Submit vote', exact: true }).click();
+    const submitChangedVote = memberCard.getByRole('button', { name: 'Submit vote', exact: true });
+    await expect(submitChangedVote).toBeEnabled({ timeout: BOT_WAIT });
+    await submitChangedVote.click();
+    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toBeVisible({ timeout: BOT_WAIT });
     await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT });
     await memberCard.getByRole('button', { name: 'Withdraw vote', exact: true }).click();
     await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toHaveCount(0, { timeout: BOT_WAIT });
