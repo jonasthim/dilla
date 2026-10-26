@@ -13,6 +13,8 @@ export interface CommandComposerProps {
   onCancel: (text: string) => void;
   onSendLiteral: (text: string) => void;
   suggest: (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>) => Promise<CommandSuggestionList>;
+  /** Live snapshots that invalidate cached entity queries without editing the draft. */
+  suggestionSources?: readonly unknown[];
   contextKey: string;
   disabledReason?: string;
   onDraftChange?: (text: string) => void;
@@ -74,7 +76,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
   });
   const [submitted, setSubmitted] = useState(false);
   const suggestionQuery = selectedCommand?.options.map(option => `${option.name}:${fields[option.name]?.text ?? ''}`).join('\u0000') ?? '';
-  const { suggest: getSuggestions } = props;
+  const { suggest: getSuggestions, suggestionSources } = props;
   const suggest = useCallback((commandId: string, option: CommandOption, query: string) => getSuggestions(commandId, option, query,
     Object.fromEntries(Object.entries(fieldsNow.current).map(([name, value]) => [name, value.selected?.value ?? value.text]))), [getSuggestions]);
   const contextKey = props.contextKey;
@@ -189,7 +191,7 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
         });
       });
     }
-  }, [contextKey, suggest, selectedCommand, suggestionQuery]);
+  }, [contextKey, suggest, selectedCommand, suggestionQuery, suggestionSources]);
 
   if (parsed.type === 'literal') {
     if (!initialText.startsWith('//')) return null;

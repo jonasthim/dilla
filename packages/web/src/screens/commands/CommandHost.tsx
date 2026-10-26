@@ -4,6 +4,7 @@ import { InviteFlow } from '../Create.tsx';
 import { ModerationLog } from '../admin/ModerationLog.tsx';
 import { COMMANDS, commandAvailability, type CommandContext as Binding, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
+import { useSlices } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { useCommandProviders } from './CommandContext.tsx';
 import { CommandComposer } from './CommandComposer.tsx';
@@ -58,6 +59,10 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const accountScope = `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`;
   const memory = memoryFor(client, props.selfId, accountScope);
   const providers = useCommandProviders();
+  // Builtin suggestions read these live slices. Their arrival or policy changes
+  // must also invalidate the composer's cached query without another keystroke.
+  const suggestionSources = useSlices(['communities', `members:${props.communityId ?? ''}`,
+    `roles:${props.communityId ?? ''}`, `permissions:${props.communityId ?? ''}`]);
   const handlers = providers.handlers;
   const suggestionProvider = providers.suggest;
   const runtime = providers.runtime;
@@ -247,6 +252,6 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     {confirmation !== null ? <ConfirmDialog open title={confirmation.title} body={confirmation.body} confirmLabel="Continue" busyLabel="Working…" cancelLabel="Cancel" busy={false} error={null}
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.(true); confirmationResolve.current = null; }}
     onClose={() => { setConfirmation(null); confirmationResolve.current?.(false); confirmationResolve.current = null; }} /> : null}<CommandComposer key={contextKey} definitions={definitions} initialText={saved}
-    onExecute={execution} onCancel={cancel} onSendLiteral={sendLiteral} suggest={suggest} contextKey={contextKey}
+    onExecute={execution} onCancel={cancel} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
     onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /></>;
 }

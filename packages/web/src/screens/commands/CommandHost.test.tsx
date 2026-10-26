@@ -32,6 +32,28 @@ function hostHarness(fake = new FakeClient()) {
   return { user, view, fake, literals, channelId };
 }
 
+function moderationHarness(joined = true) {
+  const core = new FakeClient(); const communityId = '55'.repeat(16); const selfId = '66'.repeat(16);
+  const access = { loaded: true, top: 4, owner: false, manageCommunity: false, kickMembers: true, banMembers: true,
+    moderateMembers: true, manageMessages: false, manageRoles: true, manageChannels: true, createInvite: true,
+    everyoneId: '99'.repeat(16), overwritesLoaded: true };
+  const roles = [
+    { id: 'a1'.repeat(16), name: 'member', position: 1, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 },
+    { id: 'a3'.repeat(16), name: 'moderator', position: 4, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false, members: 1 },
+  ];
+  const members = [
+    { userId: selfId, username: 'ada', display: 'Ada', kind: 0 as const, roleIds: [roles[1].id] },
+    { userId: '88'.repeat(16), username: 'bea', display: 'Bea', kind: 0 as const, roleIds: [roles[0].id] },
+  ];
+  core.set('communities', [{ id: communityId, name: 'Town', owner: '77'.repeat(16) }]);
+  core.set(`permissions:${communityId}`, access); core.set(`roles:${communityId}`, roles);
+  core.set(`members:${communityId}`, joined ? members : members.slice(0, 1));
+  render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={1 << 12}
+    items={[]} selfId={selfId} draft="/kick" onDraft={() => undefined} onSendLiteral={() => undefined}
+    encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+  return { core, communityId, access, roles, members, user: userEvent.setup() };
+}
+
 describe('CommandHost', () => {
   it('routes a slash draft into the production built-in handler and publishes the resulting message', async () => {
     const { user, fake, channelId } = hostHarness();
@@ -101,6 +123,28 @@ describe('CommandHost', () => {
     await user.clear(field);
     await user.type(field, 'owner');
     await waitFor(() => expect(screen.queryByRole('option', { name: 'owner' })).toBeNull());
+  });
+
+  it('refreshes an empty moderation suggestion when the member arrives without retyping', async () => {
+    const { core, communityId, members, user } = moderationHarness(false);
+    const field = await screen.findByRole('combobox', { name: 'user' });
+    await user.type(field, 'Bea');
+    expect(screen.queryByRole('option', { name: 'Bea' })).not.toBeInTheDocument();
+    core.publish(`members:${communityId}`, members);
+    expect(await screen.findByRole('option', { name: 'Bea' })).toBeInTheDocument();
+    expect(field).toHaveValue('Bea');
+  });
+
+  it.each(['permission', 'rank', 'membership'] as const)('removes a moderation suggestion after current %s changes', async change => {
+    const { core, communityId, access, roles, members, user } = moderationHarness();
+    const field = await screen.findByRole('combobox', { name: 'user' });
+    await user.type(field, 'Bea');
+    expect(await screen.findByRole('option', { name: 'Bea' })).toBeInTheDocument();
+    if (change === 'permission') core.publish(`permissions:${communityId}`, { ...access, kickMembers: false });
+    else if (change === 'rank') core.publish(`roles:${communityId}`, roles.map(role => role.id === roles[0].id ? { ...role, position: 5 } : role));
+    else core.publish(`members:${communityId}`, members.slice(0, 1));
+    await waitFor(() => expect(screen.queryByRole('option', { name: 'Bea' })).not.toBeInTheDocument());
+    expect(field).toHaveValue('Bea');
   });
 
   it('sources unban and self-role options from their current server-managed slices', async () => {
