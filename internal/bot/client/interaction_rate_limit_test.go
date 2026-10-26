@@ -13,32 +13,43 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-// Eleven private groups require 22 proof POSTs, exceeding production's shared
-// write burst of 20 even with no other session writes.
+// Eleven private groups need 22 proof POSTs per sweep. Cover the default burst
+// and repeated sweeps against the live server's larger burst, both at 2/second.
 func TestInteractionProofRefreshElevenGroupsUnderProductionWriteLimit(t *testing.T) {
-	limiter := rate.NewLimiter(2, 20)
-	want := cbor(t, []any{[]byte{1}, make([]byte, 64)})
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/instance" {
-			reply(w, http.StatusOK, discovery(testID(99)))
-			return
-		}
-		if !limiter.Allow() {
-			reply(w, http.StatusTooManyRequests, []any{"E_RATE_LIMITED", "", uint64(500)})
-			return
-		}
-		w.Header().Set("Content-Type", "application/cbor")
-		_, _ = w.Write(want)
-	}, 0)
-	s, _ := c.Session("bot-session")
-	for group := byte(10); group < 21; group++ {
-		requestID := id.New()
-		for _, snapshot := range []bool{false, true} {
-			got, err := interactionProofCall(snapshot)(s, t.Context(), testID(1), requestID, testID(group), testID(2), testID(3))
-			if err != nil || string(got) != string(want) {
-				t.Fatalf("group %d snapshot %v: proof = %x, %v", group, snapshot, got, err)
+	for _, tc := range []struct {
+		name          string
+		burst, passes int
+	}{
+		{"default burst", 20, 1}, {"live burst", 40, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limiter := rate.NewLimiter(2, tc.burst)
+			want := cbor(t, []any{[]byte{1}, make([]byte, 64)})
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/instance" {
+					reply(w, http.StatusOK, discovery(testID(99)))
+					return
+				}
+				if !limiter.Allow() {
+					reply(w, http.StatusTooManyRequests, []any{"E_RATE_LIMITED", "", uint64(500)})
+					return
+				}
+				w.Header().Set("Content-Type", "application/cbor")
+				_, _ = w.Write(want)
+			}, 0)
+			s, _ := c.Session("bot-session")
+			for range tc.passes {
+				for group := byte(10); group < 21; group++ {
+					requestID := id.New()
+					for _, snapshot := range []bool{false, true} {
+						got, err := interactionProofCall(snapshot)(s, t.Context(), testID(1), requestID, testID(group), testID(2), testID(3))
+						if err != nil || string(got) != string(want) {
+							t.Fatalf("group %d snapshot %v: proof = %x, %v", group, snapshot, got, err)
+						}
+					}
+				}
 			}
-		}
+		})
 	}
 }
 
