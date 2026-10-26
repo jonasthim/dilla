@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { peerSeed } from './peer-seed.ts';
+import { peerSeed } from '../web/support/peer-seed.ts';
 
 test('peer usernames cannot repeat across a worker replacement or multiple peers', () => {
   const previous = new Set(Array.from({ length: 65_536 }, (_, sequence) => peerSeed(0, sequence) & 0xff_ffff));
