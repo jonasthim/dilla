@@ -446,7 +446,8 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
-    host = await startTestHost(HOST);
+    // Production uses 30 seconds: command delivery must wake independently of reconciliation.
+    host = await startTestHost({ ...HOST, botReconcileInterval: '30s' });
     await installWorkerPort(page.context());
     await traceCoreWorker(page);
     await page.addInitScript(() => {
@@ -488,7 +489,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     await openPollDialog(page, composerBox(page, GENERAL), question);
     const card = logRegion(page, GENERAL).locator('.dw-poll-card').filter({ hasText: question });
     try {
-      await expect(card).toBeVisible({ timeout: BOT_WAIT });
+      await expect(card).toBeVisible({ timeout: 25_000 });
     } catch (error) {
       await testInfo.attach('slash-poll-hydration.json', {
         body: Buffer.from(JSON.stringify(await pollFailureEvidence(page, question), null, 2)), contentType: 'application/json',

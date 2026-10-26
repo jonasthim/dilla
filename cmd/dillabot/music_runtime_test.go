@@ -887,3 +887,44 @@ func TestMusicQueueOwnsSeparateRetainedConnectionsPerChannel(t *testing.T) {
 		t.Fatalf("closing one channel affected another: %v", err)
 	}
 }
+
+func TestPrivateCommandHelperSurvivesMusicDisableAndClosesOnInstallationRemoval(t *testing.T) {
+	for _, musicEnabled := range []bool{false, true} {
+		name := "without music"
+		if musicEnabled {
+			name = "after music capability loss"
+		}
+		t.Run(name, func(t *testing.T) {
+			community, installation := id.New(), id.New()
+			source := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+			registry := newMusicQueueRegistry()
+			t.Cleanup(func() { _ = registry.Close() })
+			if musicEnabled {
+				if _, err := registry.Reconcile(t.Context(), installation, community, botMusicCapability, []client.Channel{{ID: id.New(), CommunityID: community, Kind: musicVoiceChannelKind}}, source, unavailableMusicQueueStarter()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := registry.RetainInteractions(installation, community, source); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.Reconcile(t.Context(), installation, community, 0, nil, source, unavailableMusicQueueStarter()); err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.DisableMusic(installation); err != nil {
+				t.Fatal(err)
+			}
+			if source.closed || registry.Native(installation, community) != source {
+				t.Fatal("disabling music stopped the helper needed by private commands")
+			}
+			if _, ok := registry.QueueStore(installation, community); ok {
+				t.Fatal("music queue store available without music capability")
+			}
+			if err := registry.RetainOnly(nil); err != nil {
+				t.Fatal(err)
+			}
+			if !source.closed || registry.Native(installation, community) != nil {
+				t.Fatal("removed installation retained its command helper")
+			}
+		})
+	}
+}

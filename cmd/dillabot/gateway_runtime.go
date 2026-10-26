@@ -11,6 +11,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/gatewayclient"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -125,6 +126,37 @@ func (r *botGatewayRuntime) SubscribeGroups(ctx context.Context, installation id
 		// current native groups too, so newly joined text channels wake the poller.
 		_ = e.client.Subscribe(ctx, groups)
 	}
+}
+
+type notificationGroupSource interface {
+	Groups(context.Context) ([]native.GroupInfo, error)
+	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
+}
+
+func (r *botGatewayRuntime) SubscribeNativeGroups(ctx context.Context, installation id.ID, source notificationGroupSource) error {
+	groups, err := source.Groups(ctx)
+	if err != nil {
+		return err
+	}
+	private, err := source.InteractionGroups(ctx)
+	if err != nil {
+		return err
+	}
+	ids := make([]id.ID, 0, len(groups)+len(private))
+	for _, group := range groups {
+		if group.State == 2 && group.Kind == 0 {
+			ids = append(ids, group.ID)
+		}
+	}
+	// Generic Groups deliberately excludes kind 3; discover private interaction
+	// groups through the native API that authenticates their installation binding.
+	for _, group := range private {
+		if group.State == 2 {
+			ids = append(ids, group.Group)
+		}
+	}
+	r.SubscribeGroups(ctx, installation, ids)
+	return nil
 }
 
 func acknowledgeGatewayHint(delivery gatewayclient.Delivery) error {

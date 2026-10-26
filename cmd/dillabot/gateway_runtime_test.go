@@ -7,11 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -69,5 +71,74 @@ func TestBotGatewayRuntimePublishesPresenceAndStopsOnRemoval(t *testing.T) {
 	}
 	if gw.PresenceStatus(user, 0) != 0 {
 		t.Fatal("removed installation retained gateway presence")
+	}
+}
+
+type lateNotificationStore struct {
+	presenceTestStore
+	joined atomic.Bool
+	group  id.ID
+}
+
+func (s *lateNotificationStore) GroupsForDevice(context.Context, id.ID) ([]id.ID, error) {
+	if s.joined.Load() {
+		return []id.ID{s.group}, nil
+	}
+	return nil, nil
+}
+
+type privateNotificationSource struct{ group id.ID }
+
+func (s privateNotificationSource) Groups(context.Context) ([]native.GroupInfo, error) {
+	return nil, nil
+}
+func (s privateNotificationSource) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	return []native.InteractionGroupDescriptor{{Group: s.group, State: 2}}, nil
+}
+
+func TestPrivateGroupJoinedAfterReadyWakesCommandIntake(t *testing.T) {
+	instance, device, user, installation, group := id.New(), id.New(), id.New(), id.New(), id.New()
+	store := &lateNotificationStore{group: group}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: store, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: log})
+	server := httptest.NewServer(gw.Handler())
+	defer server.Close()
+	defer gw.Shutdown(context.Background())
+	api, err := client.New(client.Config{BaseURL: server.URL, InstanceID: instance, AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newBotGatewayRuntime(t.Context(), api, true, log)
+	defer runtime.Close()
+	if err := runtime.Ensure(installation, device, user, "session"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.Wake():
+	case <-time.After(3 * time.Second):
+		t.Fatal("gateway did not become ready")
+	}
+	store.joined.Store(true)
+	if err := runtime.SubscribeNativeGroups(t.Context(), installation, privateNotificationSource{group}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := gateway.MessageCTPayload(1, 1, id.New(), []byte("ciphertext"), make([]byte, 32), 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sending Subscribe completes before the server necessarily consumes it.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	for {
+		gw.DeliverGroup(group, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: payload, Replay: true})
+		select {
+		case <-runtime.Wake():
+			return
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatal("new private group did not wake command intake")
+		}
 	}
 }

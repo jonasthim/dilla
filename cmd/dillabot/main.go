@@ -513,7 +513,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "lifecycle_bind")
 			continue
 		}
-		var musicOwnedNative bool
+		var runtimeOwnedNative bool
 		var musicQueueCount int
 		reconcileStage := "identity"
 		result, ensureErr := lifecycle.Ensure(ctx)
@@ -543,14 +543,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 						if ready {
 							reconcileStage = "structural_events_and_registration"
 							membershipReady = true
-							if groups, err := nativeClient.Groups(ctx); err == nil {
-								var notifications []id.ID
-								for _, group := range groups {
-									if group.State == 2 && (group.Kind == 0 || group.Kind == 3) {
-										notifications = append(notifications, group.ID)
-									}
-								}
-								gateways.SubscribeGroups(ctx, installation.ID, notifications)
+							if err := gateways.SubscribeNativeGroups(ctx, installation.ID, nativeClient); err != nil {
+								logger.Warn("bot gateway native group discovery unavailable", "installation_id", installation.ID.String())
 							}
 							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
 							if pollerErr != nil {
@@ -676,7 +670,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										}
 										return newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases, joinCallGroup)
 									}
-									musicOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
+									runtimeOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
 								if channelsErr != nil {
 									_ = musicRegistry.Disable(installation.ID)
@@ -761,25 +755,18 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
 												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicReplyRecovery(installation.CommunityID, nativeClient, result.Session, api, coordinator))
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
-												if musicInteractions != nil && (retainedNative || musicOwnedNative) {
-													gateways.SetTextPoller(installation.ID, func(pollCtx context.Context) error {
-														if _, err := membership.ReconcileOnce(pollCtx, result.Session); err != nil {
-															return err
-														}
-														trust, err := service.NewSourceTrust(nativeClient)
-														if err != nil {
-															return err
-														}
-														if _, err = trust.TrustPendingLeaves(pollCtx, result.Session); err != nil {
-															return err
-														}
-														_, err = eventRuntime.Drain(pollCtx)
-														return err
-													})
+												if interactionErr = musicRegistry.RetainInteractions(installation.ID, installation.CommunityID, nativeClient); interactionErr == nil {
+													runtimeOwnedNative = true
+													gateways.SetTextPoller(installation.ID, newCommandIntakePoller(membership, trust, result.Session,
+														func(pollCtx context.Context) error {
+															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
+														}, eventRuntime))
 												}
 
 												var eventResult service.GroupEventPollResult
-												eventResult, interactionErr = eventRuntime.Drain(ctx)
+												if interactionErr == nil {
+													eventResult, interactionErr = eventRuntime.Drain(ctx)
+												}
 												if interactionErr == nil && eventResult.More {
 													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)
 												}
@@ -794,7 +781,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								ensureErr = errors.Join(ensureErr, interactionErr)
 							}
 							if result.Installation.Capabilities&botMusicCapability == 0 {
-								if err := musicRegistry.Disable(installation.ID); err != nil {
+								if err := musicRegistry.DisableMusic(installation.ID); err != nil {
 									logger.Error("bot music runtime cleanup incomplete", "installation_id", installation.ID.String(), "error", err.Error())
 								}
 							} else {
@@ -846,7 +833,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			}
 		}
 		var closeErr error
-		if !retainedNative && !musicOwnedNative {
+		if !retainedNative && !runtimeOwnedNative {
 			closeErr = nativeClient.Close()
 		}
 		if ensureErr != nil || closeErr != nil {

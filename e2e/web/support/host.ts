@@ -12,7 +12,7 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
@@ -174,7 +174,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
         }).catch(() => undefined).finally(() => { clockTickInFlight = false; });
       }, 1_000);
     }
-    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
+    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined, c.botReconcileInterval);
     const stopBot = async (): Promise<void> => {
       if (bot === null || c.botRuntime !== true) throw new Error('test host has no Bot runtime to stop');
       await stop(bot);
@@ -184,7 +184,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       if (bot !== null || c.botRuntime !== true) throw new Error('test host Bot runtime is already running or unavailable');
       rmSync(join(dataDir, 'bot.toml'), { force: true });
       bot = await startBotRuntime(url, dataDir, c.port,
-        c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
+        c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined, c.botReconcileInterval);
     };
     const stopBotRuntime = async (): Promise<void> => {
       if (c.botRuntime !== true) throw new Error('test host has no Bot runtime');
@@ -263,7 +263,7 @@ export async function prepareBotRuntimeBinaries(): Promise<void> {
   await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
 }
 
-async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string): Promise<ChildProcess> {
+async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string, reconcileInterval = '1s'): Promise<ChildProcess> {
   const runtimeToken = join(dataDir, 'bot-runtime.token');
   const stateDir = join(dataDir, 'bot-state');
   const configPath = join(dataDir, 'bot.toml');
@@ -293,7 +293,7 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
     `helper_executable = ${quote(BOT_HELPER_BIN)}`,
     `wasi_module = ${quote(WASI_CORE)}`,
     `state_dir = ${quote(stateDir)}`,
-    'reconcile_interval = "1s"',
+    `reconcile_interval = ${quote(reconcileInterval)}`,
     'allow_loopback_http = true',
     '',
   ].join('\n');
