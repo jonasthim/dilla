@@ -9,6 +9,7 @@ import { test, type SecondBrowser } from './support/second';
 import { installWorkerPort, portCall } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
+import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
 
 const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? 8581);
 const HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -31,6 +32,17 @@ test.describe.configure({ timeout: 360_000 });
 test.beforeAll(async () => {
   test.setTimeout(360_000);
   await prepareBotRuntimeBinaries();
+});
+
+// Only this music scenario needs native microphone capture. Match the existing voice/music
+// Firefox fixture; ordinary web tests retain their default device/permission environment.
+const musicTest = test.extend({
+  launchOptions: async ({ browserName, launchOptions }, use) => {
+    await use(browserName === 'firefox' ? {
+      ...launchOptions,
+      firefoxUserPrefs: { ...launchOptions.firefoxUserPrefs, ...FIREFOX_MEDIA_PREFS },
+    } : launchOptions);
+  },
 });
 
 async function secondPersona(browser: Browser, browserName: string, persistent: { open(): Promise<SecondBrowser> },
@@ -131,6 +143,44 @@ async function traceCoreWorker(page: Page): Promise<void> {
         return worker;
       },
     }) as typeof Worker;
+  });
+}
+
+/** Observe native capture without changing its result, constraints, or permission decisions. */
+async function traceNativeVoice(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    type Event = { at: number; method: string; phase: string; kinds?: string[]; error?: string; permission?: string };
+    const root = window as unknown as { __slashNativeVoice?: Event[] };
+    const events: Event[] = [];
+    root.__slashNativeVoice = events;
+    const record = (event: Omit<Event, 'at'>): void => { events.push({ at: Date.now(), ...event }); };
+    const media = navigator.mediaDevices;
+    if (media === undefined) return;
+    const enumerate = media.enumerateDevices.bind(media);
+    media.enumerateDevices = async () => {
+      record({ method: 'enumerateDevices', phase: 'start' });
+      try {
+        const devices = await enumerate();
+        record({ method: 'enumerateDevices', phase: 'end', kinds: devices.map(device => device.kind) });
+        return devices;
+      } catch (error) { record({ method: 'enumerateDevices', phase: 'error', error: error instanceof Error ? error.name : typeof error }); throw error; }
+    };
+    const capture = media.getUserMedia.bind(media);
+    media.getUserMedia = async constraints => {
+      record({ method: 'getUserMedia', phase: 'start' });
+      try {
+        const permission = navigator.permissions?.query({ name: 'microphone' as PermissionName });
+        if (permission === undefined) record({ method: 'permission', phase: 'unsupported' });
+        else void permission.then(
+          result => record({ method: 'permission', phase: 'observed', permission: result.state }),
+          () => record({ method: 'permission', phase: 'unsupported' }));
+      } catch { record({ method: 'permission', phase: 'unsupported' }); }
+      try {
+        const stream = await capture(constraints);
+        record({ method: 'getUserMedia', phase: 'end', kinds: stream.getTracks().map(track => track.kind) });
+        return stream;
+      } catch (error) { record({ method: 'getUserMedia', phase: 'error', error: error instanceof Error ? error.name : typeof error }); throw error; }
+    };
   });
 }
 
@@ -542,12 +592,13 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   }
 });
 
-test('music snapshot and clear report privately or explain unavailable encrypted voice', async ({ page, instanceName }, testInfo) => {
+musicTest('music snapshot and clear report privately or explain unavailable encrypted voice', async ({ page, instanceName }, testInfo) => {
   let host: StartedHost | null = null;
   let primaryFailure: unknown;
   try {
     host = await startTestHost(VOICE_HOST);
     await traceCoreWorker(page);
+    await traceNativeVoice(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['music']);
@@ -592,6 +643,10 @@ test('music snapshot and clear report privately or explain unavailable encrypted
     }
     await joinVoice(page, COMMUNITY, GENERAL);
     await connected(page);
+    await testInfo.attach('slash-music-native-capture.json', {
+      body: Buffer.from(JSON.stringify(await page.evaluate(() =>
+        (window as unknown as { __slashNativeVoice?: unknown[] }).__slashNativeVoice?.slice(-30)))), contentType: 'application/json',
+    });
     // Keep the live voice session while returning to the text channel that hosts the command composer.
     await channelRow(page, GENERAL).click();
     await expect(composerBox(page, GENERAL)).toBeVisible({ timeout: WAIT });
@@ -616,6 +671,7 @@ test('music snapshot and clear report privately or explain unavailable encrypted
       const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[]; events: unknown[] } }).__slashWorkerTrace;
       const methods = /call|voice|sfu|account|diagnostics|connection/iu;
       return {
+        nativeMedia: (window as unknown as { __slashNativeVoice?: unknown[] }).__slashNativeVoice?.slice(-30),
         url: location.pathname,
         call: document.querySelector('[data-call-phase]')?.getAttribute('data-call-phase'),
         dock: document.querySelector('.d-voice-dock')?.getAttribute('data-phase'),
@@ -626,6 +682,24 @@ test('music snapshot and clear report privately or explain unavailable encrypted
     await testInfo.attach('slash-music-failure.json', {
       body: Buffer.from(JSON.stringify({ error: String(error), evidence }, null, 2)), contentType: 'application/json',
     });
+    const summary = await page.evaluate(() => {
+      const root = window as unknown as { __slashNativeVoice?: unknown[]; __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] } };
+      const calls = (root.__slashWorkerTrace?.calls ?? []) as { id?: number; command?: { m?: string } }[];
+      const replies = (root.__slashWorkerTrace?.returns ?? []) as { t?: string; id?: number; ok?: boolean; error?: { code?: string }; name?: string; value?: unknown }[];
+      return {
+        nativeMedia: root.__slashNativeVoice?.slice(-20),
+        domPhase: document.querySelector('[data-call-phase]')?.getAttribute('data-call-phase'),
+        workerCall: replies.filter(reply => reply.t === 'slice' && reply.name === 'call').slice(-1).map(reply => {
+          const state = reply.value as { phase?: string; reason?: string } | undefined;
+          return { phase: state?.phase, reason: state?.reason };
+        }),
+        rpc: calls.filter(call => /^call/u.test(call.command?.m ?? '')).slice(-10).map(call => {
+          const reply = replies.find(value => value.t === 'ret' && value.id === call.id);
+          return { method: call.command?.m, replied: reply !== undefined, ok: reply?.ok, code: reply?.error?.code };
+        }),
+      };
+    }).catch(() => ({ captureFailed: true }));
+    console.log('SLASH_MUSIC_FAILURE_STAGE', JSON.stringify(summary));
     throw error;
   } finally {
     const cleanupFailures: unknown[] = [];
