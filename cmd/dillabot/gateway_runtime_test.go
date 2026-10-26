@@ -87,6 +87,16 @@ func (s *lateNotificationStore) GroupsForDevice(context.Context, id.ID) ([]id.ID
 	return nil, nil
 }
 
+func (s *lateNotificationStore) GroupResource(context.Context, id.ID) (gateway.GroupResource, error) {
+	return gateway.GroupResource{Kind: 3}, nil
+}
+func (s *lateNotificationStore) ChannelCommunity(context.Context, id.ID) (*id.ID, error) {
+	return nil, nil
+}
+func (s *lateNotificationStore) Enabled(context.Context, id.ID) (bool, error) {
+	return true, nil
+}
+
 type privateNotificationSource struct{ group id.ID }
 
 func (s privateNotificationSource) Groups(context.Context) ([]native.GroupInfo, error) {
@@ -100,7 +110,7 @@ func TestPrivateGroupJoinedAfterReadyWakesCommandIntake(t *testing.T) {
 	instance, device, user, installation, group := id.New(), id.New(), id.New(), id.New(), id.New()
 	store := &lateNotificationStore{group: group}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: store, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: log})
+	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: store, ScopeResolver: store, CommunityCompatibility: store, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: log})
 	server := httptest.NewServer(gw.Handler())
 	defer server.Close()
 	defer gw.Shutdown(context.Background())
@@ -119,8 +129,30 @@ func TestPrivateGroupJoinedAfterReadyWakesCommandIntake(t *testing.T) {
 		t.Fatal("gateway did not become ready")
 	}
 	store.joined.Store(true)
+	gw.SetGroupMembers(group, []id.ID{device})
 	if err := runtime.SubscribeNativeGroups(t.Context(), installation, privateNotificationSource{group}); err != nil {
 		t.Fatal(err)
+	}
+	// Bot uploads are already durably processed locally. Echoing its own reply
+	// must not trigger another complete source sweep (and another reply wake).
+	ownPayload, err := gateway.MessageCTPayload(1, 1, device, []byte("own reply"), make([]byte, 32), 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownDeadline := time.NewTimer(200 * time.Millisecond)
+	defer ownDeadline.Stop()
+	ownTicker := time.NewTicker(10 * time.Millisecond)
+	defer ownTicker.Stop()
+ownEcho:
+	for {
+		gw.DeliverGroup(group, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: ownPayload, Replay: true})
+		select {
+		case <-runtime.Wake():
+			t.Fatal("own ciphertext echo woke command intake")
+		case <-ownDeadline.C:
+			break ownEcho
+		case <-ownTicker.C:
+		}
 	}
 	payload, err := gateway.MessageCTPayload(1, 1, id.New(), []byte("ciphertext"), make([]byte, 32), 1, nil)
 	if err != nil {

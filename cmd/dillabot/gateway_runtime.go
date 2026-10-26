@@ -88,7 +88,13 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 					}
 				}
 				r.notify()
-			case gatewayclient.OpMessageCT, gatewayclient.OpMessagePlain, gatewayclient.OpWelcome, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpCommunityChanged, gatewayclient.OpVoiceState:
+			case gatewayclient.OpMessageCT:
+				// Outgoing ciphertext is already processed by the native sender.
+				// Its gateway echo must not start another full intake sweep.
+				if message := delivery.Frame.MessageCT; message == nil || message.UploaderDevice != device {
+					r.notify()
+				}
+			case gatewayclient.OpMessagePlain, gatewayclient.OpWelcome, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpCommunityChanged, gatewayclient.OpVoiceState:
 				r.notify()
 			}
 			// Gateway deliveries are wake-up hints only. MLS source cursors and bot
