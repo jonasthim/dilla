@@ -9,6 +9,16 @@ landscape/coarse-pointer condition: index, then a section with Back to the index
 Phone tabs are hidden throughout settings; safe areas and visual viewport sizing
 keep the footer above the keyboard. No additional settings breakpoint is used.
 
+Content starts at the pane's left padding. Simple preference rows share balanced
+columns that stack naturally when the pane cannot fit them. Composite forms use
+the stacked `SettingsRow` layout, with controls below the introduction and fields
+up to 32rem wide. GIF key status and replacement/removal actions have their own
+line; Bot identity/status, display-name editing and lifecycle actions have separate
+groups. Buttons keep their natural width. Phone Back retains its full accessible
+destination, uses the short visible label, and shares the first header row with
+the section title. Active-call controls occupy a second row. When idle, that row
+takes no visible space; the connection live region remains mounted.
+
 ## Coverage inventory
 
 | Scope / group | Section | Capabilities and implementation |
@@ -132,3 +142,20 @@ short-viewport, Sign-in, Voice, Members, Music, Automoderation and search states
 The Music/Automoderation captures show the unavailable or missing-installation state;
 they are not evidence of a linked Spotify account or successful playback. Automated
 runtime protocol tests establish status semantics separately from these UI captures.
+
+### Form layout follow-up
+
+These refreshed Appearance, GIFs and Bot captures render the shipped React
+components with seeded account, provider and installation data. They demonstrate
+form layout, rather than provider connectivity. Responsive layout checks cover
+1440, 1024, 390 and 320px widths in Chromium, Firefox and WebKit; real testhost
+checks cover Appearance resizing, phone navigation, search and dirty drafts in
+all three engines. Separate phone landscape checks keep the call controls and
+dirty footer reachable.
+
+![Appearance with balanced control columns](../../user/screenshots/settings-layout-appearance-desktop.png)
+![GIF configuration below its introduction](../../user/screenshots/settings-layout-gifs-desktop.png)
+![Bot identity, name and actions](../../user/screenshots/settings-layout-bot-desktop.png)
+![Phone Appearance with a readable header](../../user/screenshots/settings-layout-appearance-phone.png)
+![Phone GIF configuration](../../user/screenshots/settings-layout-gifs-phone.png)
+![Phone Bot identity and actions](../../user/screenshots/settings-layout-bot-phone.png)

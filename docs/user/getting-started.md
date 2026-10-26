@@ -1275,7 +1275,7 @@ field; press Enter to send it, with or without text, or **remove** it. Nothing i
 Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
 
 For a server manager: in server settings → GIFs, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
-developers.giphy.com). Type it, press **save**, and it shows as dots from then on: the key is never shown again, only
+developers.giphy.com). Type it, press **save**, and the page confirms a key is set: the key is never shown again, only
 **replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
 
 Two things to know about privacy. Your searches go to {instance}, which asks Giphy for you using the server's key, so

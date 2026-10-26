@@ -87,6 +87,37 @@ test('settings search opens a registry result and focuses its setting anchor', a
   await closeSettings(page);
 });
 
+test('Appearance controls fit desktop rows and the phone section header keeps its title readable', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await peer.waitForDevices(2, setup.channel_id);
+  const settings = await openSettings(page, 'appearance');
+  for (const width of [1440, 1024, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const group = settings.getByRole('radiogroup', { name: copy('appearance.theme.label'), exact: true });
+    // matchMedia updates the React phone layout after the viewport resize event.
+    await expect.poll(async () => new Set(await group.getByRole('radio').evaluateAll(
+      elements => elements.map(el => Math.round(el.getBoundingClientRect().y)),
+    )).size, { message: `theme option rows at ${width}px` }).toBe(width >= 1024 ? 1 : 2);
+    const overflow = await settings.locator('.d-settings-frame__body').evaluate(el => el.scrollWidth > el.clientWidth);
+    expect(overflow, `settings overflow at ${width}px`).toBe(false);
+    if (width < 768) {
+      const back = settings.getByRole('button', { name: copy('workspace.back'), exact: true });
+      await expect(back).toHaveText(copy('workspace.backShort'));
+      const title = settings.locator('.d-settings-frame__section-title');
+      await expect(title).toHaveText(copy('workspace.appearance'));
+      expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      await expect(settings.locator('.d-settings-frame__activity')).toHaveAttribute('data-visible', 'false');
+      expect((await settings.locator('.d-settings-frame__bar').boundingBox())!.height,
+        'idle phone headers do not reserve a second activity row').toBeLessThanOrEqual(72);
+    }
+  }
+  await closeSettings(page);
+});
+
 test('a dirty Profile draft survives Keep editing and is discarded only after confirmation', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();

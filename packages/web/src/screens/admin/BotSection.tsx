@@ -508,27 +508,30 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       {current && currentInstallation === null && currentError === null ? <p>{t('admin.bot.none')}</p> : null}
       {page !== 'bot' && page !== 'moderationLog' && current && currentInstallation?.state !== 3 ? <Button onClick={() => void navigate({ name: 'serverSettings', communityId, section: 'bot', from: null }, true)}>{t('workspace.botSetup')}</Button> : null}
       {page === 'bot' && currentInstallation !== null ? (
-        <SettingsRow id={`${base}-status-row`} label={t('admin.bot.title')}>
-          {bot ? <div className="dw-bot-identity"><Avatar name={botDisplay} size="sm" /><span>{botDisplay}</span></div> : null}
-          {bot && access?.manageCommunity === true ? <div>
-            <label htmlFor={`${base}-bot-display`}>{t('admin.bot.name.label')}</label>
-            <input id={`${base}-bot-display`} type="text" maxLength={64} value={botNameDraft} disabled={busy}
-              onChange={event => { setBotNameDraft(event.currentTarget.value); setBotNameError(null); }} />
+        <div className="dw-bot-overview">
+          <div className="dw-bot-identity">
+            {bot ? <Avatar name={botDisplay} size="lg" /> : null}
+            <div>
+              {bot ? <strong>{botDisplay}</strong> : null}
+              <p role="status" aria-live="polite">{status}</p>
+            </div>
+            <Button aria-disabled={statusRefreshing || undefined} onClick={refreshStatus}>
+              {statusRefreshing ? t('admin.bot.status.refreshing') : t('admin.bot.status.refresh')}
+            </Button>
+          </div>
+          {bot && access?.manageCommunity === true ? <div className="dw-bot-name">
+            <TextField id={`${base}-bot-display`} label={t('admin.bot.name.label')} maxLength={64} value={botNameDraft} disabled={busy}
+              onChange={value => { setBotNameDraft(value); setBotNameError(null); }} error={botNameError ?? undefined} />
             {!managedBotForm ? <Button aria-disabled={busy || botNameDraft.trim() === '' || botNameDraft.trim() === botDisplay || undefined}
               onClick={() => void saveBotName()}>{t('admin.bot.name.save')}</Button> : null}
-            {botNameError !== null ? <p role="alert">{botNameError}</p> : null}
           </div> : null}
-          <p role="status" aria-live="polite">{status}</p>
-          <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
-          <Button aria-disabled={statusRefreshing || undefined} onClick={refreshStatus}>
-            {statusRefreshing ? t('admin.bot.status.refreshing') : t('admin.bot.status.refresh')}
-          </Button>
-        </SettingsRow>
+          <p className="dw-bot-capabilities-summary">{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
+        </div>
       ) : null}
       {page === 'bot' && canEditInstallationCapabilities && !editingCapabilities ? <Button aria-disabled={busy || enableUnavailable || undefined}
         onClick={() => { editingCapabilitiesRef.current = true; setEditingCapabilities(true); }}>{t('admin.bot.capabilities.edit')}</Button> : null}
       {page === 'bot' && showCapabilitySelection ? (
-        <fieldset aria-describedby={`${base}-capability-help`}>
+        <fieldset className="dw-bot-capabilities" aria-describedby={`${base}-capability-help`}>
           <legend>{t('admin.bot.capabilities.select')}</legend>
           <p id={`${base}-capability-help`}>{t('admin.bot.capabilities.permissionCeiling')}</p>
           {CAPABILITY_OPTIONS.map(option => {
@@ -589,7 +592,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
         {currentInstallation?.state === 3 && access?.loaded === true && (!access.manageCommunity || !access.manageRoles)
           ? <p role="note">{t('admin.bot.music.djRoles.readOnly')}</p> : null}
         {djRolesError !== null ? <p role="alert">{djRolesError}</p> : null}
-        {djRolesReady ? <SettingsRow id={`${base}-dj-roles-row`} label={t('admin.bot.music.djRoles.label')}>
+        {djRolesReady ? <SettingsRow id={`${base}-dj-roles-row`} label={t('admin.bot.music.djRoles.label')} layout="stacked">
           <fieldset disabled={!canEditDjRoles || busy}>
             <legend>{t('admin.bot.music.djRoles.label')}</legend>
             {djRoleCandidates.map(role => <label key={role.id}>
@@ -602,7 +605,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
           {canEditDjRoles && !managedBotForm ? <Button aria-disabled={busy || (djRoles?.roleIds.join(',') ?? '') === djRoleValues.join(',') || undefined}
             onClick={() => void saveDjRoles()}>{t('admin.bot.music.djRoles.save')}</Button> : null}
         </SettingsRow> : null}
-        <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')}>
+        <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')} layout="stacked">
           <p>{t('admin.bot.music.spotifyClientIdHelp')}</p>
           <TextField id={`${base}-spotify-client-id`} label={t('admin.bot.music.spotifyClientId')} value={spotifyClientId}
             maxLength={256} disabled={busy || access?.manageCommunity !== true} autoComplete="off" spellCheck={false}
@@ -612,7 +615,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
         </SettingsRow>
-        <SettingsRow id={`${base}-music-commands-row`} label={t('admin.bot.music.commands')}>
+        <SettingsRow id={`${base}-music-commands-row`} label={t('admin.bot.music.commands')} layout="stacked">
           <p>{t('admin.bot.music.chatHelp')}</p>
         </SettingsRow>
         <MusicProviderStatus communityId={communityId} installationId={currentInstallation?.id ?? null} />
@@ -628,7 +631,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       {page === 'moderationLog' ? <ModerationLog communityId={communityId} showHeading={false} /> : null}
       {page === 'bot' && currentError === null ? null : page === 'bot' ? <p role="alert">{currentError}</p> : null}
       {page === 'bot' && statusRefreshError !== null ? <p role="alert">{statusRefreshError}</p> : null}
-      {page === 'bot' ? <div>
+      {page === 'bot' ? <div className="dw-bot-lifecycle">
         {enabled ? <Button aria-disabled={busy || undefined} onClick={disable}>{busy ? t('admin.bot.disabling') : t('admin.bot.disable')}</Button>
           : <Button variant="accent" aria-disabled={busy || enableUnavailable || undefined}
             aria-describedby={factors === undefined ? `${base}-stepup-reason` : undefined} onClick={enable}>

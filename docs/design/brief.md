@@ -129,6 +129,13 @@ blinking caret, `server · node · status`, a live clock, keybind hints ⌘K / `
 bottom bar (node, peers, lamport, latency, voice codec with a 12-bar meter, version). Command
 palette on ⌘K, search palette on `/`. Settings fills the viewport as a native modal workspace: a 15rem grouped sidebar and independently scrolling content, centered together within 80rem. Ordinary forms use at most 48rem, lists 64rem; padding is 2rem on spacious screens and 1rem on constrained screens. There is no floating perimeter, backdrop dismissal, rounded outer border or modal shadow. The persistent Close control shows an Escape hint.
 
+Settings content is left aligned with the pane padding. Simple preference rows use balanced,
+flexible columns that stack when their contents no longer fit. Compound forms (provider keys,
+Spotify configuration and welcome templates) sit below their labels and descriptions; a whole
+form must never be squeezed into a compact control column. Bot identity, name, lifecycle and
+capability controls have separate visual groups. On phones, Back and the section title occupy
+the first header row; ongoing call controls occupy a separate row so the title stays readable.
+
 Both optional bars are `white-space: nowrap; overflow: hidden`, so at 200 % zoom, at a raised
 browser text size, or in a narrow window they clip chunks off the right edge instead of wrapping
 and eating vertical space. They clip horizontally, never vertically: the bar heights are rem, so

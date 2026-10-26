@@ -804,7 +804,11 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   const controls = await boxes(page, '.d-settings-row__control', '.d-settings-frame__body');
   expectOne('I1 the invites rows share one control x', controls.map(b => b.x), controls.map(b => b.t));
   expectOne('I1 the invites rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
-  for (const c of controls) expectAt(`I1 the control column "${c.t}" is 16rem`, c.w, 256, 1);
+  expect(controls.length).toBe(labels.length);
+  for (const [index, c] of controls.entries()) {
+    expectAt(`I1 the control column "${c.t}" balances its label column`, c.w, labels[index]!.w, 1);
+    expect.soft(c.w, 'I1 fullscreen controls have room beyond the compact 16rem column').toBeGreaterThanOrEqual(320);
+  }
 
   // On a phone: the same section, its selects, its make button and the link dialog's Copy are 44 high.
   await page.keyboard.press('Escape');
