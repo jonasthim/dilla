@@ -203,10 +203,15 @@ test('two communities run isolated YouTube playback with independent Bot identit
     const region = musicPage.getByRole('region', { name: 'Command composer', exact: true });
     const picker = region.getByRole('combobox', { name: 'Command', exact: true });
     await picker.fill(commandId);
-    await expect(region.getByRole('option', { name: new RegExp(`/${commandId}(?:\\s|$)`, 'u') })).toBeVisible({ timeout: WAIT });
+    const option = region.getByRole('option').filter({ has: musicPage.getByText(`/${commandId}`, { exact: true }) });
+    await expect(option).toBeVisible({ timeout: WAIT });
     await picker.press('ArrowDown');
     await picker.press('Enter');
-    if (commandId === 'play') await region.getByRole('combobox', { name: 'query-or-url', exact: true }).fill(argument);
+    if (commandId === 'play') {
+      const query = region.getByRole('combobox', { name: 'query-or-url', exact: true });
+      await query.fill(argument);
+      await expect(query).toHaveValue(argument);
+    }
     const log = musicPage.getByRole('log', { name: 'messages in #general', exact: true });
     const publicBotMessages = log.locator('[data-kind="bot"]');
     const publicCount = await publicBotMessages.count();

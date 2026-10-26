@@ -14,6 +14,8 @@ const COMMUNITY = 'Slash command acceptance';
 const GENERAL = 'general';
 const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 const ACTION_TIMEOUT = process.env.CI === 'true' ? 90_000 : 30_000;
+// Utility actions cross several authenticated Bot round trips even on a fast local browser.
+const BOT_WAIT = 90_000;
 const BASIC_HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist' };
 const SFU_PORT = Number(process.env.DILLA_E2E_SLASH_SFU_PORT ?? PORT + 3);
 const VOICE_HOST: HostConfig = { ...HOST, sfu: { port: SFU_PORT, udpPort: SFU_PORT + 2, departureTimeout: 90 } };
@@ -91,8 +93,8 @@ async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, co
 
 async function traceCoreWorker(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const root = window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] } };
-    root.__slashWorkerTrace = { calls: [], returns: [] };
+    const root = window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[]; events: unknown[] } };
+    root.__slashWorkerTrace = { calls: [], returns: [], events: [] };
     const OriginalWorker = window.Worker;
     window.Worker = new Proxy(OriginalWorker, {
       construct(target, args, newTarget) {
@@ -100,13 +102,92 @@ async function traceCoreWorker(page: Page): Promise<void> {
         const post = worker.postMessage.bind(worker);
         worker.postMessage = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
           root.__slashWorkerTrace?.calls.push(message);
+          root.__slashWorkerTrace?.events.push({ direction: 'call', at: Date.now(), message });
           post(message, transfer as Transferable[]);
         };
-        worker.addEventListener('message', event => root.__slashWorkerTrace?.returns.push(event.data));
+        worker.addEventListener('message', event => {
+          root.__slashWorkerTrace?.returns.push(event.data);
+          root.__slashWorkerTrace?.events.push({ direction: 'return', at: Date.now(), message: event.data });
+        });
         return worker;
       },
     }) as typeof Worker;
   });
+}
+
+async function moderationFailureEvidence(page: Page, member: Page): Promise<unknown> {
+  const [composerSnapshot, rosterSnapshot, workerEvents] = await Promise.all([
+    page.getByRole('region', { name: 'Command composer', exact: true }).ariaSnapshot().catch(() => ''),
+    page.getByRole('complementary', { name: /members/u }).ariaSnapshot().catch(() => ''),
+    page.evaluate(() => {
+      const trace = (window as unknown as { __slashWorkerTrace?: { events: { direction?: string; at?: number; message?: unknown }[] } }).__slashWorkerTrace;
+      return trace?.events.filter(event => /community|member|role|permission|account|botcommandstatus/iu.test(JSON.stringify(event.message)))
+        .slice(-120).map(event => ({ direction: event.direction, at: event.at, message: event.message })) ?? [];
+    }),
+  ]);
+  return {
+    composerSnapshot,
+    ownerRosterSnapshot: rosterSnapshot,
+    memberCommunityButtonCount: await member.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
+      .getByRole('button', { name: COMMUNITY, exact: true }).count().catch(() => -1),
+    workerEvents,
+  };
+}
+
+async function pollFailureEvidence(page: Page, question: string): Promise<unknown> {
+  return page.evaluate(text => {
+    const root = window as unknown as {
+      __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] };
+      __slashPollObserver?: { targets: Element[]; transitions: { target: Element; intersecting: boolean }[] };
+    };
+    const trace = root.__slashWorkerTrace;
+    const calls = (trace?.calls ?? []).map(value => value as {
+      t?: string; id?: number; command?: { m?: string; operation?: number; requestId?: string; communityId?: string; channelId?: string; [key: string]: unknown };
+    });
+    const relevantCalls = calls.filter(call => {
+      const name = call.command?.m ?? '';
+      const operation = call.command?.operation;
+      return operation === 70 || operation === 71
+        || operation !== undefined && operation >= 72 && operation <= 75
+        || /capabilit|channel|community|interaction/i.test(name);
+    }).map(call => ({ id: call.id, name: call.command?.m, operation: call.command?.operation,
+      requestId: call.command?.requestId, communityId: call.command?.communityId, channelId: call.command?.channelId,
+      command: call.command }));
+    const trackedRequestIds = new Set(calls.filter(call => call.command?.m === 'humanInteractionRequest'
+      && (call.command.operation === 3 || call.command.operation !== undefined && call.command.operation >= 70 && call.command.operation <= 75))
+      .map(call => call.command?.requestId).filter((id): id is string => typeof id === 'string'));
+    const pollReadCalls = calls.filter(call => call.command?.m === 'readBotInteractionResponses'
+      && Array.isArray(call.command.requestIds) && call.command.requestIds.some(id => trackedRequestIds.has(String(id)))).slice(-300);
+    const readIds = new Set(pollReadCalls.map(call => call.id));
+    const workerReturns = (trace?.returns ?? []).map(value => value as {
+      t?: string; id?: number; ok?: boolean; value?: { upload?: string; responses?: { requestId?: string; operation?: number; status?: number; data?: Uint8Array; revision?: string }[]; through?: string; blocked?: boolean };
+      error?: unknown;
+    });
+    const interactionReturns = workerReturns.filter(value => value.id !== undefined
+      && calls.some(call => call.id === value.id && call.command?.m === 'humanInteractionRequest'
+        && (call.command.operation === 3 || call.command.operation !== undefined && call.command.operation >= 70 && call.command.operation <= 75)));
+    const pollReadReturns = workerReturns.filter(value => value.id !== undefined && readIds.has(value.id)).map(value => ({
+      id: value.id, ok: value.ok, error: value.error, through: value.value?.through, blocked: value.value?.blocked,
+      responses: value.value?.responses?.filter(row => trackedRequestIds.has(row.requestId ?? '')).map(row => ({
+        requestId: row.requestId, operation: row.operation, status: row.status, revision: row.revision,
+        data: row.data instanceof Uint8Array ? Array.from(row.data) : null,
+      })) ?? [],
+    }));
+    const statusCalls = calls.filter(call => call.command?.m === 'getBotCommandStatus').slice(-100);
+    const statusReturns = workerReturns.filter(value => value.id !== undefined && statusCalls.some(call => call.id === value.id));
+    const textMessages = [...document.querySelectorAll('[data-message-id], article')]
+      .filter(element => element.textContent?.includes(text)).slice(-10).map(element => (element as HTMLElement).outerHTML.slice(0, 16_000));
+    const observed = root.__slashPollObserver;
+    return {
+      matchingPollCards: [...document.querySelectorAll('.dw-poll-card')].map(element => (element as HTMLElement).outerHTML),
+      matchingQuestionMessages: textMessages,
+      observerTargets: observed?.targets.map(target => ({ html: (target as HTMLElement).outerHTML, containsQuestion: target.textContent?.includes(text) })) ?? [],
+      observerTransitions: observed?.transitions.map(entry => ({ containsQuestion: entry.target.textContent?.includes(text), intersecting: entry.intersecting })) ?? [],
+      interactionCalls: relevantCalls.filter(call => call.operation === 3 || call.operation === 71), interactionReturns, statusReturns,
+      pollReadCalls: pollReadCalls.map(call => ({ id: call.id, command: call.command })), pollReadReturns,
+      accountChannelAndCapabilityCalls: relevantCalls.filter(call => call.operation !== 71),
+    };
+  }, question);
 }
 
 async function lastReminderRequestId(page: Page): Promise<string | null> {
@@ -118,7 +199,7 @@ async function lastReminderRequestId(page: Page): Promise<string | null> {
   });
 }
 
-async function reminderReceipt(page: Page, requestId: string): Promise<{ communityId: string; status: number; data: number[] }> {
+async function reminderReceipt(page: Page, requestId: string): Promise<{ communityId: string; status: number; data: number[] } | null> {
   return page.evaluate(id => {
     const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] } }).__slashWorkerTrace;
     const calls = trace?.calls.map(value => value as { t?: string; id?: number; command?: {
@@ -132,35 +213,44 @@ async function reminderReceipt(page: Page, requestId: string): Promise<{ communi
     if (requestReturn?.ok !== true || requestReturn.value?.requestId !== id || requestReturn.value.upload !== 'accepted') {
       throw new Error(`worker did not confirm reminder upload ${id}`);
     }
-    const read = calls.find(value => value.t === 'call' && value.command?.m === 'readBotInteractionResponses'
+    const reads = calls.filter(value => value.t === 'call' && value.command?.m === 'readBotInteractionResponses'
       && (value.command.requestIds as string[] | undefined)?.includes(id));
-    const returned = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; value?: {
+    const returns = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; value?: {
       responses?: { requestId?: string; operation?: number; status?: number; data?: Uint8Array }[]; through?: string | null;
-    } }).find(value => value.t === 'ret' && value.id === read?.id);
-    const row = returned?.value?.responses?.find(value => value.requestId === id && value.operation === 80);
-    if (returned?.ok !== true || row?.status !== 0 || !(row.data instanceof Uint8Array)) {
-      throw new Error(`worker trace has no accepted operation-80 response for ${id}`);
+    } }) ?? [];
+    let receipt: { status: number; data: Uint8Array; through: string } | null = null;
+    for (const read of reads.slice().reverse()) {
+      const returned = returns.find(value => value.t === 'ret' && value.id === read.id);
+      const row = returned?.value?.responses?.find(value => value.requestId === id && value.operation === 80);
+      const through = returned?.value?.through;
+      if (returned?.ok !== true || row?.status !== 0 || !(row.data instanceof Uint8Array) || through == null) continue;
+      const ack = calls.find(value => value.t === 'call' && value.command?.m === 'ackBotInteractionResponses'
+        && value.command.through === through);
+      const acked = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean })
+        .some(value => value.t === 'ret' && value.id === ack?.id && value.ok === true) ?? false;
+      if (acked) { receipt = { status: row.status, data: row.data, through }; break; }
     }
-    if (returned.value?.through === null || returned.value?.through === undefined) {
-      throw new Error(`worker response read ${id} had no acknowledgement lease`);
-    }
-    const ack = calls.find(value => value.t === 'call' && value.command?.m === 'ackBotInteractionResponses'
-      && value.command.through === returned.value?.through);
-    const acked = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean })
-      .some(value => value.t === 'ret' && value.id === ack?.id && value.ok === true) ?? false;
-    if (!acked) throw new Error(`shared Bot interaction adapter has not acknowledged reminder response ${id}`);
+    // The worker's first read can be empty while the daemon is still producing the response.
+    // Returning null lets expect.poll observe the later successful read/ACK pair.
+    if (receipt === null) return null;
     const communityId = request.command?.communityId;
     if (communityId === undefined) throw new Error(`worker trace has no community for reminder request ${id}`);
-    return { communityId, status: row.status, data: Array.from(row.data) };
+    return { communityId, status: receipt.status, data: Array.from(receipt.data) };
   }, requestId);
 }
 
-async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>): Promise<Locator> {
+async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>, member: Page): Promise<Locator> {
   const region = await chooseCommand(box, page, 'kick');
   const user = region.getByRole('combobox', { name: 'user', exact: true });
   await user.fill('Bea');
   const memberOption = region.getByRole('option', { name: 'Bea', exact: true });
-  await expect(memberOption).toBeVisible({ timeout: WAIT });
+  try { await expect(memberOption).toBeVisible({ timeout: WAIT }); }
+  catch (error) {
+    await test.info().attach('slash-moderation.json', {
+      body: Buffer.from(JSON.stringify(await moderationFailureEvidence(page, member), null, 2)), contentType: 'application/json',
+    });
+    throw error;
+  }
   await user.press('ArrowDown');
   await user.press('Enter');
   await region.getByRole('button', { name: 'Run command', exact: true }).click();
@@ -183,11 +273,19 @@ async function stopAppBeforeHost(page: Page, host: StartedHost | null): Promise<
 async function openPollDialog(page: Page, box: Locator, question: string, answers = 'Soup, Salad'): Promise<void> {
   await invoke(box, page, `/poll create question:"${question}" answers:"${answers}" multiple:on`);
   const dialog = page.getByRole('dialog', { name: 'Create a poll', exact: true });
-  await expect(dialog).toBeVisible({ timeout: WAIT });
-  await expect(dialog.getByLabel('Question', { exact: true })).toHaveValue(question);
+  await expect(dialog).toBeVisible({ timeout: BOT_WAIT });
+  await expect(dialog.getByRole('textbox', { name: 'Question', exact: true })).toHaveValue(question);
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(dialog).toBeHidden({ timeout: WAIT });
+  await expect(dialog).toBeHidden({ timeout: BOT_WAIT });
   await leaveCommandMode(page);
+}
+
+async function pollOption(card: Locator, answer: string): Promise<Locator> {
+  // Shipping labels include the live vote count in the checkbox's accessible name (for
+  // example, "Soup 0"). Match the exact answer plus its numeric count.
+  const option = card.getByRole('checkbox', { name: new RegExp(`^${answer}\\s+\\d+$`, 'u') });
+  await expect(option).toHaveCount(1, { timeout: WAIT });
+  return option;
 }
 
 test('composer keeps private results private, publishes only explicit text, and retains separate channel/thread drafts', async ({ page, instanceName }) => {
@@ -265,11 +363,12 @@ test('composer keeps private results private, publishes only explicit text, and 
   } finally { await stopAppBeforeHost(page, host); }
 });
 
-test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, browser, guard, instanceName }) => {
+test('polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator', async ({ page, browser, guard, instanceName }, testInfo) => {
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
     host = await startTestHost(HOST);
+    await traceCoreWorker(page);
     await page.addInitScript(() => {
       const observed = { targets: [] as Element[], transitions: [] as { target: Element; intersecting: boolean }[], outTarget: null as Element | null };
       (window as unknown as { __slashPollObserver?: typeof observed }).__slashPollObserver = observed;
@@ -294,6 +393,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     const member = await secondContext.newPage();
+    await traceCoreWorker(member);
     const bea = await joinAs(member, host, invite, instanceName, 'Bea');
     expect(bea.username).not.toBe(owner.username);
     await openChannel(page, COMMUNITY, GENERAL);
@@ -307,14 +407,21 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const question = `Channel poll ${Date.now()}?`;
     await openPollDialog(page, composerBox(page, GENERAL), question);
     const card = logRegion(page, GENERAL).locator('.dw-poll-card').filter({ hasText: question });
-    await expect(card).toBeVisible({ timeout: WAIT });
+    try {
+      await expect(card).toBeVisible({ timeout: BOT_WAIT });
+    } catch (error) {
+      await testInfo.attach('slash-poll-hydration.json', {
+        body: Buffer.from(JSON.stringify(await pollFailureEvidence(page, question), null, 2)), contentType: 'application/json',
+      });
+      throw error;
+    }
     const observerTarget = await card.evaluateHandle(element => {
       const observer = (window as unknown as { __slashPollObserver?: { targets: Element[] } }).__slashPollObserver;
       return observer?.targets.find(target => target === element || target.contains(element)) ?? null;
     });
     expect(await observerTarget.evaluate(target => target !== null), 'the real IntersectionObserver observes the loaded card or its stable wrapper').toBe(true);
     const memberCard = logRegion(member, GENERAL).locator('.dw-poll-card').filter({ hasText: question });
-    await expect(memberCard).toBeVisible({ timeout: WAIT });
+    await expect(memberCard).toBeVisible({ timeout: BOT_WAIT });
     const scrollContainer = await card.evaluateHandle(element => {
       let node = element.parentElement;
       while (node !== null && node.scrollHeight <= node.clientHeight + 1) node = node.parentElement;
@@ -330,7 +437,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
       return observer?.transitions.some(entry => entry.target === target && !entry.intersecting) ?? false;
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must report the loaded card leaving view' }).toBe(true);
     await scrollContainer.evaluate(node => { if (node !== null) node.scrollTop = node.scrollHeight; });
-    await expect(card).toBeVisible({ timeout: WAIT });
+    await expect(card).toBeVisible({ timeout: BOT_WAIT });
     await expect.poll(() => card.evaluate(element => {
       const observer = (window as unknown as { __slashPollObserver?: {
         targets: Element[]; transitions: { target: Element; intersecting: boolean }[]; outTarget: Element | null;
@@ -340,16 +447,21 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
       return reattachedTarget !== undefined && leftAt >= 0 && observer!.transitions.slice(leftAt + 1)
         .some(entry => entry.target === reattachedTarget && entry.intersecting);
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must reactivate the card on return' }).toBe(true);
-    await memberCard.getByRole('checkbox', { name: 'Soup', exact: true }).check();
+    await (await pollOption(memberCard, 'Soup')).check();
     await memberCard.getByRole('button', { name: 'Submit vote', exact: true }).click();
     await memberCard.getByRole('button', { name: /1 · Soup/ }).click();
-    await expect(memberCard).toContainText('Bea', { timeout: WAIT });
-    await memberCard.getByRole('checkbox', { name: 'Soup', exact: true }).uncheck();
-    await memberCard.getByRole('checkbox', { name: 'Salad', exact: true }).check();
+    try { await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT }); }
+    catch (error) {
+      const evidence = { card: await memberCard.evaluate(element => (element as HTMLElement).outerHTML), worker: await pollFailureEvidence(member, question) };
+      await testInfo.attach('slash-poll-voters.json', { body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json' });
+      throw error;
+    }
+    await (await pollOption(memberCard, 'Soup')).uncheck();
+    await (await pollOption(memberCard, 'Salad')).check();
     await memberCard.getByRole('button', { name: 'Submit vote', exact: true }).click();
-    await expect(memberCard).toContainText('Bea', { timeout: WAIT });
+    await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT });
     await memberCard.getByRole('button', { name: 'Withdraw vote', exact: true }).click();
-    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toHaveCount(0, { timeout: WAIT });
+    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toHaveCount(0, { timeout: BOT_WAIT });
 
     const rootText = `Poll thread ${Date.now()}`;
     await sendText(page, GENERAL, rootText);
@@ -361,12 +473,12 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const threadQuestion = `Thread poll ${Date.now()}?`;
     await openPollDialog(page, thread.getByRole('textbox', { name: copy('thread.composer'), exact: true }), threadQuestion);
     const threadCard = thread.locator('.dw-poll-card').filter({ hasText: threadQuestion });
-    await expect(threadCard).toBeVisible({ timeout: WAIT });
+    await expect(threadCard).toBeVisible({ timeout: BOT_WAIT });
     await expect(logRegion(page, GENERAL).locator('.dw-poll-card').filter({ hasText: threadQuestion })).toHaveCount(0);
 
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await card.getByRole('button', { name: 'Close poll', exact: true }).click();
-    await expect(card).toContainText('Poll closed', { timeout: WAIT });
+    await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
     await disableBot(page);
     await expect(card).toHaveCount(0, { timeout: WAIT });
     await enableBot(page, owner.password, ['roles']);
@@ -397,12 +509,12 @@ test('music snapshot and clear use the current SFU voice call and report private
     const box = composerBox(page, GENERAL);
     await invoke(box, page, '/queue');
     await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
-      .toContainText(/music queue is empty/i);
+      .toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
     await leaveCommandMode(page);
     await invoke(box, page, '/queue clear');
     await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
-      .toContainText('Music queue cleared.');
+      .toContainText('Music queue cleared.', { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
   } finally { await stopAppBeforeHost(page, host); }
 });
@@ -412,17 +524,19 @@ test('moderation requires confirmation and applies to a distinct joined member',
   let secondContext: BrowserContext | null = null;
   try {
     host = await startTestHost(HOST);
+    await traceCoreWorker(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     const invite = await makeInviteLink(page, COMMUNITY);
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     const member = await secondContext.newPage();
+    await traceCoreWorker(member);
     const bea = await joinAs(member, host, invite, instanceName, 'Bea');
     expect(bea.username).not.toBe(owner.username);
     await openChannel(page, COMMUNITY, GENERAL);
     const box = composerBox(page, GENERAL);
-    const region = await runKickFromPicker(page, box);
+    const region = await runKickFromPicker(page, box, member);
     const confirmation = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: 'Continue', exact: true }) });
     await expect(confirmation).toBeVisible({ timeout: WAIT });
     await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -430,7 +544,7 @@ test('moderation requires confirmation and applies to a distinct joined member',
     await leaveCommandMode(page);
     await expect(page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true }).getByRole('button', { name: COMMUNITY })).toBeVisible();
 
-    await runKickFromPicker(page, box);
+    await runKickFromPicker(page, box, member);
     const confirmAgain = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: 'Continue', exact: true }) });
     await expect(confirmAgain).toBeVisible({ timeout: WAIT });
     await confirmAgain.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -455,17 +569,18 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     const reminderText = `cross-device reminder ${Date.now()}`;
     await invoke(composerBox(page, GENERAL), page, `/remind when:1m text:"${reminderText}"`);
     const dialog = page.getByRole('dialog', { name: 'Set a reminder', exact: true });
-    await expect(dialog).toBeVisible({ timeout: WAIT });
-    await expect(dialog.getByLabel('Reminder', { exact: true })).toHaveValue(reminderText);
+    await expect(dialog).toBeVisible({ timeout: BOT_WAIT });
+    await expect(dialog.getByRole('textbox', { name: 'Reminder', exact: true })).toHaveValue(reminderText);
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(dialog).toBeHidden({ timeout: WAIT });
-    await expect.poll(() => lastReminderRequestId(page), { timeout: WAIT }).toMatch(/^[0-9a-f]{32}$/u);
+    await expect(dialog).toBeHidden({ timeout: BOT_WAIT });
+    await expect.poll(() => lastReminderRequestId(page), { timeout: BOT_WAIT }).toMatch(/^[0-9a-f]{32}$/u);
     const reminderId = await lastReminderRequestId(page);
     expect(reminderId).toMatch(/^[0-9a-f]{32}$/u);
     const requestId = reminderId!;
-    await expect.poll(() => reminderReceipt(page, requestId), { timeout: WAIT, intervals: [250, 500, 1_000] })
+    await expect.poll(() => reminderReceipt(page, requestId), { timeout: BOT_WAIT, intervals: [250, 500, 1_000] })
       .toMatchObject({ status: 0 });
     const originalReceipt = await reminderReceipt(page, requestId);
+    if (originalReceipt === null) throw new Error(`acknowledged reminder response ${requestId} disappeared from the worker trace`);
 
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
@@ -474,7 +589,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await openChannel(second, COMMUNITY, GENERAL);
     await second.getByRole('button', { name: 'Reminders', exact: true }).click();
     const inbox = second.getByRole('dialog', { name: 'Your reminders', exact: true });
-    await expect(inbox).toContainText(reminderText, { timeout: WAIT });
+    await expect(inbox).toContainText(reminderText, { timeout: BOT_WAIT });
     await host.restartBotRuntime();
     await page.context().setOffline(true);
     // Close this device's live gateway as well as taking its browser context offline.
@@ -492,12 +607,12 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await openChannel(page, COMMUNITY, GENERAL);
     await page.getByRole('button', { name: 'Reminders', exact: true }).click();
     const firstInbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
-    await expect(firstInbox).toContainText(reminderText, { timeout: WAIT });
+    await expect(firstInbox).toContainText(reminderText, { timeout: BOT_WAIT });
     await expect(firstInbox).toContainText('Due');
 
     const currentInbox = second.getByRole('dialog', { name: 'Your reminders', exact: true });
     await currentInbox.getByRole('button', { name: 'Dismiss', exact: true }).click();
-    await expect(firstInbox).not.toContainText(reminderText, { timeout: WAIT });
+    await expect(firstInbox).not.toContainText(reminderText, { timeout: BOT_WAIT });
 
     // The shared adapter has already acknowledged this op80 response. Stop the managed Bot,
     // reload this same device, then ask its real worker for that exact request's archived receipt.

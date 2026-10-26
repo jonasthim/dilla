@@ -53,7 +53,7 @@ covered.
 | `queue clear` | bot music handler | parameterized operation test asserts queue empty | Private result; changes voice queue | Slash E2E: invokes `/queue clear` in the currently joined voice context and checks the private result |
 | `music` | bot music handler | `bot-handlers.test.tsx`: help text comes from music catalog; current call required | Private help text | Not claimed |
 | `music help` | bot music handler | same help handler and permission/context rules as `music` | Private help text | Not claimed |
-| `kick` | `builtinHandlers.kick` | `builtin.test.ts`: real two-party accepted removal after confirmation; cancellation and permission recheck | Private confirmation; public membership removal | Not claimed; current browser run is blocked before confirmation because the live member suggestion is absent |
+| `kick` | `builtinHandlers.kick` | `builtin.test.ts`: real two-party accepted removal after confirmation; cancellation and permission recheck | Private confirmation; public membership removal | Slash E2E: live member autocomplete, cancel, confirm, and removal of a distinct joined account (Chromium focused pass) |
 | `ban` | `builtinHandlers.ban` | `builtin.test.ts`: catalog permission, safe reason validation and stable target; registered-handler guard | Private confirmation; public membership restriction | Not claimed |
 | `unban` | `builtinHandlers.unban` | `builtin.test.ts`: loads current bans before confirmed stable-ID mutation | Private confirmation; public membership restoration | Not claimed |
 | `timeout` | `builtinHandlers.timeout` | handler guard plus `builtin.test.ts` confirmation and rank/permission checks; warnings capability required | Private confirmation; public member restriction | Not claimed |
@@ -74,10 +74,10 @@ covered.
 | `poll vote` | utility provider | `UtilityCommandProvider.test.tsx`: answer replacement, withdrawal, real nonempty selection/retry, voters and close behavior | Private command status; authenticated card mutation | Not claimed; the card UI flow is not reached in the current browser run |
 | `poll results` | utility provider | provider tests cover authenticated snapshot/result and bad marker/refused binding | Private result | Not claimed; the card UI flow is not reached in the current browser run |
 | `poll close` | utility provider | provider tests cover creator/moderator authorization, close outcome, conflict refresh and uncertain recovery | Private status; closes authenticated card | Not claimed; the card UI flow is not reached in the current browser run |
-| `remind` | utility provider | `UtilityCommandProvider.test.tsx`: create dialog, IANA timezone/DST fold, private account ownership and uncertainty | Private result; account-owned durable reminder | Not claimed; the reminder dialog does not open in the current browser run |
-| `reminders list` | utility provider | provider tests cover due list, multi-page limit and owner-change redaction | Private list | Not claimed; reminder inbox UI is not reached in the current browser run |
+| `remind` | utility provider | `UtilityCommandProvider.test.tsx`: create dialog, IANA timezone/DST fold, private account ownership and uncertainty | Private result; account-owned durable reminder | Slash E2E: creates a real reminder through its dialog; two-device due/dismiss lifecycle and post-ACK same-device archive recovery pass in Chromium |
+| `reminders list` | utility provider | provider tests cover due list, multi-page limit and owner-change redaction | Private list | Not claimed for this slash handler; shipping inbox list/dismiss UI passes in Chromium |
 | `reminders cancel` | utility provider | provider tests cover scheduled/due cancel and source-access revocation | Private result; cancels personal record | Not claimed |
-| `reminders dismiss` | utility provider | provider tests cover account-level dismissal and uncertain recovery | Private result; dismisses due record | Not claimed; reminder inbox UI is not reached in the current browser run |
+| `reminders dismiss` | utility provider | provider tests cover account-level dismissal and uncertain recovery | Private result; dismisses due record | Not claimed for this slash handler; shipping inbox list/dismiss UI passes in Chromium |
 
 ## Deliberate browser limits
 
