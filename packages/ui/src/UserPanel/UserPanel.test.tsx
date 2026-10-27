@@ -159,8 +159,8 @@ describe('UserPanel', () => {
     expect(screen.getByRole('button', { name: 'mute' })).toHaveAccessibleDescription('Ctrl Shift M');
   });
 
-  it('is 52 high with a hairline top that meets the composer band (CSS pin, G3 is UI-4)', () => {
-    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*height: 3\.25rem/m);
+  it('is --panel-h (64) high with a hairline top that meets the composer band (CSS pin, G3 is UI-4)', () => {
+    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*height: var\(--panel-h\)/m);
     expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*border-top: 1px solid var\(--hairline\)/m);
     expect(panelCss).not.toContain('d-user-panel__settings');
   });

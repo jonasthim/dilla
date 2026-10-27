@@ -173,7 +173,7 @@ function utilityOwner(client: CoreClient): string {
   return account?.instance?.id && account.user?.id && account.deviceId ? `${account.instance.id}:${account.user.id}:${account.deviceId}` : '';
 }
 export function useUtilityCommandProvider(client: CoreClient, communityId: string | null, onNavigate?: UtilityNavigate): {
-  handlers: CommandProviderHandlers; suggest: CommandSuggestionProvider; dialogs: ReactNode; inbox: ReactNode; dueCount: number;
+  handlers: CommandProviderHandlers; suggest: CommandSuggestionProvider; dialogs: ReactNode; inbox: ReactNode; dueCount: number; openInbox: () => void;
 } {
   const ownerKey = utilityOwner(client);
   const liveScope = useRef({ client, ownerKey, communityId });
@@ -556,7 +556,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     error={records?.client === client && records?.owner === ownerKey ? records.error : false} open={inboxOpen} onClose={() => setInboxOpen(false)}
     onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />;
   const inbox = <Button variant="ghost" aria-haspopup="dialog" data-focus-key="reminder-inbox" onClick={() => setInboxOpen(true)}>{copy('reminder.inbox')}{dueCount > 0 ? <span className="dw-reminder-badge" aria-label={copy('reminder.badge', { count: dueCount })}>{dueCount}</span> : null}</Button>;
-  return { handlers: commandHandlers, suggest, dialogs: <>{createElement(UtilityCommandDialogs, { dialog: visibleDialog })}{inboxDialog}</>, inbox, dueCount };
+  return { handlers: commandHandlers, suggest, dialogs: <>{createElement(UtilityCommandDialogs, { dialog: visibleDialog })}{inboxDialog}</>, inbox, dueCount, openInbox: () => setInboxOpen(true) };
 }
 
 function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;

@@ -12,7 +12,39 @@ function boundarySelector(id: string): string | null {
   if (id.startsWith('form-segmented--')) return '.d-segmented__group';
   if (id === 'form-select--default') return '.d-select__input';
   if (id === 'form-textfield--empty' || id === 'form-textfield--filled') return '.d-text-field__input';
+  if (id.startsWith('shell-topbar--')) return '.d-topbar__kbd';
   return null;
+}
+
+/** The top bar's geometry (README §5.2, the prototype's inline sizes), in CSS px at a 16px root. */
+async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
+  const got = await page.evaluate(() => {
+    const box = (sel: string) => {
+      const el = document.querySelector(`#storybook-root ${sel}`);
+      if (el === null) return null;
+      const r = el.getBoundingClientRect();
+      return { w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10 };
+    };
+    return { bar: box('.d-topbar'), search: box('.d-topbar__search'), bell: box('.d-topbar__bell .d-icon-button'), gear: box('.d-topbar__gear'),
+      chip: box('.d-topbar__voice'), badge: box('.d-topbar__badge'), tile: box('.d-brand__tile'), caret: box('.d-brand__caret') };
+  });
+  const bad: string[] = [];
+  const want = (what: string, b: { w: number; h: number } | null, w: number | null, h: number) => {
+    if (b === null) { bad.push(`no ${what}`); return; }
+    if (Math.abs(b.h - h) > 0.5 || (w !== null && Math.abs(b.w - w) > 0.5)) bad.push(`${what} is ${String(b.w)}x${String(b.h)}, want ${w === null ? '…' : String(w)}x${String(h)}`);
+  };
+  want('the bar', got.bar, null, 44);
+  want('the search trigger', got.search, null, 28);
+  want('the bell', got.bell, 28, 28);
+  want('the gear', got.gear, 28, 28);
+  want('the D tile', got.tile, 18, 18);
+  want('the caret', got.caret, 6, 12);
+  if (got.search !== null && got.search.w > 360.5) bad.push(`the search trigger is ${String(got.search.w)} wide, at most 360`);
+  if (context.id.endsWith('--in-voice')) want('the voice chip', got.chip, null, 28);
+  else if (got.chip !== null) bad.push('a voice chip outside a call');
+  if (context.id.endsWith('--reminders-due')) want('the due badge', got.badge, 14, 14);
+  else if (got.badge !== null) bad.push('a due badge with nothing due');
+  if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
 }
 
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
@@ -40,6 +72,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         throw new Error(`${context.title} / ${context.name}: ${edgeSelector} border is ${edge.border}, not --edge rgb(92, 99, 110)`);
       }
     }
+    if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
     // A container focused only by script, an opened dialog, draws no ring: around the whole dialog it reads
     // as an error box (design ruling 23(h), A11Y-DESIGN-11). Its operable controls keep the ring (below).
     const dialogRing = await page.evaluate(() => {
@@ -110,8 +143,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         `(outline-style: ${focused.outlineStyle}, outline-width: ${focused.outlineWidth}; expected solid / 2px)`,
       );
     }
-    // Chrome labels (design ruling (i), task 24): a status chunk's label is cased as a label; its
-    // value, and the channel inside the composer's label, keep the case they were given.
+    // Chrome labels (design ruling (i), task 24): the channel inside the composer's label keeps the case it was given.
     const casing = await page.evaluate(() => {
       const bad: string[] = [];
       const want = (selector: string, transform: string) => {
@@ -120,8 +152,6 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
           if (got !== transform) bad.push(`${selector} "${el.textContent ?? ''}" is ${got}, expected ${transform}`);
         }
       };
-      want('.d-chunk__k', 'uppercase');
-      want('.d-chunk__v', 'none');
       want('.d-composer__target', 'none');
       return bad;
     });

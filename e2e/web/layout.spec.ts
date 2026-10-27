@@ -3,8 +3,8 @@
 // a live person in it, the built-in AFK channel and a direct message; then every rule of the grammar is read as a rect at
 // 1440x900, 1024x768, 390x844 and 360x740 (the phone sizes on a touch phone context where the engine has one):
 //   A5  every list's names share one left x           A4  every row's trailing slot shares one right edge
-//   B1  every bar's bottom hairline is at y=48        R9  phone targets: primary 44x44, secondary 24x24
-//   C1  at 1024 the header keeps its name             R22 the rail is 72 wide, its tiles 48
+//   B1  every bar's bottom hairline is at y=44+44     R9  phone targets: primary 44x44, secondary 24x24
+//   C1  at 1024 the header keeps its name             R22 the rail is 56 wide, its tiles 38
 //   R23 a collapsed category keeps its current and unread rows, and nothing in `main` leaves its column sideways.
 // Assertions are soft: one run names every broken rule at every size, and a control that is missing counts as a broken rule
 // too. The world is always built through the current client; DILLA_E2E_CHECK_WEBROOT, a directory holding another build of
@@ -239,7 +239,14 @@ async function barBottom(page: Page, bar: string, from?: string): Promise<number
     return el.getBoundingClientRect().bottom - origin;
   }, { bar, from });
 }
-async function expectBar(page: Page, tag: string, name: string, bar: string, want = 48, from?: string): Promise<void> {
+/** Signal (README §5.1, §5.2): a desktop bar (--bar-h, 44) stands under the 44px top bar, so its hairline is at 88. A phone has no
+ *  top bar (§5.10): its list head is one --bar-h (44) from the top, and its PhoneHeader is still 48 (Task 6 makes it 52). */
+const TOP_BAR = 44;
+const BAR = 44;
+const DESKTOP_BAR = TOP_BAR + BAR;
+const PHONE_LIST_HEAD = BAR;
+const PHONE_HEADER = 48;
+async function expectBar(page: Page, tag: string, name: string, bar: string, want: number, from?: string): Promise<void> {
   const got = await barBottom(page, bar, from);
   expect.soft(got, `B1 ${name} (${bar}) is on screen at ${tag}`).not.toBeNull();
   if (got !== null) expectAt(`B1 ${name} bottom hairline at ${tag}`, got, want, 0.5);
@@ -417,19 +424,20 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
 
   // The rail (R22).
   const rail = await boxes(page, '.d-app-shell__rail');
-  expectAt(`R22 the rail is 72 wide at ${tag}`, rail[0]?.w ?? 0, 72, 0.5);
+  // README §5.3: --rail-w 56, --rail-tile 38.
+  expectAt(`R22 the rail is 56 wide at ${tag}`, rail[0]?.w ?? 0, 56, 0.5);
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {
-    expectAt(`R22 rail tile "${tile.t}" is 48 wide at ${tag}`, tile.w, 48, 0.5);
-    expectAt(`R22 rail tile "${tile.t}" is 48 high at ${tag}`, tile.h, 48, 0.5);
+    expectAt(`R22 rail tile "${tile.t}" is 38 wide at ${tag}`, tile.w, 38, 0.5);
+    expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
 
   // The channel list (A5, A4): channel rows, voice rows and category labels, and every slot in it.
   await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list');
 
   // Bars (B1): the sidebar head, the channel header, the members head.
-  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head');
-  await expectBar(page, tag, 'the channel header', '.d-channel-header');
-  if (size.width >= 1440) await expectBar(page, tag, 'the members head', '.d-member-list__bar');
+  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', DESKTOP_BAR);
+  await expectBar(page, tag, 'the channel header', '.d-channel-header', DESKTOP_BAR);
+  if (size.width >= 1440) await expectBar(page, tag, 'the members head', '.d-member-list__bar', DESKTOP_BAR);
   await expectNoOverflow(page, tag, 'a channel');
   await expectReminderInbox(page, `channel at ${tag}`);
 
@@ -438,7 +446,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     const toggle = page.locator('.d-channel-header').getByRole('button', { name: copy('members.toggle'), exact: true });
     if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
     await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
-    await expectBar(page, tag, 'the members head', '.d-member-list__bar');
+    await expectBar(page, tag, 'the members head', '.d-member-list__bar', DESKTOP_BAR);
   }
   const header = (await boxes(page, '.d-channel-header'))[0];
   const name = (await boxes(page, '.d-channel-header__name'))[0];
@@ -454,10 +462,10 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
-  await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title');
+  await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title', DESKTOP_BAR);
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
   await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the conversation header', '.d-channel-header');
+  await expectBar(page, tag, 'the conversation header', '.d-channel-header', DESKTOP_BAR);
   await expectNoOverflow(page, tag, 'a direct message');
   await expectReminderInbox(page, `direct message at ${tag}`);
 
@@ -465,7 +473,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   if (voicePath !== '') {
     await openPath(page, voicePath);
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
-    await expectBar(page, tag, 'the stage header', '.d-call-stage__bar');
+    await expectBar(page, tag, 'the stage header', '.d-call-stage__bar', DESKTOP_BAR);
     await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list with a live person');
     const avatars = await boxes(page, '.d-voice-row__person .d-voice-row__avatar', '.d-channel-list__list');
     const rowNames = await boxes(page, '.d-voice-row__name', '.d-channel-list__list');
@@ -624,7 +632,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await tab('home.tab').click();
   await expect(nav(page).getByRole('button', { name: new RegExp(`^${escapeRegExp(RAID)}`) })).toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list');
-  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head');
+  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', PHONE_LIST_HEAD);
   await expectTargets(page, tag, 'the home tab');
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {
     expect.soft(Math.min(tile.w, tile.h), `R9 rail tile "${tile.t}" is at least 44 at ${tag}`).toBeGreaterThanOrEqual(44 - TOL);
@@ -642,7 +650,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   // A channel is a pushed view under the phone header.
   await channelRow(page, 'general').click();
   await pane('view');
-  await expectBar(page, tag, 'the phone header (channel)', '.d-phone-header');
+  await expectBar(page, tag, 'the phone header (channel)', '.d-phone-header', PHONE_HEADER);
   await expectSafeAreaBar(page, tag);
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
@@ -655,7 +663,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
     await openPath(page, voicePath);
     await pane('view');
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
-    await expectBar(page, tag, 'the phone header (voice)', '.d-phone-header');
+    await expectBar(page, tag, 'the phone header (voice)', '.d-phone-header', PHONE_HEADER);
     await expectTargets(page, tag, 'the voice stage');
     await expectNoOverflow(page, tag, 'the voice stage');
     await expectReminderInbox(page, `idle voice at ${tag}`);
@@ -666,11 +674,11 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
-  await expectBar(page, tag, 'the direct messages head', '.d-channel-list__head');
+  await expectBar(page, tag, 'the direct messages head', '.d-channel-list__head', PHONE_LIST_HEAD);
   await expectTargets(page, tag, 'the direct messages');
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
   await pane('view');
-  await expectBar(page, tag, 'the phone header (direct message)', '.d-phone-header');
+  await expectBar(page, tag, 'the phone header (direct message)', '.d-phone-header', PHONE_HEADER);
   await expectNoOverflow(page, tag, 'a direct message');
   await expectReminderInbox(page, `direct message at ${tag}`);
   await toList();
@@ -678,11 +686,11 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   // The activity and You tabs remain app destinations; You now has one settings entry point.
   await tab('nav.tab.activity').click();
   await expect(page.locator('.d-phone-header')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header');
+  await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header', PHONE_HEADER);
   await expectTargets(page, tag, 'the activity tab');
   await tab('nav.tab.you').click();
   await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the phone header (you)', '.d-phone-header');
+  await expectBar(page, tag, 'the phone header (you)', '.d-phone-header', PHONE_HEADER);
   await expectTargets(page, tag, 'the you tab');
   await page.locator('[data-settings-section="index"]').click();
   const userSettings = settingsDialog(page);

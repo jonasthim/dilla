@@ -13,12 +13,13 @@ export interface AppShellProps {
   children: ReactNode;
   composer: ReactNode;
   /**
-   * web3.8: optional, desktop only. Absent (undefined, null or false) the shell renders no status wrapper and the grid
-   * has no status row. A phone never has one: the banner says when the link is down.
+   * Signal (README §5.1–5.2): the 44px top bar over the whole desktop shell (rail, sidebar, main and aside), first in the focus
+   * order after the skip link. Absent (undefined, null or false) there is no wrapper and the row is empty. A phone never has one
+   * (§5.10): it is ignored there.
    */
-  statusBar?: ReactNode;
+  topBar?: ReactNode;
   /**
-   * web3.8 (R23): desktop only, ignored on a phone. The bottom-left area, under the rail and the sidebar (the voice dock
+   * web3.8 (R23): desktop only, ignored on a phone. The bottom-left area, under the sidebar beside the full-height rail (Signal §5.1; the voice dock
    * over the user panel). Absent (undefined, null or false) the shell renders no wrapper and the row is empty. In DOM
    * order it follows the sidebar and its splitter and precedes main: rail, sidebar, splitter, bottom, main.
    */
@@ -44,6 +45,8 @@ export interface AppShellProps {
   asideCloseLabel?: string;
   /** The control that opens the aside: focus goes back to it when the drawer closes and the opener was `body`. */
   asideReturnRef?: RefObject<HTMLElement | null>;
+  /** What the aside holds, which sets its default column width (README §5.1): 'members' 232px (default) or 'thread' 340px. */
+  asideKind?: 'members' | 'thread';
   /**
    * web3.7: 'phone' is the one-pane-at-a-time shell of a phone (flow 12). Absent or 'desktop', the shell renders exactly
    * the desktop DOM and ignores every phone prop below.
@@ -80,8 +83,10 @@ const SIDEBAR_REM = { min: 12, max: 24 };
 const ASIDE_REM = { min: 14, max: 28 };
 const MAIN_MIN_REM = 24;
 /** The widths --sidebar-w gives both panes when nothing was dragged (packages/design-tokens). */
-const DEFAULT_PANE_PX = 240;
-const DEFAULT_RAIL_PX = 60;
+const DEFAULT_PANE_PX = 244;
+/** The aside's default column widths: --members-w and --thread-w. */
+const DEFAULT_ASIDE_PX = { members: 232, thread: 340 } as const;
+const DEFAULT_RAIL_PX = 56;
 
 export interface ClampInput {
   /** The shell's width, the rail's, and the two panes' requested widths, in CSS px. */
@@ -133,12 +138,12 @@ const KEYBOARD_PX = 100;
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 /**
- * The Signal shell: rail | sidebar | main (header, content, composer), a banner
- * above and an optional status bar below. DOM order is the focus order of the web-1
- * keyboard map: skip link → banner → rail → sidebar → main → status bar.
+ * The Signal shell: the top bar over rail | sidebar | main (header, content, composer) | aside, with a banner
+ * under the top bar. DOM order is the focus order of the web-1 keyboard map: skip link → top bar → banner → rail →
+ * sidebar → main → aside.
  */
 export function AppShell({
-  skipLabel, rail, sidebar, header, children, composer, statusBar, bottom, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
+  skipLabel, rail, sidebar, header, children, composer, topBar, bottom, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef, asideKind = 'members',
   layout, phonePane = 'list', tabBar, callBar, onTypingChange, covered, page, paneWidths, onPaneResize, resizeLabels,
 }: AppShellProps) {
   const mainId = useId();
@@ -147,7 +152,7 @@ export function AppShell({
   const ringRef = useRef<HTMLDivElement>(null);
   const asideRef = useRef<HTMLElement>(null);
   const hasRing = ring !== undefined && ring !== null && ring !== false;
-  const hasStatus = statusBar !== undefined && statusBar !== null && statusBar !== false;
+  const hasTopBar = topBar !== undefined && topBar !== null && topBar !== false;
   const hasBottom = bottom !== undefined && bottom !== null && bottom !== false;
   const showAside = asideOpen === true && aside !== undefined && aside !== null && aside !== false;
 
@@ -193,7 +198,7 @@ export function AppShell({
   const widthsIn = {
     shell: shellPx, rail: railPx, rem: remPx, asideColumn: columnAside,
     sidebar: (drag?.pane === 'sidebar' ? drag.px : paneWidths?.sidebar) ?? DEFAULT_PANE_PX,
-    aside: (drag?.pane === 'aside' ? drag.px : paneWidths?.aside) ?? DEFAULT_PANE_PX,
+    aside: (drag?.pane === 'aside' ? drag.px : paneWidths?.aside) ?? DEFAULT_ASIDE_PX[asideKind],
   };
   const widths = clampPanes(widthsIn);
   const ranges = { sidebar: paneRange('sidebar', widthsIn, widths.aside), aside: paneRange('aside', widthsIn, widths.sidebar) };
@@ -399,7 +404,8 @@ export function AppShell({
   return (
     <div ref={rootRef} className="d-app-shell" style={paneVars} data-resizing={drag !== null ? 'true' : undefined} data-main-narrow={mainNarrow ? 'true' : undefined}>
       <a className="d-app-shell__skip" href={`#${mainId}`} onClick={onSkip}>{skipLabel}</a>
-      <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
+      <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'} data-aside={showAside && asideKind === 'thread' ? 'thread' : undefined}>
+        {hasTopBar ? <div className="d-app-shell__topbar" inert={overlay || undefined}>{topBar}</div> : null}
         {hasBanner ? <div className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
         <div ref={railRef} className="d-app-shell__rail" inert={overlay || undefined}>{rail}</div>
         <div id={resizable ? splitSidebarId : undefined} className="d-app-shell__sidebar" inert={overlay || undefined}>{sidebar}</div>
@@ -421,7 +427,6 @@ export function AppShell({
           ) : null}
           {resizable ? <div className="d-app-shell__aside-body">{aside}</div> : aside}
         </aside> : null}
-        {hasStatus ? <div className="d-app-shell__status" inert={overlay || undefined}>{statusBar}</div> : null}
       </div>
     </div>
   );

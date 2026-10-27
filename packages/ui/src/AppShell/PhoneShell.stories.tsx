@@ -192,7 +192,7 @@ const members = (
 
 const callBar = <CallBar phase="connected" where="longhouse" muted={false} labels={{ open: 'open call in longhouse', mute: 'mute', leave: 'leave call', region: 'call' }} onOpen={noop} onMute={noop} onLeave={noop} />;
 
-const common = { skipLabel: 'skip to content', statusBar: null, header: null, composer: null } as const;
+const common = { skipLabel: 'skip to content', header: null, composer: null } as const;
 
 export const ServersList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')}>{null}</AppShell></Phone>,

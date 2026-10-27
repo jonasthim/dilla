@@ -49,6 +49,8 @@
      the grid moves down by its height, so the ring never covers the stage controls. */
   .d-app-shell .d-app-shell__ring { position: fixed; top: var(--d-vvtop, 0px); left: 0; right: 0; z-index: 30; padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
   .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
+  /* Signal (README §5.10): no top bar under 770px of shell width; the tab bar and the headers carry search and settings. */
+  .d-app-shell .d-app-shell__topbar { display: none; }
 }
 /* web3.8 (R9): the same rules for a landscape phone, whose shell is 844px wide while data-layout="phone" is set. A container
    query cannot see the viewport, so each rule has this twin with identical declarations (phone-query.test.ts pins the pair). */
@@ -56,6 +58,7 @@
 .d-app-shell[data-layout="phone"] .d-channel-header__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
 .d-app-shell[data-layout="phone"] .d-app-shell__ring { position: fixed; top: var(--d-vvtop, 0px); left: 0; right: 0; z-index: 30; padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
+.d-app-shell[data-layout="phone"] .d-app-shell__topbar { display: none; }
 /* web3.8: the banner sits above a covering page (Settings, z-index 20), and the page starts below it (--d-banner-h). */
 .d-app-shell[data-layout="phone"] .d-app-shell__banner { position: relative; z-index: 21; }
 /* web3.7: the phone shell (flow 12) shows one pane at a time. --d-shell-h is the story's and the host's fixed height;
@@ -83,6 +86,8 @@
 /* web3.9 (R10, R13): a finger needs taller rows and a wider trailing column; the rows stay flush (no gap). `[data-phone]` is the
    thread sheet's and the other phone-only surfaces' hook, which sit outside the shell element. */
 .d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
+/* Signal (README §5.10, every phone target at least 44px): the rail's 38px tiles grow to 44 inside the same 56px rail. */
+.d-app-shell[data-layout="phone"] { --rail-tile: 44px; }
 /* web3.9 (H4, R9): the primary tier is 44 x 44 on a phone layout, whatever size the control is drawn at on a desktop. */
 .d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
 /* The list heading of a phone tab (activity, you): mono, not the display serif, which is the server name's alone. */
@@ -111,8 +116,8 @@
 /* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
 @container d-shell (min-width: 64rem) {
-  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--sidebar-w)); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside"; }
-  .d-app-shell .d-app-shell__grid--aside:has(> .d-app-shell__status) { grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside" "status status status status"; }
+  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--members-w)); grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside"; }
+  .d-app-shell .d-app-shell__grid--aside[data-aside="thread"] { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--thread-w)); }
   .d-app-shell .d-app-shell__aside { position: relative; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
 }
 /* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */

@@ -72,8 +72,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-channel > .dw-voice-stage { flex: 1 1 auto; height: auto; }
 .dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; scroll-padding-bottom: 4.5rem; /* the pinned toolbar: button + 2 x 0.5rem */ }
 /* web3.8: on desktop the stage fills its pane and its toolbar is pinned to the bottom centre of it (the dock keeps its own). */
-/* web3.9 (controller addition, UI-4): the composer's resting band is as tall as the desktop user panel (3.25rem = 52px, measured in e2e/web/panes.spec.ts), so their tops meet; a phone has no user panel. */
-.d-app-shell:not([data-layout="phone"]) { --d-composer-band: 3.25rem; }
+/* web3.9 (controller addition, UI-4): the composer's resting band is as tall as the desktop user panel (--panel-h, 64px, measured in e2e/web/panes.spec.ts), so their tops meet; a phone has no user panel. */
+.d-app-shell:not([data-layout="phone"]) { --d-composer-band: var(--panel-h); }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { height: 100%; min-height: 0; box-sizing: border-box; }
 /* web3.8 WS7: the grid or the focused tile fills what the heading, the notice and the toolbar leave. */

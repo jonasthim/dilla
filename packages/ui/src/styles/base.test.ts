@@ -37,8 +37,8 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/__ring \{[^}]*padding-left: env\(safe-area-inset-left\)/);
     expect(css).toMatch(/__aside \{[^}]*padding-left: env\(safe-area-inset-left\)/);
   });
-  it('a desktop aside grid has the panel area and no status row until a status bar is given', () => {
-    expect(css).toMatch(/__grid--aside \{[^}]*grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside"; \}/);
+  it('a desktop aside grid has the top bar row, the panel area and no status row', () => {
+    expect(css).toMatch(/__grid--aside \{[^}]*grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside"; \}/);
   });
   it('hides the list pane main with the hidden attribute winning over its flex display', () => {
     const shellCss = readFileSync(fileURLToPath(new URL('../AppShell/AppShell.css', import.meta.url)), 'utf8');
@@ -53,6 +53,9 @@ describe('base.css phone rules', () => {
 describe('web3.9 base.css rules (UI-1)', () => {
   it('sets the phone row tokens on the phone shell and on [data-phone]', () => {
     expect(css).toContain('.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }');
+  });
+  it('grows the rail tiles to 44px on a phone (Signal §5.10)', () => {
+    expect(css).toContain('.d-app-shell[data-layout="phone"] { --rail-tile: 44px; }');
   });
   it('insets the focus ring on a list row (R18), after the global ring', () => {
     const rule = '[data-row]:focus-visible { outline-offset: -2px; }';

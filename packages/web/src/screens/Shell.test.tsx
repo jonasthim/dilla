@@ -1442,11 +1442,20 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, channels, status, the header actions, the active row and the composer in that order', async () => {
+  it('tabs through skip link, top bar, rail, channels, status, the header actions, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
+    // Signal (README §5.2): the top bar's search, bell and gear come first, above the rail.
+    const bar = document.querySelector<HTMLElement>('.d-topbar');
+    if (bar === null) throw new Error('no top bar');
+    await user.tab();
+    expect(document.activeElement).toBe(within(bar).getByRole('button', { name: en['topbar.search'] }));
+    await user.tab();
+    expect(document.activeElement).toBe(within(bar).getByRole('button', { name: 'Reminders' }));
+    await user.tab();
+    expect(document.activeElement).toBe(within(bar).getByRole('button', { name: en['workspace.open'] }));
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
     // Web3.8 (WS8): one gear beside the server's name; leave and delete live in server settings. There are no sidebar tabs.
@@ -1469,8 +1478,6 @@ describe('keyboard', () => {
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'Reminders' }));
-    await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
     await user.tab();
     // web3.7: the thread list sits after pins and before the members toggle.
@@ -1962,17 +1969,19 @@ it('selects a builtin member through the shipping Shell provider and executes dm
   await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
 });
 
-for (const [label, route, slot] of [
-  ['channel', `/c/${A}/${GEN}`, '.d-channel-header__actions'],
-  ['DM', `/dm/${DM}`, '.d-channel-header__actions'],
-  ['desktop voice', `/c/${A}/${VOICE}`, '.d-channel-list__head'],
-  ['channel list', `/c/${A}`, '.d-channel-list__head'],
-  ['DM list', '/dm', '.d-channel-list__head'],
+// Signal (README §5.2): on a desktop the reminders entry is the top bar's bell on every route, and the only one.
+for (const [label, route] of [
+  ['channel', `/c/${A}/${GEN}`],
+  ['DM', `/dm/${DM}`],
+  ['desktop voice', `/c/${A}/${VOICE}`],
+  ['channel list', `/c/${A}`],
+  ['DM list', '/dm'],
 ] as const) {
-  it(`keeps the reminder inbox in the existing ${label} action row`, async () => {
+  it(`keeps the reminder inbox in the top bar on the ${label} route`, async () => {
     const { user } = setup(route, { before: fake => { withDms(fake); if (label === 'channel list') fake.set(`channels:${A}`, []); } });
     const trigger = await screen.findByRole('button', { name: 'Reminders' });
-    expect(trigger.closest(slot)).not.toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Reminders' })).toHaveLength(1);
+    expect(trigger.closest('.d-topbar')).not.toBeNull();
     expect(trigger.parentElement).not.toBe(document.querySelector('.d-app-shell__main'));
     await user.click(trigger);
     expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
@@ -1980,3 +1989,24 @@ for (const [label, route, slot] of [
     expect(trigger).toHaveFocus();
   });
 }
+
+describe('the top bar', () => {
+  it('search opens the palette, as Control+K does', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(screen.getByRole('button', { name: en['topbar.search'] }));
+    expect(await screen.findByRole('combobox', { name: 'Search your messages' })).toBeInTheDocument();
+  });
+  it('the gear opens Settings', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: en['workspace.open'] }));
+    await waitFor(() => expect(path()).toBe('/settings'));
+  });
+  it('shows the Ctrl K chord off Apple platforms', () => {
+    setup(`/c/${A}/${GEN}`);
+    expect(screen.getByRole('button', { name: en['topbar.search'] })).toHaveTextContent(/Ctrl K$/);
+  });
+  it('has no voice chip outside a call', () => {
+    setup(`/c/${A}/${GEN}`);
+    expect(document.querySelector('.d-topbar__voice')).toBeNull();
+  });
+});

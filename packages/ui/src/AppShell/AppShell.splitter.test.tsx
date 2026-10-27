@@ -238,8 +238,17 @@ describe('AppShell splitters', () => {
   it('a reset shows the default width again', () => {
     shellW = 1280; stubWidths();
     const { container } = render(<ComposedShell shell={shellProps({ paneWidths: {} })} />);
-    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuenow', '240');
+    // --sidebar-w 244 (README §5.1) and --members-w 232.
+    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuenow', '244');
+    expect(sep(labels.aside)).toHaveAttribute('aria-valuenow', '232');
     expect(container.querySelector('.d-app-shell')?.getAttribute('style') ?? '').not.toContain('--d-sidebar-w');
+  });
+
+  it('a thread aside defaults to --thread-w (340) and marks its column', () => {
+    shellW = 1280; stubWidths();
+    const { container } = render(<ComposedShell shell={shellProps({ paneWidths: {}, asideKind: 'thread' })} />);
+    expect(sep(labels.aside)).toHaveAttribute('aria-valuenow', '340');
+    expect(container.querySelector('.d-app-shell__grid')).toHaveAttribute('data-aside', 'thread');
   });
 
   it('a shrink only clamps what is shown: the stored width is never reported, and a wider window restores it', () => {

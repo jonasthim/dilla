@@ -85,7 +85,7 @@ export const InDesktopShell: Story = {
   render: args => {
     const [open, setOpen] = useState(true);
     return (
-      <AppShell skipLabel="skip to content" statusBar={null} rail={rail} sidebar={sidebar} header={<ChannelHeader name="general" />} composer={mainComposer}
+      <AppShell skipLabel="skip to content" rail={rail} sidebar={sidebar} header={<ChannelHeader name="general" />} composer={mainComposer}
         aside={<ThreadPane {...args} onClose={() => setOpen(false)} />} asideLabel="thread" asideOpen={open} onAsideClose={() => setOpen(false)}>
         {log}
       </AppShell>

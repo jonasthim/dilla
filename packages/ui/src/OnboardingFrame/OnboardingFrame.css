@@ -1,5 +1,5 @@
 .d-onboarding-frame { min-height: 100dvh; display: grid; grid-template-rows: var(--topbar-h) 1fr; background: var(--bg); color: var(--fg); }
-.d-onboarding-frame__bar { display: flex; align-items: center; background: var(--bg-2); border-bottom: 1px solid var(--hairline); }
+.d-onboarding-frame__bar { display: flex; align-items: center; padding: 0 12px; background: var(--bg-2); border-bottom: 1px solid var(--hairline); }
 .d-onboarding-frame__card { width: 100%; max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem; display: grid; gap: 1.25rem; align-content: start; min-width: 0; }
 .d-onboarding-frame__title { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-display); letter-spacing: 0.02em; color: var(--fg); }
 /* The one exception to base.css's focus-ring rule, scoped to this title: the heading takes focus only

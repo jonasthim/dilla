@@ -41,14 +41,18 @@
   --knob: #FFFFFF;
   --track-off: #2A303A;
   --accent-chip: rgba(90,168,230,0.16);
+  --line-strong: #2A303A;
+  --brand-ink: #FFFFFF;
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
   --text-micro: 0.625rem;
   --text-tag: 0.53125rem;
+  --text-badge: 0.5625rem;
   --text-chip: 0.59375rem;
   --text-xs: 0.6875rem;
   --text-btn: 0.71875rem;
+  --text-ui: 0.75rem;
   --text-sm: 0.78125rem;
   --text-input: 0.8125rem;
   --text-base: 0.84375rem;
@@ -98,6 +102,8 @@
   --duration-slow: 300ms;
   --duration-enter: 380ms;
   --duration-badge: 450ms;
+  --duration-pop: 400ms;
+  --duration-turn: 200ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-toast: 220ms;
   --duration-pulse: 2s;
@@ -154,6 +160,8 @@
   --knob: #FFFFFF;
   --track-off: #2A303A;
   --accent-chip: rgba(90,168,230,0.16);
+  --line-strong: #2A303A;
+  --brand-ink: #FFFFFF;
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -199,6 +207,8 @@
   --knob: #FFFFFF;
   --track-off: #8A918A;
   --accent-chip: rgba(0,87,153,0.16);
+  --line-strong: #B4BBB4;
+  --brand-ink: #FFFFFF;
   --link-underline: 0;
   color-scheme: light;
 }
@@ -244,6 +254,8 @@
   --knob: #000000;
   --track-off: #C8C8C8;
   --accent-chip: rgba(156,203,255,0.24);
+  --line-strong: #FFFFFF;
+  --brand-ink: #FFFFFF;
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -290,6 +302,8 @@
     --knob: #FFFFFF;
     --track-off: #8A918A;
     --accent-chip: rgba(0,87,153,0.16);
+    --line-strong: #B4BBB4;
+    --brand-ink: #FFFFFF;
     --link-underline: 0;
     color-scheme: light;
   }
@@ -337,6 +351,8 @@
     --knob: #000000;
     --track-off: #C8C8C8;
     --accent-chip: rgba(156,203,255,0.24);
+    --line-strong: #FFFFFF;
+    --brand-ink: #FFFFFF;
     --link-underline: 1;
     color-scheme: dark;
   }
@@ -378,6 +394,8 @@
     --duration-slow: 0ms;
     --duration-enter: 0ms;
     --duration-badge: 0ms;
+    --duration-pop: 0ms;
+    --duration-turn: 0ms;
     --duration-toast: 0ms;
     --duration-pulse: 0ms;
     --duration-caret: 0ms;
@@ -393,6 +411,8 @@
     --duration-slow: 0ms;
     --duration-enter: 0ms;
     --duration-badge: 0ms;
+    --duration-pop: 0ms;
+    --duration-turn: 0ms;
     --duration-toast: 0ms;
     --duration-pulse: 0ms;
     --duration-caret: 0ms;

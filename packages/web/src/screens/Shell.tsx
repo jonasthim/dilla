@@ -3,7 +3,7 @@ import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   ActionMenu, AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner, PhoneHeader,
-  TabBar, UnsupportedVoice, PhoneLayoutProvider,
+  TabBar, TopBar, UnsupportedVoice, PhoneLayoutProvider,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -28,6 +28,7 @@ import {
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
 import { callPhase, DmCall, dmCallStart, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { isApplePlatform } from './voice/shortcuts.ts';
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
@@ -1121,9 +1122,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
     // E2: a touch device has no Control+K, so its list heads carry search, Home's too: the phone layout, and a desktop window
     // whose pointer is coarse (a touch tablet). A fine pointer keeps the desktop heads as they were (the gear alone on a server).
-    // Voice on desktop has its own stage bar; list routes have no conversation
-    // header. Keep their inbox entry in the existing sidebar title row.
-    const inboxInSidebar = (voiceChannel !== null && !phone) || (channel === null && dm === null);
+    // On a desktop the top bar's bell is the reminders entry (Signal, README §5.2). On a phone (no top bar), list routes have no
+    // conversation header, so their inbox entry stays in the sidebar title row.
+    const inboxInSidebar = phone && channel === null && dm === null;
     // The "+" and the gear stay a server's.
     const touchHere = phone || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
     const headerAction = onDms ? (
@@ -1327,7 +1328,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           }} />
       </>) } : undefined}
       actions={<>
-        {utilityCommands.inbox}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
         {openId !== null ? <IconButton data-foldable="" data-thread-list-toggle="" icon="messages-square" label={t('thread.list')}
           pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())} /> : null}
@@ -1350,7 +1350,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
       </>) } : undefined}
       actions={<>
-        {utilityCommands.inbox}
         {/* N1: on a desktop the call is an icon in the header, as on a phone (there it sits in the menu slot). */}
         {dmCall === null || phone ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
@@ -1552,6 +1551,18 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     <CallBar phase={callPhase(voiceCtx)} where={whereOf(call.channelId)} muted={call.state?.muted ?? false}
       labels={{ open: t('nav.call.open', { where: callWhere(call.channelId) }), mute: t('voice.mute'), leave: t('voice.leave'), region: t('voice.dock.region') }}
       onOpen={() => { if (callTarget !== null) void navigate(callTarget); }} onMute={call.toggleMute} onLeave={() => call.leave()} />
+  );
+  // Signal top bar (README §5.2), desktop only: search opens the palette as Control/⌘+K does, the bell the reminders inbox, the
+  // gear Settings, and the voice chip (while connected) the call's stage.
+  const topBar = phone ? undefined : (
+    <TopBar searchLabel={t('topbar.search')} searchShortcut={isApplePlatform() ? '⌘K' : 'Ctrl K'} onSearch={() => startSearch('all')}
+      voice={call.channelId !== null && callPhase(voiceCtx) === 'connected'
+        ? { room: whereOf(call.channelId), pingMs: call.state?.link?.rttMs ?? null, onOpen: () => { if (callTarget !== null) void navigate(callTarget); } }
+        : undefined}
+      remindersDue={utilityCommands.dueCount} onReminders={utilityCommands.openInbox}
+      onSettings={() => void navigate({ name: 'settings', section: null, from: null })}
+      labels={{ reminders: t('reminder.inbox'), settings: t('workspace.open'), remindersDue: count => t('reminder.badge', { count }),
+        voice: call.channelId === null ? '' : t('nav.call.open', { where: callWhere(call.channelId) }) }} />
   );
   // A phone remembers where each tab was left (never a settings route, nor the root that only redirects).
   useEffect(() => {
@@ -1792,6 +1803,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
+        topBar={topBar}
         {...(phone ? {} : { paneWidths, onPaneResize, resizeLabels: { sidebar: t('pane.resize.sidebar'), aside: t('pane.resize.aside') } })}
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} onTypingChange={setTyping} covered={phone && (overlay || adminFor !== null)}
         page={undefined}
@@ -1847,6 +1859,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}
         asideCloseLabel={sideNow !== null ? undefined : t('members.close')}
         asideReturnRef={sideNow !== null ? sideReturn : membersToggle}
+        asideKind={sideNow !== null ? 'thread' : 'members'}
       >
         {main}
       </AppShell>

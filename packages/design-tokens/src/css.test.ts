@@ -36,6 +36,18 @@ describe('renderCss', () => {
     expect(css).toMatch(/--text-tag: 0\.53125rem;/);
     expect(css).toContain('--tracking-soft: 0.04em;');
   });
+  it('emits the top bar values (task 5, rulings K and L)', () => {
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--line-strong:\s*#2A303A;/);
+    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--line-strong:\s*#B4BBB4;/);
+    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--line-strong:\s*#FFFFFF;/);
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--brand-ink:\s*#FFFFFF;/);
+    expect(css).toMatch(/--text-ui: 0\.75rem;/);
+    expect(css).toMatch(/--text-badge: 0\.5625rem;/);
+    expect(css).toContain('--duration-pop: 400ms;');
+    expect(css).toContain('--duration-turn: 200ms;');
+    expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-pop: 0ms;[\s\S]*--duration-turn: 0ms;/);
+    expect(css).toMatch(/\[data-motion="reduced"\]\s*{[^}]*--duration-pop: 0ms;[^}]*--duration-turn: 0ms;/);
+  });
   it('zeroes --duration-toggle under reduced motion', () => {
     expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-toggle: 0ms;/);
   });

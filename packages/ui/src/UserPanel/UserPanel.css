@@ -1,7 +1,7 @@
 /* The desktop user panel (web3.8, item 13): avatar, name block, mute and deafen, the settings gear, in one row at the
    bottom left under the rail and the sidebar. web3.9 (E3, G3): 52 high, its top meeting the composer band (UI-4 sets that
    half), and its buttons are the dock's 32px IconButtons. */
-.d-user-panel { box-sizing: border-box; display: flex; align-items: center; gap: 0.5rem; height: 3.25rem; min-width: 0; padding: 0 0.75rem; background: var(--bg-2); border-top: 1px solid var(--hairline); }
+.d-user-panel { box-sizing: border-box; display: flex; align-items: center; gap: 0.5rem; height: var(--panel-h); min-width: 0; padding: 0 0.75rem; background: var(--bg-2); border-top: 1px solid var(--hairline); }
 /* The avatar and name block is the status menu's trigger (a button, so keyboard reachable); the menu hangs above it. */
 .d-user-panel__menu { display: flex; flex: 1 1 auto; min-width: 0; }
 .d-user-panel__who {

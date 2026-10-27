@@ -9,7 +9,7 @@ import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
-import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
+import { TopBar } from '../TopBar/TopBar.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
 import { CallControls } from '../CallControls/CallControls.tsx';
@@ -101,12 +101,8 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
         </div>}
         header={p.header ?? null}
         composer={p.composer ?? null}
-        statusBar={<StatusBar position="bottom" label={t('shell.status.label')}>
-          <StatusChunk label={t('shell.status.node')}>dilla.test</StatusChunk>
-          <StatusChunk label={t('shell.status.link')} tone="ok">{t('shell.status.online')}</StatusChunk>
-          <StatusChunk label={t('shell.status.gen')}>7</StatusChunk>
-          <StatusChunk label={t('shell.status.devices')}>2</StatusChunk>
-        </StatusBar>}>
+        topBar={<TopBar searchLabel={t('topbar.search')} searchShortcut="⌘K" onSearch={noop} voice={p.joined === true ? { room: 'harbour', pingMs: 24, onOpen: noop } : undefined} remindersDue={0} onReminders={noop} onSettings={noop}
+        labels={{ reminders: t('reminder.inbox'), settings: t('workspace.open'), voice: t('nav.call.open', { where: 'harbour' }) }} />}>
         {p.main}
       </AppShell>
     </div>

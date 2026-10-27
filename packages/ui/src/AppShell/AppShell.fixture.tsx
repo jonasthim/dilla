@@ -7,18 +7,15 @@ import { MessageLog } from '../MessageLog/MessageLog.tsx';
 import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Banner } from '../Banner/Banner.tsx';
-import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
+import { TopBar } from '../TopBar/TopBar.tsx';
 import { Button } from '../Button/Button.tsx';
 
 const noop = () => {};
 
-/** web3.8 (R4): the desktop shell has no status bar; a story or a test that wants the optional row passes this as `shell.statusBar`. */
-export const fixtureStatusBar = (
-  <StatusBar position="bottom" label="status">
-    <StatusChunk label="server">dilla.thim.dev</StatusChunk>
-    <StatusChunk label="connection" tone="ok" onClick={noop}>online</StatusChunk>
-    <StatusChunk label="gen">3</StatusChunk>
-  </StatusBar>
+/** Signal task 5: the desktop top bar; a story or a test that wants it passes this as `shell.topBar`. */
+export const fixtureTopBar = (
+  <TopBar searchLabel="Search or jump to…" searchShortcut="⌘K" onSearch={noop} remindersDue={0} onReminders={noop} onSettings={noop}
+    labels={{ reminders: 'Reminders', settings: 'Open settings', voice: 'open the call in harbour' }} />
 );
 
 const rowLabel = (c: { name: string; unread: number; mentions: number; muted: boolean }) =>

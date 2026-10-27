@@ -73,6 +73,8 @@ export const en = {
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
   'search.open': 'search',
+  /* Signal top bar (README §5.2): the search trigger's name and text, verbatim from the prototype. */
+  'topbar.search': 'Search or jump to…',
   'keyboard.title': 'Keyboard',
   'keyboard.searchAll': 'Control/⌘+K',
   'keyboard.searchChannel': 'Control+/',

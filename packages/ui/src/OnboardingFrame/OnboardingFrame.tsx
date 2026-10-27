@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { BrandMark } from '../StatusBar/StatusBar.tsx';
+import { BrandMark } from '../TopBar/TopBar.tsx';
 import './OnboardingFrame.css';
 
 export interface OnboardingFrameProps {

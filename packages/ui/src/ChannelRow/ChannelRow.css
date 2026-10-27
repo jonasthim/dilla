@@ -5,8 +5,12 @@
 /* Unread: a bright name and a 4px tick at the left edge, not bold. Selected (R14): the fill and a 2px accent bar there. */
 .d-chrow:not([data-unread="0"]), .d-chrow:not([data-mentions="0"]) { color: var(--fg); box-shadow: inset 4px 0 0 var(--fg-2); }
 .d-chrow[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
-/* A muted row dims its glyph and name only: its mention pill keeps full contrast (ruling 15). */
-.d-chrow[data-muted="true"] .d-chrow__glyph, .d-chrow[data-muted="true"] .d-chrow__name { opacity: var(--opacity-muted); }
+/* A muted row dims its glyph and name only: its mention pill keeps full contrast (ruling 15). The name takes --fg-3 (at least
+   4.5:1 on bg-2) rather than an opacity, which left it at 4.37:1 (Global Constraints: no opacity on text that carries meaning). */
+.d-chrow[data-muted="true"] .d-chrow__glyph { opacity: var(--opacity-muted); }
+.d-chrow[data-muted="true"] .d-chrow__name { color: var(--fg-3); }
+/* On the selected (surface-hi) or hovered row, never fg-3 (README §10.4): fg-2. */
+.d-chrow[data-muted="true"]:is(:hover, [aria-current="page"]) .d-chrow__name { color: var(--fg-2); }
 .d-chrow__glyph { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1rem /* 16px */; color: var(--fg-3); }
 .d-chrow__lock { display: inline-flex; flex: none; color: var(--fg-3); }
 .d-chrow__spacer { flex: 1; }
