@@ -5,7 +5,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, COPY, HEX32, TEST_TIMEOUT, WAIT, channelRow, composerBox, copy, deleteDialog, editorBox, expectAccessible,
   logRegion, openChannel, pinsDialog, railItem, railNav, rowById, rowToolbar, sendText, signUp, tag, test, isPeerMessage,
-  type PeerMessage, type PeerReceived, type PeerSetup, channelRowMenuItem,
+  type PeerMessage, type PeerReceived, type PeerSetup, channelRowMenuItem, expectRowMenuAction, rowAction
 } from './support/app';
 import { WebDriver } from './support/driver';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -140,8 +140,8 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       // Bjorn's reply is not Ada's: her toolbar offers no edit or delete on it.
       await paneRow(page, ok).focus();
       await expect(rowToolbar(paneRow(page, ok))).toBeVisible();
-      await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.edit'), exact: true })).toHaveCount(0);
-      await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.delete'), exact: true })).toHaveCount(0);
+      await expectRowMenuAction(paneRow(page, ok), 'edit', false);
+      await expectRowMenuAction(paneRow(page, ok), 'delete', false);
 
       // MP7 (N1): a thread row's author name opens the profile card; it is live (not inert) and takes focus, and Escape returns focus to the name.
       const author = paneRow(page, ok).locator('.d-message-row__author-open');
@@ -245,7 +245,7 @@ test('Ada edits and deletes her own reply in the thread', async ({ page }) => {
     const sent = await peer.waitFor(first, general);
 
     await mine.focus();
-    await rowToolbar(mine).getByRole('button', { name: copy('shell.message.edit'), exact: true }).click();
+    await rowAction(mine, 'edit');
     await expect(editorBox(page)).toBeFocused();
     await expect(editorBox(page)).toHaveValue(first);
     const edited = `edited ${tag()}`;
@@ -258,7 +258,7 @@ test('Ada edits and deletes her own reply in the thread', async ({ page }) => {
 
     const byId = threadPane(page).locator(`${CLASS.messageRow}[data-msg-id="${sent.msg_id}"]`);
     await byId.focus();
-    await rowToolbar(byId).getByRole('button', { name: copy('shell.message.delete'), exact: true }).click();
+    await rowAction(byId, 'delete');
     await expect(deleteDialog(page)).toBeVisible();
     await deleteDialog(page).getByRole('button', { name: copy('shell.delete.confirm'), exact: true }).click();
     await expect(byId).toHaveAttribute('data-state', 'deleted', { timeout: WAIT });

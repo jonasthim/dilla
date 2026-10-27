@@ -207,5 +207,5 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | tabs.voiceUse | Leave the call and use this tab | confirms the hand-over; the other tab's call ends |
 | tabs.voiceKeep | Keep the call | cancels; focus starts here; nothing is taken over |
 | boot.otherTab.status | dilla is open in another tab | other-tab heading |
-| typing.one | {name} is typing | conversation status |
-| typing.many | Several people are typing | conversation status |
+| typing.one | {name} is typing… | conversation status |
+| typing.many | Several people are typing… | conversation status |

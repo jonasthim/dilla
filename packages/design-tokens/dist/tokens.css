@@ -49,9 +49,23 @@
   --control-edge-key: #3A404A;
   --warn-tint: rgba(255,209,106,0.14);
   --fg-chip: #C9CED6;
+  --accent-faint: rgba(90,168,230,0.07);
+  --accent-flash: rgba(90,168,230,0.18);
+  --accent-hover: rgba(90,168,230,0.08);
+  --fg-faint: #636A75;
+  --scrim-tag: rgba(8,9,11,0.8);
+  --code-line-no: #4A5059;
+  --code-comment: #6C737E;
+  --code-bool: #E9B6EC;
+  --code-keyword: #C4A7FF;
+  --code-row-hover: rgba(255,255,255,0.02);
+  --danger-line: rgba(255,110,110,0.5);
+  --surface-tile: #11151A;
+  --fg-quiet: #5C636E;
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
+  --text-pico: 0.40625rem;
   --text-nano: 0.5rem;
   --text-mini: 0.46875rem;
   --text-micro: 0.625rem;
@@ -67,6 +81,7 @@
   --text-base: 0.84375rem;
   --text-md: 0.875rem;
   --text-lg: 1.0625rem;
+  --text-welcome: 1.125rem;
   --text-title: 1.1875rem;
   --text-xl: 1.375rem;
   --weight-display: 700;
@@ -131,6 +146,11 @@
   --duration-dock: 340ms;
   --duration-rail-badge: 500ms;
   --duration-popover: 200ms;
+  --duration-switch: 140ms;
+  --duration-switch-rise: 240ms;
+  --duration-focus: 160ms;
+  --duration-rise: 180ms;
+  --duration-stagger: 40ms;
   --row-pad-y: 0.375rem;
   --row-pad-x: 1.125rem;
   --row-gap: 0.125rem;
@@ -189,6 +209,19 @@
   --control-edge-key: #3A404A;
   --warn-tint: rgba(255,209,106,0.14);
   --fg-chip: #C9CED6;
+  --accent-faint: rgba(90,168,230,0.07);
+  --accent-flash: rgba(90,168,230,0.18);
+  --accent-hover: rgba(90,168,230,0.08);
+  --fg-faint: #636A75;
+  --scrim-tag: rgba(8,9,11,0.8);
+  --code-line-no: #4A5059;
+  --code-comment: #6C737E;
+  --code-bool: #E9B6EC;
+  --code-keyword: #C4A7FF;
+  --code-row-hover: rgba(255,255,255,0.02);
+  --danger-line: rgba(255,110,110,0.5);
+  --surface-tile: #11151A;
+  --fg-quiet: #5C636E;
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -242,6 +275,19 @@
   --control-edge-key: #6F776F;
   --warn-tint: rgba(138,90,0,0.14);
   --fg-chip: #3F453F;
+  --accent-faint: rgba(0,87,153,0.07);
+  --accent-flash: rgba(0,87,153,0.18);
+  --accent-hover: rgba(0,87,153,0.08);
+  --fg-faint: #5C635C;
+  --scrim-tag: rgba(20,23,26,0.8);
+  --code-line-no: #5C635C;
+  --code-comment: #5C635C;
+  --code-bool: #8A2E8F;
+  --code-keyword: #5B3BA8;
+  --code-row-hover: rgba(0,0,0,0.03);
+  --danger-line: rgba(179,38,30,0.5);
+  --surface-tile: #FFFFFF;
+  --fg-quiet: #4F564F;
   --link-underline: 0;
   color-scheme: light;
 }
@@ -295,6 +341,19 @@
   --control-edge-key: #FFFFFF;
   --warn-tint: rgba(255,224,138,0.2);
   --fg-chip: #E6E6E6;
+  --accent-faint: rgba(156,203,255,0.12);
+  --accent-flash: rgba(156,203,255,0.3);
+  --accent-hover: rgba(156,203,255,0.16);
+  --fg-faint: #C8C8C8;
+  --scrim-tag: rgba(0,0,0,0.85);
+  --code-line-no: #C8C8C8;
+  --code-comment: #C8C8C8;
+  --code-bool: #F5C2F7;
+  --code-keyword: #D9C8FF;
+  --code-row-hover: rgba(255,255,255,0.08);
+  --danger-line: rgba(255,154,154,0.5);
+  --surface-tile: #000000;
+  --fg-quiet: #C8C8C8;
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -349,6 +408,19 @@
     --control-edge-key: #6F776F;
     --warn-tint: rgba(138,90,0,0.14);
     --fg-chip: #3F453F;
+    --accent-faint: rgba(0,87,153,0.07);
+    --accent-flash: rgba(0,87,153,0.18);
+    --accent-hover: rgba(0,87,153,0.08);
+    --fg-faint: #5C635C;
+    --scrim-tag: rgba(20,23,26,0.8);
+    --code-line-no: #5C635C;
+    --code-comment: #5C635C;
+    --code-bool: #8A2E8F;
+    --code-keyword: #5B3BA8;
+    --code-row-hover: rgba(0,0,0,0.03);
+    --danger-line: rgba(179,38,30,0.5);
+    --surface-tile: #FFFFFF;
+    --fg-quiet: #4F564F;
     --link-underline: 0;
     color-scheme: light;
   }
@@ -404,6 +476,19 @@
     --control-edge-key: #FFFFFF;
     --warn-tint: rgba(255,224,138,0.2);
     --fg-chip: #E6E6E6;
+    --accent-faint: rgba(156,203,255,0.12);
+    --accent-flash: rgba(156,203,255,0.3);
+    --accent-hover: rgba(156,203,255,0.16);
+    --fg-faint: #C8C8C8;
+    --scrim-tag: rgba(0,0,0,0.85);
+    --code-line-no: #C8C8C8;
+    --code-comment: #C8C8C8;
+    --code-bool: #F5C2F7;
+    --code-keyword: #D9C8FF;
+    --code-row-hover: rgba(255,255,255,0.08);
+    --danger-line: rgba(255,154,154,0.5);
+    --surface-tile: #000000;
+    --fg-quiet: #C8C8C8;
     --link-underline: 1;
     color-scheme: dark;
   }
@@ -459,6 +544,11 @@
     --duration-dock: 0ms;
     --duration-rail-badge: 0ms;
     --duration-popover: 0ms;
+    --duration-switch: 0ms;
+    --duration-switch-rise: 0ms;
+    --duration-focus: 0ms;
+    --duration-rise: 0ms;
+    --duration-stagger: 0ms;
   }
 }
 
@@ -484,5 +574,10 @@
     --duration-dock: 0ms;
     --duration-rail-badge: 0ms;
     --duration-popover: 0ms;
+    --duration-switch: 0ms;
+    --duration-switch-rise: 0ms;
+    --duration-focus: 0ms;
+    --duration-rise: 0ms;
+    --duration-stagger: 0ms;
 }
 

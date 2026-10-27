@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   addServerVia, TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmComposer, dmLog, makeInviteLink,
-  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test,
+  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test, expectRowMenuAction
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -180,7 +180,7 @@ test('manual text timeout blocks community writes and recovers while read, voice
     await expect(editRow).toContainText(ownForEdit);
     await discardRefusedWrite(editRow);
 
-    await expect(rowToolbar(editRow).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible();
+    await expectRowMenuAction(editRow, 'pin', true);
     await rowAction(editRow, 'pin');
     await expectWriteRefused(editRow);
     await expect(editRow).not.toHaveAttribute('data-pinned', 'true');

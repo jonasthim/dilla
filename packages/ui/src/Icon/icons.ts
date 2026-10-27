@@ -75,6 +75,8 @@
  *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
  *   icons/house.svg  3ce1e3be357b3d704af39405df420cfd8ebc6b5d73b017f95492f43e09d07dc9
  *   icons/alarm-clock.svg  b6d5c6298468151d429c184ccb404fae746f4abe34579289d9946aab167a078b
+ *   icons/smile-plus.svg  394b13141695981e7cb6e0684bdd92c98dea8ec48cc0b2b771303323d7cf7c69
+ *   icons/code-xml.svg  f0782c1c2078078fe8017b713d7da1e118023caeff579f6f1de177b608da2ce9
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -453,6 +455,19 @@ export const ICONS = {
     ['path', { d: 'm22 6-3-3' }],
     ['path', { d: 'M6.38 18.7 4 21' }],
     ['path', { d: 'M17.64 18.67 20 21' }],
+  ],
+  'smile-plus': [
+    ['path', { d: 'M13.267 2.08a10 10 0 108.653 8.653' }],
+    ['path', { d: 'M15 10V9' }],
+    ['path', { d: 'M16 5h6' }],
+    ['path', { d: 'M16.472 15a6 6 0 01-8.943 0' }],
+    ['path', { d: 'M19 2v6' }],
+    ['path', { d: 'M9 10V9' }],
+  ],
+  'code-xml': [
+    ['path', { d: 'm18 16 4-4-4-4' }],
+    ['path', { d: 'm6 8-4 4 4 4' }],
+    ['path', { d: 'm14.5 4-5 16' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

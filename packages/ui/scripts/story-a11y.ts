@@ -1,5 +1,6 @@
 import type { Page } from 'playwright';
 import { injectAxe, checkA11y } from 'axe-playwright';
+import { CONVERSATION_PROTOTYPE_CONTRAST } from './prototype-contrast.ts';
 
 const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/', 'Settings/', 'Search/', 'Voice/', 'Media/'];
 
@@ -246,6 +247,7 @@ async function checkSignalGeometry(page: Page, context: StoryContext, wants: Wan
   if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
 }
 
+
 /**
  * Ruling Y (prototype parity, Jonas 2026-10-27): elements whose colours are exactly the prototype's and fall below 4.5:1 in the
  * signal theme. Only axe's color-contrast rule is off for them, only in signal; every other rule still runs on them, and the
@@ -254,7 +256,31 @@ async function checkSignalGeometry(page: Page, context: StoryContext, wants: Wan
 const PROTOTYPE_CONTRAST: { story: (id: string) => boolean; selector: string; why: string }[] = [
   { story: id => id.startsWith('voice-voicedock--') || id.startsWith('screens-voice--'), selector: '.d-voice-dock__where',
     why: 'voice dock stats in --fg-3 #767D89 on the --live tint (4.38:1), prototype parity, Jonas 2026-10-27' },
+  // Task 7 (README §5.5): the conversation's prototype colours below 4.5:1, wherever a conversation is composed.
+  ...CONVERSATION_PROTOTYPE_CONTRAST.map(e => ({ story: () => true, selector: e.selector, why: `${e.why}, prototype parity, Jonas 2026-10-27` })),
 ];
+
+/**
+ * Review Focus 4 (task 7, Ruling C): a reaction chip draws 22px (README §6.5) and takes a 24px hit area through its ::before.
+ * Measured in a real browser: the chip's box grown by its ::before's negative insets, at least 24 x 24.
+ */
+async function checkReactionHitAreas(page: Page, context: StoryContext): Promise<void> {
+  const got = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('#storybook-root :is(.d-reaction-bar__chip, .d-reaction-bar__add)')).map(el => {
+    const r = el.getBoundingClientRect();
+    const b = getComputedStyle(el, '::before');
+    const cs = getComputedStyle(el);
+    const px = (v: string) => (v.endsWith('px') ? parseFloat(v) : 0);
+    const bw = px(cs.borderTopWidth);
+    return { drawn: Math.round(r.height * 10) / 10, content: b.content, position: b.position,
+      h: r.height - 2 * bw - px(b.top) - px(b.bottom), w: r.width - 2 * bw - px(b.left) - px(b.right) };
+  }));
+  if (got.length === 0 && !context.id.endsWith('--none')) throw new Error(`${context.title} / ${context.name}: no reaction chips to measure`);
+  for (const g of got) {
+    if (Math.abs(g.drawn - 22) > 0.5) throw new Error(`${context.title} / ${context.name}: a reaction chip draws ${String(g.drawn)}px, want 22 (§6.5)`);
+    if (g.position !== 'absolute' || g.h < 23.5 || g.w < 23.5) throw new Error(`${context.title} / ${context.name}: a reaction chip's hit area is ${String(g.w)} x ${String(g.h)}, want at least 24 x 24`);
+  }
+}
+const REACTION_HIT_STORIES = (id: string) => id.startsWith('conversation-reactionbar--') || id === 'conversation-messagerow--signal-reactions';
 
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
     if (context.id === 'settings-settingsframe--phone-index') {
@@ -291,6 +317,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         throw new Error(`${context.title} / ${context.name}: ${boundary.selector} border is ${edge.border}, not the prototype's ${boundary.colour}`);
       }
     }
+    if (REACTION_HIT_STORIES(context.id)) await checkReactionHitAreas(page, context);
     if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
     const solidDot = SOLID_DOTS[context.id];
     if (solidDot !== undefined) await checkSolidDot(page, context, solidDot);

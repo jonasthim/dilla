@@ -1,7 +1,8 @@
 // The open conversation's draft, mentions, replies and file tray.
-import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { encodeMentions, mentionQuery, PERM, type MemberSummary, type MentionMember, type RoleSummary, type SlowState, type TimelineItem } from '@dilla/client-core';
-import { Composer, MentionList, ReplyChip } from '@dilla/ui';
+import { Composer, EmojiGrid, MentionList, ReplyChip } from '@dilla/ui';
+import { REACTION_EMOJI } from '../../emoji.ts';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { useRoute } from '../../router.ts';
@@ -30,7 +31,9 @@ export interface ComposerAreaProps { channelId: string; label: string; placehold
   /** True: an announcement channel. When absent the channel's `announcement` flag in the channels slice says. */
   announcement?: boolean;
   /** Speaks a queued send once, politely (the shell's announcer). */
-  announce?: (text: string) => void }
+  announce?: (text: string) => void;
+  /** Someone else typing here: the footer's TypingIndicator (README §5.5). */
+  typing?: ReactNode }
 
 export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const client = useCore();
@@ -56,6 +59,16 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const [gifOpen, setGifOpen] = useState(false);
   const [gifQuery, setGifQuery] = useState('');
   const gifButton = useRef<HTMLButtonElement>(null);
+  // Task 7 (README §5.5): the footer's emoji picker inserts at the caret; Escape gives focus back to its button.
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const emojiButton = useRef<HTMLButtonElement>(null);
+  const insertEmoji = (emoji: string) => {
+    const el = textareaRef.current;
+    const from = el?.selectionStart ?? p.draft.length;
+    const to = el?.selectionEnd ?? p.draft.length;
+    pendingCaret.current = from + emoji.length;
+    p.onDraft(p.draft.slice(0, from) + emoji + p.draft.slice(to));
+  };
   useEffect(() => {
     if (gifCommunity === null) return;
     let cancelled = false;
@@ -177,6 +190,11 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
       encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
       onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={setCommandMode} slashSubmission={slashSubmission} />
+    <div className="d-composer-pop">
+    {emojiOpen && blocked === null ? <EmojiGrid id={`${id}-emoji`} label={t('shell.composer.emoji')} items={REACTION_EMOJI.map(a => ({ emoji: a.emoji, name: t(a.key) }))}
+      search={{ label: t('shell.composer.emojiSearch'), placeholder: t('shell.composer.emojiSearch') }}
+      onPick={emoji => { setEmojiOpen(false); insertEmoji(emoji); }}
+      onClose={() => { setEmojiOpen(false); emojiButton.current?.focus(); }} /> : null}
     {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery} dispatch={a => { p.dispatch(a); }}
       {...(p.announce !== undefined ? { announce: p.announce } : {})}
       onClose={reason => {
@@ -184,6 +202,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
         if (reason === 'escape') gifButton.current?.focus();
         else if (reason === 'picked') textareaRef.current?.focus();
       }} /> : null}
+    </div>
     <input ref={inputRef} className="dw-attach-input" type="file" multiple hidden
       onChange={e => { void attachFiles(client, p.channelId, Array.from(e.currentTarget.files ?? []), a => p.dispatch(a)); e.currentTarget.value = ''; }} />
     {!commandMode ? <Composer label={p.label} placeholder={p.placeholder} maxLength={4000} value={p.draft}
@@ -193,16 +212,18 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       sendLabel={t('shell.composer.send')}
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
       attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
-      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => setGifOpen(o => !o), buttonRef: gifButton } } : {})}
+      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => { setEmojiOpen(false); setGifOpen(o => !o); }, buttonRef: gifButton } } : {})}
+      emoji={{ label: t('shell.composer.emoji'), open: emojiOpen && blocked === null, controls: `${id}-emoji`, onToggle: () => { setGifOpen(false); setEmojiOpen(o => !o); }, buttonRef: emojiButton }}
+      codeLabel={t('shell.composer.code')} hint={t('shell.composer.newLine')} typing={p.typing} replying={p.ui.reply !== null}
       {...(noticeBody !== null ? { notice: noticeBody } : {})}
       top={<>
-        {p.ui.reply !== null ? <ReplyChip label={t('shell.composer.replying', { name: p.ui.reply.author })}
+        {p.ui.reply !== null ? <ReplyChip label={t('shell.composer.replying', { name: p.ui.reply.author })} name={p.ui.reply.author}
           excerpt={p.ui.reply.excerpt} cancelLabel={t('shell.composer.replyCancel')}
           onCancel={() => { p.dispatch({ type: 'reply', reply: null }); textareaRef.current?.focus(); }} /> : null}
         <TrayList channelId={p.channelId} items={tray} onError={e => p.onError(e)} />
-        {p.ui.trayError !== null ? <p className="dw-tray-error" role="alert">{p.ui.trayError}</p> : null}
-        {open ? <MentionList id={listId} label={t('shell.composer.mentions')}
-          options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary }))}
+        {p.ui.trayError !== null ? <p className="dw-tray-error d-composer__alert" role="alert">{p.ui.trayError}</p> : null}
+        {open ? <MentionList id={listId} label={t('shell.composer.mentions')} title={t('shell.composer.mentionsTitle')}
+          options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary, person: o.id.startsWith('m-') }))}
           activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}
       </>}
       measure={value => new TextEncoder().encode(encodeMentions(value, p.encodeWith, broadcast, roleMentions)).length}

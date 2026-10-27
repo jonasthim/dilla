@@ -126,7 +126,7 @@ describe('replies (L-UI-45)', () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'the question')] });
     await user.click(within(within(rowOf(P1)).getByRole('toolbar')).getByRole('button', { name: 'reply' }));
     expect(box()).toHaveFocus();
-    expect(chip()).toHaveTextContent('replying to bob');
+    expect(chip()).toHaveTextContent(/replying to bob/i);
     expect(chip()).toHaveTextContent('the question');
     await user.keyboard('@b');
     expect(screen.getByRole('listbox', { name: 'people to mention' })).toBeInTheDocument();

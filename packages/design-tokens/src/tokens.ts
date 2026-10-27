@@ -12,6 +12,17 @@ export type ColorTokens = {
   controlEdge: string; controlEdgeField: string; controlEdgeKey: string;
   /** The reminders popover (task 6b fix round 1): a due row's icon tint and the row action's text (prototype #C9CED6). */
   warnTint: string; fgChip: string;
+  /**
+   * The conversation (task 7), each the prototype's literal: the replied-to row's tint, the jump flash, the thread chip's
+   * hover, faint meta text (a code block's line count, the placeholder), the GIF tag's scrim, and the code highlighter
+   * (line numbers, comments, booleans, keywords, a hovered code line).
+   */
+  accentFaint: string; accentFlash: string; accentHover: string; fgFaint: string; scrimTag: string;
+  codeLineNo: string; codeComment: string; codeBool: string; codeKeyword: string; codeRowHover: string;
+  /** A failed tray card's line, and the feed's welcome tile. */
+  dangerLine: string; surfaceTile: string;
+  /** Quiet meta in the feed and composer (the gutter time, an empty composer's send): signal is the prototype's #5C636E; light and high-contrast keep 4.5:1. */
+  fgQuiet: string;
   linkUnderline: 0 | 1;
 };
 
@@ -26,6 +37,9 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerSoft: 'rgba(255,110,110,0.1)', dangerBorder: 'rgba(255,110,110,0.45)', dangerInk: '#1A0606', warnSoft: 'rgba(255,209,106,0.05)', scrim: 'rgba(3,4,6,0.6)', knob: '#FFFFFF', trackOff: '#2A303A', accentChip: 'rgba(90,168,230,0.16)', lineStrong: '#2A303A', brandInk: '#FFFFFF', hoverHi: '#1A1E25',
     controlEdge: '#2A303A', controlEdgeField: '#252A33', controlEdgeKey: '#3A404A',
     warnTint: 'rgba(255,209,106,0.14)', fgChip: '#C9CED6',
+    accentFaint: 'rgba(90,168,230,0.07)', accentFlash: 'rgba(90,168,230,0.18)', accentHover: 'rgba(90,168,230,0.08)', fgFaint: '#636A75', scrimTag: 'rgba(8,9,11,0.8)',
+    codeLineNo: '#4A5059', codeComment: '#6C737E', codeBool: '#E9B6EC', codeKeyword: '#C4A7FF', codeRowHover: 'rgba(255,255,255,0.02)',
+    dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E',
     linkUnderline: 0,
   },
   light: {
@@ -38,6 +52,9 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerSoft: 'rgba(179,38,30,0.1)', dangerBorder: 'rgba(179,38,30,0.45)', dangerInk: '#FFFFFF', warnSoft: 'rgba(138,90,0,0.05)', scrim: 'rgba(0,0,0,0.4)', knob: '#FFFFFF', trackOff: '#8A918A', accentChip: 'rgba(0,87,153,0.16)', lineStrong: '#B4BBB4', brandInk: '#FFFFFF', hoverHi: '#D6DAD6',
     controlEdge: '#6F776F', controlEdgeField: '#6F776F', controlEdgeKey: '#6F776F',
     warnTint: 'rgba(138,90,0,0.14)', fgChip: '#3F453F',
+    accentFaint: 'rgba(0,87,153,0.07)', accentFlash: 'rgba(0,87,153,0.18)', accentHover: 'rgba(0,87,153,0.08)', fgFaint: '#5C635C', scrimTag: 'rgba(20,23,26,0.8)',
+    codeLineNo: '#5C635C', codeComment: '#5C635C', codeBool: '#8A2E8F', codeKeyword: '#5B3BA8', codeRowHover: 'rgba(0,0,0,0.03)',
+    dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -50,6 +67,9 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerSoft: 'rgba(255,154,154,0.1)', dangerBorder: 'rgba(255,154,154,0.45)', dangerInk: '#000000', warnSoft: 'rgba(255,224,138,0.05)', scrim: 'rgba(0,0,0,0.7)', knob: '#000000', trackOff: '#C8C8C8', accentChip: 'rgba(156,203,255,0.24)', lineStrong: '#FFFFFF', brandInk: '#FFFFFF', hoverHi: '#2A2A2A',
     controlEdge: '#FFFFFF', controlEdgeField: '#FFFFFF', controlEdgeKey: '#FFFFFF',
     warnTint: 'rgba(255,224,138,0.2)', fgChip: '#E6E6E6',
+    accentFaint: 'rgba(156,203,255,0.12)', accentFlash: 'rgba(156,203,255,0.3)', accentHover: 'rgba(156,203,255,0.16)', fgFaint: '#C8C8C8', scrimTag: 'rgba(0,0,0,0.85)',
+    codeLineNo: '#C8C8C8', codeComment: '#C8C8C8', codeBool: '#F5C2F7', codeKeyword: '#D9C8FF', codeRowHover: 'rgba(255,255,255,0.08)',
+    dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8',
     linkUnderline: 1,
   },
 };
@@ -93,6 +113,7 @@ export const structural = {
    * comment so the reference stays checkable.
    */
   text: {
+    pico: '0.40625rem',   // 6.5px (a reply line's 14px mini avatar; task 7)
     nano: '0.5rem',       // 8px (the reminders popover's 22px bot tile; task 6b)
     mini: '0.46875rem',   // 7.5px (an 18px voice occupant avatar's initials)
     micro: '0.625rem',    // 10px
@@ -108,6 +129,7 @@ export const structural = {
     base: '0.84375rem',   // 13.5px
     md: '0.875rem',       // 14px
     lg: '1.0625rem',      // 17px
+    welcome: '1.125rem',  // 18px (the feed's "Welcome to #general"; task 7)
     title: '1.1875rem',   // 19px (the server name at the top of the sidebar)
     xl: '1.375rem',       // 22px
   },
@@ -146,7 +168,9 @@ export const structural = {
    * the Windows forced-colors indicator survives.
    */
   focusRing: '2px solid var(--accent)',
-  motion: { toggle: '240ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', aside: '280ms', bar: '600ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms', hover: '140ms', tab: '160ms', spin: '180ms', dock: '340ms', railBadge: '500ms', popover: '200ms' },
+  motion: { toggle: '240ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', aside: '280ms', bar: '600ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms', hover: '140ms', tab: '160ms', spin: '180ms', dock: '340ms', railBadge: '500ms', popover: '200ms',
+    /** Task 7 (the prototype's conversation): the feed's channel-switch fade, the composer's focus ring, the toolbar's rise and the 40ms entrance stagger. */
+    switch: '140ms', switchRise: '240ms', focus: '160ms', rise: '180ms', stagger: '40ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

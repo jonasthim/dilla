@@ -58,7 +58,7 @@ function Screen({ main, composer, after }: { main: ReactNode; composer?: ReactNo
   </div>;
 }
 
-const toolbar = <MessageToolbar label={t('shell.message.toolbar')} tabbable items={[
+const toolbar = <MessageToolbar moreLabel="more actions" label={t('shell.message.toolbar')} tabbable items={[
   { id: 'react', label: t('shell.message.react'), onAction: noop },
   { id: 'reply', label: t('shell.message.reply'), onAction: noop },
   { id: 'edit', label: t('shell.message.edit'), onAction: noop },

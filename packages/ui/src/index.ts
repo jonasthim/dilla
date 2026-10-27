@@ -78,6 +78,8 @@ export type { MessageToolbarProps } from './MessageToolbar/MessageToolbar.tsx';
 export { ReactionBar } from './ReactionBar/ReactionBar.tsx';
 export type { ReactionBarProps } from './ReactionBar/ReactionBar.tsx';
 export { EmojiGrid } from './EmojiGrid/EmojiGrid.tsx';
+export { CodeBlock } from './CodeBlock/CodeBlock.tsx';
+export type { CodeBlockProps, CodeBlockLabels } from './CodeBlock/CodeBlock.tsx';
 export type { EmojiGridProps } from './EmojiGrid/EmojiGrid.tsx';
 export { MessageEditor } from './MessageEditor/MessageEditor.tsx';
 export type { MessageEditorProps } from './MessageEditor/MessageEditor.tsx';

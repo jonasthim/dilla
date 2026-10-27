@@ -2,7 +2,7 @@
 import { phoneNow } from '../../layout.ts';
 import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
-import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
+import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useRoute } from '../../router.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
@@ -73,7 +73,9 @@ export interface ConversationProps { channelId: string; logKey: string; label: s
   /** Opens a message's thread (web3.7); without it a row offers no thread item and no chip. */
   onOpenThread?: (msgId: string) => void;
   /** Opens a profile card for a mentioned user or a message's author (MP7); without it neither is a button. */
-  onOpenProfile?: ProfileOpener }
+  onOpenProfile?: ProfileOpener;
+  /** The start of the conversation (README §5.5), shown over the first message once the whole history is here. */
+  welcome?: { icon: IconName; title: string; body: string } }
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
@@ -335,11 +337,13 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}
-      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}>
+      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}
+      {...(p.welcome !== undefined && p.timeline !== undefined && !p.timeline.hasEarlier ? { welcome: p.welcome } : {})}>
       {items.map((item, index) => <Fragment key={item.key}>
         {startsDay(items[index - 1], item) ? <DateDivider label={dayLabel(item.ts, now)} /> : null}
         <MessageItem item={item} channelId={p.channelId} book={p.book} now={now} bits={bits} client={client} communityId={communityId} threadId={null}
         grouped={groupedWithAbove(items[index - 1], item)} revealed={item.key === revealedKey} onReveal={on => reveal(item.key, on)}
+        replying={item.msgId !== null && p.ui.reply?.msgId === item.msgId}
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
         editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentionsFor(item.body))).length}
         rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}

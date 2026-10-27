@@ -1006,6 +1006,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
     ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report}
     {...(channel !== null ? { onOpenThread: openThread } : {})}
+    welcome={channel !== null
+      ? { icon: channel.announcement ? 'megaphone' : 'hash', title: t('shell.log.welcome', { channel: channel.name }), body: t('shell.log.welcomeBody', { channel: channel.name }) }
+      : { icon: 'at-sign', title: dm?.name ?? '', body: t('shell.log.welcomeDmBody') }}
     onOpenProfile={openProfile} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
@@ -1263,7 +1266,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       items={timeline?.items ?? []} book={book} draft={ordinaryDrafts.current.get(targetId) ?? (draft.channelId === targetId ? draft.text : '')}
       onDraft={text => { rememberDraft(ordinaryDrafts.current, targetId, text); setDraft({ channelId: targetId, text, typed: true }); }} ui={ui} dispatch={dispatch} onSend={send} onError={report}
       {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
-      announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
+      announcement={channel !== null && isAnnouncement(channel)} announce={announce}
+      typing={typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames} labels={{ one: en['typing.one'], many: t('typing.many') }} /> : null} />
   );
 
   // The pane belongs to a server shown by a channel route; a DM route, voice stage or Settings has none beside it.
@@ -1890,12 +1894,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           <p className="d-sr-only dw-voice-lasting" role="status">{call.lasting}</p>
           {header}
         </>}
-        composer={composer === null ? null : <>
-          {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
-          {typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames}
-            labels={{ one: en['typing.one'], many: t('typing.many') }} /> : null}
-          {composer}
-        </>}
+        composer={composer}
         banner={<>
           {linkReason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}

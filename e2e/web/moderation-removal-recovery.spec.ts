@@ -1,7 +1,7 @@
 // Signed moderator removals through the shipped browser client. The host starts empty and every
 // account, role, invite, message and removal is made through the UI; no database fixture is used.
 import { expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
-import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, sendText, signUp, test } from './support/app';
+import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, sendText, signUp, test, expectRowMenuAction, rowAction } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -110,10 +110,8 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     await expect(messageRow(page, 'general', BODY)).toBeVisible();
     const unauthorizedRow = messageRow(unauthorized.page, 'general', BODY);
     await expect(unauthorizedRow).toBeVisible();
-    const removeLabel = copy('shell.message.moderateRemove');
     await unauthorizedRow.focus();
-    await expect(unauthorizedRow.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true })
-      .getByRole('button', { name: removeLabel, exact: true })).toHaveCount(0);
+    await expectRowMenuAction(unauthorizedRow, 'moderateRemove', false);
 
     // Leave Cato's device offline while Bea signs a removal proof and submits it to the real API.
     const msgId = await authorRow.getAttribute('data-msg-id');
@@ -125,10 +123,8 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     const modRow = messageRow(mod.page, 'general', BODY);
     await expect(modRow).toBeVisible();
     await modRow.focus();
-    const action = modRow.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true })
-      .getByRole('button', { name: removeLabel, exact: true });
-    await expect(action).toBeVisible();
-    await action.click();
+    await expectRowMenuAction(modRow, 'moderateRemove', true);
+    await rowAction(modRow, 'moderateRemove');
     const confirm = dialog(mod.page, 'shell.moderation.removeTitle');
     await confirm.getByRole('textbox', { name: copy('shell.moderation.reason'), exact: true }).fill('reviewed by moderator');
     const removalResult: { value: number | null } = { value: null };

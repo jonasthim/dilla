@@ -66,8 +66,9 @@ describe('R9: the @container twins', () => {
     return out;
   });
 
-  it('finds the three @container d-shell blocks (base.css and MessageRow.css twice)', () => {
-    expect(containers.map(c => c.file).sort()).toEqual(['MessageRow/MessageRow.css', 'MessageRow/MessageRow.css', 'styles/base.css']);
+  // Task 7: MessageRow.css lost its two blocks (the toolbar floats and the thread chip is 24px at every width, as in the prototype).
+  it('finds the one @container d-shell block (base.css)', () => {
+    expect(containers.map(c => c.file).sort()).toEqual(['styles/base.css']);
     expect(containers.every(c => c.body.length > 0)).toBe(true);
   });
 

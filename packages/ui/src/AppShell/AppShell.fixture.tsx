@@ -6,6 +6,7 @@ import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
 import { MessageLog } from '../MessageLog/MessageLog.tsx';
 import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
+import { GeneralLog, SignalComposer } from '../MessageRow/conversation.fixture.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { TopBar } from '../TopBar/TopBar.tsx';
 import { Button } from '../Button/Button.tsx';
@@ -73,7 +74,6 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
  * sample data (Task 11).
  */
 export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
-  const [draft, setDraft] = useState('');
   const membersOpen = shell?.asideOpen === true;
   return (
     <AppShell
@@ -106,8 +106,7 @@ export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
         labels={{ region: 'your account', mute: 'mute', deafen: 'deafen' }} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
         status={{ current: 'online', label: 'your status: online', onChoose: noop,
           items: [{ id: 'online', label: 'online' }, { id: 'idle', label: 'idle' }, { id: 'dnd', label: 'do not disturb' }, { id: 'invisible', label: 'invisible' }] }} />}
-      composer={<Composer label="message #general" placeholder="Message #general" maxLength={4000} value={draft} onChange={setDraft}
-        onSend={() => setDraft('')} sendLabel="send" counterLabel={n => `${n} left`} />}
+      composer={<SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}
       aside={shell?.aside === undefined ? undefined : (
         <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
           groups={[
@@ -117,11 +116,8 @@ export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
           ]} />
       )}
     >
-      <MessageLog label="messages in #general" emptyLabel="No messages yet.">
-        <MessageRow author="Ada" time="20:27" body="raid tonight at 20:00? bring the good shields" state="ok" />
-        <MessageRow author="Björn" time="20:27" body="in. last time the bridge troll took everything we had" state="ok" />
-        <MessageRow author="Mira" time="20:28" body="count me in" state="ok" own />
-      </MessageLog>
+      {/* Task 7: the conversation as packages/web composes it (MessageItem, ComposerArea; conversation.fixture.tsx). */}
+      <GeneralLog />
     </AppShell>
   );
 }

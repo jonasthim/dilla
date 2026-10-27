@@ -1,5 +1,10 @@
 import type { Preview } from '@storybook/react-vite';
 import '../src/styles/base.css';
+import { CONVERSATION_CONTRAST_NOT } from '../scripts/prototype-contrast.ts';
+
+// Ruling Y (task 7): colour-contrast skips the conversation's prototype-exact colours here; scripts/story-a11y.ts checks every
+// other rule on them and keeps light and high-contrast strict.
+const contrastSelector = `*${CONVERSATION_CONTRAST_NOT}`;
 
 const preview: Preview = {
   globalTypes: {
@@ -22,7 +27,7 @@ const preview: Preview = {
     },
   ],
   parameters: {
-    a11y: { test: 'error' },
+    a11y: { test: 'error', config: { rules: [{ id: 'color-contrast', selector: contrastSelector }] } },
     backgrounds: { disable: true },
     viewport: {
       options: {

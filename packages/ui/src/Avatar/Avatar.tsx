@@ -9,7 +9,7 @@ export type Presence = 'online' | 'idle' | 'dnd' | 'offline';
  */
 export const AVATAR_HUES = [0, 20, 210, 230, 250, 270, 300, 330] as const;
 
-export type AvatarProps = { name: string; initials?: string; hue?: (typeof AVATAR_HUES)[number]; presence?: Presence; size?: 'voice' | 'xs' | 'sm' | 'member' | 'row' | 'md' | 'lg' | 'panel'; shape?: 'circle' | 'bot' };
+export type AvatarProps = { name: string; initials?: string; hue?: (typeof AVATAR_HUES)[number]; presence?: Presence; size?: 'mini' | 'voice' | 'sug' | 'xs' | 'sm' | 'member' | 'msg' | 'row' | 'md' | 'lg' | 'panel'; shape?: 'circle' | 'bot' };
 
 function deriveInitials(name: string): string {
   const parts = name.trim().split(/\s+/);

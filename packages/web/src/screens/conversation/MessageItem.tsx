@@ -51,7 +51,23 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   /** Phone only (R30): whether this row's toolbar is shown, and the row's ask to show or hide it. Absent: the toolbar is always shown. */
   revealed?: boolean;
   onReveal?: (on: boolean) => void;
-  client?: CoreClient; communityId?: string | null; threadId?: string | null }
+  client?: CoreClient; communityId?: string | null; threadId?: string | null;
+  /** The message the composer is replying to: tinted with the accent bar (README §5.5). */
+  replying?: boolean }
+
+/** The author's name colour (README §5.5): the first of their roles that has a colour, 0 for none. */
+export function nameColorOf(userId: string | null, book: NameBook): number {
+  if (userId === null || book.roleInfo === undefined) return 0;
+  const member = book.members.find(m => m.userId === userId);
+  for (const id of member?.roleIds ?? []) {
+    const color = book.roleInfo.get(id)?.color ?? 0;
+    if (color !== 0) return color;
+  }
+  return 0;
+}
+
+/** Read at render, so a language switch is seen. */
+const codeLabels = () => ({ copy: t('shell.code.copy'), copied: t('shell.code.copied'), lines: (n: number) => t(n === 1 ? 'shell.code.line' : 'shell.code.lines', { n }) });
 
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
@@ -90,8 +106,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const canSend = p.bits == null || (p.bits & PERM.sendMessages) !== 0;
   const openThread = item.state === 'ok' && item.msgId !== null && item.seq !== null ? p.onOpenThread : undefined;
   const toolbar = item.state === 'ok' && item.msgId !== null && item.seq !== null ? <MessageToolbar
-    label={t('shell.message.toolbar')} tabbable={p.active} items={[
-      { id: 'react', label: t('shell.message.react'), onAction: e => emit({ kind: 'react', anchor: e.currentTarget as HTMLElement }) },
+    label={t('shell.message.toolbar')} moreLabel={t('shell.message.more')} tabbable={p.active} items={[
+      { id: 'react', label: t('shell.message.react'), onAction: anchor => emit({ kind: 'react', anchor }) },
       ...(p.inThread === true || !canSend ? [] : [{ id: 'reply' as const, label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) }]),
       ...(openThread !== undefined && canSend ? [{ id: 'thread' as const, label: t('thread.open'), onAction: () => openThread(item.msgId!) }] : []),
       ...(ownAuthor ? [{ id: 'edit' as const, label: t('shell.message.edit'), onAction: () => emit({ kind: 'edit' as const }) }] : []),
@@ -127,7 +143,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     authorId={item.senderUser ?? undefined}
     onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
       openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={displayBody} card={card}
-    grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal}
+    grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal} replying={p.replying === true}
+    nameColor={item.bot ? 0 : nameColorOf(item.senderUser, p.book)} codeLabels={codeLabels()}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

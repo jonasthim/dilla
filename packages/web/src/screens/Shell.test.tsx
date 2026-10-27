@@ -13,6 +13,7 @@ import { joinErrorState, replaceHistoryState } from '../router.ts';
 import { browser } from '../browser.ts';
 import { Shell } from './Shell.tsx';
 import type { ShellUpdateDeps } from './Shell.tsx';
+import { toolbarButton } from '../test/toolbar.ts';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -296,7 +297,7 @@ it('restores the reply target and member pane after the channel list arrives', a
   await waitFor(() => expect(remove).toHaveBeenCalledOnce());
   act(() => fake.set(`channels:${A}`, CHANNELS));
   await waitFor(() => expect(composer()).toHaveValue('later'));
-  await waitFor(() => expect(screen.getByText(/replying to Bob/i)).toBeInTheDocument());
+  await waitFor(() => expect(document.querySelector('.d-reply-chip__label')).toHaveTextContent(/replying to Bob/i));
 });
 it('reopens the search dialog with its query after an update', async () => {
   const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
@@ -519,12 +520,12 @@ it('renews typing while the draft keeps changing, within the server’s hold', a
 it('names typing people once each, in one polite status above the composer', () => {
   const { fake } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: PEER, name: 'bob', expiresAt: NOW + 9 }]));
-  const status = screen.getByText('bob is typing');
+  const status = screen.getByText('bob is typing…');
   expect(status).toHaveAttribute('role', 'status');
   expect(document.querySelector('.d-app-shell__main')).toContainElement(status);
   act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: BOT, name: 'Helper', expiresAt: NOW + 10 }]));
   expect(screen.getAllByText(/typing/)).toHaveLength(1);
-  expect(screen.getByText('Several people are typing')).toHaveAttribute('role', 'status');
+  expect(screen.getByText('Several people are typing…')).toHaveAttribute('role', 'status');
 });
 
 it('says only in the unblocked conversation that a validated Remove restored sending', async () => {
@@ -650,7 +651,7 @@ it('shows a trust refusal of a pin as the conversation\'s blocked copy, not a ra
   fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_UMK_CHANGED' })) : Promise.resolve(null);
   const row = () => screen.getByText('pin me').closest<HTMLElement>('.d-message-row')!;
   const shown = screen.getAllByText(changed).length;
-  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await user.click(toolbarButton(within(row()).getByRole('toolbar', { name: en['shell.message.toolbar'] }), 'pin'));
   await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(1));
   // The alert and the composer already say it; the refusal adds its own dismissable banner with the same text.
   await waitFor(() => expect(screen.getAllByText(changed).length).toBe(shown + 1));
@@ -659,7 +660,7 @@ it('shows a trust refusal of a pin as the conversation\'s blocked copy, not a ra
   // Any other trust code reads as the failed-device copy.
   fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_DEVICE_UNLISTED' })) : Promise.resolve(null);
   act(() => fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: false } }));
-  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await user.click(toolbarButton(within(row()).getByRole('toolbar', { name: en['shell.message.toolbar'] }), 'pin'));
   await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(2));
   await waitFor(() => expect(screen.getAllByText(failed).length).toBeGreaterThan(1));
   expect(document.body).not.toHaveTextContent('E_DEVICE_UNLISTED');
@@ -889,8 +890,8 @@ describe('timeline', () => {
     // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
     expect(within(log).getAllByText('web')).toHaveLength(2);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
-    // Each row names its time once, and the gutter of the row folded into its author's run shows the same full time (R29): 8 rows and 1 gutter.
-    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(9);
+    // Each row names its time once in its head (heard) and once in its gutter (seen; Task 7, Signal §5.5): 8 rows, 16 times.
+    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(16);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
     expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
@@ -1490,10 +1491,13 @@ describe('keyboard', () => {
     await user.tab();
     // MP7: the author name is the row's first inner stop.
     expect(document.activeElement).toBe(screen.getByRole('article').querySelector('.d-message-row__author-open'));
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
+    // Task 7 (Signal §5.5): the input row (textarea, send), then the footer's tools (attach, emoji, </>).
     await user.tab();
     expect(composer()).toHaveFocus();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: en['shell.composer.send'] }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
   });
   // Requirement 11: closing the join dialog puts focus in the composer.
   it('moves focus to the composer when the join dialog closes', async () => {

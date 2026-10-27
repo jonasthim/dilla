@@ -33,6 +33,8 @@ export interface ActionMenuProps {
    */
   trigger?: 'button' | 'none';
   returnFocus?(): HTMLElement | null;
+  /** The trigger's tab index, for a trigger inside a roving toolbar (the message toolbar's "more"). */
+  triggerTabIndex?: number;
 }
 
 /**
@@ -40,7 +42,7 @@ export interface ActionMenuProps {
  * on the last. Arrows wrap, Home and End jump. Escape closes and refocuses the trigger, Tab closes and moves on, and a
  * pointerdown outside closes. `open` is the caller's, so a row can also open the menu from a context menu (`at`).
  */
-export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon, triggerContent, labelledBy, className, triggerClassName, trigger = 'button', returnFocus }: ActionMenuProps) {
+export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon, triggerContent, labelledBy, className, triggerClassName, trigger = 'button', returnFocus, triggerTabIndex }: ActionMenuProps) {
   const base = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -140,7 +142,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
 
   return (
     <span ref={rootRef} className={className === undefined ? 'd-action-menu' : `d-action-menu ${className}`}>
-      {trigger === 'none' ? null : <button ref={triggerRef} type="button" className={triggerClassName === undefined ? 'd-action-menu__trigger' : `d-action-menu__trigger ${triggerClassName}`} aria-label={labelledBy === undefined ? label : undefined} aria-labelledby={labelledBy} aria-haspopup="menu" data-focus-key={focusKey}
+      {trigger === 'none' ? null : <button ref={triggerRef} type="button" className={triggerClassName === undefined ? 'd-action-menu__trigger' : `d-action-menu__trigger ${triggerClassName}`} aria-label={labelledBy === undefined ? label : undefined} aria-labelledby={labelledBy} aria-haspopup="menu" data-focus-key={focusKey} tabIndex={triggerTabIndex}
         aria-expanded={open} aria-controls={open ? `${base}-menu` : undefined}
         onClick={() => onOpenChange(!open)} onKeyDown={onTriggerKey}>
         {triggerContent ?? (icon !== undefined ? <Icon name={icon} size={22} /> : <span aria-hidden="true">⋯</span>)}

@@ -347,7 +347,7 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.edit.hint` | `escape to cancel · enter to save` | under the editor |
 | `shell.edit.save` | `save` | editor button |
 | `shell.edit.cancel` | `cancel` | editor button |
-| `shell.composer.replying` | `replying to {name}` | the reply chip |
+| `shell.composer.replying` | `Replying to {name}` | the reply bar (Signal §5.5, the prototype's case) |
 | `shell.composer.replyCancel` | `cancel reply` | the reply chip's `×` |
 | `shell.composer.attach` | `attach files` | the composer's `+` |
 | `shell.composer.mentions` | `people to mention` | the mention list's name |

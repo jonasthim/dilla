@@ -7,7 +7,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
-  channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, channelRowMenuItem,
+  channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, channelRowMenuItem, expectRowMenuAction
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -143,7 +143,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await theirs.focus();
     await expect(rowToolbar(theirs)).toBeVisible();
     await expect(rowToolbar(theirs).getByRole('button', { name: copy('shell.message.react'), exact: true })).toBeVisible();
-    await expect(rowToolbar(theirs).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toHaveCount(0);
+    await expectRowMenuAction(theirs, 'pin', false);
     const box2 = composerBox(page2, 'general');
     await box2.fill('@ev');
     await expect(mentionList(page2)).toHaveCount(0);
@@ -301,7 +301,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     // Björn's own app follows too: his offer to pin is gone with the right.
     await theirs.focus();
     await expect(theirs).not.toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    await expect(rowToolbar(theirs).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toHaveCount(0, { timeout: WAIT });
+    await expectRowMenuAction(theirs, 'pin', false);
 
     // Turning the right back on brings the same pin back: pins follow the current rights, in both directions.
     settings = await openSettings(page);

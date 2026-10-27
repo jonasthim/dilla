@@ -5,6 +5,9 @@ import { Composer } from './Composer.tsx';
 import { ReplyChip } from '../ReplyChip/ReplyChip.tsx';
 import { AttachmentTray } from '../AttachmentTray/AttachmentTray.tsx';
 import { MentionList } from '../MentionList/MentionList.tsx';
+import { SignalComposer } from '../MessageRow/conversation.fixture.tsx';
+import { TypingIndicator } from '../TypingIndicator/TypingIndicator.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 
 // The Composer is controlled (L-UI-13): each story passes the text as `value`. 69 bytes per line, so 53
 // lines (less the last space) leave 344 of the 4000-byte budget and 59 lines are 70 bytes over it.
@@ -106,3 +109,30 @@ export const BandThreeLines: Story = {
     await expect(formHeight(canvasElement)).toBeGreaterThan(52);
   },
 };
+
+// ---- Task 7 (Signal §8): the prototype's composer states, with the props ComposerArea passes (conversation.fixture.tsx).
+const signalBox = (Story: () => ReactNode) => <div style={{ maxWidth: 900, paddingTop: 140, background: 'var(--bg)' }}><Story /></div>;
+const signalArgs = { globals: { theme: 'signal' }, decorators: [signalBox] };
+const GIF = { label: 'add a gif', open: false, onToggle: () => {} };
+export const SignalEmpty: Story = { ...signalArgs, render: () => <SignalComposer gif={GIF} /> };
+export const SignalFocused: Story = { ...signalArgs, render: () => <FocusField><SignalComposer gif={GIF} /></FocusField> };
+export const SignalWithText: Story = { ...signalArgs, render: () => <SignalComposer gif={GIF} value="see you at the bridge" /> };
+export const SignalTyping: Story = { ...signalArgs, render: () => <SignalComposer gif={GIF}
+  typing={<TypingIndicator names={['Björn']} labels={{ one: '{name} is typing…', many: 'Several people are typing…' }} />} /> };
+export const SignalReply: Story = { ...signalArgs, render: () => <FocusField><SignalComposer gif={GIF} replying
+  top={<ReplyChip label="Replying to Ada" name="Ada" excerpt="raid tonight at 20:00? bring the good shields" cancelLabel="cancel reply" onCancel={() => {}} />} /></FocusField> };
+export const SignalAttachmentsUploading: Story = { ...signalArgs, render: () => <SignalComposer gif={GIF} canSendEmpty
+  top={<AttachmentTray label="files to send" items={[
+    { id: 't0', name: 'map.png', size: '1.2 MB', step: 'uploading', failed: false, phase: 'uploading', removeLabel: 'remove map.png', onRemove: () => {} },
+    { id: 't1', name: 'packing-list.txt', size: '2 KB', step: 'ready', failed: false, phase: 'ready', removeLabel: 'remove packing-list.txt', onRemove: () => {} },
+  ]} />} /> };
+export const SignalAttachmentTooLarge: Story = { ...signalArgs, render: () => <SignalComposer gif={GIF}
+  top={<p className="d-composer__alert" role="alert">raid-video.mkv is over 25 MB and cannot be sent from a browser.</p>} /> };
+export const SignalMentioning: Story = { ...signalArgs, render: () => <SignalComposer gif={GIF} value="@b"
+  combobox={{ expanded: true, controls: 'mentions', activeDescendant: 'm-bjorn', onKey: () => false }}
+  top={<MentionList id="mentions" label="people to mention" title="Members" activeId="m-bjorn" onPick={() => {}} options={[
+    { id: 'm-bjorn', primary: 'Björn', secondary: '@bjorn', person: true }, { id: 'b-everyone', primary: '@everyone', secondary: 'everyone in this channel' },
+  ]} />} /> };
+export const SignalPhone: Story = { globals: { theme: 'signal' }, render: () => (
+  <PhoneLayoutProvider value><div data-layout="phone" style={{ width: 390, paddingTop: 40, background: 'var(--bg)' }}><SignalComposer gif={GIF} /></div></PhoneLayoutProvider>
+) };

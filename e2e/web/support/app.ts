@@ -1010,9 +1010,33 @@ export function rowById(page: Page, channel: string, msgId: string): Locator {
 export function rowToolbar(row: Locator): Locator {
   return row.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
 }
-export async function rowAction(row: Locator, action: 'react' | 'reply' | 'edit' | 'pin' | 'unpin' | 'delete'): Promise<void> {
+/** Task 7 (Signal §5.5, Ruling U): edit, pin, unpin, delete and remove-for-everyone sit in the toolbar's "more" menu. */
+export type RowMenuAction = 'edit' | 'pin' | 'unpin' | 'delete' | 'moderateRemove';
+const MENU_ACTIONS: ReadonlySet<string> = new Set<RowMenuAction>(['edit', 'pin', 'unpin', 'delete', 'moderateRemove']);
+export function rowMore(row: Locator): Locator {
+  return rowToolbar(row).getByRole('button', { name: copy('shell.message.more'), exact: true });
+}
+export function rowMenuItem(row: Locator, action: RowMenuAction): Locator {
+  return rowToolbar(row).getByRole('menuitem', { name: copy(`shell.message.${action}`), exact: true });
+}
+export async function rowAction(row: Locator, action: 'react' | 'reply' | RowMenuAction): Promise<void> {
   await row.focus();
-  await rowToolbar(row).getByRole('button', { name: copy(`shell.message.${action}`), exact: true }).click();
+  if (!MENU_ACTIONS.has(action)) {
+    await rowToolbar(row).getByRole('button', { name: copy(`shell.message.${action}`), exact: true }).click();
+    return;
+  }
+  if (await rowMore(row).getAttribute('aria-expanded') !== 'true') await rowMore(row).click();
+  await rowMenuItem(row, action as RowMenuAction).click();
+}
+/** Whether the row's "more" menu offers `action` (retried until `timeout`); the menu is closed again after. */
+export async function expectRowMenuAction(row: Locator, action: RowMenuAction, offered: boolean, timeout = WAIT): Promise<void> {
+  await expect(async () => {
+    await row.focus();
+    if (await rowMore(row).count() === 0) { expect(offered).toBe(false); return; }
+    if (await rowMore(row).getAttribute('aria-expanded') !== 'true') await rowMore(row).click();
+    await expect(rowMenuItem(row, action)).toHaveCount(offered ? 1 : 0, { timeout: 1_000 });
+  }).toPass({ timeout });
+  if (await rowMore(row).count() > 0 && await rowMore(row).getAttribute('aria-expanded') === 'true') await row.page().keyboard.press('Escape');
 }
 export function reactionChip(row: Locator, emojiName: string, count: number): Locator {
   return row.getByRole('button', { name: copy('shell.message.reaction', { name: emojiName, count }), exact: true });

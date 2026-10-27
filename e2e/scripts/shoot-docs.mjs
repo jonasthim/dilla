@@ -389,8 +389,14 @@ async function idOf(page, channel, text) {
 async function toolbarAction(page, msgId, key) {
   await byId(page, msgId).focus();
   await byId(page, msgId).hover();
-  await byId(page, msgId).getByRole('toolbar', { name: t('shell.message.toolbar'), exact: true })
-    .getByRole('button', { name: t(key), exact: true }).click();
+  const toolbar = byId(page, msgId).getByRole('toolbar', { name: t('shell.message.toolbar'), exact: true });
+  // Task 7 (Ruling U): edit, pin, unpin and delete are in the "more" menu; react, reply and thread are icon buttons.
+  if (['shell.message.edit', 'shell.message.pin', 'shell.message.unpin', 'shell.message.delete'].includes(key)) {
+    await toolbar.getByRole('button', { name: t('shell.message.more'), exact: true }).click();
+    await toolbar.getByRole('menuitem', { name: t(key), exact: true }).click();
+    return;
+  }
+  await toolbar.getByRole('button', { name: t(key), exact: true }).click();
 }
 
 async function pickEmoji(page, nameKey) {

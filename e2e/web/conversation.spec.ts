@@ -5,7 +5,7 @@ import {
   CLASS, HEX32, TEST_TIMEOUT, WAIT, attachInput, channelRow, composerBox, copy, deleteDialog, drawImage, editorBox,
   expectAccessible, expectComposerReady, flashSeen, instanceInvite, joinCommunity, lightbox, logRegion, mentionList,
   PERM_PIN, messageRow, openChannel, pinsDialog, reactionChip, rowAction, rowById, rowToolbar, sendText, sha256Hex, shownName,
-  signIn, signUp, tag, trayEntries, watchFlash, type Peer, channelRowMenuItem,
+  signIn, signUp, tag, trayEntries, watchFlash, type Peer, channelRowMenuItem, expectRowMenuAction
 } from './support/app';
 import { test } from './support/second';
 
@@ -116,7 +116,7 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
   // server's owner, first gives everyone that right, and the browser's toolbar then offers it.
   await peer.allowEveryone(PERM_PIN);
   await target.focus();
-  await expect(rowToolbar(target).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible({ timeout: WAIT });
+  await expectRowMenuAction(target, 'pin', true);
   await rowAction(target, 'pin');
   await expect(target).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
   await channelRowMenuItem(page, channel, 'shell.pins.open');
@@ -387,7 +387,7 @@ test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
   // A plain member may not pin (flow 09): the peer, the server's owner, gives everyone that right first.
   await peer.allowEveryone(PERM_PIN);
   await own.focus();
-  await expect(rowToolbar(own).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible({ timeout: WAIT });
+  await expectRowMenuAction(own, 'pin', true);
   await rowAction(own, 'pin');
   await expect(inB).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
 

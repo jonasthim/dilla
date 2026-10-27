@@ -34,6 +34,9 @@ const SIGNAL_ICONS = {
   'house': ['M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8', 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
   // Task 6b fix round 1: the reminders popover's row icon (the prototype's alarm-clock).
   'alarm-clock': ['circle', 'M12 9v4l2 2', 'M5 3 2 6', 'm22 6-3-3', 'M6.38 18.7 4 21', 'M17.64 18.67 20 21'],
+  // Task 7: the reaction bar's add button and the composer's </> button.
+  'smile-plus': ['M13.267 2.08a10 10 0 108.653 8.653', 'M15 10V9', 'M16 5h6', 'M16.472 15a6 6 0 01-8.943 0', 'M19 2v6', 'M9 10V9'],
+  'code-xml': ['m18 16 4-4-4-4', 'm6 8-4 4 4 4', 'm14.5 4-5 16'],
 } as const;
 const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
 
