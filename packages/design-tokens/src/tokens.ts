@@ -1,37 +1,45 @@
-export type ThemeName = 'mesh' | 'light' | 'high-contrast';
+export type ThemeName = 'signal' | 'light' | 'high-contrast';
 
 export type ColorTokens = {
   bg: string; bg2: string; bg3: string; surface: string; surface2: string; surfaceHi: string;
   hairline: string; hairline2: string; edge: string;
-  fg: string; fg2: string; fg3: string; fg4: string; fgLink: string;
-  accent: string; accent2: string; accentInk: string; accentSoft: string;
+  fg: string; fgBody: string; fgStrong: string; fg2: string; fg3: string; fg4: string; fgLink: string;
+  accent: string; accent2: string; accentInk: string; accentSoft: string; brand: string; hover: string;
   danger: string; warn: string; ok: string; mention: string; mentionInk: string;
+  okSoft: string; okSoftBorder: string; okTint: string; okBorder: string; okText: string;
+  dangerSoft: string; dangerBorder: string; dangerInk: string; warnSoft: string; scrim: string;
   linkUnderline: 0 | 1;
 };
 
 export const themes: Record<ThemeName, ColorTokens> = {
-  mesh: {
-    bg: '#070809', bg2: '#0C0D0F', bg3: '#101214', surface: '#0C0D0F', surface2: '#14171A', surfaceHi: '#1A1E22',
-    hairline: '#1F2226', hairline2: '#363B41', edge: '#6B7370',
-    fg: '#E8ECE8', fg2: '#A0A6A0', fg3: '#818780', fg4: '#5E635E', fgLink: '#7CFF8E',
-    accent: '#7CFF8E', accent2: '#A8FFB6', accentInk: '#06150A', accentSoft: 'rgba(124,255,142,0.14)',
+  signal: {
+    bg: '#08090B', bg2: '#0B0D10', bg3: '#0D1014', surface: '#0D1014', surface2: '#0F1216', surfaceHi: '#171B22',
+    hairline: '#1A1D23', hairline2: '#232831', edge: '#5C636E',
+    fg: '#E4E8EE', fgBody: '#D5DAE1', fgStrong: '#B9BFC8', fg2: '#8C939E', fg3: '#767D89', fg4: '#5C636E', fgLink: '#5AA8E6',
+    accent: '#5AA8E6', accent2: '#8CC4F0', accentInk: '#03121E', accentSoft: 'rgba(90,168,230,0.12)', brand: '#005799', hover: '#14171C',
     danger: '#FF6E6E', warn: '#FFD16A', ok: '#7CFF8E', mention: '#FFD16A', mentionInk: '#1A1300',
+    okSoft: 'rgba(124,255,142,0.04)', okSoftBorder: 'rgba(124,255,142,0.22)', okTint: 'rgba(124,255,142,0.08)', okBorder: 'rgba(124,255,142,0.25)', okText: '#9EF5AC',
+    dangerSoft: 'rgba(255,110,110,0.1)', dangerBorder: 'rgba(255,110,110,0.45)', dangerInk: '#1A0606', warnSoft: 'rgba(255,209,106,0.05)', scrim: 'rgba(3,4,6,0.6)',
     linkUnderline: 0,
   },
   light: {
     bg: '#F5F6F5', bg2: '#ECEEEC', bg3: '#E3E6E3', surface: '#FFFFFF', surface2: '#E6E9E6', surfaceHi: '#DDE1DD',
     hairline: '#CBD0CB', hairline2: '#8F978F', edge: '#6F776F',
-    fg: '#14171A', fg2: '#3F453F', fg3: '#5C635C', fg4: '#A9B0A9', fgLink: '#1B7334',
-    accent: '#1B7334', accent2: '#196B30', accentInk: '#FFFFFF', accentSoft: 'rgba(27,115,52,0.14)',
+    fg: '#14171A', fgBody: '#14171A', fgStrong: '#3F453F', fg2: '#3F453F', fg3: '#5C635C', fg4: '#A9B0A9', fgLink: '#005799',
+    accent: '#005799', accent2: '#004A82', accentInk: '#FFFFFF', accentSoft: 'rgba(0,87,153,0.12)', brand: '#005799', hover: '#E3E6E3',
     danger: '#B3261E', warn: '#8A5A00', ok: '#1B7334', mention: '#F2C14E', mentionInk: '#1A1300',
+    okSoft: 'rgba(27,115,52,0.04)', okSoftBorder: 'rgba(27,115,52,0.22)', okTint: 'rgba(27,115,52,0.08)', okBorder: 'rgba(27,115,52,0.25)', okText: '#1B7334',
+    dangerSoft: 'rgba(179,38,30,0.1)', dangerBorder: 'rgba(179,38,30,0.45)', dangerInk: '#FFFFFF', warnSoft: 'rgba(138,90,0,0.05)', scrim: 'rgba(0,0,0,0.4)',
     linkUnderline: 0,
   },
   'high-contrast': {
     bg: '#000000', bg2: '#000000', bg3: '#0A0A0A', surface: '#000000', surface2: '#101010', surfaceHi: '#1C1C1C',
     hairline: '#FFFFFF', hairline2: '#FFFFFF', edge: '#FFFFFF',
-    fg: '#FFFFFF', fg2: '#E6E6E6', fg3: '#C8C8C8', fg4: '#8A8A8A', fgLink: '#9BFFA8',
-    accent: '#9BFFA8', accent2: '#C4FFCC', accentInk: '#000000', accentSoft: 'rgba(155,255,168,0.2)',
+    fg: '#FFFFFF', fgBody: '#FFFFFF', fgStrong: '#E6E6E6', fg2: '#E6E6E6', fg3: '#C8C8C8', fg4: '#8A8A8A', fgLink: '#9CCBFF',
+    accent: '#9CCBFF', accent2: '#C7E2FF', accentInk: '#000000', accentSoft: 'rgba(156,203,255,0.2)', brand: '#005799', hover: '#1C1C1C',
     danger: '#FF9A9A', warn: '#FFE08A', ok: '#9BFFA8', mention: '#FFE08A', mentionInk: '#000000',
+    okSoft: 'rgba(155,255,168,0.04)', okSoftBorder: 'rgba(155,255,168,0.22)', okTint: 'rgba(155,255,168,0.08)', okBorder: 'rgba(155,255,168,0.25)', okText: '#9BFFA8',
+    dangerSoft: 'rgba(255,154,154,0.1)', dangerBorder: 'rgba(255,154,154,0.45)', dangerInk: '#000000', warnSoft: 'rgba(255,224,138,0.05)', scrim: 'rgba(0,0,0,0.7)',
     linkUnderline: 1,
   },
 };
@@ -41,7 +49,8 @@ export type ColorKey = Exclude<keyof ColorTokens, 'linkUnderline'>;
 /** Text pairs (≥ 4.5:1): [foreground, background]. */
 export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['fg', 'bg'], ['fg', 'bg2'], ['fg', 'surface'], ['fg', 'surface2'], ['fg', 'surfaceHi'],
-  ['fg2', 'bg'], ['fg2', 'bg2'], ['fg2', 'surface2'],
+  ['fg2', 'bg'], ['fg2', 'bg2'], ['fg2', 'surface2'], ['fg2', 'surfaceHi'],
+  ['fgBody', 'bg'], ['fgStrong', 'surface2'], ['okText', 'bg2'],
   ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'], ['fg3', 'surface2'],
   ['fgLink', 'bg'], ['danger', 'bg'], ['warn', 'bg'], ['ok', 'bg2'],
   ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'],
@@ -49,6 +58,7 @@ export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
 /** UI component and large-text pairs (≥ 3:1). */
 export const UI_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['accent', 'bg'], ['accent', 'bg2'], ['edge', 'bg'], ['edge', 'surface2'], ['danger', 'surface2'], ['warn', 'surface2'], ['fg2', 'surfaceHi'],
+  ['ok', 'bg2'], ['edge', 'surface'],
 ];
 
 export const structural = {
@@ -60,7 +70,7 @@ export const structural = {
    * The type scale in rem at a 16px root, never px: a user who raises the
    * browser's default text size, or zooms to 200 %, must scale the chrome
    * with it (WCAG 1.4.4). The px equivalent of each step is kept as a
-   * comment so the Mesh reference stays checkable.
+   * comment so the reference stays checkable.
    */
   text: {
     micro: '0.625rem',    // 10px
@@ -73,10 +83,11 @@ export const structural = {
   },
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
-  radius: { sm: '0px', md: '2px', lg: '3px', pill: '999px', avatar: '2px' },
+  labelTrackingWide: '0.12em',
+  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px' },
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
-  shadow: { s1: '0 0 0 1px rgba(124,255,142,0.08)', s2: '0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)' },
+  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -84,16 +95,18 @@ export const structural = {
    * around rem text clips it the moment the browser's text size goes up.
    */
   layout: {
-    railW: '72px', railTile: '48px', slotW: '32px', sidebarW: '240px', membersW: '232px', threadW: '380px',
-    topbarH: '2rem',          // 32px
+    railW: '56px', railTile: '38px', slotW: '32px', sidebarW: '244px', membersW: '232px', threadW: '340px',
+    topbarH: '2.75rem',       // 44px
     bottombarH: '1.625rem',   // 26px
-    channelHeaderH: '3rem',   // 48px
-    barH: '3rem',             // 48px, the one height of every pane's top bar (UI-3 moves ChannelHeader to it)
-    rowH: '2rem',             // 32px, a list row; 2.75rem on a phone (base.css)
-    rowHSub: '2rem',          // 32px, a sub-row (a voice participant); 2.25rem on a phone
+    channelHeaderH: '2.75rem',// 44px
+    barH: '2.75rem',          // 44px, the one height of every pane's top bar
+    panelH: '4rem',           // 64px: user panel AND voice call bar (top edges align)
+    rowH: '1.75rem',          // 28px, a list row; 2.75rem on a phone (base.css)
+    rowHSub: '1.625rem',      // 26px, a sub-row (a voice participant); 2.25rem on a phone
     rowH2: '2.75rem',         // 44px, a two-line row; 3.25rem on a phone
-    listGap: '0.125rem',      // 2px between list rows; 0 on a phone
+    listGap: '0.0625rem',     // 1px between list rows; 0 on a phone
   },
+
   /**
    * The focus ring, as an `outline` shorthand: `outline: var(--focus-ring)`
    * with `outline-offset: 2px`. An outline, not a `box-shadow`, so a
@@ -102,7 +115,7 @@ export const structural = {
    * the Windows forced-colors indicator survives.
    */
   focusRing: '2px solid var(--accent)',
-  motion: { fast: '150ms', normal: '200ms', slow: '300ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
+  motion: { press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

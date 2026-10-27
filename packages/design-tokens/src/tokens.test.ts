@@ -5,15 +5,20 @@ import { contrastRatio } from './contrast.ts';
 const names = Object.keys(themes) as ThemeName[];
 
 describe('themes', () => {
-  it('defines mesh, light and high-contrast with the same keys', () => {
-    expect(names.sort()).toEqual(['high-contrast', 'light', 'mesh']);
-    const keys = Object.keys(themes.mesh).sort();
+  it('defines signal, light and high-contrast with the same keys', () => {
+    expect([...names].sort()).toEqual(['high-contrast', 'light', 'signal']);
+    expect(names).toEqual(['signal', 'light', 'high-contrast']);
+    const keys = Object.keys(themes.signal).sort();
     for (const n of names) expect(Object.keys(themes[n]).sort()).toEqual(keys);
   });
-  it('keeps the Mesh accent and background', () => {
-    expect(themes.mesh.bg).toBe('#070809');
-    expect(themes.mesh.accent).toBe('#7CFF8E');
-    expect(themes.mesh.fg4).toBe('#5E635E');
+  it('has the Signal background and blue accent', () => {
+    expect(themes.signal.bg).toBe('#08090B');
+    expect(themes.signal.accent).toBe('#5AA8E6');
+    expect(themes.signal.fg4).toBe('#5C636E');
+  });
+  it('moves light and high-contrast to the blue accent', () => {
+    expect(themes.light.accent).toBe('#005799');
+    expect(themes['high-contrast'].accent).toBe('#9CCBFF');
   });
 });
 
@@ -32,15 +37,16 @@ describe('WCAG AA guard', () => {
   }
   it('high-contrast underlines links', () => {
     expect(themes['high-contrast'].linkUnderline).toBe(1);
-    expect(themes.mesh.linkUnderline).toBe(0);
+    expect(themes.signal.linkUnderline).toBe(0);
   });
 });
 
 describe('structural tokens', () => {
-  it('has the Mesh radii and layout dimensions', () => {
-    expect(structural.radius.md).toBe('2px');
-    expect(structural.radius.pill).toBe('999px');
-    expect(structural.layout.railW).toBe('72px');
+  it('has the Signal radii and layout dimensions', () => {
+    expect(structural.radius).toEqual({
+      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px',
+    });
+    expect(structural.layout.railW).toBe('56px');
   });
   it('states the type scale in rem at a 16px root, never px', () => {
     expect(structural.text).toEqual({
@@ -55,20 +61,26 @@ describe('structural tokens', () => {
     // A box that bounds scale text has to grow with the text (WCAG 1.4.4):
     // a px bar around rem text clips it. The pane widths are furniture the
     // user drags, not text boxes, so they stay px.
-    expect(structural.layout.topbarH).toBe('2rem');
+    expect(structural.layout.topbarH).toBe('2.75rem');
     expect(structural.layout.bottombarH).toBe('1.625rem');
-    expect(structural.layout.channelHeaderH).toBe('3rem');
-    expect(structural.layout.barH).toBe('3rem');
-    expect(structural.layout.rowH).toBe('2rem');
-    expect(structural.layout.rowHSub).toBe('2rem');
+    expect(structural.layout.channelHeaderH).toBe('2.75rem');
+    expect(structural.layout.barH).toBe('2.75rem');
+    expect(structural.layout.panelH).toBe('4rem');
+    expect(structural.layout.rowH).toBe('1.75rem');
+    expect(structural.layout.rowHSub).toBe('1.625rem');
     expect(structural.layout.rowH2).toBe('2.75rem');
-    expect(structural.layout.listGap).toBe('0.125rem');
-    expect(structural.layout.railTile).toBe('48px');
+    expect(structural.layout.listGap).toBe('0.0625rem');
+    expect(structural.layout.railTile).toBe('38px');
     expect(structural.layout.slotW).toBe('32px');
-    expect(structural.layout.railW).toBe('72px');
-    expect(structural.layout.sidebarW).toBe('240px');
+    expect(structural.layout.railW).toBe('56px');
+    expect(structural.layout.sidebarW).toBe('244px');
     expect(structural.layout.membersW).toBe('232px');
-    expect(structural.layout.threadW).toBe('380px');
+    expect(structural.layout.threadW).toBe('340px');
+  });
+  it('keeps every bar, row and panel height in rem', () => {
+    for (const k of ['topbarH', 'barH', 'channelHeaderH', 'panelH', 'rowH', 'rowHSub'] as const) {
+      expect(structural.layout[k], `--${k} must be rem so 200 % text does not clip it`).toMatch(/rem$/);
+    }
   });
   it('has three densities, every length in rem', () => {
     expect(Object.keys(densities)).toEqual(['compact', 'regular', 'cozy']);
