@@ -5,16 +5,13 @@ import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { DM, GEN, NOW, P1, P2, PEER, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
 import { messageTime } from '../shell-model.ts';
+import { rowMenuItem } from '../../test/row-menu.ts';
+import type { UserEvent } from '@testing-library/user-event';
 
 const PINNED_TS = 1700000000;
 const pin = (over: Partial<PinnedItem> = {}): PinnedItem => ({ msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: PINNED_TS, threadRoot: null, ...over });
-/** Signal (Ruling U): pins live in the channel header's "more" menu. */
-const openPins = async (user: { click(el: Element): Promise<void> }) => {
-  const header = document.querySelector<HTMLElement>('.d-channel-header');
-  if (header === null) throw new Error('no header');
-  await user.click(within(header).getByRole('button', { name: 'more' }));
-  await user.click(screen.getByRole('menuitem', { name: 'pinned' }));
-};
+/** Ruling X (Jonas 2026-10-27): pins live in the channel row's context menu. */
+const openPins = (user: UserEvent) => rowMenuItem(user, 'general', 'pinned');
 
 describe('pins (Q20, ruling 23)', () => {
   it('opens from the header, loads the pins, names who pinned, unpins and closes', async () => {
@@ -55,7 +52,8 @@ describe('pins (Q20, ruling 23)', () => {
   });
   it('titles a DM’s pins by the DM’s name', async () => {
     const { fake, user } = renderConversation({ dm: true });
-    await openPins(user);
+    // A DM has no channel row menu: its header keeps the pins button (Ruling X is about a channel's header).
+    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: 'pinned' }));
     expect(screen.getByRole('dialog', { name: 'Pinned with bob' })).toBeInTheDocument();
     expect(fake.callsOf('loadPins')).toEqual([{ m: 'loadPins', channelId: DM }]);
   });

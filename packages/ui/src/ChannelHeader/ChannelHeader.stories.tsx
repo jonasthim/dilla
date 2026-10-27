@@ -176,8 +176,8 @@ export const NarrowMain: Story = {
 
 // Signal §5.5 (the prototype's header): Threads (icon and label) and Members (icon and count), 28px, radius 6px; the button
 // whose aside is open is --accent on --accent-soft.
-// The props the web passes (packages/web/src/screens/Shell.tsx, the channel header): Threads and Members, then the "⋯" menu
-// at every width with pins, search and edit channel (Ruling U).
+// The props the web passes (packages/web/src/screens/Shell.tsx, the channel header): Threads and Members and nothing else
+// (Ruling X; the "⋯" of Ruling U is gone).
 const signalActions = (open: 'threads' | 'members' | null) => (
   <>
     <Button variant="ghost" mark={false} pressed={open === 'threads'} data-thread-list-toggle=""><Icon name="messages-square" size={14} />Threads</Button>
@@ -186,8 +186,8 @@ const signalActions = (open: 'threads' | 'members' | null) => (
     </Tooltip>
   </>
 );
-const SIGNAL = { name: 'general', topic: 'raids, plans and the bridge troll',
-  overflow: { label: 'more', always: true, items: [{ id: 'pins', label: 'pinned messages' }, { id: 'search', label: 'search' }, { id: 'edit', label: 'edit channel' }], onSelect: () => {} } };
+// Ruling X (Jonas 2026-10-27): no "⋯"; the web passes no overflow (pins and edit channel are in the row's context menu).
+const SIGNAL = { name: 'general', topic: 'raids, plans and the bridge troll', overflow: undefined };
 // Main's width in the prototype at 1280: 1280 - 56 - 244 less the aside (232 members, 340 thread).
 export const SignalMembersOpen: Story = { args: { ...SIGNAL, actions: signalActions('members') }, globals: { theme: 'signal' }, decorators: [inMain(748)],
   play: ({ canvasElement }) => { expectHeaderFits(canvasElement, 'SignalMembersOpen'); } };

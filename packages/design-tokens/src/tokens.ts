@@ -8,6 +8,8 @@ export type ColorTokens = {
   danger: string; warn: string; ok: string; mention: string; mentionInk: string;
   okSoft: string; okSoftBorder: string; okTint: string; okBorder: string; okText: string;
   dangerSoft: string; dangerBorder: string; dangerInk: string; warnSoft: string; scrim: string; knob: string; trackOff: string; accentChip: string; lineStrong: string; brandInk: string; hoverHi: string;
+  /** Control boundaries (task 6b). Signal: the prototype's exact borders; light and high-contrast: `edge`. */
+  controlEdge: string; controlEdgeField: string; controlEdgeKey: string;
   linkUnderline: 0 | 1;
 };
 
@@ -20,6 +22,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     danger: '#FF6E6E', warn: '#FFD16A', ok: '#7CFF8E', mention: '#FFD16A', mentionInk: '#1A1300',
     okSoft: 'rgba(124,255,142,0.04)', okSoftBorder: 'rgba(124,255,142,0.22)', okTint: 'rgba(124,255,142,0.08)', okBorder: 'rgba(124,255,142,0.25)', okText: '#9EF5AC',
     dangerSoft: 'rgba(255,110,110,0.1)', dangerBorder: 'rgba(255,110,110,0.45)', dangerInk: '#1A0606', warnSoft: 'rgba(255,209,106,0.05)', scrim: 'rgba(3,4,6,0.6)', knob: '#FFFFFF', trackOff: '#2A303A', accentChip: 'rgba(90,168,230,0.16)', lineStrong: '#2A303A', brandInk: '#FFFFFF', hoverHi: '#1A1E25',
+    controlEdge: '#2A303A', controlEdgeField: '#252A33', controlEdgeKey: '#3A404A',
     linkUnderline: 0,
   },
   light: {
@@ -30,6 +33,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     danger: '#B3261E', warn: '#8A5A00', ok: '#1B7334', mention: '#F2C14E', mentionInk: '#1A1300',
     okSoft: 'rgba(27,115,52,0.04)', okSoftBorder: 'rgba(27,115,52,0.22)', okTint: 'rgba(27,115,52,0.08)', okBorder: 'rgba(27,115,52,0.25)', okText: '#1B7334',
     dangerSoft: 'rgba(179,38,30,0.1)', dangerBorder: 'rgba(179,38,30,0.45)', dangerInk: '#FFFFFF', warnSoft: 'rgba(138,90,0,0.05)', scrim: 'rgba(0,0,0,0.4)', knob: '#FFFFFF', trackOff: '#8A918A', accentChip: 'rgba(0,87,153,0.16)', lineStrong: '#B4BBB4', brandInk: '#FFFFFF', hoverHi: '#D6DAD6',
+    controlEdge: '#6F776F', controlEdgeField: '#6F776F', controlEdgeKey: '#6F776F',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -40,6 +44,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     danger: '#FF9A9A', warn: '#FFE08A', ok: '#9BFFA8', mention: '#FFE08A', mentionInk: '#000000',
     okSoft: 'rgba(155,255,168,0.04)', okSoftBorder: 'rgba(155,255,168,0.22)', okTint: 'rgba(155,255,168,0.08)', okBorder: 'rgba(155,255,168,0.25)', okText: '#9BFFA8',
     dangerSoft: 'rgba(255,154,154,0.1)', dangerBorder: 'rgba(255,154,154,0.45)', dangerInk: '#000000', warnSoft: 'rgba(255,224,138,0.05)', scrim: 'rgba(0,0,0,0.7)', knob: '#000000', trackOff: '#C8C8C8', accentChip: 'rgba(156,203,255,0.24)', lineStrong: '#FFFFFF', brandInk: '#FFFFFF', hoverHi: '#2A2A2A',
+    controlEdge: '#FFFFFF', controlEdgeField: '#FFFFFF', controlEdgeKey: '#FFFFFF',
     linkUnderline: 1,
   },
 };
@@ -60,6 +65,16 @@ export const UI_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['accent', 'bg'], ['accent', 'bg2'], ['edge', 'bg'], ['edge', 'surface2'], ['danger', 'surface2'], ['warn', 'surface2'], ['fg2', 'surfaceHi'],
   ['ok', 'bg2'], ['edge', 'surface'],
 ];
+
+/**
+ * Control boundaries: `controlEdge` (buttons, toggle, top bar keycap; prototype #2A303A), `controlEdgeField`
+ * (text fields, selects, segmented; #252A33) and `controlEdgeKey` (settings keycaps, the rail's add tile; #3A404A).
+ * Exemption from the 3:1 UI rule (WCAG 1.4.11), signal only: Jonas chose the prototype's exact borders on
+ * 2026-10-27 over the accessible `edge`. Light and high-contrast were not designed: there they equal `edge` and
+ * must pass 3:1 (tokens.test.ts). `UI_PAIRS` keeps checking `edge` itself in every theme.
+ */
+export const CONTROL_EDGE_KEYS = ['controlEdge', 'controlEdgeField', 'controlEdgeKey'] as const satisfies ReadonlyArray<ColorKey>;
+export const CONTROL_EDGE_EXEMPT: ReadonlyArray<ThemeName> = ['signal'];
 
 export const structural = {
   font: {
@@ -94,7 +109,7 @@ export const structural = {
   labelTracking: '0.08em',
   trackingSoft: '0.04em',
   labelTrackingWide: '0.12em',
-  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px' },
+  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px' },
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
   shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)' },

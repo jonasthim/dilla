@@ -17,9 +17,9 @@
 .d-community-rail__home[aria-current="page"] { color: var(--accent); background: var(--surface-hi); }
 /* The 20 x 1 hairline under the `@` tile. */
 .d-community-rail__rule { width: 20px; height: 1px; margin: 2px 0; background: var(--hairline-2); list-style: none; }
-/* The "+" (add a server): a 38px dashed --edge circle, --fg-2 glyph; on hover the accent and a 90deg turn over 180ms. */
+/* The "+" (add a server): a 38px dashed --control-edge-key circle (#3A404A), --fg-2 glyph; on hover the accent and a 90deg turn over 180ms. */
 .d-community-rail__join { display: inline-flex; align-items: center; justify-content: center; padding: 0; min-width: 0; min-height: 0; font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-pill); cursor: pointer; }
-.d-community-rail__glyph { width: var(--rail-tile); height: var(--rail-tile); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; line-height: 1; border: 1px dashed var(--edge); border-radius: var(--r-pill); transition: color var(--duration-spin), border-color var(--duration-spin), transform var(--duration-spin); }
+.d-community-rail__glyph { width: var(--rail-tile); height: var(--rail-tile); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; line-height: 1; border: 1px dashed var(--control-edge-key); border-radius: var(--r-pill); transition: color var(--duration-spin), border-color var(--duration-spin), transform var(--duration-spin); }
 .d-community-rail__join:hover .d-community-rail__glyph { color: var(--accent); border-color: var(--accent); transform: rotate(90deg); }
 /* The mention count: bottom right, 4px out, a 2.5px bg-2 ring (Pill), popping in. */
 .d-community-rail__badge { position: absolute; right: -4px; bottom: -4px; line-height: 0; animation: d-pop var(--duration-rail-badge) var(--ease-out) both; }
@@ -28,5 +28,4 @@
 .d-community-rail__settings { width: var(--rail-tile); height: var(--rail-tile); display: inline-flex; align-items: center; justify-content: center; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-pill); cursor: pointer; transition: background var(--duration-normal) var(--ease-out), color var(--duration-normal) var(--ease-out), border-radius var(--duration-normal) var(--ease-out); }
 .d-community-rail__settings:hover { color: var(--fg); background: var(--hover); border-radius: var(--r-xl); }
 .d-community-rail__cog { width: 1rem; height: 1rem; }
-/* Ruling N (README §5.10, every phone target at least 44px): on a phone the tiles are 44 inside the same 56px rail. */
-[data-layout="phone"] .d-community-rail { --rail-tile: 44px; }
+/* On a phone the tiles stay the prototype's 38px (Jonas 2026-10-27, supersedes Ruling N). */

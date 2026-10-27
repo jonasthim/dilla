@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect } from 'vitest';
+import { rowMenuItem } from '../test/row-menu.ts';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, CommunityAccess, MemberSummary } from '@dilla/client-core';
@@ -67,15 +68,14 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
   });
 
-  // Final fix B1/M2: "edit channel" left the sidebar; the channel header has it, for that channel.
-  it('the sidebar has no edit channel; the header has it with manageChannels and it opens the edit dialog of that channel', async () => {
+  // Final fix B1/M2: "edit channel" left the sidebar; Ruling X: it is in the channel row's context menu, for that channel.
+  it('the sidebar and header have no edit channel button; the row menu has it with manageChannels (Ruling X) and it opens the edit dialog of that channel', async () => {
     const { fake, user } = setup(ME.id);
     act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: true })); });
     const sidebar = document.querySelector('.dw-sidebar') as HTMLElement;
     expect(within(sidebar).queryByRole('button', { name: 'edit channel' })).toBeNull();
-    const header = document.querySelector('.d-channel-header') as HTMLElement;
-    await user.click(within(header).getByRole('button', { name: 'more' }));
-    await user.click(screen.getByRole('menuitem', { name: 'edit channel' }));
+    expect(within(document.querySelector('.d-channel-header') as HTMLElement).queryByRole('button', { name: 'edit channel' })).toBeNull();
+    await rowMenuItem(user, 'general', 'edit channel');
     const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
     expect(within(dialog).getByRole('textbox', { name: 'Channel name' })).toHaveValue('general');
     expect(screen.queryByRole('dialog', { name: /settings/i })).toBeNull();

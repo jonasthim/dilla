@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { DOCK_STATS_CONTRAST } from '../VoiceDock/dockStatsContrast.ts';
 import type { ReactNode } from 'react';
 import { AppShell } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
@@ -21,7 +22,7 @@ import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 import { en, formatTime, t } from '../../../web/src/strings/index.ts';
 import '../../../web/src/app.css';
 
-const meta = { title: 'Screens/Voice', parameters: { layout: 'fullscreen' } } satisfies Meta;
+const meta = { title: 'Screens/Voice', parameters: { layout: 'fullscreen', ...DOCK_STATS_CONTRAST } } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 

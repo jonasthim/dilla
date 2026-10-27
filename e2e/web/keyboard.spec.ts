@@ -123,14 +123,13 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await press('Escape');
   await expect(composerBox(page, channel)).toBeFocused();
 
-  // Signal §5.5 (Ruling U): the header has Threads and Members, and the "more" menu (pins, search, edit channel) at every width.
+  // Signal §5.5 (Ruling X, Jonas 2026-10-27): the header has exactly the prototype's Threads and Members; no "more" menu (pins and
+  // edit channel are in the channel row's context menu, search is the top bar's).
   const bar = page.locator(CLASS.channelHeader);
-  for (const key of ['layout.header.threads', 'layout.header.more']) {
-    await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toHaveCount(1);
-    await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toBeVisible();
-  }
+  await expect(bar.getByRole('button', { name: copy('layout.header.threads'), exact: true })).toBeVisible();
   await expect(bar.getByRole('button', { name: /^Members/ })).toBeVisible();
-  for (const key of ['shell.pins.open', 'search.open']) await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toHaveCount(0);
+  await expect(bar.getByRole('button')).toHaveCount(2);
+  for (const key of ['layout.header.more', 'shell.pins.open', 'search.open']) await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toHaveCount(0);
   // One Tab lap from the skip link, in the order the Global Constraints fix.
   const regions = [
     page.getByRole('link', { name: copy(COPY.skipLink), exact: true }),   // 0 skip link

@@ -36,6 +36,13 @@ describe('renderCss', () => {
     expect(css).toMatch(/--text-tag: 0\.53125rem;/);
     expect(css).toContain('--tracking-soft: 0.04em;');
   });
+  it('emits the control edges (task 6b, prototype parity in signal)', () => {
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge:\s*#2A303A;/);
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge-field:\s*#252A33;/);
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge-key:\s*#3A404A;/);
+    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--control-edge:\s*#6F776F;/);
+    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--control-edge-field:\s*#FFFFFF;/);
+  });
   it('emits the top bar values (task 5, rulings K and L)', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--line-strong:\s*#2A303A;/);
     expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--line-strong:\s*#B4BBB4;/);
@@ -96,6 +103,7 @@ describe('renderCss', () => {
     expect(css).toContain('--text-title: 1.1875rem;');
     expect(css).toContain('--text-mini: 0.46875rem;');
     expect(css).toContain('--r-row: 5px;');
+    expect(css).toContain('--r-tag: 3px;'); // every prototype tag (BOT, LIVE, playback only): task 6b
     expect(css).toContain('--hover-hi: #1A1E25;');
     expect(css).toContain('--shadow-3: 0 30px 80px rgba(0,0,0,0.65);');
     expect(css).toContain('--label-tracking-wide: 0.12em;');

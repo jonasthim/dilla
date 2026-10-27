@@ -462,6 +462,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const roles = useSlice(`roles:${communityId ?? ''}`);
   const broadcast = channel !== null;
   const [ui, rawDispatch] = useConversationUi(targetId);
+  // Ruling X: a channel row's menu asks for the pins of a channel that may not be open yet: they open once it is.
+  const pinsFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (pinsFor.current === null || pinsFor.current !== targetId) return;
+    pinsFor.current = null;
+    rawDispatch({ type: 'pins', open: true });
+  }, [targetId, rawDispatch]);
   const slow = useSlice(`slow:${targetId ?? ''}`);
   const overwrites = useSlice(`overwrites:${communityId ?? ''}`);
   // A jump to a message that shows in a thread (a reply quote, a pin) opens that thread; any other jump stays in the channel.
@@ -1090,7 +1097,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const phonePane: 'list' | 'view' = overlay || base.name === 'dm' || (base.name === 'channel' && base.channelId !== null) ? 'view' : 'list';
   const openSettings = useRef<string | null>(null);
   if (phone && phonePane === 'list' && phoneTab === 'activity') {
-    sidebar = <Activity onOpen={target => void navigate(target.communityId === null ? { name: 'dm', channelId: target.channelId }
+    sidebar = <Activity reminders={{ due: utilityCommands.dueCount, onOpen: utilityCommands.openInbox }} onOpen={target => void navigate(target.communityId === null ? { name: 'dm', channelId: target.channelId }
       : { name: 'channel', communityId: target.communityId, channelId: target.channelId })} />;
   } else if (phone && phonePane === 'list' && phoneTab === 'you') {
     sidebar = <You onOpenSettings={section => { openSettings.current = section ?? 'index'; void navigate({ name: 'settings', section, from: null }); }} />;
@@ -1171,6 +1178,18 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
+        // Ruling X (Jonas 2026-10-27, pixel parity): the header has no "⋯"; a text channel's pins and edit channel are in its row's
+        // context menu (right-click, long press, Shift+F10 or the ContextMenu key).
+        {...(onDms || serverId === null ? {} : { rowMenu: {
+          label: () => t('nav.channel.menu'),
+          items: () => [{ id: 'pins', label: t('shell.pins.open') }, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
+          onSelect: (id: string, item: string) => {
+            if (item === 'edit') { setEditChannelId(id); return; }
+            if (id === openId) { dispatch({ type: 'pins', open: true }); return; }
+            pinsFor.current = id;
+            void navigate({ name: 'channel', communityId: serverId, channelId: id });
+          },
+        } })}
         // Signal §5.4: the unread tag reads "{n} new"; the stat line under the server name counts who is online and who is in voice.
         newLabel={n => t('layout.row.new', { n })}
         // Ruling W: online counts people, not bots; before presence has loaded the line holds the in-voice count alone, no dot.
@@ -1319,7 +1338,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
   // Signal §5.5, §5.10 (Ruling U): a channel's header has the prototype's controls. Threads (its icon and label; an icon alone on a
   // phone) and Members (its icon and the member count, named "Members, {n}", the number shown once the list has loaded); a phone
-  // adds search. Everything else (pins, search on a desktop, edit channel, the reminders inbox on a phone) is in the "⋯" menu.
+  // adds search. There is no "⋯" (Jonas 2026-10-27, Ruling X): pins and edit channel are in the channel row's context menu,
+  // search is the top bar's (and Control/⌘+K) on a desktop, the reminders inbox the top bar's bell or the phone's Activity tab.
   const memberCount = members == null ? null : members.length;
   const membersName = memberCount === null ? t('layout.header.members') : t('layout.header.membersCount', { n: memberCount });
   const threadsOn = sideNow?.view === 'list';
@@ -1331,36 +1351,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       </Button>
     </Tooltip>
   );
-  const editItem = canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [];
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
     actions={<>{utilityCommands.inbox}<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /></>} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
-        {/* The prototype's phone header: Threads as its 14px icon alone, Members, a 15px search; every target 44 (PhoneHeader.css). */}
+        {/* The prototype's phone header: Threads as its 14px icon alone, Members, a 15px search, at its sizes (PhoneHeader.css). */}
         {openId !== null ? <Button variant="ghost" mark={false} data-thread-list-toggle="" aria-label={t('layout.header.threads')} pressed={threadsOn}
           onClick={toggleThreads}><Icon name={THREADS_GLYPH} size={14} /></Button> : null}
         {membersButton}
         <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch('channel', e.currentTarget)} />
-        <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
-          items={[...pinsItem, ...editItem, { id: 'inbox', label: t('reminder.inbox') }]}
-          onSelect={id => {
-            if (id === 'pins') pinsOpen();
-            else if (id === 'edit') setEditChannelId(channel.id);
-            else utilityCommands.openInbox();
-          }} />
       </>) } : undefined}
       actions={<>
         {openId !== null ? <Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={threadsOn} onClick={toggleThreads}>
           <Icon name={THREADS_GLYPH} size={14} />{t('layout.header.threads')}</Button> : null}
         {membersButton}
-      </>}
-      overflow={{ label: t('layout.header.more'), always: true, items: [...pinsItem, searchItem, ...editItem],
-        onSelect: id => {
-          if (id === 'search') startSearch('channel');
-          else if (id === 'pins') pinsOpen();
-          else if (id === 'edit') setEditChannelId(channel.id);
-        } }} />
+      </>} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
         {utilityCommands.inbox}

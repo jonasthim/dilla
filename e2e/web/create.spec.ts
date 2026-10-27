@@ -247,7 +247,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
       return { left: r.left, right: r.right, width: r.width, clipped: b.scrollWidth > b.clientWidth + 1,
         sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right, width: sidebar.width } };
     });
-    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 240 px (${JSON.stringify(gearFit.sidebar)})`).toBeLessThanOrEqual(240);
+    // Signal §5.1: the sidebar's default width is the prototype's 244 (--sidebar-w).
+    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 244 px (${JSON.stringify(gearFit.sidebar)})`).toBeLessThanOrEqual(244);
     expect(gearFit.left).toBeGreaterThanOrEqual((gearFit.sidebar?.left ?? 0) - 0.5);
     expect(gearFit.right).toBeLessThanOrEqual((gearFit.sidebar?.right ?? 0) + 0.5);
     expect(gearFit.width).toBeGreaterThanOrEqual(24);
@@ -278,8 +279,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
       const log = page.getByRole('log', { name: copy('shell.log.label', { channel: slug }), exact: true });
       await expect(log).toContainText(copy('shell.log.emptyMade'));
       await expect(log).not.toContainText(copy('shell.log.empty'));
-      // Signal (Ruling U): pins are in the header's "more" menu; its trigger stands in the viewport.
-      await expect(page.locator('.d-channel-header').getByRole('button', { name: copy('layout.header.more'), exact: true })).toBeInViewport({ ratio: 1 });
+      // Ruling X: the header's Members button (the last header control; pins moved to the row's context menu) stands in the viewport.
+      await expect(page.locator('.d-channel-header [data-members-toggle]')).toBeInViewport({ ratio: 1 });
       const size = page.viewportSize();
       await page.setViewportSize({ width: 360, height: 740 });
       try {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { openRowMenu } from '../test/row-menu.ts';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
@@ -145,18 +146,22 @@ describe('the phone shell: pushed views', () => {
     expect(await screen.findByRole('navigation', { name: t('nav.tabs.label') })).toBeInTheDocument();
   });
 
-  it('has Threads, Members and search in the header and the rest in the channel menu: pins, edit channel for a person who may, reminders (Ruling U)', async () => {
-    const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
+  it('has exactly Threads, Members and search in the header, no menu (Ruling X)', async () => {
+    phone({ path: `/c/${A}/${TEXT}` });
     const header = (await screen.findByRole('heading', { level: 2, name: 'lobby' })).closest('.d-phone-header') as HTMLElement;
-    expect(within(header).getByRole('button', { name: t('layout.header.threads') })).toBeInTheDocument();
-    expect(within(header).getByRole('button', { name: /^Members/ })).toBeInTheDocument();
-    expect(within(header).getByRole('button', { name: t('search.open') })).toBeInTheDocument();
-    await user.click(within(header).getByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('reminder.inbox')]);
+    const actions = header.querySelector<HTMLElement>('.d-phone-header__actions')!;
+    expect(within(actions).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('layout.header.threads'), expect.stringMatching(/^Members/), t('search.open')]);
+    expect(within(header).queryByRole('button', { name: t('nav.channel.menu') })).toBeNull();
+  });
+
+  it('a channel row\'s context menu on the list holds pins, and edit channel for a person who may (Ruling X)', async () => {
+    const { user, client } = phone({ path: `/c/${A}` });
+    let menu = await openRowMenu(user, 'lobby');
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open')]);
     await user.keyboard('{Escape}');
     manage(client);
-    await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('admin.channel.open'), t('reminder.inbox')]);
+    menu = await openRowMenu(user, 'lobby');
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('admin.channel.open')]);
   });
 
   it('opens a DM as a pushed view with a pins menu', async () => {
@@ -789,11 +794,12 @@ describe('search on a touch tablet, focus return and a server that did not load 
   });
 });
 
-// Signal (Ruling U): a channel's phone header holds the inbox in its "⋯" menu (below); a DM, the voice stage and the lists keep the button.
-it('keeps the reminder inbox in the phone channel header\'s menu', async () => {
+// Ruling X: a channel's phone header has no "⋯"; the Activity tab's first row opens the inbox. A DM, the voice stage and the lists
+// keep their button (below).
+it('opens the reminder inbox from the Activity tab', async () => {
   const { user } = phone({ path: `/c/${A}/${TEXT}` });
-  await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-  await user.click(screen.getByRole('menuitem', { name: 'Reminders' }));
+  await user.click(await screen.findByRole('link', { name: new RegExp(`^${t('nav.tab.activity')}`) }));
+  await user.click(await screen.findByRole('button', { name: 'Reminders' }));
   expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
 });
 

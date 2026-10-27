@@ -29,7 +29,7 @@
 /* web3.7: the slow-mode countdown and the announcement channel's read-only line, above the box and after `top`. Text, never a block. */
 .d-composer__notice { margin: 0; font-size: var(--text-sm); color: var(--fg-2); overflow-wrap: anywhere; }
 /* E8: the gif button, a mono word next to the attach plus. Same target rules as attach. */
-.d-composer__gif { flex-shrink: 0; display: inline-grid; place-items: center; min-width: 1.75rem; height: 1.75rem; padding: 0 0.375rem; font: inherit; font-size: var(--text-xs); line-height: 1; color: var(--fg-2); background: transparent; border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer; transition: color var(--duration-fast), background var(--duration-fast); }
+.d-composer__gif { flex-shrink: 0; display: inline-grid; place-items: center; min-width: 1.75rem; height: 1.75rem; padding: 0 0.375rem; font: inherit; font-size: var(--text-xs); line-height: 1; color: var(--fg-2); background: transparent; border: 1px solid var(--control-edge); border-radius: var(--r-md); cursor: pointer; transition: color var(--duration-fast), background var(--duration-fast); }
 .d-composer__gif:hover, .d-composer__gif[aria-expanded="true"] { color: var(--fg); background: var(--surface-hi); }
 .d-composer__gif:disabled { color: var(--fg-3); background: transparent; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .d-composer__gif { transition: none; } }

@@ -21,7 +21,7 @@
    --accent-soft, which, with aria-pressed, replaces the old 2px bar. */
 .d-channel-header__actions .d-icon-button { width: 1.75rem /* 28px */; height: 1.75rem; border-radius: var(--r-md); color: var(--fg-2); }
 .d-channel-header__actions .d-icon-button svg { width: 14px; height: 14px; }
-.d-channel-header__actions .d-btn { height: 1.75rem; gap: 6px; padding: 0 8px; font-size: var(--text-xs); color: var(--fg-2); background: transparent; border-color: transparent; border-radius: var(--r-md); box-shadow: none; transition: color var(--duration-fast), background var(--duration-fast); }
+.d-channel-header__actions .d-btn { height: 1.75rem; gap: 6px; padding: 0 8px; border: 0; font-size: var(--text-xs); color: var(--fg-2); background: transparent; border-color: transparent; border-radius: var(--r-md); box-shadow: none; transition: color var(--duration-fast), background var(--duration-fast); }
 .d-channel-header__actions .d-btn__label { display: inline-flex; align-items: center; gap: 6px; }
 .d-channel-header__actions :is(.d-icon-button, .d-btn):hover { color: var(--fg); background: transparent; }
 .d-channel-header__actions :is(.d-icon-button, .d-btn)[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: transparent; box-shadow: none; }

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelList, type ChannelListProps } from './ChannelList.tsx';
@@ -432,5 +432,81 @@ describe('the stat line', () => {
     rerender(<ChannelList {...base} stats={[{ text: '5 in voice' }]} />);
     expect(container.querySelector('.d-channel-list__live')).toBeNull();
     expect(container.querySelector('.d-channel-list__sep')).toBeNull();
+  });
+});
+
+describe('the row context menu (Ruling X: pins and edit channel)', () => {
+  // jsdom has no PointerEvent: a MouseEvent named like one, carrying pointerType, is what React reads.
+  const touch = (el: Element, type: 'pointerdown' | 'pointerup', at = { clientX: 20, clientY: 30 }) =>
+    act(() => { el.dispatchEvent(Object.assign(new MouseEvent(type, { bubbles: true, ...at }), { pointerType: 'touch' })); });
+  const rowMenu = (onSelect = vi.fn()) => ({
+    label: (name: string) => `${name} menu`,
+    items: (id: string) => id === 'g' ? [{ id: 'pins', label: 'pinned messages' }, { id: 'edit', label: 'edit channel' }] : [{ id: 'pins', label: 'pinned messages' }],
+    onSelect,
+  });
+  it('a right-click on a text row opens its menu at the pointer, without selecting the row', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByRole('button', { name: 'general' }) });
+    const menu = screen.getByRole('menu', { name: 'general menu' });
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(['pinned messages', 'edit channel']);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+  it('Shift+F10 on a focused row opens it; a choice reports the channel and the item and focus returns to the row', async () => {
+    const user = userEvent.setup();
+    const chosen = vi.fn();
+    render(<ChannelList {...props({ rowMenu: rowMenu(chosen) })} />);
+    screen.getByRole('button', { name: 'general' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    expect(screen.getByRole('menuitem', { name: 'pinned messages' })).toHaveFocus();
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(chosen).toHaveBeenCalledWith('g', 'edit');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+  it('the ContextMenu key opens it too; Escape closes it back to the row', async () => {
+    const user = userEvent.setup();
+    render(<ChannelList {...props({ rowMenu: rowMenu() })} />);
+    screen.getByRole('button', { name: 'loot' }).focus();
+    await user.keyboard('{ContextMenu}');
+    expect(screen.getByRole('menu', { name: 'loot menu' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'loot' })).toHaveFocus();
+  });
+  it('a long press on a touch screen opens it and the tap that ends it does not open the channel', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(500); });
+      expect(screen.getByRole('menu', { name: 'general menu' })).toBeInTheDocument();
+      touch(row, 'pointerup');
+      fireEvent.click(row);
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it('a short tap still opens the channel', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(200); });
+      touch(row, 'pointerup');
+      fireEvent.click(row);
+      expect(onSelect).toHaveBeenCalledWith('g');
+      expect(screen.queryByRole('menu')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+  it('without rowMenu a right-click does nothing of its own', async () => {
+    const user = userEvent.setup();
+    render(<ChannelList {...props()} />);
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByRole('button', { name: 'general' }) });
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });

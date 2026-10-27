@@ -54,8 +54,8 @@ describe('web3.9 base.css rules (UI-1)', () => {
   it('sets the phone row tokens on the phone shell and on [data-phone]', () => {
     expect(css).toContain('.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }');
   });
-  it('grows the rail tiles to 44px on a phone (Signal §5.10)', () => {
-    expect(css).toContain('.d-app-shell[data-layout="phone"] { --rail-tile: 44px; }');
+  it('keeps the prototype\'s 38px rail tiles on a phone (Jonas 2026-10-27, supersedes Ruling N)', () => {
+    expect(css).not.toContain('--rail-tile: 44px');
   });
   it('insets the focus ring on a list row (R18), after the global ring', () => {
     const rule = '[data-row]:focus-visible { outline-offset: -2px; }';
@@ -63,7 +63,7 @@ describe('web3.9 base.css rules (UI-1)', () => {
     expect(css.indexOf(rule)).toBeGreaterThan(css.indexOf('.d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }'));
   });
   it('gives a button, a segmented option and an icon button 44px on a phone layout (H4)', () => {
-    expect(css).toContain('.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }');
+    expect(css).toContain('.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *) { min-height: 2.75rem; min-width: 2.75rem; }');
   });
   it('adds no @media of its own for it (the phone-query count stays with phone-query.test.ts)', () => {
     expect(css.split('(max-width: 47.99rem), (pointer: coarse)').length - 1).toBe(1);

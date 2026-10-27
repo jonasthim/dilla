@@ -128,6 +128,15 @@ async function expectTapTargets(controls: Locator, state: string): Promise<void>
   expect(small, `${state}: controls under 44x44 CSS px`).toEqual([]);
 }
 
+/** Jonas 2026-10-27 (pixel parity, supersedes Ruling N): a few phone controls are the prototype's size, not 44 (the rail's
+ *  38px tiles; the phone header's Threads and Members 28 high, search 36 x 28). Each is measured at that size exactly. */
+async function expectPrototypeSize(control: Locator, what: string, want: { w?: number; h: number }): Promise<void> {
+  const box = await control.boundingBox();
+  expect(box, `${what} has a box`).not.toBeNull();
+  if (want.w !== undefined) expect(Math.abs(box!.width - want.w), `${what} is ${String(want.w)} wide (got ${String(box!.width)})`).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(box!.height - want.h), `${what} is ${String(want.h)} high (got ${String(box!.height)})`).toBeLessThanOrEqual(0.5);
+}
+
 test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs, the link, tap targets and focus', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
   const h = started();
   const dir = phoneDir(testInfo.project.name, testInfo.workerIndex, 1);
@@ -258,7 +267,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await grouped.locator('.d-message-row__body').tap();
       await expect(grouped.getByRole('toolbar')).toHaveCount(0);
       await expectAccessible(page, 'the channel view');
-      await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
+      // The back stays a 44 target; the actions are the prototype's (Threads 30 x 28, Members 28 high, search 36 x 28).
+      await expectTapTargets(page.locator('.d-phone-header__back'), 'the channel view header back');
+      const headerActions = page.locator('.d-phone-header__actions');
+      await expectPrototypeSize(headerActions.getByRole('button', { name: copy('layout.header.threads'), exact: true }), 'the header Threads', { w: 30, h: 28 });
+      await expectPrototypeSize(headerActions.locator('[data-members-toggle]'), 'the header Members', { h: 28 });
+      await expectPrototypeSize(headerActions.getByRole('button', { name: copy('search.open'), exact: true }), 'the header search', { w: 36, h: 28 });
+      await expect(page.locator('.d-phone-header').getByRole('button', { name: copy('nav.channel.menu'), exact: true })).toHaveCount(0);
     });
 
     // 3a. web3.7.2: the shell is fixed and follows the visual viewport's offset (--d-vvtop stands in for the iOS pan, which
@@ -344,7 +359,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     await test.step('the list is accessible and its tap targets are 44 px', async () => {
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
-      await expectTapTargets(homeTile(page), 'the @ tile');
+      await expectPrototypeSize(homeTile(page), 'the @ tile', { w: 38, h: 38 });
       // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
       // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
       const search = page.getByRole('button', { name: copy('search.open'), exact: true });
@@ -633,7 +648,7 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     await test.step('three tabs, the @ tile, and a /dm deep link at 844 x 390', async () => {
       await expect(tabBar(page).getByRole('link')).toHaveCount(3);
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar at 844 x 390');
-      await expectTapTargets(homeTile(page), 'the @ tile at 844 x 390');
+      await expectPrototypeSize(homeTile(page), 'the @ tile at 844 x 390', { w: 38, h: 38 });
       await homeTile(page).tap();
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
       await expectAccessible(page, 'Home with @ selected at 844 x 390');

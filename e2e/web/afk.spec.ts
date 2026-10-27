@@ -230,10 +230,11 @@ async function listOrder(page: Page): Promise<string[]> {
   }));
 }
 /** The AFK row is the last of the list's rows that stand in no category (R42: the built-in position is below every channel a
- *  client makes), a voice row with the speaker glyph. It is always the list's very last row, below every category (MP6). */
+ *  client makes), a voice row with the moon glyph (Signal README §5.4). It is always the list's very last row, below every category (MP6). */
 async function expectAfkLast(page: Page, name: string): Promise<void> {
   await expect(voiceRow(page, name)).toBeVisible({ timeout: WAIT });
-  await expect(voiceRow(page, name).locator('[data-icon="volume-2"]')).toHaveCount(1);
+  await expect(voiceRow(page, name).locator('[data-icon="moon"]')).toHaveCount(1);
+  await expect(voiceRow(page, name).locator('[data-icon="volume-2"]')).toHaveCount(0);
   await expect.poll(async () => {
     return (await listOrder(page)).at(-1);
   }, { timeout: WAIT, message: `${name} is the very last row of the list (MP6)` }).toBe(copy('voice.open', { name }));

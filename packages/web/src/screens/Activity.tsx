@@ -12,9 +12,13 @@ const CHEVRON = 'chevron-right';
 /**
  * The phone's Activity tab (flow 12): the mentions and direct messages the worker noticed since this tab opened,
  * newest first, then every other channel or DM with something unread. A row opens the channel or DM it names, and a
- * reply that shows in a thread opens that thread too.
+ * reply that shows in a thread opens that thread too. With `reminders`, the first row opens the reminders inbox and says how many
+ * are due (the prototype lists due reminders first; Ruling X: the phone's channel header has no "⋯" to reach it from).
  */
-export function Activity(props: { onOpen(target: { communityId: string | null; channelId: string }): void }): React.JSX.Element {
+export function Activity(props: {
+  onOpen(target: { communityId: string | null; channelId: string }): void;
+  reminders?: { due: number; onOpen(): void };
+}): React.JSX.Element {
   const notices = useSlice('notices');
   const badges = useSlice('badges');
   const settings = useSlice('settings');
@@ -38,10 +42,25 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
   ].map(row => ({ ...row, badge: rowBadge(badges, settings, row.id, row.communityId ?? undefined) }))
     .filter(row => (row.badge.unread > 0 || row.badge.mentions > 0) && !named.has(row.id));
 
+  const reminders = props.reminders === undefined ? null : (
+    <ul className="dw-phone-list">
+      <li>
+        <button type="button" className="dw-phone-row" aria-haspopup="dialog" onClick={() => props.reminders?.onOpen()}>
+          <span className="dw-phone-row__text">
+            <span className="dw-phone-row__line">{t('reminder.inbox')}</span>
+            {props.reminders.due > 0 ? <span className="dw-phone-row__meta">{t('reminder.badge', { count: props.reminders.due })}</span> : null}
+          </span>
+          <Icon name={CHEVRON} size={18} />
+        </button>
+      </li>
+    </ul>
+  );
+
   if (listed.length === 0 && elsewhere.length === 0) {
     return (
       <div className="dw-phone-pane dw-phone-pane--empty">
         <PhoneHeader title={t('activity.title')} />
+        {reminders}
         <div className="dw-phone-pane__frame"><EmptyState title={t('activity.emptyTitle')} body={t('activity.since')} /></div>
       </div>
     );
@@ -49,6 +68,7 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
   return (
     <div className="dw-phone-pane">
       <PhoneHeader title={t('activity.title')} />
+      {reminders}
       {listed.length === 0 ? null : (
         <ul className="dw-phone-list" aria-label={t('activity.title')}>
           {listed.map(n => {

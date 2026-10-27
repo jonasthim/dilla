@@ -14,9 +14,9 @@
 button.d-voice-dock__line1 { cursor: pointer; }
 button.d-voice-dock__line1:hover .d-voice-dock__text { text-decoration: underline; text-underline-offset: 0.2em; }
 .d-voice-dock__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The stats (or the phase words): 10.5px. --fg-2, not the prototype's --fg-3: on the --live tint --fg-3 is 4.38:1 (a Global
-   Constraints contrast fix). */
-.d-voice-dock__where { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); color: var(--fg-2); }
+/* The stats (or the phase words): 10.5px --fg-3, the prototype's #767D89 (Jonas 2026-10-27, supersedes Ruling V). On the signal
+   --live tint that is 4.38:1, below AA by his choice; story-a11y.ts scopes the axe exception to this element. */
+.d-voice-dock__where { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); color: var(--fg-3); }
 .d-voice-dock[data-phase="paused"] .d-voice-dock__glyph { color: var(--warn); }
 .d-voice-dock__controls { display: flex; flex: none; align-items: center; gap: 2px; }
 /* Leave: the --danger glyph; on hover the --danger fill with its dark ink (150ms). */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { themes, TEXT_PAIRS, UI_PAIRS, structural, densities, type ThemeName } from './tokens.ts';
+import { themes, TEXT_PAIRS, UI_PAIRS, CONTROL_EDGE_KEYS, CONTROL_EDGE_EXEMPT, structural, densities, type ThemeName } from './tokens.ts';
 import { contrastRatio } from './contrast.ts';
 
 const names = Object.keys(themes) as ThemeName[];
@@ -35,6 +35,26 @@ describe('WCAG AA guard', () => {
       });
     }
   }
+  // Jonas 2026-10-27: signal draws control borders exactly as the prototype does (below 3:1, accepted);
+  // light and high-contrast were not designed and keep accessible boundaries.
+  it('exempts only signal from the 3:1 control-boundary rule', () => {
+    expect(CONTROL_EDGE_EXEMPT).toEqual(['signal']);
+  });
+  it('signal control edges are the prototype values', () => {
+    expect(themes.signal.controlEdge).toBe('#2A303A');
+    expect(themes.signal.controlEdgeField).toBe('#252A33');
+    expect(themes.signal.controlEdgeKey).toBe('#3A404A');
+  });
+  for (const n of names.filter((t) => !CONTROL_EDGE_EXEMPT.includes(t))) {
+    for (const key of CONTROL_EDGE_KEYS) {
+      it(`${n}: ${key} is the theme's edge and at least 3:1 on bg, bg2, surface, surface2`, () => {
+        expect(themes[n][key]).toBe(themes[n].edge);
+        for (const bg of ['bg', 'bg2', 'surface', 'surface2'] as const) {
+          expect(contrastRatio(themes[n][key], themes[n][bg])).toBeGreaterThanOrEqual(3);
+        }
+      });
+    }
+  }
   it('high-contrast underlines links', () => {
     expect(themes['high-contrast'].linkUnderline).toBe(1);
     expect(themes.signal.linkUnderline).toBe(0);
@@ -44,7 +64,7 @@ describe('WCAG AA guard', () => {
 describe('structural tokens', () => {
   it('has the Signal radii and layout dimensions', () => {
     expect(structural.radius).toEqual({
-      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px',
+      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px',
     });
     expect(structural.layout.railW).toBe('56px');
   });

@@ -31,11 +31,11 @@ const noop = () => {};
 const frame: CSSProperties = { width: 390, margin: -16, transform: 'translateZ(0)', ['--d-shell-h' as string]: '844px' };
 const Phone = ({ children }: { children: ReactNode }) => <div style={frame}>{children}</div>;
 
+// The tabs the web passes (packages/web/src/screens/Shell.tsx `tabItem`): home (house), activity (bell), you (user), as in the prototype.
 type TabId = 'servers' | 'dms' | 'activity' | 'you';
 const tabs = (current: TabId): TabBarItem[] => [
-  { id: 'servers', label: 'servers', href: '#servers', icon: 'server', current: current === 'servers' },
-  { id: 'dms', label: 'dms', href: '#dms', icon: 'message-square', current: current === 'dms', count: 3, countLabel: 'dms, 3 unread' },
-  { id: 'activity', label: 'activity', href: '#activity', icon: 'activity', current: current === 'activity', count: 120, countLabel: 'activity, 120 unread' },
+  { id: 'home', label: 'home', href: '#home', icon: 'house', current: current === 'servers' || current === 'dms', count: 3, countLabel: 'home, 3 new' },
+  { id: 'activity', label: 'activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 120, countLabel: 'activity, 120 new' },
   { id: 'you', label: 'you', href: '#you', icon: 'user', current: current === 'you' },
 ];
 const tabBar = (current: TabId) => <TabBar label="main" items={tabs(current)} onSelect={noop} />;

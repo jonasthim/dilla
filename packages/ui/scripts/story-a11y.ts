@@ -5,15 +5,23 @@ const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/', '
 
 type StoryContext = { id: string; title: string; name: string };
 
-/** The element whose border is a control's only boundary, for the stories that must draw it in --edge. */
-function boundarySelector(id: string): string | null {
-  if (id.startsWith('primitives-keyhint--')) return '.d-keyhint__kbd';
-  if (id === 'form-toggle--off') return '.d-toggle__track';
-  if (id.startsWith('form-segmented--')) return '.d-segmented__group';
-  if (id === 'form-select--default') return '.d-select__input';
-  if (id === 'form-textfield--empty' || id === 'form-textfield--filled') return '.d-text-field__input';
-  if (id.startsWith('shell-topbar--')) return '.d-topbar__kbd';
-  if (id === 'shell-communityrail--signal') return '.d-community-rail__glyph';
+/**
+ * The element whose border is a control's only boundary, and the colour signal draws it in. Jonas 2026-10-27:
+ * signal uses the prototype's exact borders (--control-edge #2A303A, --control-edge-field #252A33 for fields,
+ * --control-edge-key #3A404A for keycaps and the add tile); light and high-contrast keep --edge (tokens.test.ts).
+ */
+const CONTROL_EDGE = 'rgb(42, 48, 58)';
+const CONTROL_EDGE_FIELD = 'rgb(37, 42, 51)';
+const CONTROL_EDGE_KEY = 'rgb(58, 64, 74)';
+function boundarySelector(id: string): { selector: string; colour: string } | null {
+  if (id.startsWith('primitives-keyhint--')) return { selector: '.d-keyhint__kbd', colour: CONTROL_EDGE_KEY };
+  if (id === 'form-toggle--off') return { selector: '.d-toggle__track', colour: CONTROL_EDGE };
+  if (id.startsWith('form-segmented--')) return { selector: '.d-segmented__group', colour: CONTROL_EDGE_FIELD };
+  if (id === 'form-select--default') return { selector: '.d-select__input', colour: CONTROL_EDGE_FIELD };
+  if (id === 'form-textfield--empty' || id === 'form-textfield--filled') return { selector: '.d-text-field__input', colour: CONTROL_EDGE_FIELD };
+  if (id === 'primitives-button--default') return { selector: '.d-btn', colour: CONTROL_EDGE };
+  if (id.startsWith('shell-topbar--')) return { selector: '.d-topbar__kbd', colour: CONTROL_EDGE };
+  if (id === 'shell-communityrail--signal') return { selector: '.d-community-rail__glyph', colour: CONTROL_EDGE_KEY };
   return null;
 }
 
@@ -178,8 +186,34 @@ const SIGNAL_GEOMETRY: Record<string, Want[]> = {
   'voice-voicedock--signal': [{ sel: '.d-voice-dock', radius: 8, background: 'rgba(124, 255, 142, 0.04)' }, { sel: '.d-voice-dock__leave', w: 28, h: 28, color: 'rgb(255, 110, 110)' }, { sel: '.d-voice-dock__bars', h: 12 }, { sel: '.d-voice-dock__bars > span', w: 2 }],
   'shell-channelheader--signal-members-open': [{ sel: '.d-channel-header', h: 44 }, { sel: '.d-channel-header__actions [aria-pressed="true"]', h: 28, color: 'rgb(90, 168, 230)', background: 'rgba(90, 168, 230, 0.12)' }],
   'shell-tabbar--signal': [{ sel: '.d-tab-bar__link', h: 56 }, { sel: '.d-tab-bar__link[aria-current="page"]', color: 'rgb(228, 232, 238)' }],
-  'shell-phoneheader--signal': [{ sel: '.d-phone-header', h: 52 }, { sel: '.d-phone-header__back', w: 44, h: 44 }],
+  // Jonas 2026-10-27: the prototype's phone sizes (supersedes Ruling N): Threads/Members 28 high, search 36 x 28, no "⋯".
+  'shell-phoneheader--signal': [{ sel: '.d-phone-header', h: 52 }, { sel: '.d-phone-header__back', w: 44, h: 44 },
+    { sel: '.d-phone-header__actions .d-btn[aria-label="Threads"]', w: 30, h: 28 }, { sel: '.d-phone-header__actions .d-icon-button', w: 36, h: 28 }],
 };
+/**
+ * Jonas 2026-10-27 (supersedes Ruling Q): in signal a presence dot is a solid disc in the prototype's colour (online #7CFF8E,
+ * idle #FFD16A, dnd #FF6E6E, invisible/offline #767D89) with no half fill, bar or ring. The status word stays for screen readers.
+ */
+const SOLID_DOTS: Record<string, string> = {
+  'shell-userpanel--signal': 'rgb(124, 255, 142)', 'shell-userpanel--signal-idle': 'rgb(255, 209, 106)',
+  'shell-userpanel--signal-dnd': 'rgb(255, 110, 110)', 'shell-userpanel--signal-invisible': 'rgb(118, 125, 137)',
+  'primitives-avatar--member': 'rgb(124, 255, 142)',
+};
+async function checkSolidDot(page: Page, context: StoryContext, want: string): Promise<void> {
+  const got = await page.evaluate(() => {
+    const el = document.querySelector('#storybook-root .d-avatar__presence .d-state-dot');
+    if (el === null) return null;
+    const st = getComputedStyle(el);
+    return { bg: st.backgroundColor, image: st.backgroundImage, border: st.borderTopWidth, after: getComputedStyle(el, '::after').content };
+  });
+  if (got === null) throw new Error(`${context.title} / ${context.name}: no presence dot`);
+  const bad: string[] = [];
+  if (got.bg !== want) bad.push(`fill ${got.bg}, want ${want}`);
+  if (got.image !== 'none') bad.push(`background-image ${got.image} (a half fill)`);
+  if (got.border !== '0px') bad.push(`border ${got.border} (a ring)`);
+  if (got.after !== 'none' && got.after !== 'normal') bad.push(`::after ${got.after} (a bar)`);
+  if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: presence dot is not solid: ${bad.join('; ')}`);
+}
 async function checkSignalGeometry(page: Page, context: StoryContext, wants: Want[]): Promise<void> {
   await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== 'running' || a.effect?.getTiming().iterations === Infinity), undefined, { timeout: 5_000 }).catch(() => {});
   const bad = await page.evaluate((list: Want[]) => {
@@ -203,6 +237,16 @@ async function checkSignalGeometry(page: Page, context: StoryContext, wants: Wan
   if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
 }
 
+/**
+ * Ruling Y (prototype parity, Jonas 2026-10-27): elements whose colours are exactly the prototype's and fall below 4.5:1 in the
+ * signal theme. Only axe's color-contrast rule is off for them, only in signal; every other rule still runs on them, and the
+ * light and high-contrast stories get no exception.
+ */
+const PROTOTYPE_CONTRAST: { story: (id: string) => boolean; selector: string; why: string }[] = [
+  { story: id => id.startsWith('voice-voicedock--') || id.startsWith('screens-voice--'), selector: '.d-voice-dock__where',
+    why: 'voice dock stats in --fg-3 #767D89 on the --live tint (4.38:1), prototype parity, Jonas 2026-10-27' },
+];
+
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
     if (context.id === 'settings-settingsframe--phone-index') {
       await page.setViewportSize({ width: 640, height: 400 });
@@ -210,25 +254,37 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     }
     await injectAxe(page);
     const strict = STRICT_TARGET_TITLES.some(prefix => context.title.startsWith(prefix));
-    await checkA11y(page, '#storybook-root', {
+    const signal = await page.evaluate(() => document.documentElement.getAttribute('data-theme') === 'signal');
+    const excepted = signal ? PROTOTYPE_CONTRAST.filter(e => e.story(context.id)).map(e => e.selector) : [];
+    const present = excepted.length === 0 ? [] : await page.evaluate(sels => sels.filter(s => document.querySelector(`#storybook-root ${s}`) !== null), excepted);
+    const rules = { ...(strict ? { 'target-size': { enabled: true } } : {}) };
+    await checkA11y(page, present.length === 0 ? '#storybook-root' : { include: [['#storybook-root']], exclude: present.map(s => [`#storybook-root ${s}`]) }, {
       detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
-      ...(strict ? { axeOptions: { rules: { 'target-size': { enabled: true } } } } : {}),
+      ...(strict ? { axeOptions: { rules } } : {}),
     });
-    // Control boundaries meet WCAG 1.4.11 (3:1): an input, a select, a segmented outline and the off toggle's
-    // track are drawn in --edge, rgb(92, 99, 110) in the signal theme, never the fainter hairline.
-    const edgeSelector = boundarySelector(context.id);
-    if (edgeSelector) {
+    // The excepted elements still pass every other rule.
+    if (present.length > 0) {
+      await checkA11y(page, { include: present.map(s => [`#storybook-root ${s}`]) }, {
+        detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
+        axeOptions: { rules: { ...rules, 'color-contrast': { enabled: false } } },
+      });
+    }
+    // Control boundaries are the prototype's exact colours in signal (Jonas 2026-10-27), never --edge or a hairline.
+    const boundary = boundarySelector(context.id);
+    if (boundary) {
       const edge = await page.evaluate(sel => {
         const el = document.querySelector(sel);
         return el ? { theme: document.documentElement.getAttribute('data-theme'), border: getComputedStyle(el).borderTopColor } : null;
-      }, edgeSelector);
-      if (!edge) throw new Error(`${context.title} / ${context.name}: no ${edgeSelector} to check`);
+      }, boundary.selector);
+      if (!edge) throw new Error(`${context.title} / ${context.name}: no ${boundary.selector} to check`);
       if (edge.theme !== 'signal') throw new Error(`${context.title} / ${context.name}: expected theme signal, got ${edge.theme}`);
-      if (edge.border !== 'rgb(92, 99, 110)') {
-        throw new Error(`${context.title} / ${context.name}: ${edgeSelector} border is ${edge.border}, not --edge rgb(92, 99, 110)`);
+      if (edge.border !== boundary.colour) {
+        throw new Error(`${context.title} / ${context.name}: ${boundary.selector} border is ${edge.border}, not the prototype's ${boundary.colour}`);
       }
     }
     if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
+    const solidDot = SOLID_DOTS[context.id];
+    if (solidDot !== undefined) await checkSolidDot(page, context, solidDot);
     const signalWants = SIGNAL_GEOMETRY[context.id];
     if (signalWants !== undefined) await checkSignalGeometry(page, context, signalWants);
     if (context.id === 'shell-appshell--aside-close-live') await checkAsideTransition(page, context);

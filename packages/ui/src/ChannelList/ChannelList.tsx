@@ -1,4 +1,5 @@
-import { useLayoutEffect, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
+import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { ChannelRow } from '../ChannelRow/ChannelRow.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
@@ -64,6 +65,12 @@ export interface ChannelListProps {
     rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[]; count?: string }>>;
     onJoin?(id: string): void;
   };
+  /**
+   * A text row's context menu (Ruling X: the channel's pins and edit channel live here, since the header has no "⋯"). It opens on a
+   * right-click, a long press on a touch screen, and Shift+F10 or the ContextMenu key on a focused row; it has no visible trigger.
+   * `items(id)` empty means that row has no menu.
+   */
+  rowMenu?: { label(name: string): string; items(id: string): readonly ActionMenuItem[]; onSelect(channelId: string, itemId: string): void };
 }
 
 type Entry =
@@ -102,7 +109,7 @@ function entriesOf(channels: readonly ChannelListChannel[], categories: NonNulla
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server', stats, newLabel }: ChannelListProps) {
+export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server', stats, newLabel, rowMenu }: ChannelListProps) {
   const isJoined = (c: ChannelListChannel) => c.joined === true || (voice !== undefined && Object.hasOwn(voice.rooms, c.id) && voice.rooms[c.id].joined);
   const entries = entriesOf(channels, categories, activeId, isJoined);
   const roving = useRovingFocus(entries.findIndex(e => e.kind === 'channel' && e.channel.id === activeId));
@@ -118,6 +125,52 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
   useLayoutEffect(syncExtras);
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>) => { roving.onKeyDown(e); syncExtras(); };
   const onFocus = (e: FocusEvent<HTMLUListElement>) => { roving.onFocus(e); syncExtras(); };
+  // The row context menu (Ruling X). `row` is the row's button, where focus goes back when the menu closes.
+  const [menu, setMenu] = useState<{ id: string; name: string; at: { x: number; y: number }; row: HTMLElement } | null>(null);
+  // Where the platform sends both a keydown and a contextmenu for one Shift+F10, the menu opens once.
+  const keyOpenedAt = useRef(-Infinity);
+  // A long press: a touch held 500ms opens the menu; the click that ends it then does not open the channel.
+  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
+  const swallowClick = useRef(false);
+  useEffect(() => () => { if (press.current !== null) clearTimeout(press.current.timer); }, []);
+  const menuFor = (c: ChannelListChannel) => (rowMenu === undefined || c.kind === 'voice' ? [] : rowMenu.items(c.id));
+  const openMenu = (c: ChannelListChannel, li: HTMLElement, at: { x: number; y: number }) => {
+    const row = li.querySelector<HTMLElement>('.d-chrow');
+    if (row !== null) setMenu({ id: c.id, name: c.name, at, row });
+  };
+  const rowHandlers = (c: ChannelListChannel) => menuFor(c).length === 0 ? {} : {
+    onContextMenu: (e: MouseEvent<HTMLLIElement>) => {
+      e.preventDefault();
+      if (e.timeStamp - keyOpenedAt.current < 500) return;
+      openMenu(c, e.currentTarget, { x: e.clientX, y: e.clientY });
+    },
+    onKeyDown: (e: KeyboardEvent<HTMLLIElement>) => {
+      if (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey)) return;
+      e.preventDefault();
+      keyOpenedAt.current = e.timeStamp;
+      const box = e.currentTarget.getBoundingClientRect();
+      openMenu(c, e.currentTarget, { x: box.left + 8, y: box.bottom });
+    },
+    onPointerDown: (e: PointerEvent<HTMLLIElement>) => {
+      if (e.pointerType !== 'touch') return;
+      const li = e.currentTarget;
+      const at = { x: e.clientX, y: e.clientY };
+      if (press.current !== null) clearTimeout(press.current.timer);
+      press.current = { x: at.x, y: at.y, timer: setTimeout(() => { press.current = null; swallowClick.current = true; openMenu(c, li, at); }, 500) };
+    },
+    onPointerMove: (e: PointerEvent<HTMLLIElement>) => {
+      const p = press.current;
+      if (p !== null && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10) { clearTimeout(p.timer); press.current = null; }
+    },
+    onPointerUp: () => { if (press.current !== null) { clearTimeout(press.current.timer); press.current = null; } },
+    onPointerCancel: () => { if (press.current !== null) { clearTimeout(press.current.timer); press.current = null; } },
+    onClickCapture: (e: MouseEvent<HTMLLIElement>) => {
+      if (!swallowClick.current) return;
+      swallowClick.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+  };
   const renderChannel = (c: ChannelListChannel) => {
     const unread = c.unread ?? 0;
     const mentions = c.mentions ?? 0;
@@ -136,7 +189,7 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       );
     }
     return (
-      <li key={c.id}>
+      <li key={c.id} {...rowHandlers(c)}>
         <ChannelRow name={c.name} kind={c.afk === true ? 'afk' : c.kind} readable={c.readable} active={c.id === activeId}
           unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} newLabel={newLabel} onSelect={() => onSelect(c.id)} />
       </li>
@@ -178,6 +231,11 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
     </p>
   ) : null;
   const foot = footer !== undefined ? <div className="d-channel-list__footer">{footer}</div> : null;
+  const contextMenu = menu !== null && rowMenu !== undefined ? (
+    <ActionMenu label={rowMenu.label(menu.name)} items={rowMenu.items(menu.id)} open trigger="none" at={menu.at}
+      returnFocus={() => (menu.row.isConnected ? menu.row : null)}
+      onOpenChange={open => { if (!open) setMenu(null); }} onSelect={item => rowMenu.onSelect(menu.id, item)} />
+  ) : null;
   return (
     <nav className="d-channel-list" aria-label={label}>
       {headerAction !== undefined ? (
@@ -193,6 +251,7 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       ) : (
         <>{body}{foot}</>
       )}
+      {contextMenu}
     </nav>
   );
 }

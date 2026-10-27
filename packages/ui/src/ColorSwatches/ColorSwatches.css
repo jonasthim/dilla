@@ -6,7 +6,7 @@
  * The one non-token value in the library: --d-swatch is set inline from data (#rrggbb), because a role's colour is
  * chosen by the person and cannot be a theme token. It paints only the swatch fill; the name, check and ring are tokens.
  */
-.d-color-swatches__swatch { position: relative; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 1.75rem; height: 1.75rem; min-width: 1.5rem; min-height: 1.5rem; padding: 0; background: var(--d-swatch); border: 2px solid var(--edge); border-radius: var(--r-pill); cursor: pointer; }
+.d-color-swatches__swatch { position: relative; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 1.75rem; height: 1.75rem; min-width: 1.5rem; min-height: 1.5rem; padding: 0; background: var(--d-swatch); border: 2px solid var(--control-edge); border-radius: var(--r-pill); cursor: pointer; }
 .d-color-swatches__swatch:hover { border-color: var(--fg-2); }
 .d-color-swatches__swatch[aria-checked="true"] { border-color: var(--fg); }
 /* "No colour": an empty circle struck through, so it is not a missing swatch. */

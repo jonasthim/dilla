@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { DOCK_STATS_CONTRAST } from './dockStatsContrast.ts';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { VoiceDock } from './VoiceDock.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
@@ -33,7 +34,7 @@ function expectDock(root: HTMLElement, story: string): void {
 
 // Every string is L-COPY-05's / layout's, quoted.
 const meta = {
-  title: 'Voice/VoiceDock', component: VoiceDock,
+  title: 'Voice/VoiceDock', component: VoiceDock, parameters: DOCK_STATS_CONTRAST,
   args: {
     phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
     labels: {

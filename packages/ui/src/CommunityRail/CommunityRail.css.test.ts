@@ -34,10 +34,10 @@ describe('the rail (CSS pin)', () => {
   it('has no left-edge pill (the prototype draws none)', () => {
     expect(css).not.toContain('__pill');
   });
-  it('the add tile is a dashed --edge circle that turns 90deg on hover', () => {
+  it('the add tile is a dashed --control-edge-key circle (#3A404A in signal) that turns 90deg on hover', () => {
     const d = rule('.d-community-rail__glyph');
     expect(d).toMatch(/width: var\(--rail-tile\);/);
-    expect(d).toMatch(/border: 1px dashed var\(--edge\);/);
+    expect(d).toMatch(/border: 1px dashed var\(--control-edge-key\);/);
     expect(rule('.d-community-rail__join:hover .d-community-rail__glyph')).toMatch(/transform: rotate\(90deg\);/);
   });
   it('the mention badge pops in at the bottom right', () => {

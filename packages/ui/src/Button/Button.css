@@ -3,7 +3,7 @@
   height: 1.875rem /* 30px */; padding: 0 12px;
   font: inherit; font-size: var(--text-btn); font-weight: var(--weight-body);
   color: var(--fg); background: transparent;
-  border: 1px solid var(--edge); border-radius: var(--r-md);
+  border: 1px solid var(--control-edge); border-radius: var(--r-md);
   cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-press) var(--ease-out);
 }
 .d-btn:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.94); }

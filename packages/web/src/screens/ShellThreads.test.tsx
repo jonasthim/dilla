@@ -1,5 +1,6 @@
 // W-Shell-B: threads in the aside (one aside) and as a phone sheet, slow mode in the composer, the channel rows (flow 11).
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { rowMenuItem } from '../test/row-menu.ts';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary, type TimelineItem } from '@dilla/client-core';
@@ -161,8 +162,7 @@ describe('threads on a desktop shell (one aside)', () => {
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
     await waitFor(() => expect(threadPane()).toBeNull());
     act(() => fake.set(`pins:${GEN}`, [{ msgId: ROOT2, seq: '4', senderUser: BOB, excerpt: 'the second root', pinnedBy: BOB, pinnedSeq: '5', ts: 1_700_000_000, threadRoot: ROOT }]));
-    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: en['layout.header.more'] }));
-    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await rowMenuItem(user, 'general', en['shell.pins.open']);
     await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
     expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
     expect(fake.callsOf('openThread')).toHaveLength(2);
@@ -367,8 +367,7 @@ describe('where focus lands (fix round 2)', () => {
     const { fake, user } = setup();
     await screen.findByRole('button', { name: '2 replies' });
     pinFor(fake);
-    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: en['layout.header.more'] }));
-    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await rowMenuItem(user, 'general', en['shell.pins.open']);
     await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
     await screen.findByRole('complementary', { name: en['thread.title'] });
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
@@ -397,12 +396,12 @@ describe('phone: a thread from a search hit, a pin and a quote', () => {
     expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
   });
 
+  // Ruling X: on a phone the pins are in the channel row's context menu (a long press; here its right-click twin) on the list.
   it('opens a thread sheet from a pin', async () => {
-    const { fake, user } = setup({ phone: true });
-    await screen.findByRole('button', { name: '2 replies' });
+    const { fake, user } = setup({ phone: true, path: `/c/${A}` });
     pinFor(fake);
-    await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await rowMenuItem(user, 'general', en['shell.pins.open']);
+    await screen.findByRole('button', { name: '2 replies' });
     await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
     const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');

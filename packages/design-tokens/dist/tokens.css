@@ -44,6 +44,9 @@
   --line-strong: #2A303A;
   --brand-ink: #FFFFFF;
   --hover-hi: #1A1E25;
+  --control-edge: #2A303A;
+  --control-edge-field: #252A33;
+  --control-edge-key: #3A404A;
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
@@ -79,6 +82,7 @@
   --r-bot: 6px;
   --r-seg: 7px;
   --r-row: 5px;
+  --r-tag: 3px;
   --opacity-muted: 0.8;
   --shadow-1: 0 8px 20px rgba(0,0,0,0.4);
   --shadow-2: 0 20px 50px rgba(0,0,0,0.55);
@@ -175,6 +179,9 @@
   --line-strong: #2A303A;
   --brand-ink: #FFFFFF;
   --hover-hi: #1A1E25;
+  --control-edge: #2A303A;
+  --control-edge-field: #252A33;
+  --control-edge-key: #3A404A;
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -223,6 +230,9 @@
   --line-strong: #B4BBB4;
   --brand-ink: #FFFFFF;
   --hover-hi: #D6DAD6;
+  --control-edge: #6F776F;
+  --control-edge-field: #6F776F;
+  --control-edge-key: #6F776F;
   --link-underline: 0;
   color-scheme: light;
 }
@@ -271,6 +281,9 @@
   --line-strong: #FFFFFF;
   --brand-ink: #FFFFFF;
   --hover-hi: #2A2A2A;
+  --control-edge: #FFFFFF;
+  --control-edge-field: #FFFFFF;
+  --control-edge-key: #FFFFFF;
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -320,6 +333,9 @@
     --line-strong: #B4BBB4;
     --brand-ink: #FFFFFF;
     --hover-hi: #D6DAD6;
+    --control-edge: #6F776F;
+    --control-edge-field: #6F776F;
+    --control-edge-key: #6F776F;
     --link-underline: 0;
     color-scheme: light;
   }
@@ -370,6 +386,9 @@
     --line-strong: #FFFFFF;
     --brand-ink: #FFFFFF;
     --hover-hi: #2A2A2A;
+    --control-edge: #FFFFFF;
+    --control-edge-field: #FFFFFF;
+    --control-edge-key: #FFFFFF;
     --link-underline: 1;
     color-scheme: dark;
   }

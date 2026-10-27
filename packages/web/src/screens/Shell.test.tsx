@@ -6,6 +6,7 @@ import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
+import { openRowMenu } from '../test/row-menu.ts';
 import { formatTime } from '../strings/index.ts';
 import { en } from '../strings/en.ts';
 import { joinErrorState, replaceHistoryState } from '../router.ts';
@@ -313,14 +314,16 @@ it('opens scoped search with a modifier and sends the typed query', async () => 
   expect(input).toHaveFocus();
 });
 
-it('opens search from the channel header (walk 1; Signal Ruling U: its "more" menu, the top bar holds search too)', async () => {
+// Ruling X (Jonas 2026-10-27): the desktop channel header has no search; the top bar's search is the one, as Control+K is.
+it('has no search in the desktop channel header; the top bar opens it', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   const header = (await screen.findByRole('heading', { level: 2, name: 'general' })).closest('header')!;
-  await user.click(within(header).getByRole('button', { name: 'more' }));
-  await user.click(screen.getByRole('menuitem', { name: 'search' }));
+  expect(within(header).queryByRole('button', { name: 'search' })).toBeNull();
+  expect(within(header).queryByRole('button', { name: 'more' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: en['topbar.search'] }));
   const input = screen.getByRole('combobox', { name: 'Search your messages' });
   await user.type(input, 'lamp');
-  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+  await waitFor(() => expect(fake.callsOf('search').some(c => c.query === 'lamp')).toBe(true));
 });
 // Walk 7: the browser's own offline event shows the link banner at once; the gateway status stays online.
 it('shows the link banner when the browser goes offline, and empties it when it returns', async () => {
@@ -1478,12 +1481,10 @@ describe('keyboard', () => {
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
-    // Signal §5.5 (Ruling U): Threads, Members, then the "more" menu (pins, search, edit channel) at every width.
+    // Signal §5.5 (Ruling X): Threads, Members and nothing else (pins and edit channel are in the row's context menu).
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: en['layout.header.threads'] }));
     await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: /^Members/ }));
-    await user.tab();
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();
@@ -1918,9 +1919,8 @@ describe('devices and settings', () => {
 describe('the channel header actions (web3.9)', () => {
   const OWNED = [{ id: A, name: 'Midgard', owner: ME.id }];
   const header = () => document.querySelector('.d-channel-header') as HTMLElement;
-  const more = () => within(header()).getByRole('button', { name: en['layout.header.more'] });
 
-  it('Signal §5.5 (Ruling U): Threads (icon and label) and Members (icon, the count, named "Members, {n}"), nothing folds', () => {
+  it('Signal §5.5 (Ruling X): Threads (icon and label) and Members (icon, the count, named "Members, {n}"), nothing else', () => {
     setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const bar = within(header());
     const threads = bar.getByRole('button', { name: en['layout.header.threads'] });
@@ -1931,22 +1931,31 @@ describe('the channel header actions (web3.9)', () => {
     expect(members.textContent).toMatch(/^\d+$/);
     expect(header().querySelector('[data-foldable]')).toBeNull();
     for (const name of [en['shell.pins.open'], en['search.open'], en['admin.channel.open']]) expect(bar.queryByRole('button', { name })).toBeNull();
-    expect(header()).toHaveAttribute('data-overflow', 'always');
-    expect(more()).toBeInTheDocument();
+    expect(header()).not.toHaveAttribute('data-overflow');
+    expect(bar.queryByRole('button', { name: en['layout.header.more'] })).toBeNull();
+    expect(bar.getAllByRole('button')).toHaveLength(2);
   });
 
-  it('the "more" menu holds pins, search and edit channel in order, and an item does what its button did', async () => {
+  it('the channel row\'s context menu holds pins and edit channel (Ruling X), and pins opens them', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
-    await user.click(more());
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['search.open'], en['admin.channel.open']]);
-    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    const menu = await openRowMenu(user, 'general');
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['admin.channel.open']]);
+    await user.click(within(menu).getByRole('menuitem', { name: en['shell.pins.open'] }));
     await waitFor(() => expect(fake.callsOf('loadPins')).toHaveLength(1));
   });
+  it('pins from the row of another channel open that channel, then its pins', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const menu = await openRowMenu(user, 'random');
+    await user.click(within(menu).getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await waitFor(() => expect(path()).toBe(`/c/${A}/${RAND}`));
+    expect(await screen.findByRole('dialog', { name: /random/ })).toBeInTheDocument();
+    expect(fake.callsOf('loadPins').length).toBeGreaterThan(0);
+  });
 
-  it('a member without manage channels has no edit action, in the bar or the menu', async () => {
+  it('a member without manage channels has no edit action, in the bar or the row menu', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
-    await user.click(more());
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['search.open']]);
+    const menu = await openRowMenu(user, 'general');
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open']]);
     await user.keyboard('{Escape}');
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });

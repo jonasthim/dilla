@@ -20,7 +20,7 @@ const notice = (id: number, over: Partial<Notice>): Notice =>
   ({ id, channelId: LOOT, communityId: A, kind: 'mention', senderUser: null, senderName: 'ada', body: 'hello', ts: NOW - 60 * (10 - id), threadRoot: null, ...over });
 const ch = (id: string, name: string): ChannelSummary => ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, group: 'none', slowmode: 0, announcement: false });
 
-function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: number; mentions: number }> } = {}) {
+function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: number; mentions: number }>; reminders?: { due: number; onOpen(): void } } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
@@ -30,11 +30,31 @@ function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: num
   fake.set('badges', opts.badges ?? {});
   const onOpen = vi.fn();
   const user = userEvent.setup();
-  const view = render(<div className="d-root"><CoreProvider client={fake}><Activity onOpen={onOpen} /></CoreProvider></div>);
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Activity onOpen={onOpen} {...(opts.reminders === undefined ? {} : { reminders: opts.reminders })} /></CoreProvider></div>);
   return { fake, user, view, onOpen };
 }
 
 describe('Activity', () => {
+  // Ruling X (Jonas 2026-10-27): the channel header lost its "⋯", so the phone reaches the reminders inbox from this tab, where
+  // the prototype lists due reminders first.
+  it('opens the reminders inbox from its first row, which says how many are due', async () => {
+    const onOpen = vi.fn();
+    const { user } = setup({ reminders: { due: 2, onOpen }, notices: [notice(2, { kind: 'mention', channelId: LOOT })] });
+    const rows = screen.getAllByRole('button');
+    expect(rows[0]).toHaveTextContent(t('reminder.inbox'));
+    expect(rows[0]).toHaveTextContent(t('reminder.badge', { count: 2 }));
+    expect(rows[0]).toHaveAttribute('aria-haspopup', 'dialog');
+    await user.click(rows[0]);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+  it('keeps the reminders row when nothing else is new, without a due count when none is due', async () => {
+    const onOpen = vi.fn();
+    const { user } = setup({ reminders: { due: 0, onOpen } });
+    const row = screen.getByRole('button', { name: t('reminder.inbox') });
+    expect(row).not.toHaveTextContent(t('reminder.badge', { count: 0 }));
+    await user.click(row);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
   it('lists mentions and DMs newest first and leaves plain messages out', () => {
     setup({ notices: [
       notice(1, { kind: 'message', body: 'plain', channelId: GEN }),

@@ -44,7 +44,6 @@
 .d-voice-row__state { flex: none; display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; color: var(--fg-2); }
 .d-voice-row__state:is([data-state="muted"], [data-state="deafened"]) { color: var(--danger); }
 .d-voice-row__state[data-state="unverified"] { color: var(--warn); }
-/* "playback only": the prototype's quiet outline in --line-strong (Ruling L, a decorative chip). */
-.d-voice-row__states > .d-tag[data-kind="playbackOnly"] { border-color: var(--line-strong); }
+/* "playback only": the prototype's quiet outline in --line-strong (Ruling L) is the Tag's own (Tag.css). */
 /* AW6: a person of the AFK channel's away roster has no voice connection: the name steps back to --fg-2 beside the word. */
 .d-voice-row__person[data-away="true"] .d-voice-row__person-name { color: var(--fg-2); }

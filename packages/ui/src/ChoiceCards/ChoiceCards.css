@@ -1,6 +1,6 @@
 .d-choice-cards { display: grid; gap: 0.75rem; min-width: 0; }
 .d-choice-cards__label { margin: 0; }
-.d-choice-cards__card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.75rem; padding: 0.875rem 1rem; min-height: 3rem; background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer; }
+.d-choice-cards__card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.75rem; padding: 0.875rem 1rem; min-height: 3rem; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-md); cursor: pointer; }
 .d-choice-cards__card[data-checked="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .d-choice-cards__card:has(.d-choice-cards__radio:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .d-choice-cards__card[data-disabled="true"] { cursor: not-allowed; }

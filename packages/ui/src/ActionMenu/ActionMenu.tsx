@@ -27,6 +27,12 @@ export interface ActionMenuProps {
   /** Extra classes on the wrapper and on the trigger, for a caller that lays the trigger out itself. */
   className?: string;
   triggerClassName?: string;
+  /**
+   * 'none': no trigger is drawn; the menu exists only while `open`, at `at` (a context menu: a right-click, a long press,
+   * Shift+F10 on a row; Ruling X). Escape, a choice and Tab hand focus to `returnFocus()` (the row) instead of a trigger.
+   */
+  trigger?: 'button' | 'none';
+  returnFocus?(): HTMLElement | null;
 }
 
 /**
@@ -34,7 +40,7 @@ export interface ActionMenuProps {
  * on the last. Arrows wrap, Home and End jump. Escape closes and refocuses the trigger, Tab closes and moves on, and a
  * pointerdown outside closes. `open` is the caller's, so a row can also open the menu from a context menu (`at`).
  */
-export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon, triggerContent, labelledBy, className, triggerClassName }: ActionMenuProps) {
+export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon, triggerContent, labelledBy, className, triggerClassName, trigger = 'button', returnFocus }: ActionMenuProps) {
   const base = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -42,6 +48,8 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
   const startAt = useRef<'first' | 'last'>('first');
   const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null);
   const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
+  // Where focus goes back when the menu closes from inside it: the trigger, or the caller's element when there is none.
+  const focusBack = () => { (trigger === 'none' ? returnFocus?.() ?? null : triggerRef.current)?.focus(); };
 
   // Focus goes to the first item (the last after ArrowUp) every time the menu opens.
   useEffect(() => {
@@ -110,11 +118,11 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
         e.preventDefault();
         e.stopPropagation();
         onOpenChange(false);
-        triggerRef.current?.focus();
+        focusBack();
         break;
       case 'Tab':
         // Focus goes to the trigger first, so the browser's Tab moves on from there rather than into the popup.
-        triggerRef.current?.focus();
+        focusBack();
         onOpenChange(false);
         break;
     }
@@ -122,7 +130,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
 
   const select = (id: string) => {
     onOpenChange(false);
-    triggerRef.current?.focus();
+    focusBack();
     onSelect(id);
   };
 
@@ -132,11 +140,11 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
 
   return (
     <span ref={rootRef} className={className === undefined ? 'd-action-menu' : `d-action-menu ${className}`}>
-      <button ref={triggerRef} type="button" className={triggerClassName === undefined ? 'd-action-menu__trigger' : `d-action-menu__trigger ${triggerClassName}`} aria-label={labelledBy === undefined ? label : undefined} aria-labelledby={labelledBy} aria-haspopup="menu" data-focus-key={focusKey}
+      {trigger === 'none' ? null : <button ref={triggerRef} type="button" className={triggerClassName === undefined ? 'd-action-menu__trigger' : `d-action-menu__trigger ${triggerClassName}`} aria-label={labelledBy === undefined ? label : undefined} aria-labelledby={labelledBy} aria-haspopup="menu" data-focus-key={focusKey}
         aria-expanded={open} aria-controls={open ? `${base}-menu` : undefined}
         onClick={() => onOpenChange(!open)} onKeyDown={onTriggerKey}>
         {triggerContent ?? (icon !== undefined ? <Icon name={icon} size={22} /> : <span aria-hidden="true">⋯</span>)}
-      </button>
+      </button>}
       {open ? (
         <div ref={menuRef} id={`${base}-menu`} role="menu" aria-label={label} className="d-action-menu__popup" style={style} data-placement={at ? undefined : placement}
           onKeyDown={onMenuKey}>

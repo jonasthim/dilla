@@ -128,10 +128,12 @@ async function expectListGrammar(page: Page, tag: string, list: string, names: s
 
 /** Every visible control that takes a tap or a click. */
 const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], [role="checkbox"], [role="radio"]';
-/** The controls a thumb works all day: 44x44 on a phone (R9). Everything else is secondary (24x24, with the 2.5.8 spacing). */
+/** The controls a thumb works all day: 44x44 on a phone (R9). Everything else is secondary (24x24, with the 2.5.8 spacing). Jonas
+ *  2026-10-27 (pixel parity): the rail's tiles (38) and the phone header's actions (28 high; search 36 x 28) are the prototype's sizes,
+ *  so they are secondary; the header's back and call dot stay 44. */
 const PRIMARY = [
-  '.d-tab-bar__link', '.d-phone-header button', '.d-chrow', '.d-voice-row', '.d-channel-list__cat-head', '.d-voice-row__join button',
-  '.d-channel-list__cat-add button', '.d-channel-list__head button', '.d-community-rail__item', '.d-community-rail__join', '.d-composer button',
+  '.d-tab-bar__link', '.d-phone-header__back', '.d-phone-header__dot', '.d-chrow', '.d-voice-row', '.d-channel-list__cat-head', '.d-voice-row__join button',
+  '.d-channel-list__cat-add button', '.d-channel-list__head button', '.d-composer button',
   '.d-call-bar button', '.d-call-stage__controls button',
 ].join(', ');
 
@@ -526,17 +528,15 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await expect(settings).toBeHidden({ timeout: WAIT });
 }
 
-/** The private inbox stays reachable when its one trigger moves between existing header slots. With `menu`, the phone channel
- *  header's "⋯" menu holds it (Signal, Ruling U), and focus returns to that menu's trigger. */
-async function expectReminderInbox(page: Page, state: string, menu = false): Promise<void> {
+/** The private inbox stays reachable when its one trigger moves between existing header slots; on a phone's channel it is the
+ *  Activity tab's first row (Ruling X: the channel header has no "⋯"). Focus returns to the trigger. */
+async function expectReminderInbox(page: Page, state: string): Promise<void> {
   await test.step(`reminder inbox on ${state}`, async () => {
     const before = page.url();
-    const opener = menu ? page.locator('.d-phone-header').getByRole('button', { name: copy('nav.channel.menu'), exact: true })
-      : page.getByRole('button', { name: 'Reminders', exact: true });
+    const opener = page.getByRole('button', { name: 'Reminders', exact: true });
     await expect(opener).toHaveCount(1);
     await expect(opener).toBeVisible();
     await opener.click();
-    if (menu) await page.getByRole('menuitem', { name: 'Reminders', exact: true }).click();
     const inbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
     await expect(inbox).toHaveCount(1);
     await expect(inbox).toBeVisible();
@@ -646,7 +646,9 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', PHONE_LIST_HEAD);
   await expectTargets(page, tag, 'the home tab');
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {
-    expect.soft(Math.min(tile.w, tile.h), `R9 rail tile "${tile.t}" is at least 44 at ${tag}`).toBeGreaterThanOrEqual(44 - TOL);
+    // The prototype's 38px tiles on a phone too (Jonas 2026-10-27, supersedes Ruling N).
+    expectAt(`R22 rail tile "${tile.t}" is 38 wide at ${tag}`, tile.w, 38, 0.5);
+    expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
   // The controller addition (UI-2 review): in the real app the voice join button and the category "+" are 44 on a phone.
   for (const [selector, what] of [['.d-voice-row__join button', 'the voice join button'], ['.d-channel-list__cat-add button', 'the category "+"']] as const) {
@@ -665,7 +667,6 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectSafeAreaBar(page, tag);
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
-  await expectReminderInbox(page, `channel at ${tag}`, true);
   await expectWrapsInLog(page, tag, 'a channel');
   await toList();
 
@@ -699,6 +700,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expect(page.locator('.d-phone-header')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header', PHONE_HEADER);
   await expectTargets(page, tag, 'the activity tab');
+  await expectReminderInbox(page, `the activity tab at ${tag}`);
   await tab('nav.tab.you').click();
   await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the phone header (you)', '.d-phone-header', PHONE_HEADER);

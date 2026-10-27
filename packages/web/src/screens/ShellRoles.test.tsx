@@ -1,5 +1,6 @@
 // W-Shell: the shell wires the channel bits, roles, lost access and the role flows (web3.5, flow 09).
 import { afterEach, describe, it, expect } from 'vitest';
+import { rowMenuItem } from '../test/row-menu.ts';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
@@ -114,8 +115,7 @@ describe('the channel edit dialog', () => {
   it('speaks its saves through the shell announcer', async () => {
     const { fake, user } = setup({ acc: { manageChannels: true, manageRoles: true }, overwrites: { [GEN]: [{ kind: 0, targetId: GAME, allow: 0, deny: 0 }] } });
     fake.handler = () => Promise.resolve(null);
-    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: 'more' }));
-    await user.click(screen.getByRole('menuitem', { name: 'edit channel' }));
+    await rowMenuItem(user, 'general', 'edit channel');
     const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
     await user.click(within(dialog).getByRole('button', { name: /^Game Night/ }));
     await user.click(within(within(dialog).getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
@@ -126,8 +126,7 @@ describe('the channel edit dialog', () => {
 describe('the pins panel', () => {
   it('states the pin rule once the bits are known', async () => {
     const { user } = setup();
-    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: 'more' }));
-    await user.click(screen.getByRole('menuitem', { name: 'pinned' }));
+    await rowMenuItem(user, 'general', 'pinned');
     expect(screen.getByText('A pin shows while the person who pinned it may pin in this channel.')).toBeInTheDocument();
   });
 });
@@ -160,8 +159,7 @@ describe('lost access', () => {
   it('announces, moves to the first listed channel, keeps the draft and closes the channel dialog', async () => {
     const { fake, user } = setup({ acc: { manageChannels: true } });
     await user.type(box(), 'still here');
-    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: 'more' }));
-    await user.click(screen.getByRole('menuitem', { name: 'edit channel' }));
+    await rowMenuItem(user, 'general', 'edit channel');
     expect(screen.getByRole('dialog', { name: 'Edit #general' })).toBeInTheDocument();
     act(() => { fake.publish(`channels:${A}`, [ch(LOBBY, 'lobby', 1)]); });
     expect(await screen.findByText('#general is no longer available to you.', { selector: '[data-testid="shell-announcer"]' })).toBeInTheDocument();

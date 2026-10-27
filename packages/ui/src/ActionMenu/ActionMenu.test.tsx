@@ -195,3 +195,38 @@ describe('ActionMenu focus key', () => {
     expect(trigger()).toHaveAttribute('data-focus-key', 'member:u1');
   });
 });
+
+describe('ActionMenu without a trigger (a context menu, Ruling X)', () => {
+  function Bare({ onSelect = () => {} }: { onSelect?: (id: string) => void }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <div>
+        <button type="button" id="row">general</button>
+        <ActionMenu label="general menu" items={items} open={open} onOpenChange={setOpen} onSelect={onSelect} at={{ x: 10, y: 10 }}
+          trigger="none" returnFocus={() => document.getElementById('row')} />
+      </div>
+    );
+  }
+  it('renders no trigger button, only the menu, and focuses its first item', () => {
+    render(<Bare />);
+    expect(screen.queryByRole('button', { name: 'general menu' })).toBeNull();
+    expect(screen.getByRole('menu', { name: 'general menu' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'kick' })).toHaveFocus();
+  });
+  it('Escape closes it and gives focus back to the row', async () => {
+    const user = userEvent.setup();
+    render(<Bare />);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+  it('a choice closes it, focuses the row and reports the id', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<Bare onSelect={onSelect} />);
+    await user.click(screen.getByRole('menuitem', { name: 'ban' }));
+    expect(onSelect).toHaveBeenCalledWith('ban');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+});

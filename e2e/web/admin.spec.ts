@@ -167,7 +167,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
       const barBox = await bar.boundingBox();
       const headerBox = await page.locator('.d-channel-header').boundingBox();
       if (barBox === null || headerBox === null) throw new Error(`no members bar or channel header at ${String(width)}`);
-      expect(barBox.height, `members bar height at ${String(width)}`).toBeCloseTo(48, 0);
+      // Signal §5.1: every pane's top bar is --bar-h, 44 (the prototype's members head and channel header).
+      expect(barBox.height, `members bar height at ${String(width)}`).toBeCloseTo(44, 0);
       expect(barBox.y + barBox.height, `members bar bottom at ${String(width)}`).toBeCloseTo(headerBox.y + headerBox.height, 0);
       const close = page.getByRole('button', { name: copy('members.close'), exact: true });
       if (await close.count() > 0) {

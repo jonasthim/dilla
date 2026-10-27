@@ -20,8 +20,8 @@
 }
 .d-topbar__search:hover { border-color: var(--accent); color: var(--fg-strong); }
 .d-topbar__search-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The keycap is a boundary drawn on its own, so it takes --edge (global constraints), not the prototype's hairline. */
-.d-topbar__kbd { flex: none; padding: 0 5px; font: inherit; font-size: var(--text-micro); line-height: 1rem /* 16px */; color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-sm); }
+/* The keycap's border is the prototype's #2A303A (--control-edge; Jonas 2026-10-27). */
+.d-topbar__kbd { flex: none; padding: 0 5px; font: inherit; font-size: var(--text-micro); line-height: 1rem /* 16px */; color: var(--fg-2); border: 1px solid var(--control-edge); border-radius: var(--r-sm); }
 
 /* The voice chip: only while in a call; it enters with d-up. */
 .d-topbar__voice {

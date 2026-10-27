@@ -69,7 +69,7 @@
 .d-call-tile__fullscreen {
   position: absolute; top: 0.25rem; right: 0.25rem; display: inline-flex; align-items: center; justify-content: center;
   width: 2.5rem; height: 2.5rem; padding: 0; color: var(--fg); background: color-mix(in srgb, var(--bg) 82%, transparent);
-  border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer;
+  border: 1px solid var(--control-edge); border-radius: var(--r-md); cursor: pointer;
 }
 .d-call-tile__fullscreen:hover { border-color: var(--fg-2); }
 .d-call-tile__fullscreen[aria-pressed="true"] { border-color: var(--accent); }
@@ -79,14 +79,14 @@
 .d-call-tile__stream .d-call-tile__volume { flex: 1 1 auto; width: auto; }
 .d-call-tile__mute {
   flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem; padding: 0;
-  color: var(--fg); background: color-mix(in srgb, var(--bg) 82%, transparent); border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer;
+  color: var(--fg); background: color-mix(in srgb, var(--bg) 82%, transparent); border: 1px solid var(--control-edge); border-radius: var(--r-md); cursor: pointer;
 }
 /* The phone's volume button and its popover show on the phone layout only (below). */
 .d-call-tile__streamvol, .d-call-tile__popover { display: none; }
 .d-call-tile__streamvol {
   flex: none; align-items: center; justify-content: center; min-width: 2.75rem; height: 2.75rem; padding: 0 0.5rem;
   font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; color: var(--fg);
-  background: color-mix(in srgb, var(--bg) 82%, transparent); border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer;
+  background: color-mix(in srgb, var(--bg) 82%, transparent); border: 1px solid var(--control-edge); border-radius: var(--r-md); cursor: pointer;
 }
 .d-call-tile__streamvol:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .d-call-tile__streamvol[aria-expanded="true"] { border-color: var(--fg-2); }

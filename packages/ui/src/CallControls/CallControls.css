@@ -32,7 +32,7 @@
    changes nothing. The button keeps full opacity. */
 .d-voice-toolbar .d-voice-toolbar__control[aria-disabled="true"] { opacity: 1; border-style: dashed; }
 .d-voice-toolbar .d-voice-toolbar__control[aria-disabled="true"] .d-icon { opacity: 0.4; }
-.d-voice-toolbar .d-voice-toolbar__control[data-variant="default"][aria-disabled="true"]:hover { background: var(--surface-2); border-color: var(--edge); }
+.d-voice-toolbar .d-voice-toolbar__control[data-variant="default"][aria-disabled="true"]:hover { background: var(--surface-2); border-color: var(--control-edge); }
 .d-voice-toolbar .d-voice-toolbar__control[data-variant="danger"][aria-disabled="true"]:hover { background: transparent; border-color: var(--danger); }
 
 /* Windows High Contrast drops the underline (a box-shadow): a pressed control gets a double-weight Highlight edge. */
@@ -47,7 +47,7 @@
   position: absolute; z-index: 20; pointer-events: none;
   display: flex; align-items: baseline; gap: 0.5rem; padding: 0.25rem 0.5rem;
   font-size: var(--text-xs); font-weight: normal; white-space: nowrap; cursor: default;
-  color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md);
+  color: var(--fg); background: var(--surface); border: 1px solid var(--control-edge); border-radius: var(--r-md);
 }
 .d-voice-toolbar__tip[hidden] { display: none; }
 .d-voice-toolbar__tip[data-origin="hover"] { pointer-events: auto; }

@@ -7,7 +7,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
-  channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, headerMenuItem,
+  channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, channelRowMenuItem,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -213,9 +213,9 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(theirs).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
     const mine = messageRow(page, 'general', hello);
     await expect(mine).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    // Signal (Ruling U): pins open from the header's "more" menu; focus returns to its trigger.
-    const pinsButton = page.locator(CLASS.channelHeader).getByRole('button', { name: copy('layout.header.more'), exact: true });
-    await headerMenuItem(page, 'shell.pins.open');
+    // Ruling X: pins open from the channel row's context menu; focus returns to the row.
+    const pinsButton = channelRow(page, 'general');
+    await channelRowMenuItem(page, 'general', 'shell.pins.open');
     const pins = pinsDialog(page, 'general');
     await expect(pins).toBeVisible({ timeout: WAIT });
     await expect(pins).toContainText(copy('shell.pins.by', { name: FRIEND }), { timeout: WAIT });
@@ -291,7 +291,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(roleRow(settings, ROLE).getByRole('button', { name: copy('roles.editLabel', { name: ROLE }), exact: true })).toBeFocused();
     await closeSettings(page);
     await expect(mine).not.toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    await headerMenuItem(page, 'shell.pins.open');
+    await channelRowMenuItem(page, 'general', 'shell.pins.open');
     await expect(pins).toBeVisible({ timeout: WAIT });
     await expect(pins.getByText(copy('shell.pins.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
     await expect(pins).not.toContainText(copy('shell.pins.by', { name: FRIEND }));
@@ -312,7 +312,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(editor).toBeHidden({ timeout: WAIT });
     await closeSettings(page);
     await expect(mine).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    await headerMenuItem(page, 'shell.pins.open');
+    await channelRowMenuItem(page, 'general', 'shell.pins.open');
     await expect(pins).toContainText(copy('shell.pins.by', { name: FRIEND }), { timeout: WAIT });
     await page.keyboard.press('Escape');
     await expect(pins).toBeHidden();
