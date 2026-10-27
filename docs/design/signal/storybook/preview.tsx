@@ -7,7 +7,7 @@ import '../src/styles/base.css';
 
 const preview: Preview = {
   globalTypes: {
-    theme: { description: 'Theme', toolbar: { title: 'Theme', items: ['signal', 'mesh', 'light', 'high-contrast'], dynamicTitle: true } },
+    theme: { description: 'Theme', toolbar: { title: 'Theme', items: ['signal', 'light', 'high-contrast'], dynamicTitle: true } },
     density: { description: 'Density', toolbar: { title: 'Density', items: ['compact', 'regular', 'cozy'], dynamicTitle: true } },
     motion: { description: 'Motion', toolbar: { title: 'Motion', items: ['full', 'reduced'], dynamicTitle: true } },
   },

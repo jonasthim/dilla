@@ -5,7 +5,8 @@
  * viewBox with fill none, stroke currentColor, stroke width 2 and round caps and joins (the Icon component sets these).
  * Do not edit by hand: re-fetch at a pinned tag and regenerate with packages/ui/scripts/vendor-icons.mjs.
  *
- * SHA-256 of each upstream file at 1.57.0:
+ * SHA-256 of each upstream file at 1.57.0 (the Signal wave A icons, from smile on, are hashed from the lucide-static@1.57.0
+ * package files, which carry a licence banner the GitHub files lack; the geometry is the same):
  *   icons/mic.svg  9b940cd735d1ffa270ba670c4e677d9a09400f3fa81d6b3f405b12a3b67a59a8
  *   icons/mic-off.svg  bcb5a033b4ecd182ec8d0d0945810ccc5147219b1a21c017b47fd4d5ae3a8320
  *   icons/headphones.svg  7719585dafa921805aefc21fc3262bbcc621507610a653b84e1632236650b35a
@@ -55,6 +56,23 @@
  *   icons/arrow-up.svg  8c22c25874c80bb062bef985d207d8f1d4a4d7847237d0a8cf720a3235968518
  *   icons/arrow-down.svg  2b641c7a59d39450edfed72067fcc9940a1a316a737346af23b4b9103c0689f2
  *   icons/crown.svg  544c1b6181749ae4b4c98861a5a6ed1242940239cda97cc13c74e84a03fd68c0
+ *   icons/smile.svg  771cabee7210123710fa75e8e678447019556f9f1760d0bd5d973dc7737f4524
+ *   icons/reply.svg  680ce38573a81869c3895215dd947ce98e72db3721c1d1fc2dd6c613966dc38b
+ *   icons/paperclip.svg  c07feb190928247e678da6792825c1d202eb8eec5277a81b40419474df175b5e
+ *   icons/bell.svg  6d7dea6c129327853cd604404b13bfdc064950084f20663d819039ddeacd2da3
+ *   icons/inbox.svg  eab9633ac534d1d3636ef3f04c161dac329a91464fef0e426552d5dcdb7bc3e4
+ *   icons/copy.svg  e62cbf8dee74b569c565fc34af61829627f97f0478b38b07db8ddf4d30fc6126
+ *   icons/download.svg  34b08d12b6283b9077769106ee0e6aa4d0c2c080a13580eec106f80f6cd3f8f1
+ *   icons/loader.svg  8f4029c4b4c3b00e2969d5eec220b3db73370e6ad21a04b87c22b04ff7cd70ec
+ *   icons/moon.svg  98404a105593855d5182a42ef60dbe8e3ad463159940a744da109ca1b9997af8
+ *   icons/link.svg  bfb93210dc01fd4735bac6370b471e1512972230f5a00d7582f194fe5c3e5a1f
+ *   icons/trash-2.svg  b1fbab898c2066f0b6842e25220c6d1494d558e687fa40f0b728d1cf205c9338
+ *   icons/chevron-up.svg  b4bd4d46387207f4e22cc2565a937edf9d830620c0eee4c4bdfb12b7f1b14779
+ *   icons/fingerprint.svg  51c89ddf8c0d8690fb07fbe3223fb6718ed5d0c367d4ac75499ee6c4db155070
+ *   icons/smartphone.svg  81dd05ac118e3a75719846184185bf0b49075774beb208bbcb4c00e60d2d41a2
+ *   icons/key.svg  5b5df114a2ca86b871af7f67d2f322df868c528c49ed3f8b1fe188fb5adb6d38
+ *   icons/square.svg  ea98f50de2f267b4d866a77d4425fa3da2dec239d3c13a0e2cbde0bdf95dfe37
+ *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -74,7 +92,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -101,6 +119,7 @@
 
 export type IconElement =
   | readonly ['path', { readonly d: string }]
+  | readonly ['polyline', { readonly points: string }]
   | readonly ['rect', { readonly x?: string; readonly y?: string; readonly width: string; readonly height: string; readonly rx?: string; readonly ry?: string }]
   | readonly ['circle', { readonly cx: string; readonly cy: string; readonly r: string }]
   | readonly ['line', { readonly x1: string; readonly y1: string; readonly x2: string; readonly y2: string }];
@@ -336,6 +355,90 @@ export const ICONS = {
   'crown': [
     ['path', { d: 'M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z' }],
     ['path', { d: 'M5 21h14' }],
+  ],
+  'smile': [
+    ['path', { d: 'M15 10V9' }],
+    ['path', { d: 'M16.472 15a6 6 0 01-8.943 0' }],
+    ['path', { d: 'M9 10V9' }],
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+  ],
+  'reply': [
+    ['path', { d: 'M20 18v-2a4 4 0 0 0-4-4H4' }],
+    ['path', { d: 'm9 17-5-5 5-5' }],
+  ],
+  'paperclip': [
+    ['path', { d: 'm16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551' }],
+  ],
+  'bell': [
+    ['path', { d: 'M10.268 21a2 2 0 0 0 3.464 0' }],
+    ['path', { d: 'M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326' }],
+  ],
+  'inbox': [
+    ['polyline', { points: '22 12 16 12 14 15 10 15 8 12 2 12' }],
+    ['path', { d: 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z' }],
+  ],
+  'copy': [
+    ['rect', { width: '14', height: '14', x: '8', y: '8', rx: '2', ry: '2' }],
+    ['path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }],
+  ],
+  'download': [
+    ['path', { d: 'M12 15V3' }],
+    ['path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }],
+    ['path', { d: 'm7 10 5 5 5-5' }],
+  ],
+  'loader': [
+    ['path', { d: 'M12 2v4' }],
+    ['path', { d: 'm16.2 7.8 2.9-2.9' }],
+    ['path', { d: 'M18 12h4' }],
+    ['path', { d: 'm16.2 16.2 2.9 2.9' }],
+    ['path', { d: 'M12 18v4' }],
+    ['path', { d: 'm4.9 19.1 2.9-2.9' }],
+    ['path', { d: 'M2 12h4' }],
+    ['path', { d: 'm4.9 4.9 2.9 2.9' }],
+  ],
+  'moon': [
+    ['path', { d: 'M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401' }],
+  ],
+  'link': [
+    ['path', { d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' }],
+    ['path', { d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' }],
+  ],
+  'trash-2': [
+    ['path', { d: 'M10 11v6' }],
+    ['path', { d: 'M14 11v6' }],
+    ['path', { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6' }],
+    ['path', { d: 'M3 6h18' }],
+    ['path', { d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }],
+  ],
+  'chevron-up': [
+    ['path', { d: 'm18 15-6-6-6 6' }],
+  ],
+  'fingerprint': [
+    ['path', { d: 'M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4' }],
+    ['path', { d: 'M14 13.12c0 2.38 0 6.38-1 8.88' }],
+    ['path', { d: 'M17.29 21.02c.12-.6.43-2.3.5-3.02' }],
+    ['path', { d: 'M2 12a10 10 0 0 1 18-6' }],
+    ['path', { d: 'M2 16h.01' }],
+    ['path', { d: 'M21.8 16c.2-2 .131-5.354 0-6' }],
+    ['path', { d: 'M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2' }],
+    ['path', { d: 'M8.65 22c.21-.66.45-1.32.57-2' }],
+    ['path', { d: 'M9 6.8a6 6 0 0 1 9 5.2v2' }],
+  ],
+  'smartphone': [
+    ['rect', { width: '14', height: '20', x: '5', y: '2', rx: '2', ry: '2' }],
+    ['path', { d: 'M12 18h.01' }],
+  ],
+  'key': [
+    ['path', { d: 'm2 21 9.6-9.6' }],
+    ['path', { d: 'm7.5 15.5 2.3 2.3a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0L4 19' }],
+    ['circle', { cx: '15.5', cy: '7.5', r: '5.5' }],
+  ],
+  'square': [
+    ['rect', { width: '18', height: '18', x: '3', y: '3', rx: '2' }],
+  ],
+  'arrow-right': [
+    ['path', { d: 'M5 12h14' }],
+    ['path', { d: 'm12 5 7 7-7 7' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

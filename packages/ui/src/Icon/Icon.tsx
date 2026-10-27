@@ -21,6 +21,7 @@ export function Icon({ name, size = 20 }: IconProps) {
       {nodes.map(([tag, attrs], i) => {
         switch (tag) {
           case 'path': return <path key={i} {...attrs} />;
+          case 'polyline': return <polyline key={i} {...attrs} />;
           case 'rect': return <rect key={i} {...attrs} />;
           case 'circle': return <circle key={i} {...attrs} />;
           case 'line': return <line key={i} {...attrs} />;

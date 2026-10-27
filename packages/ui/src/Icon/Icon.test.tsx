@@ -11,9 +11,44 @@ const SHELL_NAMES = [
   'lock', 'arrow-up', 'arrow-down', 'log-out', 'shield', 'keyboard', 'monitor-smartphone', 'phone', 'square-pen', 'at-sign', 'pin', 'users', 'ellipsis', 'crown',
 ] as const;
 
+/** Signal wave A: the Lucide 1.57.0 geometry of each added icon (lucide-static@1.57.0/icons/<name>.svg). */
+const SIGNAL_ICONS = {
+  'smile': ['M15 10V9', 'M16.472 15a6 6 0 01-8.943 0', 'M9 10V9', 'circle'],
+  'reply': ['M20 18v-2a4 4 0 0 0-4-4H4', 'm9 17-5-5 5-5'],
+  'paperclip': ['m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551'],
+  'bell': ['M10.268 21a2 2 0 0 0 3.464 0', 'M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326'],
+  'inbox': ['polyline', 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'],
+  'copy': ['rect', 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'],
+  'download': ['M12 15V3', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'm7 10 5 5 5-5'],
+  'loader': ['M12 2v4', 'm16.2 7.8 2.9-2.9', 'M18 12h4', 'm16.2 16.2 2.9 2.9', 'M12 18v4', 'm4.9 19.1 2.9-2.9', 'M2 12h4', 'm4.9 4.9 2.9 2.9'],
+  'moon': ['M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401'],
+  'link': ['M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71', 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'],
+  'trash-2': ['M10 11v6', 'M14 11v6', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6', 'M3 6h18', 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'],
+  'chevron-up': ['m18 15-6-6-6 6'],
+  'fingerprint': ['M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4', 'M14 13.12c0 2.38 0 6.38-1 8.88', 'M17.29 21.02c.12-.6.43-2.3.5-3.02', 'M2 12a10 10 0 0 1 18-6', 'M2 16h.01', 'M21.8 16c.2-2 .131-5.354 0-6', 'M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2', 'M8.65 22c.21-.66.45-1.32.57-2', 'M9 6.8a6 6 0 0 1 9 5.2v2'],
+  'smartphone': ['rect', 'M12 18h.01'],
+  'key': ['m2 21 9.6-9.6', 'm7.5 15.5 2.3 2.3a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0L4 19', 'circle'],
+  'square': ['rect'],
+  'arrow-right': ['M5 12h14', 'm12 5 7 7-7 7'],
+} as const;
+const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
+
 describe('Icon', () => {
-  it('vendors exactly the voice icons and the shell icons', () => {
-    expect(Object.keys(ICONS).sort()).toEqual([...NAMES, ...SHELL_NAMES].sort());
+  it('vendors exactly the voice icons, the shell icons and the Signal icons', () => {
+    expect(Object.keys(ICONS).sort()).toEqual([...NAMES, ...SHELL_NAMES, ...SIGNAL_NAMES].sort());
+  });
+
+  it.each(SIGNAL_NAMES)('%s renders an svg with its Lucide 1.57.0 geometry', (name) => {
+    const { container } = render(<Icon name={name} />);
+    const svg = container.querySelector('svg');
+    expect(svg).toHaveAttribute('data-icon', name);
+    const want = SIGNAL_ICONS[name];
+    expect(svg?.children.length).toBe(want.length);
+    const paths = Array.from(svg?.querySelectorAll('path') ?? []).map(p => p.getAttribute('d'));
+    expect(paths).toEqual(want.filter(w => w.length > 8 || /^[Mm]/.test(w)).filter(w => !['circle', 'rect', 'polyline'].includes(w)));
+    for (const tag of ['circle', 'rect', 'polyline'] as const) {
+      expect(svg?.querySelectorAll(tag).length).toBe(want.filter(w => w === tag).length);
+    }
   });
 
   it.each(SHELL_NAMES)('%s renders its geometry', (name: IconName) => {
