@@ -7,5 +7,5 @@ export const Online: Story = { args: { presence: 'online' } };
 export const Idle: Story = { args: { name: 'lina', presence: 'idle' } };
 export const DoNotDisturb: Story = { args: { name: 'erik', presence: 'dnd' } };
 export const Offline: Story = { args: { name: 'sven', presence: 'offline' } };
-export const Bot: Story = { args: { name: 'Skald', initials: 'SK', hue: 210 } };
+export const Bot: Story = { args: { name: 'Skald', initials: 'SK', hue: 210, shape: 'bot' } };
 export const Large: Story = { args: { size: 'lg', presence: 'online' } };

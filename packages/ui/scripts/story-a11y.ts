@@ -5,6 +5,15 @@ const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/', '
 
 type StoryContext = { id: string; title: string; name: string };
 
+/** The element whose border is a control's only boundary, for the stories that must draw it in --edge. */
+function boundarySelector(id: string): string | null {
+  if (id === 'form-toggle--off') return '.d-toggle__track';
+  if (id.startsWith('form-segmented--')) return '.d-segmented__group';
+  if (id === 'form-select--default') return '.d-select__input';
+  if (id === 'form-textfield--empty' || id === 'form-textfield--filled') return '.d-text-field__input';
+  return null;
+}
+
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
     if (context.id === 'settings-settingsframe--phone-index') {
       await page.setViewportSize({ width: 640, height: 400 });
@@ -16,6 +25,20 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
       ...(strict ? { axeOptions: { rules: { 'target-size': { enabled: true } } } } : {}),
     });
+    // Control boundaries meet WCAG 1.4.11 (3:1): an input, a select, a segmented outline and the off toggle's
+    // track are drawn in --edge, rgb(92, 99, 110) in the signal theme, never the fainter hairline.
+    const edgeSelector = boundarySelector(context.id);
+    if (edgeSelector) {
+      const edge = await page.evaluate(sel => {
+        const el = document.querySelector(sel);
+        return el ? { theme: document.documentElement.getAttribute('data-theme'), border: getComputedStyle(el).borderTopColor } : null;
+      }, edgeSelector);
+      if (!edge) throw new Error(`${context.title} / ${context.name}: no ${edgeSelector} to check`);
+      if (edge.theme !== 'signal') throw new Error(`${context.title} / ${context.name}: expected theme signal, got ${edge.theme}`);
+      if (edge.border !== 'rgb(92, 99, 110)') {
+        throw new Error(`${context.title} / ${context.name}: ${edgeSelector} border is ${edge.border}, not --edge rgb(92, 99, 110)`);
+      }
+    }
     // A container focused only by script, an opened dialog, draws no ring: around the whole dialog it reads
     // as an error box (design ruling 23(h), A11Y-DESIGN-11). Its operable controls keep the ring (below).
     const dialogRing = await page.evaluate(() => {

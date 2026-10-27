@@ -75,6 +75,15 @@ describe('Avatar', () => {
 });
 const read = (name: string) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
+describe('Avatar shape', () => {
+  it('is a circle by default and marks a bot with data-shape="bot"', () => {
+    const { rerender } = render(<Avatar name="Skald" />);
+    expect(screen.getByRole('img', { name: 'Skald' })).toHaveAttribute('data-shape', 'circle');
+    rerender(<Avatar name="Skald" shape="bot" />);
+    expect(screen.getByRole('img', { name: 'Skald' })).toHaveAttribute('data-shape', 'bot');
+  });
+});
+
 describe('Avatar sizes xs and row (UI-1)', () => {
   it('xs is 24px and row is 32px, by data-size', () => {
     const css = read('./Avatar.css');

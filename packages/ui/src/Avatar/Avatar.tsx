@@ -9,7 +9,7 @@ export type Presence = 'online' | 'idle' | 'dnd' | 'offline';
  */
 export const AVATAR_HUES = [0, 20, 210, 230, 250, 270, 300, 330] as const;
 
-export type AvatarProps = { name: string; initials?: string; hue?: (typeof AVATAR_HUES)[number]; presence?: Presence; size?: 'xs' | 'sm' | 'row' | 'md' | 'lg' };
+export type AvatarProps = { name: string; initials?: string; hue?: (typeof AVATAR_HUES)[number]; presence?: Presence; size?: 'xs' | 'sm' | 'row' | 'md' | 'lg'; shape?: 'circle' | 'bot' };
 
 function deriveInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -23,10 +23,10 @@ function deriveHue(name: string): number {
 
 const PRESENCE_TONE = { online: 'ok', idle: 'idle', dnd: 'dnd', offline: 'off' } as const;
 
-export function Avatar({ name, initials, hue, presence, size = 'md' }: AvatarProps) {
+export function Avatar({ name, initials, hue, presence, size = 'md', shape = 'circle' }: AvatarProps) {
   const label = presence ? `${name}, ${presence}` : name;
   return (
-    <span className="d-avatar" data-size={size} role="img" aria-label={label} style={{ ['--avatar-hue' as string]: String(hue ?? deriveHue(name)) }}>
+    <span className="d-avatar" data-size={size} data-shape={shape} role="img" aria-label={label} style={{ ['--avatar-hue' as string]: String(hue ?? deriveHue(name)) }}>
       <span className="d-avatar__initials" aria-hidden="true">{initials ?? deriveInitials(name)}</span>
       {presence ? <span className="d-avatar__presence" data-presence={presence} aria-hidden="true"><StateDot tone={PRESENCE_TONE[presence]} size="md" /></span> : null}
     </span>
