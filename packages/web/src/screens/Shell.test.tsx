@@ -1657,7 +1657,8 @@ describe('direct messages', () => {
     expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: DM }]);
     expect(homeTile()).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'bob' })).toHaveTextContent('bob');
-    expect(document.querySelector('.d-channel-header__title')).toHaveTextContent('[ @ bob ]');
+    expect(document.querySelector('.d-channel-header__title')).toHaveTextContent(/^bob$/);
+    expect(document.querySelector('.d-channel-header__title [data-icon="at-sign"]')).not.toBeNull();
     act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', body: 'hey' })] })));
     expect(screen.getByRole('log', { name: 'messages with bob' })).toHaveTextContent('hey');
     await expectNoAxeViolations(view.container);

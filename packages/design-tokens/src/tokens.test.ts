@@ -44,14 +44,14 @@ describe('WCAG AA guard', () => {
 describe('structural tokens', () => {
   it('has the Signal radii and layout dimensions', () => {
     expect(structural.radius).toEqual({
-      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px',
+      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px',
     });
     expect(structural.layout.railW).toBe('56px');
   });
   it('states the type scale in rem at a 16px root, never px', () => {
     expect(structural.text).toEqual({
-      micro: '0.625rem', tag: '0.53125rem', badge: '0.5625rem', chip: '0.59375rem', xs: '0.6875rem', btn: '0.71875rem', ui: '0.75rem', sm: '0.78125rem', input: '0.8125rem', base: '0.84375rem',
-      md: '0.875rem', lg: '1.0625rem', xl: '1.375rem',
+      mini: '0.46875rem', micro: '0.625rem', meta: '0.65625rem', tag: '0.53125rem', badge: '0.5625rem', chip: '0.59375rem', xs: '0.6875rem', btn: '0.71875rem', ui: '0.75rem', sm: '0.78125rem', input: '0.8125rem', base: '0.84375rem',
+      md: '0.875rem', lg: '1.0625rem', title: '1.1875rem', xl: '1.375rem',
     });
     for (const [step, size] of Object.entries(structural.text)) {
       expect(size, `--text-${step} must be rem so browser text size and 200 % zoom scale it`).toMatch(/rem$/);

@@ -584,7 +584,7 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 
 /**
  * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26, MP5): the channel name
- * (a button to Diagnostics; the server is its tooltip), the link stats ({ping} · ↑{up} ↓{down} kb/s, from call.state.link), then camera, share screen and leave (no meter and no line: the input level stays in
+ * (a button to Diagnostics; the server is its tooltip), the link stats ({ping} · ↑ {up} ↓ {down} kb/s, from call.state.link), then camera, share screen and leave (no meter and no line: the input level stays in
  * Settings → Voice, the push-to-talk and hearing lines on the stage; no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
  * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.

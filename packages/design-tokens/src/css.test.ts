@@ -69,7 +69,7 @@ describe('renderCss', () => {
     expect(css).toMatch(/:root\s*{[^}]*--row-pad-y:\s*0\.375rem;/);
   });
   it('zeroes every duration but the meter, in the media query and under data-motion', () => {
-    const zeroed = ['press', 'fast', 'normal', 'slow', 'enter', 'badge', 'toast', 'pulse', 'caret', 'flash'];
+    const zeroed = ['press', 'fast', 'normal', 'slow', 'enter', 'badge', 'toast', 'pulse', 'caret', 'flash', 'hover', 'tab', 'spin', 'dock', 'rail-badge'];
     const blocks = [
       css.match(/@media \(prefers-reduced-motion: reduce\)\s*{\s*:root\s*{([^}]*)}/)?.[1],
       css.match(/\[data-motion="reduced"\]\s*{([^}]*)}/)?.[1],
@@ -86,6 +86,17 @@ describe('renderCss', () => {
     expect(css).toContain('--duration-enter: 380ms;');
     expect(css).toContain('--duration-badge: 450ms;');
     expect(css).toContain('--duration-meter: 120ms;');
+    // Task 6 (Ruling K): the sidebar's own durations, read off the prototype.
+    expect(css).toContain('--duration-hover: 140ms;');
+    expect(css).toContain('--duration-tab: 160ms;');
+    expect(css).toContain('--duration-spin: 180ms;');
+    expect(css).toContain('--duration-dock: 340ms;');
+    expect(css).toContain('--duration-rail-badge: 500ms;');
+    expect(css).toContain('--text-meta: 0.65625rem;');
+    expect(css).toContain('--text-title: 1.1875rem;');
+    expect(css).toContain('--text-mini: 0.46875rem;');
+    expect(css).toContain('--r-row: 5px;');
+    expect(css).toContain('--hover-hi: #1A1E25;');
     expect(css).toContain('--shadow-3: 0 30px 80px rgba(0,0,0,0.65);');
     expect(css).toContain('--label-tracking-wide: 0.12em;');
     expect(css).toContain('--accent: #5AA8E6;');

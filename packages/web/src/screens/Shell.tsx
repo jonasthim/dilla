@@ -1069,6 +1069,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     voiceRooms[r.id] = afkChannels.has(r.id) ? { joined: r.joined, held: r.held, participants: awayPeople, count: en['voice.afk.count'] }
       : { joined: r.joined, held: r.held, participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
   }
+  // The people in this server's voice rooms (not the AFK roster), each counted once.
+  const inVoiceHere = new Set(voiceRows.filter(r => !afkChannels.has(r.id)).flatMap(r => (r.room?.participants ?? []).map(p => p.userId))).size;
   const openVoice = (id: string) => { if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
@@ -1172,6 +1174,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
+        // Signal §5.4: the unread tag reads "{n} new"; the stat line under the server name counts the people in its voice rooms.
+        newLabel={n => t('layout.row.new', { n })}
+        {...(onDms || inVoiceHere === 0 ? {} : { stats: [t('voice.count', { n: inVoiceHere })] })}
         content={content} />
     </div>);
   }

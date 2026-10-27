@@ -1,5 +1,5 @@
-import { useId } from 'react';
-import { voiceStateWords, VoiceStates, type VoiceParticipantView, type VoiceStateLabels } from '../CallTile/CallTile.tsx';
+import { useId, type ReactNode } from 'react';
+import { voiceStateWords, VoiceStates, type VoiceParticipantView, type VoiceStateLabels, type VoiceStateWord } from '../CallTile/CallTile.tsx';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { Tag } from '../Tag/Tag.tsx';
@@ -16,6 +16,8 @@ export interface VoiceChannelRowProps {
   participants: readonly VoiceParticipantView[];
   /** The channel is readable by this server (joinable by public invite): the readable glyph stays on the row. */
   readable?: boolean;
+  /** The built-in AFK channel: the moon in place of the speaker (Signal §5.4). */
+  afk?: boolean;
   /**
    * `open` is `voice.open` ('voice {name}'), `count` is `voice.count` ('{n} in voice'), both filled here;
    * `playbackOnly` is `voice.bot.playbackOnly` ('playback only'), shown with the bot tag; `join` is `voice.join`, the slot's icon button; `joined` is `voice.row.joined` ('connected'), added to the description (after the count) of the row this device is in; the name stays 'voice {name}';
@@ -36,6 +38,19 @@ const SLOT_STATES = new Set(['muted', 'deafened']);
  * state is the union across their devices: speaking if any device speaks, camera or screen if any shares one, muted
  * and deafened only if every device is. State is the worst across devices (unverified, connecting, not-heard, ok); web and bot if any. The first device stands for the person (name, id); order is kept.
  */
+/**
+ * Signal §5.4: a person's state glyphs are 12px (the call stage keeps its 14px ones), a shared screen is the LIVE tag in
+ * place of the monitor glyph, and a deafened person shows headphone-off without mic-off. Every other state keeps its glyph and word.
+ */
+function rowWords(words: readonly VoiceStateWord[]): VoiceStateWord[] {
+  const small: Partial<Record<string, ReactNode>> = {
+    muted: <Icon name="mic-off" size={12} />, deafened: <Icon name="headphone-off" size={12} />, video: <Icon name="video" size={12} />, screen: <span aria-hidden="true"><Tag kind="live" /></span>,
+  };
+  // Deafened already silences the mic: the prototype draws headphone-off alone (the deafened word says both to a screen reader's ear).
+  const deaf = words.some(w => w.key === 'deafened');
+  return words.filter(w => !(deaf && w.key === 'muted')).map(w => (small[w.key] !== undefined ? { ...w, glyph: small[w.key] } : w));
+}
+
 /** Worst first: an unverified stream is a security warning and must never read as ok. */
 const WORST: readonly VoiceParticipantView['state'][] = ['unverified', 'connecting', 'not-heard', 'ok'];
 
@@ -52,15 +67,17 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
 }
 
 /**
- * A voice channel in the sidebar, on the same grammar as ChannelRow (R10-R13): the volume-2 glyph, the name with its
- * count after it (`harbour · 3`), then one trailing slot (empty when this device is in the call: the joined row shows no phone and no accent, only a bold full-strength name, as Discord's). The
- * join icon is a sibling drawn over that slot (a button cannot sit inside the row's button), shown while the row is
- * hovered or focused and always on a device without hover; never on the channel you are in. Under the row, one
- * sub-row per person (R25, A7) at `--row-h-sub`, indented so the avatar starts at the name's x, with the speaking ring on
- * the avatar (the only visible speaking mark, WEB-DOCK; the word stays for assistive technology) and the mute and deafen glyphs in the slot. The row and its parts are siblings, so the button stays the first
- * element of a list item (the roving lists find it there); a caller outside ChannelList wraps them in `.d-voice-item`.
+ * A voice channel in the sidebar (Signal, README §5.4), on ChannelRow's grammar: the 14px speaker (the moon for AFK), the name,
+ * and the occupant count at the right (10.5px). The row you are in has a --fg 600 name and the --live glyph; the row the main
+ * pane shows has the selected fill, the accent glyph and the 2px accent bar. The join icon is a sibling drawn over the
+ * trailing slot (a button cannot sit inside the row's button), shown while the row is hovered or focused and always on a
+ * device without hover; never on the channel you are in. Under the row, one 26px sub-row per person (R25, A7), 30px in:
+ * an 18px avatar (the bot's rounded square), the name in 12px, its tags, then camera, LIVE, and the mute and deafen glyphs
+ * in the slot. Speaking is only a ring on the avatar (no meter in the list; the word stays for assistive technology). The
+ * row and its parts are siblings, so the button stays the first element of a list item (the roving lists find it there);
+ * a caller outside ChannelList wraps them in `.d-voice-item`.
  */
-export function VoiceChannelRow({ name, current, joined, participants: devices, readable, labels, onOpen, onJoin }: VoiceChannelRowProps) {
+export function VoiceChannelRow({ name, current, joined, participants: devices, readable, afk = false, labels, onOpen, onJoin }: VoiceChannelRowProps) {
   const countId = useId();
   const participants = groupPeople(devices);
   const n = participants.length;
@@ -68,15 +85,16 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
     <>
       <button type="button" className="d-voice-row" data-row aria-label={labels.open.replaceAll('{name}', name)}
         aria-describedby={n > 0 || joined ? countId : undefined} aria-current={current ? 'page' : undefined}
-        data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} onClick={() => onOpen()}>
-        <span className="d-voice-row__glyph" aria-hidden="true"><Icon name="volume-2" size={14} /></span>
+        data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} data-afk={afk ? 'true' : undefined} onClick={() => onOpen()}>
+        <span className="d-voice-row__bar" aria-hidden="true" />
+        <span className="d-voice-row__glyph" aria-hidden="true"><Icon name={afk ? 'moon' : 'volume-2'} size={14} /></span>
         <span className="d-voice-row__title">
           <span className="d-voice-row__name">{name}</span>
-          {n > 0 ? <span className="d-voice-row__count" aria-hidden="true">{` · ${String(n)}`}</span> : null}
         </span>
         {n > 0 || joined ? <span id={countId} className="d-sr-only">{[...(n > 0 ? [labels.count.replaceAll('{n}', String(n))] : []), ...(joined ? [labels.joined] : [])].join(', ')}</span> : null}
         {readable === true ? <Tag kind="readable" /> : null}
-        <TrailingSlot />
+        {n > 0 ? <span className="d-voice-row__count" aria-hidden="true">{String(n)}</span> : null}
+        {onJoin !== undefined && !joined ? <TrailingSlot /> : null}
       </button>
       {onJoin !== undefined && !joined ? (
         <span className="d-voice-row__join">
@@ -88,11 +106,11 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
       {n > 0 ? (
         <ul role="list" className="d-voice-row__people">
           {participants.map(p => {
-            const words = voiceStateWords(p, labels.state);
+            const words = rowWords(voiceStateWords(p, labels.state));
             return (
               <li key={p.userId} className="d-voice-row__person" data-row data-speaking={p.speaking ? 'true' : undefined}
                 data-away={p.away === true ? 'true' : undefined}>
-                <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="xs" /></span>
+                <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="voice" shape={p.bot ? 'bot' : 'circle'} /></span>
                 <span className="d-voice-row__person-name">{p.name}</span>
                 <span className="d-voice-row__states">
                   {p.bot ? (
@@ -102,6 +120,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
                     </>
                   ) : null}
                   {p.away === true && labels.away !== undefined ? <>{' '}<span className="d-voice-row__state" data-state="away">{labels.away}</span></> : null}
+                  <span className="d-voice-row__fill" aria-hidden="true" />
                   <VoiceStates words={words.filter(w => !SLOT_STATES.has(w.key) && w.key !== 'speaking')} prefix="d-voice-row" />
                   {p.speaking ? <>{' '}<span className="d-sr-only">{labels.state.speaking}</span></> : null}
                 </span>

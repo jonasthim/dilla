@@ -43,6 +43,13 @@ export interface ChannelListProps {
   actionsLabel?: string;
   /** A control at the right of the server's name (the phone's server menu), in one row with the heading. */
   headerAction?: ReactNode;
+  /**
+   * The stat line under the heading (Signal §5.4), e.g. ['3 online', '2 in voice']: 10.5px, the first after a 6px live dot,
+   * the rest after a "·". Absent or empty, no line.
+   */
+  stats?: readonly string[];
+  /** The unread tag's visible text for a count (`layout.row.new`, '{n} new'), passed to every ChannelRow. */
+  newLabel?(count: string): string;
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
    *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
   content?: ReactNode;
@@ -95,7 +102,7 @@ function entriesOf(channels: readonly ChannelListChannel[], categories: NonNulla
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
+export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server', stats, newLabel }: ChannelListProps) {
   const isJoined = (c: ChannelListChannel) => c.joined === true || (voice !== undefined && Object.hasOwn(voice.rooms, c.id) && voice.rooms[c.id].joined);
   const entries = entriesOf(channels, categories, activeId, isJoined);
   const roving = useRovingFocus(entries.findIndex(e => e.kind === 'channel' && e.channel.id === activeId));
@@ -123,15 +130,15 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       const canJoin = voice.onJoin !== undefined && !joined && room?.held !== true && c.afk !== true;
       return (
         <li key={c.id} className="d-voice-item" data-joined={joined ? 'true' : undefined}>
-          <VoiceChannelRow name={c.name} current={c.id === activeId} joined={joined} participants={room?.participants ?? []}
+          <VoiceChannelRow name={c.name} current={c.id === activeId} joined={joined} participants={room?.participants ?? []} afk={c.afk === true}
             readable={c.readable} labels={room?.count === undefined ? voice.labels : { ...voice.labels, count: room.count }} onOpen={() => onSelect(c.id)} onJoin={canJoin ? () => voice.onJoin?.(c.id) : undefined} />
         </li>
       );
     }
     return (
       <li key={c.id}>
-        <ChannelRow name={c.name} kind={c.kind} readable={c.readable} active={c.id === activeId}
-          unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} onSelect={() => onSelect(c.id)} />
+        <ChannelRow name={c.name} kind={c.afk === true ? 'afk' : c.kind} readable={c.readable} active={c.id === activeId}
+          unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} newLabel={newLabel} onSelect={() => onSelect(c.id)} />
       </li>
     );
   };
@@ -143,9 +150,10 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
         <li key={`cat:${e.id}`} className="d-channel-list__cat">
           <button type="button" className="d-channel-list__cat-head" data-row aria-expanded={!e.collapsed} data-collapsed={e.collapsed ? 'true' : undefined}
             onClick={() => onToggleCategory?.(e.id)}>
-            <span className="d-channel-list__cat-chevron" aria-hidden="true"><Icon name="chevron-down" size={14} /></span>
+            <span className="d-channel-list__cat-chevron" aria-hidden="true"><Icon name="chevron-down" size={11} /></span>
             <span className="d-channel-list__cat-label">{e.name}</span>
-            <TrailingSlot />
+            <span className="d-channel-list__cat-rule" aria-hidden="true" />
+            {onAddInCategory !== undefined ? <TrailingSlot /> : null}
           </button>
           {onAddInCategory !== undefined ? (
             <span className="d-channel-list__cat-add">
@@ -158,12 +166,23 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       ))}
     </ul>
   );
+  const statLine = stats !== undefined && stats.length > 0 ? (
+    <p className="d-channel-list__stats">
+      {stats.map((text, i) => (
+        <span key={i} className="d-channel-list__stat">
+          {i === 0 ? <span className="d-channel-list__live" aria-hidden="true" /> : <span className="d-channel-list__sep" aria-hidden="true">·</span>}
+          {text}
+        </span>
+      ))}
+    </p>
+  ) : null;
   const foot = footer !== undefined ? <div className="d-channel-list__footer">{footer}</div> : null;
   return (
     <nav className="d-channel-list" aria-label={label}>
       {headerAction !== undefined ? (
         <div className="d-channel-list__head"><h1 className="d-channel-list__title" data-kind={titleKind === 'plain' ? 'plain' : undefined}>{title}</h1>{headerAction}</div>
       ) : <h1 className="d-channel-list__title" data-kind={titleKind === 'plain' ? 'plain' : undefined}>{title}</h1>}
+      {statLine}
       {actions !== undefined ? <div className="d-channel-list__actions" role="group" aria-label={actionsLabel}>{actions}</div> : null}
       {tabs !== undefined ? (
         <>

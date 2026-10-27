@@ -24,8 +24,8 @@ export interface TabBarProps {
 const isModified = (e: MouseEvent) => e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey;
 
 /**
- * The phone's bottom navigation: one link per place (servers, direct messages, activity, you), icon over label, the
- * current one in the accent. Real links, so a long-press or a middle click works; a plain click is handled in place.
+ * The phone's 56px bottom navigation (Signal §5.10): one link per place, a 19px icon over its 10px label, the
+ * current one in --fg under a 2px accent bar. Real links, so a long-press or a middle click works; a plain click is handled in place.
  * A count chip is decoration: the link is named by `countLabel` while there is a count.
  */
 export function TabBar({ label, items, onSelect }: TabBarProps) {
@@ -44,7 +44,7 @@ export function TabBar({ label, items, onSelect }: TabBarProps) {
                   onSelect(item.id);
                 }}>
                 <span className="d-tab-bar__icon">
-                  <Icon name={item.icon} size={22} />
+                  <Icon name={item.icon} size={19} />
                   {count > 0 ? <span className="d-tab-bar__chip" aria-hidden="true">{count > 99 ? '99+' : count}</span> : null}
                 </span>
                 <span className="d-tab-bar__label">{item.label}</span>

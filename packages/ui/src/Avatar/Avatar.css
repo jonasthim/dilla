@@ -1,5 +1,10 @@
 .d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) 45% 42%); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
 .d-avatar[data-shape="bot"] { border-radius: var(--r-bot); background: var(--brand); }
+/* Signal §5.4: an 18px voice occupant, 7.5px initials; the bot's square is 5px at this size (the prototype's avR). */
+.d-avatar[data-size="voice"] { width: 1.125rem /* 18px */; height: 1.125rem; font-size: var(--text-mini); }
+.d-avatar[data-size="voice"][data-shape="bot"] { border-radius: var(--r-row); }
+/* Signal §5.4: the user panel's 30px avatar, 10px initials. */
+.d-avatar[data-size="panel"] { width: 1.875rem /* 30px */; height: 1.875rem; font-size: var(--text-micro); }
 .d-avatar[data-size="sm"] { width: 1.25rem /* 20px */; height: 1.25rem /* 20px */; font-size: 0.5625rem /* 9px */; }
 .d-avatar[data-size="xs"] { width: 1.5rem /* 24px */; height: 1.5rem /* 24px */; font-size: 0.5625rem /* 9px */; }
 .d-avatar[data-size="member"] { width: 1.75rem /* 28px */; height: 1.75rem; font-size: var(--text-micro); }

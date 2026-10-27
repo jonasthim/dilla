@@ -630,7 +630,8 @@ describe('AW5: the AFK channel in the shell never hosts a call', () => {
     app.client.publish(`afk:${A}`, afkSlice());
     const rowButton = await screen.findByRole('button', { name: 'voice music' });
     const row = rowButton.closest('li') as HTMLElement;
-    expect(row.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
+    // Signal §5.4: the AFK row's glyph is the moon.
+    expect(row.querySelector('svg[data-icon="moon"]')).not.toBeNull();
     expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
     // Final review M4: no "join voice" icon on the AFK row; the page offers go AFK, and a desktop click goes AFK.
     expect(within(row).queryByRole('button', { name: /join/i })).toBeNull();
@@ -1415,11 +1416,11 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     const stats = () => dockEl().querySelector('.d-voice-dock__stats')!;
     expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent(/^— ms$/);
     act(() => app.session.update({ link: { rttMs: 24, upKbps: 48, downKbps: 96, lossPct: 0 } }));
-    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s'));
+    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑ 48 ↓ 96 kb/s'));
     expect(stats()).toHaveAttribute('data-quality', 'good');
     expect(stats()).toHaveTextContent('Ping 24 milliseconds, good. Sending 48, receiving 96 kilobits per second.');
     act(() => app.session.update({ link: { rttMs: 0, upKbps: 1, downKbps: 0, lossPct: 0 } }));
-    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑1 ↓0 kb/s'));
+    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑ 1 ↓ 0 kb/s'));
     act(() => app.session.update({ link: { rttMs: 210, upKbps: 5, downKbps: 6, lossPct: 0 } }));
     await waitFor(() => expect(stats()).toHaveAttribute('data-quality', 'poor'));
     act(() => app.session.update({ link: { rttMs: 40, upKbps: 5, downKbps: 6, lossPct: 6 } }));
@@ -1429,12 +1430,12 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent(/^reconnecting$/));
   });
 
-  it('camera, share and leave are 32px icon buttons', async () => {
+  it('camera, share and leave are 28px icon buttons (Signal §5.4)', async () => {
     await inVoice();
     await offStage();
     const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
     expect(buttons).toHaveLength(3);
-    for (const b of buttons) { expect(b).toHaveClass('d-icon-button'); expect(b).toHaveAttribute('data-size', '32'); }
+    for (const b of buttons) { expect(b).toHaveClass('d-icon-button'); expect(b).toHaveAttribute('data-size', '28'); }
   });
 
   it('a remote tile at volume 70 shows "70 %" in its chip', async () => {

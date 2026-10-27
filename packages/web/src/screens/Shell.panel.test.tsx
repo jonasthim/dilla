@@ -273,7 +273,7 @@ describe('one set of shortcuts and the call panel (R3)', () => {
     expect(document.querySelector('.dw-voice-dock .d-voice-dock__where')).toHaveTextContent('— ms');
     expect(document.querySelector('.dw-voice-dock')).not.toHaveTextContent(t('settings.voice.level'));
     expect(document.querySelector('.dw-voice-dock [role="meter"], .dw-voice-dock .d-audio-meter')).toBeNull();
-    for (const b of callPanel.getAllByRole('button').filter(x => x.closest('[role="toolbar"]') !== null)) expect(b).toHaveAttribute('data-size', '32');
+    for (const b of callPanel.getAllByRole('button').filter(x => x.closest('[role="toolbar"]') !== null)) expect(b).toHaveAttribute('data-size', '28');
     await app.user.click(callPanel.getByRole('button', { name: 'general · Midgard' }));
     await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
   });

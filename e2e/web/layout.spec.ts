@@ -211,18 +211,18 @@ async function expectWrapsInLog(page: Page, tag: string, state: string): Promise
   expect.soft(m.textLeft, `the text's left edge is inside the log's content box in ${state} at ${tag}`).toBeGreaterThanOrEqual(m.left - TOL);
 }
 
-/** On Chromium, a notched phone: with a 47 px top inset the header clears it (48 + 47), and where base.css zeroes its padding-top
- *  (the ring or the link banner already cleared the notch) it is exactly 48 in the same inset. Other engines have no override. */
+/** On Chromium, a notched phone: with a 47 px top inset the header clears it (52 + 47, Signal §5.10), and where base.css zeroes its
+ *  padding-top (the ring or the link banner already cleared the notch) it is exactly 52 in the same inset. Other engines have no override. */
 async function expectSafeAreaBar(page: Page, tag: string): Promise<void> {
   if (page.context().browser()?.browserType().name() !== 'chromium') return;
   const cdp = await page.context().newCDPSession(page);
   try {
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 47, bottom: 0, left: 0, right: 0 } });
     const height = () => page.evaluate(() => document.querySelector('.d-phone-header')?.getBoundingClientRect().height ?? NaN);
-    await expect.poll(height, { message: `the phone header with a notch at ${tag}` }).toBeCloseTo(95, 0);
+    await expect.poll(height, { message: `the phone header with a notch at ${tag}` }).toBeCloseTo(99, 0);
     // The page's CSP forbids a style element; the CSSOM is allowed, and zeroing the padding is what base.css does in those states.
     await page.evaluate(() => { document.querySelector<HTMLElement>('.d-phone-header')?.style.setProperty('padding-top', '0', 'important'); });
-    expectAt(`B1 the phone header with a notch but its padding zeroed is 48 high at ${tag}`, await height(), 48, 0.5);
+    expectAt(`B1 the phone header with a notch but its padding zeroed is 52 high at ${tag}`, await height(), 52, 0.5);
     await page.evaluate(() => { document.querySelector<HTMLElement>('.d-phone-header')?.style.removeProperty('padding-top'); });
   } finally {
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } }).catch(() => undefined);
@@ -240,12 +240,17 @@ async function barBottom(page: Page, bar: string, from?: string): Promise<number
   }, { bar, from });
 }
 /** Signal (README §5.1, §5.2): a desktop bar (--bar-h, 44) stands under the 44px top bar, so its hairline is at 88. A phone has no
- *  top bar (§5.10): its list head is one --bar-h (44) from the top, and its PhoneHeader is still 48 (Task 6 makes it 52). */
+ *  top bar (§5.10): its list head is one --bar-h (44) from the top, and its PhoneHeader is 52 (§5.10, Task 6). */
 const TOP_BAR = 44;
 const BAR = 44;
 const DESKTOP_BAR = TOP_BAR + BAR;
-const PHONE_LIST_HEAD = BAR;
-const PHONE_HEADER = 48;
+/** Signal §5.4: the sidebar head is no bar. It is padded 14px over and 8px under its tallest item: the 19px serif server name
+ *  (line box 28.5) on a desktop, the 28px new-message icon button beside the 14px mono DM heading (line box 21), and the 44px head buttons
+ *  on a phone (Ruling N). */
+const SIDEBAR_HEAD = TOP_BAR + 14 + 28.5 + 8;
+const SIDEBAR_HEAD_DMS = TOP_BAR + 14 + 28 + 8;
+const PHONE_LIST_HEAD = 14 + 44 + 8;
+const PHONE_HEADER = 52;
 async function expectBar(page: Page, tag: string, name: string, bar: string, want: number, from?: string): Promise<void> {
   const got = await barBottom(page, bar, from);
   expect.soft(got, `B1 ${name} (${bar}) is on screen at ${tag}`).not.toBeNull();
@@ -431,11 +436,14 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
 
-  // The channel list (A5, A4): channel rows, voice rows and category labels, and every slot in it.
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list');
+  // The channel list (A5, A4): channel rows and voice rows, and every slot in it. Signal §5.4: a category label follows its 11px
+  // chevron (8 + 11 + 6), so the category labels share one x of their own.
+  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list');
+  const cats = await boxes(page, '.d-channel-list__cat-label', '.d-channel-list__list');
+  expectOne(`A5 category labels share one left x at ${tag}`, cats.map(b => b.x), cats.map(b => b.t));
 
-  // Bars (B1): the sidebar head, the channel header, the members head.
-  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', DESKTOP_BAR);
+  // Bars (B1): the channel header and the members head; the sidebar head (Signal §5.4) is the padded head over the stat line.
+  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', SIDEBAR_HEAD);
   await expectBar(page, tag, 'the channel header', '.d-channel-header', DESKTOP_BAR);
   if (size.width >= 1440) await expectBar(page, tag, 'the members head', '.d-member-list__bar', DESKTOP_BAR);
   await expectNoOverflow(page, tag, 'a channel');
@@ -462,7 +470,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
-  await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title', DESKTOP_BAR);
+  await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title', SIDEBAR_HEAD_DMS);
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
   await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the conversation header', '.d-channel-header', DESKTOP_BAR);
@@ -474,7 +482,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     await openPath(page, voicePath);
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
     await expectBar(page, tag, 'the stage header', '.d-call-stage__bar', DESKTOP_BAR);
-    await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list with a live person');
+    await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list with a live person');
     const avatars = await boxes(page, '.d-voice-row__person .d-voice-row__avatar', '.d-channel-list__list');
     const rowNames = await boxes(page, '.d-voice-row__name', '.d-channel-list__list');
     if (avatars.length > 0 && rowNames.length > 0) expectAt(`A7 a person's avatar starts at the names' x at ${tag}`, avatars[0].x, rowNames[0].x, TOL);
@@ -631,7 +639,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await toList();
   await tab('home.tab').click();
   await expect(nav(page).getByRole('button', { name: new RegExp(`^${escapeRegExp(RAID)}`) })).toBeVisible({ timeout: WAIT });
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list');
+  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list');
   await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', PHONE_LIST_HEAD);
   await expectTargets(page, tag, 'the home tab');
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {

@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChannelList } from './ChannelList.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 
@@ -125,13 +126,16 @@ const MIXED_ARGS = {
   headerAction: <Button variant="ghost" size="sm" aria-label="server menu">⋯</Button>,
 };
 
-/** Every name (row, voice, category label) starts at the same x (+-0.5px), a person's avatar too, and every trailing slot ends at the same x. */
+/**
+ * Every row name (channel, voice) starts at the same x (+-0.5px), a person's avatar too, and every trailing slot ends at the
+ * same x. Signal §5.4: the category label sits after its 11px chevron (8 + 11 + 6), so it is not on the names' x.
+ */
 export function expectOneGrid(root: HTMLElement, story: string): void {
-  const lefts = Array.from(root.querySelectorAll<HTMLElement>('.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label, .d-voice-row__avatar'))
+  const lefts = Array.from(root.querySelectorAll<HTMLElement>('.d-chrow__name, .d-voice-row__name, .d-voice-row__avatar'))
     .map(el => el.getBoundingClientRect().left);
-  const rights = Array.from(root.querySelectorAll<HTMLElement>('.d-chrow .d-slot, .d-voice-row > .d-slot, .d-channel-list__cat-head .d-slot, .d-voice-row__person .d-slot'))
+  const rights = Array.from(root.querySelectorAll<HTMLElement>('.d-chrow .d-slot, .d-voice-row > .d-slot, .d-voice-row__person .d-slot'))
     .map(el => el.getBoundingClientRect().right);
-  if (lefts.length < 8 || rights.length < 8) throw new Error(`${story}: too few rows measured (${String(lefts.length)}, ${String(rights.length)})`);
+  if (lefts.length < 8 || rights.length < 6) throw new Error(`${story}: too few rows measured (${String(lefts.length)}, ${String(rights.length)})`);
   const off = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
   if (off(lefts) > 0.5) throw new Error(`${story}: the names start ${String(off(lefts))}px apart (${lefts.join(', ')})`);
   if (off(rights) > 0.5) throw new Error(`${story}: the slots end ${String(off(rights))}px apart (${rights.join(', ')})`);
@@ -176,3 +180,26 @@ export const UnreadAndMention: Story = { args: UNREAD_ARGS, globals: { theme: 's
 export const UnreadAndMentionLight: Story = { args: UNREAD_ARGS, globals: { theme: 'light' } };
 export const UnreadAndMentionHighContrast: Story = { args: UNREAD_ARGS, globals: { theme: 'high-contrast' } };
 export const UnreadAndMentionPhone: Story = { args: UNREAD_ARGS, globals: { theme: 'signal' }, decorators: [tall(360, true)], play: phonePlay('UnreadAndMentionPhone') };
+
+// Signal parity (README §5.4): the prototype's Midgard Crew sidebar at its first paint.
+const SIGNAL_VOICE = {
+  ...VOICE,
+  rooms: {
+    hv: { joined: false, participants: [] },
+    harbour: { joined: false, participants: [person('Ada', { speaking: true, screen: true }), person('Björn', { video: true }), person('Kari', { video: true, screen: true }), person('Ole'), person('Glenn', { bot: true, web: false })] },
+    afk: { joined: false, participants: [] },
+  },
+};
+const SIGNAL_ARGS = {
+  title: 'Midgard Crew', stats: ['3 online', '5 in voice'], activeId: 'general', newLabel: (n: string) => `${n} new`, voice: SIGNAL_VOICE,
+  categories: [{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }], onToggleCategory: () => {},
+  headerAction: <IconButton icon="chevron-down" size={28} label="server settings" />,
+  channels: [
+    { id: 'general', name: 'general', kind: 'text', readable: false },
+    { id: 'hv', name: 'general', kind: 'voice', readable: false },
+    { id: 'loot', name: 'loot', kind: 'text', readable: false, parentId: 'raids', unread: 1 },
+    { id: 'harbour', name: 'harbour', kind: 'voice', readable: false, parentId: 'boats' },
+    { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true },
+  ],
+} as const;
+export const Signal: Story = { args: SIGNAL_ARGS, globals: { theme: 'signal' }, decorators: [tall(244)] };

@@ -508,7 +508,7 @@ export const en = {
   'voice.dock.ping': '{ms} ms',
   'voice.dock.pingSub': '<1 ms',
   'voice.dock.pingNone': '— ms',
-  'voice.dock.rate': '↑{up} ↓{down} kb/s',
+  'voice.dock.rate': '↑ {up} ↓ {down} kb/s',
   'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
   'voice.dock.quality.good': 'good',
   'voice.dock.quality.poor': 'poor',

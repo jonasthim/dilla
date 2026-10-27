@@ -13,6 +13,7 @@ function boundarySelector(id: string): string | null {
   if (id === 'form-select--default') return '.d-select__input';
   if (id === 'form-textfield--empty' || id === 'form-textfield--filled') return '.d-text-field__input';
   if (id.startsWith('shell-topbar--')) return '.d-topbar__kbd';
+  if (id === 'shell-communityrail--signal') return '.d-community-rail__glyph';
   return null;
 }
 
@@ -127,6 +128,78 @@ async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
   if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
 }
 
+/**
+ * Task 6 (Signal §5.3-§5.5, §5.10): the geometry and the computed states of the rail, the sidebar rows, the user panel, the
+ * dock, the channel header, the tab bar and the phone header, read in the browser (Ruling C). Each entry is a selector and
+ * what its first match must measure; `shadow` is a substring of its computed box-shadow, `radius` its top-left radius in px.
+ */
+type Want = { sel: string; w?: number; h?: number; radius?: number; shadow?: string; transform?: string; color?: string; background?: string };
+const LIVE_RING = '0px 0px 0px 3.5px';
+const SIGNAL_GEOMETRY: Record<string, Want[]> = {
+  'shell-communityrail--signal': [
+    { sel: '.d-community-rail', w: 56 },
+    { sel: '.d-community-rail__item[aria-current="page"]', w: 38, h: 38, radius: 10, shadow: LIVE_RING, background: 'rgb(90, 168, 230)' },
+    { sel: '.d-community-rail__item:not([aria-current])', w: 38, h: 38, radius: 999, background: 'rgb(20, 23, 28)' },
+    { sel: '.d-community-rail__badge .d-pill', h: 16, background: 'rgb(255, 209, 106)', color: 'rgb(26, 19, 0)' },
+    { sel: '.d-community-rail__glyph', w: 38, h: 38, radius: 999 },
+    { sel: '.d-community-rail__rule', w: 20, h: 1 },
+  ],
+  'shell-communityrail--signal-home-selected': [
+    { sel: '.d-community-rail__home', w: 38, h: 38, radius: 10, background: 'rgb(23, 27, 34)', color: 'rgb(90, 168, 230)' },
+  ],
+  'primitives-channelrow--text': [{ sel: '.d-chrow', h: 28, radius: 5, color: 'rgb(140, 147, 158)' }, { sel: '.d-chrow__glyph', color: 'rgb(92, 99, 110)' }],
+  'primitives-channelrow--active': [
+    { sel: '.d-chrow', h: 28, background: 'rgb(23, 27, 34)', color: 'rgb(228, 232, 238)' },
+    { sel: '.d-chrow__bar', w: 2, h: 16, transform: 'none' },
+    { sel: '.d-chrow__glyph', color: 'rgb(90, 168, 230)' },
+  ],
+  'primitives-channelrow--unread': [{ sel: '.d-chrow', color: 'rgb(228, 232, 238)' }, { sel: '.d-chrow .d-pill', h: 16, radius: 4, background: 'rgb(90, 168, 230)' }],
+  'primitives-channelrow--mention': [{ sel: '.d-chrow .d-pill', h: 16, radius: 4, background: 'rgb(255, 209, 106)', color: 'rgb(26, 19, 0)' }],
+  'primitives-channelrow--collapsed-but-unread': [{ sel: '.d-channel-list__cat-head', h: 26 }],
+  'primitives-channelrow--voice-joined': [{ sel: '.d-voice-row', h: 28 }, { sel: '.d-voice-row__glyph', color: 'rgb(124, 255, 142)' }],
+  'voice-voicechannelrow--speaking': [
+    { sel: '.d-voice-row__person', h: 26 },
+    { sel: '.d-voice-row__person[data-speaking="true"] .d-avatar', w: 18, h: 18, shadow: LIVE_RING },
+    { sel: '.d-voice-row__person:not([data-speaking]) .d-avatar', w: 18, h: 18 },
+  ],
+  'voice-voicechannelrow--with-glenn': [{ sel: '.d-voice-row__person:last-child .d-avatar[data-shape="bot"]', w: 18, radius: 5 }],
+  'voice-voicechannelrow--muted-deafened': [{ sel: '.d-voice-row__state[data-state="muted"]', color: 'rgb(255, 110, 110)' }],
+  'voice-voicechannelrow--camera-and-live': [{ sel: '.d-voice-row__state[data-state="screen"] .d-tag', background: 'rgb(255, 110, 110)' }],
+  'shell-channellist--signal': [
+    { sel: '.d-channel-list__cat-head', h: 26 },
+    { sel: '.d-channel-list__live', w: 6, h: 6 },
+    { sel: '.d-chrow', h: 28 },
+  ],
+  'shell-userpanel--signal': [{ sel: '.d-user-panel', h: 64 }, { sel: '.d-user-panel .d-icon-button', w: 30, h: 30 }, { sel: '.d-user-panel__who .d-avatar', w: 30, h: 30 }],
+  'shell-userpanel--signal-muted-and-deafened': [{ sel: '.d-user-panel .d-icon-button[aria-pressed="true"]', w: 30, color: 'rgb(255, 110, 110)', background: 'rgba(255, 110, 110, 0.1)' }],
+  'voice-voicedock--signal': [{ sel: '.d-voice-dock', radius: 8, background: 'rgba(124, 255, 142, 0.04)' }, { sel: '.d-voice-dock__leave', w: 28, h: 28, color: 'rgb(255, 110, 110)' }, { sel: '.d-voice-dock__bars', h: 12 }, { sel: '.d-voice-dock__bars > span', w: 2 }],
+  'shell-channelheader--signal-members-open': [{ sel: '.d-channel-header', h: 44 }, { sel: '.d-channel-header__actions [aria-pressed="true"]', h: 28, color: 'rgb(90, 168, 230)', background: 'rgba(90, 168, 230, 0.12)' }],
+  'shell-tabbar--signal': [{ sel: '.d-tab-bar__link', h: 56 }, { sel: '.d-tab-bar__link[aria-current="page"]', color: 'rgb(228, 232, 238)' }],
+  'shell-phoneheader--signal': [{ sel: '.d-phone-header', h: 52 }, { sel: '.d-phone-header__back', w: 44, h: 44 }],
+};
+async function checkSignalGeometry(page: Page, context: StoryContext, wants: Want[]): Promise<void> {
+  await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== 'running' || a.effect?.getTiming().iterations === Infinity), undefined, { timeout: 5_000 }).catch(() => {});
+  const bad = await page.evaluate((list: Want[]) => {
+    const out: string[] = [];
+    const near = (a: number, b: number) => Math.abs(a - b) <= 0.5;
+    for (const want of list) {
+      const el = document.querySelector<HTMLElement>(`#storybook-root ${want.sel}`);
+      if (el === null) { out.push(`no ${want.sel}`); continue; }
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      if (want.w !== undefined && !near(r.width, want.w)) out.push(`${want.sel} is ${String(r.width)} wide, want ${String(want.w)}`);
+      if (want.h !== undefined && !near(r.height, want.h)) out.push(`${want.sel} is ${String(r.height)} high, want ${String(want.h)}`);
+      if (want.radius !== undefined && !near(Math.min(parseFloat(st.borderTopLeftRadius), 999), want.radius) && !(want.radius === 999 && parseFloat(st.borderTopLeftRadius) >= r.width / 2)) out.push(`${want.sel} radius is ${st.borderTopLeftRadius}, want ${String(want.radius)}px`);
+      if (want.shadow !== undefined && !st.boxShadow.includes(want.shadow)) out.push(`${want.sel} box-shadow is ${st.boxShadow}, want ${want.shadow}`);
+      if (want.transform !== undefined && st.transform !== want.transform && st.transform !== 'matrix(1, 0, 0, 1, 0, 0)') out.push(`${want.sel} transform is ${st.transform}`);
+      if (want.color !== undefined && st.color !== want.color) out.push(`${want.sel} color is ${st.color}, want ${want.color}`);
+      if (want.background !== undefined && st.backgroundColor !== want.background) out.push(`${want.sel} background is ${st.backgroundColor}, want ${want.background}`);
+    }
+    return out;
+  }, wants);
+  if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
+}
+
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
     if (context.id === 'settings-settingsframe--phone-index') {
       await page.setViewportSize({ width: 640, height: 400 });
@@ -153,6 +226,8 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       }
     }
     if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
+    const signalWants = SIGNAL_GEOMETRY[context.id];
+    if (signalWants !== undefined) await checkSignalGeometry(page, context, signalWants);
     if (context.id === 'shell-appshell--aside-close-live') await checkAsideTransition(page, context);
     const asideWant = ASIDE_STORIES[context.id];
     if (asideWant !== undefined) await checkAside(page, context, asideWant);

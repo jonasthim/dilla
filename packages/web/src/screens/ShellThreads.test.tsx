@@ -477,11 +477,12 @@ describe('the channel header of an announcement channel (walk 17)', () => {
     const title = head.closest('.d-channel-header__title')!;
     expect(title.querySelector('[data-icon="megaphone"]')).not.toBeNull();
     expect(head.querySelector('[data-icon="megaphone"]')).toBeNull();
-    expect(title.textContent).toBe('[ news ]');
+    expect(title.textContent).toBe('news');
     cleanup();
     setup({ path: `/c/${A}/${GEN}` });
     const plain = await screen.findByRole('heading', { level: 2, name: 'general' });
     expect(plain.closest('.d-channel-header__title')!.querySelector('[data-icon="megaphone"]')).toBeNull();
-    expect(plain.closest('.d-channel-header__title')!.textContent).toBe('[ # general ]');
+    expect(plain.closest('.d-channel-header__title')!.textContent).toBe('general');
+    expect(plain.closest('.d-channel-header__title')!.querySelector('[data-icon="hash"]')).not.toBeNull();
   });
 });
