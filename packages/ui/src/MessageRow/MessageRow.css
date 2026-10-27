@@ -16,6 +16,8 @@
 .d-message-row:not([data-grouped="true"]) .d-message-row__gutter,
 .d-message-row:hover .d-message-row__gutter, .d-message-row[data-hover="true"] .d-message-row__gutter,
 .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { color: var(--fg-quiet); }
+/* A 12-hour time ("10:06 PM", 8 characters) is wider than the prototype's 44px column at 10.5px: it steps down to 9px, which fits. */
+.d-message-row__gutter[data-long="true"] { font-size: var(--text-badge); }
 .d-message-row[data-grouped="true"] .d-message-row__gutter { padding-top: 0.0625rem /* 1px */; }
 .d-message-row[data-reply="true"] .d-message-row__gutter { padding-top: 2.375rem /* 38px */; }
 .d-message-row__avatar { display: block; width: 1.875rem; height: 1.875rem; }
@@ -47,11 +49,12 @@
 
 /* The toolbar floats at top −12px, right 16px (react, reply, thread, more); it fades in and rises 3px while the row is hovered
    or holds focus, and on the active row while focus is in the log: never while the person types in the composer (ruling 39). */
-.d-message-row__toolbar { position: absolute; top: -0.75rem; right: 1rem; z-index: 2; opacity: 0; transform: translateY(3px); pointer-events: none;
-  transition: opacity var(--duration-press), transform var(--duration-rise) var(--ease-out); }
+/* Hidden, it is also out of the tab order (visibility), as the display:none it replaces was; it hides after its fade. */
+.d-message-row__toolbar { position: absolute; top: -0.75rem; right: 1rem; z-index: 2; opacity: 0; transform: translateY(3px); pointer-events: none; visibility: hidden;
+  transition: opacity var(--duration-press), transform var(--duration-rise) var(--ease-out), visibility 0s linear var(--duration-press); }
 .d-message-row:hover .d-message-row__toolbar, .d-message-row[data-hover="true"] .d-message-row__toolbar,
 .d-message-row:focus-within .d-message-row__toolbar, .d-message-log:focus-within .d-message-row[data-active="true"] .d-message-row__toolbar,
-.d-message-row[data-revealed="true"] .d-message-row__toolbar { opacity: 1; transform: none; pointer-events: auto; }
+.d-message-row[data-revealed="true"] .d-message-row__toolbar { opacity: 1; transform: none; pointer-events: auto; visibility: visible; transition-delay: 0s; }
 /* A phone renders the toolbar only once the row is revealed (R30). */
 
 /* A sent reply (§6.5): the 2px connector curve from the avatar column, the mini avatar, the author in bold and one line. */

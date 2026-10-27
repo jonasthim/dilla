@@ -354,8 +354,10 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     expect(bar!.y + bar!.height, 'the tab bar reaches the bottom').toBeGreaterThanOrEqual(840);
     // The sheet is an AppShell overlay: it takes focus to its first control, the back button (flow 11 says the composer; see the report).
     await expect(sheet.getByRole('button', { name: copy('thread.close'), exact: true })).toBeFocused();
-    const composer = await threadComposer(page).boundingBox();
-    expect(composer!.y + composer!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThan(844 - 120);
+    // Task 7: the textarea sits in the box's input row over the footer, so the composer (its form) is measured.
+    const composer = await threadComposer(page).locator('xpath=ancestor::form[1]').boundingBox();
+    // Task 7: the Signal composer keeps the prototype's 10px bottom padding on a phone, so its box ends within 16px of the sheet's end.
+    expect(composer!.y + composer!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThanOrEqual(box!.y + box!.height - 16);
     const ok = `ok ${tag()}`;
     await peer.send(ok, general, { threadId: root.msg_id });
     await expect(sheet.getByText(ok)).toBeVisible({ timeout: WAIT });

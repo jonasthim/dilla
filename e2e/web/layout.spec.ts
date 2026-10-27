@@ -134,7 +134,8 @@ const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea,
 const PRIMARY = [
   '.d-tab-bar__link', '.d-phone-header__back', '.d-phone-header__dot', '.d-chrow', '.d-voice-row', '.d-channel-list__cat-head', '.d-voice-row__join button',
   // Ruling AB: the server head's ⌄ is the prototype's 26px (secondary tier); the DM head's "message someone" stays primary.
-  '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)', '.d-composer button',
+  // Task 7 (rule 0): the composer's send (28) and footer tools (26 x 24) are the prototype's sizes, so they are secondary.
+  '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)',
   '.d-call-bar button', '.d-call-stage__controls button',
 ].join(', ');
 
@@ -146,8 +147,14 @@ async function expectTargets(page: Page, tag: string, state: string): Promise<vo
       const cs = getComputedStyle(el);
       if (cs.visibility === 'hidden' || cs.display === 'inline' || el.getClientRects().length === 0) continue;
       if (el instanceof HTMLInputElement && ['checkbox', 'radio'].includes(el.type) && el.closest('label') !== null) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width <= 1 || r.height <= 1) continue;
+      const box = el.getBoundingClientRect();
+      if (box.width <= 1 || box.height <= 1) continue;
+      // A control that reaches out by an absolutely placed ::after (the author name and the mention pill on a phone) is measured with it.
+      const after = getComputedStyle(el, '::after');
+      const px = (v: string) => (v.endsWith('px') ? parseFloat(v) : 0);
+      const grow = after.content !== 'none' && after.position === 'absolute' && cs.position !== 'static'
+        ? { t: Math.max(0, -px(after.top)), b: Math.max(0, -px(after.bottom)), l: Math.max(0, -px(after.left)), r: Math.max(0, -px(after.right)) } : { t: 0, b: 0, l: 0, r: 0 };
+      const r = { width: box.width + grow.l + grow.r, height: box.height + grow.t + grow.b, top: box.top, bottom: box.bottom, left: box.left, right: box.right };
       if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
       const tier = el.matches(primary) ? 44 : 24;
       if (r.width + 0.5 < tier || r.height + 0.5 < tier) {
@@ -1273,12 +1280,11 @@ test('FC: the save button of a file card beside an image is not clipped at 1280 
     const row = messageRow(page, 'general', text);
     const save = row.getByRole('button', { name: copy('shell.attachment.save', { name: 'loot-list.txt' }), exact: true });
     await expect(save, `${tag} the save button is named for the file`).toBeVisible({ timeout: WAIT });
-    await expect.soft(save, `${tag} its visible text is just the save word`).toHaveText(copy('media.save'));
-    const clip = await save.evaluate(e => ({ sw: e.scrollWidth, cw: e.clientWidth }));
-    expect.soft(clip.sw, `${tag} the save text is not clipped (scrollWidth ${String(clip.sw)} > clientWidth ${String(clip.cw)})`).toBeLessThanOrEqual(clip.cw);
+    // Task 7 (§6.8): the prototype's 28px download icon; its word is the tooltip, its name the file's.
+    await expect.soft(save, `${tag} its tooltip is the save word`).toHaveAttribute('title', copy('media.save'));
     const log = (await boxes(page, '[role="log"]'))[0];
     const card = (await boxes(page, '.d-attachment-card[data-kind="file"]'))[0];
-    const btn = (await boxes(page, '.d-attachment-card__file .d-attachment-card__save'))[0];
+    const btn = (await boxes(page, '.d-attachment-card__file .d-attachment-card__download'))[0];
     expect(log !== undefined && card !== undefined && btn !== undefined, `${tag} the log, the file card and its save are drawn`).toBe(true);
     if (log === undefined || card === undefined || btn === undefined) return;
     expect.soft(card.r, `${tag} the card is not wider than the log`).toBeLessThanOrEqual(log.r + TOL);

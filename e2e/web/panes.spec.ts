@@ -48,9 +48,12 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   const tops = async () => page.evaluate(() => {
     const panel = document.querySelector('.d-user-panel')?.getBoundingClientRect();
     const composer = document.querySelector('.d-composer')?.getBoundingClientRect();
-    return { panelTop: panel?.top ?? NaN, panelHeight: panel?.height ?? NaN, composerTop: composer?.top ?? NaN };
+    return { panelTop: panel?.top ?? NaN, panelBottom: panel?.bottom ?? NaN, panelHeight: panel?.height ?? NaN, composerTop: composer?.top ?? NaN, composerBottom: composer?.bottom ?? NaN };
   });
-  await expect.poll(async () => { const m = await tops(); return Math.abs(m.composerTop - m.panelTop); }, { message: 'composer and user panel tops at 1440x900' }).toBeLessThanOrEqual(1);
+  // Task 7 (Signal §5.5): the prototype's two-row composer is taller than the 64 px panel, so the two share their bottom edge, not
+  // their top: the composer's top stands at or above the panel's.
+  await expect.poll(async () => { const m = await tops(); return Math.abs(m.composerBottom - m.panelBottom); }, { message: 'composer and user panel bottoms at 1440x900' }).toBeLessThanOrEqual(1);
+  expect((await tops()).composerTop, 'the composer reaches at least the panel top').toBeLessThanOrEqual((await tops()).panelTop + 1);
   expect((await tops()).panelHeight, 'the user panel is 64 px high').toBeCloseTo(64, 0);
   await page.setViewportSize({ width: 1280, height: 800 });
 

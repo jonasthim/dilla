@@ -211,7 +211,8 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectComposerReady(page, 'general');
       const composer = composerBox(page, 'general');
       expect(await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
-      await expectTapTargets(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true }), 'the attach button');
+      // Task 7 (rule 0, Jonas 2026-10-27): the composer's footer tools are the prototype's 26 x 24 on a phone too.
+      await expectPrototypeSize(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true }), 'the attach button', { w: 26, h: 24 });
       await composer.tap();
       await expect(composer).toBeFocused();
       expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
@@ -247,21 +248,17 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(actions).toBeVisible();
       await row.locator('.d-message-row__body').tap();
       await expect(actions).toHaveCount(0);
-      // I2: a grouped row's gutter time fits the avatar column and its gap, unclipped, at 390 and at 360.
+      // Task 7 (Signal §5.10, the prototype's phone rows): the gutter is a bare 4px column that never shows a time, even on a
+      // revealed follow-up (the head keeps it for a screen reader; a first row shows it beside the name). Nothing clips.
       await sendText(page, 'general', 'tack');
       const grouped = messageRow(page, 'general', 'tack');
       await expect(grouped).toHaveAttribute('data-grouped', 'true');
       await grouped.locator('.d-message-row__body').tap();
       for (const width of [390, 360]) {
         await page.setViewportSize({ width, height: 844 });
-        const g = await grouped.locator('.d-message-row__gutter').evaluate(el => {
-          const box = el.getBoundingClientRect();
-          const main = el.parentElement!.querySelector('.d-message-row__main')!.getBoundingClientRect();
-          return { left: box.left, right: box.right, mainLeft: main.left, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, text: el.textContent };
-        });
-        expect(g.left, `the gutter time starts on screen at ${String(width)}: ${g.text}`).toBeGreaterThanOrEqual(0);
-        expect(g.right, `the gutter time ends before the text at ${String(width)}`).toBeLessThanOrEqual(g.mainLeft + 0.5);
-        expect(g.scrollWidth, `the gutter time is not clipped at ${String(width)}`).toBeLessThanOrEqual(g.clientWidth);
+        const g = await grouped.locator('.d-message-row__gutter').evaluate(el => ({ width: el.getBoundingClientRect().width, visibility: getComputedStyle(el).visibility }));
+        expect(g.visibility, `the phone gutter shows no time at ${String(width)}`).toBe('hidden');
+        expect(Math.round(g.width), `the phone gutter is the prototype's 4px at ${String(width)}`).toBe(4);
       }
       await page.setViewportSize({ width: 390, height: 844 });
       await grouped.locator('.d-message-row__body').tap();

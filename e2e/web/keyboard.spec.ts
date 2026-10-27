@@ -103,11 +103,9 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   const received = await peer.waitFor(`${first}\nline two`);
   expect(received.tier).toBe(1);
 
-  // Shift+Tab crosses the attach button into the newest row. Tab enters its toolbar; Escape returns to the row,
-  // then to the composer.
+  // Task 7 (Signal §5.5): the composer's tools sit in the footer under the textarea, so Shift+Tab goes straight into the
+  // newest row. Tab enters its toolbar; Escape returns to the row, then to the composer.
   await expect(composerBox(page, channel)).toBeFocused();
-  await press('Shift+Tab');
-  await expect(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true })).toBeFocused();
   await press('Shift+Tab');
   const newest = logRegion(page, channel).locator(CLASS.messageRow).last();
   await expect(newest).toBeFocused();
