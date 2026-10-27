@@ -49,6 +49,38 @@ async function checkAside(page: Page, context: StoryContext, want: number): Prom
   }
 }
 
+/**
+ * Fix round 2: the web app's close path (the content goes with the close). The same aside element animates its width to 0:
+ * ~100ms after the click it is between 0 and 232, then it ends hidden or unmounted; a reopen animates from 0 again.
+ */
+async function checkAsideTransition(page: Page, context: StoryContext): Promise<void> {
+  const name = `${context.title} / ${context.name}`;
+  const read = () => page.evaluate(() => {
+    const el = document.querySelector<HTMLElement & { __mark?: boolean }>('#storybook-root .d-app-shell__aside');
+    return el === null ? null : { width: el.getBoundingClientRect().width, same: el.__mark === true, open: el.dataset.open, visibility: getComputedStyle(el).visibility };
+  });
+  await page.waitForTimeout(600);
+  const before = await read();
+  if (before === null || Math.abs(before.width - 232) > 0.5) throw new Error(`${name}: the open aside is ${String(before?.width)} wide, want 232`);
+  await page.evaluate(() => { (document.querySelector('#storybook-root .d-app-shell__aside') as (HTMLElement & { __mark?: boolean }) | null)!.__mark = true; });
+  await page.click('#storybook-root .story-aside-toggle');
+  await page.waitForTimeout(100);
+  const mid = await read();
+  if (mid === null || !mid.same) throw new Error(`${name}: closing replaced or removed the aside at once`);
+  if (mid.open !== 'false' || !(mid.width > 0.5 && mid.width < 231.5)) throw new Error(`${name}: 100ms into the close the aside is ${String(mid.width)} wide (data-open ${String(mid.open)}), want between 0 and 232`);
+  await page.waitForTimeout(800);
+  const after = await read();
+  if (after !== null && (after.width > 0.5 || after.visibility !== 'hidden')) throw new Error(`${name}: the closed aside is ${String(after.width)} wide and ${after.visibility}`);
+  await page.click('#storybook-root .story-aside-toggle');
+  await page.waitForTimeout(100);
+  const reopening = await read();
+  if (reopening === null || !(reopening.width > 0.5 && reopening.width < 231.5)) throw new Error(`${name}: 100ms into the reopen the aside is ${String(reopening?.width)} wide, want between 0 and 232`);
+  await page.waitForTimeout(600);
+  const reopened = await read();
+  if (reopened === null || Math.abs(reopened.width - 232) > 0.5) throw new Error(`${name}: the reopened aside is ${String(reopened?.width)} wide, want 232`);
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+}
+
 /** The top bar's geometry (README §5.2, the prototype's inline sizes), in CSS px at a 16px root. */
 async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
   const got = await page.evaluate(() => {
@@ -121,6 +153,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       }
     }
     if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
+    if (context.id === 'shell-appshell--aside-close-live') await checkAsideTransition(page, context);
     const asideWant = ASIDE_STORIES[context.id];
     if (asideWant !== undefined) await checkAside(page, context, asideWant);
     // A container focused only by script, an opened dialog, draws no ring: around the whole dialog it reads

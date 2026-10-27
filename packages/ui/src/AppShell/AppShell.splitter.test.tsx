@@ -263,10 +263,20 @@ describe('AppShell splitters', () => {
     try {
       shellW = 1280; stubWidths();
       const { container, rerender } = render(<ComposedShell shell={shellProps()} />);
+      const open = container.querySelector('.d-app-shell__aside');
+      expect(open).toHaveAttribute('data-open', 'true');
       rerender(<ComposedShell shell={shellProps({ asideOpen: false, aside: undefined })} />);
       const closing = container.querySelector('.d-app-shell__aside');
+      // The same element, so its width transitions (a new one would start at 0).
+      expect(closing).toBe(open);
       expect(closing).toHaveAttribute('data-open', 'false');
       expect(closing).toHaveTextContent('pane control');
+      // A quick reopen before the transition ends reuses it too.
+      rerender(<ComposedShell shell={shellProps()} />);
+      expect(container.querySelector('.d-app-shell__aside')).toBe(open);
+      expect(open).toHaveAttribute('data-open', 'true');
+      rerender(<ComposedShell shell={shellProps({ asideOpen: false, aside: undefined })} />);
+      expect(container.querySelector('.d-app-shell__aside')).toBe(open);
       act(() => { closing!.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'width' })); });
       expect(container.querySelector('.d-app-shell__aside')).toBeNull();
       // Reduced motion fires no transitionend: a fallback timer unmounts it too.

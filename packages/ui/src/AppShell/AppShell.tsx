@@ -195,13 +195,14 @@ export function AppShell({
   const lastAside = useRef<{ node: ReactNode; kind: 'members' | 'thread'; label?: string } | null>(null);
   const hasAsideContent = aside !== undefined && aside !== null && aside !== false;
   if (hasAsideContent) lastAside.current = { node: aside, kind: asideKind, label: asideLabel };
+  // `closing` is derived during render (React's "adjust state while rendering"), not in an effect: on the very render where
+  // the aside closes, the same <aside> stays in the tree with the last content, so its width transitions to 0.
   const [closing, setClosing] = useState(false);
-  const wasShown = useRef(showAside);
-  useLayoutEffect(() => {
-    if (wasShown.current && !showAside && !narrowRef.current && layout !== 'phone') setClosing(true);
-    if (showAside) setClosing(false);
-    wasShown.current = showAside;
-  }, [showAside, layout]);
+  const [wasShown, setWasShown] = useState(showAside);
+  if (wasShown !== showAside) {
+    setWasShown(showAside);
+    setClosing(!showAside && !narrow && layout !== 'phone');
+  }
   const closedAside = layout !== 'phone' && !narrow && !showAside && (hasAsideContent || (closing && lastAside.current !== null));
   const asideMounted = showAside || closedAside;
   const asideNode = hasAsideContent ? aside : lastAside.current?.node;

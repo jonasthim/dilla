@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ComposedShell, fixtureTopBar } from './AppShell.fixture.tsx';
 import { TopBar } from '../TopBar/TopBar.tsx';
@@ -26,6 +27,18 @@ export const AsideWide: Story = { render: () => <div style={{ ['--d-shell-h' as 
 // Signal (README §5.1): the column aside is 232 (members) or 340 (thread); closed, it stays mounted at 0, hidden and inert.
 export const AsideThread: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, asideKind: 'thread' }} /></div> };
 export const AsideClosed: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, asideOpen: false }} /></div> };
+// The web app's path (fix round 2): the content goes together with the close, and the same aside animates to 0. A button
+// outside the shell toggles it; story-a11y clicks it and reads the width mid-transition.
+function LiveAside() {
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{ ['--d-shell-h' as string]: '736px' }}>
+      <button type="button" className="story-aside-toggle" onClick={() => setOpen(o => !o)}>toggle members</button>
+      <ComposedShell shell={{ aside: open ? members : undefined, asideLabel: 'members', asideOpen: open, onAsideClose: () => setOpen(false), asideCloseLabel: 'close members' }} />
+    </div>
+  );
+}
+export const AsideCloseLive: Story = { render: () => <LiveAside /> };
 export const AsideMedium: Story = { render: () => <div style={{ width: 900, ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
 // Final fix I2: the drawer's close button, at the top of the overlay (a column has none).
 export const AsideNarrowClose: Story = {
