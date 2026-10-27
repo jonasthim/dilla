@@ -122,7 +122,7 @@ export const structural = {
    * the Windows forced-colors indicator survives.
    */
   focusRing: '2px solid var(--accent)',
-  motion: { toggle: '240ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
+  motion: { toggle: '240ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', aside: '280ms', bar: '600ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

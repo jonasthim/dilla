@@ -23,6 +23,9 @@ const members = (
 );
 const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' };
 export const AsideWide: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
+// Signal (README §5.1): the column aside is 232 (members) or 340 (thread); closed, it stays mounted at 0, hidden and inert.
+export const AsideThread: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, asideKind: 'thread' }} /></div> };
+export const AsideClosed: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, asideOpen: false }} /></div> };
 export const AsideMedium: Story = { render: () => <div style={{ width: 900, ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
 // Final fix I2: the drawer's close button, at the top of the overlay (a column has none).
 export const AsideNarrowClose: Story = {
@@ -183,6 +186,10 @@ export const Frame: Story = {
 export const FrameMembers: Story = {
   parameters: { layout: 'fullscreen' },
   render: () => <div style={frame}><ComposedShell shell={{ ...withAside, topBar: topBar({}), bottom: userPanel }} /></div>,
+};
+export const FrameMembersClosed: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><ComposedShell shell={{ ...withAside, asideOpen: false, topBar: topBar({}), bottom: userPanel }} /></div>,
 };
 export const FrameInVoice: Story = {
   parameters: { layout: 'fullscreen' },

@@ -30,9 +30,10 @@
   cursor: pointer; animation: d-up var(--duration-slow) var(--ease-out) both;
 }
 .d-topbar__bars { display: flex; align-items: flex-end; gap: 2px; height: 0.75rem /* 12px */; }
-.d-topbar__bars i { display: block; width: 2px; height: 0.75rem; background: var(--ok); transform-origin: bottom; animation: d-bar calc(var(--duration-slow) * 2) infinite; }
-.d-topbar__bars i:nth-child(2) { animation-delay: calc(var(--duration-slow) * 2 / 3); }
-.d-topbar__bars i:nth-child(3) { animation-delay: calc(var(--duration-slow) * 4 / 3); }
+/* sBar 600ms, each bar a third of it later (200ms, 400ms). */
+.d-topbar__bars i { display: block; width: 2px; height: 0.75rem; background: var(--ok); transform-origin: bottom; animation: d-bar var(--duration-bar) infinite; }
+.d-topbar__bars i:nth-child(2) { animation-delay: calc(var(--duration-bar) / 3); }
+.d-topbar__bars i:nth-child(3) { animation-delay: calc(var(--duration-bar) * 2 / 3); }
 
 /* The bell's due count: 14px, --mention fill (the prototype's #FFD16A) with --mention-ink, pops in. */
 .d-topbar__bell { position: relative; display: inline-flex; flex: none; }
@@ -42,6 +43,8 @@
   border-radius: var(--r-pill); box-shadow: 0 0 0 2px var(--bg-2); pointer-events: none; animation: d-pop var(--duration-pop) both;
 }
 
-/* The gear turns 45° on hover, over 200ms. */
+/* The gear turns 45° on hover, over 200ms. The prototype's bell and gear have no press state: a press keeps the hover's turn
+   (these selectors outrank IconButton's :active scale). */
 .d-topbar .d-topbar__gear { transition: background var(--duration-turn), color var(--duration-turn), transform var(--duration-turn); }
-.d-topbar .d-topbar__gear:hover { transform: rotate(45deg); }
+.d-topbar .d-topbar__gear:hover, .d-topbar .d-topbar__gear:hover:active:not(:disabled) { transform: rotate(45deg); }
+.d-topbar .d-topbar__bell .d-icon-button:active:not(:disabled) { transform: none; }

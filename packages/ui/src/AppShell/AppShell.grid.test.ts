@@ -19,10 +19,18 @@ describe('AppShell grid areas', () => {
   it('the panel wrapper is the panel area', () => {
     expect(shell).toMatch(/\.d-app-shell__panel \{[^}]*grid-area: panel;/);
   });
-  it('the aside is the fourth column, 232 (members) or 340 (thread) unless dragged, under the top bar', () => {
-    expect(base).toMatch(/\.d-app-shell__grid--aside \{[^}]*var\(--d-aside-w, var\(--members-w\)\);[^}]*grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside";/);
-    expect(base).toMatch(/\.d-app-shell__grid--aside\[data-aside="thread"\] \{[^}]*var\(--d-aside-w, var\(--thread-w\)\);/);
+  it('the aside is the fourth (auto) column and sets its own width: 232 (members) or 340 (thread) unless dragged', () => {
+    expect(base).toMatch(/\.d-app-shell__grid--aside \{[^}]*minmax\(0, 1fr\) auto;[^}]*grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside";/);
+    expect(base).toMatch(/\.d-app-shell \.d-app-shell__aside \{[^}]*--d-aside-open: var\(--d-aside-w, var\(--members-w\)\);[^}]*width: var\(--d-aside-open\);/);
+    expect(base).toMatch(/\[data-aside="thread"\] > \.d-app-shell__aside \{ --d-aside-open: var\(--d-aside-w, var\(--thread-w\)\); \}/);
     expect(base).not.toMatch(/d-app-shell__status/);
+  });
+  it('the column aside animates its width over --duration-aside with --ease-out; its body keeps the open width', () => {
+    expect(base).toMatch(/\.d-app-shell \.d-app-shell__aside \{[^}]*transition: width var\(--duration-aside\) var\(--ease-out\)/);
+    expect(base).toMatch(/\.d-app-shell__aside\[data-open="false"\] \{[^}]*width: 0; border-left-width: 0; visibility: hidden;[^}]*visibility 0s linear var\(--duration-aside\);/);
+    expect(base).toMatch(/@starting-style \{ \.d-app-shell \.d-app-shell__aside\[data-open="true"\] \{ width: 0; border-left-width: 0; \} \}/);
+    expect(base).toMatch(/\.d-app-shell__aside > \.d-app-shell__aside-body \{[^}]*width: calc\(var\(--d-aside-open\) - 1px\);/);
+    expect(base).toContain('.d-app-shell[data-resizing] .d-app-shell__aside { transition: none; }');
   });
   it('the aside is drawn on bg-2', () => {
     expect(shell).toMatch(/\.d-app-shell__aside \{[^}]*background: var\(--bg-2\);/);

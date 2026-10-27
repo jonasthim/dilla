@@ -16,6 +16,39 @@ function boundarySelector(id: string): string | null {
   return null;
 }
 
+/** README §5.1: the column aside's settled width (members 232, thread 340, closed 0). */
+const ASIDE_STORIES: Record<string, number> = {
+  'shell-appshell--aside-wide': 232, 'shell-appshell--frame-members': 232, 'shell-appshell--aside-thread': 340,
+  'shell-appshell--aside-closed': 0, 'shell-appshell--frame-members-closed': 0,
+};
+async function checkAside(page: Page, context: StoryContext, want: number): Promise<void> {
+  // Let the width transition settle (the runner already waited for finite animations; this is the belt to that).
+  await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== 'running' || a.effect?.getTiming().iterations === Infinity), undefined, { timeout: 5_000 }).catch(() => {});
+  const got = await page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#storybook-root .d-app-shell__aside');
+    if (el === null) return null;
+    const control = el.querySelector<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])');
+    control?.focus();
+    return {
+      width: Math.round(el.getBoundingClientRect().width * 10) / 10, visibility: getComputedStyle(el).visibility, inert: el.inert,
+      bodyWidth: Math.round((el.querySelector('.d-app-shell__aside-body')?.getBoundingClientRect().width ?? 0) * 10) / 10,
+      focused: control !== null && document.activeElement === control,
+    };
+  });
+  const name = `${context.title} / ${context.name}`;
+  if (got === null) throw new Error(`${name}: no aside`);
+  if (Math.abs(got.width - want) > 0.5) throw new Error(`${name}: the aside is ${String(got.width)} wide, want ${String(want)}`);
+  if (want === 0) {
+    if (got.visibility !== 'hidden' || !got.inert) throw new Error(`${name}: the closed aside is ${got.visibility} and inert=${String(got.inert)}`);
+    if (got.focused) throw new Error(`${name}: a control in the closed aside takes focus`);
+  } else {
+    if (got.visibility !== 'visible' || got.inert) throw new Error(`${name}: the open aside is ${got.visibility} and inert=${String(got.inert)}`);
+    // The body is the open width less the 1px hairline, whatever the column is doing.
+    if (Math.abs(got.bodyWidth - (want - 1)) > 0.5) throw new Error(`${name}: the aside body is ${String(got.bodyWidth)} wide, want ${String(want - 1)}`);
+    await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+  }
+}
+
 /** The top bar's geometry (README §5.2, the prototype's inline sizes), in CSS px at a 16px root. */
 async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
   const got = await page.evaluate(() => {
@@ -44,6 +77,21 @@ async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
   else if (got.chip !== null) bad.push('a voice chip outside a call');
   if (context.id.endsWith('--reminders-due')) want('the due badge', got.badge, 14, 14);
   else if (got.badge !== null) bad.push('a due badge with nothing due');
+  // The gear keeps its 45° hover turn while pressed (the prototype has no press state).
+  if (context.id === 'shell-topbar--default') {
+    await page.hover('#storybook-root .d-topbar__gear');
+    await page.mouse.down();
+    await page.waitForTimeout(300);
+    const turn = await page.evaluate(() => {
+      const el = document.querySelector('#storybook-root .d-topbar__gear');
+      return el === null ? '' : getComputedStyle(el).transform;
+    });
+    await page.mouse.up();
+    await page.mouse.move(0, 0);
+    // rotate(45deg) is matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0); a scale would shrink the terms.
+    const m = /^matrix\(([-\d.]+), ([-\d.]+)/.exec(turn);
+    if (m === null || Math.abs(Number(m[1]) - Math.SQRT1_2) > 0.01 || Math.abs(Number(m[2]) - Math.SQRT1_2) > 0.01) bad.push(`the pressed gear's transform is ${turn}, want rotate(45deg)`);
+  }
   if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
 }
 
@@ -73,6 +121,8 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       }
     }
     if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
+    const asideWant = ASIDE_STORIES[context.id];
+    if (asideWant !== undefined) await checkAside(page, context, asideWant);
     // A container focused only by script, an opened dialog, draws no ring: around the whole dialog it reads
     // as an error box (design ruling 23(h), A11Y-DESIGN-11). Its operable controls keep the ring (below).
     const dialogRing = await page.evaluate(() => {

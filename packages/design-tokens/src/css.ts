@@ -33,7 +33,7 @@ function structuralDecls(): string {
 }
 
 /** Durations zeroed under reduced motion; `meter` is a live level readout, never zeroed. One list for the media query and `data-motion`. */
-const REDUCED = ['toggle', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'pop', 'turn', 'toast', 'pulse', 'caret', 'flash'];
+const REDUCED = ['toggle', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'pop', 'turn', 'aside', 'bar', 'toast', 'pulse', 'caret', 'flash'];
 
 export function renderCss(): string {
   const reduced = REDUCED.map(k => `    --duration-${k}: 0ms;`).join('\n');

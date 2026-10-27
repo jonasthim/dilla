@@ -188,6 +188,35 @@ export function AppShell({
   }, [phoneLayout]);
   const overlay = showAside && narrow;
 
+  // Signal (README §5.1): on a desktop the column aside animates its width 0 <-> 232/340. A closed aside whose content is still
+  // given stays mounted at width 0; when the content goes with the close, the last content is kept until the width transition
+  // ends. Closed, it is inert and (after the transition) visibility: hidden, so it is neither read nor focusable. The overlay
+  // drawer (narrow) and the phone are unchanged: they render only while open.
+  const lastAside = useRef<{ node: ReactNode; kind: 'members' | 'thread'; label?: string } | null>(null);
+  const hasAsideContent = aside !== undefined && aside !== null && aside !== false;
+  if (hasAsideContent) lastAside.current = { node: aside, kind: asideKind, label: asideLabel };
+  const [closing, setClosing] = useState(false);
+  const wasShown = useRef(showAside);
+  useLayoutEffect(() => {
+    if (wasShown.current && !showAside && !narrowRef.current && layout !== 'phone') setClosing(true);
+    if (showAside) setClosing(false);
+    wasShown.current = showAside;
+  }, [showAside, layout]);
+  const closedAside = layout !== 'phone' && !narrow && !showAside && (hasAsideContent || (closing && lastAside.current !== null));
+  const asideMounted = showAside || closedAside;
+  const asideNode = hasAsideContent ? aside : lastAside.current?.node;
+  const shownKind = hasAsideContent ? asideKind : lastAside.current?.kind ?? asideKind;
+  useEffect(() => {
+    if (!closing || showAside) return;
+    const el = asideRef.current;
+    const done = () => setClosing(false);
+    const onEnd = (e: TransitionEvent) => { if (e.target === el && e.propertyName === 'width') done(); };
+    el?.addEventListener('transitionend', onEnd);
+    // A zero duration (reduced motion) fires no transitionend.
+    const fallback = setTimeout(done, 600);
+    return () => { el?.removeEventListener('transitionend', onEnd); clearTimeout(fallback); };
+  }, [closing, showAside]);
+
   // web3.8 splitters: desktop only, and only when the app named them.
   const resizable = layout !== 'phone' && resizeLabels !== undefined;
   const columnAside = showAside && !narrow;
@@ -404,7 +433,7 @@ export function AppShell({
   return (
     <div ref={rootRef} className="d-app-shell" style={paneVars} data-resizing={drag !== null ? 'true' : undefined} data-main-narrow={mainNarrow ? 'true' : undefined}>
       <a className="d-app-shell__skip" href={`#${mainId}`} onClick={onSkip}>{skipLabel}</a>
-      <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'} data-aside={showAside && asideKind === 'thread' ? 'thread' : undefined}>
+      <div className={asideMounted ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'} data-aside={asideMounted && shownKind === 'thread' ? 'thread' : undefined}>
         {hasTopBar ? <div className="d-app-shell__topbar" inert={overlay || undefined}>{topBar}</div> : null}
         {hasBanner ? <div className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
         <div ref={railRef} className="d-app-shell__rail" inert={overlay || undefined}>{rail}</div>
@@ -418,14 +447,16 @@ export function AppShell({
           {composer}
         </main>
         {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
-        {showAside ? <aside ref={asideRef} id={resizable ? asideId : undefined} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside" data-resizable={resizable && columnAside ? 'true' : undefined} inert={covered === true || undefined}>
+        {asideMounted ? <aside ref={asideRef} id={resizable ? asideId : undefined} aria-label={showAside ? asideLabel : lastAside.current?.label ?? asideLabel} tabIndex={-1} className="d-app-shell__aside"
+          data-open={showAside ? 'true' : 'false'} data-resizable={resizable && columnAside ? 'true' : undefined} inert={covered === true || !showAside || undefined}>
           {resizable && columnAside ? splitter('aside', asideId) : null}
           {overlay && asideCloseLabel !== undefined ? (
             <div className="d-app-shell__aside-head">
               <Button variant="ghost" size="sm" onClick={() => onAsideClose?.()}>{asideCloseLabel}</Button>
             </div>
           ) : null}
-          {resizable ? <div className="d-app-shell__aside-body">{aside}</div> : aside}
+          {/* The body keeps the open width while the column animates, so its text never reflows. */}
+          <div className="d-app-shell__aside-body">{asideNode}</div>
         </aside> : null}
       </div>
     </div>

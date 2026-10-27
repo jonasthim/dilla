@@ -45,6 +45,10 @@ describe('renderCss', () => {
     expect(css).toMatch(/--text-badge: 0\.5625rem;/);
     expect(css).toContain('--duration-pop: 400ms;');
     expect(css).toContain('--duration-turn: 200ms;');
+    expect(css).toContain('--duration-aside: 280ms;');
+    expect(css).toContain('--duration-bar: 600ms;');
+    expect(css).toMatch(/\[data-motion="reduced"\]\s*{[^}]*--duration-aside: 0ms;[^}]*--duration-bar: 0ms;/);
+    expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-aside: 0ms;[\s\S]*--duration-bar: 0ms;/);
     expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-pop: 0ms;[\s\S]*--duration-turn: 0ms;/);
     expect(css).toMatch(/\[data-motion="reduced"\]\s*{[^}]*--duration-pop: 0ms;[^}]*--duration-turn: 0ms;/);
   });

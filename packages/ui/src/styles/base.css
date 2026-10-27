@@ -116,9 +116,27 @@
 /* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
 @container d-shell (min-width: 64rem) {
-  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--members-w)); grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside"; }
-  .d-app-shell .d-app-shell__grid--aside[data-aside="thread"] { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--thread-w)); }
-  .d-app-shell .d-app-shell__aside { position: relative; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
+  /* Signal (README §5.1): the aside's column is `auto`; the aside sets its own width, 232 (members) or 340 (thread) unless
+     dragged, and animates it from and to 0 over --duration-aside. Its body keeps the open width, so text never reflows. */
+  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) auto; grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside"; }
+  .d-app-shell .d-app-shell__aside {
+    --d-aside-open: var(--d-aside-w, var(--members-w));
+    position: relative; grid-area: aside; box-sizing: border-box; display: flex; flex-direction: column; width: var(--d-aside-open); min-height: 0; min-width: 0;
+    z-index: auto; box-shadow: none; overflow: hidden;
+    transition: width var(--duration-aside) var(--ease-out), border-left-width var(--duration-aside) var(--ease-out), visibility 0s;
+  }
+  .d-app-shell .d-app-shell__grid--aside[data-aside="thread"] > .d-app-shell__aside { --d-aside-open: var(--d-aside-w, var(--thread-w)); }
+  .d-app-shell .d-app-shell__aside > .d-app-shell__aside-body { flex: 1; flex-shrink: 0; width: calc(var(--d-aside-open) - 1px); min-height: 0; overflow-y: auto; }
+  /* With a splitter the aside lets it hang 12px over its left edge; the clip still cuts the body on the right while it animates. */
+  .d-app-shell .d-app-shell__aside[data-resizable] { overflow: visible; clip-path: inset(0 0 0 -12px); }
+  /* Closed: 0 wide, and hidden once the width has gone (inert from the start), so it is neither read nor focusable. */
+  .d-app-shell .d-app-shell__aside[data-open="false"] {
+    width: 0; border-left-width: 0; visibility: hidden;
+    transition: width var(--duration-aside) var(--ease-out), border-left-width var(--duration-aside) var(--ease-out), visibility 0s linear var(--duration-aside);
+  }
+  @starting-style { .d-app-shell .d-app-shell__aside[data-open="true"] { width: 0; border-left-width: 0; } }
+  /* A drag follows the pointer, not the animation. */
+  .d-app-shell[data-resizing] .d-app-shell__aside { transition: none; }
 }
 /* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */
 .d-root .d-app-shell__aside[tabindex="-1"]:focus-visible { outline: none; }
