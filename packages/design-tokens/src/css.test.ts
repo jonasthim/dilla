@@ -19,6 +19,11 @@ describe('renderCss', () => {
     expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--link-underline:\s*1;/);
     expect(css.toLowerCase()).not.toContain('mesh');
   });
+  it('emits --knob: white on signal and light, black on high-contrast (the toggle knob)', () => {
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--knob:\s*#FFFFFF;/);
+    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--knob:\s*#FFFFFF;/);
+    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--knob:\s*#000000;/);
+  });
   it('follows the OS light setting only when no theme is chosen', () => {
     expect(css).toMatch(/@media \(prefers-color-scheme: light\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#F5F6F5;[^}]*--accent:\s*#005799;/);
   });

@@ -10,6 +10,33 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const PROTOTYPE = path.resolve(HERE, '../prototype/Dilla Signal Prototype.dc.html');
 export const DEFAULT_GLOBALS = 'theme:signal;motion:reduced';
 const SETTLE_MS = 600;
+export const CLIP_PAD = 8;
+export const SCALE = 2;
+const REPO = path.resolve(HERE, '../../../..');
+
+/** A clip box grown by `pad` on every side, kept inside the page (x/y >= 0). Pure. */
+export function padClip(box, pad = CLIP_PAD) {
+  const x = Math.max(0, box.x - pad), y = Math.max(0, box.y - pad);
+  return { x, y, width: box.width + (box.x - x) + pad, height: box.height + (box.y - y) + pad };
+}
+
+/**
+ * CSS that stands in for the prototype's Google Fonts stylesheet: the same two families, from the repo's own font
+ * files (inlined as data: URIs, since a https-served sheet may not point at file: URLs). `read` is injectable for tests.
+ */
+export function localFontCss(read = f => fs.readFileSync(path.join(REPO, 'node_modules', f)).toString('base64')) {
+  const face = (family, style, weight, file) => `@font-face{font-family:'${family}';font-style:${style};font-weight:${weight};font-display:block;src:url(data:font/woff2;base64,${read(file)}) format('woff2')}`;
+  return [
+    face('JetBrains Mono', 'normal', '400 700', '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'),
+    face('DM Serif Display', 'italic', '400', '@fontsource/dm-serif-display/files/dm-serif-display-latin-400-italic.woff2'),
+  ].join('\n');
+}
+
+async function routeFonts(page) {
+  const css = localFontCss();
+  await page.route(/^https:\/\/fonts\.googleapis\.com\//, r => r.fulfill({ status: 200, contentType: 'text/css', body: css }));
+  await page.route(/^https:\/\/fonts\.gstatic\.com\//, r => r.abort());
+}
 
 const isObject = v => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -94,14 +121,20 @@ async function runSteps(page, steps) {
 }
 
 async function capture(page, out, clip) {
-  if (clip) await page.locator(clip).first().screenshot({ path: out });
-  else await page.screenshot({ path: out });
+  if (clip) {
+    const loc = page.locator(clip).first();
+    await loc.scrollIntoViewIfNeeded();
+    const box = await loc.boundingBox();
+    if (!box) throw new Error(`clip ${clip}: no box`);
+    await page.screenshot({ path: out, clip: padClip(box), fullPage: true });
+  } else await page.screenshot({ path: out });
 }
 
 async function shootPrototype(browser, pair, out) {
-  const context = await browser.newContext({ viewport: pair.viewport, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ viewport: pair.viewport, reducedMotion: 'reduce', deviceScaleFactor: SCALE });
   try {
     const page = await context.newPage();
+    await routeFonts(page);
     await page.addInitScript(installPropsInjection, pair.prototype.props ?? {});
     await page.goto(pathToFileURL(PROTOTYPE).href, { waitUntil: 'load' });
     await settle(page);
@@ -111,7 +144,7 @@ async function shootPrototype(browser, pair, out) {
 }
 
 async function shootStory(browser, pair, base, out) {
-  const context = await browser.newContext({ viewport: pair.viewport, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ viewport: pair.viewport, reducedMotion: 'reduce', deviceScaleFactor: SCALE });
   try {
     const page = await context.newPage();
     const response = await page.goto(storyUrl(base, pair.story), { waitUntil: 'load' });

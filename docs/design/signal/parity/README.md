@@ -46,8 +46,11 @@ A spec is a JSON array of pairs:
 - `clip` (either side) crops to the first element matching the selector; without it the whole viewport is shot.
 - `story.id` is the Storybook story id (`<title-slug>--<story-slug>`, see `storybook-static/index.json`).
   `story.globals` defaults to `theme:signal;motion:reduced`.
-- Both sides run with `prefers-reduced-motion: reduce`, wait for `document.fonts.ready` and 600 ms. The prototype's
-  fonts come from Google Fonts, so the machine needs network access for a faithful type comparison.
+- Both sides run with `prefers-reduced-motion: reduce` at deviceScaleFactor 2, wait for `document.fonts.ready` and 600 ms.
+  The prototype's Google Fonts requests are intercepted and answered with `@font-face` rules built from the repo's own
+  `@fontsource-variable/jetbrains-mono` and `@fontsource/dm-serif-display` files, so no network is needed and both sides
+  use the same font files.
+- A `clip` crop gets 8px of padding on every side (both frames), so edges, rings and shadows are visible.
 
 ## The rule
 

@@ -4,4 +4,4 @@
 .d-avatar[data-size="xs"] { width: 1.5rem /* 24px */; height: 1.5rem /* 24px */; font-size: 0.5625rem /* 9px */; }
 .d-avatar[data-size="row"] { width: 2rem /* 32px */; height: 2rem /* 32px */; font-size: var(--text-xs); }
 .d-avatar[data-size="lg"] { width: 4rem /* 64px */; height: 4rem /* 64px */; font-size: var(--text-lg); }
-.d-avatar__presence { position: absolute; right: -4px; bottom: -4px; width: 0.75rem /* 12px */; height: 0.75rem /* 12px */; border-radius: var(--r-pill); display: flex; align-items: center; justify-content: center; background: var(--bg-2); }
+.d-avatar__presence { position: absolute; right: -3px; bottom: -3px; width: 0.8125rem /* 13px */; height: 0.8125rem /* 13px */; border-radius: var(--r-pill); display: flex; align-items: center; justify-content: center; background: var(--bg-2); }

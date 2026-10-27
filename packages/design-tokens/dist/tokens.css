@@ -38,6 +38,7 @@
   --danger-ink: #1A0606;
   --warn-soft: rgba(255,209,106,0.05);
   --scrim: rgba(3,4,6,0.6);
+  --knob: #FFFFFF;
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
@@ -141,6 +142,7 @@
   --danger-ink: #1A0606;
   --warn-soft: rgba(255,209,106,0.05);
   --scrim: rgba(3,4,6,0.6);
+  --knob: #FFFFFF;
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -183,6 +185,7 @@
   --danger-ink: #FFFFFF;
   --warn-soft: rgba(138,90,0,0.05);
   --scrim: rgba(0,0,0,0.4);
+  --knob: #FFFFFF;
   --link-underline: 0;
   color-scheme: light;
 }
@@ -225,6 +228,7 @@
   --danger-ink: #000000;
   --warn-soft: rgba(255,224,138,0.05);
   --scrim: rgba(0,0,0,0.7);
+  --knob: #000000;
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -268,6 +272,7 @@
     --danger-ink: #FFFFFF;
     --warn-soft: rgba(138,90,0,0.05);
     --scrim: rgba(0,0,0,0.4);
+    --knob: #FFFFFF;
     --link-underline: 0;
     color-scheme: light;
   }
@@ -312,6 +317,7 @@
     --danger-ink: #000000;
     --warn-soft: rgba(255,224,138,0.05);
     --scrim: rgba(0,0,0,0.7);
+    --knob: #000000;
     --link-underline: 1;
     color-scheme: dark;
   }
