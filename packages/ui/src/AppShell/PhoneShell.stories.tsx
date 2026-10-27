@@ -20,6 +20,9 @@ import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { RingBanner } from '../RingBanner/RingBanner.tsx';
 import { ThreadPane } from '../ThreadPane/ThreadPane.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
+import { GeneralLog, SignalComposer } from '../MessageRow/conversation.fixture.tsx';
+import { Tooltip } from '../Tooltip/Tooltip.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
@@ -325,4 +328,17 @@ export const RingOverThreadSheet: Story = {
         asideLabel="thread" asideOpen onAsideClose={noop}>{log}</AppShell>
     </Phone>
   ),
+};
+
+// Task 7: the phone conversation as the web composes it in Signal: the phone channel header (Threads, Members, search; Ruling U),
+// the #general feed and the composer (packages/web/src/screens/Shell.tsx, MessageItem.tsx, ComposerArea.tsx).
+const signalPhoneHeader = <ChannelHeader name="general" topic="raids, plans and the bridge troll" phone={{ backLabel: 'back to channels', onBack: noop, menu: <>
+  <Button variant="ghost" mark={false} aria-label="Threads" pressed={false}><Icon name="messages-square" size={14} /></Button>
+  <Tooltip label="Members"><Button variant="ghost" mark={false} aria-label="Members, 6"><Icon name="users" size={14} /><span aria-hidden="true">6</span></Button></Tooltip>
+  <IconButton icon="search" size={28} label="search" />
+</> }} />;
+export const SignalConversation: Story = {
+  globals: { theme: 'signal' },
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
+    header={signalPhoneHeader} composer={<SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}><GeneralLog /></AppShell></Phone>,
 };

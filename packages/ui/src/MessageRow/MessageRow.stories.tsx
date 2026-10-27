@@ -154,7 +154,7 @@ export const SignalReplyFlash: Story = { ...signal, render: () => <Row author="A
 export const SignalReactions: Story = { ...signal, render: () => <Row author="Björn" time="20:27" body="in. last time the bridge troll took everything we had" forceHover
   reactions={rowReactions([{ emoji: '🛡️', count: 3, mine: true, name: 'shield' }, { emoji: '🔥', count: 1, mine: false, name: 'fire' }])} /> };
 export const SignalThread: Story = { ...signal, render: () => <Row author="Björn" time="20:27" body="in. last time the bridge troll took everything we had"
-  thread={{ label: '2 replies', onOpen: () => {} }} /> };
+  thread={{ label: '2 replies', last: 'last 20:33', onOpen: () => {} }} /> };
 export const SignalCodeBlockYaml: Story = { ...signal, render: () => <Row author="Björn" time="20:29" body={yamlBody} /> };
 export const SignalCodeBlockJson: Story = { ...signal, render: () => <Row author="Björn" time="20:29"
   body={[{ kind: 'text', text: 'same thing for the bot:' }, { kind: 'codeblock', lang: 'json', text: RAID_JSON }]} /> };

@@ -155,7 +155,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     pinnedLabel={item.pinned ? t('shell.message.pinned') : undefined} seq={item.seq} msgId={item.msgId}
     reply={replyProps} toolbar={toolbar} pendingAction={pendingAction}
     thread={openThread !== undefined && item.thread !== null ? { label: item.thread.count === 1 ? t('thread.summary.one') : t('thread.summary.other', { count: item.thread.count }),
-      onOpen: () => openThread(item.msgId!) } : undefined}
+      last: t('thread.summary.last', { time: formatTime(item.thread.lastTs) }), onOpen: () => openThread(item.msgId!) } : undefined}
     editor={p.editing !== null ? <MessageEditor label={t('shell.edit.label')} value={p.editing} onChange={v => p.onEditChange(v)}
       onSave={v => p.onEditSave(v)} onCancel={() => p.onEditCancel()} hint={t('shell.edit.hint')} saveLabel={t('shell.edit.save')}
       cancelLabel={t('shell.edit.cancel')} maxLength={4000} measure={v => p.editMeasure(v)}

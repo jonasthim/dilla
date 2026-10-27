@@ -10,7 +10,7 @@
 .d-message-log__welcome { margin-top: auto; padding: 1rem 1.25rem 1.125rem /* 16px 20px 18px */; }
 .d-message-log__welcome + .d-message-log__rows, .d-message-log__welcome ~ .d-message-log__rows { margin-top: 0; }
 .d-message-log__welcome + .d-message-log__empty { margin: 0; padding: 0 1.25rem 0.5rem; text-align: left; }
-.d-message-log__welcome-tile { width: 2.5rem; height: 2.5rem; box-sizing: border-box; border-radius: var(--r-lg); background: var(--surface-tile); border: 1px solid var(--hairline-2); color: var(--accent); display: flex; align-items: center; justify-content: center; }
+.d-message-log__welcome-tile { width: 2.5rem; height: 2.5rem; box-sizing: content-box; /* the prototype's 40px plus its border */ border-radius: var(--r-lg); background: var(--surface-tile); border: 1px solid var(--hairline-2); color: var(--accent); display: flex; align-items: center; justify-content: center; }
 .d-message-log__welcome-title { margin: 0.625rem 0 0; font-size: var(--text-welcome); font-weight: var(--weight-display); color: var(--fg); }
 .d-message-log__welcome-body { margin: 0; font-size: var(--text-ui); color: var(--fg-2); }
 /* A day divider: "TODAY" 10px/600, tracking 0.12em, uppercase, fg-3 (the prototype's #767D89), then a hairline. */

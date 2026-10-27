@@ -77,6 +77,7 @@ Polite, through `useAnnouncer`: `slow.queued` when a send is queued behind slow 
 - `thread.open='reply in thread'`
 - `thread.summary.one='1 reply'`
 - `thread.summary.other='{count} replies'`
+- `thread.summary.last='last {time}'` (Signal task 7: after the count, seen only)
 - `thread.title='Thread'`
 - `thread.close='close thread'`
 - `thread.composer='reply in thread'`

@@ -50,7 +50,7 @@ export interface MessageRowProps {
   card?: ReactNode;
   reactions?: ReactNode;
   /** A public thread's summary under the body: a chip button named by `label` ("2 replies") that opens it. */
-  thread?: { label: string; onOpen(): void };
+  thread?: { label: string; onOpen(): void; /** "last 20:33" after the count (README §5.5), seen only: the name stays the count. */ last?: string };
   toolbar?: ReactNode;
   editor?: ReactNode;
   pendingAction?: { label: string; tone: 'pending' | 'failed'; actions?: readonly { label: string; onAction(): void }[] };
@@ -265,6 +265,7 @@ export function MessageRow({
           <button type="button" className="d-message-row__thread" tabIndex={tabIndex}
             onPointerDown={e => e.preventDefault()} onClick={() => thread.onOpen()}>
             <Icon name="messages-square" size={12} />{thread.label}
+            {thread.last !== undefined ? <span className="d-message-row__thread-last" aria-hidden="true"> · {thread.last}</span> : null}
           </button>
         ) : null}
         {pendingAction !== undefined ? (

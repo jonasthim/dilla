@@ -51,7 +51,7 @@ export function GeneralLog({ welcome = true }: { welcome?: boolean }) {
       <Row author="Ada" time="20:27" body="raid tonight at 20:00? bring the good shields" nameColor={0xE9B6EC} />
       <Row author="Björn" time="20:27" body="in. last time the bridge troll took everything we had"
         reactions={rowReactions([{ emoji: '🛡️', count: 2, mine: false, name: 'shield' }, { emoji: '🔥', count: 1, mine: false, name: 'fire' }])}
-        thread={{ label: '2 replies', onOpen: noop }} />
+        thread={{ label: '2 replies', last: 'last 20:33', onOpen: noop }} />
       <Row author="Mira" time="20:28" own body={'I’m in too. Packing list:\nrope\ntorches\nsnacks for Björn'} />
       <Row author="Ada" time="20:29" body="the map from saturday is in #loot, the one with the coffee stain" nameColor={0xE9B6EC} />
       <Row author="Ada" time="20:29" grouped body="see you at the bridge" nameColor={0xE9B6EC} />
