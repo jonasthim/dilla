@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openRowMenu } from '../test/row-menu.ts';
+import * as ClientCore from '@dilla/client-core';
+import type { BotUtilities, ReminderSummary } from '@dilla/client-core';
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
@@ -765,6 +767,40 @@ describe('search on a touch tablet, focus return and a server that did not load 
     const menu = await screen.findByRole('button', { name: t('admin.open') });
     expect(within(menu.closest('.d-channel-list__head') as HTMLElement).getAllByRole('button')).toEqual([menu]);
   });
+});
+
+// Task 6b fix round 2: a due reminder is an Activity row; a tap opens the reminders sheet (the popover's sheet layout) with it.
+it('opens the reminders sheet from a due reminder\'s Activity row', async () => {
+  const due: ReminderSummary = { id: '01'.padStart(32, '0'), text: 'bring two ropes', dueUnixSeconds: 1_800_000_001n,
+    timezone: 'UTC', sourceChannelId: TEXT, sourceThreadId: null, state: 'due', revision: 1n };
+  vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({
+    capabilities: () => Promise.resolve({ version: 1, installationId: '44'.repeat(16), botUserId: '55'.repeat(16), supportedOperations: [3, 80, 81, 82, 83, 84] }),
+    reminderList: () => Promise.resolve({ items: [due], nextCursor: null }),
+  } as unknown as BotUtilities);
+  const { user } = phone({ path: '/activity' });
+  const row = await screen.findByRole('button', { name: /bring two ropes/ });
+  expect(row).toHaveTextContent(t('activity.reminder', { where: '#lobby' }));
+  await user.click(row);
+  const sheet = await screen.findByRole('dialog', { name: 'Reminders' });
+  expect(sheet).toHaveAttribute('data-layout', 'sheet');
+  expect(within(sheet).getByRole('tab', { name: /^Due 1/ })).toHaveAttribute('aria-selected', 'true');
+  expect(within(sheet).getByText('bring two ropes')).toBeInTheDocument();
+  expect(within(sheet).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
+  expect(row).toHaveFocus();
+});
+
+// Ruling AE: the phone's home lists end in the prototype's user panel (above the tab bar), the desktop's panel and data.
+it('shows the user panel under the phone\'s server and DM lists, not on Activity or You', async () => {
+  const { user } = phone({ path: `/c/${A}` });
+  await screen.findByRole('button', { name: t('admin.open') });
+  const panel = document.querySelector('.dw-sidebar .d-user-panel');
+  expect(panel).not.toBeNull();
+  expect(within(panel as HTMLElement).getByRole('toolbar', { name: 'your account' })).toBeInTheDocument();
+  await user.click(screen.getByRole('link', { name: new RegExp(`^${t('nav.tab.activity')}`) }));
+  await screen.findByRole('heading', { level: 2, name: t('activity.title') });
+  expect(document.querySelector('.d-user-panel')).toBeNull();
 });
 
 // Ruling X / Jonas 2026-10-27: no "Reminders" button in any phone header or list head; a due reminder is a row on the Activity

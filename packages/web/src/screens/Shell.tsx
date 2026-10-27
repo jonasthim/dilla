@@ -1218,6 +1218,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           { text: t('voice.count', { n: inVoiceHere }) },
         ] })}
         content={content} />
+      {/* Ruling AE (Jonas 2026-10-27): the phone's home lists end in the prototype's user panel, above the tab bar, as the desktop's
+          sidebar does (the same panel, the same data). */}
+      {phone && self !== null ? <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
+        ptt={settings?.['voice.mode'] === 'ptt' ? { held: call.state?.speaking === true } : false} /> : null}
     </div>);
   }
 

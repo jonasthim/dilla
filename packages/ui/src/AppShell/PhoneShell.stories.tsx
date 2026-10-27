@@ -19,6 +19,7 @@ import { CallBar } from '../CallBar/CallBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { RingBanner } from '../RingBanner/RingBanner.tsx';
 import { ThreadPane } from '../ThreadPane/ThreadPane.tsx';
+import { UserPanel } from '../UserPanel/UserPanel.tsx';
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
@@ -215,7 +216,14 @@ const signalChannels = (
 );
 export const SignalServersList: Story = {
   globals: { theme: 'signal' },
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={signalChannels} tabBar={tabBar('servers')}>{null}</AppShell></Phone>,
+  // Ruling AE: the list ends in the user panel above the tab bar, as the web's phone sidebar does (packages/web/src/screens/Shell.tsx).
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} tabBar={tabBar('servers')}
+    sidebar={<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}><div style={{ flex: '1 1 auto', minHeight: 0 }}>{signalChannels}</div>
+      <UserPanel name="Mira" username="mira" line="online" muted={false} deafened={false} onMute={noop} onDeafen={noop}
+        labels={{ region: 'your account', mute: 'mute', deafen: 'deafen' }} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
+        status={{ current: 'online', label: 'your status: online', onChoose: noop,
+          items: [{ id: 'online', label: 'online' }, { id: 'idle', label: 'idle' }, { id: 'dnd', label: 'do not disturb' }, { id: 'invisible', label: 'invisible' }] }} />
+    </div>}>{null}</AppShell></Phone>,
 };
 export const ChannelView: Story = {
   render: () => (

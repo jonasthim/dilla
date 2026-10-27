@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { ComposedShell, fixtureTopBar } from './AppShell.fixture.tsx';
+import { ComposedShell, fixtureTopBar, SignalShell } from './AppShell.fixture.tsx';
 import { TopBar } from '../TopBar/TopBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
@@ -194,15 +194,16 @@ const topBar = (p: { voice?: boolean; due?: number }) => (
 );
 export const Frame: Story = {
   parameters: { layout: 'fullscreen' },
-  render: () => <div style={frame}><ComposedShell shell={{ topBar: topBar({}), bottom: userPanel }} /></div>,
+  // Task 6b fix round 2 (rule 3d): the frame as packages/web composes it in Signal (SignalShell), not the older composition.
+  render: () => <div style={frame}><SignalShell shell={{ topBar: topBar({}) }} /></div>,
 };
 export const FrameMembers: Story = {
   parameters: { layout: 'fullscreen' },
-  render: () => <div style={frame}><ComposedShell shell={{ ...withAside, topBar: topBar({}), bottom: userPanel }} /></div>,
+  render: () => <div style={frame}><SignalShell shell={{ ...withAside, topBar: topBar({}) }} /></div>,
 };
 export const FrameMembersClosed: Story = {
   parameters: { layout: 'fullscreen' },
-  render: () => <div style={frame}><ComposedShell shell={{ ...withAside, asideOpen: false, topBar: topBar({}), bottom: userPanel }} /></div>,
+  render: () => <div style={frame}><SignalShell shell={{ ...withAside, asideOpen: false, topBar: topBar({}) }} /></div>,
 };
 export const FrameInVoice: Story = {
   parameters: { layout: 'fullscreen' },

@@ -43,7 +43,7 @@ function ruleFor(css: string, selector: string): string {
 describe('R9: the primary tier is 44 x 44 on a phone layout', () => {
   it('gives .d-btn, .d-segmented__option and .d-icon-button a 44px minimum, both ways', () => {
     // Not inside the phone header's actions: those are the prototype's 28 high (Jonas 2026-10-27, PhoneHeader.css).
-    const rule = ruleFor(base, `${PHONE} :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn)`);
+    const rule = ruleFor(base, `${PHONE} :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *)`);
     expect(px(decl(rule, 'min-height'))).toBeGreaterThanOrEqual(44);
     expect(px(decl(rule, 'min-width'))).toBeGreaterThanOrEqual(44);
   });

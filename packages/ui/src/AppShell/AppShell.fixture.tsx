@@ -9,6 +9,10 @@ import { Composer } from '../Composer/Composer.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { TopBar } from '../TopBar/TopBar.tsx';
 import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
+import { Tooltip } from '../Tooltip/Tooltip.tsx';
+import { UserPanel } from '../UserPanel/UserPanel.tsx';
+import { MemberList } from '../MemberList/MemberList.tsx';
 
 const noop = () => {};
 
@@ -60,3 +64,65 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
     </AppShell>
   );
 }
+
+/**
+ * Task 6b fix round 2 (restyle rule 3d): the whole desktop frame composed the way packages/web/src/screens/Shell.tsx composes it
+ * in Signal: the rail with the @ home tile, the server list (the 26px ⌄ head, the stat line, categories, the voice rows, AFK),
+ * the channel header with Threads and Members (with the count, Ruling X), the user panel without a gear (its line under the
+ * name), and the members aside. The messages, the composer and the member list are later tasks' (7, 9) and the people are
+ * sample data (Task 11).
+ */
+export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
+  const [draft, setDraft] = useState('');
+  const membersOpen = shell?.asideOpen === true;
+  return (
+    <AppShell
+      skipLabel="skip to messages"
+      {...shell}
+      rail={<CommunityRail label="servers" activeId="a1" onSelect={noop}
+        home={{ label: 'direct messages', itemLabel: 'direct messages, unread 0, mentions 0', selected: false, unread: 0, mentions: 0, onSelect: noop }}
+        addLabel="add a server" onAdd={noop} itemLabel={itemLabel}
+        items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Valhalla Kitchen', unread: 2, mentions: 2 }]} />}
+      sidebar={<ChannelList label="channels" title="Midgard Crew" activeId="general" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
+        headerAction={<Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>}
+        stats={[{ text: '3 online', live: true }, { text: '5 in voice' }]} newLabel={n => `${n} new`}
+        categories={[{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }]} onToggleCategory={noop}
+        voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
+          state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting',
+            video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } },
+          rooms: { hv: { joined: false, participants: [] }, harbour: { joined: false, participants: [] }, afk: { joined: false, participants: [] } } }}
+        channels={[
+          { id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'hv', name: 'general', kind: 'voice', readable: false },
+          { id: 'loot', name: 'loot', kind: 'text', readable: false, parentId: 'raids', unread: 1 },
+          { id: 'harbour', name: 'harbour', kind: 'voice', readable: false, parentId: 'boats' }, { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true },
+        ]} />}
+      header={<ChannelHeader name="general" topic="raids, plans and the bridge troll" actions={<>
+        <Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={false}><Icon name="messages-square" size={14} />Threads</Button>
+        <Tooltip label="Members">
+          <Button variant="ghost" mark={false} data-members-toggle="" aria-label="Members, 6" pressed={membersOpen}><Icon name="users" size={14} /><span aria-hidden="true">6</span></Button>
+        </Tooltip>
+      </>} />}
+      bottom={<UserPanel name="Mira" username="mira" line="online" muted={false} deafened={false} onMute={noop} onDeafen={noop}
+        labels={{ region: 'your account', mute: 'mute', deafen: 'deafen' }} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
+        status={{ current: 'online', label: 'your status: online', onChoose: noop,
+          items: [{ id: 'online', label: 'online' }, { id: 'idle', label: 'idle' }, { id: 'dnd', label: 'do not disturb' }, { id: 'invisible', label: 'invisible' }] }} />}
+      composer={<Composer label="message #general" placeholder="Message #general" maxLength={4000} value={draft} onChange={setDraft}
+        onSend={() => setDraft('')} sendLabel="send" counterLabel={n => `${n} left`} />}
+      aside={shell?.aside === undefined ? undefined : (
+        <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
+          groups={[
+            { id: 'mods', kind: 'role', title: 'raid leads', members: [{ id: 'u1', name: 'Ada', isOwner: true, presence: 'online' }] },
+            { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Björn', presence: 'online' }, { id: 'u3', name: 'Kari', presence: 'online' }] },
+            { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u4', name: 'Ole', presence: 'offline' }] },
+          ]} />
+      )}
+    >
+      <MessageLog label="messages in #general" emptyLabel="No messages yet.">
+        <MessageRow author="Ada" time="20:27" body="raid tonight at 20:00? bring the good shields" state="ok" />
+        <MessageRow author="Björn" time="20:27" body="in. last time the bridge troll took everything we had" state="ok" />
+        <MessageRow author="Mira" time="20:28" body="count me in" state="ok" own />
+      </MessageLog>
+    </AppShell>
+  );
+}
+

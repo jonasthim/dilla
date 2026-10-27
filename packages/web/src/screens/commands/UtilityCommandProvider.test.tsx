@@ -256,7 +256,7 @@ describe('utility command provider', () => {
     const mounted = mount(f.client, null);
     await user.click(screen.getByRole('button', { name: /Reminders/ }));
     expect(screen.getByRole('tab', { name: /^Upcoming/ })).toHaveAttribute('aria-selected', 'true');
-    release({ items: [{ id: '01'.padStart(32, '0'), communityId: COMMUNITY, text: 'Due soon', createdAt: 1_800_000_000n, dueUnixSeconds: 1_800_000_001n,
+    release({ items: [{ id: '01'.padStart(32, '0'), text: 'Due soon', dueUnixSeconds: 1_800_000_001n,
       timezone: 'UTC', sourceChannelId: CHANNEL, sourceThreadId: null, state: 'due', revision: 1n }], nextCursor: null });
     expect(await screen.findByText('Due soon')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /^Due/ })).toHaveAttribute('aria-selected', 'true');
