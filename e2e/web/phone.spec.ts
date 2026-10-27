@@ -319,8 +319,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await reply.fill('svar');
       await reply.press('Enter');
       await expect(page.getByRole('complementary', { name: copy('thread.title') }).getByText('svar')).toBeVisible({ timeout: WAIT });
-      const box = await reply.boundingBox();
-      expect(box!.y + box!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThan(844 - 120);
+      // Task 7: the textarea sits in the Signal box's input row over its footer, so the composer (its form) is measured: it ends where
+      // the sheet does.
+      const box = await reply.locator('xpath=ancestor::form[1]').boundingBox();
+      const sheetBox = await page.getByRole('complementary', { name: copy('thread.title') }).boundingBox();
+      expect(box!.y + box!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThanOrEqual(sheetBox!.y + sheetBox!.height - 16);
       await page.goBack();
       await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
       await row.getByRole('button', { name: copy('thread.summary.one'), exact: true }).click();
@@ -676,7 +679,8 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
       await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
       const chip = row.getByRole('button', { name: copy('thread.summary.one'), exact: true });
       await expect(chip).toBeVisible({ timeout: WAIT });
-      await expectTapTargets(chip, 'the thread chip of a message at 844 x 390');
+      // Task 7 (rule 0, Jonas 2026-10-27): the thread chip is the prototype's 24px high on a phone too.
+      await expectPrototypeSize(chip, 'the thread chip of a message at 844 x 390', { h: 24 });
     });
 
     // A call needs a live SFU, which this host does not run, so this step does not measure a real call's controls. It puts
