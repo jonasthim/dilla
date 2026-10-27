@@ -191,7 +191,7 @@ const SIGNAL_VOICE = {
   },
 };
 const SIGNAL_ARGS = {
-  title: 'Midgard Crew', stats: ['3 online', '5 in voice'], activeId: 'general', newLabel: (n: string) => `${n} new`, voice: SIGNAL_VOICE,
+  title: 'Midgard Crew', stats: [{ text: '3 online', live: true }, { text: '5 in voice' }], activeId: 'general', newLabel: (n: string) => `${n} new`, voice: SIGNAL_VOICE,
   categories: [{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }], onToggleCategory: () => {},
   headerAction: <IconButton icon="chevron-down" size={28} label="server settings" />,
   channels: [

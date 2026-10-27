@@ -94,6 +94,9 @@
 `layout.rail.add='add a server'`
 `layout.row.new='{n} new'`
 `layout.sidebar.online='{n} online'`
+`layout.header.threads='Threads'`
+`layout.header.members='Members'`
+`layout.header.membersCount='Members, {n}'`
 `layout.add.title='add a server'`
 `layout.add.join='join a server'`
 `layout.add.create='new server'`

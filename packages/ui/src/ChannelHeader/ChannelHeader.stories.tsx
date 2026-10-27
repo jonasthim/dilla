@@ -3,6 +3,7 @@ import { ChannelHeader } from './ChannelHeader.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
+import { Tooltip } from '../Tooltip/Tooltip.tsx';
 
 // R27: pins, threads, search, edit channel and members as 32px toggles; pins and threads fold into the "⋯" menu below 36rem.
 const ACTIONS = (
@@ -175,13 +176,18 @@ export const NarrowMain: Story = {
 
 // Signal §5.5 (the prototype's header): Threads (icon and label) and Members (icon and count), 28px, radius 6px; the button
 // whose aside is open is --accent on --accent-soft.
+// The props the web passes (packages/web/src/screens/Shell.tsx, the channel header): Threads and Members, then the "⋯" menu
+// at every width with pins, search and edit channel (Ruling U).
 const signalActions = (open: 'threads' | 'members' | null) => (
   <>
-    <Button variant="ghost" mark={false} pressed={open === 'threads'} aria-label="threads"><Icon name="messages-square" size={14} />Threads</Button>
-    <Button variant="ghost" mark={false} pressed={open === 'members'} aria-label="members, 6"><Icon name="users" size={14} />6</Button>
+    <Button variant="ghost" mark={false} pressed={open === 'threads'} data-thread-list-toggle=""><Icon name="messages-square" size={14} />Threads</Button>
+    <Tooltip label="Members">
+      <Button variant="ghost" mark={false} pressed={open === 'members'} data-members-toggle="" aria-label="Members, 6"><Icon name="users" size={14} /><span aria-hidden="true">6</span></Button>
+    </Tooltip>
   </>
 );
-const SIGNAL = { name: 'general', topic: 'raids, plans and the bridge troll', overflow: undefined };
+const SIGNAL = { name: 'general', topic: 'raids, plans and the bridge troll',
+  overflow: { label: 'more', always: true, items: [{ id: 'pins', label: 'pinned messages' }, { id: 'search', label: 'search' }, { id: 'edit', label: 'edit channel' }], onSelect: () => {} } };
 // Main's width in the prototype at 1280: 1280 - 56 - 244 less the aside (232 members, 340 thread).
 export const SignalMembersOpen: Story = { args: { ...SIGNAL, actions: signalActions('members') }, globals: { theme: 'signal' }, decorators: [inMain(748)],
   play: ({ canvasElement }) => { expectHeaderFits(canvasElement, 'SignalMembersOpen'); } };

@@ -248,29 +248,28 @@ describe('one set of shortcuts and the call panel (R3)', () => {
     expect(stageBar().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
   });
 
-  it('the call panel has camera, share and leave and no mute, and sits above the user panel', async () => {
+  it('the call panel has leave alone (Signal §5.4, Ruling U: camera and share are the stage\'s) and no mute, and sits above the user panel', async () => {
     const app = shell();
     await joinVoice(app);
     const dock = screen.getByRole('toolbar', { name: 'voice controls' });
-    expect(within(dock).getAllByRole('button').map(b => b.getAttribute('aria-label')))
-      .toEqual([t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
+    expect(within(dock).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('voice.leave')]);
     const callPanel = document.querySelector('.dw-voice-dock')!;
     expect(callPanel.compareDocumentPosition(panel()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(callPanel.parentElement).toBe(panel()!.parentElement);
   });
 
-  it('web3.9 R26, MP5: the call panel reads the channel over the link stats ("general · Midgard" is its name), opens Diagnostics, and has no meter or level text', async () => {
+  it('web3.9 R26, MP5: the call panel reads the channel ("general · Midgard" read in full) over the link stats, and has no meter or level text', async () => {
     const app = shell();
     await joinVoice(app);
     const callPanel = within(document.querySelector<HTMLElement>('.dw-voice-dock')!);
-    expect(callPanel.getByRole('button', { name: 'general · Midgard' })).toBeInTheDocument();
+    // Ruling U: line 1 is text, not a button (Diagnostics is in Settings).
+    expect(callPanel.queryByRole('button', { name: 'general · Midgard' })).toBeNull();
+    expect(callPanel.getByText('general · Midgard')).toHaveClass('d-sr-only');
     expect(document.querySelector('.dw-voice-dock .d-voice-dock__text')).toHaveTextContent(/^general$/);
     expect(document.querySelector('.dw-voice-dock .d-voice-dock__where')).toHaveTextContent('— ms');
     expect(document.querySelector('.dw-voice-dock')).not.toHaveTextContent(t('settings.voice.level'));
     expect(document.querySelector('.dw-voice-dock [role="meter"], .dw-voice-dock .d-audio-meter')).toBeNull();
     for (const b of callPanel.getAllByRole('button').filter(x => x.closest('[role="toolbar"]') !== null)) expect(b).toHaveAttribute('data-size', '28');
-    await app.user.click(callPanel.getByRole('button', { name: 'general · Midgard' }));
-    await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
   });
 
   it('Ctrl+Shift+M in a call toggles the session, once', async () => {

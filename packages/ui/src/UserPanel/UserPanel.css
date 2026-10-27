@@ -28,6 +28,8 @@
 .d-user-panel .d-icon-button:hover { background: var(--hover-hi); }
 /* On: the --danger glyph (mic-off, headphone-off) on the danger tint; the swapped glyph and aria-pressed carry the state. */
 .d-user-panel .d-icon-button[aria-pressed="true"] { color: var(--danger); background: var(--danger-soft); box-shadow: none; }
+/* The prototype's hover paints --hover-hi over the toggled-on tint too. */
+.d-user-panel .d-icon-button[aria-pressed="true"]:hover { background: var(--hover-hi); }
 /* Push-to-talk (web3.9): the tag sits on the mic button's corner, never colour alone; the avatar rings while the key is held. */
 .d-user-panel__mic { position: relative; display: inline-flex; }
 .d-user-panel__ptt { position: absolute; right: -2px; bottom: -2px; padding: 0 0.1875rem; font-size: var(--text-badge); line-height: 1rem; letter-spacing: var(--tracking-soft); color: var(--fg-2); background: var(--bg-2); border: 1px solid var(--hairline); border-radius: var(--r-sm); pointer-events: none; }

@@ -13,8 +13,7 @@
 /* The stat line: 10.5px --fg-3, padding 0 14px 10px, 10px gaps; the first item after a 6px --ok dot. */
 .d-channel-list__stats { display: flex; flex: none; gap: 10px; margin: 0; padding: 0 14px 10px; font-size: var(--text-meta); color: var(--fg-3); white-space: nowrap; overflow: hidden; }
 .d-channel-list__stat { display: inline-flex; align-items: center; gap: 10px; }
-.d-channel-list__stat:first-child { gap: 5px; }
-.d-channel-list__live { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--ok); }
+.d-channel-list__live { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--ok); margin-right: -5px; /* 5px before the online count */ }
 /* The server's actions sit under its name, above the tabs; the hairline moves below them. */
 .d-channel-list__title:has(+ .d-channel-list__actions) { padding-bottom: 6px; }
 /* Flow 07: both actions on one row in the 240 px sidebar, so their buttons are compact (28 px tall, 6 px sides); they

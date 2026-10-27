@@ -23,6 +23,12 @@ describe('ChannelHeader', () => {
     expect(css).toMatch(/^\.d-channel-header \{[^}]*container: d-channel-header \/ inline-size/m);
   });
 
+  it('Ruling U: with overflow.always the "more" menu shows at every width (data-overflow="always", CSS pin)', () => {
+    const { container } = render(<ChannelHeader name="general" overflow={{ label: 'more', items: [{ id: 'pins', label: 'pinned messages' }], onSelect: () => {}, always: true }} />);
+    expect(container.querySelector('.d-channel-header')).toHaveAttribute('data-overflow', 'always');
+    expect(css).toMatch(/\.d-channel-header\[data-overflow="always"\] \.d-channel-header__more \{ display: inline-flex; \}/);
+  });
+
   it('folds the foldable actions into the "more" menu below 36rem of header width (CSS pin, R27)', () => {
     const q = css.match(/@container d-channel-header \(max-width: 36rem\) \{([\s\S]*?)\n\}/);
     expect(q).not.toBeNull();

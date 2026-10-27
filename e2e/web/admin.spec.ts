@@ -6,7 +6,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   TEST_TIMEOUT, WAIT, makeInviteLink, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
-  signUp, test, channelRow, expectComposerReady,
+  signUp, test, channelRow, expectComposerReady, membersToggle,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -147,8 +147,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     if (shots) {
       const wide = page.viewportSize();
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.getByRole('button', { name: copy('nav.channel.menu'), exact: true }).click();
-      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
+      await membersToggle(page).click();
       await memberRow(page, SERVER, FRIEND).locator('.d-member-list__open').click();
       await expect(page.getByRole('dialog', { name: FRIEND })).toBeVisible();
       await page.screenshot({ path: `${shots}/card-phone-390.png` });

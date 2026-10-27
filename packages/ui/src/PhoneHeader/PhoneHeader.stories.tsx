@@ -2,6 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { PhoneHeader } from './PhoneHeader.tsx';
 import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
+import { Tooltip } from '../Tooltip/Tooltip.tsx';
+import { ActionMenu } from '../ActionMenu/ActionMenu.tsx';
 
 // Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
 const meta = { title: 'Shell/PhoneHeader', component: PhoneHeader, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof PhoneHeader>;
@@ -23,10 +26,15 @@ export const NoBack: Story = { args: { title: 'activity' }, render: args => fram
 export const Signal: Story = {
   args: { title: <><span className="d-channel-header__glyph" aria-hidden="true"><Icon name="hash" size={14} /></span><span className="d-phone-header__text">general</span></>,
     topic: 'raids, plans and the bridge troll', backLabel: 'back to channels', onBack: () => {},
+    // The props the web passes (packages/web/src/screens/Shell.tsx, ChannelHeader's `phone.menu`): Threads, Members with the count,
+    // search, then the "⋯" menu (pins, edit channel, reminders).
     actions: <>
-      <Button variant="ghost" aria-label="threads"><Icon name="messages-square" size={14} /></Button>
-      <Button variant="ghost" aria-label="members, 6"><Icon name="users" size={14} />6</Button>
-      <Button variant="ghost" aria-label="search"><Icon name="search" size={15} /></Button>
+      <Button variant="ghost" mark={false} aria-label="Threads" pressed={false}><Icon name="messages-square" size={14} /></Button>
+      <Tooltip label="Members">
+        <Button variant="ghost" mark={false} aria-label="Members, 6"><Icon name="users" size={14} /><span aria-hidden="true">6</span></Button>
+      </Tooltip>
+      <IconButton icon="search" size={28} label="search" />
+      <ActionMenu label="channel menu" icon="ellipsis-vertical" open={false} onOpenChange={() => {}} items={[{ id: 'pins', label: 'pinned messages' }, { id: 'inbox', label: 'Reminders' }]} onSelect={() => {}} />
     </> },
   globals: { theme: 'signal' },
   render: args => <div data-layout="phone" style={{ maxWidth: 390 }}><PhoneHeader {...args} /></div>,

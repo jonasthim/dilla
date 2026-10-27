@@ -8,7 +8,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
-  messageRow, signIn, type Account,
+  messageRow, signIn, type Account, membersToggle,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
 import { nextCode } from './support/totp';
@@ -390,12 +390,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     });
 
     // The channel menu's sheet: closed by the system back and by its own back, focus returns to the menu trigger.
-    await test.step('the members sheet returns focus to the channel menu', async () => {
+    await test.step('the members sheet returns focus to the Members button', async () => {
       await channelRow(page, 'general').tap();
       await expect(back(page)).toBeVisible({ timeout: WAIT });
-      const menu = page.getByRole('button', { name: copy('nav.channel.menu'), exact: true });
+      const menu = membersToggle(page);
       await menu.click();
-      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
       const close = page.getByRole('button', { name: copy('members.close'), exact: true });
       await expect(close).toBeVisible({ timeout: WAIT });
       await expectAbove(page.getByRole('complementary', { name: /members/ }), tabBar(page), 'the members sheet');
@@ -403,7 +402,6 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(close).toBeHidden({ timeout: WAIT });
       await expect(menu).toBeFocused();
       await menu.click();
-      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
       await expect(close).toBeVisible({ timeout: WAIT });
       await close.click();
       await expect(close).toBeHidden({ timeout: WAIT });

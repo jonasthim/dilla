@@ -27,6 +27,8 @@
 .d-channel-header__actions :is(.d-icon-button, .d-btn)[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: transparent; box-shadow: none; }
 /* The "⋯" menu is shown only while the header is narrow; its trigger is a 28px icon button like the rest. */
 .d-channel-header .d-channel-header__more { display: none; }
+/* Ruling U: a header whose menu holds the actions the prototype has no button for shows it at every width. */
+.d-channel-header[data-overflow="always"] .d-channel-header__more { display: inline-flex; }
 .d-channel-header__more .d-channel-header__more-trigger { width: 1.75rem; height: 1.75rem; padding: 0; border: 0; border-radius: var(--r-md); color: var(--fg-2); }
 .d-channel-header__more .d-channel-header__more-trigger:hover, .d-channel-header__more .d-channel-header__more-trigger[aria-expanded="true"] { color: var(--fg); background: var(--hover); border-color: transparent; }
 /* Below 36rem of header width the foldable actions hide (their tooltip anchor with them) when there is a menu to take them, the topic goes, and the menu shows. */

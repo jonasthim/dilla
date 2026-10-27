@@ -278,7 +278,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
       const log = page.getByRole('log', { name: copy('shell.log.label', { channel: slug }), exact: true });
       await expect(log).toContainText(copy('shell.log.emptyMade'));
       await expect(log).not.toContainText(copy('shell.log.empty'));
-      await expect(button(page, 'shell.pins.open')).toBeInViewport({ ratio: 1 });
+      // Signal (Ruling U): pins are in the header's "more" menu; its trigger stands in the viewport.
+      await expect(page.locator('.d-channel-header').getByRole('button', { name: copy('layout.header.more'), exact: true })).toBeInViewport({ ratio: 1 });
       const size = page.viewportSize();
       await page.setViewportSize({ width: 360, height: 740 });
       try {

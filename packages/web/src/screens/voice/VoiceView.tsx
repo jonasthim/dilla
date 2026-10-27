@@ -583,14 +583,14 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26, MP5): the channel name
- * (a button to Diagnostics; the server is its tooltip), the link stats ({ping} · ↑ {up} ↓ {down} kb/s, from call.state.link), then camera, share screen and leave (no meter and no line: the input level stays in
- * Settings → Voice, the push-to-talk and hearing lines on the stage; no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
- * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
- * action stand above the dock.
+ * The call panel above the user panel while this device is in voice (flow 06; Signal §5.4, Ruling U): the channel name (the
+ * server is its tooltip and accessible name), the link stats ({ping} · ↑ {up} ↓ {down} kb/s, from call.state.link), and leave,
+ * as the prototype's dock. Camera and share are the stage's controls; Diagnostics is in Settings. No mute or deafen (the user
+ * panel owns them, R3), and the one polite status region. While the call is paused and its stage is not on screen, the pause
+ * banner and its action stand above the dock.
  */
-export function Dock({ v, where, server, stageShown, onStatus }: {
-  v: VoiceContext; where: string; /** The community of the call's channel; null for a DM call. */ server: string | null; stageShown: boolean; onStatus: () => void;
+export function Dock({ v, where, server, stageShown }: {
+  v: VoiceContext; where: string; /** The community of the call's channel; null for a DM call. */ server: string | null; stageShown: boolean;
 }): React.JSX.Element | null {
   const { call } = v;
   const bannerRef = useRef<HTMLDivElement>(null);
@@ -636,7 +636,6 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
           where: server === null ? where : t('layout.dock.where', { channel: where, server }),
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
-        onStatus={onStatus} onCamera={call.toggleCamera} onShare={call.toggleShare}
         onLeave={call.leave} />
     </div>
   );

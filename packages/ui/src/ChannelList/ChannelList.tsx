@@ -44,10 +44,10 @@ export interface ChannelListProps {
   /** A control at the right of the server's name (the phone's server menu), in one row with the heading. */
   headerAction?: ReactNode;
   /**
-   * The stat line under the heading (Signal §5.4), e.g. ['3 online', '2 in voice']: 10.5px, the first after a 6px live dot,
-   * the rest after a "·". Absent or empty, no line.
+   * The stat line under the heading (Signal §5.4), e.g. "3 online · 2 in voice" after a dot: 10.5px, the parts after a "·" (a comma for a
+   * screen reader). A part with `live` follows the 6px --live dot (the online count). Absent or empty, no line.
    */
-  stats?: readonly string[];
+  stats?: readonly { text: string; live?: boolean }[];
   /** The unread tag's visible text for a count (`layout.row.new`, '{n} new'), passed to every ChannelRow. */
   newLabel?(count: string): string;
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
@@ -168,10 +168,11 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
   );
   const statLine = stats !== undefined && stats.length > 0 ? (
     <p className="d-channel-list__stats">
-      {stats.map((text, i) => (
-        <span key={i} className="d-channel-list__stat">
-          {i === 0 ? <span className="d-channel-list__live" aria-hidden="true" /> : <span className="d-channel-list__sep" aria-hidden="true">·</span>}
-          {text}
+      {stats.map((part, i) => (
+        <span key={i} className="d-channel-list__stat" data-live={part.live === true ? 'true' : undefined}>
+          {i > 0 ? <><span className="d-channel-list__sep" aria-hidden="true">·</span><span className="d-sr-only">, </span></> : null}
+          {part.live === true ? <span className="d-channel-list__live" aria-hidden="true" /> : null}
+          {part.text}
         </span>
       ))}
     </p>

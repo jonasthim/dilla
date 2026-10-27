@@ -1173,9 +1173,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         rowLabel={badgeLabel}
         // Signal §5.4: the unread tag reads "{n} new"; the stat line under the server name counts who is online and who is in voice.
         newLabel={n => t('layout.row.new', { n })}
+        // Ruling W: online counts people, not bots; before presence has loaded the line holds the in-voice count alone, no dot.
         {...(onDms || communityId === null ? {} : { stats: [
-          ...(members == null || presence == null ? [] : [t('layout.sidebar.online', { n: members.filter(m => (presence[m.userId] ?? 'offline') !== 'offline').length })]),
-          t('voice.count', { n: inVoiceHere }),
+          ...(members == null || presence == null ? [] : [{ live: true, text: t('layout.sidebar.online', {
+            n: members.filter(m => m.kind !== 1 && (presence[m.userId] ?? 'offline') !== 'offline').length }) }]),
+          { text: t('voice.count', { n: inVoiceHere }) },
         ] })}
         content={content} />
     </div>);
@@ -1307,7 +1309,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const pinsOpen = () => dispatch({ type: 'pins', open: true });
   const searchItem = { id: 'search', label: t('search.open') };
   const pinsItem = openId !== null ? [{ id: 'pins', label: t('shell.pins.open') }] : [];
-  const listItem = channel !== null && openId !== null ? [{ id: 'threads', label: t('thread.list') }] : [];
   // H3: while typing, the call bar steps aside and the header's dot says the call is still up (named as the bar's open button).
   const callBarUp = phone && call.channelId !== null && !(phonePane === 'view' && call.channelId === (voiceChannel?.id ?? dm?.id));
   // The dot is the call bar's open button, folded to 44 x 44: the same name, the same target.
@@ -1316,41 +1317,48 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const dotProp = dot === undefined ? {} : { dot };
   const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
+  // Signal §5.5, §5.10 (Ruling U): a channel's header has the prototype's controls. Threads (its icon and label; an icon alone on a
+  // phone) and Members (its icon and the member count, named "Members, {n}", the number shown once the list has loaded); a phone
+  // adds search. Everything else (pins, search on a desktop, edit channel, the reminders inbox on a phone) is in the "⋯" menu.
+  const memberCount = members == null ? null : members.length;
+  const membersName = memberCount === null ? t('layout.header.members') : t('layout.header.membersCount', { n: memberCount });
+  const threadsOn = sideNow?.view === 'list';
+  const toggleThreads = () => (threadsOn ? closeSide() : openList());
+  const membersButton = (
+    <Tooltip label={t('layout.header.members')}>
+      <Button variant="ghost" mark={false} data-members-toggle="" aria-label={membersName} pressed={membersShown} onClick={toggleMembers}>
+        <Icon name={MEMBERS_GLYPH} size={14} />{memberCount === null ? null : <span aria-hidden="true">{memberCount}</span>}
+      </Button>
+    </Tooltip>
+  );
+  const editItem = canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [];
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
     actions={<>{utilityCommands.inbox}<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /></>} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
-        {utilityCommands.inbox}
+        {/* The prototype's phone header: Threads as its 14px icon alone, Members, a 15px search; every target 44 (PhoneHeader.css). */}
+        {openId !== null ? <Button variant="ghost" mark={false} data-thread-list-toggle="" aria-label={t('layout.header.threads')} pressed={threadsOn}
+          onClick={toggleThreads}><Icon name={THREADS_GLYPH} size={14} /></Button> : null}
+        {membersButton}
+        <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch('channel', e.currentTarget)} />
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
-          items={[searchItem, ...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
+          items={[...pinsItem, ...editItem, { id: 'inbox', label: t('reminder.inbox') }]}
           onSelect={id => {
-            if (id === 'search') startSearch('channel');
-            else if (id === 'pins') pinsOpen();
-            else if (id === 'threads') openList();
+            if (id === 'pins') pinsOpen();
             else if (id === 'edit') setEditChannelId(channel.id);
-            else if (!membersOpen) toggleMembers();
+            else utilityCommands.openInbox();
           }} />
       </>) } : undefined}
       actions={<>
-        {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
-        {/* Signal §5.5: Threads is an icon and its label, Members an icon and the member count; while its aside is open a
-            button is the accent on --accent-soft (aria-pressed). */}
-        {openId !== null ? <Button variant="ghost" mark={false} data-foldable="" data-thread-list-toggle="" pressed={sideNow?.view === 'list'}
-          onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())}><Icon name={THREADS_GLYPH} size={14} />{t('thread.list')}</Button> : null}
-        <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
-        {canManageChannels ? <IconButton data-foldable="" icon="settings" label={t('admin.channel.open')} onClick={() => setEditChannelId(channel.id)} /> : null}
-        <Tooltip label={t('members.toggle')}>
-          <Button variant="ghost" mark={false} data-members-toggle="" aria-label={t('members.toggle')} pressed={membersShown} onClick={toggleMembers}>
-            <Icon name={MEMBERS_GLYPH} size={14} /><span aria-hidden="true">{(members ?? []).length}</span>
-          </Button>
-        </Tooltip>
+        {openId !== null ? <Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={threadsOn} onClick={toggleThreads}>
+          <Icon name={THREADS_GLYPH} size={14} />{t('layout.header.threads')}</Button> : null}
+        {membersButton}
       </>}
-      overflow={{ label: t('layout.header.more'), items: [...pinsItem, ...listItem, searchItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
+      overflow={{ label: t('layout.header.more'), always: true, items: [...pinsItem, searchItem, ...editItem],
         onSelect: id => {
           if (id === 'search') startSearch('channel');
           else if (id === 'pins') pinsOpen();
-          else if (id === 'threads') { if (sideNow?.view === 'list') closeSide(); else openList(); }
           else if (id === 'edit') setEditChannelId(channel.id);
         } }} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
@@ -1827,7 +1835,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         sidebar={sidebar}
         bottom={phone || self === null ? undefined : <>
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
-            server={dockServer} onStatus={() => void navigate({ name: 'settings', section: 'diagnostics', from: null })}
+            server={dockServer}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
           <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
             ptt={settings?.['voice.mode'] === 'ptt' ? { held: call.state?.speaking === true } : false} />

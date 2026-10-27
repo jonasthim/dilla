@@ -417,3 +417,20 @@ describe('ChannelList, categories', () => {
     });
   });
 });
+
+// Signal §5.4 (fix round 2): the stat line. The live dot belongs to the online part alone; a screen reader hears a comma
+// between the parts in place of the decorative "·".
+describe('the stat line', () => {
+  const base = { label: 'channels', title: 'Midgard Crew', channels: [], activeId: null, onSelect: () => {}, emptyLabel: 'none' };
+  it('draws the dot only before a live part, and a hidden comma between parts', () => {
+    const { container, rerender } = render(<ChannelList {...base} stats={[{ text: '3 online', live: true }, { text: '5 in voice' }]} />);
+    const parts = [...container.querySelectorAll('.d-channel-list__stat')];
+    expect(parts[0].querySelector('.d-channel-list__live')).not.toBeNull();
+    expect(parts[1].querySelector('.d-channel-list__live')).toBeNull();
+    expect(parts[1].querySelector('.d-sr-only')?.textContent).toBe(', ');
+    expect(parts[1].querySelector('.d-channel-list__sep')).toHaveAttribute('aria-hidden', 'true');
+    rerender(<ChannelList {...base} stats={[{ text: '5 in voice' }]} />);
+    expect(container.querySelector('.d-channel-list__live')).toBeNull();
+    expect(container.querySelector('.d-channel-list__sep')).toBeNull();
+  });
+});

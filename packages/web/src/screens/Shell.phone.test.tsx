@@ -105,10 +105,10 @@ describe('the phone shell: search (walk 1)', () => {
     expect(screen.getByRole('combobox', { name: t('search.placeholder') })).toHaveFocus();
   });
 
-  it('opens it from the channel menu, scoped to the conversation', async () => {
+  it('opens it from the channel header\'s search (Signal §5.10, Ruling U), scoped to the conversation', async () => {
     const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('search.open') }));
+    const header = (await screen.findByRole('heading', { level: 2, name: 'lobby' })).closest('.d-phone-header') as HTMLElement;
+    await user.click(within(header).getByRole('button', { name: t('search.open') }));
     await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
     await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: TEXT, query: 'lamp', cursor: null }));
   });
@@ -145,14 +145,18 @@ describe('the phone shell: pushed views', () => {
     expect(await screen.findByRole('navigation', { name: t('nav.tabs.label') })).toBeInTheDocument();
   });
 
-  it('names the channel menu: pins and members, and edit channel for a person who may', async () => {
+  it('has Threads, Members and search in the header and the rest in the channel menu: pins, edit channel for a person who may, reminders (Ruling U)', async () => {
     const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('search.open'), t('shell.pins.open'), t('thread.list'), t('members.toggle')]);
+    const header = (await screen.findByRole('heading', { level: 2, name: 'lobby' })).closest('.d-phone-header') as HTMLElement;
+    expect(within(header).getByRole('button', { name: t('layout.header.threads') })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: /^Members/ })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: t('search.open') })).toBeInTheDocument();
+    await user.click(within(header).getByRole('button', { name: t('nav.channel.menu') }));
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('reminder.inbox')]);
     await user.keyboard('{Escape}');
     manage(client);
     await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('search.open'), t('shell.pins.open'), t('thread.list'), t('admin.channel.open'), t('members.toggle')]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('admin.channel.open'), t('reminder.inbox')]);
   });
 
   it('opens a DM as a pushed view with a pins menu', async () => {
@@ -182,11 +186,10 @@ describe('the phone shell: pushed views', () => {
 });
 
 describe('the phone shell: the members sheet', () => {
-  it('opens as a history entry, closes on the system back and returns focus to the menu', async () => {
+  it('opens as a history entry, closes on the system back and returns focus to the Members button', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    const trigger = await screen.findByRole('button', { name: t('nav.channel.menu') });
+    const trigger = await screen.findByRole('button', { name: /^Members/ });
     await user.click(trigger);
-    await user.click(screen.getByRole('menuitem', { name: t('members.toggle') }));
     expect(await screen.findByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
     expect(window.history.state).toMatchObject({ phoneSheet: 'members' });
     act(() => { window.history.back(); });
@@ -196,8 +199,7 @@ describe('the phone shell: the members sheet', () => {
 
   it('closes through its own back control by popping its entry', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('members.toggle') }));
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
     const sheet = await screen.findByRole('complementary', { name: 'members of Midgard' });
     const length = window.history.length;
     await user.click(within(sheet).getByRole('button', { name: t('members.close') }));
@@ -288,8 +290,7 @@ describe('the phone shell: tabs', () => {
 
   it('an open members sheet closes when a tab is tapped: its entry is popped once and the new tab shows', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('members.toggle') }));
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
     await screen.findByRole('complementary', { name: 'members of Midgard' });
     expect(tabs()).not.toBeNull();
     const length = window.history.length;
@@ -314,8 +315,7 @@ describe('the phone shell: tabs', () => {
   it('two quick taps on a tab with a sheet open pop the sheet entry once', async () => {
     phone({ path: `/c/${A}/${TEXT}` });
     const { user } = { user: (await import('@testing-library/user-event')).default.setup() };
-    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('members.toggle') }));
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
     await screen.findByRole('complementary', { name: 'members of Midgard' });
     const back = vi.spyOn(window.history, 'back');
     const link = tab('activity');
@@ -789,8 +789,15 @@ describe('search on a touch tablet, focus return and a server that did not load 
   });
 });
 
+// Signal (Ruling U): a channel's phone header holds the inbox in its "⋯" menu (below); a DM, the voice stage and the lists keep the button.
+it('keeps the reminder inbox in the phone channel header\'s menu', async () => {
+  const { user } = phone({ path: `/c/${A}/${TEXT}` });
+  await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
+  await user.click(screen.getByRole('menuitem', { name: 'Reminders' }));
+  expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
+});
+
 for (const [label, path, slot] of [
-  ['channel', `/c/${A}/${TEXT}`, '.d-phone-header__actions'],
   ['DM', `/dm/${DM}`, '.d-phone-header__actions'],
   ['voice', `/c/${A}/${GENV}`, '.d-phone-header__actions'],
   ['channel list', `/c/${A}`, '.d-channel-list__head'],

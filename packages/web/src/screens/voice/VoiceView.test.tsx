@@ -49,10 +49,11 @@ describe('voice in the shell', () => {
     expect(screen.queryByRole('region', { name: 'AFK channel' })).toBeNull();
   });
 
-  it('final review I-2 control: in an ordinary call the dock\u2019s camera is live', async () => {
+  it('final review I-2 control: in an ordinary call the stage\u2019s camera is live (Signal, Ruling U: the dock has leave alone)', async () => {
     await inVoice();
     const dock = within(screen.getByRole('toolbar', { name: t('voice.dock.region') }));
-    expect(dock.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-disabled', 'true');
+    expect(dock.queryByRole('button', { name: 'camera' })).toBeNull();
+    expect(main().getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
   it('an ordinary voice call keeps its controls live', async () => {
@@ -951,67 +952,50 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
   };
   afterEach(() => { Reflect.deleteProperty(navigator, 'mediaDevices'); });
 
-  it('the dock holds camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
+  // Signal §5.4 (Ruling U): the dock is the prototype's, leave alone; camera and share stay the stage's controls under its rules.
+  it('the dock holds leave alone; camera and share are the stage’s toggles', async () => {
     withCapture();
     const app = await inVoice();
-    await offStage();
-    expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label')))
-      .toEqual([t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
-    await app.user.click(dock().getByRole('button', { name: t('voice.cameraOn') }));
+    await app.user.click(stage().getByRole('button', { name: t('voice.cameraOn') }));
     await waitFor(() => expect(app.session.state.camera).toBe(true));
-    expect(dock().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true');
-    // One state: the stage's camera shows pressed too, and pressing it there turns the camera off again.
+    await offStage();
+    expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('voice.leave')]);
     await onStage();
     await waitFor(() => expect(stage().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true'));
-    await app.user.click(stage().getByRole('button', { name: t('voice.cameraOn') }));
-    await waitFor(() => expect(app.session.state.camera).toBe(false));
-    await offStage();
-    await app.user.click(dock().getByRole('button', { name: t('voice.shareOn') }));
+    await app.user.click(stage().getByRole('button', { name: t('voice.shareOn') }));
     await waitFor(() => expect(app.session.state.sharing).toBe(true));
-    await onStage();
-    await waitFor(() => expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-pressed', 'true'));
   });
 
-  it('without screen capture, share is aria-disabled in the dock as on the stage', async () => {
+  it('without screen capture, share is aria-disabled on the stage, and the dock has none', async () => {
     await inVoice();
     expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
     await offStage();
-    expect(dock().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
-    expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-disabled');
+    expect(dock().queryByRole('button', { name: t('voice.shareOn') })).toBeNull();
   });
 
-  it('while paused, the dock’s camera and share are aria-disabled and do nothing; mute and leave stay live', async () => {
+  it('while paused, the stage’s camera and share are aria-disabled; the dock’s leave and the panel’s mute and deafen stay live', async () => {
     withCapture();
     const app = await inVoice({ trust: [bobChanged()], withSettings: true });
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await screen.findByText('paused in general');
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(stage().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
     await offStage();
-    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
-      expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
-      await app.user.click(dock().getByRole('button', { name }));
-    }
-    expect(app.session.state.camera).toBe(false);
-    expect(app.session.state.sharing).toBe(false);
     expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
     for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    expect(app.session.state.camera).toBe(false);
   });
 
-  it('while joining, the dock’s camera and share are aria-disabled; the user panel’s mute and deafen and the dock’s leave stay live', async () => {
+  it('while joining, the user panel’s mute and deafen and the dock’s leave stay live', async () => {
     withCapture();
     const app = renderVoiceShell();
     const release = app.holdStart();
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
     await offStage();
-    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
     expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
     for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
     release();
     await waitFor(() => expect(app.sessions).toHaveLength(1));
-    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-    await waitFor(() => expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-disabled'));
-    expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-disabled');
   });
 
   it('only the user panel’s mute and deafen carry aria-keyshortcuts and are described by their shortcut; the stage’s tip shows it and they carry none', async () => {
@@ -1027,46 +1011,18 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
       .toHaveLength(1);
   });
 
-  // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.
-  it('a disabled camera or share says why: not available, paused, connecting', async () => {
+  // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*) on the stage; the name stays. (The dock has none, Ruling U.)
+  it('a disabled camera or share says why: not available, paused', async () => {
     const app = await inVoice();
-    // No getDisplayMedia here: share says so, and camera, live, says nothing.
-    const noShare = (bar: ReturnType<typeof dock>) => {
-      const share = bar.getByRole('button', { name: t('voice.shareOn') });
-      expect(share).toHaveAccessibleName(t('voice.shareOn'));
-      expect(share).toHaveAccessibleDescription(t('voice.why.noShare'));
-      expect(bar.getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby');
-    };
-    const paused = (bar: ReturnType<typeof dock>) => {
-      for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
-        expect(bar.getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.paused'));
-      }
-    };
-    noShare(stage());
-    await offStage();
-    noShare(dock());
+    const share = stage().getByRole('button', { name: t('voice.shareOn') });
+    expect(share).toHaveAccessibleName(t('voice.shareOn'));
+    expect(share).toHaveAccessibleDescription(t('voice.why.noShare'));
+    expect(stage().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby');
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await screen.findByText('paused in general');
-    paused(dock());
-    await onStage();
-    paused(stage());
-  });
-
-  it('while joining, the dock’s camera and share say connecting', async () => {
-    withCapture();
-    const app = renderVoiceShell();
-    const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
-    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
-    await offStage();
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
-      expect(dock().getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.joining'));
+      expect(stage().getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.paused'));
     }
-    release();
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-    await waitFor(() => expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby'));
-    expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-describedby');
   });
 });
 
@@ -1112,7 +1068,8 @@ describe('web3.7: one set of call controls', () => {
     dockFirst.focus();
     await app.user.keyboard('{ArrowRight}');
     expect(screen.getByRole('toolbar', { name: 'voice controls' }).contains(document.activeElement)).toBe(true);
-    expect(document.activeElement).not.toBe(dockFirst);
+    // Ruling U: leave is the dock's one control, so the arrow keeps focus on it.
+    expect(document.activeElement).toBe(dockFirst);
     expect(main().getByRole('toolbar', { name: 'voice channel controls' }).contains(document.activeElement)).toBe(false);
   });
 });
@@ -1399,15 +1356,13 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     expect(dock.querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
   });
 
-  it('MP5: line 1 is the channel name (the server in its tooltip and accessible name) and opens Diagnostics', async () => {
-    const app = await inVoice();
+  it('MP5: line 1 is the channel name (the server in its tooltip and accessible text); Ruling U: it is text, not a button', async () => {
+    await inVoice();
     await offStage();
-    const status = within(dockEl()).getByRole('button', { name: 'general · Midgard' });
-    expect(status).toHaveAttribute('title', 'general · Midgard');
+    expect(within(dockEl()).queryByRole('button', { name: 'general · Midgard' })).toBeNull();
+    expect(dockEl().querySelector('.d-voice-dock__line1')).toHaveAttribute('title', 'general · Midgard');
     expect(dockEl().querySelector('.d-voice-dock__text')).toHaveTextContent(/^general$/);
     expect(dockEl()).not.toHaveTextContent('voice connected');
-    await app.user.click(status);
-    await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
   });
 
   it('MP5: line 2 reads "— ms" before the first sample, then the ping and rates from call.state.link, naming the quality', async () => {
@@ -1430,11 +1385,11 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent(/^reconnecting$/));
   });
 
-  it('camera, share and leave are 28px icon buttons (Signal §5.4)', async () => {
+  it('leave is the dock’s one control, a 28px icon button (Signal §5.4, Ruling U)', async () => {
     await inVoice();
     await offStage();
     const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(1);
     for (const b of buttons) { expect(b).toHaveClass('d-icon-button'); expect(b).toHaveAttribute('data-size', '28'); }
   });
 

@@ -7,7 +7,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
-  channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox,
+  channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox, headerMenuItem,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -120,8 +120,9 @@ async function makeRole(page: Page, name: string, rights: string[]): Promise<voi
 }
 /** The channel header's "edit channel" opens channel settings; the private switch lives in its permissions section. */
 async function openChannelSettings(page: Page, name: string): Promise<{ dialog: Locator; priv: Locator; opener: Locator }> {
-  const opener = page.locator(CLASS.channelHeader).getByRole('button', { name: copy('admin.channel.open'), exact: true });
-  await opener.click();
+  // Signal (Ruling U): "edit channel" is in the header's "more" menu; focus returns to its trigger.
+  const opener = page.locator(CLASS.channelHeader).getByRole('button', { name: copy('layout.header.more'), exact: true });
+  await headerMenuItem(page, 'admin.channel.open');
   const dialog = dialogOf(page, 'admin.channel.titleText', { name });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   const priv = switchOf(dialog, 'chperm.private');

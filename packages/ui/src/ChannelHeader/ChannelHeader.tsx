@@ -16,7 +16,10 @@ export interface ChannelHeaderProps {
    * The "⋯" menu that holds the folded actions: `label` names it (`layout.header.more`), `items` mirror the foldable
    * actions in the same order, and `onSelect` receives the picked item's id. Shown only below 36rem of header width.
    */
-  overflow?: { label: string; items: readonly ActionMenuItem[]; onSelect(id: string): void };
+  overflow?: { label: string; items: readonly ActionMenuItem[]; onSelect(id: string): void;
+    /** Signal §5.5 (Ruling U): the menu shows at every width and holds what the prototype's header has no button for (pins,
+     *  search, edit channel); nothing folds. */
+    always?: boolean };
   /** On a phone: a PhoneHeader in place of the desktop header, with a back control and `menu` as its action. */
   phone?: { backLabel: string; onBack(): void; menu?: ReactNode; /** A call is up and the call bar has stepped aside while typing: the dot after the title, named by this. */ dot?: { label: string; onOpen: () => void } };
 }
@@ -45,7 +48,7 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
     );
   }
   return (
-    <header className="d-channel-header" data-overflow={overflow !== undefined ? 'true' : undefined}>
+    <header className="d-channel-header" data-overflow={overflow === undefined ? undefined : overflow.always === true ? 'always' : 'true'}>
       <div className="d-channel-header__title">
         <Glyph kind={kind} />
         <h2 className="d-channel-header__name">{name}</h2>

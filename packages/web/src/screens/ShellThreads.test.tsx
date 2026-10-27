@@ -87,7 +87,7 @@ function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: str
 const members = () => screen.queryByRole('complementary', { name: 'members of Midgard' });
 const threadPane = () => screen.queryByRole('complementary', { name: en['thread.title'] });
 const listPane = () => screen.queryByRole('complementary', { name: en['thread.list'] });
-const toggle = () => screen.getByRole('button', { name: en['members.toggle'] });
+const toggle = () => screen.getByRole('button', { name: /^Members/ });
 const wait = (fake: FakeClient) => fake.set(`slow:${GEN}`, { until: Date.now() + 60_000, queued: false });
 
 describe('threads on a desktop shell (one aside)', () => {
@@ -161,7 +161,8 @@ describe('threads on a desktop shell (one aside)', () => {
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
     await waitFor(() => expect(threadPane()).toBeNull());
     act(() => fake.set(`pins:${GEN}`, [{ msgId: ROOT2, seq: '4', senderUser: BOB, excerpt: 'the second root', pinnedBy: BOB, pinnedSeq: '5', ts: 1_700_000_000, threadRoot: ROOT }]));
-    await user.click(screen.getByRole('button', { name: en['shell.pins.open'] }));
+    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: en['layout.header.more'] }));
+    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
     await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
     expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
     expect(fake.callsOf('openThread')).toHaveLength(2);
@@ -183,7 +184,7 @@ describe('threads on a desktop shell (one aside)', () => {
 describe('the thread list', () => {
   it('opens from the header button, lists the threads, opens one in its place, and Escape closes the list returning focus to the button', async () => {
     const { fake, user } = setup();
-    await user.click(await screen.findByRole('button', { name: en['thread.list'] }));
+    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
     const aside = await screen.findByRole('complementary', { name: en['thread.list'] });
     expect(members()).toBeNull();
     expect(fake.callsOf('loadThreads')).toEqual([{ m: 'loadThreads', channelId: GEN }]);
@@ -193,11 +194,11 @@ describe('the thread list', () => {
     expect(listPane()).toBeNull();
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
     await waitFor(() => expect(threadPane()).toBeNull());
-    await user.click(screen.getByRole('button', { name: en['thread.list'] }));
+    await user.click(screen.getByRole('button', { name: en['layout.header.threads'] }));
     await screen.findByRole('complementary', { name: en['thread.list'] });
     await user.keyboard('{Escape}');
     await waitFor(() => expect(listPane()).toBeNull());
-    expect(screen.getByRole('button', { name: en['thread.list'] })).toHaveFocus();
+    expect(screen.getByRole('button', { name: en['layout.header.threads'] })).toHaveFocus();
   });
 });
 
@@ -263,9 +264,8 @@ describe('threads on a phone (a sheet)', () => {
 
   it('opens the thread list from the channel menu as a sheet, and a row opens its thread in the same entry', async () => {
     const { user } = setup({ phone: true });
-    const menu = await screen.findByRole('button', { name: t('nav.channel.menu') });
-    await user.click(menu);
-    await user.click(screen.getByRole('menuitem', { name: en['thread.list'] }));
+    // Signal (Ruling U): Threads is a header button on a phone too.
+    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
     const sheet = await screen.findByRole('complementary', { name: en['thread.list'] });
     expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
     const length = window.history.length;
@@ -337,7 +337,7 @@ async function searchThread(fake: FakeClient, user: ReturnType<typeof userEvent.
 describe('where focus lands (fix round 2)', () => {
   it('lands in the thread composer when a thread is picked from the list', async () => {
     const { user } = setup();
-    await user.click(await screen.findByRole('button', { name: en['thread.list'] }));
+    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
     const aside = await screen.findByRole('complementary', { name: en['thread.list'] });
     await user.click(within(aside).getByRole('button', { name: /the second root/ }));
     await screen.findByRole('complementary', { name: en['thread.title'] });
@@ -367,7 +367,8 @@ describe('where focus lands (fix round 2)', () => {
     const { fake, user } = setup();
     await screen.findByRole('button', { name: '2 replies' });
     pinFor(fake);
-    await user.click(screen.getByRole('button', { name: en['shell.pins.open'] }));
+    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: en['layout.header.more'] }));
+    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
     await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
     await screen.findByRole('complementary', { name: en['thread.title'] });
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
@@ -379,8 +380,7 @@ describe('where focus lands (fix round 2)', () => {
 describe('phone: a thread from a search hit, a pin and a quote', () => {
   it('opens from a search hit, replacing an open members sheet so it does not come back', async () => {
     const { fake, user } = setup({ phone: true });
-    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: en['members.toggle'] }));
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
     await screen.findByRole('complementary', { name: 'members of Midgard' });
     await searchThread(fake, user);
     expect(members()).toBeNull();

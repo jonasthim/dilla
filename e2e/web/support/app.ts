@@ -813,6 +813,13 @@ export function settingsDialog(page: Page): Locator { return page.getByRole('dia
 export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }
 /** Desktop Settings opener: the top bar's gear (Signal §5.2; the user panel has none, §5.4). Phone settings are opened from You → Open settings. */
 export function settingsGear(page: Page): Locator { return page.locator('.d-topbar').getByRole('button', { name: copy('workspace.open'), exact: true }); }
+/** Signal (Ruling U): the channel header's "more" menu holds pins, search and edit channel; this opens one of them by its copy key. */
+export async function headerMenuItem(page: Page, key: string): Promise<void> {
+  await page.locator('.d-channel-header').getByRole('button', { name: copy('layout.header.more'), exact: true }).click();
+  await page.getByRole('menuitem', { name: copy(key), exact: true }).click();
+}
+/** The channel header's Members button (named "Members" or "Members, {n}"), on a desktop or a phone. */
+export function membersToggle(page: Page): Locator { return page.locator('.d-channel-header [data-members-toggle], .d-phone-header [data-members-toggle]'); }
 /** Opens the requested section through the visible workspace navigation at the current viewport. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
   const phone = await page.evaluate(() => matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches);

@@ -313,10 +313,11 @@ it('opens scoped search with a modifier and sends the typed query', async () => 
   expect(input).toHaveFocus();
 });
 
-it('opens search from a visible control in the channel header (walk 1)', async () => {
+it('opens search from the channel header (walk 1; Signal Ruling U: its "more" menu, the top bar holds search too)', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   const header = (await screen.findByRole('heading', { level: 2, name: 'general' })).closest('header')!;
-  await user.click(within(header).getByRole('button', { name: 'search' }));
+  await user.click(within(header).getByRole('button', { name: 'more' }));
+  await user.click(screen.getByRole('menuitem', { name: 'search' }));
   const input = screen.getByRole('combobox', { name: 'Search your messages' });
   await user.type(input, 'lamp');
   await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
@@ -1477,17 +1478,11 @@ describe('keyboard', () => {
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
+    // Signal §5.5 (Ruling U): Threads, Members, then the "more" menu (pins, search, edit channel) at every width.
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: en['layout.header.threads'] }));
     await user.tab();
-    // web3.7: the thread list sits after pins and before the members toggle.
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'threads' }));
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: /^Members/ }));
     await user.tab();
-    // walk 1: the search control follows the thread list.
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'search' }));
-    await user.tab();
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: /members/ }));
-    await user.tab();
-    // The fold menu is a stop only below 36rem of header width (CSS hides it above); jsdom has no layout.
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
@@ -1925,23 +1920,25 @@ describe('the channel header actions (web3.9)', () => {
   const header = () => document.querySelector('.d-channel-header') as HTMLElement;
   const more = () => within(header()).getByRole('button', { name: en['layout.header.more'] });
 
-  it('are icon buttons named by their existing labels; pins, threads, search and edit fold, members stays', () => {
+  it('Signal §5.5 (Ruling U): Threads (icon and label) and Members (icon, the count, named "Members, {n}"), nothing folds', () => {
     setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const bar = within(header());
-    const names = [en['shell.pins.open'], en['thread.list'], en['search.open'], en['admin.channel.open'], en['members.toggle']];
-    const icons = ['pin', 'messages-square', 'search', 'settings', 'users'];
-    names.forEach((name, i) => {
-      const b = bar.getByRole('button', { name });
-      expect(b.querySelector(`svg[data-icon="${icons[i]}"]`)).not.toBeNull();
-      expect(b.hasAttribute('data-foldable')).toBe(i < 4);
-    });
+    const threads = bar.getByRole('button', { name: en['layout.header.threads'] });
+    expect(threads).toHaveTextContent(en['layout.header.threads']);
+    expect(threads.querySelector('svg[data-icon="messages-square"]')).not.toBeNull();
+    const members = bar.getByRole('button', { name: /^Members, \d+$/ });
+    expect(members.querySelector('svg[data-icon="users"]')).not.toBeNull();
+    expect(members.textContent).toMatch(/^\d+$/);
+    expect(header().querySelector('[data-foldable]')).toBeNull();
+    for (const name of [en['shell.pins.open'], en['search.open'], en['admin.channel.open']]) expect(bar.queryByRole('button', { name })).toBeNull();
+    expect(header()).toHaveAttribute('data-overflow', 'always');
     expect(more()).toBeInTheDocument();
   });
 
-  it('the "more" menu holds the folding actions in order, and an item does what its button does', async () => {
+  it('the "more" menu holds pins, search and edit channel in order, and an item does what its button did', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     await user.click(more());
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['thread.list'], en['search.open'], en['admin.channel.open']]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['search.open'], en['admin.channel.open']]);
     await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
     await waitFor(() => expect(fake.callsOf('loadPins')).toHaveLength(1));
   });
@@ -1949,7 +1946,7 @@ describe('the channel header actions (web3.9)', () => {
   it('a member without manage channels has no edit action, in the bar or the menu', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
     await user.click(more());
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['thread.list'], en['search.open']]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['search.open']]);
     await user.keyboard('{Escape}');
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });

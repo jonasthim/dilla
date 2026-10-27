@@ -15,7 +15,7 @@ import { join, relative, resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { addServerVia, REPO_ROOT, attachInput, drawImage, messageRow, trayEntries,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, completeSignUp, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, homeTile, makeInviteLink, newAccount, openSettings, railItem, railNav,
-  sendText, settingsDialog, signIn, signUp, test, isExpectedInteractionAdmissionContextRefusal, type Account,
+  sendText, settingsDialog, signIn, signUp, test, isExpectedInteractionAdmissionContextRefusal, type Account, membersToggle,
 } from './support/app';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { PROFILE_ROOT } from './support/persistent';
@@ -451,7 +451,7 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
 
   // C1: at 1024 with the members aside open the header keeps its name and every action stays inside the header.
   if (size.width === 1024) {
-    const toggle = page.locator('.d-channel-header').getByRole('button', { name: copy('members.toggle'), exact: true });
+    const toggle = membersToggle(page);
     if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
     await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
     await expectBar(page, tag, 'the members head', '.d-member-list__bar', DESKTOP_BAR);
@@ -526,14 +526,17 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await expect(settings).toBeHidden({ timeout: WAIT });
 }
 
-/** The private inbox stays reachable when its one trigger moves between existing header slots. */
-async function expectReminderInbox(page: Page, state: string): Promise<void> {
+/** The private inbox stays reachable when its one trigger moves between existing header slots. With `menu`, the phone channel
+ *  header's "⋯" menu holds it (Signal, Ruling U), and focus returns to that menu's trigger. */
+async function expectReminderInbox(page: Page, state: string, menu = false): Promise<void> {
   await test.step(`reminder inbox on ${state}`, async () => {
     const before = page.url();
-    const opener = page.getByRole('button', { name: 'Reminders', exact: true });
+    const opener = menu ? page.locator('.d-phone-header').getByRole('button', { name: copy('nav.channel.menu'), exact: true })
+      : page.getByRole('button', { name: 'Reminders', exact: true });
     await expect(opener).toHaveCount(1);
     await expect(opener).toBeVisible();
     await opener.click();
+    if (menu) await page.getByRole('menuitem', { name: 'Reminders', exact: true }).click();
     const inbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
     await expect(inbox).toHaveCount(1);
     await expect(inbox).toBeVisible();
@@ -662,7 +665,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectSafeAreaBar(page, tag);
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
-  await expectReminderInbox(page, `channel at ${tag}`);
+  await expectReminderInbox(page, `channel at ${tag}`, true);
   await expectWrapsInLog(page, tag, 'a channel');
   await toList();
 
@@ -1275,7 +1278,7 @@ test('FC: the save button of a file card beside an image is not clipped at 1280 
   await measure('1280');
 
   await page.setViewportSize({ width: 1024, height: 768 });
-  const toggle = page.locator('.d-channel-header').getByRole('button', { name: copy('members.toggle'), exact: true });
+  const toggle = membersToggle(page);
   if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
   await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
   await measure('1024 with the members aside');

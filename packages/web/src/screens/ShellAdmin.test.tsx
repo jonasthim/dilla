@@ -47,7 +47,7 @@ const wide = () => {
 describe('Shell, server admin and member list (flow 08)', () => {
   it('the members toggle opens and closes the member pane', async () => {
     const { user } = setup();
-    const toggle = screen.getByRole('button', { name: /members/ });
+    const toggle = screen.getByRole('button', { name: /^Members/ });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(screen.queryByRole('complementary')).toBeNull();
     await user.click(toggle);
@@ -74,7 +74,8 @@ describe('Shell, server admin and member list (flow 08)', () => {
     const sidebar = document.querySelector('.dw-sidebar') as HTMLElement;
     expect(within(sidebar).queryByRole('button', { name: 'edit channel' })).toBeNull();
     const header = document.querySelector('.d-channel-header') as HTMLElement;
-    await user.click(within(header).getByRole('button', { name: 'edit channel' }));
+    await user.click(within(header).getByRole('button', { name: 'more' }));
+    await user.click(screen.getByRole('menuitem', { name: 'edit channel' }));
     const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
     expect(within(dialog).getByRole('textbox', { name: 'Channel name' })).toHaveValue('general');
     expect(screen.queryByRole('dialog', { name: /settings/i })).toBeNull();
@@ -98,7 +99,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
     act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
     expect(screen.queryByRole('complementary')).toBeNull();
     expect(document.querySelector('[inert]')).toBeNull();
-    const toggle = screen.getByRole('button', { name: /^members/ });
+    const toggle = screen.getByRole('button', { name: /^Members/ });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     await user.click(toggle);
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
@@ -110,7 +111,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
     const { user } = setup();
-    const toggle = screen.getByRole('button', { name: /^members/ });
+    const toggle = screen.getByRole('button', { name: /^Members/ });
     await user.click(toggle);
     await user.click(toggle);
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
@@ -125,7 +126,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
   });
@@ -133,7 +134,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   // Final fix I2: the drawer's own close control.
   it('the drawer has a close members button that closes it', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     const side = screen.getByRole('complementary', { name: 'members of Midgard' });
     await user.click(within(side).getByRole('button', { name: 'close members' }));
     expect(screen.queryByRole('complementary')).toBeNull();
@@ -142,7 +143,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   // Final fix M5: the aside names the list; the list inside is no second region of the same name.
   it('the member list inside the aside is not a second region named like it', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     expect(screen.queryByRole('region', { name: 'members of Midgard' })).toBeNull();
   });
 
@@ -214,7 +215,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
     wide();
     const voice: ChannelSummary = { ...CHANNELS[0], id: VOICE, kind: 1, name: 'lounge', group: 'unsupported' };
     setup(OTHER, `/c/${A}/${VOICE}`, [voice, ...CHANNELS]);
-    expect(screen.queryByRole('button', { name: /^members/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Members/ })).toBeNull();
     expect(screen.queryByRole('complementary')).toBeNull();
   });
 

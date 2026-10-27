@@ -5,7 +5,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, COPY, HEX32, TEST_TIMEOUT, WAIT, channelRow, composerBox, copy, deleteDialog, editorBox, expectAccessible,
   logRegion, openChannel, pinsDialog, railItem, railNav, rowById, rowToolbar, sendText, signUp, tag, test, isPeerMessage,
-  type PeerMessage, type PeerReceived, type PeerSetup,
+  type PeerMessage, type PeerReceived, type PeerSetup, headerMenuItem,
 } from './support/app';
 import { WebDriver } from './support/driver';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -313,7 +313,7 @@ test('a thread opens from the pin of a reply', async ({ page }) => {
     await expect(chip(rowById(page, GENERAL, decoy.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
     // A pin of the reply: the pins dialog's jump opens the thread too.
     await peer.send('', general, { type: 5, replyTo: reply.msg_id });
-    await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
+    await headerMenuItem(page, 'shell.pins.open');
     const pins = pinsDialog(page, GENERAL);
     await expect(pins).toBeVisible({ timeout: WAIT });
     await expect(pins).toContainText(needle, { timeout: WAIT });

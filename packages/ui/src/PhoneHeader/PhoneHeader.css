@@ -3,6 +3,8 @@
    control is 44 x 44 (6px into the left padding), --fg-strong with a 20px chevron; any action button is 44. */
 .d-phone-header { display: flex; align-items: center; gap: 10px; min-height: calc(3.25rem - 1px); box-sizing: content-box; padding: env(safe-area-inset-top) 10px 0 8px; background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
 .d-phone-header .d-btn[data-size] { height: 2.75rem; min-width: 2.75rem; justify-content: center; padding: 0 0.5rem; }
+/* Every control in the phone header is a 44 x 44 target (README §5.10, Ruling N), the icon buttons and the "⋯" trigger too. */
+.d-phone-header :is(.d-icon-button, .d-action-menu__trigger) { min-width: 2.75rem; min-height: 2.75rem; }
 .d-phone-header .d-phone-header__back.d-btn[data-size] { width: 2.75rem; padding: 0; margin-left: -6px; color: var(--fg-strong); border: 0; }
 /* The title: the 14px --fg-3 glyph, 6px, the name in 13.5px/700, cut to one line. */
 .d-phone-header__title { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; font-size: var(--text-base); font-weight: var(--weight-display); color: var(--fg); }
@@ -13,6 +15,8 @@
 .d-phone-header__topic { flex: 1 1 0; min-width: 0; margin: 0; font-size: var(--text-ui); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-phone-header__marker { display: inline-flex; flex-shrink: 0; color: var(--fg-3); }
 .d-phone-header__actions .d-btn__label { display: inline-flex; align-items: center; gap: 6px; }
+/* While its sheet is open a header button is the accent on --accent-soft, as on a desktop (Signal §5.5). */
+.d-phone-header__actions .d-btn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: transparent; box-shadow: none; }
 .d-phone-header__actions { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; color: var(--fg-2); }
 /* The call dot: a 44 x 44 button (a primary target) that draws an 8px accent dot and opens the call. */
 .d-phone-header__dot { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; padding: 0; background: transparent; border: 0; cursor: pointer; }
