@@ -29,7 +29,10 @@ describe('AppShell grid areas', () => {
     expect(base).toMatch(/\.d-app-shell \.d-app-shell__aside \{[^}]*transition: width var\(--duration-aside\) var\(--ease-out\)/);
     expect(base).toMatch(/\.d-app-shell__aside\[data-open="false"\] \{[^}]*width: 0; border-left-width: 0; visibility: hidden;[^}]*visibility 0s linear var\(--duration-aside\);/);
     expect(base).toMatch(/@starting-style \{ \.d-app-shell \.d-app-shell__aside\[data-open="true"\] \{ width: 0; border-left-width: 0; \} \}/);
-    expect(base).toMatch(/\.d-app-shell__aside > \.d-app-shell__aside-body \{[^}]*width: calc\(var\(--d-aside-open\) - 1px\);/);
+    expect(base).toMatch(/\.d-app-shell__aside-body > \.d-app-shell__aside-scroll \{[^}]*width: calc\(var\(--d-aside-open\) - 1px\);/);
+    // Task 6 fix round 3: nothing in the aside clips by clip-path, which would cut its fixed-position popovers (the profile card).
+    expect(base).not.toMatch(/d-app-shell__aside[^{]*\{[^}]*clip-path/);
+    expect(base).toMatch(/\.d-app-shell__aside\[data-open\] > \.d-app-shell__aside-body \{[^}]*overflow: hidden;/);
     expect(base).toContain('.d-app-shell[data-resizing] .d-app-shell__aside { transition: none; }');
   });
   it('the aside is drawn on bg-2', () => {

@@ -32,6 +32,8 @@ async function checkAside(page: Page, context: StoryContext, want: number): Prom
     control?.focus();
     return {
       width: Math.round(el.getBoundingClientRect().width * 10) / 10, visibility: getComputedStyle(el).visibility, inert: el.inert,
+      // Task 6 fix round 3: a clip-path on the aside or its body would cut a fixed-position popover inside it (the profile card).
+      clipped: [el, el.querySelector('.d-app-shell__aside-body')].some(n => n !== null && getComputedStyle(n).clipPath !== 'none'),
       bodyWidth: Math.round((el.querySelector('.d-app-shell__aside-body')?.getBoundingClientRect().width ?? 0) * 10) / 10,
       focused: control !== null && document.activeElement === control,
     };
@@ -39,6 +41,7 @@ async function checkAside(page: Page, context: StoryContext, want: number): Prom
   const name = `${context.title} / ${context.name}`;
   if (got === null) throw new Error(`${name}: no aside`);
   if (Math.abs(got.width - want) > 0.5) throw new Error(`${name}: the aside is ${String(got.width)} wide, want ${String(want)}`);
+  if (got.clipped) throw new Error(`${name}: the aside or its body has a clip-path, which would cut its fixed-position popovers`);
   if (want === 0) {
     if (got.visibility !== 'hidden' || !got.inert) throw new Error(`${name}: the closed aside is ${got.visibility} and inert=${String(got.inert)}`);
     if (got.focused) throw new Error(`${name}: a control in the closed aside takes focus`);

@@ -457,7 +457,9 @@ export function AppShell({
             </div>
           ) : null}
           {/* The body keeps the open width while the column animates, so its text never reflows. */}
-          <div className="d-app-shell__aside-body">{asideNode}</div>
+          {/* The body clips by overflow, never by clip-path: a clip-path would cut every fixed-position popover inside the aside too
+              (the member profile card hangs over main). Its scroller keeps the open width. */}
+          <div className="d-app-shell__aside-body"><div className="d-app-shell__aside-scroll">{asideNode}</div></div>
         </aside> : null}
       </div>
     </div>
