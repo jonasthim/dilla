@@ -39,12 +39,18 @@
   --warn-soft: rgba(255,209,106,0.05);
   --scrim: rgba(3,4,6,0.6);
   --knob: #FFFFFF;
+  --track-off: #2A303A;
+  --accent-chip: rgba(90,168,230,0.16);
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
   --text-micro: 0.625rem;
+  --text-tag: 0.53125rem;
+  --text-chip: 0.59375rem;
   --text-xs: 0.6875rem;
+  --text-btn: 0.71875rem;
   --text-sm: 0.78125rem;
+  --text-input: 0.8125rem;
   --text-base: 0.84375rem;
   --text-md: 0.875rem;
   --text-lg: 1.0625rem;
@@ -54,6 +60,7 @@
   --weight-label: 600;
   --label-tracking: 0.08em;
   --label-tracking-wide: 0.12em;
+  --tracking-soft: 0.04em;
   --r-sm: 4px;
   --r-md: 6px;
   --r-lg: 8px;
@@ -67,6 +74,7 @@
   --shadow-1: 0 8px 20px rgba(0,0,0,0.4);
   --shadow-2: 0 20px 50px rgba(0,0,0,0.55);
   --shadow-3: 0 30px 80px rgba(0,0,0,0.65);
+  --shadow-knob: 0 1px 3px rgba(0,0,0,0.4);
   --rail-w: 56px;
   --rail-tile: 38px;
   --slot-w: 32px;
@@ -83,6 +91,7 @@
   --row-h-2: 2.75rem;
   --list-gap: 0.0625rem;
   --focus-ring: 2px solid var(--accent);
+  --duration-toggle: 240ms;
   --duration-press: 120ms;
   --duration-fast: 150ms;
   --duration-normal: 220ms;
@@ -143,6 +152,8 @@
   --warn-soft: rgba(255,209,106,0.05);
   --scrim: rgba(3,4,6,0.6);
   --knob: #FFFFFF;
+  --track-off: #2A303A;
+  --accent-chip: rgba(90,168,230,0.16);
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -186,6 +197,8 @@
   --warn-soft: rgba(138,90,0,0.05);
   --scrim: rgba(0,0,0,0.4);
   --knob: #FFFFFF;
+  --track-off: #8A918A;
+  --accent-chip: rgba(0,87,153,0.16);
   --link-underline: 0;
   color-scheme: light;
 }
@@ -229,6 +242,8 @@
   --warn-soft: rgba(255,224,138,0.05);
   --scrim: rgba(0,0,0,0.7);
   --knob: #000000;
+  --track-off: #C8C8C8;
+  --accent-chip: rgba(156,203,255,0.24);
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -273,6 +288,8 @@
     --warn-soft: rgba(138,90,0,0.05);
     --scrim: rgba(0,0,0,0.4);
     --knob: #FFFFFF;
+    --track-off: #8A918A;
+    --accent-chip: rgba(0,87,153,0.16);
     --link-underline: 0;
     color-scheme: light;
   }
@@ -318,6 +335,8 @@
     --warn-soft: rgba(255,224,138,0.05);
     --scrim: rgba(0,0,0,0.7);
     --knob: #000000;
+    --track-off: #C8C8C8;
+    --accent-chip: rgba(156,203,255,0.24);
     --link-underline: 1;
     color-scheme: dark;
   }
@@ -352,6 +371,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --duration-toggle: 0ms;
     --duration-press: 0ms;
     --duration-fast: 0ms;
     --duration-normal: 0ms;
@@ -366,6 +386,7 @@
 }
 
 [data-motion="reduced"] {
+    --duration-toggle: 0ms;
     --duration-press: 0ms;
     --duration-fast: 0ms;
     --duration-normal: 0ms;

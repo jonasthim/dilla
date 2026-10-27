@@ -7,7 +7,7 @@ export type ColorTokens = {
   accent: string; accent2: string; accentInk: string; accentSoft: string; brand: string; hover: string;
   danger: string; warn: string; ok: string; mention: string; mentionInk: string;
   okSoft: string; okSoftBorder: string; okTint: string; okBorder: string; okText: string;
-  dangerSoft: string; dangerBorder: string; dangerInk: string; warnSoft: string; scrim: string; knob: string;
+  dangerSoft: string; dangerBorder: string; dangerInk: string; warnSoft: string; scrim: string; knob: string; trackOff: string; accentChip: string;
   linkUnderline: 0 | 1;
 };
 
@@ -19,7 +19,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accent: '#5AA8E6', accent2: '#8CC4F0', accentInk: '#03121E', accentSoft: 'rgba(90,168,230,0.12)', brand: '#005799', hover: '#14171C',
     danger: '#FF6E6E', warn: '#FFD16A', ok: '#7CFF8E', mention: '#FFD16A', mentionInk: '#1A1300',
     okSoft: 'rgba(124,255,142,0.04)', okSoftBorder: 'rgba(124,255,142,0.22)', okTint: 'rgba(124,255,142,0.08)', okBorder: 'rgba(124,255,142,0.25)', okText: '#9EF5AC',
-    dangerSoft: 'rgba(255,110,110,0.1)', dangerBorder: 'rgba(255,110,110,0.45)', dangerInk: '#1A0606', warnSoft: 'rgba(255,209,106,0.05)', scrim: 'rgba(3,4,6,0.6)', knob: '#FFFFFF',
+    dangerSoft: 'rgba(255,110,110,0.1)', dangerBorder: 'rgba(255,110,110,0.45)', dangerInk: '#1A0606', warnSoft: 'rgba(255,209,106,0.05)', scrim: 'rgba(3,4,6,0.6)', knob: '#FFFFFF', trackOff: '#2A303A', accentChip: 'rgba(90,168,230,0.16)',
     linkUnderline: 0,
   },
   light: {
@@ -29,7 +29,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accent: '#005799', accent2: '#004A82', accentInk: '#FFFFFF', accentSoft: 'rgba(0,87,153,0.12)', brand: '#005799', hover: '#E3E6E3',
     danger: '#B3261E', warn: '#8A5A00', ok: '#1B7334', mention: '#F2C14E', mentionInk: '#1A1300',
     okSoft: 'rgba(27,115,52,0.04)', okSoftBorder: 'rgba(27,115,52,0.22)', okTint: 'rgba(27,115,52,0.08)', okBorder: 'rgba(27,115,52,0.25)', okText: '#1B7334',
-    dangerSoft: 'rgba(179,38,30,0.1)', dangerBorder: 'rgba(179,38,30,0.45)', dangerInk: '#FFFFFF', warnSoft: 'rgba(138,90,0,0.05)', scrim: 'rgba(0,0,0,0.4)', knob: '#FFFFFF',
+    dangerSoft: 'rgba(179,38,30,0.1)', dangerBorder: 'rgba(179,38,30,0.45)', dangerInk: '#FFFFFF', warnSoft: 'rgba(138,90,0,0.05)', scrim: 'rgba(0,0,0,0.4)', knob: '#FFFFFF', trackOff: '#8A918A', accentChip: 'rgba(0,87,153,0.16)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -39,7 +39,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accent: '#9CCBFF', accent2: '#C7E2FF', accentInk: '#000000', accentSoft: 'rgba(156,203,255,0.2)', brand: '#005799', hover: '#1C1C1C',
     danger: '#FF9A9A', warn: '#FFE08A', ok: '#9BFFA8', mention: '#FFE08A', mentionInk: '#000000',
     okSoft: 'rgba(155,255,168,0.04)', okSoftBorder: 'rgba(155,255,168,0.22)', okTint: 'rgba(155,255,168,0.08)', okBorder: 'rgba(155,255,168,0.25)', okText: '#9BFFA8',
-    dangerSoft: 'rgba(255,154,154,0.1)', dangerBorder: 'rgba(255,154,154,0.45)', dangerInk: '#000000', warnSoft: 'rgba(255,224,138,0.05)', scrim: 'rgba(0,0,0,0.7)', knob: '#000000',
+    dangerSoft: 'rgba(255,154,154,0.1)', dangerBorder: 'rgba(255,154,154,0.45)', dangerInk: '#000000', warnSoft: 'rgba(255,224,138,0.05)', scrim: 'rgba(0,0,0,0.7)', knob: '#000000', trackOff: '#C8C8C8', accentChip: 'rgba(156,203,255,0.24)',
     linkUnderline: 1,
   },
 };
@@ -74,8 +74,12 @@ export const structural = {
    */
   text: {
     micro: '0.625rem',    // 10px
+    tag: '0.53125rem',    // 8.5px
+    chip: '0.59375rem',   // 9.5px (the rail badge)
     xs: '0.6875rem',      // 11px
+    btn: '0.71875rem',    // 11.5px (a settings button and a segmented option)
     sm: '0.78125rem',     // 12.5px
+    input: '0.8125rem',   // 13px (a text field)
     base: '0.84375rem',   // 13.5px
     md: '0.875rem',       // 14px
     lg: '1.0625rem',      // 17px
@@ -83,11 +87,12 @@ export const structural = {
   },
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
+  trackingSoft: '0.04em',
   labelTrackingWide: '0.12em',
   radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px' },
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
-  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)' },
+  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -115,7 +120,7 @@ export const structural = {
    * the Windows forced-colors indicator survives.
    */
   focusRing: '2px solid var(--accent)',
-  motion: { press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
+  motion: { toggle: '240ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

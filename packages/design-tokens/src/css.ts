@@ -21,10 +21,10 @@ function structuralDecls(): string {
     `  --font-mono: ${s.font.mono};`, `  --font-serif-italic: ${s.font.serifItalic};`,
     ...Object.entries(s.text).map(([k, v]) => `  --text-${k}: ${v};`),
     ...Object.entries(s.weight).map(([k, v]) => `  --weight-${k}: ${v};`),
-    `  --label-tracking: ${s.labelTracking};`, `  --label-tracking-wide: ${s.labelTrackingWide};`,
+    `  --label-tracking: ${s.labelTracking};`, `  --label-tracking-wide: ${s.labelTrackingWide};`, `  --tracking-soft: ${s.trackingSoft};`,
     ...Object.entries(s.radius).map(([k, v]) => `  --r-${k}: ${v};`),
     ...Object.entries(s.opacity).map(([k, v]) => `  --opacity-${k}: ${v};`),
-    ...Object.entries(s.shadow).map(([k, v]) => `  --shadow-${k.slice(1)}: ${v};`),
+    ...Object.entries(s.shadow).map(([k, v]) => `  --shadow-${k.replace(/^s(\d)$/, "$1")}: ${v};`),
     ...Object.entries(s.layout).map(([k, v]) => `  --${kebab(k)}: ${v};`),
     `  --focus-ring: ${s.focusRing};`,
     ...Object.entries(s.motion).map(([k, v]) => (k === 'easeOut' ? `  --ease-out: ${v};` : `  --duration-${kebab(k)}: ${v};`)),
@@ -33,7 +33,7 @@ function structuralDecls(): string {
 }
 
 /** Durations zeroed under reduced motion; `meter` is a live level readout, never zeroed. One list for the media query and `data-motion`. */
-const REDUCED = ['press', 'fast', 'normal', 'slow', 'enter', 'badge', 'toast', 'pulse', 'caret', 'flash'];
+const REDUCED = ['toggle', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'toast', 'pulse', 'caret', 'flash'];
 
 export function renderCss(): string {
   const reduced = REDUCED.map(k => `    --duration-${k}: 0ms;`).join('\n');

@@ -24,6 +24,21 @@ describe('renderCss', () => {
     expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--knob:\s*#FFFFFF;/);
     expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--knob:\s*#000000;/);
   });
+  it('emits the prototype values the scale lacked (ruling K)', () => {
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--track-off:\s*#2A303A;/);
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--accent-chip:\s*rgba\(90,168,230,0\.16\);/);
+    expect(css).toContain('--shadow-knob: 0 1px 3px rgba(0,0,0,0.4);');
+    expect(css).toContain('--shadow-1:');
+    expect(css).toContain('--duration-toggle: 240ms;');
+    expect(css).toMatch(/--text-btn: 0\.71875rem;/);
+    expect(css).toMatch(/--text-input: 0\.8125rem;/);
+    expect(css).toMatch(/--text-chip: 0\.59375rem;/);
+    expect(css).toMatch(/--text-tag: 0\.53125rem;/);
+    expect(css).toContain('--tracking-soft: 0.04em;');
+  });
+  it('zeroes --duration-toggle under reduced motion', () => {
+    expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-toggle: 0ms;/);
+  });
   it('follows the OS light setting only when no theme is chosen', () => {
     expect(css).toMatch(/@media \(prefers-color-scheme: light\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#F5F6F5;[^}]*--accent:\s*#005799;/);
   });

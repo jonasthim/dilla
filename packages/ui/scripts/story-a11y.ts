@@ -7,6 +7,7 @@ type StoryContext = { id: string; title: string; name: string };
 
 /** The element whose border is a control's only boundary, for the stories that must draw it in --edge. */
 function boundarySelector(id: string): string | null {
+  if (id.startsWith('primitives-keyhint--')) return '.d-keyhint__kbd';
   if (id === 'form-toggle--off') return '.d-toggle__track';
   if (id.startsWith('form-segmented--')) return '.d-segmented__group';
   if (id === 'form-select--default') return '.d-select__input';
