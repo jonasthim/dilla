@@ -7,4 +7,5 @@ export const activity = {
   'activity.dm': 'direct message',
   'activity.elsewhere': 'unread elsewhere',
   'activity.since': 'Since this tab opened.',
+  'activity.reminder': 'Reminder · {where}',
 } as const;

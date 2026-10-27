@@ -238,9 +238,17 @@ export async function openDm(page: Page, dmId: string, name: string): Promise<vo
   await expect(page).toHaveURL(new RegExp(`/dm/${dmId}$`), { timeout: WAIT });
   await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });
 }
-/** The DM header's `call` (no live call) or `join call` icon button (web3.9 N1). */
-export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locator {
-  return page.locator('.d-channel-header, .d-phone-header').getByRole('button', { name: copy(key), exact: true });
+/**
+ * Ruling Z (Jonas 2026-10-27): the open DM's `call` / `join call` is its row's context-menu item (and Control/⌘+Shift+Enter), not a
+ * header button. `click()` right-clicks the open DM's row and picks it.
+ */
+export function stripButton(page: Page, key: 'call.start' | 'call.join'): { click(): Promise<void> } {
+  return {
+    async click() {
+      await dmsNav(page).locator('.d-chrow[aria-current="page"]').click({ button: 'right' });
+      await page.getByRole('menuitem', { name: copy(key), exact: true }).click();
+    },
+  };
 }
 /** The incoming rings on screen (L-UI-70), each with `data-ring` `incoming` or `busy`. */
 export function rings(page: Page): Locator { return page.locator('.d-ring-banner__ring'); }

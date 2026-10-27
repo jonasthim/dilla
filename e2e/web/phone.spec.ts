@@ -360,20 +360,22 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
       await expectPrototypeSize(homeTile(page), 'the @ tile', { w: 38, h: 38 });
-      // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
-      // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
-      const search = page.getByRole('button', { name: copy('search.open'), exact: true });
-      const gear = page.getByRole('button', { name: copy('admin.open'), exact: true });
+      // Ruling AB (Jonas 2026-10-27): beside the server's name sits only the prototype's ⌄ (server settings, 26 x 26), plus the
+      // "+" while there are no categories; no search, no reminders. "leave" is in server settings.
+      const menu = page.getByRole('button', { name: copy('admin.open'), exact: true });
+      await expect(page.locator('.d-channel-list__head').getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Reminders', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: copy('nav.server.menu'), exact: true })).toHaveCount(0);
       await expect(page.getByRole('menuitem')).toHaveCount(0);
-      await expectTapTargets(search, 'the search icon');
-      await expectTapTargets(gear, 'the settings gear');
-      await expectTapTargets(newChannelButton(page), 'the new channel "+"');
+      await expectPrototypeSize(menu, 'the server ⌄', { w: 26, h: 26 });
+      await expect(newChannelButton(page)).toBeVisible();
     });
 
-    // Walk 1: a phone has no Control+K, so search opens from the servers list header, full screen; a hit opens its channel.
-    await test.step('search from the servers list header opens full screen and a hit opens its message', async () => {
-      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
+    // Walk 1: a phone has no Control+K, so search opens from a conversation's phone header (Ruling AB: the list head has none),
+    // full screen; a hit opens its channel.
+    await test.step('search from the channel header opens full screen and a hit opens its message', async () => {
+      await channelRow(page, 'general').tap();
+      await page.locator('.d-phone-header').getByRole('button', { name: copy('search.open'), exact: true }).tap();
       const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
       await expect(palette).toBeVisible({ timeout: WAIT });
       const box = await palette.boundingBox();
@@ -392,14 +394,12 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
     });
 
-    // E2: the direct messages list (the @ tile's Home) has search too (a touch device has no Control+K); Escape closes the palette.
-    await test.step('search from the direct messages list opens the palette and Escape closes it', async () => {
+    // Ruling AB: the direct messages list (the @ tile's Home) has no search in its head, only "message someone".
+    await test.step('the direct messages list head holds only "message someone"', async () => {
       await homeTile(page).tap();
-      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
-      const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
-      await expect(palette).toBeVisible({ timeout: WAIT });
-      await page.keyboard.press('Escape');
-      await expect(palette).toBeHidden({ timeout: WAIT });
+      const head = page.locator('.d-channel-list__head');
+      await expect(head.getByRole('button', { name: copy('shell.dms.new'), exact: true })).toBeVisible({ timeout: WAIT });
+      await expect(head.getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
       await railItem(page, SERVER).tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });

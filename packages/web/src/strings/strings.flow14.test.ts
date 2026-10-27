@@ -71,7 +71,6 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
     'layout.add.title',
     'layout.add.join',
     'layout.add.create',
-    'home.tab',
   ];
   it('the presence sections are bare words: the member list draws the count', () => {
     const table = en as Readonly<Record<string, string>>;
@@ -97,7 +96,8 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   });
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(14);
+    // Ruling AA: home.tab is the prototype's "Home".
+    expect(LOWER.length).toBe(13);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

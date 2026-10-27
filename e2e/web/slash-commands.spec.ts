@@ -804,7 +804,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await signIn(second, owner, instanceName);
     await openChannel(second, COMMUNITY, GENERAL);
     await second.getByRole('button', { name: 'Reminders', exact: true }).click();
-    const inbox = second.getByRole('dialog', { name: 'Your reminders', exact: true });
+    const inbox = second.getByRole('dialog', { name: 'Reminders', exact: true });
     await expect(inbox).toContainText(reminderText, { timeout: BOT_WAIT });
     await host.restartBotRuntime();
     await page.context().setOffline(true);
@@ -814,7 +814,9 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     // The supported Bot fixture advances host time alongside wall time. Let the real one-minute
     // duration elapse so the due-state path crosses the same authenticated clock used by requests.
     await expect.poll(async () => {
-      const currentInbox = second.getByRole('dialog', { name: 'Your reminders', exact: true });
+      // README §6.7: the popover lists one tab at a time; a reminder that fell due moves to Due, where its action is Dismiss.
+      const currentInbox = second.getByRole('dialog', { name: 'Reminders', exact: true });
+      await currentInbox.getByRole('tab', { name: /^Due/ }).click();
       return currentInbox.getByRole('button', { name: 'Dismiss', exact: true }).count();
     }, { timeout: 180_000, intervals: [2_000, 5_000], message: 'the reminder should become due after one minute' }).toBeGreaterThan(0);
 
@@ -822,11 +824,11 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await page.goto(host.url);
     await openChannel(page, COMMUNITY, GENERAL);
     await page.getByRole('button', { name: 'Reminders', exact: true }).click();
-    const firstInbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
+    const firstInbox = page.getByRole('dialog', { name: 'Reminders', exact: true });
     await expect(firstInbox).toContainText(reminderText, { timeout: BOT_WAIT });
     await expect(firstInbox).toContainText('Due');
 
-    const currentInbox = second.getByRole('dialog', { name: 'Your reminders', exact: true });
+    const currentInbox = second.getByRole('dialog', { name: 'Reminders', exact: true });
     await currentInbox.getByRole('button', { name: 'Dismiss', exact: true }).click();
     await expect(firstInbox).not.toContainText(reminderText, { timeout: BOT_WAIT });
 

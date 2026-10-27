@@ -34,9 +34,9 @@ const Phone = ({ children }: { children: ReactNode }) => <div style={frame}>{chi
 // The tabs the web passes (packages/web/src/screens/Shell.tsx `tabItem`): home (house), activity (bell), you (user), as in the prototype.
 type TabId = 'servers' | 'dms' | 'activity' | 'you';
 const tabs = (current: TabId): TabBarItem[] => [
-  { id: 'home', label: 'home', href: '#home', icon: 'house', current: current === 'servers' || current === 'dms', count: 3, countLabel: 'home, 3 new' },
-  { id: 'activity', label: 'activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 120, countLabel: 'activity, 120 new' },
-  { id: 'you', label: 'you', href: '#you', icon: 'user', current: current === 'you' },
+  { id: 'home', label: 'Home', href: '#home', icon: 'house', current: current === 'servers' || current === 'dms', count: 3, countLabel: 'Home, 3 new' },
+  { id: 'activity', label: 'Activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 120, countLabel: 'Activity, 120 new' },
+  { id: 'you', label: 'You', href: '#you', icon: 'user', current: current === 'you' },
 ];
 const tabBar = (current: TabId) => <TabBar label="main" items={tabs(current)} onSelect={noop} />;
 
@@ -196,6 +196,26 @@ const common = { skipLabel: 'skip to content', header: null, composer: null } as
 
 export const ServersList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')}>{null}</AppShell></Phone>,
+};
+// Task 6b fix round 1: the servers list as the web composes it in Signal (Shell.tsx): the head is the name and the 26px ⌄ (Ruling AB),
+// the stat line, the categories and rows; no search, no reminders. The voice rooms' people are sample-free here (empty rooms).
+const signalChannels = (
+  <ChannelList label="channels" title="Midgard Crew" activeId="general" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
+    headerAction={<Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>}
+    stats={[{ text: '3 online', live: true }, { text: '5 in voice' }]} newLabel={n => `${n} new`}
+    categories={[{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }]} onToggleCategory={noop}
+    voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
+      state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting',
+        video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } }, rooms: { hv: { joined: false, participants: [] }, harbour: { joined: false, participants: [] }, afk: { joined: false, participants: [] } } }}
+    channels={[
+      { id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'hv', name: 'general', kind: 'voice', readable: false },
+      { id: 'loot', name: 'loot', kind: 'text', readable: false, parentId: 'raids', unread: 1 },
+      { id: 'harbour', name: 'harbour', kind: 'voice', readable: false, parentId: 'boats' }, { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true },
+    ]} />
+);
+export const SignalServersList: Story = {
+  globals: { theme: 'signal' },
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={signalChannels} tabBar={tabBar('servers')}>{null}</AppShell></Phone>,
 };
 export const ChannelView: Story = {
   render: () => (

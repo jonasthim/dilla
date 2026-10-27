@@ -187,6 +187,15 @@ const SIGNAL_GEOMETRY: Record<string, Want[]> = {
   'shell-channelheader--signal-members-open': [{ sel: '.d-channel-header', h: 44 }, { sel: '.d-channel-header__actions [aria-pressed="true"]', h: 28, color: 'rgb(90, 168, 230)', background: 'rgba(90, 168, 230, 0.12)' }],
   'shell-tabbar--signal': [{ sel: '.d-tab-bar__link', h: 56 }, { sel: '.d-tab-bar__link[aria-current="page"]', color: 'rgb(228, 232, 238)' }],
   // Jonas 2026-10-27: the prototype's phone sizes (supersedes Ruling N): Threads/Members 28 high, search 36 x 28, no "⋯".
+  // Task 6b fix round 1: the prototype's heights are content plus a 1px border: a button 30 + 2 = 32, the role-name field 34 + 2 = 36.
+  'primitives-button--default': [{ sel: '.d-btn', h: 32 }],
+  'form-textfield--filled': [{ sel: '.d-text-field__input', h: 36 }],
+  // README §6.7, the prototype's bell popover (content-box + border): 342 wide, 22px tabs, 26px row icons (--warn on a due one), 26px row actions.
+  'shell-reminderspopover--due': [
+    { sel: '.d-reminders', w: 342, radius: 10 }, { sel: '.d-reminders__tab', h: 22 }, { sel: '.d-reminders__bot', w: 22, h: 22 },
+    { sel: '.d-reminders__row[data-due="true"] .d-reminders__icon', w: 26, h: 26, color: 'rgb(255, 209, 106)', background: 'rgba(255, 209, 106, 0.14)' },
+    { sel: '.d-reminders__action', h: 26 },
+  ],
   'shell-phoneheader--signal': [{ sel: '.d-phone-header', h: 52 }, { sel: '.d-phone-header__back', w: 44, h: 44 },
     { sel: '.d-phone-header__actions .d-btn[aria-label="Threads"]', w: 30, h: 28 }, { sel: '.d-phone-header__actions .d-icon-button', w: 36, h: 28 }],
 };

@@ -1,5 +1,5 @@
 import { createElement, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Button, Dialog } from '@dilla/ui';
+import { Button, Dialog, RemindersPopover, type ReminderItem } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
@@ -173,7 +173,18 @@ function utilityOwner(client: CoreClient): string {
   return account?.instance?.id && account.user?.id && account.deviceId ? `${account.instance.id}:${account.user.id}:${account.deviceId}` : '';
 }
 export function useUtilityCommandProvider(client: CoreClient, communityId: string | null, onNavigate?: UtilityNavigate): {
-  handlers: CommandProviderHandlers; suggest: CommandSuggestionProvider; dialogs: ReactNode; inbox: ReactNode; dueCount: number; openInbox: () => void;
+  handlers: CommandProviderHandlers; suggest: CommandSuggestionProvider; dialogs: ReactNode;
+  /** A stand-alone trigger with its popover (tests, and any surface without the top bar). */
+  inbox: ReactNode;
+  dueCount: number;
+  /** The due reminders, for the phone's Activity tab (one row each, as the prototype lists them). */
+  dueReminders: readonly { key: string; text: string; where: string }[];
+  remindersOpen: boolean;
+  /** Opens the reminders popover (README §6.7); `from` gets focus back on Escape. */
+  openInbox: (from?: HTMLElement | null) => void;
+  closeInbox: () => void;
+  /** The popover itself while open: 'popover' under the top bar's bell, 'sheet' on a phone. `anchor` is the control that toggles it. */
+  remindersPanel: (layout: 'popover' | 'sheet', anchor?: () => HTMLElement | null) => ReactNode;
 } {
   const ownerKey = utilityOwner(client);
   const liveScope = useRef({ client, ownerKey, communityId });
@@ -183,6 +194,9 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const resolveDialog = useRef<((value: unknown) => void) | null>(null);
   const cancelDialog = useRef<(() => void) | null>(null);
   const [inboxOpen, setInboxOpen] = useState(false);
+  // null: the tab follows the list (Due while anything is due, else Upcoming), also while it is still loading; a pick holds.
+  const [inboxTab, setInboxTab] = useState<'due' | 'upcoming' | null>(null);
+  const inboxOpener = useRef<HTMLElement | null>(null);
   const [records, setRecords] = useState<{ client: CoreClient; owner: string; rows: ReminderInboxEntry[]; loading: boolean; error: boolean } | null>(null);
   const pausedCommunities = useRef(new Map<string, string>());
   const [sourceAccessVersion, setSourceAccessVersion] = useState(0);
@@ -260,7 +274,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     pausedCommunities.current = nextPaused;
     const previous = knownDue.current?.owner === currentOwner ? knownDue.current.ids : null;
     const seen = new Set(previous ?? []);
-    if (previous !== null) for (const entry of ordered) if (entry.reminder.state === 'due' && !seen.has(entry.reminder.id)) notifyReminder(entry, client, () => setInboxOpen(true));
+    if (previous !== null) for (const entry of ordered) if (entry.reminder.state === 'due' && !seen.has(entry.reminder.id)) notifyReminder(entry, client, () => { setInboxTab('due'); setInboxOpen(true); });
     for (const entry of ordered) if (entry.reminder.state === 'due') seen.add(entry.reminder.id);
     knownDue.current = { owner: currentOwner, ids: seen };
     setRecords({ client, owner: currentOwner, rows: ordered, loading: false, error: failed }); return failed ? null : ordered;
@@ -551,16 +565,58 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   }, [communityId, currentRecords, utilityFor]);
   const dueCount = currentRecords.filter(row => row.reminder.state === 'due').length;
   const visibleDialog = dialogScope?.client === client && dialogScope.owner === ownerKey && dialogScope.communityId === communityId ? dialog : null;
-  // The dialog stays mounted here while its trigger moves between header slots.
-  const inboxDialog = <ReminderInbox client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={records?.client !== client || records?.owner !== ownerKey ? ownerKey !== '' : records.loading}
-    error={records?.client === client && records?.owner === ownerKey ? records.error : false} open={inboxOpen} onClose={() => setInboxOpen(false)}
-    onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />;
-  const inbox = <Button variant="ghost" aria-haspopup="dialog" data-focus-key="reminder-inbox" onClick={() => setInboxOpen(true)}>{copy('reminder.inbox')}{dueCount > 0 ? <span className="dw-reminder-badge" aria-label={copy('reminder.badge', { count: dueCount })}>{dueCount}</span> : null}</Button>;
-  return { handlers: commandHandlers, suggest, dialogs: <>{createElement(UtilityCommandDialogs, { dialog: visibleDialog })}{inboxDialog}</>, inbox, dueCount, openInbox: () => setInboxOpen(true) };
+  const loading = records?.client !== client || records?.owner !== ownerKey ? ownerKey !== '' : records.loading;
+  const loadError = records?.client === client && records?.owner === ownerKey ? records.error : false;
+  const openInbox = (from?: HTMLElement | null) => {
+    const active = document.activeElement;
+    inboxOpener.current = from ?? (active instanceof HTMLElement && active !== document.body ? active : null);
+    setInboxTab(null);
+    setInboxOpen(true);
+  };
+  const closeInbox = () => setInboxOpen(false);
+  const remindersPanel = (layout: 'popover' | 'sheet', anchor?: () => HTMLElement | null) => !inboxOpen ? null : (
+    <ReminderPanel client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={loading} error={loadError}
+      layout={layout} tab={inboxTab ?? (dueCount > 0 ? 'due' : 'upcoming')} onTab={setInboxTab} onClose={closeInbox} returnFocus={() => inboxOpener.current} anchor={anchor}
+      onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />
+  );
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const inbox = <span ref={triggerRef} className="dw-reminder-trigger"><Button variant="ghost" aria-haspopup="dialog" aria-expanded={inboxOpen} data-focus-key="reminder-inbox"
+    onClick={e => (inboxOpen ? closeInbox() : openInbox(e.currentTarget))}>{copy('reminder.inbox')}{dueCount > 0 ? <span className="dw-reminder-badge" aria-label={copy('reminder.badge', { count: dueCount })}>{dueCount}</span> : null}</Button>
+    {remindersPanel('popover', () => triggerRef.current)}</span>;
+  const dueReminders = currentRecords.filter(row => row.reminder.state === 'due')
+    .map(row => ({ key: `${row.communityId}:${row.reminder.id}`, text: row.reminder.text, where: sourceWhere(client, row) }));
+  return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog }), inbox, dueCount, dueReminders,
+    remindersOpen: inboxOpen, openInbox, closeInbox, remindersPanel };
 }
 
-function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
-  open: boolean; onClose(): void; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
+/** "#general": the channel a reminder was set in, when this client knows it; else nothing. */
+function sourceWhere(client: CoreClient, row: ReminderInboxEntry): string {
+  const id = row.reminder.sourceChannelId;
+  if (id === null) return '';
+  const name = (client.get(`channels:${row.communityId}`) ?? []).find(c => c.id === id)?.name;
+  return name === undefined ? '' : `#${name}`;
+}
+
+/** When a reminder is due, as the prototype writes it: "Today, 20:00", "Tomorrow, 08:30", else "Fri 30 Oct, 20:00". */
+export function reminderWhen(unixSeconds: number, now: Date = new Date()): string {
+  const at = new Date(unixSeconds * 1000);
+  const time = at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const day = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  if (day(at) === day(now)) return copy('reminder.today', { time });
+  if (day(at) === day(tomorrow)) return copy('reminder.tomorrow', { time });
+  const date = at.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
+  return `${date}, ${time}`;
+}
+
+/**
+ * The reminders popover's data (README §6.7, Ruling AC): the Due tab lists the due reminders with Dismiss, the Upcoming tab the
+ * scheduled ones with Cancel (the prototype's two actions, both the bot's own operations). A reminder's text opens the message it
+ * was set from when that is still reachable. There is no Snooze: the bot has no snooze operation (see the task 6b report).
+ */
+function ReminderPanel(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
+  layout: 'popover' | 'sheet'; tab: 'due' | 'upcoming'; onTab(tab: 'due' | 'upcoming'): void; onClose(): void; returnFocus(): HTMLElement | null;
+  anchor?: () => HTMLElement | null; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState('');
   const attempts = inboxAttemptMap(props.client);
   const renderScope = useRef({ client: props.client, owner: props.ownerKey }); renderScope.current = { client: props.client, owner: props.ownerKey };
@@ -629,28 +685,20 @@ function ReminderInbox(props: { client: CoreClient; ownerKey: string; rows: Remi
     if (liveOwner !== props.ownerKey || !sourceAvailable(row) || row.reminder.sourceChannelId === null) return;
     props.onNavigate?.(row.communityId, row.reminder.sourceChannelId, row.reminder.sourceThreadId);
   };
-  return <Dialog open={props.open} title={copy('reminder.inboxTitle')} closeLabel={copy('reminder.close')} onClose={() => props.onClose()}>
-    <div className="dw-reminder-inbox">
-      {props.loading ? <p role="status">{copy('reminder.loading')}</p> : null}
-      {props.error ? <p role="alert">{copy('reminder.loadError')}</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
-      {!props.loading && current.length === 0 ? <p>{copy('reminder.emptyInbox')}</p> : null}
-      {due.length ? <section aria-labelledby="dw-reminders-due"><h3 id="dw-reminders-due">{copy('reminder.due')}</h3><ul>
-        {due.map(row => <ReminderRow key={`${row.communityId}:${row.reminder.id}`} row={row} busy={busy !== null} canSource={sourceAvailable(row)} onSource={() => jump(row)} onCancel={() => void mutate(row, 'cancel')} onDismiss={() => void mutate(row, 'dismiss')} />)}
-      </ul></section> : null}
-      {scheduled.length ? <section aria-labelledby="dw-reminders-upcoming"><h3 id="dw-reminders-upcoming">{copy('reminder.upcoming')}</h3><ul>
-        {scheduled.map(row => <ReminderRow key={`${row.communityId}:${row.reminder.id}`} row={row} busy={busy !== null} canSource={sourceAvailable(row)} onSource={() => jump(row)} onCancel={() => void mutate(row, 'cancel')} onDismiss={() => void mutate(row, 'dismiss')} />)}
-      </ul></section> : null}
-    </div>
-  </Dialog>;
-}
-function ReminderRow(props: { row: ReminderInboxEntry; busy: boolean; canSource: boolean; onSource(): void; onCancel(): void; onDismiss(): void }): React.JSX.Element {
-  const item = props.row.reminder;
-  return <li className="dw-reminder-card"><p>{item.text}</p><p>{copy('reminder.dueWithZone', { time: new Date(Number(item.dueUnixSeconds) * 1000).toLocaleString(), timezone: item.timezone })}</p>
-    {item.sourceChannelId !== null ? props.canSource ? <Button variant="ghost" onClick={() => props.onSource()}>{copy('reminder.source')}</Button> : <span>{copy('reminder.sourceUnavailable')}</span> : null}
-    {item.state === 'scheduled' || item.state === 'due' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onCancel()}>{copy('reminder.cancel')}</Button> : null}
-    {item.state === 'due' ? <Button variant="ghost" disabled={props.busy} onClick={() => props.onDismiss()}>{copy('reminder.dismiss')}</Button> : null}
-  </li>;
+  const keyOf = (row: ReminderInboxEntry) => `${row.communityId}:${row.reminder.id}`;
+  const listed = [...due, ...scheduled];
+  const items: ReminderItem[] = listed.map(row => ({
+    id: keyOf(row), text: row.reminder.text, when: reminderWhen(Number(row.reminder.dueUnixSeconds)), where: sourceWhere(props.client, row),
+    due: row.reminder.state === 'due', busy: busy !== null, canOpen: row.reminder.sourceChannelId !== null && sourceAvailable(row),
+  }));
+  const status = props.loading ? copy('reminder.loading') : props.error ? copy('reminder.loadError') : error !== '' ? error : undefined;
+  return <RemindersPopover items={items} tab={props.tab} onTab={tab => props.onTab(tab)} layout={props.layout} status={status}
+    onAction={(id, action) => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) void mutate(row, action); }}
+    onOpen={id => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) { props.onClose(); jump(row); } }}
+    onClose={() => props.onClose()} returnFocus={() => props.returnFocus()} anchor={props.anchor}
+    labels={{ title: copy('reminder.inbox'), tabs: copy('reminder.tabs'), due: copy('reminder.due'), upcoming: copy('reminder.upcoming'),
+      dismiss: copy('reminder.dismiss'), cancel: copy('reminder.cancel'), emptyDue: copy('reminder.emptyDue'), emptyUpcoming: copy('reminder.emptyUpcoming'),
+      footer: copy('reminder.footer') }} />;
 }
 
 const notifiedReminders = new WeakMap<CoreClient, Map<string, Set<string>>>();

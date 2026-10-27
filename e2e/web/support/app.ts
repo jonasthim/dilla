@@ -817,7 +817,7 @@ export function settingsGear(page: Page): Locator { return page.locator('.d-topb
  *  row's context menu. This right-clicks the row and picks the item by its copy key; focus returns to the row afterwards. */
 export async function channelRowMenuItem(page: Page, channel: string, key: string): Promise<void> {
   await channelRow(page, channel).click({ button: 'right' });
-  await page.getByRole('menu', { name: copy('nav.channel.menu'), exact: true }).getByRole('menuitem', { name: copy(key), exact: true }).click();
+  await page.getByRole('menu', { name: copy('nav.channel.menuOf', { name: channel }), exact: true }).getByRole('menuitem', { name: copy(key), exact: true }).click();
 }
 /** The channel header's Members button (named "Members" or "Members, {n}"), on a desktop or a phone. */
 export function membersToggle(page: Page): Locator { return page.locator('.d-channel-header [data-members-toggle], .d-phone-header [data-members-toggle]'); }

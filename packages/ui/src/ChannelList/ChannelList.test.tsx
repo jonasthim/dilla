@@ -489,6 +489,42 @@ describe('the row context menu (Ruling X: pins and edit channel)', () => {
       expect(onSelect).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
+  it('a long press that no click follows (a touch platform that sends none) does not eat the next tap', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(500); });
+      touch(row, 'pointerup');
+      // No click. The menu is dismissed, then a later ordinary tap opens a channel.
+      act(() => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); });
+      act(() => { vi.advanceTimersByTime(2000); });
+      const loot = screen.getByRole('button', { name: 'loot' });
+      touch(loot, 'pointerdown');
+      touch(loot, 'pointerup');
+      fireEvent.click(loot);
+      expect(onSelect).toHaveBeenCalledWith('t');
+    } finally { vi.useRealTimers(); }
+  });
+  it('a long press with no click is forgotten by the next pointerdown, even before its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(500); });
+      touch(row, 'pointerup');
+      act(() => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); });
+      const loot = screen.getByRole('button', { name: 'loot' });
+      touch(loot, 'pointerdown');
+      touch(loot, 'pointerup');
+      fireEvent.click(loot);
+      expect(onSelect).toHaveBeenCalledWith('t');
+    } finally { vi.useRealTimers(); }
+  });
   it('a short tap still opens the channel', () => {
     vi.useFakeTimers();
     try {

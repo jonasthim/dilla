@@ -1,5 +1,6 @@
 // The whole-branch fix wave of web-3 (wb-security.md, wb-client.md, wb-web-a11y.md): the shell's side.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { startDmCall } from '../../test/row-menu.ts';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import { A, BOB, callState, DM, GENV, ring, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../../test/fake-client.ts';
@@ -149,12 +150,13 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
 
   it('I2: the DM strip region exists before its notice, so a refusal is announced', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    const start = await main().findByRole('button', { name: 'call' });
+    await screen.findByRole('navigation', { name: t('shell.dms.label') });
     const region = document.querySelector('.dw-call-strip [role="status"]');
     expect(region).not.toBeNull();
     expect(region).toHaveTextContent('');
     app.module.startPageCall = failingStart('E_CALL_FULL') as unknown as typeof app.module.startPageCall;
-    await app.user.click(start);
+    // Ruling Z: the DM call is in the DM row's context menu.
+    await startDmCall(app.user, 'bob');
     await waitFor(() => expect(region).toHaveTextContent(t('voice.full')));
     expect(region?.isConnected).toBe(true);
   });
@@ -214,11 +216,11 @@ describe('keyboard, rings and the voice section (wb-web-a11y m1, m3, m4, m5)', (
     expect(join.closest('.d-slot')).not.toBeNull();
   });
 
-  it('m5: leaving from the dock on another DM focuses the @ tile, not that DM call button', async () => {
+  it('m5: leaving from the dock on another DM focuses the @ tile, not that DM\'s row', async () => {
     const app = await inVoice();
     window.history.pushState(null, '', `/dm/${DM}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
-    await main().findByRole('button', { name: 'call' });
+    await screen.findByRole('navigation', { name: t('shell.dms.label') });
     await app.user.click(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(document.activeElement).toHaveAccessibleName('direct messages'));
   });

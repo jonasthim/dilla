@@ -36,6 +36,13 @@ describe('renderCss', () => {
     expect(css).toMatch(/--text-tag: 0\.53125rem;/);
     expect(css).toContain('--tracking-soft: 0.04em;');
   });
+  it('emits the reminders popover values (task 6b fix round 1)', () => {
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--warn-tint:\s*rgba\(255,209,106,0\.14\);/);
+    expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--fg-chip:\s*#C9CED6;/);
+    expect(css).toContain('--shadow-popover: 0 20px 50px rgba(0,0,0,0.6);');
+    expect(css).toContain('--duration-popover: 200ms;');
+    expect(css).toMatch(/\[data-motion="reduced"\]\s*{[^}]*--duration-popover: 0ms;/);
+  });
   it('emits the control edges (task 6b, prototype parity in signal)', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge:\s*#2A303A;/);
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge-field:\s*#252A33;/);

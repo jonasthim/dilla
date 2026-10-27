@@ -74,7 +74,7 @@ describe('IconButton', () => {
     });
     // Except in the phone header's actions, drawn at the prototype's sizes (Jonas 2026-10-27).
     it('on a phone layout the hit area is 44 whatever the size (H4), outside the phone header\'s actions', () => {
-      expect(baseText()).toMatch(/\.d-app-shell\[data-layout="phone"\] :is\(\.d-btn, \.d-segmented__option, \.d-icon-button\):not\(\.d-phone-header__actions \*\) \{ min-height: 2\.75rem; min-width: 2\.75rem; \}/);
+      expect(baseText()).toMatch(/\.d-app-shell\[data-layout="phone"\] :is\(\.d-btn, \.d-segmented__option, \.d-icon-button\):not\(\.d-phone-header__actions \*, \.d-channel-list__head-btn\) \{ min-height: 2\.75rem; min-width: 2\.75rem; \}/);
     });
   });
 });

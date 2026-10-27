@@ -81,7 +81,8 @@ describe('the copy rules', () => {
     expect(en['shell.dm.composer']).toBe('message @{name}');
     // Flow 07 and 04 add the start-server, empty-DM, empty-log and GIF copy; Bot moderation adds recovery copy.
     // The later GIF attachment label adds one more shell key.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(195);
+    // Task 6b fix round 1 (Ruling Z): the DM header topic adds shell.dm.topic, topicHandle, topicGroup and you.
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(199);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);

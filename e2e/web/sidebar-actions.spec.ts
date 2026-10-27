@@ -110,7 +110,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await page2.keyboard.press('Escape');
     await expect(settings).toBeHidden();
 
-    // 3. At 390x844: the header has the gear and search, no menu; the list header has the "+" for Ada only.
+    // 3. At 390x844 (Ruling AB): the head has the ⌄ (server settings) alone, no search, no menu; the list header has the "+" for Ada only.
     await page.setViewportSize({ width: 390, height: 844 });
     await page2.setViewportSize({ width: 390, height: 844 });
     for (const p of [page, page2]) {
@@ -118,7 +118,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
       await expect(backButton).toBeVisible({ timeout: WAIT });
       await backButton.click();
       await expect(button(p, 'admin.open')).toBeVisible({ timeout: WAIT });
-      await expect(button(p, 'search.open')).toBeVisible();
+      await expect(p.locator('.d-channel-list__head').getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
       await expect(button(p, 'nav.server.menu')).toHaveCount(0);
       await expect(button(p, 'admin.leave.open')).toHaveCount(0);
     }

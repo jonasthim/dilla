@@ -52,8 +52,8 @@ describe('pins (Q20, ruling 23)', () => {
   });
   it('titles a DM’s pins by the DM’s name', async () => {
     const { fake, user } = renderConversation({ dm: true });
-    // A DM has no channel row menu: its header keeps the pins button (Ruling X is about a channel's header).
-    await user.click(within(document.querySelector<HTMLElement>('.d-channel-header')!).getByRole('button', { name: 'pinned' }));
+    // Ruling Z: a DM's pins are in its row's context menu, as a channel's are.
+    await rowMenuItem(user, 'bob', 'pinned', 'dms');
     expect(screen.getByRole('dialog', { name: 'Pinned with bob' })).toBeInTheDocument();
     expect(fake.callsOf('loadPins')).toEqual([{ m: 'loadPins', channelId: DM }]);
   });

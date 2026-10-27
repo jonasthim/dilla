@@ -133,7 +133,8 @@ const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea,
  *  so they are secondary; the header's back and call dot stay 44. */
 const PRIMARY = [
   '.d-tab-bar__link', '.d-phone-header__back', '.d-phone-header__dot', '.d-chrow', '.d-voice-row', '.d-channel-list__cat-head', '.d-voice-row__join button',
-  '.d-channel-list__cat-add button', '.d-channel-list__head button', '.d-composer button',
+  // Ruling AB: the server head's ⌄ is the prototype's 26px (secondary tier); the DM head's "message someone" stays primary.
+  '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)', '.d-composer button',
   '.d-call-bar button', '.d-call-stage__controls button',
 ].join(', ');
 
@@ -252,6 +253,8 @@ const DESKTOP_BAR = TOP_BAR + BAR;
 const SIDEBAR_HEAD = TOP_BAR + 14 + 28.5 + 8;
 const SIDEBAR_HEAD_DMS = TOP_BAR + 14 + 28 + 8;
 const PHONE_LIST_HEAD = 14 + 44 + 8;
+/** Ruling AB: a server's phone head holds only the 26px ⌄, so it is the desktop's head without the top bar: 14 + 28.5 + 8. */
+const PHONE_SERVER_HEAD = 14 + 28.5 + 8;
 const PHONE_HEADER = 52;
 async function expectBar(page: Page, tag: string, name: string, bar: string, want: number, from?: string): Promise<void> {
   const got = await barBottom(page, bar, from);
@@ -528,8 +531,8 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   await expect(settings).toBeHidden({ timeout: WAIT });
 }
 
-/** The private inbox stays reachable when its one trigger moves between existing header slots; on a phone's channel it is the
- *  Activity tab's first row (Ruling X: the channel header has no "⋯"). Focus returns to the trigger. */
+/** On a desktop the top bar's bell opens the reminders popover (README §6.7): non-modal, under the bell; Escape closes it and
+ *  gives focus back to the bell. A phone has no reminders button anywhere (Jonas 2026-10-27): a due reminder is an Activity row. */
 async function expectReminderInbox(page: Page, state: string): Promise<void> {
   await test.step(`reminder inbox on ${state}`, async () => {
     const before = page.url();
@@ -537,13 +540,19 @@ async function expectReminderInbox(page: Page, state: string): Promise<void> {
     await expect(opener).toHaveCount(1);
     await expect(opener).toBeVisible();
     await opener.click();
-    const inbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
+    const inbox = page.getByRole('dialog', { name: 'Reminders', exact: true });
     await expect(inbox).toHaveCount(1);
     await expect(inbox).toBeVisible();
-    await inbox.getByRole('button', { name: 'Close reminders', exact: true }).click();
+    await expect(page.locator('.d-topbar__bell')).toContainText('Reminders');
+    await page.keyboard.press('Escape');
     await expect(inbox).toBeHidden();
     await expect(opener).toBeFocused();
     await expect(page).toHaveURL(before);
+  });
+}
+async function expectNoPhoneReminders(page: Page, state: string): Promise<void> {
+  await test.step(`no reminders button on ${state}`, async () => {
+    await expect(page.getByRole('button', { name: 'Reminders', exact: true })).toHaveCount(0);
   });
 }
 
@@ -643,7 +652,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await tab('home.tab').click();
   await expect(nav(page).getByRole('button', { name: new RegExp(`^${escapeRegExp(RAID)}`) })).toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list');
-  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', PHONE_LIST_HEAD);
+  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', PHONE_SERVER_HEAD);
   await expectTargets(page, tag, 'the home tab');
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {
     // The prototype's 38px tiles on a phone too (Jonas 2026-10-27, supersedes Ruling N).
@@ -678,7 +687,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
     await expectBar(page, tag, 'the phone header (voice)', '.d-phone-header', PHONE_HEADER);
     await expectTargets(page, tag, 'the voice stage');
     await expectNoOverflow(page, tag, 'the voice stage');
-    await expectReminderInbox(page, `idle voice at ${tag}`);
+    await expectNoPhoneReminders(page, `idle voice at ${tag}`);
     await toList();
   }
 
@@ -692,7 +701,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await pane('view');
   await expectBar(page, tag, 'the phone header (direct message)', '.d-phone-header', PHONE_HEADER);
   await expectNoOverflow(page, tag, 'a direct message');
-  await expectReminderInbox(page, `direct message at ${tag}`);
+  await expectNoPhoneReminders(page, `direct message at ${tag}`);
   await toList();
 
   // The activity and You tabs remain app destinations; You now has one settings entry point.
@@ -700,7 +709,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expect(page.locator('.d-phone-header')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header', PHONE_HEADER);
   await expectTargets(page, tag, 'the activity tab');
-  await expectReminderInbox(page, `the activity tab at ${tag}`);
+  await expectNoPhoneReminders(page, `the activity tab at ${tag}`);
   await tab('nav.tab.you').click();
   await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
   await expectBar(page, tag, 'the phone header (you)', '.d-phone-header', PHONE_HEADER);
@@ -931,12 +940,11 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await dmsNav(page).getByRole('button', { name: /^Cy/ }).click();
     await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
     const header = (await boxes(page, '.d-channel-header'))[0];
-    await expect.soft(page.locator('.d-channel-header').getByRole('button', { name: copy('call.start'), exact: true }), 'N1 the call is a button in the DM header').toBeVisible({ timeout: WAIT });
-    const callBox = (await boxes(page, '.d-channel-header button[aria-label]')).find(b => b.t === copy('call.start'));
-    if (header !== undefined && callBox !== undefined) {
-      expect.soft(callBox.y >= header.y - TOL && callBox.b <= header.b + TOL && callBox.r <= header.r + TOL, 'N1 the call button stands inside the header').toBe(true);
-      expect.soft(callBox.w, 'N1 the call is an icon, not a text button').toBeLessThanOrEqual(44 + TOL);
-    }
+    // Ruling Z (Jonas 2026-10-27): the DM header is the prototype's (name and topic); the call is the DM row's menu item.
+    await expect.soft(page.locator('.d-channel-header').getByRole('button'), 'N1 the DM header has no buttons').toHaveCount(0);
+    await dmsNav(page).getByRole('button', { name: /^Cy/ }).click({ button: 'right' });
+    await expect.soft(page.getByRole('menuitem', { name: copy('call.start'), exact: true }), 'N1 the call is in the DM row menu').toBeVisible({ timeout: WAIT });
+    await page.keyboard.press('Escape');
     expect.soft((await boxes(page, '.dw-call-strip')).map(b => b.h), 'N1 no band under the header: the call strip is collapsed').toEqual((await boxes(page, '.dw-call-strip')).map(() => 0));
     const log = (await boxes(page, '[role="log"]'))[0];
     if (header !== undefined && log !== undefined) expect.soft(log.y - header.b, 'N1 the log starts directly under the header').toBeLessThanOrEqual(8);
@@ -984,7 +992,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
-    await expectReminderInbox(cy, 'joined voice at 390x844');
+    await expectNoPhoneReminders(cy, 'joined voice at 390x844');
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];
     const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
     expect.soft(tabs !== undefined && controls !== undefined, 'D4 the voice controls and tab bar are on screen').toBe(true);

@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChannelList } from './ChannelList.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
-import { IconButton } from '../IconButton/IconButton.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 
@@ -193,7 +193,8 @@ const SIGNAL_VOICE = {
 const SIGNAL_ARGS = {
   title: 'Midgard Crew', stats: [{ text: '3 online', live: true }, { text: '5 in voice' }], activeId: 'general', newLabel: (n: string) => `${n} new`, voice: SIGNAL_VOICE,
   categories: [{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }], onToggleCategory: () => {},
-  headerAction: <IconButton icon="chevron-down" size={28} label="server settings" />,
+  // The head the web passes (packages/web/src/screens/Shell.tsx headerAction, Ruling AB): the 26px ⌄ that opens server settings.
+  headerAction: <Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>,
   channels: [
     { id: 'general', name: 'general', kind: 'text', readable: false },
     { id: 'hv', name: 'general', kind: 'voice', readable: false },

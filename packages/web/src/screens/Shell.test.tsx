@@ -96,7 +96,7 @@ it('keeps the reminder inbox entry mounted from DM and root routes without a sel
   const { user, view } = setup('/', { communities: [] });
   expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Reminders' }));
-  expect(await screen.findByRole('dialog', { name: 'Your reminders' })).toBeInTheDocument();
+  expect(await screen.findByRole('dialog', { name: 'Reminders' })).toBeInTheDocument();
   view.unmount();
   replaceHistoryState(null, '', `/dm/${'ab'.repeat(16)}`);
   const fake = new FakeClient();
@@ -1989,10 +1989,20 @@ for (const [label, route] of [
     expect(screen.getAllByRole('button', { name: 'Reminders' })).toHaveLength(1);
     expect(trigger.closest('.d-topbar')).not.toBeNull();
     expect(trigger.parentElement).not.toBe(document.querySelector('.d-app-shell__main'));
+    // README §6.7: the bell opens the non-modal reminders popover under it (Due / Upcoming); Escape gives focus back to the bell.
     await user.click(trigger);
-    expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
-    await user.click(screen.getByRole('button', { name: 'Close reminders' }));
+    const popover = screen.getByRole('dialog', { name: 'Reminders' });
+    expect(popover).toHaveAttribute('aria-modal', 'false');
+    expect(trigger.closest('.d-topbar__bell')).toContainElement(popover);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(within(popover).getByRole('tab', { name: /^Upcoming/ })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
     expect(trigger).toHaveFocus();
+    // A second press on the bell toggles it shut.
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
   });
 }
 

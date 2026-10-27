@@ -88,7 +88,7 @@
 .d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
 /* web3.9 (H4, R9): the primary tier is 44 x 44 on a phone layout, whatever size the control is drawn at on a desktop. The phone
    header's actions are drawn at the prototype's sizes instead (Jonas 2026-10-27; PhoneHeader.css). */
-.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *) { min-height: 2.75rem; min-width: 2.75rem; }
+.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn) { min-height: 2.75rem; min-width: 2.75rem; }
 /* The list heading of a phone tab (activity, you): mono, not the display serif, which is the server name's alone. */
 .d-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); color: var(--fg); }
 /* A ring above the pane's header already cleared the notch (it pads by the safe area and the grid moves down by it). */

@@ -106,4 +106,4 @@
 `layout.search.hint.close='to close'`
 `home.tile='direct messages'`
 `home.tileLabel='direct messages, unread {unread}, mentions {mentions}'`
-`home.tab='home'`
+`home.tab='Home'`

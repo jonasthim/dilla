@@ -74,6 +74,7 @@
  *   icons/square.svg  ea98f50de2f267b4d866a77d4425fa3da2dec239d3c13a0e2cbde0bdf95dfe37
  *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
  *   icons/house.svg  3ce1e3be357b3d704af39405df420cfd8ebc6b5d73b017f95492f43e09d07dc9
+ *   icons/alarm-clock.svg  b6d5c6298468151d429c184ccb404fae746f4abe34579289d9946aab167a078b
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -444,6 +445,14 @@ export const ICONS = {
   'house': [
     ['path', { d: 'M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8' }],
     ['path', { d: 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }],
+  ],
+  'alarm-clock': [
+    ['circle', { cx: '12', cy: '13', r: '8' }],
+    ['path', { d: 'M12 9v4l2 2' }],
+    ['path', { d: 'M5 3 2 6' }],
+    ['path', { d: 'm22 6-3-3' }],
+    ['path', { d: 'M6.38 18.7 4 21' }],
+    ['path', { d: 'M17.64 18.67 20 21' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

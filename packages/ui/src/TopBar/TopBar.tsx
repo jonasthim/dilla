@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import { Icon } from '../Icon/Icon.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import './TopBar.css';
@@ -14,6 +14,9 @@ export interface TopBarProps {
   /** Reminders that are due; the bell draws a count badge above 0. */
   remindersDue: number;
   onReminders(): void;
+  /** The reminders popover (README §6.7) while it is open; it hangs under the bell, which then reads as pressed. */
+  reminders?: ReactNode;
+  remindersOpen?: boolean;
   onSettings(): void;
   /** `voice` describes the chip (its name is its text); `remindersDue` words the badge for assistive tech. */
   labels: { reminders: string; settings: string; voice: string; remindersDue?(count: number): string };
@@ -34,7 +37,7 @@ export function BrandMark({ size = 'page' }: { size?: 'bar' | 'page' }) {
  * The Signal top bar (README §5.2), 44px over the whole desktop shell: the wordmark, the search trigger in the centre, and on
  * the right the voice chip (in a call only), the reminders bell and the settings gear. A phone has none (§5.10).
  */
-export function TopBar({ searchLabel, searchShortcut, onSearch, voice, remindersDue, onReminders, onSettings, labels }: TopBarProps) {
+export function TopBar({ searchLabel, searchShortcut, onSearch, voice, remindersDue, onReminders, reminders, remindersOpen = false, onSettings, labels }: TopBarProps) {
   const id = useId();
   const voiceDesc = `${id}-voice`;
   const dueDesc = `${id}-due`;
@@ -60,10 +63,11 @@ export function TopBar({ searchLabel, searchShortcut, onSearch, voice, reminders
           </>
         )}
         <span className="d-topbar__bell">
-          <IconButton icon="bell" size={28} label={labels.reminders} aria-haspopup="dialog" onClick={onReminders}
-            aria-describedby={due ? dueDesc : undefined} />
+          <IconButton icon="bell" size={28} label={labels.reminders} aria-haspopup="dialog" aria-expanded={remindersOpen}
+            data-open={remindersOpen ? 'true' : undefined} onClick={onReminders} aria-describedby={due ? dueDesc : undefined} />
           {due ? <span className="d-topbar__badge" aria-hidden="true">{remindersDue > 99 ? '99+' : remindersDue}</span> : null}
           {due ? <span id={dueDesc} hidden>{labels.remindersDue?.(remindersDue) ?? String(remindersDue)}</span> : null}
+          {remindersOpen ? reminders : null}
         </span>
         <IconButton icon="settings" size={28} className="d-topbar__gear" label={labels.settings} onClick={onSettings} />
       </div>

@@ -14,6 +14,8 @@ export function Keyboard(): React.JSX.Element {
       { action: t('search.scope.channel'), keys: [t('keyboard.searchChannel')] },
       { action: t('keyboard.muteAction'), keys: [t('keyboard.mute')] },
       { action: t('keyboard.deafenAction'), keys: [t('keyboard.deafen')] },
+      // Ruling Z: the DM call lives in the DM row's menu and under this chord, not as a header button.
+      { action: t('keyboard.dmCallAction'), keys: [t('keyboard.dmCall')] },
     ]} />
     <p><button type="button" className="d-link" onClick={() => void navigate({ name: 'settings', section: 'voice', from: null }, true)}>{t('settings.nav.voice')}</button></p>
   </section>;

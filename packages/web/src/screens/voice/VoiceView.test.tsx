@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dmMenuItems, startDmCall } from '../../test/row-menu.ts';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { en, t } from '../../strings/index.ts';
 import {
@@ -484,7 +485,7 @@ describe('review round 1', () => {
 
   it('I3: the outgoing ring is announced in the dock status, once per change', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await startDmCall(app.user, 'bob');
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: ['bob'], declined: [], notRung: [] } }));
     const status = () => document.querySelector('.d-voice-dock [role="status"]');
@@ -556,9 +557,9 @@ describe('review round 1', () => {
     const app = renderVoiceShell({ path: `/dm/${DM}`, sendBlocks: { [DM]: block },
       call: callState({ phase: 'blocked', channelId: DM, error: { ...UMK, code: 'E_DEVICE_UNLISTED' }, changedUser: null }) });
     expect(await main().findByText(t('voice.blockedJoin'))).toBeInTheDocument();
-    expect(main().queryByRole('button', { name: 'call' })).toBeNull();
+    expect(await dmMenuItems(app.user, 'bob')).not.toContain('call');
     act(() => app.client.publish('sendBlocks', {}));
-    expect(await main().findByRole('button', { name: 'call' })).toBeInTheDocument();
+    await waitFor(async () => expect(await dmMenuItems(app.user, 'bob')).toContain('call'));
   });
 
   it('a changed identity keeps the join hidden even with the sendBlocks entry clear', () => {
@@ -611,7 +612,7 @@ describe('review round 1', () => {
 
   it('I7: in a DM call a "messages" toggle swaps the stage for the log and composer', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await startDmCall(app.user, 'bob');
     await main().findByRole('toolbar', { name: 'call controls' });
     const box = document.querySelector('.dw-dm-call')!;
     expect(box).toHaveAttribute('data-view', 'stage');
@@ -794,7 +795,7 @@ describe('push to talk in the user panel (web3.9)', () => {
 describe('WEB-DOCK review: a DM call stage carries the hearing line', () => {
   it('shows "hearing {attached} of {expected}" under a DM call\'s controls', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await startDmCall(app.user, 'bob');
     await main().findByRole('toolbar', { name: 'call controls' });
     expect(document.querySelector('.dw-dm-call [data-audio-expected]')).toBeNull();
     act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
@@ -1334,7 +1335,7 @@ describe('the voice stage header (web3.9)', () => {
 
   it('a DM call stage has no channel header', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await startDmCall(app.user, 'bob');
     await main().findByRole('toolbar', { name: 'call controls' });
     expect(document.querySelector('.d-call-stage__bar')).toBeNull();
   });

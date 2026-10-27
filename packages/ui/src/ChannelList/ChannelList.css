@@ -9,7 +9,7 @@
 .d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; padding: 0; }
 /* The head's icon buttons: 26px on desktop (the prototype's chevron), 44px on a phone. */
 .d-channel-list__head-btn { flex: none; height: 1.625rem; min-width: 1.625rem; min-height: 1.625rem; padding: 0; justify-content: center; }
-[data-layout="phone"] .d-channel-list__head-btn { height: 2.75rem; min-width: 2.75rem; min-height: 2.75rem; }
+/* Ruling AB: the ⌄ stays the prototype's 26px on a phone too (Jonas 2026-10-27). */
 /* The stat line: 10.5px --fg-3, padding 0 14px 10px, 10px gaps; the first item after a 6px --ok dot. */
 .d-channel-list__stats { display: flex; flex: none; gap: 10px; margin: 0; padding: 0 14px 10px; font-size: var(--text-meta); color: var(--fg-3); white-space: nowrap; overflow: hidden; }
 .d-channel-list__stat { display: inline-flex; align-items: center; gap: 10px; }

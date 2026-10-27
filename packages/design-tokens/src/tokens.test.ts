@@ -70,7 +70,7 @@ describe('structural tokens', () => {
   });
   it('states the type scale in rem at a 16px root, never px', () => {
     expect(structural.text).toEqual({
-      mini: '0.46875rem', micro: '0.625rem', meta: '0.65625rem', tag: '0.53125rem', badge: '0.5625rem', chip: '0.59375rem', xs: '0.6875rem', btn: '0.71875rem', ui: '0.75rem', sm: '0.78125rem', input: '0.8125rem', base: '0.84375rem',
+      nano: '0.5rem', mini: '0.46875rem', micro: '0.625rem', meta: '0.65625rem', tag: '0.53125rem', badge: '0.5625rem', chip: '0.59375rem', xs: '0.6875rem', btn: '0.71875rem', ui: '0.75rem', sm: '0.78125rem', input: '0.8125rem', base: '0.84375rem',
       md: '0.875rem', lg: '1.0625rem', title: '1.1875rem', xl: '1.375rem',
     });
     for (const [step, size] of Object.entries(structural.text)) {

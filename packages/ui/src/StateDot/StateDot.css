@@ -11,9 +11,12 @@
 .d-state-dot[data-tone="pending"] { border: 1.5px dashed var(--fg-3); }
 /* A presence dot (avatar corner) that is off is the prototype's solid invisible grey. */
 .d-avatar__presence .d-state-dot[data-tone="off"] { border: 0; background: var(--fg-3); }
-:root:is([data-theme="light"], [data-theme="high-contrast"]) .d-state-dot[data-tone="idle"] { background: linear-gradient(90deg, var(--warn) 50%, transparent 50%); border: 1.5px solid var(--warn); }
-:root:is([data-theme="light"], [data-theme="high-contrast"]) .d-state-dot[data-tone="dnd"]::after { content: ""; position: absolute; top: 50%; left: 20%; width: 60%; height: 1.5px; transform: translateY(-50%); background: var(--bg); }
-:root:is([data-theme="light"], [data-theme="high-contrast"]) .d-avatar__presence .d-state-dot[data-tone="off"] { border: 1.5px solid var(--fg-3); background: transparent; }
+/* Light and high-contrast shapes; forced colours (below) always wins, so these stay out of it. */
+@media not (forced-colors: active) {
+  :root:is([data-theme="light"], [data-theme="high-contrast"]) .d-state-dot[data-tone="idle"] { background: linear-gradient(90deg, var(--warn) 50%, transparent 50%); border: 1.5px solid var(--warn); }
+  :root:is([data-theme="light"], [data-theme="high-contrast"]) .d-state-dot[data-tone="dnd"]::after { content: ""; position: absolute; top: 50%; left: 20%; width: 60%; height: 1.5px; transform: translateY(-50%); background: var(--bg); }
+  :root:is([data-theme="light"], [data-theme="high-contrast"]) .d-avatar__presence .d-state-dot[data-tone="off"] { border: 1.5px solid var(--fg-3); background: transparent; }
+}
 @media (forced-colors: active) {
   .d-state-dot { border: 1.5px solid CanvasText; }
   .d-state-dot[data-tone="ok"], .d-state-dot[data-tone="warn"], .d-state-dot[data-tone="danger"], .d-state-dot[data-tone="dnd"] { background: CanvasText; }

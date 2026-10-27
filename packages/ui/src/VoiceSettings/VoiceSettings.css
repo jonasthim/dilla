@@ -5,7 +5,9 @@
 }
 .d-voice-settings__select:hover { border-color: var(--fg-3); }
 .d-voice-settings__key { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.d-voice-settings__kbd { min-width: 1.75rem; padding: 0.125rem 0.5rem; font: inherit; font-size: var(--text-sm); text-align: center; color: var(--fg); border: 1px solid var(--control-edge-key); border-radius: var(--r-md); }
+/* The push-to-talk key: the prototype's keyBd, #252A33 (--control-edge-field), the accent while it listens for a key. */
+.d-voice-settings__kbd { min-width: 1.75rem; padding: 0.125rem 0.5rem; font: inherit; font-size: var(--text-sm); text-align: center; color: var(--fg); border: 1px solid var(--control-edge-field); border-radius: var(--r-md); }
+.d-voice-settings__kbd[data-listening="true"] { border-color: var(--accent); }
 .d-voice-settings__kbd[data-empty="true"] { color: var(--fg-2); border-style: dashed; }
 .d-voice-settings .d-voice-settings__capture { height: auto; min-height: 2rem; }
 /* The capture prompt is a status region that is always present; empty, it takes no room. */

@@ -395,7 +395,9 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
+      <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name}
+        // Ruling Z: the prototype's voice header: the name and its topic ("{n} in voice" once joined, else "voice channel"), no controls.
+        topic={joined ? t('voice.count', { n: v.voice?.[channelId]?.participants.length ?? 0 }) : t('voice.header.idle')} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
         controls={joined ? <><Controls v={v} paused={paused} dm={dm} /><ShareSound v={v} /><StageLines v={v} /></>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}

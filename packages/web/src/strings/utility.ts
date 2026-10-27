@@ -15,9 +15,12 @@ export const utility = {
   'reminder.preview': 'This will be due {preview}.', 'reminder.byteCount': '{current} of 1500 bytes', 'reminder.invalid': 'Choose a valid time from 1 minute to 365 days away and enter reminder text.',
   'reminder.ambiguous': 'This local time occurs twice. Choose which time you mean.', 'reminder.earlier': 'Earlier · {offset}', 'reminder.later': 'Later · {offset}', 'reminder.created': 'Reminder set.',
   'reminder.uncertain': 'The reminder may have been set. Check your reminders before trying again.', 'reminder.list': '{count} reminder(s): {items}', 'reminder.empty': 'You have no reminders.',
-  'reminder.cancelled': 'Reminder cancelled.', 'reminder.dismissed': 'Reminder dismissed.', 'reminder.inbox': 'Reminders', 'reminder.inboxTitle': 'Your reminders', 'reminder.due': 'Due', 'reminder.upcoming': 'Scheduled',
+  'reminder.cancelled': 'Reminder cancelled.', 'reminder.dismissed': 'Reminder dismissed.', 'reminder.inbox': 'Reminders', 'reminder.inboxTitle': 'Your reminders', 'reminder.due': 'Due', 'reminder.upcoming': 'Upcoming',
   'reminder.loading': 'Loading reminders…', 'reminder.loadError': 'Some reminders could not be loaded. Try again shortly.', 'reminder.emptyInbox': 'No reminders are due or scheduled.',
   'reminder.cancel': 'Cancel', 'reminder.dismiss': 'Dismiss', 'reminder.source': 'Open source message', 'reminder.sourceUnavailable': 'The source message is no longer available.',
   'reminder.more': 'Load more', 'reminder.badge': '{count} due', 'reminder.close': 'Close reminders', 'reminder.uncertainMutation': 'The change may have been saved. Refresh reminders before trying again.',
+  'reminder.emptyDue': 'Nothing due.', 'reminder.emptyUpcoming': 'No upcoming reminders. Try /remind.',
+  'reminder.footer': 'Private to you, across your devices. Add one with /remind.', 'reminder.today': 'Today, {time}', 'reminder.tomorrow': 'Tomorrow, {time}',
+  'reminder.tabs': 'Reminder lists',
   'reminder.unavailable': 'Reminders are unavailable in this community.', 'reminder.conflict': 'This reminder changed. Refresh the inbox before trying again.',
 } as const;

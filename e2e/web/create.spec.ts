@@ -248,7 +248,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
         sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right, width: sidebar.width } };
     });
     // Signal §5.1: the sidebar's default width is the prototype's 244 (--sidebar-w).
-    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 244 px (${JSON.stringify(gearFit.sidebar)})`).toBeLessThanOrEqual(244);
+    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 244 px (${JSON.stringify(gearFit.sidebar)})`).toBeCloseTo(244, 0);
     expect(gearFit.left).toBeGreaterThanOrEqual((gearFit.sidebar?.left ?? 0) - 0.5);
     expect(gearFit.right).toBeLessThanOrEqual((gearFit.sidebar?.right ?? 0) + 0.5);
     expect(gearFit.width).toBeGreaterThanOrEqual(24);

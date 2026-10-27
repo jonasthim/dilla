@@ -147,12 +147,13 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByRole('region', { name: 'members of Midgard' })).toBeNull();
   });
 
-  it('the sidebar header holds one action, the gear named "server settings", beside the name; no leave button', () => {
+  // Ruling AB: the prototype's ⌄ (chevron-down), named "server settings", is the head's one action.
+  it('the sidebar header holds one action, the ⌄ named "server settings", beside the name; no leave button', () => {
     setup();
     const nav = screen.getByRole('navigation', { name: 'channels' });
     const gear = within(nav).getByRole('button', { name: 'server settings' });
     expect(gear.closest('.d-channel-list__head')).toContainElement(screen.getByRole('heading', { level: 1, name: 'Midgard' }));
-    expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
+    expect(gear.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
     expect(gear.textContent).toBe('');
     expect(screen.queryByRole('group', { name: 'server actions' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'leave server' })).toBeNull();

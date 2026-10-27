@@ -203,20 +203,21 @@ describe('utility command provider', () => {
     expect(f.requests.find(row => row.operation === 83)?.requestId).toMatch(/^[0-9a-f]{32}$/u);
     mounted.unmount();
   });
-  it('allows cancelling a due reminder from the inbox', async () => {
+  // README §6.7 / the prototype: a due reminder offers Dismiss (op 83), an upcoming one Cancel (op 82), each on its tab.
+  it('cancels an upcoming reminder from the Upcoming tab; a due one offers Dismiss only', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Cancel me' } }, commandContext(f.client, 'ad'.repeat(16))); });
     await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
-    f.markReminderDue(); await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ae'.repeat(16))); });
+    await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ae'.repeat(16))); });
     await user.click(screen.getByRole('button', { name: /Reminders/ })); await screen.findByText('Cancel me');
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /^Upcoming/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Cancel' })); await waitFor(() => expect(f.requests.some(row => row.operation === 82)).toBe(true));
     mounted.unmount();
   });
   it('does not dispatch an inbox mutation after the live account changes during capability lookup', async () => {
     const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
     await real.reminderCreate({ requestId: 'b3'.repeat(16), whenKind: 0, when: 3600, text: 'Owner scoped', timezone: 'UTC', sourceChannelId: CHANNEL });
-    f.markReminderDue();
     let hold = false; let release!: (value: Awaited<ReturnType<typeof real.capabilities>>) => void; const capProbe = vi.fn(); const cancel = vi.fn((input: Parameters<typeof real.reminderCancel>[0]) => real.reminderCancel(input));
     const delayed = new Promise<Awaited<ReturnType<typeof real.capabilities>>>(resolve => { release = resolve; });
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, capabilities: () => { capProbe(); return hold ? delayed : real.capabilities(); }, reminderCancel: cancel });
@@ -231,9 +232,10 @@ describe('utility command provider', () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Still private' } }, commandContext(f.client, 'af'.repeat(16))); });
     await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
-    await user.click(screen.getByRole('button', { name: 'Reminders' })); await screen.findByRole('button', { name: 'Open source message' });
+    // The text is the link to its source message (a button drawn as text); a source that went away leaves plain text.
+    await user.click(screen.getByRole('button', { name: 'Reminders' })); await screen.findByRole('button', { name: 'Still private' });
     act(() => f.client.set(`channels:${COMMUNITY}`, f.client.get(`channels:${COMMUNITY}`)!.map(row => ({ ...row, group: 'removed' })) as never)); mounted.rerenderProbe();
-    expect(screen.queryByRole('button', { name: 'Open source message' })).not.toBeInTheDocument(); expect(screen.getByText('Still private')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Still private' })).not.toBeInTheDocument(); expect(screen.getByText('Still private')).toBeInTheDocument();
     mounted.unmount();
   });
 
@@ -242,6 +244,22 @@ describe('utility command provider', () => {
     await waitFor(() => expect(mounted.captured.value).toBeDefined());
     expect(screen.getByRole('button', { name: 'Reminders' })).toBeInTheDocument();
     expect(mounted.captured.value!.handlers.remind).toBeUndefined();
+    mounted.unmount();
+  });
+  // e2e slash-commands (reminders sync): opened while the list still loads, the popover's tab follows the list once it arrives.
+  it('opened while loading, the popover lands on Due once a due reminder arrives', async () => {
+    const user = userEvent.setup(); const f = utilityFixture();
+    let release!: (page: { items: ReminderSummary[]; nextCursor: Uint8Array | null }) => void;
+    const pending = new Promise<{ items: ReminderSummary[]; nextCursor: Uint8Array | null }>(resolve => { release = resolve; });
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ version: 1, installationId: INSTALLATION, botUserId: BOT, supportedOperations: [3, 80, 81, 82, 83, 84] }),
+      reminderList: () => pending } as unknown as BotUtilities);
+    const mounted = mount(f.client, null);
+    await user.click(screen.getByRole('button', { name: /Reminders/ }));
+    expect(screen.getByRole('tab', { name: /^Upcoming/ })).toHaveAttribute('aria-selected', 'true');
+    release({ items: [{ id: '01'.padStart(32, '0'), communityId: COMMUNITY, text: 'Due soon', createdAt: 1_800_000_000n, dueUnixSeconds: 1_800_000_001n,
+      timezone: 'UTC', sourceChannelId: CHANNEL, sourceThreadId: null, state: 'due', revision: 1n }], nextCursor: null });
+    expect(await screen.findByText('Due soon')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /^Due/ })).toHaveAttribute('aria-selected', 'true');
     mounted.unmount();
   });
   it('loads every page at the 100 reminder quota, including the last records', async () => {
@@ -257,8 +275,11 @@ describe('utility command provider', () => {
     const mounted = mount(f.client, null);
     await waitFor(() => expect(listPage).toHaveBeenCalledTimes(5));
     await user.click(screen.getByRole('button', { name: /Reminders/ }));
-    expect(await screen.findByText('Reminder 100')).toBeInTheDocument(); expect(screen.getByText('Reminder 81')).toBeInTheDocument();
-    expect(screen.getAllByRole('listitem')).toHaveLength(100); expect(screen.getByRole('button', { name: /33 due/ })).toBeInTheDocument(); mounted.unmount();
+    // 33 of them are due (the Due tab, picked first); the other 67 are on Upcoming.
+    expect(await screen.findByText('Reminder 81')).toBeInTheDocument(); expect(screen.getAllByRole('listitem')).toHaveLength(33);
+    expect(screen.getByRole('button', { name: /33 due/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: /^Upcoming/ }));
+    expect(screen.getByText('Reminder 100')).toBeInTheDocument(); expect(screen.getAllByRole('listitem')).toHaveLength(67); mounted.unmount();
   });
   it('pages 100 long single-record responses through the real BotUtilities adapter', async () => {
     const f = utilityFixture(); const base = f.client.handler; const pageRequests: Uint8Array[] = [];
@@ -765,7 +786,7 @@ describe('byte-bounded utility discovery and reconciliation', () => {
   });
 });
 
-it('keeps the reminder inbox dialog mounted when its trigger moves between action slots', async () => {
+it('keeps the reminders popover open, once, when its trigger moves between action slots', async () => {
   const f = utilityFixture(); const user = userEvent.setup();
   function Relocating({ sidebar }: { sidebar: boolean }) {
     const provider = useUtilityCommandProvider(f.client, sidebar ? null : COMMUNITY);
@@ -773,10 +794,10 @@ it('keeps the reminder inbox dialog mounted when its trigger moves between actio
   }
   const mounted = render(<Relocating sidebar={false} />);
   await user.click(screen.getByRole('button', { name: 'Reminders' }));
-  const dialog = screen.getByRole('dialog', { name: 'Your reminders' });
+  expect(screen.getByRole('dialog', { name: 'Reminders' })).toBeInTheDocument();
   mounted.rerender(<Relocating sidebar />);
-  expect(screen.getByRole('dialog', { name: 'Your reminders' })).toBe(dialog);
-  expect(screen.getAllByRole('dialog', { name: 'Your reminders' })).toHaveLength(1);
-  await user.click(screen.getByRole('button', { name: 'Close reminders' }));
-  expect(screen.getByRole('button', { name: 'Reminders' })).toHaveFocus();
+  expect(screen.getAllByRole('dialog', { name: 'Reminders' })).toHaveLength(1);
+  act(() => { screen.getByRole('dialog', { name: 'Reminders' }).querySelector<HTMLElement>('[role="tab"]')?.focus(); });
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
 });

@@ -152,11 +152,19 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       openMenu(c, e.currentTarget, { x: box.left + 8, y: box.bottom });
     },
     onPointerDown: (e: PointerEvent<HTMLLIElement>) => {
+      // A new press forgets a long press whose closing click never came (a platform that sends none after a context menu).
+      swallowClick.current = false;
       if (e.pointerType !== 'touch') return;
       const li = e.currentTarget;
       const at = { x: e.clientX, y: e.clientY };
       if (press.current !== null) clearTimeout(press.current.timer);
-      press.current = { x: at.x, y: at.y, timer: setTimeout(() => { press.current = null; swallowClick.current = true; openMenu(c, li, at); }, 500) };
+      press.current = { x: at.x, y: at.y, timer: setTimeout(() => {
+        press.current = null;
+        swallowClick.current = true;
+        // The click that ends a long press comes at once or not at all: after a second, nothing is left to swallow.
+        setTimeout(() => { swallowClick.current = false; }, 1000);
+        openMenu(c, li, at);
+      }, 500) };
     },
     onPointerMove: (e: PointerEvent<HTMLLIElement>) => {
       const p = press.current;

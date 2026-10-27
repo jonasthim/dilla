@@ -140,7 +140,7 @@ export function VoiceSettings({
       {mode === 'ptt' ? (
         <SettingsRow id={`${id}-ptt`} label={labels.pttKey}>
           <span className="d-voice-settings__key">
-            <kbd className="d-voice-settings__kbd" data-empty={pttKey === null ? 'true' : undefined}>{pttKey ?? labels.pttNone}</kbd>
+            <kbd className="d-voice-settings__kbd" data-empty={pttKey === null ? 'true' : undefined} data-listening={capturing ? 'true' : undefined}>{pttKey ?? labels.pttNone}</kbd>
             <button ref={captureRef} type="button" className="d-btn d-voice-settings__capture" data-variant={capturing ? 'accent' : 'default'} data-size="md"
               aria-describedby={`${id}-prompt`} onKeyDown={onCaptureKeyDown} onBlur={() => { if (capturing) onCaptureKey('cancel'); }}
               onClick={() => { if (!capturing) onCaptureKey('start'); }}>{labels.pttSet}</button>

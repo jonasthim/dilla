@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { PERM } from '@dilla/client-core';
-import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
+import type { ChannelGroupState, ChannelSummary, DmSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
-  ActionMenu, AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner, PhoneHeader,
+  AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner,
   TabBar, Tooltip, TopBar, UnsupportedVoice, PhoneLayoutProvider,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
@@ -65,8 +65,8 @@ export interface ShellUpdateDeps {
 }
 
 /** The icon of the channel list's new-channel button. */
-const SEARCH = 'search';
-const SETTINGS = 'settings';
+/** Ruling AB: the server head's ⌄ (the prototype's 15px chevron) opens the server's settings. */
+const SERVER_MENU = 'chevron-down';
 /** The channel header's Threads and Members glyphs (Signal §5.5). */
 const THREADS_GLYPH = 'messages-square';
 const MEMBERS_GLYPH = 'users';
@@ -313,7 +313,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // The phone keyboard is up over a focused field (AppShell says so): the call bar steps aside for a dot in the header (H3).
   const [keyTyping, setTyping] = useState(false);
   const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
-  const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
   // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
   const openedNarrow = useRef(false);
@@ -435,6 +434,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [overlay, joinOpen, pickerOpen, createFlowOpen, searchOpen, targetId]);
+  // Ruling Z: the open DM's call is Control/⌘+Shift+Enter (no button in its header). Not while typing an IME composition, not
+  // under a modal; nothing when this DM's call is already up or held.
+  const dmCallKey = useRef<() => void>(() => undefined);
+  dmCallKey.current = () => { if (dm !== null) dmCallStart(voiceCtx, dm.id)?.onStart(); };
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing || event.altKey || !event.shiftKey || !(event.ctrlKey || event.metaKey) || event.key !== 'Enter') return;
+      if (overlay || joinOpen || pickerOpen || createFlowOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
+      event.preventDefault();
+      dmCallKey.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [overlay, joinOpen, pickerOpen, createFlowOpen, searchOpen]);
   useEffect(() => {
     if (searchOpen) return;
     const opener = restoreSearchFocus.current;
@@ -465,9 +478,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // Ruling X: a channel row's menu asks for the pins of a channel that may not be open yet: they open once it is.
   const pinsFor = useRef<string | null>(null);
   useEffect(() => {
-    if (pinsFor.current === null || pinsFor.current !== targetId) return;
+    const wanted = pinsFor.current;
+    if (wanted === null) return;
+    // Any other target first (a deep link, a back) drops the request: the pins never open on a later visit by surprise.
     pinsFor.current = null;
-    rawDispatch({ type: 'pins', open: true });
+    if (wanted === targetId) rawDispatch({ type: 'pins', open: true });
   }, [targetId, rawDispatch]);
   const slow = useSlice(`slow:${targetId ?? ''}`);
   const overwrites = useSlice(`overwrites:${communityId ?? ''}`);
@@ -578,10 +593,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   useLayoutEffect(() => {
     if (leftFrom === null) return;
     const name = whereOf(leftFrom.id);
-    // WB a11y m5: only the call's own row, or its own DM's call button; else the `@` tile, where the dock was
+    // WB a11y m5: only the call's own row, or its own DM's row (Ruling Z: the call lives in its menu); else the `@` tile, where the dock was
     // (never another DM's call button, never the page).
     const target = document.querySelector<HTMLElement>(`button.d-voice-row[aria-label="${CSS.escape(t('voice.open', { name }))}"]`)
-      ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('[data-dm-call-start]') : null)
+      ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('.dw-sidebar .d-chrow[aria-current="page"]') : null)
       ?? document.querySelector<HTMLElement>('.d-community-rail__home, .dw-sidebar h1');
     target?.focus();
     setLeftFrom(null);
@@ -1097,7 +1112,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const phonePane: 'list' | 'view' = overlay || base.name === 'dm' || (base.name === 'channel' && base.channelId !== null) ? 'view' : 'list';
   const openSettings = useRef<string | null>(null);
   if (phone && phonePane === 'list' && phoneTab === 'activity') {
-    sidebar = <Activity reminders={{ due: utilityCommands.dueCount, onOpen: utilityCommands.openInbox }} onOpen={target => void navigate(target.communityId === null ? { name: 'dm', channelId: target.channelId }
+    sidebar = <Activity reminders={{ due: utilityCommands.dueReminders, onOpen: from => utilityCommands.openInbox(from) }} onOpen={target => void navigate(target.communityId === null ? { name: 'dm', channelId: target.channelId }
       : { name: 'channel', communityId: target.communityId, channelId: target.channelId })} />;
   } else if (phone && phonePane === 'list' && phoneTab === 'you') {
     sidebar = <You onOpenSettings={section => { openSettings.current = section ?? 'index'; void navigate({ name: 'settings', section, from: null }); }} />;
@@ -1125,38 +1140,25 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
       setPickerOpen(true);
     };
-    // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
-    // E2: a touch device has no Control+K, so its list heads carry search, Home's too: the phone layout, and a desktop window
-    // whose pointer is coarse (a touch tablet). A fine pointer keeps the desktop heads as they were (the gear alone on a server).
-    // On a desktop the top bar's bell is the reminders entry (Signal, README §5.2). On a phone (no top bar), list routes have no
-    // conversation header, so their inbox entry stays in the sidebar title row.
-    const inboxInSidebar = phone && channel === null && dm === null;
-    // The "+" and the gear stay a server's.
-    const touchHere = phone || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+    // H2, N2: the DM list's one action lives in its head (a square-pen) on every layout, not in a footer row of its own.
+    // Ruling AB (Jonas 2026-10-27): a server's head is the prototype's: its name and the ⌄ that opens the server's settings (and
+    // the "+" while it has no categories, the one place a channel is made then). Search is the top bar's and Control/⌘+K, or a
+    // conversation's phone header; settings the top bar's gear or the You tab; reminders the bell or the Activity tab.
     const headerAction = onDms ? (
+      <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} />
+    ) : !voiceHere ? undefined : (
       <>
-        {touchHere ? <IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /> : null}
-        <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} />
-      </>
-    ) : !voiceHere && !touchHere ? undefined : (
-      <>
-        {voiceHere && canManageChannels && categoryRows.length === 0 ? (
+        {canManageChannels && categoryRows.length === 0 ? (
           <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
         ) : null}
-        {touchHere ? (
-          <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)}>
-            <Icon name={SEARCH} size={18} /></Button>
-        ) : null}
-        {voiceHere ? (
-          <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin(null)}>
-            <Icon name={SETTINGS} size={18} /></Button>
-        ) : null}
+        <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin(null)}>
+          <Icon name={SERVER_MENU} size={15} /></Button>
       </>
     );
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        headerAction={inboxInSidebar ? <>{headerAction}{utilityCommands.inbox}</> : headerAction}
+        headerAction={headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.
         categories={onDms ? undefined : categoryRows}
@@ -1180,8 +1182,25 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         rowLabel={badgeLabel}
         // Ruling X (Jonas 2026-10-27, pixel parity): the header has no "⋯"; a text channel's pins and edit channel are in its row's
         // context menu (right-click, long press, Shift+F10 or the ContextMenu key).
-        {...(onDms || serverId === null ? {} : { rowMenu: {
-          label: () => t('nav.channel.menu'),
+        // Ruling Z: a DM's call (Control/⌘+Shift+Enter too) and its pins are in the DM row's context menu.
+        {...(onDms ? { rowMenu: {
+          label: (name: string) => t('nav.channel.menuOf', { name }),
+          items: (id: string) => {
+            const start = dmCallStart(voiceCtx, id);
+            return [...(start === null ? [] : [{ id: 'call', label: start.label }]), { id: 'pins', label: t('shell.pins.open') }];
+          },
+          onSelect: (id: string, item: string) => {
+            if (item === 'call') {
+              dmCallStart(voiceCtx, id)?.onStart();
+              if (id !== dmId) void navigate({ name: 'dm', channelId: id });
+              return;
+            }
+            if (id === openId) { dispatch({ type: 'pins', open: true }); return; }
+            pinsFor.current = id;
+            void navigate({ name: 'dm', channelId: id });
+          },
+        } } : serverId === null ? {} : { rowMenu: {
+          label: (name: string) => t('nav.channel.menuOf', { name }),
           items: () => [{ id: 'pins', label: t('shell.pins.open') }, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
           onSelect: (id: string, item: string) => {
             if (item === 'edit') { setEditChannelId(id); return; }
@@ -1325,16 +1344,24 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // Back on a phone: the history's back for a view the app pushed, else the tab's list (a deep link, a reload).
   const listRoute: Route = dmId !== null ? { name: 'dms' } : communityId !== null ? { name: 'channel', communityId, channelId: null } : { name: 'root' };
   const onBack = () => goBack(listRoute, navigate);
-  const pinsOpen = () => dispatch({ type: 'pins', open: true });
-  const searchItem = { id: 'search', label: t('search.open') };
-  const pinsItem = openId !== null ? [{ id: 'pins', label: t('shell.pins.open') }] : [];
   // H3: while typing, the call bar steps aside and the header's dot says the call is still up (named as the bar's open button).
   const callBarUp = phone && call.channelId !== null && !(phonePane === 'view' && call.channelId === (voiceChannel?.id ?? dm?.id));
   // The dot is the call bar's open button, folded to 44 x 44: the same name, the same target.
   const dot = callBarUp && keyTyping && call.channelId !== null
     ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) void navigate(callTarget); } } : undefined;
   const dotProp = dot === undefined ? {} : { dot };
-  const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
+  // The DM topic (Ruling Z): "@handle · status" for a one-to-one DM (the status message, when the person has one), "group DM ·
+  // Ada, Björn and you" for a group.
+  const dmTopic = (d: DmSummary): string | undefined => {
+    const others = d.members.filter(id => id !== self?.id).map(id => allMembers.find(m => m.userId === id)).filter(m => m !== undefined);
+    if (d.members.length > 2) {
+      const names = new Intl.ListFormat('en', { type: 'conjunction' }).format([...others.map(m => m.display || m.username), t('shell.dm.you')]);
+      return t('shell.dm.topicGroup', { names });
+    }
+    const other = others[0];
+    if (other === undefined) return undefined;
+    return other.statusMsg ? t('shell.dm.topic', { handle: other.username, status: other.statusMsg }) : t('shell.dm.topicHandle', { handle: other.username });
+  };
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
   // Signal §5.5, §5.10 (Ruling U): a channel's header has the prototype's controls. Threads (its icon and label; an icon alone on a
   // phone) and Members (its icon and the member count, named "Members, {n}", the number shown once the list has loaded); a phone
@@ -1351,8 +1378,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       </Button>
     </Tooltip>
   );
-  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
-    actions={<>{utilityCommands.inbox}<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /></>} /> : null) : channel !== null
+  // Ruling Z (Jonas 2026-10-27): every conversation header is the prototype's one template: back (phone), glyph and name, topic;
+  // a chat (a text channel or a DM) adds Threads (labelled on a desktop) when it has threads, Members with the count on a server,
+  // and Search on a phone. A voice channel has no controls. The DM call and pins are in the DM row's context menu (and the call
+  // under Control/⌘+Shift+Enter), search is the top bar's and Control/⌘+K, the reminders the bell and the Activity tab.
+  const voiceTopic = voiceChannel === null ? undefined : call.channelId === voiceChannel.id
+    ? t('voice.count', { n: voiceCtx.voice?.[voiceChannel.id]?.participants.length ?? 0 }) : t('voice.header.idle');
+  const header = voiceChannel !== null ? (phone ? <ChannelHeader kind="voice" name={voiceChannel.name} topic={voiceTopic}
+    phone={{ backLabel: t('nav.back'), onBack, ...dotProp }} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
@@ -1367,21 +1400,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           <Icon name={THREADS_GLYPH} size={14} />{t('layout.header.threads')}</Button> : null}
         {membersButton}
       </>} />
-    : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
-      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
-        {utilityCommands.inbox}
-        {dmCall === null ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
-        <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
-          items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
-      </>) } : undefined}
-      actions={<>
-        {/* N1: on a desktop the call is an icon in the header, as on a phone (there it sits in the menu slot). */}
-        {dmCall === null || phone ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
-        {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
-        <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
-      </>}
-      overflow={{ label: t('layout.header.more'), items: [...pinsItem, searchItem],
-        onSelect: id => { if (id === 'search') startSearch('channel'); else pinsOpen(); } }} /> : null;
+    // A DM has no threads in this client (threads are a server channel's), so its header carries no Threads button.
+    : dm !== null ? <ChannelHeader kind="dm" name={dm.name} topic={dmTopic(dm)}
+      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
+        <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch('channel', e.currentTarget)} />
+      ) } : undefined} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
 
@@ -1579,12 +1602,16 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   );
   // Signal top bar (README §5.2), desktop only: search opens the palette as Control/⌘+K does, the bell the reminders inbox, the
   // gear Settings, and the voice chip (while connected) the call's stage.
+  // The bell the reminders popover hangs under, and gives focus back to (README §6.7).
+  const bellOf = () => document.querySelector<HTMLElement>('.d-topbar__bell .d-icon-button');
   const topBar = phone ? undefined : (
     <TopBar searchLabel={t('topbar.search')} searchShortcut={isApplePlatform() ? '⌘K' : 'Ctrl K'} onSearch={() => startSearch('all')}
       voice={call.channelId !== null && callPhase(voiceCtx) === 'connected'
         ? { room: whereOf(call.channelId), pingMs: call.state?.link?.rttMs ?? null, onOpen: () => { if (callTarget !== null) void navigate(callTarget); } }
         : undefined}
-      remindersDue={utilityCommands.dueCount} onReminders={utilityCommands.openInbox}
+      remindersDue={utilityCommands.dueCount} remindersOpen={utilityCommands.remindersOpen}
+      onReminders={() => (utilityCommands.remindersOpen ? utilityCommands.closeInbox() : utilityCommands.openInbox(bellOf()))}
+      reminders={utilityCommands.remindersPanel('popover', bellOf)}
       onSettings={() => void navigate({ name: 'settings', section: null, from: null })}
       labels={{ reminders: t('reminder.inbox'), settings: t('workspace.open'), remindersDue: count => t('reminder.badge', { count }),
         voice: call.channelId === null ? '' : t('nav.call.open', { where: callWhere(call.channelId) }) }} />
@@ -1808,6 +1835,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     <>
       {botCommands.dialogs}
       {utilityCommands.dialogs}
+      {/* On a phone the reminders popover is a sheet over the Activity tab (Ruling X, README §6.7). */}
+      {phone ? utilityCommands.remindersPanel('sheet') : null}
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
             {t('update.noStorage')}</Banner> : null}

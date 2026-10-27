@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import { nextCode } from './support/totp';
 import {
-  CLASS, COPY, TEST_TIMEOUT, WAIT, channelsNav, composerBox, copy, expectComposerReady, expectShell,
+  CLASS, COPY, TEST_TIMEOUT, WAIT, channelRow, channelsNav, composerBox, copy, expectComposerReady, expectShell,
   closeSettings, heading, instanceInvite, logRegion, messageRow, nextButton, openSettings, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
 } from './support/app';
 
@@ -130,6 +130,16 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await expect(bar.getByRole('button', { name: /^Members/ })).toBeVisible();
   await expect(bar.getByRole('button')).toHaveCount(2);
   for (const key of ['layout.header.more', 'shell.pins.open', 'search.open']) await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toHaveCount(0);
+  // Ruling X: Shift+F10 on a focused channel row opens its context menu (pins); Escape gives focus back to the row.
+  const row = channelRow(page, channel);
+  await row.focus();
+  await press('Shift+F10');
+  const rowMenu = page.getByRole('menu', { name: copy('nav.channel.menuOf', { name: channel }), exact: true });
+  await expect(rowMenu).toBeVisible();
+  await expect(rowMenu.getByRole('menuitem', { name: copy('shell.pins.open'), exact: true })).toBeFocused();
+  await press('Escape');
+  await expect(rowMenu).toHaveCount(0);
+  await expect(row).toBeFocused();
   // One Tab lap from the skip link, in the order the Global Constraints fix.
   const regions = [
     page.getByRole('link', { name: copy(COPY.skipLink), exact: true }),   // 0 skip link

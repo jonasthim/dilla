@@ -37,6 +37,8 @@
 
 /* The bell's due count: 14px, --mention fill (the prototype's #FFD16A) with --mention-ink, pops in. */
 .d-topbar__bell { position: relative; display: inline-flex; flex: none; }
+/* While its popover is open the bell is the accent on --accent-soft (the prototype's remFg / remBg). */
+.d-topbar .d-topbar__bell .d-icon-button[data-open="true"] { color: var(--accent); background: var(--accent-soft); }
 .d-topbar__badge {
   box-sizing: border-box; position: absolute; top: 2px; right: 2px; display: flex; align-items: center; justify-content: center; min-width: 0.875rem /* 14px */;
   height: 0.875rem; padding: 0 3px; font-size: var(--text-badge); font-weight: var(--weight-display); line-height: 1; color: var(--mention-ink); background: var(--mention);
