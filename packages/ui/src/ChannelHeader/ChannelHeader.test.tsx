@@ -14,7 +14,7 @@ describe('ChannelHeader', () => {
     expect(css).toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--bar-h\)/m);
     expect(css).not.toContain('--channel-header-h');
     expect(css).not.toContain('data-main-narrow');
-    expect(css).toMatch(/^\.d-channel-header__title \{[^}]*min-width: calc-size\(max-content, min\(size, 8rem\)\)/m);
+    expect(css).toMatch(/^\.d-channel-header__title \{[^}]*min-width: min\(8rem, 100%\); min-width: calc-size\(max-content, min\(size, 8rem\)\)/m);
     expect(css).toMatch(/^\.d-channel-header__name \{[^}]*text-overflow: ellipsis/m);
     expect(css).toMatch(/^\.d-channel-header__actions \{[^}]*flex-shrink: 0/m);
     expect(css).toMatch(/^\.d-channel-header \{[^}]*padding: 0 10px 0 20px;[^}]*/m);

@@ -9,6 +9,8 @@
 .d-phone-header__title > :not(.d-channel-header__glyph) { min-width: 0; }
 .d-phone-header__title .d-channel-header__glyph { display: inline-flex; flex: none; color: var(--fg-3); }
 .d-phone-header__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The topic: 12px --fg-2, taking the free width and cut with an ellipsis. */
+.d-phone-header__topic { flex: 1 1 0; min-width: 0; margin: 0; font-size: var(--text-ui); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-phone-header__marker { display: inline-flex; flex-shrink: 0; color: var(--fg-3); }
 .d-phone-header__actions .d-btn__label { display: inline-flex; align-items: center; gap: 6px; }
 .d-phone-header__actions { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; color: var(--fg-2); }

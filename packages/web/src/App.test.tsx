@@ -633,7 +633,7 @@ describe('App settings and notifications', () => {
     fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }] satisfies DmSummary[]);
     fake.set('settings', {});
   }
-  it('opens settings over the shell and returns focus to the user panel’s gear on Escape', async () => {
+  it('opens settings over the shell and returns focus to the top bar’s gear on Escape (Signal: the user panel has no gear)', async () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     ready(fake);
@@ -641,7 +641,8 @@ describe('App settings and notifications', () => {
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     const rail = screen.getByRole('navigation', { name: 'servers' });
     expect(within(rail).queryByRole('button', { name: 'settings' })).toBeNull();
-    const gear = () => screen.getByRole('button', { name: 'user settings' });
+    expect(screen.queryByRole('button', { name: 'user settings' })).toBeNull();
+    const gear = () => within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: 'Open settings' });
     await user.click(gear());
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'servers' })).toBe(rail);

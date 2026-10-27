@@ -11,9 +11,10 @@
 .d-root .d-tab-bar__link[aria-current="page"]::before { transform: scaleX(1); }
 .d-tab-bar__icon { position: relative; display: inline-flex; }
 .d-tab-bar__label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); line-height: 1.5; }
-/* A count: the --mention badge (Ruling O) with a 2px bg-2 ring, at the icon's top right. */
-.d-tab-bar__chip { position: absolute; top: -4px; left: calc(100% - 0.375rem); min-width: 1rem; height: 1rem; box-sizing: border-box; padding: 0 0.25rem; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-chip); font-weight: var(--weight-display); line-height: 1; color: var(--mention-ink); background: var(--mention); border-radius: var(--r-pill); box-shadow: 0 0 0 2px var(--bg-2); }
+/* A count: the prototype's 8px --mention dot with a 2px bg-2 ring, 8px from the top, 6px right of the tab's centre; the
+   count itself is in the link's name. */
+.d-tab-bar__dot { position: absolute; top: 8px; left: calc(50% + 6px); width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--mention); box-shadow: 0 0 0 2px var(--bg-2); }
 @media (forced-colors: active) {
   .d-root .d-tab-bar__link[aria-current="page"]::before { background: Highlight; }
-  .d-tab-bar__chip { border: 1px solid CanvasText; }
+  .d-tab-bar__dot { background: CanvasText; }
 }

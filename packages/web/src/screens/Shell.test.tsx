@@ -1468,13 +1468,12 @@ describe('keyboard', () => {
     await user.tab();
     // web3.8: the sidebar splitter is its own stop between the channel list and the header.
     expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
-    // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), its toolbar (one stop: mute, deafen), then the gear.
+    // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), then its toolbar (one stop:
+    // mute, deafen). Signal §5.4: no gear (the top bar holds it).
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: online$/ }));
     await user.tab();
     expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'user settings' }));
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
@@ -1902,9 +1901,9 @@ describe('devices and settings', () => {
     expect(fake.callsOf('refreshDevices')).toEqual([]);
     expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
   });
-  it('opens settings from the user panel’s gear, remembering the channel', async () => {
+  it('opens settings from the top bar’s gear, remembering the channel', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
-    await user.click(screen.getByRole('button', { name: 'user settings' }));
+    await user.click(screen.getByRole('button', { name: en['workspace.open'] }));
     expect(path()).toBe('/settings');
     expect(window.history.state).toMatchObject({ settingsFrom: `/c/${A}/${GEN}` });
     expect(typeof (window.history.state as Record<string, unknown>).dillaHistoryIndex).toBe('number');

@@ -39,7 +39,7 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
   const [menuOpen, setMenuOpen] = useState(false);
   if (phone !== undefined) {
     return (
-      <PhoneHeader backLabel={phone.backLabel} onBack={phone.onBack} actions={phone.menu} dot={phone.dot}
+      <PhoneHeader backLabel={phone.backLabel} onBack={phone.onBack} actions={phone.menu} dot={phone.dot} topic={topic}
         marker={readable ? <span role="img" aria-label={readableLabel ?? 'Readable by this server'}><Icon name="eye" size={14} /></span> : undefined}
         title={<><Glyph kind={kind} /><span className="d-phone-header__text">{name}</span></>} />
     );

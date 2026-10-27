@@ -30,6 +30,8 @@ const SIGNAL_ICONS = {
   'key': ['m2 21 9.6-9.6', 'm7.5 15.5 2.3 2.3a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0L4 19', 'circle'],
   'square': ['rect'],
   'arrow-right': ['M5 12h14', 'm12 5 7 7-7 7'],
+  // Task 6 fix round 1: the phone's Home tab (the prototype's house).
+  'house': ['M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8', 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
 } as const;
 const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
 

@@ -30,6 +30,14 @@ describe('UserPanel', () => {
     expect(screen.getByText('@ada')).toHaveAttribute('title', '@ada');
   });
 
+  it('Signal §5.4: with `line` the status shows under the name in place of @username; without onSettings there is no gear', () => {
+    render(<UserPanel {...panel({ name: 'Mira', username: 'mira', line: 'do not disturb', onSettings: undefined })} />);
+    expect(screen.getByText('do not disturb')).toHaveClass('d-user-panel__username');
+    expect(screen.queryByText('@mira')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Mira, your status: Online' })).toBeInTheDocument();
+  });
+
   it('is a plain div with no role and no name; its toolbar carries the region name', () => {
     const { container } = render(<UserPanel {...panel()} />);
     const root = container.firstElementChild!;

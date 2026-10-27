@@ -64,11 +64,12 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('[role="meter"], .d-audio-meter, .d-meter, meter')).toBeNull();
     expect(container.querySelector('.d-voice-row__person[data-speaking="true"] .d-avatar')).not.toBeNull();
   });
-  it('Glenn (a bot) has the rounded-square avatar, the BOT tag and "playback only"', () => {
+  it('Glenn (a bot) has the rounded-square avatar and "playback only"; the bot word is for a screen reader only (fix round 1)', () => {
     const { container } = render(<VoiceChannelRow {...base} participants={[person('Glenn', { bot: true, web: false })]} />);
     const row = container.querySelector('.d-voice-row__person') as HTMLElement;
     expect(row.querySelector('.d-avatar')).toHaveAttribute('data-shape', 'bot');
-    expect(row.querySelector('.d-tag[data-kind="bot"]')).toHaveTextContent('bot');
+    expect(row.querySelector('.d-tag[data-kind="bot"]')).toBeNull();
+    expect(row.querySelector('.d-sr-only')).toHaveTextContent('bot');
     expect(row.querySelector('.d-tag[data-kind="playbackOnly"]')).toHaveTextContent('playback only');
   });
 

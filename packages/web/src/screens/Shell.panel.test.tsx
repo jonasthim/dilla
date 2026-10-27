@@ -6,7 +6,6 @@ import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { A, callState, GENV, MEMBERS, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
-import { focusUserSettings } from './Shell.tsx';
 import { pushHistoryState, replaceHistoryState } from '../router.ts';
 
 // web3.8 WS6: the desktop user panel at the bottom left (R23-R25), the call panel above it, settings behind the gear.
@@ -28,7 +27,6 @@ afterEach(() => {
 const main = () => within(screen.getByRole('main'));
 const panel = () => document.querySelector<HTMLElement>('.d-user-panel');
 const inPanel = () => within(panel()!);
-const gear = () => inPanel().getByRole('button', { name: t('panel.settings') });
 const stageBar = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
 
 /** The shell, with the worker's setSetting applied to the settings slice as the real worker publishes it. */
@@ -56,14 +54,16 @@ async function joinVoice(app: ReturnType<typeof shell>) {
 }
 
 describe('the desktop user panel', () => {
-  it('shows the display name and @username', async () => {
+  it('shows the display name and, under it, the presence label (Signal §5.4), not @username', async () => {
     const app = shell();
     await screen.findByRole('main');
-    expect(inPanel().getByText('@ada')).toBeInTheDocument();
+    expect(inPanel().getByText(t('presence.online'))).toBeInTheDocument();
+    expect(inPanel().queryByText('@ada')).toBeNull();
     expect(panel()).toHaveTextContent('ada');
     app.client.publish(`members:${A}`, MEMBERS.map(m => (m.userId === ME.id ? { ...m, display: 'Ada Lovelace' } : m)));
     await waitFor(() => expect(panel()).toHaveTextContent('Ada Lovelace'));
-    expect(inPanel().getByText('@ada')).toBeInTheDocument();
+    act(() => app.client.publish('account', account({ presenceChoice: 'dnd' })));
+    expect(await inPanel().findByText(t('presence.dnd'))).toBeInTheDocument();
   });
 
   it('outside a call, mute writes voice.self muted and shows pressed; deafen then writes deafened, and again muted', async () => {
@@ -115,10 +115,12 @@ describe('the desktop user panel', () => {
     expect(inPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('the gear opens the desktop Settings root', async () => {
+  it('has no settings gear (Signal §5.4: settings is the top bar\'s gear, which opens the Settings root)', async () => {
     const app = shell();
     await screen.findByRole('main');
-    await app.user.click(gear());
+    expect(inPanel().queryByRole('button', { name: t('panel.settings') })).toBeNull();
+    expect(inPanel().getAllByRole('button').map(b => b.getAttribute('aria-label') ?? '')).not.toContain(t('workspace.open'));
+    await app.user.click(within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: t('workspace.open') }));
     expect(window.location.pathname).toBe('/settings');
   });
 
@@ -126,9 +128,9 @@ describe('the desktop user panel', () => {
     const app = shell();
     await screen.findByRole('main');
     const who = inPanel().getByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.online') })}$`) });
-    expect(who).toHaveTextContent('@ada');
-    // WCAG 2.5.3: the name holds the visible name and username.
-    expect(who).toHaveAccessibleName('ada @ada, your status: online');
+    expect(who).toHaveTextContent(t('presence.online'));
+    // WCAG 2.5.3: the name holds the visible name and the status.
+    expect(who).toHaveAccessibleName('ada, your status: online');
     await app.user.click(who);
     const menu = screen.getByRole('menu');
     expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual(
@@ -155,14 +157,7 @@ describe('the desktop user panel', () => {
       app.client.publish('account', account({ user: { ...ME, display: 'Ada Lovelace' } }));
     });
     await waitFor(() => expect(panel()).toHaveTextContent('Ada Lovelace'));
-    expect(inPanel().getByText('@ada')).toBeInTheDocument();
-  });
-
-  it('focusUserSettings focuses the gear, where focus returns when Settings closes', async () => {
-    shell();
-    await screen.findByRole('main');
-    focusUserSettings();
-    expect(gear()).toHaveFocus();
+    expect(inPanel().getByText(t('presence.online'))).toBeInTheDocument();
   });
 
   it('the rail has no settings button on desktop', async () => {

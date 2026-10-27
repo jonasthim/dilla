@@ -72,7 +72,7 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
  * pane shows has the selected fill, the accent glyph and the 2px accent bar. The join icon is a sibling drawn over the
  * trailing slot (a button cannot sit inside the row's button), shown while the row is hovered or focused and always on a
  * device without hover; never on the channel you are in. Under the row, one 26px sub-row per person (R25, A7), 30px in:
- * an 18px avatar (the bot's rounded square), the name in 12px, its tags, then camera, LIVE, and the mute and deafen glyphs
+ * an 18px avatar (the bot's rounded square, with "playback only" and no visible BOT tag), the name in 12px, its tags, then camera, LIVE, and the mute and deafen glyphs
  * in the slot. Speaking is only a ring on the avatar (no meter in the list; the word stays for assistive technology). The
  * row and its parts are siblings, so the button stays the first element of a list item (the roving lists find it there);
  * a caller outside ChannelList wraps them in `.d-voice-item`.
@@ -115,7 +115,8 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
                 <span className="d-voice-row__states">
                   {p.bot ? (
                     <>
-                      {' '}<span className="d-tag" data-kind="bot">{labels.state.bot}</span>
+                      {/* Signal §5.4 (fix round 1): the rounded-square avatar marks the bot; the word stays for a screen reader. */}
+                      {' '}<span className="d-sr-only">{labels.state.bot}</span>
                       {' '}<span className="d-tag" data-kind="playbackOnly">{labels.playbackOnly}</span>
                     </>
                   ) : null}

@@ -24,7 +24,7 @@ export const CurrentYou: Story = {
 
 /** Signal §5.10 (the prototype's phone tabs): Home, Activity (a count) and You, Home current. */
 const SIGNAL_ITEMS = (current: string): TabBarItem[] => [
-  { id: 'home', label: 'Home', href: '#home', icon: 'server', current: current === 'home' },
+  { id: 'home', label: 'Home', href: '#home', icon: 'house', current: current === 'home' },
   { id: 'activity', label: 'Activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 2, countLabel: 'Activity, 2 unread' },
   { id: 'you', label: 'You', href: '#you', icon: 'user', current: current === 'you' },
 ];

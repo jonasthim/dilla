@@ -73,6 +73,7 @@
  *   icons/key.svg  5b5df114a2ca86b871af7f67d2f322df868c528c49ed3f8b1fe188fb5adb6d38
  *   icons/square.svg  ea98f50de2f267b4d866a77d4425fa3da2dec239d3c13a0e2cbde0bdf95dfe37
  *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
+ *   icons/house.svg  3ce1e3be357b3d704af39405df420cfd8ebc6b5d73b017f95492f43e09d07dc9
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -439,6 +440,10 @@ export const ICONS = {
   'arrow-right': [
     ['path', { d: 'M5 12h14' }],
     ['path', { d: 'm12 5 7 7-7 7' }],
+  ],
+  'house': [
+    ['path', { d: 'M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8' }],
+    ['path', { d: 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

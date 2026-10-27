@@ -156,12 +156,13 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
-  // list and the user panel (web3.8, item 10), and the panel is three stops (the name block, which opens the status menu; its
-  // mute and deafen toolbar; then the gear) before the header; the lap ends at the composer (web3.8, R4: no status bar).
+  // 20 Tabs (Signal: the top bar adds its search, bell and gear before the rail, outside every region): the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
+  // list and the user panel (web3.8, item 10), and the panel is two stops (the name block, which opens the status menu; its
+  // mute and deafen toolbar; Signal §5.4: no gear, the top bar holds it) before the header; the lap ends at the composer
+  // (web3.8, R4: no status bar).
   const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
   let splitterAt = -1;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 20; i++) {
     await press('Tab');
     if (await splitter.evaluate(el => el === document.activeElement)) splitterAt = i;
     seen.push(await regionOfFocus());
@@ -172,8 +173,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(seen.slice(0, splitterAt + 1), 'the splitter comes after the channel list').toContain(2);
   expect(seen[splitterAt + 2], 'the stop after the splitter is the user panel\'s name block (the status menu)').toBe(3);
   expect(seen[splitterAt + 3], 'the toolbar is the panel\'s second stop').toBe(3);
-  expect(seen[splitterAt + 4], 'the gear is the panel\'s third stop').toBe(3);
-  expect(seen[splitterAt + 5], 'the stop after the panel is in the channel header').toBe(4);
+  expect(seen[splitterAt + 4], 'the stop after the panel is in the channel header').toBe(4);
   const start = seen.indexOf(0);
   expect(start, `the skip link is a tab stop (regions seen: ${seen.join(' ')})`).toBeGreaterThanOrEqual(0);
   const lap: number[] = [];
@@ -195,7 +195,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   // web3.9: the sidebar tabs are gone (the @ tile holds direct messages), so the sidebar is the gear and the rows.
   expect(stops.get(2), 'the sidebar is two tab stops: the "server settings" gear and the rows').toBe(2);
   expect(stops.get(1), 'the rail is one tab stop, its "+" tile included').toBe(1);
-  expect(stops.get(3), 'the user panel is three tab stops: the status menu button, mute and deafen as one toolbar, and the gear').toBe(3);
+  expect(stops.get(3), 'the user panel is two tab stops: the status menu button, and mute and deafen as one toolbar').toBe(2);
 
   // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
   const settings = await openSettings(page, 'diagnostics');

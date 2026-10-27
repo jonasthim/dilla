@@ -99,13 +99,13 @@ export const PushToTalkLight: Story = { args: { ptt: PTT }, globals: { theme: 'l
 export const PushToTalkHighContrast: Story = { args: { ptt: { ...PTT, held: true } }, globals: { theme: 'high-contrast' } };
 export const PushToTalkHeld: Story = { args: { ptt: { ...PTT, held: true } }, globals: { theme: 'signal' } };
 
-// Signal §5.4: the panel as the prototype draws it (no gear: the top bar holds it), one story per status dot, and mute and
-// deafen on. `onSettings` is left out.
-const SIGNAL = { name: 'Mira', username: 'mira', onSettings: undefined, labels: { region: 'your account', mute: 'mute', deafen: 'deafen' } };
+// Signal §5.4: the panel as the prototype draws it (no gear: the top bar holds it; the status under the name), one story per
+// status dot, and mute and deafen on. `onSettings` is left out.
+const SIGNAL = { name: 'Mira', username: 'mira', line: 'online', onSettings: undefined, labels: { region: 'your account', mute: 'mute', deafen: 'deafen' } };
 const status = (current: 'online' | 'idle' | 'dnd' | 'invisible') => ({ ...meta.args.status, current });
 export const Signal: Story = { args: { ...SIGNAL }, globals: { theme: 'signal' } };
-export const SignalIdle: Story = { args: { ...SIGNAL, status: status('idle') }, globals: { theme: 'signal' } };
-export const SignalDnd: Story = { args: { ...SIGNAL, status: status('dnd') }, globals: { theme: 'signal' } };
-export const SignalInvisible: Story = { args: { ...SIGNAL, status: status('invisible') }, globals: { theme: 'signal' } };
+export const SignalIdle: Story = { args: { ...SIGNAL, line: 'idle', status: status('idle') }, globals: { theme: 'signal' } };
+export const SignalDnd: Story = { args: { ...SIGNAL, line: 'do not disturb', status: status('dnd') }, globals: { theme: 'signal' } };
+export const SignalInvisible: Story = { args: { ...SIGNAL, line: 'invisible', status: status('invisible') }, globals: { theme: 'signal' } };
 export const SignalMuted: Story = { args: { ...SIGNAL, muted: true }, globals: { theme: 'signal' } };
 export const SignalMutedAndDeafened: Story = { args: { ...SIGNAL, muted: true, deafened: true }, globals: { theme: 'signal' } };

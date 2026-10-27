@@ -3,7 +3,7 @@ import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   ActionMenu, AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner, PhoneHeader,
-  TabBar, TopBar, UnsupportedVoice, PhoneLayoutProvider,
+  TabBar, Tooltip, TopBar, UnsupportedVoice, PhoneLayoutProvider,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -64,17 +64,12 @@ export interface ShellUpdateDeps {
   reload(): void;
 }
 
-/**
- * Focuses the user panel's settings gear (web3.8, R24), where focus returns when Settings closes; does nothing when
- * there is none (a phone has no user panel).
- */
-export function focusUserSettings(): void {
-  document.querySelector<HTMLButtonElement>('.d-user-panel button[aria-label="' + t('panel.settings') + '"]')?.focus();
-}
-
 /** The icon of the channel list's new-channel button. */
 const SEARCH = 'search';
 const SETTINGS = 'settings';
+/** The channel header's Threads and Members glyphs (Signal §5.5). */
+const THREADS_GLYPH = 'messages-square';
+const MEMBERS_GLYPH = 'users';
 const CATEGORY = 2;
 // The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
 const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_DEVICE_REVOKED', 'E_TIER_MISMATCH']);
@@ -244,6 +239,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // An empty id names a slice that never exists, so it reads undefined.
   const channels = useSlice(`channels:${communityId ?? ''}`);
   const members = useSlice(`members:${communityId ?? ''}`);
+  // Signal §5.4: the sidebar's stat line counts the server's members who are not offline (the members aside's own presence slice).
+  const presence = useSlice(`presence:${communityId ?? ''}`);
   const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
   // AW5: every listed server's built-in AFK channel. Nobody joins a call there (R-AW1): a press on it chooses AFK, which
@@ -1174,9 +1171,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
-        // Signal §5.4: the unread tag reads "{n} new"; the stat line under the server name counts the people in its voice rooms.
+        // Signal §5.4: the unread tag reads "{n} new"; the stat line under the server name counts who is online and who is in voice.
         newLabel={n => t('layout.row.new', { n })}
-        {...(onDms || inVoiceHere === 0 ? {} : { stats: [t('voice.count', { n: inVoiceHere })] })}
+        {...(onDms || communityId === null ? {} : { stats: [
+          ...(members == null || presence == null ? [] : [t('layout.sidebar.online', { n: members.filter(m => (presence[m.userId] ?? 'offline') !== 'offline').length })]),
+          t('voice.count', { n: inVoiceHere }),
+        ] })}
         content={content} />
     </div>);
   }
@@ -1334,11 +1334,17 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       </>) } : undefined}
       actions={<>
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
-        {openId !== null ? <IconButton data-foldable="" data-thread-list-toggle="" icon="messages-square" label={t('thread.list')}
-          pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())} /> : null}
+        {/* Signal §5.5: Threads is an icon and its label, Members an icon and the member count; while its aside is open a
+            button is the accent on --accent-soft (aria-pressed). */}
+        {openId !== null ? <Button variant="ghost" mark={false} data-foldable="" data-thread-list-toggle="" pressed={sideNow?.view === 'list'}
+          onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())}><Icon name={THREADS_GLYPH} size={14} />{t('thread.list')}</Button> : null}
         <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
         {canManageChannels ? <IconButton data-foldable="" icon="settings" label={t('admin.channel.open')} onClick={() => setEditChannelId(channel.id)} /> : null}
-        <IconButton data-members-toggle="" icon="users" label={t('members.toggle')} pressed={membersShown} onClick={toggleMembers} />
+        <Tooltip label={t('members.toggle')}>
+          <Button variant="ghost" mark={false} data-members-toggle="" aria-label={t('members.toggle')} pressed={membersShown} onClick={toggleMembers}>
+            <Icon name={MEMBERS_GLYPH} size={14} /><span aria-hidden="true">{(members ?? []).length}</span>
+          </Button>
+        </Tooltip>
       </>}
       overflow={{ label: t('layout.header.more'), items: [...pinsItem, ...listItem, searchItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
         onSelect: id => {
@@ -1500,7 +1506,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const homeCount = dmCounts.unread;
   const activityCount = railItems.reduce((n, item) => n + item.mentions, 0) + dmCounts.unread;
   const tabLabel = (to: PhoneTab) => t(to === 'home' ? 'home.tab' : `nav.tab.${to}`);
-  const tabItem = (to: PhoneTab, icon: 'server' | 'activity' | 'user', count?: number) => ({
+  const tabItem = (to: PhoneTab, icon: 'house' | 'bell' | 'user', count?: number) => ({
     id: to, label: tabLabel(to), href: routePath(tabTarget(to)), icon, current: phoneTab === to,
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
@@ -1538,7 +1544,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         });
       } else openTab(to, current);
     }} items={[
-      tabItem('home', 'server', homeCount), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
+      tabItem('home', 'house', homeCount), tabItem('activity', 'bell', activityCount), tabItem('you', 'user'),
     ]} />
   );
   // The call bar stands on a phone while this device is in a call and its stage is not on screen.
@@ -1824,7 +1830,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             server={dockServer} onStatus={() => void navigate({ name: 'settings', section: 'diagnostics', from: null })}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
           <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
-            onSettings={() => void navigate({ name: 'settings', section: null, from: null })}
             ptt={settings?.['voice.mode'] === 'ptt' ? { held: call.state?.speaking === true } : false} />
         </>}
         ring={!overlay && rings !== undefined && rings.length > 0 ? ringFlow : undefined}

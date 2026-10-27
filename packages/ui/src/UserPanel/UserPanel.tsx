@@ -9,6 +9,11 @@ import './UserPanel.css';
 export interface UserPanelProps {
   name: string;
   username: string;
+  /**
+   * The line under the name (Signal §5.4): the person's status, such as the presence label ("online", "do not disturb"). Without
+   * it the line is `@username`.
+   */
+  line?: string;
   muted: boolean;
   deafened: boolean;
   /** The mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
@@ -47,7 +52,7 @@ const DOT: Record<UserPanelProps['status']['current'], Presence> = { online: 'on
  * the toolbar of its toggles (one roving Tab stop). The avatar and name block is a menu button for the status
  * (Discord-style), with the current status as a dot on the avatar.
  */
-export function UserPanel({ name, username, muted, deafened, shortcuts, labels, onMute, onDeafen, onSettings, status, ptt }: UserPanelProps) {
+export function UserPanel({ name, username, line, muted, deafened, shortcuts, labels, onMute, onDeafen, onSettings, status, ptt }: UserPanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const nameId = useId();
   const bar = useIconToolbar();
@@ -59,13 +64,15 @@ export function UserPanel({ name, username, muted, deafened, shortcuts, labels, 
         items={status.items.map(item => ({ ...item, checked: item.id === status.current }))} onSelect={status.onChoose}
         triggerContent={<>
           {/* WCAG 2.5.3: the button's name holds its visible text, then the status. */}
-          <span id={nameId} className="d-sr-only">{`${name} @${username}, ${status.label}`}</span>
+          <span id={nameId} className="d-sr-only">{line === undefined ? `${name} @${username}, ${status.label}` : `${name}, ${status.label}`}</span>
           <span className="d-user-panel__avatar" data-speaking={ptt?.held === true ? 'true' : undefined}>
             <Avatar name={name} size="panel" presence={DOT[status.current]} />
           </span>
           <span className="d-user-panel__text">
             <span className="d-user-panel__name" title={name}>{name}</span>
-            <span className="d-user-panel__username" title={`@${username}`}>@{username}</span>
+            {line === undefined
+              ? <span className="d-user-panel__username" title={`@${username}`}>@{username}</span>
+              : <span className="d-user-panel__username" title={line}>{line}</span>}
           </span>
         </>} />
       <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-user-panel__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>

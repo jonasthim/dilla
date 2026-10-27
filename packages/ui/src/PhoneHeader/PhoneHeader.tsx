@@ -5,6 +5,8 @@ import './PhoneHeader.css';
 
 export interface PhoneHeaderProps {
   title: ReactNode;
+  /** The channel topic after the title (Signal §5.10, the prototype's phone header): 12px, cut with an ellipsis. */
+  topic?: string;
   backLabel?: string;
   onBack?(): void;
   actions?: ReactNode;
@@ -19,7 +21,7 @@ export interface PhoneHeaderProps {
  * heading cut to one line, and the caller's actions at the end. Every control is at least 44 × 44 CSS px. It pads its top by the device's
  * safe area, so it clears a notch.
  */
-export function PhoneHeader({ title, backLabel, onBack, actions, marker, dot }: PhoneHeaderProps) {
+export function PhoneHeader({ title, topic, backLabel, onBack, actions, marker, dot }: PhoneHeaderProps) {
   return (
     <header className="d-phone-header">
       {onBack !== undefined ? (
@@ -28,6 +30,7 @@ export function PhoneHeader({ title, backLabel, onBack, actions, marker, dot }: 
       <h2 className="d-phone-header__title">{typeof title === 'string' ? <span className="d-phone-header__text">{title}</span> : title}</h2>
       {dot !== undefined ? <button type="button" className="d-phone-header__dot" aria-label={dot.label} onClick={dot.onOpen} onMouseDown={e => e.preventDefault()}><span aria-hidden="true" /></button> : null}
       {marker !== undefined ? <span className="d-phone-header__marker">{marker}</span> : null}
+      {topic !== undefined && topic !== '' ? <p className="d-phone-header__topic">{topic}</p> : null}
       {actions !== undefined ? <div className="d-phone-header__actions">{actions}</div> : null}
     </header>
   );

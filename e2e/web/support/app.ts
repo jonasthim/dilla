@@ -811,8 +811,8 @@ export type SettingsSection = 'profile' | 'signin' | 'devices' | 'notifications'
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
 /** The user panel (desktop) or the You tab settings row (phone). */
 export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }
-/** Desktop Settings opener. Phone settings are opened from You → Open settings. */
-export function settingsGear(page: Page): Locator { return userPanel(page).getByRole('button', { name: copy('panel.settings'), exact: true }); }
+/** Desktop Settings opener: the top bar's gear (Signal §5.2; the user panel has none, §5.4). Phone settings are opened from You → Open settings. */
+export function settingsGear(page: Page): Locator { return page.locator('.d-topbar').getByRole('button', { name: copy('workspace.open'), exact: true }); }
 /** Opens the requested section through the visible workspace navigation at the current viewport. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
   const phone = await page.evaluate(() => matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches);

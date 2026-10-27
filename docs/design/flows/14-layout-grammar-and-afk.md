@@ -93,6 +93,7 @@
 `layout.category.add='new channel in {name}'`
 `layout.rail.add='add a server'`
 `layout.row.new='{n} new'`
+`layout.sidebar.online='{n} online'`
 `layout.add.title='add a server'`
 `layout.add.join='join a server'`
 `layout.add.create='new server'`

@@ -6,8 +6,8 @@
 /* The title: the 14px --fg-3 glyph, 6px, then the name in 13.5px/700. It keeps 8rem (C1) and the name inside it is cut with
    an ellipsis, never widening the page; the caller's actions stay whole. The topic is what gives way first. */
 /* min-width: the name keeps up to 8rem (C1) but a shorter name is not padded out to it, so the topic follows the name at
-   10px as in the prototype (calc-size; an engine without it keeps no floor). */
-.d-channel-header__title { display: flex; align-items: center; gap: 6px; min-width: 0; min-width: calc-size(max-content, min(size, 8rem)); flex: 0 1 auto; font-size: var(--text-base); font-weight: var(--weight-display); color: var(--fg); white-space: nowrap; }
+   10px as in the prototype (calc-size; an engine without it falls back to min(8rem, 100%)). */
+.d-channel-header__title { display: flex; align-items: center; gap: 6px; min-width: min(8rem, 100%); min-width: calc-size(max-content, min(size, 8rem)); flex: 0 1 auto; font-size: var(--text-base); font-weight: var(--weight-display); color: var(--fg); white-space: nowrap; }
 .d-channel-header__name { flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; font: inherit; }
 /* C3: the glyph is a flex item of its own beside the name. */
 .d-channel-header__glyph { display: inline-flex; flex: none; align-items: center; color: var(--fg-3); }

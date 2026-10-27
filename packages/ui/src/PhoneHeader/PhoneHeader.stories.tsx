@@ -19,10 +19,10 @@ export const LongTitle: Story = {
 };
 export const NoBack: Story = { args: { title: 'activity' }, render: args => frame(<PhoneHeader {...args} />) };
 
-/** Signal §5.10 (the prototype's phone header): 52px, the 44px back, the hash and the name, threads, members and search (44px targets, Ruling N). */
+/** Signal §5.10 (the prototype's phone header): 52px, the 44px back, the hash and the name, the topic, threads, members and search (44px targets, Ruling N). */
 export const Signal: Story = {
   args: { title: <><span className="d-channel-header__glyph" aria-hidden="true"><Icon name="hash" size={14} /></span><span className="d-phone-header__text">general</span></>,
-    backLabel: 'back to channels', onBack: () => {},
+    topic: 'raids, plans and the bridge troll', backLabel: 'back to channels', onBack: () => {},
     actions: <>
       <Button variant="ghost" aria-label="threads"><Icon name="messages-square" size={14} /></Button>
       <Button variant="ghost" aria-label="members, 6"><Icon name="users" size={14} />6</Button>
