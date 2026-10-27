@@ -623,6 +623,24 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
     await waitFor(() => expect(sessions).toHaveLength(1));
   });
 
+  it('Control+Shift+Enter outside a DM keeps its default and starts nothing', async () => {
+    const { sessions } = phone({ path: `/c/${A}/${TEXT}` });
+    await screen.findByRole('textbox', { name: /message/ });
+    const event = new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    act(() => { window.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it('a held Control+Shift+Enter in a DM starts one call, not one per repeat', async () => {
+    const { sessions } = phone({ path: `/dm/${DM}` });
+    await screen.findByRole('heading', { level: 2, name: 'bob' });
+    const repeat = new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true, repeat: true, bubbles: true, cancelable: true });
+    act(() => { window.dispatchEvent(repeat); });
+    expect(repeat.defaultPrevented).toBe(true);
+    expect(sessions).toHaveLength(0);
+  });
+
   describe('while typing', () => {
     async function inCall() {
       const app = phone({ path: `/c/${A}/${GENV}` });

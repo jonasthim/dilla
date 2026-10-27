@@ -436,14 +436,19 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   }, [overlay, joinOpen, pickerOpen, createFlowOpen, searchOpen, targetId]);
   // Ruling Z: the open DM's call is Control/⌘+Shift+Enter (no button in its header). Not while typing an IME composition, not
   // under a modal; nothing when this DM's call is already up or held.
-  const dmCallKey = useRef<() => void>(() => undefined);
-  dmCallKey.current = () => { if (dm !== null) dmCallStart(voiceCtx, dm.id)?.onStart(); };
+  // Null while no DM is open: the shortcut then leaves the key alone (no preventDefault), so Ctrl+Shift+Enter keeps its default.
+  const dmCallKey = useRef<(() => void) | null>(null);
+  dmCallKey.current = dm !== null ? () => { dmCallStart(voiceCtx, dm.id)?.onStart(); } : null;
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.isComposing || event.altKey || !event.shiftKey || !(event.ctrlKey || event.metaKey) || event.key !== 'Enter') return;
       if (overlay || joinOpen || pickerOpen || createFlowOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
+      const start = dmCallKey.current;
+      if (start === null) return;
       event.preventDefault();
-      dmCallKey.current();
+      // A held chord auto-repeats: only its first press starts the call.
+      if (event.repeat) return;
+      start();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

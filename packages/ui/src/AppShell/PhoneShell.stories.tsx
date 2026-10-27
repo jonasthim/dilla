@@ -214,10 +214,16 @@ const signalChannels = (
       { id: 'harbour', name: 'harbour', kind: 'voice', readable: false, parentId: 'boats' }, { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true },
     ]} />
 );
+// The rail as Shell.tsx passes it: the @ home tile first, no settings button (settings live under the You tab).
+const signalRail = (
+  <CommunityRail label="servers" activeId="a1" onSelect={noop} addLabel="add a server" onAdd={noop} itemLabel={itemLabel}
+    home={{ label: 'direct messages', itemLabel: 'direct messages, unread 0, mentions 0', selected: false, unread: 0, mentions: 0, onSelect: noop }}
+    items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Valhalla Kitchen', unread: 2, mentions: 2 }]} />
+);
 export const SignalServersList: Story = {
   globals: { theme: 'signal' },
   // Ruling AE: the list ends in the user panel above the tab bar, as the web's phone sidebar does (packages/web/src/screens/Shell.tsx).
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} tabBar={tabBar('servers')}
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={signalRail} tabBar={tabBar('servers')}
     sidebar={<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}><div style={{ flex: '1 1 auto', minHeight: 0 }}>{signalChannels}</div>
       <UserPanel name="Mira" username="mira" line="online" muted={false} deafened={false} onMute={noop} onDeafen={noop}
         labels={{ region: 'your account', mute: 'mute', deafen: 'deafen' }} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
