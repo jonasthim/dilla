@@ -9,9 +9,9 @@ import { readTheme, writeTheme } from '../../prefs.ts';
 import { applyPreference } from '../../theme.ts';
 import { Appearance } from './Appearance.tsx';
 
-afterEach(() => { vi.unstubAllGlobals(); applyPreference(window, 'mesh'); });
+afterEach(() => { vi.unstubAllGlobals(); applyPreference(window, 'signal'); });
 
-function setup(stored: 'system' | 'mesh' | 'light' | 'high-contrast' | null) {
+function setup(stored: 'system' | 'signal' | 'light' | 'high-contrast' | null) {
   const idb = new FakeIdb();
   vi.stubGlobal('indexedDB', idb.factory);
   vi.stubGlobal('matchMedia', (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }));
@@ -46,7 +46,7 @@ describe('Appearance', () => {
     const view = render(<CoreProvider client={new FakeClient()}><Appearance /></CoreProvider>);
     expect(screen.getByRole('heading', { level: 2, name: 'Appearance' })).toBeInTheDocument();
     expect(within(theme()).getAllByRole('radio')).toHaveLength(4);
-    for (const name of ['system', 'mesh', 'light', 'high contrast']) expect(within(theme()).getByRole('radio', { name })).toBeInTheDocument();
+    for (const name of ['system', 'signal', 'light', 'high contrast']) expect(within(theme()).getByRole('radio', { name })).toBeInTheDocument();
     await waitFor(() => expect(within(theme()).getByRole('radio', { name: 'light' })).toHaveAttribute('aria-checked', 'true'));
     await user.click(within(theme()).getByRole('radio', { name: 'high contrast' }));
     expect(document.documentElement.dataset.theme).toBe('high-contrast');

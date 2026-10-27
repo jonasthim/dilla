@@ -133,7 +133,7 @@ const KEYBOARD_PX = 100;
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 /**
- * The Mesh shell: rail | sidebar | main (header, content, composer), a banner
+ * The Signal shell: rail | sidebar | main (header, content, composer), a banner
  * above and an optional status bar below. DOM order is the focus order of the web-1
  * keyboard map: skip link → banner → rail → sidebar → main → status bar.
  */

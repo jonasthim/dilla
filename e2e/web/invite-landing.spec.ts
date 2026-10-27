@@ -1,4 +1,4 @@
-// web3.8, INV: the invite landing page in Mesh style. From an empty host, Ada starts "Midgard Crew", opens server settings,
+// web3.8, INV: the invite landing page in Signal style. From an empty host, Ada starts "Midgard Crew", opens server settings,
 // goes to Invites, makes a link there and reads its URL (never the sidebar's "invite link" action, which WS4 removes).
 // The page itself is the instance's static HTML under `default-src 'none'`: the spec asserts what it says, that it has
 // one same-origin link, that its headers are the unchanged four, and shoots it in both colour schemes at both sizes.

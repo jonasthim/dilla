@@ -41,14 +41,14 @@ const badgePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLEl
   if (ratio < 3) throw new Error(`${story}: the mention count is ${ratio.toFixed(2)}:1`);
 };
 /** A server selected (the 40px pill), unread servers (the 8px pill), and the `@` tile quiet. */
-export const WithHome: Story = { args: FULL, globals: { theme: 'mesh' }, play: badgePlay('WithHome') };
+export const WithHome: Story = { args: FULL, globals: { theme: 'signal' }, play: badgePlay('WithHome') };
 export const WithHomeLight: Story = { args: FULL, globals: { theme: 'light' }, play: badgePlay('WithHomeLight') };
 export const WithHomeHighContrast: Story = { args: FULL, globals: { theme: 'high-contrast' }, play: badgePlay('WithHomeHighContrast') };
 /** Home selected (DMs open) with unread messages and a mention (the count at the bottom right). */
-export const HomeSelected: Story = { args: { ...FULL, activeId: null, home: { ...HOME, selected: true, unread: 3, mentions: 1, itemLabel: 'direct messages, unread 3, mentions 1' } }, globals: { theme: 'mesh' }, play: badgePlay('HomeSelected') };
-export const HomeUnread: Story = { args: { ...FULL, home: { ...HOME, unread: 5, itemLabel: 'direct messages, unread 5' } }, globals: { theme: 'mesh' }, play: badgePlay('HomeUnread') };
+export const HomeSelected: Story = { args: { ...FULL, activeId: null, home: { ...HOME, selected: true, unread: 3, mentions: 1, itemLabel: 'direct messages, unread 3, mentions 1' } }, globals: { theme: 'signal' }, play: badgePlay('HomeSelected') };
+export const HomeUnread: Story = { args: { ...FULL, home: { ...HOME, unread: 5, itemLabel: 'direct messages, unread 5' } }, globals: { theme: 'signal' }, play: badgePlay('HomeUnread') };
 /** On a phone the settings tile is gone (the You tab is the way) and the tiles stay 48. */
-export const OnPhone: Story = { args: FULL, globals: { theme: 'mesh' },
+export const OnPhone: Story = { args: FULL, globals: { theme: 'signal' },
   decorators: [Story => <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: 72, height: 'calc(100vh - 32px)' }}><Story /></div></PhoneLayoutProvider>],
   play: ({ canvasElement }) => {
     const tiles = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-community-rail__item'));

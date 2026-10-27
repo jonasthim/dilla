@@ -98,7 +98,7 @@ export const Empty: Story = { args: { participants: [] } };
 /** This device is in it, and the main pane shows it. */
 /** The join icon shows on focus or hover (here: focused); a joined row has neither the join icon nor a connected glyph. */
 export const JoinFocused: Story = {
-  globals: { theme: 'mesh' },
+  globals: { theme: 'signal' },
   play: async ({ canvasElement }) => { await expectJoinRing(canvasElement, 'JoinFocused'); },
 };
 export const JoinFocusedLight: Story = { ...JoinFocused, globals: { theme: 'light' } };

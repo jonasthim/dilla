@@ -224,7 +224,7 @@ test('desktop, phone and reflow keep controls accessible in three themes', async
   await peer.waitForDevices(2, setup.channel_id);
   for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 740 }, { width: 320, height: 740 }]) {
     await page.setViewportSize(viewport);
-    for (const theme of ['mesh', 'light', 'high-contrast']) {
+    for (const theme of ['signal', 'light', 'high-contrast']) {
       await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
       await expectAccessible(page, `${theme} ${viewport.width}px`);
       const layout = await page.evaluate(() => ({

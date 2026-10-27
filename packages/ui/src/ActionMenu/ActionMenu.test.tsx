@@ -179,7 +179,7 @@ describe('ActionMenu', () => {
     expect(menuItems()[0]).toHaveFocus();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, closed and open', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, closed and open', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const startOpen of [false, true]) {
       const { container, unmount } = render(<div className="d-root"><Harness startOpen={startOpen} /></div>);

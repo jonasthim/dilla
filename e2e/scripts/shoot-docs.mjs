@@ -12,7 +12,7 @@
 //      empty shell, then, through the client alone, starts the server "Midgard Crew" (which comes with #general and
 //      a voice general), adds the text channel #loot and the voice channel "harbour", and makes an invite link;
 //      ada's screens are shot on the way, at 1280×800 and at 360×740, and the rail once on its own;
-//   3. signs björn and mira up through that invite link in two more Chromium profiles (Mesh theme,
+//   3. signs björn and mira up through that invite link in two more Chromium profiles (Signal theme,
 //      1280×800), lets the three talk in #general, and shoots mira's screens;
 //   3b. replies, reacts, edits, pins, mentions and shares images and files in #general between the three
 //      of them and shoots mira's view of each (the images are drawn by canvas in the page at run time);
@@ -1012,7 +1012,7 @@ async function main(argv) {
     await revealRow.click({ position: { x: 150, y: 8 } });
     await mira.locator('[data-revealed="true"]').waitFor({ state: 'detached', timeout: WAIT });
     // web3.7.1 (opt in with --ui-out): the tab bar on a channel, hidden while typing, under Settings and under the members
-    // sheet, in the Mesh, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
+    // sheet, in the Signal, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
     if (o.uiOut !== undefined) {
       mkdirSync(o.uiOut, { recursive: true });
       const ui = async (name, theme) => {
@@ -1021,7 +1021,7 @@ async function main(argv) {
         await mira.screenshot({ path: path.join(o.uiOut, `${name}.${theme}.png`) });
       };
       const channelMenu = mira.getByRole('button', { name: t('nav.channel.menu'), exact: true });
-      for (const theme of ['mesh', 'light', 'high-contrast']) {
+      for (const theme of ['signal', 'light', 'high-contrast']) {
         // Right after opening: the tab bar shows, nothing is focused and there is no keyboard.
         await phoneBack.click();
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
@@ -1060,7 +1060,7 @@ async function main(argv) {
         await closeMembers.click();
         await closeMembers.waitFor({ state: 'hidden', timeout: WAIT });
       }
-      await mira.evaluate(() => { document.documentElement.dataset.theme = 'mesh'; });
+      await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await settle(mira, { keepFocus: false });
     }
     await phoneBack.click();
@@ -1127,7 +1127,7 @@ async function main(argv) {
       await openSettings('profile');
       const userSettings = mira.getByRole('dialog', { name: t('settings.title'), exact: true });
       await userSettings.waitFor({ timeout: WAIT });
-      await capture(mira, 'profile-desktop-mesh');
+      await capture(mira, 'profile-desktop-signal');
       for (const [section, name] of [
         ['signin', 'signin'], ['devices', 'devices'], ['notifications', 'notifications'],
         ['voice', 'voice'], ['privacy', 'privacy'], ['diagnostics', 'diagnostics'],
@@ -1135,7 +1135,7 @@ async function main(argv) {
         await byText(mira, 'navigation', 'settings.nav.label')
           .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
         await mira.waitForURL(new RegExp(`/settings/${section}$`));
-        await capture(mira, `${name}-desktop-mesh`);
+        await capture(mira, `${name}-desktop-signal`);
       }
       const search = userSettings.getByRole('searchbox', { name: t('workspace.search'), exact: true });
       await search.fill('microphone test');
@@ -1162,16 +1162,16 @@ async function main(argv) {
       await mira.waitForURL(/\/settings\/profile$/);
       for (const [theme, width, height, name] of [
         ['light', 1440, 900, 'profile-desktop-light'], ['high-contrast', 1440, 900, 'profile-desktop-high-contrast'],
-        ['mesh', 1024, 768, 'profile-tablet-mesh'], ['mesh', 390, 844, 'profile-phone-mesh'],
-        ['mesh', 320, 740, 'profile-narrow-mesh'], ['mesh', 844, 390, 'profile-short-wide-mesh'],
-        ['mesh', 720, 450, 'profile-short-viewport-mesh'],
+        ['signal', 1024, 768, 'profile-tablet-signal'], ['signal', 390, 844, 'profile-phone-signal'],
+        ['signal', 320, 740, 'profile-narrow-signal'], ['signal', 844, 390, 'profile-short-wide-signal'],
+        ['signal', 720, 450, 'profile-short-viewport-signal'],
       ]) {
         await mira.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
         await mira.setViewportSize({ width, height });
         await mira.waitForTimeout(250);
         await capture(mira, name);
       }
-      await mira.evaluate(() => { document.documentElement.dataset.theme = 'mesh'; });
+      await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await mira.setViewportSize(PHONE_APP);
       await mira.waitForTimeout(250);
       await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();

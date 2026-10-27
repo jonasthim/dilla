@@ -116,7 +116,7 @@ describe('MemberList', () => {
     expect(screen.queryByRole('heading', { level: 3 })).toBeNull();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, loading and empty', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, loading and empty', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { loading: true }, { groups: [] }]) {
       const { container, unmount } = render(<div className="d-root"><MemberList {...props(over)} /></div>);
@@ -193,21 +193,21 @@ describe('MemberList role colour on the name (P1)', () => {
   const nameOf = (n: string) => screen.getByText(n);
 
   it('colours the name itself, draws no dot, and leaves uncoloured names on the token colour', () => {
-    document.documentElement.dataset.theme = 'mesh';
+    document.documentElement.dataset.theme = 'signal';
     const { container } = render(<MemberList {...withColors()} />);
     expect(nameOf('Astrid').style.color).toBe('rgb(231, 76, 60)');
     for (const n of ['Bjorn', 'Cleo', 'Dag']) expect(nameOf(n).style.color).toBe('');
     expect(container.querySelector('.d-role-dot')).toBeNull();
   });
 
-  it('falls back to the text token when the role colour fails 4.5:1 (a near-black colour on mesh)', () => {
-    document.documentElement.dataset.theme = 'mesh';
+  it('falls back to the text token when the role colour fails 4.5:1 (a near-black colour on signal)', () => {
+    document.documentElement.dataset.theme = 'signal';
     render(<MemberList {...withColors()} />);
     expect(nameOf('Eira').style.color).toBe('');
   });
 
-  it('judges per theme: a pale colour passes on mesh and falls back on the light theme', () => {
-    document.documentElement.dataset.theme = 'mesh';
+  it('judges per theme: a pale colour passes on signal and falls back on the light theme', () => {
+    document.documentElement.dataset.theme = 'signal';
     const { unmount } = render(<MemberList {...pale()} />);
     expect(nameOf('Pale').style.color).not.toBe('');
     unmount();
@@ -217,7 +217,7 @@ describe('MemberList role colour on the name (P1)', () => {
   });
 
   it('follows a theme switch while mounted', async () => {
-    document.documentElement.dataset.theme = 'mesh';
+    document.documentElement.dataset.theme = 'signal';
     render(<MemberList {...pale()} />);
     expect(nameOf('Pale').style.color).not.toBe('');
     document.documentElement.dataset.theme = 'light';
@@ -232,7 +232,7 @@ describe('MemberList role colour on the name (P1)', () => {
 
 describe('MemberList fix round 1', () => {
   it('I1: an offline row dims its text to 0.8, so a role colour that only just passes opaque falls back there (0xe74c3c: online yes, offline no)', () => {
-    document.documentElement.dataset.theme = 'mesh';
+    document.documentElement.dataset.theme = 'signal';
     const p = props({ groups: [
       { id: 'on', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Astrid', color: 0xe74c3c }] },
       { id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'b', name: 'Bjorn', color: 0xe74c3c }] },
@@ -242,8 +242,8 @@ describe('MemberList fix round 1', () => {
     expect(screen.getByText('Bjorn').style.color).toBe('');
   });
 
-  it('I1: an offline row keeps a colour that still passes after the dimming (0xf1c40f on mesh)', () => {
-    document.documentElement.dataset.theme = 'mesh';
+  it('I1: an offline row keeps a colour that still passes after the dimming (0xf1c40f on signal)', () => {
+    document.documentElement.dataset.theme = 'signal';
     const p = props({ groups: [{ id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'b', name: 'Bjorn', color: 0xf1c40f }] }] });
     render(<MemberList {...p} />);
     expect(screen.getByText('Bjorn').style.color).not.toBe('');

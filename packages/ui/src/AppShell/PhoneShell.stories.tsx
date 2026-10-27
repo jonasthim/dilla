@@ -20,7 +20,7 @@ import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { RingBanner } from '../RingBanner/RingBanner.tsx';
 import { ThreadPane } from '../ThreadPane/ThreadPane.tsx';
 
-// A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (mesh, light, high-contrast). The decorator's 16px
+// A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
 const meta = { title: 'Shell/Phone', parameters: { layout: 'fullscreen' } } satisfies Meta;
 export default meta;

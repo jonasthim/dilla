@@ -284,13 +284,13 @@ describe('VoiceDock (MP5)', () => {
     expect(css).not.toMatch(/margin-left: auto/);
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe with all controls in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe with all controls in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...dock} onStatus={() => {}} camera canShare={false} /></div>);
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...(meta.args as VoiceDockProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

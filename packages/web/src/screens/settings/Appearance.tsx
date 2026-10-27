@@ -9,7 +9,7 @@ import { useSlice } from '../../core/use-slice.ts';
 const TITLE_ID = 'appearance-title';
 const THEMES: readonly { value: ThemePref; key: StringKey }[] = [
   { value: 'system', key: 'appearance.theme.system' },
-  { value: 'mesh', key: 'appearance.theme.mesh' },
+  { value: 'signal', key: 'appearance.theme.signal' },
   { value: 'light', key: 'appearance.theme.light' },
   { value: 'high-contrast', key: 'appearance.theme.contrast' },
 ];

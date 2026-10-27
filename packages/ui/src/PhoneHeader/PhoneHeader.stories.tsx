@@ -3,7 +3,7 @@ import { PhoneHeader } from './PhoneHeader.tsx';
 import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 
-// Switch the theme in the toolbar (mesh, light, high-contrast). A real 390px phone width.
+// Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
 const meta = { title: 'Shell/PhoneHeader', component: PhoneHeader, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof PhoneHeader>;
 export default meta;
 type Story = StoryObj<typeof meta>;

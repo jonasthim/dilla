@@ -213,11 +213,11 @@ export async function axeEverywhere(page: Page, state: string): Promise<void> {
   const viewport = page.viewportSize();
   const theme = await page.evaluate(() => document.documentElement.dataset.theme ?? null);
   try {
-    for (const name of ['mesh', 'light', 'high-contrast'] as const) {
+    for (const name of ['signal', 'light', 'high-contrast'] as const) {
       await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, name);
       await expectAccessible(page, `${state} in the ${name} theme`);
     }
-    await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, 'mesh');
+    await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, 'signal');
     await page.setViewportSize({ width: 360, height: 740 });
     await expectAccessible(page, `${state} at 360×740`);
   } finally {

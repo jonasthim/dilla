@@ -267,7 +267,7 @@ describe('CallTile', () => {
     expect([...(list?.querySelectorAll('option') ?? [])].map(o => o.getAttribute('value'))).toEqual(['100']);
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><ul><CallTile {...(meta.args as CallTileProps)} /></ul></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

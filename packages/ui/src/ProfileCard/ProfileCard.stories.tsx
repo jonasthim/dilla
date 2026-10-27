@@ -71,21 +71,21 @@ async function expectSheet(root: HTMLElement, story: string): Promise<void> {
   if (!card.contains(document.activeElement)) throw new Error(`${story}: focus is not inside the card`);
 }
 
-export const DesktopMesh: Story = {
-  render: args => <Beside {...args} />, parameters: { layout: 'fullscreen' }, globals: { theme: 'mesh' },
+export const DesktopSignal: Story = {
+  render: args => <Beside {...args} />, parameters: { layout: 'fullscreen' }, globals: { theme: 'signal' },
   play: ({ canvasElement }) => expectPopover(canvasElement, 'ProfileCard popover'),
 };
-export const DesktopLight: Story = { ...DesktopMesh, globals: { theme: 'light' } };
-export const DesktopHighContrast: Story = { ...DesktopMesh, globals: { theme: 'high-contrast' } };
+export const DesktopLight: Story = { ...DesktopSignal, globals: { theme: 'light' } };
+export const DesktopHighContrast: Story = { ...DesktopSignal, globals: { theme: 'high-contrast' } };
 /** A member who is neither the owner nor the viewer, with no roles of their own beyond the default, offline. */
 export const DesktopPlainMember: Story = {
-  ...DesktopMesh, args: { name: 'Astrid', username: 'astrid', presence: 'offline', status: undefined, isOwner: false, isYou: false, roles: [{ name: 'members', color: null }], actions: actions.slice(0, 2) },
+  ...DesktopSignal, args: { name: 'Astrid', username: 'astrid', presence: 'offline', status: undefined, isOwner: false, isYou: false, roles: [{ name: 'members', color: null }], actions: actions.slice(0, 2) },
 };
 
-export const PhoneSheetMesh: Story = {
+export const PhoneSheetSignal: Story = {
   render: args => <PhoneLayoutProvider value><ProfileCard {...args} /></PhoneLayoutProvider>,
-  parameters: { layout: 'fullscreen' }, globals: { theme: 'mesh' },
+  parameters: { layout: 'fullscreen' }, globals: { theme: 'signal' },
   play: ({ canvasElement }) => expectSheet(canvasElement, 'ProfileCard sheet'),
 };
-export const PhoneSheetLight: Story = { ...PhoneSheetMesh, globals: { theme: 'light' } };
-export const PhoneSheetHighContrast: Story = { ...PhoneSheetMesh, globals: { theme: 'high-contrast' } };
+export const PhoneSheetLight: Story = { ...PhoneSheetSignal, globals: { theme: 'light' } };
+export const PhoneSheetHighContrast: Story = { ...PhoneSheetSignal, globals: { theme: 'high-contrast' } };

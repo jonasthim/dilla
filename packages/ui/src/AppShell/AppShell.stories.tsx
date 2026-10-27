@@ -87,7 +87,7 @@ const bottomPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
 };
 export const BottomPanel: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
-  globals: { theme: 'mesh' }, play: bottomPlay,
+  globals: { theme: 'signal' }, play: bottomPlay,
 };
 /** MP8: the sidebar splitter runs from the sidebar's top to the panel's bottom, and a drag from the panel's edge resizes the sidebar. */
 const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
@@ -122,12 +122,12 @@ const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement })
 };
 export const BottomPanelSplitter: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
-  globals: { theme: 'mesh' }, play: fullHeightPlay,
+  globals: { theme: 'signal' }, play: fullHeightPlay,
 };
 /** MP8: with a status bar the splitter stops above the status row. */
 export const BottomPanelSplitterStatus: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, statusBar: fixtureStatusBar, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
-  globals: { theme: 'mesh' },
+  globals: { theme: 'signal' },
   play: async ({ canvasElement }) => {
     await fullHeightPlay({ canvasElement });
     const sep = canvasElement.querySelector<HTMLElement>('[role="separator"][aria-label="resize the channel list"]');
@@ -162,7 +162,7 @@ export const BottomPanelWithStatus: Story = {
  */
 export const Desktop: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, bottom: userPanel }} /></div>,
-  globals: { theme: 'mesh' },
+  globals: { theme: 'signal' },
   play: ({ canvasElement }) => {
     const shell = canvasElement.querySelector<HTMLElement>('.d-app-shell')!.getBoundingClientRect();
     const edge = (selector: string) => {

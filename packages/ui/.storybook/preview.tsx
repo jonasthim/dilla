@@ -3,10 +3,10 @@ import '../src/styles/base.css';
 
 const preview: Preview = {
   globalTypes: {
-    theme: { description: 'Theme', toolbar: { title: 'Theme', items: ['mesh', 'light', 'high-contrast'], dynamicTitle: true } },
+    theme: { description: 'Theme', toolbar: { title: 'Theme', items: ['signal', 'light', 'high-contrast'], dynamicTitle: true } },
     density: { description: 'Density', toolbar: { title: 'Density', items: ['compact', 'regular', 'cozy'], dynamicTitle: true } },
   },
-  initialGlobals: { theme: 'mesh', density: 'regular' },
+  initialGlobals: { theme: 'signal', density: 'regular' },
   decorators: [
     (Story, ctx) => {
       document.documentElement.dataset.theme = ctx.globals.theme;

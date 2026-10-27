@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { TabBar, type TabBarItem } from './TabBar.tsx';
 
-// Switch the theme in the toolbar (mesh, light, high-contrast). A real 390px phone width.
+// Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
 const meta = { title: 'Shell/TabBar', component: TabBar, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof TabBar>;
 export default meta;
 type Story = StoryObj<typeof meta>;

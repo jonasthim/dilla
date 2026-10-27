@@ -365,7 +365,7 @@ export const en = {
   'appearance.title': 'Appearance',
   'appearance.theme.label': 'theme',
   'appearance.theme.system': 'system',
-  'appearance.theme.mesh': 'mesh',
+  'appearance.theme.signal': 'signal',
   'appearance.theme.light': 'light',
   'appearance.theme.contrast': 'high contrast',
   'shell.message.toolbar': 'actions for this message',

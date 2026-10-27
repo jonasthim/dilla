@@ -983,7 +983,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 // with sign out; one phone settings entry point and an index/back traversal; the admin reorder as arrow icon buttons with truncated names; privacy
 // "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in all three themes where the surface is new.
 
-const THEMES = ['mesh', 'light', 'high-contrast'] as const;
+const THEMES = ['signal', 'light', 'high-contrast'] as const;
 async function expectAccessibleInThemes(page: Page, state: string): Promise<void> {
   const before = await page.evaluate(() => document.documentElement.dataset.theme ?? '');
   try {

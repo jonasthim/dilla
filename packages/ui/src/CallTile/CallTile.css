@@ -29,7 +29,7 @@
 .d-call-tile__volume-row { display: flex; align-items: center; gap: 0.25rem; min-width: 0; }
 .d-call-tile__volume-value { flex: 0 0 auto; min-width: 4.5ch; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 /* The range is a voice control: its hit box is 40 px high on a desktop and 44 px on a phone (flow 06). Product walk M6:
-   drawn in Mesh (a hairline track filled with the accent up to the value, a square thumb, a tick at 100 %) in every
+   drawn in Signal (a hairline track filled with the accent up to the value, a square thumb, a tick at 100 %) in every
    engine, rather than the browser's own control. */
 .d-call-tile__volume input {
   flex: 1 1 auto; min-width: 0; min-height: 2.5rem; margin: 0; background: transparent; cursor: pointer;

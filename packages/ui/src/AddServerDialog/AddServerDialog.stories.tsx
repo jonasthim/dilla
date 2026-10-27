@@ -20,8 +20,8 @@ const play = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
     if (c.getBoundingClientRect().height < 44) throw new Error('AddServerDialog: a choice is under 44px');
   }
 };
-export const Open: Story = { globals: { theme: 'mesh' }, play };
+export const Open: Story = { globals: { theme: 'signal' }, play };
 export const OpenLight: Story = { globals: { theme: 'light' }, play };
 export const OpenHighContrast: Story = { globals: { theme: 'high-contrast' }, play };
-export const OnPhone: Story = { globals: { theme: 'mesh' }, play,
+export const OnPhone: Story = { globals: { theme: 'signal' }, play,
   decorators: [Story => <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: '100%' }}><Story /></div></PhoneLayoutProvider>] };

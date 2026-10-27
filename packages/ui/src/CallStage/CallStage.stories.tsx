@@ -273,12 +273,12 @@ function expectVisibleTargets(root: HTMLElement, story: string): void {
   }
 }
 
-const gridStory = (n: number, theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+const gridStory = (n: number, theme: 'signal' | 'light' | 'high-contrast'): Story => ({
   args: { tiles: people(n), code: null }, globals: { theme }, decorators: [stageBox],
   render: args => <StageDemo {...args} />,
   play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectGrid(canvasElement, `Grid${String(n)}`, n); },
 });
-const focusedStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+const focusedStory = (theme: 'signal' | 'light' | 'high-contrast'): Story => ({
   args: { tiles: [person('ada', { video: true }), shared('ada'), person('bo', { video: true, speaking: true }), person('cy', { muted: true }), person('you', { video: true }, true)], code: null },
   globals: { theme }, decorators: [stageBox],
   render: args => <StageDemo {...args} initialFocus="d-ada:screen" />,
@@ -292,33 +292,33 @@ export const FocusedFew: Story = {
   play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'FocusedFew'); },
 };
 /** Nine tiles with a person focused: the filmstrip overflows and scrolls, and the focused tile stays at the left edge. */
-const focusedNineStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+const focusedNineStory = (theme: 'signal' | 'light' | 'high-contrast'): Story => ({
   args: { tiles: people(9), code: null }, globals: { theme }, decorators: [stageBox],
   render: args => <StageDemo {...args} initialFocus="d-ed:camera" />,
   play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'Focused9'); },
 });
 /** One tile fills the area above the toolbar. */
-export const Grid1: Story = gridStory(1, 'mesh');
+export const Grid1: Story = gridStory(1, 'signal');
 export const Grid1Light: Story = gridStory(1, 'light');
 export const Grid1HighContrast: Story = gridStory(1, 'high-contrast');
 /** Two tiles: one column or two, whichever makes the tiles widest. */
-export const Grid2: Story = gridStory(2, 'mesh');
+export const Grid2: Story = gridStory(2, 'signal');
 export const Grid2Light: Story = gridStory(2, 'light');
 export const Grid2HighContrast: Story = gridStory(2, 'high-contrast');
 /** Three tiles: on a phone the odd last one spans both columns. */
-export const Grid3: Story = gridStory(3, 'mesh');
-export const Grid5: Story = gridStory(5, 'mesh');
-export const Grid4: Story = gridStory(4, 'mesh');
+export const Grid3: Story = gridStory(3, 'signal');
+export const Grid5: Story = gridStory(5, 'signal');
+export const Grid4: Story = gridStory(4, 'signal');
 export const Grid4Light: Story = gridStory(4, 'light');
 export const Grid4HighContrast: Story = gridStory(4, 'high-contrast');
-export const Grid9: Story = gridStory(9, 'mesh');
+export const Grid9: Story = gridStory(9, 'signal');
 export const Grid9Light: Story = gridStory(9, 'light');
 export const Grid9HighContrast: Story = gridStory(9, 'high-contrast');
 /** A shared screen focused: it spans row 1 and the people flow into the filmstrip under it; the same video elements stay. */
-export const Focused: Story = focusedStory('mesh');
+export const Focused: Story = focusedStory('signal');
 export const FocusedLight: Story = focusedStory('light');
 export const FocusedHighContrast: Story = focusedStory('high-contrast');
-export const Focused9: Story = focusedNineStory('mesh');
+export const Focused9: Story = focusedNineStory('signal');
 export const Focused9Light: Story = focusedNineStory('light');
 export const Focused9HighContrast: Story = focusedNineStory('high-contrast');
 
@@ -328,7 +328,7 @@ function silentScreen(name: string): StageTile { return { ...shared(name), silen
 function soundScreen(name: string, volume: number): StageTile {
   return { ...shared(name), stream: { volume, labels: { volume: `stream volume for ${name}`, mute: 'mute stream' }, onVolume: noop, onMute: noop } };
 }
-const screensStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+const screensStory = (theme: 'signal' | 'light' | 'high-contrast'): Story => ({
   args: { tiles: [person('you', { video: true }, true), silentScreen('ada'), soundScreen('bo', 100), soundScreen('cy', 0)], code: null },
   globals: { theme }, decorators: [stageBox],
   render: args => <StageDemo {...args} />,
@@ -339,10 +339,10 @@ const screensStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
     if (marks !== 1) throw new Error(`Screens: ${String(marks)} no-sound marks, expected 1 (only the silent screen; a muted stream is not silent)`);
   },
 });
-export const ScreensSound: Story = screensStory('mesh');
+export const ScreensSound: Story = screensStory('signal');
 /** Phone (visited at 360 × 740): a real tap on the volume button inside the stage opens the popover, and the range is wide enough. */
 export const ScreensPhonePopover: Story = {
-  ...screensStory('mesh'),
+  ...screensStory('signal'),
   parameters: { phoneViewport: true },
   play: async ({ canvasElement }) => {
     await nextFrame(); await nextFrame();
