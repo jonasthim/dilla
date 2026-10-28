@@ -19,9 +19,10 @@ const adapter = vi.hoisted(() => {
 });
 vi.mock('@dilla/client-core', async importOriginal => ({ ...await importOriginal<object>(), createVoiceMusicAdapter: () => adapter }));
 
-const { MusicPlayer, musicMarker, useMusicCard, useMusicPlayer } = await import('./music.tsx');
+const { heldMusicRefreshers, isCommunityBot, MusicPlayer, musicMarker, useMusicCard, useMusicPlayer } = await import('./music.tsx');
 
 const COMMUNITY = 'ab'.repeat(16);
+const CLIENT = {} as CoreClient;
 const CHANNEL = 'cd'.repeat(16);
 const ADA = '0a'.repeat(16);
 const BJORN = '0b'.repeat(16);
@@ -38,7 +39,7 @@ const playing = (control = true): VoiceMusicState => ({
 });
 
 function Harness({ bot = 'Glenn', variant = 'card' as const }: { bot?: string | null; variant?: 'card' | 'compact' | 'stage' }) {
-  const view = useMusicPlayer({ client: {} as CoreClient, communityId: COMMUNITY, channelId: CHANNEL, room: 'harbour', bot, members, trust: undefined });
+  const view = useMusicPlayer({ client: CLIENT, communityId: COMMUNITY, channelId: CHANNEL, room: 'harbour', bot, members, trust: undefined });
   return view === null ? <p>no player</p> : <MusicPlayer view={view} variant={variant} />;
 }
 
@@ -113,29 +114,69 @@ describe('useMusicPlayer', () => {
     expect(screen.queryByRole('group', { name: 'Music player' })).toBeNull();
   });
 
-  it('re-reads the snapshot every 10 s while open', () => {
+  it('re-reads the snapshot every 25 s while open, not while the page is hidden, and once when it shows again', () => {
     vi.useFakeTimers();
+    const hiddenProp = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    let pageHidden = false;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => pageHidden });
     try {
       const { unmount } = render(<Harness />);
-      act(() => { vi.advanceTimersByTime(10_000); });
+      act(() => { vi.advanceTimersByTime(25_000); });
       expect(adapter.refresh).toHaveBeenCalledWith(CHANNEL);
+      adapter.refresh.mockClear();
+      pageHidden = true;
+      act(() => { vi.advanceTimersByTime(50_000); });
+      expect(adapter.refresh).not.toHaveBeenCalled();
+      pageHidden = false;
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect(adapter.refresh).toHaveBeenCalledTimes(1);
       unmount();
       adapter.refresh.mockClear();
-      act(() => { vi.advanceTimersByTime(20_000); });
+      act(() => { vi.advanceTimersByTime(60_000); });
       expect(adapter.refresh).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(document, 'hidden');
+      if (hiddenProp !== undefined) Object.defineProperty(Document.prototype, 'hidden', hiddenProp);
+      vi.useRealTimers();
+    }
+  });
+
+  it('two views of one channel share one schedule, cleared when both have gone', () => {
+    const one = render(<Harness variant="stage" />);
+    const two = render(<Harness variant="compact" />);
+    expect(heldMusicRefreshers()).toBe(1);
+    one.unmount();
+    expect(heldMusicRefreshers()).toBe(1);
+    two.unmount();
+    expect(heldMusicRefreshers()).toBe(0);
+  });
+
+  it('re-reads a second after the playing track should end', () => {
+    vi.useFakeTimers();
+    try {
+      render(<Harness variant="stage" />);
+      act(() => { adapter.set({ ...playing(), clock: { elapsedMs: 0, receivedAtMs: Date.now() } } as VoiceMusicState); });
+      adapter.refresh.mockClear();
+      // 3:34 track at 0:37: 177 s left, then a second.
+      act(() => { vi.advanceTimersByTime(177_000 + 999); });
+      const before = adapter.refresh.mock.calls.length;
+      act(() => { vi.advanceTimersByTime(2); });
+      expect(adapter.refresh.mock.calls.length).toBe(before + 1);
     } finally { vi.useRealTimers(); }
   });
 });
 
-function CardHarness({ botInRoom, inCall }: { botInRoom: boolean; inCall: boolean }) {
-  const view = useMusicCard({ client: {} as CoreClient, communityId: COMMUNITY, channelId: CHANNEL, room: 'harbour', bot: 'Glenn', botInRoom, inCall, members, trust: undefined });
+const ITEM = 'ef'.repeat(16);
+function CardHarness({ botInRoom, inCall, item = ITEM, visible = true }: { botInRoom: boolean; inCall: boolean; item?: string; visible?: boolean }) {
+  const view = useMusicCard({ client: CLIENT, communityId: COMMUNITY, channelId: CHANNEL, room: 'harbour', bot: 'Glenn', item, botInRoom, visible, inCall, members, trust: undefined });
   return <MusicPlayer view={view} variant="card" />;
 }
 
 describe('the "started music" card', () => {
   it('parses the player marker only at the end of the body', () => {
-    expect(musicMarker(`Music started.\n[dilla-music:v1:${CHANNEL}:${ADA}]`)).toEqual({ voiceChannelId: CHANNEL, requesterId: ADA });
-    expect(musicMarker(`[dilla-music:v1:${CHANNEL}:${ADA}] and more`)).toBeNull();
+    expect(musicMarker(`Music started.\n[dilla-music:v1:${CHANNEL}:${ADA}:${ITEM}]`)).toEqual({ voiceChannelId: CHANNEL, requesterId: ADA, item: ITEM });
+    expect(musicMarker(`Music started.\n[dilla-music:v1:${CHANNEL}:${ADA}]`)).toBeNull();
+    expect(musicMarker(`[dilla-music:v1:${CHANNEL}:${ADA}:${ITEM}] and more`)).toBeNull();
     expect(musicMarker('[dilla-music:v1:xyz:abc]')).toBeNull();
   });
 
@@ -166,5 +207,25 @@ describe('the "started music" card', () => {
       act(() => { vi.advanceTimersByTime(5_000); });
       expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '45');
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('the card after its track (fix round 2)', () => {
+  it('shows the finished state once another track plays, and reads nothing off screen', async () => {
+    render(<CardHarness botInRoom inCall item={'77'.repeat(16)} />);
+    act(() => { adapter.set(playing()); });
+    const card = await screen.findByRole('group', { name: 'Music player' });
+    expect(card).toHaveTextContent('Finished');
+    expect(card).toHaveTextContent('Glenn played this in harbour');
+    expect(card).not.toHaveTextContent('Sea shanties for rowing');
+  });
+  it('an off-screen card does not subscribe', () => {
+    render(<CardHarness botInRoom inCall={false} visible={false} />);
+    expect(adapter.subscribe).not.toHaveBeenCalled();
+  });
+  it('the Bot account is the community member of kind 1', () => {
+    expect(isCommunityBot([{ userId: ADA, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }], ADA)).toBe(true);
+    expect(isCommunityBot(members, ADA)).toBe(false);
+    expect(isCommunityBot(members, null)).toBe(false);
   });
 });

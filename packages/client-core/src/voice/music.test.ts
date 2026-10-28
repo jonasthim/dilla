@@ -119,6 +119,26 @@ describe('authenticated voice music adapter', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('fix round 2: decodes 11 and 13 slot snapshots and longer track rows, ignoring what it does not know', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    const track = ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, '', 'future'];
+    f.answer(f.getRequest(10), 0, '1', encode([1n, 1n, track, [], 1_000n, 0n, 75n, 0n, 0n, 1n, 500n]));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const eleven = f.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>;
+    expect(eleven.track?.title).toBe('Track');
+    expect(eleven.clock).toBeUndefined();
+    unsubscribe();
+    const g = fixture();
+    const off = g.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(g.getRequest(10)).toBeDefined());
+    g.answer(g.getRequest(10), 0, '1', encode([1n, 1n, track, [], 1_000n, 0n, 75n, 0n, 0n, 1n, 9_000n, 10_000n, 'later']));
+    await vi.waitFor(() => expect(g.adapter.state(CHANNEL).status).toBe('available'));
+    expect((g.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>).clock?.elapsedMs).toBe(1_000);
+    off();
+  });
+
   it('an older Bot without the stamp keeps the static position', () => {
     const state: Extract<VoiceMusicState, { status: 'available' }> = { status: 'available', track: { id: 'a', title: 'T', artist: 'A', durationMs: 60_000 },
       queue: [], positionMs: 12_000, volume: 50, paused: false, shuffle: false, repeat: 'off', permissions: { control: true, manageQueue: true } };

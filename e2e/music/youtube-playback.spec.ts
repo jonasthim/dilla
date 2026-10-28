@@ -217,7 +217,8 @@ test('two communities run isolated YouTube playback with independent Bot identit
       await expect(query).toHaveValue(argument);
     }
     const log = musicPage.getByRole('log', { name: 'messages in #general', exact: true });
-    // A bot-authored row (MessageRow marks its author `data-bot`; the old `[data-kind="bot"]` matched nothing since Signal).
+    // A bot-authored row, grouped or not: MessageRow marks its author `data-bot` (the sr-only author of a grouped row too),
+    // which also counts the grouped bot rows the old `[data-kind="bot"]` locator missed.
     const publicBotMessages = log.locator('.d-message-row:has(.d-message-row__author[data-bot])');
     const publicCount = await publicBotMessages.count();
     await region.getByRole('button', { name: 'Run command', exact: true }).click();

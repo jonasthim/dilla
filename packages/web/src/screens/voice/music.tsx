@@ -2,7 +2,7 @@
 // music snapshot for one voice channel (client-core's per-community adapter keeps one store per channel), read while the Bot is
 // in that channel's call. Nothing here invents a value the snapshot does not carry: the requester is the member the Bot
 // recorded, and the playhead runs on only from the Bot's own stamp (Ruling AI; an older Bot's snapshot stays static).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createVoiceMusicAdapter, musicPlayheadMs, type CoreClient, type MemberSummary, type TrustSummary, type VoiceMusicAdapter,
   type VoiceMusicState, type VoiceMusicTrack } from '@dilla/client-core';
 import { NowPlaying, type NowPlayingProps } from '@dilla/ui';
@@ -16,10 +16,11 @@ export type MusicPlayerView = Omit<NowPlayingProps, 'variant' | 'onToggle' | 'on
 };
 
 /**
- * Fix round 1 (item 3): the Bot has no push for music changes (interaction responses answer requests; nothing streams state),
- * so an open player re-reads the snapshot every 10 s as the fallback. One timer per channel, however many views read it.
+ * Fix rounds 1–2 (item 3): the Bot has no push for music changes (interaction responses answer requests; nothing streams
+ * state), so an open player re-reads the snapshot as a fallback: every 25 s while the page is visible, once when it becomes
+ * visible again, and once a second after the playing track should end. One schedule per channel, however many views read it.
  */
-export const MUSIC_REFRESH_MS = 10_000;
+export const MUSIC_REFRESH_MS = 25_000;
 
 export const MUSIC_LABELS = (): NowPlayingProps['labels'] => ({
   region: t('music.region'), playing: t('music.playing'), paused: t('music.paused'), stopped: t('music.stopped'), idle: t('music.idle'),
@@ -34,19 +35,52 @@ function adapterFor(client: CoreClient, communityId: string | null): VoiceMusicA
   try { return createVoiceMusicAdapter(client, communityId); } catch { return null; }
 }
 
-const refreshers = new WeakMap<VoiceMusicAdapter, Map<string, { count: number; timer: ReturnType<typeof setInterval> }>>();
-/** One 10 s re-read per (adapter, channel) while any view holds it. */
-function holdRefresh(adapter: VoiceMusicAdapter, channelId: string): () => void {
+interface Refresher { count: number; timer: ReturnType<typeof setInterval>; end: ReturnType<typeof setTimeout> | null; refresh(): void }
+const refreshers = new Map<VoiceMusicAdapter, Map<string, Refresher>>();
+const hidden = () => typeof document !== 'undefined' && document.hidden;
+let visibilityBound = false;
+/** A page that becomes visible again re-reads every held channel once. */
+function bindVisibility(): void {
+  if (visibilityBound || typeof document === 'undefined') return;
+  visibilityBound = true;
+  document.addEventListener('visibilitychange', () => {
+    if (hidden()) return;
+    for (const channels of refreshers.values()) for (const row of channels.values()) row.refresh();
+  });
+}
+/** One schedule per (adapter, channel) while any view holds it; returns the release and the track-end scheduler. */
+function holdRefresh(adapter: VoiceMusicAdapter, channelId: string): { release(): void; endIn(ms: number | null): void } {
+  bindVisibility();
   let channels = refreshers.get(adapter);
   if (channels === undefined) { channels = new Map(); refreshers.set(adapter, channels); }
-  const held = channels.get(channelId);
-  if (held !== undefined) held.count++;
-  else channels.set(channelId, { count: 1, timer: setInterval(() => { void adapter.refresh(channelId).catch(() => undefined); }, MUSIC_REFRESH_MS) });
-  return () => {
-    const row = channels.get(channelId);
-    if (row === undefined) return;
-    if (--row.count === 0) { clearInterval(row.timer); channels.delete(channelId); }
+  let row = channels.get(channelId);
+  if (row === undefined) {
+    const refresh = () => { void adapter.refresh(channelId).catch(() => undefined); };
+    row = { count: 0, end: null, refresh, timer: setInterval(() => { if (!hidden()) refresh(); }, MUSIC_REFRESH_MS) };
+    channels.set(channelId, row);
+  }
+  row.count++;
+  const held = row;
+  return {
+    release() {
+      if (--held.count > 0) return;
+      clearInterval(held.timer);
+      if (held.end !== null) clearTimeout(held.end);
+      channels.delete(channelId);
+      if (channels.size === 0) refreshers.delete(adapter);
+    },
+    endIn(ms) {
+      if (held.end !== null) clearTimeout(held.end);
+      held.end = ms === null ? null : setTimeout(() => { held.end = null; held.refresh(); }, ms);
+    },
   };
+}
+
+/** Test hook: how many channel schedules are held (fix round 2: two views on one channel share one). */
+export function heldMusicRefreshers(): number {
+  let n = 0;
+  for (const channels of refreshers.values()) n += channels.size;
+  return n;
 }
 
 function useMusicState(client: CoreClient, communityId: string | null, channelId: string | null): VoiceMusicState | null {
@@ -55,11 +89,18 @@ function useMusicState(client: CoreClient, communityId: string | null, channelId
     setState(null);
     const adapter = adapterFor(client, communityId);
     if (adapter === null || channelId === null) return;
-    const read = () => setState(adapter.state(channelId));
+    const hold = holdRefresh(adapter, channelId);
+    const read = () => {
+      const next = adapter.state(channelId);
+      setState(next);
+      // Re-read a second after the playing track should end (the next one starts, or the queue ran out).
+      if (next.status === 'available' && next.track !== null && !next.paused && next.clock !== undefined && next.track.durationMs > 0)
+        hold.endIn(Math.max(0, next.track.durationMs - musicPlayheadMs(next, Date.now())) + 1000);
+      else hold.endIn(null);
+    };
     const unsubscribe = adapter.subscribe(channelId, read);
     read();
-    const release = holdRefresh(adapter, channelId);
-    return () => { release(); unsubscribe(); };
+    return () => { hold.release(); unsubscribe(); };
   }, [client, communityId, channelId]);
   return state;
 }
@@ -86,9 +127,9 @@ interface ViewInput {
 function musicView({ state, room, bot, members, trust, inCall, now, onToggle, onSkip, onStop }: ViewInput): MusicPlayerView {
   const base = { room, bot: { name: bot }, onToggle, onSkip, onStop, labels: MUSIC_LABELS() };
   if (state === null || state.status !== 'available') {
-    // The Bot is not playing in that room any more: the prototype's "Glenn left voice".
-    return { ...base, positionS: 0, playing: false, meta: t('music.left', { bot }), canControl: false,
-      blocked: inCall ? t('music.blocked.dj') : t('music.blocked.join', { room }), queue: [] };
+    // The Bot is not playing in that room any more: the prototype's "Glenn left voice"; a press says the same.
+    const left = t('music.left', { bot });
+    return { ...base, positionS: 0, playing: false, meta: left, canControl: false, blocked: left, queue: [] };
   }
   const requester = (track: VoiceMusicTrack) => (track.requesterId === undefined ? '' : userName(track.requesterId, members, trust));
   const current = state.track;
@@ -148,16 +189,30 @@ export function useMusicPlayer({ client, communityId, channelId, room, bot, memb
 export interface MusicCardInput extends Omit<MusicPlayerInput, 'bot'> {
   /** The Bot's name (the message's author). */
   bot: string;
+  /** The queue item this message announced (fix round 2): the card is live only while that track plays. */
+  item: string;
   /** The Bot is in that voice channel's call now (else the card says it left voice). */
   botInRoom: boolean;
+  /** The card is on screen (fix round 2: an off-screen card reads nothing). */
+  visible: boolean;
   /** This device is in that voice channel's call. */
   inCall: boolean;
 }
 
-/** The card on Glenn's "started music" message: the same player state, read while the Bot is in that room. */
-export function useMusicCard({ client, communityId, channelId, room, bot, botInRoom, inCall, members, trust }: MusicCardInput): MusicPlayerView {
-  const player = useChannelPlayer(client, communityId, channelId, botInRoom);
-  return musicView({ ...player, state: botInRoom ? player.state : null, room, bot, members, trust, inCall });
+/**
+ * The card on Glenn's "started music" message: the same player state, read while the Bot is in that room and the card is on
+ * screen, and live only while the announced track is the one playing; after that it says the track finished.
+ */
+export function useMusicCard({ client, communityId, channelId, room, bot, item, botInRoom, visible, inCall, members, trust }: MusicCardInput): MusicPlayerView {
+  const player = useChannelPlayer(client, communityId, channelId, botInRoom && visible);
+  if (!botInRoom) return musicView({ ...player, state: null, room, bot, members, trust, inCall });
+  const state = player.state;
+  if (state !== null && state.status === 'available' && state.track !== null && state.track.id !== item) {
+    const ended = t('music.ended', { bot, room });
+    return { room, bot: { name: bot }, positionS: 0, playing: false, meta: ended, canControl: false, blocked: ended, queue: [],
+      onToggle: player.onToggle, onSkip: player.onSkip, onStop: player.onStop, labels: { ...MUSIC_LABELS(), idle: t('music.finished') } };
+  }
+  return musicView({ ...player, room, bot, members, trust, inCall });
 }
 
 /**
@@ -175,30 +230,53 @@ export function MusicPlayer({ view, variant }: { view: MusicPlayerView; variant:
     onToggle={run(view.onToggle)} onSkip={run(view.onSkip)} onStop={run(view.onStop)} />;
 }
 
-/** The player marker Glenn's public "started music" message ends with: the voice channel and the requester. */
-const MARKER = /\n?\[dilla-music:v1:([0-9a-f]{32}):([0-9a-f]{32})\]$/u;
-export function musicMarker(body: string): { voiceChannelId: string; requesterId: string } | null {
+/** The player marker Glenn's public "started music" message ends with: the voice channel, the requester and the queue item. */
+const MARKER = /\n?\[dilla-music:v1:([0-9a-f]{32}):([0-9a-f]{32}):([0-9a-f]{32})\]$/u;
+export function musicMarker(body: string): { voiceChannelId: string; requesterId: string; item: string } | null {
   const match = MARKER.exec(body);
-  return match === null ? null : { voiceChannelId: match[1], requesterId: match[2] };
+  return match === null ? null : { voiceChannelId: match[1], requesterId: match[2], item: match[3] };
+}
+
+/** An element's visibility on screen (IntersectionObserver); without one (tests, old engines) it counts as visible. */
+function useOnScreen(ref: { current: Element | null }): boolean {
+  const [visible, setVisible] = useState(typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => { setVisible(entries.some(e => e.isIntersecting)); });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return visible;
 }
 
 /**
  * Jonas 2026-10-28: the card on Glenn's public "started music" message in the channel where /play ran. It reads the same player
- * state as the dock row and the stage bar, for the voice channel the marker names, while the Bot is in that room.
+ * state as the dock row and the stage bar, for the voice channel and track the marker names, while the Bot is in that room.
  */
-export function MusicMessageCard({ client, communityId, voiceChannelId, bot }: { client: CoreClient; communityId: string | null; voiceChannelId: string; bot: string }) {
+export function MusicMessageCard({ client, communityId, voiceChannelId, item, bot }: { client: CoreClient; communityId: string | null; voiceChannelId: string; item: string; bot: string }) {
   const voice = useSlice('voice');
   const call = useSlice('call');
   const trust = useSlice('trust');
   const members = useSlice(`members:${communityId ?? ''}`) ?? [];
-  const room = useMusicRoom(communityId, voiceChannelId);
+  const ref = useRef<HTMLDivElement>(null);
+  const visible = useOnScreen(ref);
+  const room = musicRoomName(client, communityId, voiceChannelId);
   const botInRoom = voice?.[voiceChannelId]?.participants.some(p => p.bot) === true;
-  const view = useMusicCard({ client, communityId, channelId: voiceChannelId, room, bot, botInRoom, inCall: call?.channelId === voiceChannelId, members, trust });
-  return <MusicPlayer view={view} variant="card" />;
+  const view = useMusicCard({ client, communityId, channelId: voiceChannelId, room, bot, item, botInRoom, visible, inCall: call?.channelId === voiceChannelId, members, trust });
+  return <div ref={ref} className="dw-music-card"><MusicPlayer view={view} variant="card" /></div>;
 }
 
-/** The voice channel's name (the player's room); its id's start while the channel list has not arrived. */
-export function useMusicRoom(communityId: string | null, voiceChannelId: string): string {
-  const channels = useSlice(`channels:${communityId ?? ''}`);
-  return channels?.find(c => c.id === voiceChannelId)?.name ?? voiceChannelId.slice(0, 8);
+/** The voice channel's name, read once (no subscription per message row); "a voice channel" when this viewer cannot see it. */
+export function musicRoomName(client: CoreClient, communityId: string | null, voiceChannelId: string): string {
+  const channels = communityId === null ? undefined : client.get(`channels:${communityId}`);
+  return channels?.find(c => c.id === voiceChannelId)?.name ?? t('music.someRoom');
+}
+
+/**
+ * Security review M1: the card is drawn only for an unedited message from this community's managed Bot account (a member row
+ * of account kind 1, the server's account kind, not the sender's credential).
+ */
+export function isCommunityBot(members: readonly MemberSummary[], userId: string | null): boolean {
+  return userId !== null && members.some(m => m.userId === userId && m.kind === 1);
 }

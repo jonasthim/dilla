@@ -9,7 +9,7 @@ import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
 import type { CoreClient } from '@dilla/client-core';
 import { PollCard, finalPollMarker } from '../commands/PollCard.tsx';
-import { MusicMessageCard, musicMarker, useMusicRoom } from '../voice/music.tsx';
+import { isCommunityBot, MusicMessageCard, musicMarker, musicRoomName } from '../voice/music.tsx';
 
 const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
   ok: null, pending: 'shell.message.pending', failed: 'shell.message.failed',
@@ -143,13 +143,14 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const time = messageTime(item.ts, p.now);
   const marker = item.bot ? finalPollMarker(item.body) : null;
   // Fix round 1 (Jonas 2026-10-28): Glenn's "started music" message: the prototype's line and the live player card.
-  const music = item.bot && marker === null ? musicMarker(item.body) : null;
-  const musicRoom = useMusicRoom(p.communityId ?? null, music?.voiceChannelId ?? '');
+  // Security review M1: only an unedited message from this community's managed Bot account.
+  const music = item.bot && marker === null && !item.edited && isCommunityBot(p.book.members, item.senderUser) ? musicMarker(item.body) : null;
+  const musicRoom = music === null || p.client === undefined ? '' : musicRoomName(p.client, p.communityId ?? null, music.voiceChannelId);
   const displayBody = !shown ? '' : music !== null
     ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
     : markdownParts(marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, ''), p.book, item.mention);
   const card = music !== null && p.client !== undefined && shown
-    ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} bot={author} />
+    ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
     : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
     body={item.body} authorId={item.senderUser} bot={item.bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
     onOpenThread={p.onOpenThread} /> : undefined;

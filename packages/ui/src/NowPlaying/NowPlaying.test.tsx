@@ -119,3 +119,17 @@ describe('NowPlaying', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+describe('NowPlaying toasts (fix round 2)', () => {
+  it('several players share one live region, and the last one leaving takes it away', async () => {
+    const first = render(<NowPlaying {...npHarbour} variant="compact" canControl={false} />);
+    const second = render(<NowPlaying {...npHarbour} variant="stage" canControl={false} />);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    await userEvent.click(within(second.container).getByRole('button', { name: 'Skip' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Join harbour to control playback');
+    first.unmount();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    second.unmount();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});

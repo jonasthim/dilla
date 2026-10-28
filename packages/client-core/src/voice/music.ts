@@ -381,7 +381,9 @@ function text(value: CborValue): string {
 }
 function track(value: CborValue): VoiceMusicTrack | null {
   if (value === null) return null;
-  const row = array(value, 8);
+  const row = array(value);
+  // Fix round 2: a newer Bot may append slots; the eight this client reads must be there, the rest is ignored.
+  if (row.length < 8) throw new Error('Malformed music snapshot.');
   const provider = text(field(row, 1));
   const canonicalId = text(field(row, 2));
   const itemId = text(field(row, 0));
@@ -399,8 +401,9 @@ function track(value: CborValue): VoiceMusicTrack | null {
 }
 function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: string } {
   const row = array(decode(data));
-  // v1 has 10 slots; a Bot with Ruling AI adds slot 10 (Unix ms when slot 4 was the playhead, 0 unknown) and 11 (its Unix ms now).
-  if (row.length !== 10 && row.length !== 12) throw new Error('Malformed music snapshot.');
+  // v1 has 10 slots; a Bot with Ruling AI adds slot 10 (Unix ms when slot 4 was the playhead, 0 unknown) and 11 (its Unix ms
+  // now). Fix round 2: tolerant of later additions — at least 10, the stamp read only when both of its slots are there.
+  if (row.length < 10) throw new Error('Malformed music snapshot.');
   if (uint(field(row, 0), 1) !== 1) throw new Error('Unsupported music snapshot version.');
   const revisionValue = field(row, 1);
   if (typeof revisionValue !== 'bigint') throw new Error('Malformed music snapshot.');
@@ -419,7 +422,7 @@ function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: s
     ...playheadClock(row) } };
 }
 function playheadClock(row: CborValue[]): { clock?: { elapsedMs: number; receivedAtMs: number } } {
-  if (row.length !== 12) return {};
+  if (row.length < 12) return {};
   const at = uint(field(row, 10));
   const now = uint(field(row, 11));
   if (at === 0 || now < at) return {};

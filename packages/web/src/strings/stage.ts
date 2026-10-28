@@ -37,6 +37,10 @@ export const stage = {
   'music.idle': 'Nothing playing',
   'music.idleIn': '{bot} is idle in {room}. /play starts the next one.',
   'music.left': '{bot} left voice',
+  // Fix round 2: an announced track that is no longer the one playing, and a room this viewer cannot see.
+  'music.finished': 'Finished',
+  'music.ended': '{bot} played this in {room}',
+  'music.someRoom': 'a voice channel',
   // Fix round 1 (Jonas 2026-10-28): Glenn's public message where /play ran, the prototype's copy.
   'music.started': '{name} started music in {room}',
   'music.play': 'Play',
