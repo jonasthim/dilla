@@ -3,7 +3,7 @@
 .d-profile-card {
   position: relative; box-sizing: content-box; z-index: 40; width: 300px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: hidden auto;
   font-family: var(--font-mono); color: var(--fg); background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-xxl);
-  box-shadow: var(--shadow-card); animation: d-modal var(--duration-card) var(--ease-out) both;
+  box-shadow: var(--shadow-profile); animation: d-modal var(--duration-profile) var(--ease-out) both;
 }
 .d-profile-card:focus-visible { outline: none; }
 /* The 56px band: the person's hue, 45% saturation, 30% to 16% light at 135°. */

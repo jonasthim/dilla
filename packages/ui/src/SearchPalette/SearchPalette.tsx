@@ -42,7 +42,8 @@ function composing(event: KeyboardEvent): boolean {
  * --scrim; opening focuses the textbox and closing returns focus to the opener.
  */
 export function SearchPalette({ open, query, groups, labels, status, modal = false, onQuery, onPick, onClose }: SearchPaletteProps) {
-  const [active, setActive] = useState(0);
+  // The active row is held by its id, so results that arrive later (the message search) never change what Enter opens (fix round 2).
+  const [activeId, setActiveId] = useState<string | null>(null);
   const listId = useId();
   const phone = usePhoneLayout();
   const asDialog = modal && !phone;
@@ -50,10 +51,6 @@ export function SearchPalette({ open, query, groups, labels, status, modal = fal
   const dialogRef = useRef<HTMLDialogElement>(null);
   const picked = useRef(false);
   const resultsRef = useRef<HTMLDivElement>(null);
-  // The active row stays in view as the arrows move it.
-  useEffect(() => {
-    resultsRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
-  });
   // A desktop palette is a modal <dialog> (R-S1): the browser traps focus, makes the shell inert and draws the ::backdrop scrim.
   useEffect(() => {
     const el = dialogRef.current;
@@ -72,13 +69,19 @@ export function SearchPalette({ open, query, groups, labels, status, modal = fal
   const pick = (id: string) => { picked.current = true; onPick(id); };
   const shown = groups.filter(g => g.items.length > 0);
   const items = shown.flatMap(g => g.items);
+  const found = activeId === null ? -1 : items.findIndex(i => i.id === activeId);
+  const activeIndex = found < 0 ? 0 : found;
+  const currentId = items.length > 0 ? items[activeIndex].id : null;
+  // The active row stays in view as the arrows move it (only when it changes).
+  useEffect(() => {
+    resultsRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, [currentId]);
   if (!open) return null;
-  const activeIndex = Math.min(active, Math.max(0, items.length - 1));
   const domId = (id: string) => `${listId}-${id}`;
   const handleInputKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (composing(event)) return;
-    if (event.key === 'ArrowDown' && items.length) { event.preventDefault(); setActive((activeIndex + 1) % items.length); }
-    else if (event.key === 'ArrowUp' && items.length) { event.preventDefault(); setActive((activeIndex - 1 + items.length) % items.length); }
+    if (event.key === 'ArrowDown' && items.length) { event.preventDefault(); setActiveId(items[(activeIndex + 1) % items.length].id); }
+    else if (event.key === 'ArrowUp' && items.length) { event.preventDefault(); setActiveId(items[(activeIndex - 1 + items.length) % items.length].id); }
     else if (event.key === 'Enter' && items.length) { event.preventDefault(); pick(items[activeIndex].id); }
   };
   // Escape closes from anywhere in the palette (Flow 05 "any top overlay"), never during IME composition.
@@ -88,13 +91,12 @@ export function SearchPalette({ open, query, groups, labels, status, modal = fal
     if (!composing(event)) onClose();
   };
   const text = status ?? (items.length ? '' : labels.empty);
-  let index = -1;
   const palette = <section className="d-search-palette" data-layout={phone ? 'phone' : undefined} role="search" aria-label={labels.search} onKeyDown={handleKey}>
     <div className="d-search-palette__field">
       <span className="d-search-palette__glyph" aria-hidden="true"><Icon name="search" size={16} /></span>
       <input ref={inputRef} type="text" role="combobox" aria-label={labels.search} placeholder={labels.placeholder} aria-expanded={items.length > 0} aria-autocomplete="list"
         aria-controls={items.length ? listId : undefined} aria-activedescendant={items.length ? domId(items[activeIndex].id) : undefined}
-        value={query} onChange={event => { setActive(0); onQuery(event.target.value); }} onKeyDown={handleInputKey} />
+        value={query} onChange={event => { setActiveId(null); onQuery(event.target.value); }} onKeyDown={handleInputKey} />
       <button type="button" className="d-search-palette__esc" aria-label={labels.close} onClick={onClose}>esc</button>
     </div>
     {/* A long list scrolls: the region is a tab stop so a keyboard can scroll it too (the arrows in the textbox keep the active row in view). */}
@@ -103,11 +105,9 @@ export function SearchPalette({ open, query, groups, labels, status, modal = fal
         <div key={group.id} role="group" aria-label={group.label} className="d-search-palette__section" data-group={group.id}>
           <div className="d-search-palette__group" aria-hidden="true">{group.label}</div>
           {group.items.map(item => {
-            index += 1;
-            const at = index;
-            const selected = at === activeIndex;
+            const selected = item.id === currentId;
             return (
-              <div role="option" id={domId(item.id)} key={item.id} aria-selected={selected} onClick={() => pick(item.id)} onMouseEnter={() => setActive(at)}>
+              <div role="option" id={domId(item.id)} key={item.id} aria-selected={selected} onClick={() => pick(item.id)} onMouseEnter={() => setActiveId(item.id)}>
                 {item.avatar !== undefined
                   ? <span className="d-search-palette__avatar" aria-hidden="true"><Avatar name={item.avatar.name} size="xs" shape={item.avatar.bot === true ? 'bot' : 'circle'} /></span>
                   : <span className="d-search-palette__tile" aria-hidden="true"><Icon name={item.icon ?? 'search'} size={13} /></span>}

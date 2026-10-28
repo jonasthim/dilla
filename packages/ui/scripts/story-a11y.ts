@@ -94,7 +94,6 @@ async function checkAsideTransition(page: Page, context: StoryContext): Promise<
   await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
 }
 
-/** The top bar's geometry (README §5.2, the prototype's inline sizes), in CSS px at a 16px root. */
 /**
  * Task 9 (Signal §5.8, Ruling C): the desktop palette is centred by left/right 0 and margin 0 auto, never a transform: once its
  * entry animation has ended its computed transform is none, its centre is the viewport's, it is min(600px, 92%) wide at 14vh,
@@ -126,6 +125,7 @@ async function checkPalette(page: Page, context: StoryContext): Promise<void> {
   if (bad.length > 0) throw new Error(`${name}: ${bad.join('; ')}`);
 }
 
+/** The top bar's geometry (README §5.2, the prototype's inline sizes), in CSS px at a 16px root. */
 async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
   const got = await page.evaluate(() => {
     const box = (sel: string) => {

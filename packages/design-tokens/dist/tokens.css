@@ -129,7 +129,7 @@
   --shadow-popover: 0 20px 50px rgba(0,0,0,0.6);
   --shadow-menu: 0 18px 48px rgba(0,0,0,0.6);
   --shadow-toast: 0 12px 30px rgba(0,0,0,0.5);
-  --shadow-card: 0 24px 60px rgba(0,0,0,0.6);
+  --shadow-profile: 0 24px 60px rgba(0,0,0,0.6);
   --shadow-status: 0 16px 40px rgba(0,0,0,0.55);
   --rail-w: 56px;
   --rail-tile: 38px;
@@ -185,7 +185,7 @@
   --duration-progress: 1s;
   --duration-scrim: 160ms;
   --duration-dialog: 240ms;
-  --duration-card: 260ms;
+  --duration-profile: 260ms;
   --row-pad-y: 0.375rem;
   --row-pad-x: 1.125rem;
   --row-gap: 0.125rem;
@@ -664,7 +664,7 @@
     --duration-progress: 0ms;
     --duration-scrim: 0ms;
     --duration-dialog: 0ms;
-    --duration-card: 0ms;
+    --duration-profile: 0ms;
   }
 }
 
@@ -705,6 +705,6 @@
     --duration-progress: 0ms;
     --duration-scrim: 0ms;
     --duration-dialog: 0ms;
-    --duration-card: 0ms;
+    --duration-profile: 0ms;
 }
 

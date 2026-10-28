@@ -163,7 +163,9 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
     <Fragment key={item.id}>{item.sep === true ? <div className="d-action-menu__sep" role="separator" /> : null}<button type="button" role={item.check !== undefined ? 'menuitemcheckbox' : item.checked === undefined ? 'menuitem' : 'menuitemradio'}
       aria-checked={item.check ?? item.checked} tabIndex={-1} className="d-action-menu__item" data-id={item.id}
       data-danger={item.danger ? 'true' : undefined} onClick={() => select(item)}>
-      {item.icon !== undefined ? <><span className="d-action-menu__icon" aria-hidden="true"><Icon name={item.icon} size={14} /></span><span className="d-action-menu__label">{item.label}</span></> : item.label}
+      {item.icon !== undefined ? <span className="d-action-menu__icon" aria-hidden="true"><Icon name={item.icon} size={14} /></span> : null}
+      {/* A label longer than the menu ends in an ellipsis; its full text is the title (fix round 2). */}
+      <span className="d-action-menu__label" title={item.label}>{item.label}</span>
       {item.checked === true ? <span className="d-action-menu__tick" aria-hidden="true"><Icon name="check" size={13} /></span> : null}
       {item.check !== undefined ? <span className="d-action-menu__check" data-on={item.check ? 'true' : undefined} aria-hidden="true"><Icon name="check" size={10} stroke={3} /></span> : null}
     </button></Fragment>

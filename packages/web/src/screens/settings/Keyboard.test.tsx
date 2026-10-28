@@ -28,9 +28,10 @@ it('names the modifier one way, under a sentence-case heading', () => {
 
 // I3: a table with a caption and the four shortcuts as its rows, the action as the row header.
 // Ruling Z adds the DM call chord (Control/⌘+Shift+Enter).
-it('is a table with a caption and five rows', () => {
+// Task 9 fix round 2: Control+/ opens the same palette as Control+K, one row with both chords.
+it('is a table with a caption and four rows', () => {
   render(<Keyboard />);
   const table = screen.getByRole('table', { name: 'Keyboard' });
-  expect(within(table).getAllByRole('row')).toHaveLength(5);
-  expect(within(table).getAllByRole('rowheader').map(h => h.textContent)).toEqual(['search', 'this conversation', 'mute or unmute', 'deafen or undeafen', 'call the open direct message']);
+  expect(within(table).getAllByRole('row')).toHaveLength(4);
+  expect(within(table).getAllByRole('rowheader').map(h => h.textContent)).toEqual(['search', 'mute or unmute', 'deafen or undeafen', 'call the open direct message']);
 });

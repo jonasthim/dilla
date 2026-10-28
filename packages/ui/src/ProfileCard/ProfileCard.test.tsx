@@ -319,7 +319,7 @@ describe('ProfileCard placement', () => {
   // Task 9 (Signal §5.7): the sheet's 16px top corners and d-sheet-up; the popover 300px with the card shadow and d-modal 260ms.
   it('CSS pins: the sheet sits at the bottom with 16px top corners and slides up, the popover is 300px with the card shadow', () => {
     expect(css).toMatch(/\.d-profile-card\[data-layout="sheet"\] \{[^}]*bottom: 0[^}]*border-radius: var\(--r-sheet\) var\(--r-sheet\) 0 0[^}]*animation-name: d-sheet-up/);
-    expect(css).toMatch(/\.d-profile-card \{[^}]*width: 300px[^}]*box-shadow: var\(--shadow-card\)[^}]*animation: d-modal var\(--duration-card\)/);
+    expect(css).toMatch(/\.d-profile-card \{[^}]*width: 300px[^}]*box-shadow: var\(--shadow-profile\)[^}]*animation: d-modal var\(--duration-profile\)/);
   });
 });
 

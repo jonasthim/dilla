@@ -2034,3 +2034,43 @@ describe('the top bar', () => {
     expect(document.querySelector('.d-topbar__voice')).toBeNull();
   });
 });
+
+// Task 9 fix round 2: the member menu's Mention appends "@username " (a space before it when the draft does not end in one), puts
+// the caret at the end and focuses the composer; the narrow desktop's drawer over the conversation (jsdom's layout) closes first,
+// and the focus waits until the composer is no longer inert.
+async function mentionBob() {
+  const r = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`presence:${A}`, { [ME.id]: 'online', [PEER]: 'online', [BOT]: 'online' });
+  } });
+  await r.user.type(composer(), 'hi');
+  await r.user.click(screen.getByRole('button', { name: /^Members/ }));
+  const aside = screen.getByRole('complementary', { name: 'members of Midgard' });
+  fireEvent.contextMenu(within(aside).getByRole('button', { name: /\bbob\b/ }), { clientX: 10, clientY: 10 });
+  await r.user.click(within(screen.getByRole('menu', { name: 'actions for bob' })).getByRole('menuitem', { name: 'Mention' }));
+  return r;
+}
+it('Mention from the member menu closes the drawer, appends with a separator and focuses the composer, caret at the end', async () => {
+  await mentionBob();
+  await waitFor(() => expect(composer()).toHaveFocus());
+  const box = composer() as HTMLTextAreaElement;
+  expect(box.value).toBe('hi @bob ');
+  expect(box.selectionStart).toBe(box.value.length);
+  expect(screen.queryByRole('complementary', { name: 'members of Midgard' })).toBeNull();
+  expect(box.closest('[inert]')).toBeNull();
+});
+it('Mention is not offered while the composer cannot send (a text timeout)', async () => {
+  const expires = NOW + 600;
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`presence:${A}`, { [ME.id]: 'online', [PEER]: 'online', [BOT]: 'online' });
+    client.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve(String(expires)) : Promise.resolve(null);
+  } });
+  await screen.findByText(`You cannot post messages in this community until ${formatTime(expires)}.`);
+  await user.click(screen.getByRole('button', { name: /^Members/ }));
+  const aside = screen.getByRole('complementary', { name: 'members of Midgard' });
+  fireEvent.contextMenu(within(aside).getByRole('button', { name: /\bbob\b/ }), { clientX: 10, clientY: 10 });
+  const menu = screen.getByRole('menu', { name: 'actions for bob' });
+  expect(within(menu).getByRole('menuitem', { name: 'Message' })).toBeInTheDocument();
+  expect(within(menu).queryByRole('menuitem', { name: 'Mention' })).toBeNull();
+});

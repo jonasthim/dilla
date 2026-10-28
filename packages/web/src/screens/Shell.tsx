@@ -191,7 +191,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const search = useSlice('search');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchScope, setSearchScope] = useState<'channel' | 'community' | 'all'>('all');
   const [searchRequest, setSearchRequest] = useState(0);
   const searchRequestRef = useRef(0);
   // The page's own count of search commands still unanswered: the palette says it is searching until the newest settles.
@@ -266,6 +265,17 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // The composer is controlled: the text of the channel or DM it was typed in.
   // `typed`: only a draft edited in this page sends typing; a restored update checkpoint cannot clear AFK.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string; typed?: true }>({ channelId: null, text: '' });
+  // Mention (task 9): the composer takes focus, caret at the end, once nothing covers it.
+  const mentionFocus = useRef(false);
+  const [, setMentionTick] = useState(0);
+  useEffect(() => {
+    if (!mentionFocus.current) return;
+    const box = document.querySelector<HTMLTextAreaElement>('.d-app-shell__main .d-composer textarea');
+    if (box === null || box.closest('[inert]') !== null || document.querySelector('.d-app-shell__backdrop') !== null) return;
+    mentionFocus.current = false;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  });
   const ordinaryDrafts = useRef(new Map<string, string>());
   const [selfTimeout, setSelfTimeout] = useState<{ communityId: string; expires: number } | null>(null);
   const selfUserId = account?.user?.id;
@@ -402,9 +412,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const timeline = useSlice(`timeline:${openId ?? ''}`);
   const typing = useSlice(`typing:${openId ?? ''}`) ?? [];
   const typingNames = [...new Map(typing.map(row => [row.userId, row.name])).values()];
-  const searchId = searchScope === 'channel' ? targetId : searchScope === 'community' ? communityId : null;
-  const issueSearch = (query: string, scope: 'channel' | 'community' | 'all', id: string | null) => {
-    if (!query.trim() || (scope !== 'all' && id === null)) return;
+  const issueSearch = (query: string, scope: 'all', id: null) => {
+    if (!query.trim()) return;
     searchRequestRef.current = Math.max(searchRequestRef.current, search?.requestId ?? 0);
     setSearchRequest(0);
     const call = ++searchCalls.current;
@@ -419,10 +428,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     }
   }, [searchOpen, search]);
   // A button that opens search passes itself as `from`, so focus returns to it on close whatever a tap did to focus (iOS does not focus a tapped button).
-  const startSearch = (scope: 'channel' | 'all', from?: HTMLElement) => {
+  // Task 9 fix round 2: one model, the prototype's palette; messages are searched everywhere (the open conversation's hits first).
+  const startSearch = (from?: HTMLElement) => {
     const active = document.activeElement;
     searchOpener.current = from ?? (active instanceof HTMLElement && active !== document.body ? active : null);
-    setSearchScope(scope);
     setSearchQuery('');
     setSearchOpen(true);
   };
@@ -431,14 +440,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       if (event.isComposing || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
       // M-01: never under another modal (pins, lightbox, any open dialog), and never again while search is open.
       if (overlay || joinOpen || pickerOpen || createFlowOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
-      if (event.key.toLowerCase() === 'k') { event.preventDefault(); startSearch('all'); }
-      else if (event.ctrlKey && !event.metaKey && event.key === '/' && targetId !== null) {
-        event.preventDefault(); startSearch('channel');
-      }
+      // Control+/ opens the same palette as Control/⌘+K (it used to open a conversation-scoped search).
+      if (event.key.toLowerCase() === 'k' || (event.ctrlKey && !event.metaKey && event.key === '/')) { event.preventDefault(); startSearch(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overlay, joinOpen, pickerOpen, createFlowOpen, searchOpen, targetId]);
+  }, [overlay, joinOpen, pickerOpen, createFlowOpen, searchOpen]);
   // Ruling Z: the open DM's call is Control/⌘+Shift+Enter (no button in its header). Not while typing an IME composition, not
   // under a modal; nothing when this DM's call is already up or held.
   // Null while no DM is open: the shortcut then leaves the key alone (no preventDefault), so Ctrl+Shift+Enter keeps its default.
@@ -965,22 +972,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
 
   // The channels whose send is in flight: a second Enter or a click on send meanwhile posts nothing (WEB-APP-01).
   const sending = useRef(new Set<string>());
-  // Task 9 fix round 1 (Jonas): the member menu's Mention puts "@username " at the end of the open text channel's draft and
-  // focuses the composer (on a phone the member sheet closes first). Absent where there is no composer to write in.
-  const mentionFromMembers = channel !== null && channel.kind === 0 && voiceChannel === null && targetId !== null && canSend ? (username: string) => {
-    const id = targetId;
-    const base = draft.channelId === id ? draft.text : ordinaryDrafts.current.get(id) ?? '';
-    const text = `${base}${base === '' || /\s$/.test(base) ? '' : ' '}@${username} `;
-    rememberDraft(ordinaryDrafts.current, id, text);
-    setDraft({ channelId: id, text, typed: true });
-    if (phone) memberSheet.close();
-    requestAnimationFrame(() => {
-      const box = document.querySelector<HTMLTextAreaElement>('.d-app-shell__main .d-composer textarea');
-      if (box === null) return;
-      box.focus();
-      box.setSelectionRange(box.value.length, box.value.length);
-    });
-  } : undefined;
   // The text stays until the send resolves; a refused send keeps it (pre-flight ruling (d)).
   const send = (m: OutgoingMessage) => {
     if (targetId === null) return;
@@ -1317,6 +1308,21 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // A thread (or the list of threads) is a sheet of its own on a phone, with the same history rules.
   const threadSheet = usePhoneSheet('thread', phone && sideNow !== null, () => setSide(null));
   const closeSide = phone ? threadSheet.close : () => setSide(null);
+  // Task 9 fix rounds 1-2 (Jonas): the member menu's Mention puts "@username " at the end of the open text channel's draft and
+  // focuses the composer. Only while that composer can send (no timeout, block or failed open). An aside drawn over the
+  // conversation (a phone's sheet, a narrow desktop's drawer) closes first; the focus waits in `mentionFocus` until the
+  // aside is gone and the composer is no longer inert.
+  const mentionFromMembers = channel !== null && channel.kind === 0 && voiceChannel === null && targetId !== null && reason === null ? (username: string) => {
+    const id = targetId;
+    const base = draft.channelId === id ? draft.text : ordinaryDrafts.current.get(id) ?? '';
+    const text = `${base}${base === '' || /\s$/.test(base) ? '' : ' '}@${username} `;
+    rememberDraft(ordinaryDrafts.current, id, text);
+    setDraft({ channelId: id, text, typed: true });
+    mentionFocus.current = true;
+    if (phone) memberSheet.close();
+    else if (document.querySelector('.d-app-shell__backdrop') !== null) setMembersOpen(false);
+    setMentionTick(n => n + 1);
+  } : undefined;
   // Where focus goes when the sheet or drawer closes: the control that opened it (kept from the first open, not from a list row),
   // else the root's message row, else the header's button.
   const sideOpener = useRef<Element | null>(null);
@@ -1443,7 +1449,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         {openId !== null ? <Button variant="ghost" mark={false} data-thread-list-toggle="" aria-label={t('layout.header.threads')} pressed={threadsOn}
           onClick={toggleThreads}><Icon name={THREADS_GLYPH} size={14} /></Button> : null}
         {membersButton}
-        <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch('channel', e.currentTarget)} />
+        <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch(e.currentTarget)} />
       </>) } : undefined}
       actions={<>
         {openId !== null ? <Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={threadsOn} onClick={toggleThreads}>
@@ -1453,7 +1459,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     // A DM has no threads in this client (threads are a server channel's), so its header carries no Threads button.
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name} topic={dmTopic(dm)}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
-        <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch('channel', e.currentTarget)} />
+        <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch(e.currentTarget)} />
       ) } : undefined} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
@@ -1490,7 +1496,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       { id: 'mute', label: t(call.selfMuted ? 'search.action.unmute' : 'search.action.mute'), sub: isApplePlatform() ? '⌘⇧M' : 'Ctrl+Shift+M',
         icon: call.selfMuted ? 'mic' : 'mic-off', keywords: 'microphone', run: () => { call.selfMute(); return true; } },
       { id: 'dm', label: t('search.action.dm'), sub: t('search.action.dmSub'), icon: 'message-square', keywords: 'direct message dm',
-        run: () => { setPickerOpen(true); return true; } },
+        // The DM picker takes focus: the palette's close must not hand it back to the opener (fix round 2).
+        run: () => { searchOpener.current = null; setPickerOpen(true); return true; } },
     ]),
   ];
   const pickSearchHit = async (hit: SearchHitView): Promise<boolean> => {
@@ -1685,7 +1692,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // The bell the reminders popover hangs under, and gives focus back to (README §6.7).
   const bellOf = () => document.querySelector<HTMLElement>('.d-topbar__bell .d-icon-button');
   const topBar = phone ? undefined : (
-    <TopBar searchLabel={t('topbar.search')} searchShortcut={isApplePlatform() ? '⌘K' : 'Ctrl K'} onSearch={() => startSearch('all')}
+    <TopBar searchLabel={t('topbar.search')} searchShortcut={isApplePlatform() ? '⌘K' : 'Ctrl K'} onSearch={() => startSearch()}
       voice={call.channelId !== null && callPhase(voiceCtx) === 'connected'
         ? { room: whereOf(call.channelId), pingMs: call.state?.link?.rttMs ?? null, onOpen: () => { if (callTarget !== null) void navigate(callTarget); } }
         : undefined}
@@ -1790,16 +1797,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
         const view = validViewPlace(saved.view);
         if (view !== null) setPendingView(view);
-        if (saved.search?.open === true && typeof saved.search.query === 'string' && saved.search.query.length <= 2_000
-          && (saved.search.scope === 'all' || saved.search.scope === 'community' || saved.search.scope === 'channel')) {
-          const scope = saved.search.scope;
-          const id = typeof saved.search.id === 'string' && HEX32.test(saved.search.id) ? saved.search.id : null;
-          setSearchScope(scope);
+        // An older checkpoint's scope is ignored: the palette searches everywhere.
+        if (saved.search?.open === true && typeof saved.search.query === 'string' && saved.search.query.length <= 2_000) {
           setSearchQuery(saved.search.query);
           setSearchOpen(true);
-          if (saved.search.query.trim() !== '' && (scope === 'all' || id !== null)) {
+          if (saved.search.query.trim().length >= 2) {
             setSearchBusy(true);
-            void client.call({ m: 'search', scope, id, query: saved.search.query, cursor: null })
+            void client.call({ m: 'search', scope: 'all', id: null, query: saved.search.query, cursor: null })
               .catch(() => undefined).finally(() => setSearchBusy(false));
           }
         }
@@ -1871,7 +1875,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         const files = targetId === null ? [] : await client.call({ m: 'checkpointFiles', channelId: targetId }) as File[];
         const resumeId = call.channelId ?? call.recoveryChannelId ?? recentUpdateCall?.channelId ?? null;
         await update.store.save(updateScope, { conversationId: targetId, draft, side, threadDraft, membersOpen, ui, tab: homeSelected ? 'dms' : 'channels', view: captureViewPlace(),
-          search: { open: searchOpen, query: searchQuery, scope: searchScope, id: searchId },
+          search: { open: searchOpen, query: searchQuery, scope: 'all', id: null },
           call: resumeId === null ? null
             : { channelId: resumeId,
               camera: call.state?.camera ?? (call.recoveryChannelId !== null ? call.recoveryCamera : recentUpdateCall?.camera ?? false),
@@ -1886,11 +1890,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       }
     })();
   }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, homeSelected,
-    searchOpen, searchQuery, searchScope, searchId, call, recentUpdateCall]);
-  const openCommandSearch = (query: string, scope: 'channel' | 'community' | 'all') => {
-    const id = scope === 'channel' ? targetId : scope === 'community' ? communityId : null;
-    if (scope !== 'all' && id === null) return;
-    setSearchScope(scope); setSearchQuery(query); setSearchOpen(true); issueSearch(query, scope, id);
+    searchOpen, searchQuery, call, recentUpdateCall]);
+  // The /search command opens the palette with its query; like the palette, it searches everywhere (its scope argument no longer narrows).
+  const openCommandSearch = (query: string) => {
+    setSearchQuery(query); setSearchOpen(true); if (query.trim().length >= 2) issueSearch(query, 'all', null);
   };
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped

@@ -38,7 +38,7 @@ const meta = {
   title: 'Shell/ProfileCard', component: ProfileCard,
   args: {
     name: 'Björn', username: 'bjorn', presence: 'online', client: 'WEB', status: 'bridge troll survivor', bio: 'Carries shields, loses them.',
-    roles: [{ name: 'DJ', color: 0xffd16a }, { name: '@everyone', color: null }], actions: [message, compare], onAction: noop, onClose: noop,
+    roles: [{ name: 'DJ', color: 0xffd16a }, { name: '@everyone', color: null }], actions: [message, compare, roles], onAction: noop, onClose: noop,
   },
 } satisfies Meta<typeof ProfileCard>;
 export default meta;
@@ -89,7 +89,7 @@ const beside = (row: string): Story => ({
   render: args => <Beside {...args} row={row} />, parameters: { layout: 'fullscreen' }, globals: { theme: 'signal' },
   play: ({ canvasElement }) => expectPopover(canvasElement, `ProfileCard ${row}`, row),
 });
-/** A member, as the viewer sees them without Manage roles: Message and the shield. */
+/** A member, as a viewer with Manage roles sees them (the prototype's Mira): Message, the shield and Edit roles. */
 export const Person: Story = { ...beside('u2') };
 /** The owner, with Manage roles: the crown after the name, Message, the shield and Edit roles. */
 export const Owner: Story = {
@@ -101,7 +101,7 @@ export const Owner: Story = {
 export const Bot: Story = {
   ...beside('g1'),
   args: { name: 'Glenn', username: 'glenn', status: undefined, presence: 'idle', isBot: true, client: undefined, bio: 'Managed bot. Music, polls, reminders and moderation for this server.',
-    roles: [{ name: '@everyone', color: null }], actions: [message, compare] },
+    roles: [{ name: '@everyone', color: null }], actions: [message, compare, roles] },
 };
 /** Your own card: no actions (the prototype's). */
 export const You: Story = {

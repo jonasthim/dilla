@@ -4,7 +4,7 @@
 /* Task 9: every menu is the prototype's context menu (Signal §5.4): 4px in, --surface-2 in the --line-strong edge, 9px corners,
    the 0 18px 48px shadow, d-modal 160ms. A caller sets its width (the person menu's 236px, the status menu's 220px). */
 .d-action-menu__popup {
-  position: absolute; top: 100%; right: 0; z-index: 30; display: grid; min-width: 11rem; max-height: calc(100dvh - 16px); overflow-y: auto; box-sizing: border-box;
+  position: absolute; top: 100%; right: 0; z-index: 30; display: grid; min-width: 11rem; max-width: min(300px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; box-sizing: border-box;
   padding: 4px; font-family: var(--font-mono); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-menu);
   box-shadow: var(--shadow-menu); animation: d-modal var(--duration-focus) var(--ease-out) both;
 }
@@ -22,7 +22,7 @@
 /* The prototype's separator: 1px --hairline, 4px 6px. */
 .d-action-menu__sep { height: 1px; margin: 4px 6px; background: var(--hairline); }
 .d-action-menu__icon { display: inline-flex; opacity: 0.85; }
-.d-action-menu__label { flex: 1; text-align: left; }
+.d-action-menu__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 /* A single-choice item's tick (the status menu's chosen status): 13px --accent at the end. */
 .d-action-menu__tick { display: inline-flex; margin-left: auto; color: var(--accent); }
 .d-action-menu__check {

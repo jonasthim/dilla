@@ -173,7 +173,7 @@ export const structural = {
   opacity: { muted: '0.8' },
   shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)', menu: '0 18px 48px rgba(0,0,0,0.6)', toast: '0 12px 30px rgba(0,0,0,0.5)',
     // Task 9: the profile card (the prototype's 0 24px 60px .6) and the user panel's status menu (0 16px 40px .55).
-    card: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)' },
+    profile: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -209,7 +209,7 @@ export const structural = {
     /** Task 8b (the prototype's music player): the card's rise, the dock row's, the stage bar's, the queue's, and the progress fill's 1s linear step. */
     player: '360ms', playerRow: '260ms', playerBar: '300ms', queue: '200ms', progress: '1s',
     // Task 9 (the prototype's overlays): a scrim's fade, a form dialog's entrance and the profile card's entrance.
-    scrim: '160ms', dialog: '240ms', card: '260ms' },
+    scrim: '160ms', dialog: '240ms', profile: '260ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openRowMenu } from '../test/row-menu.ts';
 import * as ClientCore from '@dilla/client-core';
 import type { BotUtilities, ReminderSummary } from '@dilla/client-core';
-import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
-import { A, callState, CHANNELS, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
+import { A, BOB, callState, CAROL, CHANNELS, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
+import { ME } from '../test/fixtures.ts';
 import { pushHistoryState, replaceHistoryState } from '../router.ts';
 
 /** A window of the given kind: only the phone query matches, so the wide-window defaults (the members column) stay off. */
@@ -831,3 +832,20 @@ for (const path of [`/dm/${DM}`, `/c/${A}/${GENV}`, `/c/${A}`, '/dm', `/c/${A}/$
     expect(screen.queryByRole('button', { name: 'Reminders' })).toBeNull();
   });
 }
+
+// Task 9 fix round 2: the member menu's Mention on a phone pops the members sheet first, then focuses the composer, caret at the end.
+describe('the phone shell: Mention', () => {
+  it('closes the members sheet and focuses the channel composer with "@username " at the end', async () => {
+    const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
+    act(() => { client.set(`presence:${A}`, { [ME.id]: 'online', [BOB]: 'online', [CAROL]: 'online' }); });
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
+    const sheet = await screen.findByRole('complementary', { name: 'members of Midgard' });
+    fireEvent.contextMenu(within(sheet).getByRole('button', { name: /\bbob\b/ }), { clientX: 10, clientY: 10 });
+    await user.click(within(screen.getByRole('menu', { name: 'actions for bob' })).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(screen.queryByRole('complementary')).toBeNull());
+    const box = document.querySelector<HTMLTextAreaElement>('.d-app-shell__main .d-composer textarea')!;
+    await waitFor(() => expect(box).toHaveFocus());
+    expect(box.value).toBe('@bob ');
+    expect(box.selectionStart).toBe(box.value.length);
+  });
+});

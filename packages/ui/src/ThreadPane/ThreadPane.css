@@ -34,10 +34,16 @@
 .d-thread-pane .d-message-row__time { font-size: var(--text-micro); color: var(--fg-faint); }
 .d-thread-pane .d-message-row__body { font-size: var(--text-sm); line-height: 1.5; }
 .d-thread-pane .d-message-row__thread { display: none; }
+/* The prototype's thread draws no client tag beside an author (fix round 2); a bot keeps its BOT tag. */
+.d-thread-pane .d-message-row .d-tag[data-kind="web"] { display: none; }
 /* The reply input (Ruling AL): 8px 12px 12px around a --bg-3 box in the --hairline-2 line, 8px corners, the accent › and a 30px line; no
    send button on a desktop (Enter sends, as the prototype); a phone keeps it (a soft keyboard's Enter is a new line). */
 .d-thread-pane__composer .d-composer { padding: 8px 12px 12px; background: transparent; }
-.d-thread-pane__composer .d-composer__box { background: var(--bg-3); border-color: var(--hairline-2); border-radius: var(--r-lg); }
+.d-thread-pane__composer .d-composer__box { position: relative; background: var(--bg-3); border-color: var(--hairline-2); border-radius: var(--r-lg); }
+/* The prototype's reply box is 40px (4px + the 30px line + 4px, in its 1px line): the typing sweep lies over its top edge instead of
+   adding a row, and a foot with nothing but its spacer takes no room (fix round 2). */
+.d-thread-pane__composer .d-composer__sweep { position: absolute; inset: 0 0 auto 0; }
+.d-thread-pane__composer .d-composer__foot:not(:has(> :not(.d-composer__spacer))) { display: none; }
 .d-thread-pane__composer .d-composer__box:focus-within { border-color: var(--accent); box-shadow: none; }
 .d-thread-pane__composer .d-composer__row { padding: 4px 4px 4px 10px; }
 .d-thread-pane__composer .d-composer__input { min-height: 30px; font-size: var(--text-input); }

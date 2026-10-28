@@ -96,7 +96,7 @@
 /* The server menu and its items: 44px on a phone. */
 .d-app-shell[data-layout="phone"] .d-action-menu__trigger:not(.d-user-panel *) { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
 /* Ruling AE: the phone's user panel is the prototype's, at its desktop sizes (30px avatar, 30px mute and deafen, 64 high). */
-.d-app-shell[data-layout="phone"] .d-action-menu__item { min-height: 2.75rem; }
+/* Task 9 fix round 2: a menu item keeps the prototype's 32px on a phone too (rule 0: phone sizes follow the prototype). */
 .d-app-shell[data-layout="phone"] .d-composer { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__callbar) .d-composer { padding-bottom: 0.5rem; }
 /* The tab bar pads the home indicator once: the composers above it (the thread pane's too) add none, until the bar steps aside while typing. */

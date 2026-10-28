@@ -223,3 +223,22 @@ describe('SearchPalette groups (task 9 fix round 1)', () => {
     await expectNoAxeViolations(view.container);
   });
 });
+
+describe('SearchPalette active row (fix round 2)', () => {
+  it('keeps the active row by id when results arrive above it, so Enter opens what was chosen', async () => {
+    const user = userEvent.setup();
+    const onPick = vi.fn();
+    const channels = { id: 'channels', label: 'Channels', items: [{ id: 'ch:a', label: 'alpha', icon: 'hash' as const }, { id: 'ch:b', label: 'beta', icon: 'hash' as const }] };
+    const props = { open: true, query: 'ro', labels, onQuery: vi.fn(), onPick, onClose: vi.fn() };
+    const view = render(<SearchPalette {...props} groups={[channels]} />);
+    const input = screen.getByRole('combobox', { name: labels.search });
+    input.focus();
+    await user.keyboard('{ArrowDown}');
+    expect(activeOption(input)).toHaveTextContent('beta');
+    // The message search answers: a group lands before the channels.
+    view.rerender(<SearchPalette {...props} groups={[...g([{ id: 'm1', snippet: 'rope', location: '#general' }]), channels]} />);
+    expect(activeOption(input)).toHaveTextContent('beta');
+    await user.keyboard('{Enter}');
+    expect(onPick).toHaveBeenCalledExactlyOnceWith('ch:b');
+  });
+});

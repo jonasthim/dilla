@@ -10,8 +10,8 @@ export function Keyboard(): React.JSX.Element {
   const [, navigate] = useRoute();
   return <section className="dw-settings-section" aria-labelledby="keyboard-title"><h2 id="keyboard-title" tabIndex={-1}>{t('keyboard.title')}</h2>
     <KeyboardTable caption={t('keyboard.title')} rows={[
-      { action: t('search.open'), keys: [t('keyboard.searchAll')] },
-      { action: t('search.scope.channel'), keys: [t('keyboard.searchChannel')] },
+      // Task 9 fix round 2: both chords open the one palette (no scoped search any more).
+      { action: t('search.open'), keys: [t('keyboard.searchAll'), t('keyboard.searchChannel')] },
       { action: t('keyboard.muteAction'), keys: [t('keyboard.mute')] },
       { action: t('keyboard.deafenAction'), keys: [t('keyboard.deafen')] },
       // Ruling Z: the DM call lives in the DM row's menu and under this chord, not as a header button.
