@@ -8,6 +8,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox, channelRowMenuItem,
+ makeRole as makeRoleInline,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -76,15 +77,6 @@ async function memberAction(page: Page, name: string, item: string): Promise<voi
   await memberTrigger(page, name).click();
   await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
 }
-/** The roles list row of a role: a listitem named by the role's name. */
-const roleRow = (settings: Locator, name: string) => settings.getByRole('list', { name: copy('roles.title'), exact: true }).getByRole('listitem').filter({ hasText: name });
-/** Opens the editor of the existing role `name` from the roles tab. */
-async function editRole(page: Page, settings: Locator, name: string): Promise<Locator> {
-  await roleRow(settings, name).getByRole('button', { name: copy('roles.editLabel', { name }), exact: true }).click();
-  const editor = dialogOf(page, 'roles.editor.titleEdit', { name });
-  await expect(editor).toBeVisible({ timeout: WAIT });
-  return editor;
-}
 async function setSwitch(toggle: Locator, on: boolean): Promise<void> {
   if ((await toggle.getAttribute('aria-checked')) !== String(on)) await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', String(on));
@@ -107,15 +99,8 @@ async function assign(page: Page, name: string, role: string, on: boolean): Prom
 async function makeRole(page: Page, name: string, rights: string[]): Promise<void> {
   const settings = await openSettings(page);
   await navItem(settings, 'roles.tab').click();
-  const newRole = button(settings, 'roles.new');
-  await newRole.click();
-  const editor = dialogOf(page, 'roles.editor.titleNew', { server: SERVER });
-  await expect(editor).toBeVisible({ timeout: WAIT });
-  await editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(name);
-  for (const right of rights) await setSwitch(switchOf(editor, right), true);
-  await button(editor, 'roles.editor.create').click();
-  await expect(editor).toBeHidden({ timeout: WAIT });
-  await expect(roleRow(settings, name)).toBeVisible({ timeout: WAIT });
+  // Signal task 10c: the inline role editor (every change saves at once).
+  await makeRoleInline(page, settings, name, { perms: rights.map(right => right.replace(/^perm\./, '')) });
   await closeSettings(page);
 }
 /** The channel header's "edit channel" opens channel settings; the private switch lives in its permissions section. */

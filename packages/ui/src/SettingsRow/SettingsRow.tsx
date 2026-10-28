@@ -21,6 +21,8 @@ export interface SettingsRowProps {
    * row opens it. Task 10c puts Glenn's Rename, Refresh status and Disable here, beside the prototype's one Restart button.
    */
   menu?: { label: string; items: readonly ActionMenuItem[]; onSelect(itemId: string): void };
+  /** A settings-search anchor (`data-setting`) on the row itself, so a row can be found without a wrapper. */
+  anchor?: string;
   children: ReactNode;
 }
 
@@ -29,7 +31,7 @@ export interface SettingsRowProps {
  * The row is a group named by its visible label and described by its hint. Consecutive rows draw one 10px-radius group
  * with hairlines between them; the row wraps on narrow widths. Complex forms can always stack below their introduction.
  */
-export function SettingsRow({ id, label, hint, icon, tag, headingLevel, layout = 'inline', menu, children }: SettingsRowProps) {
+export function SettingsRow({ id, label, hint, icon, tag, headingLevel, layout = 'inline', menu, anchor, children }: SettingsRowProps) {
   const Label = headingLevel === undefined ? 'span' : (`h${headingLevel}` as const);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -40,6 +42,7 @@ export function SettingsRow({ id, label, hint, icon, tag, headingLevel, layout =
     name === 'onKeyDown' || name === 'onClickCapture' ? handler : (e: { target: EventTarget }) => { if (!onControl(e)) (handler as (ev: unknown) => void)(e); }]));
   return (
     <div ref={rowRef} className={`d-settings-row${layout === 'stacked' ? ' d-settings-row--stacked' : ''}`} data-row role="group" aria-labelledby={`${id}-label`} aria-describedby={hint ? `${id}-hint` : undefined}
+      data-setting={anchor}
       {...(menu === undefined ? {} : { tabIndex: 0, 'aria-keyshortcuts': 'Shift+F10', ...rowTrigger })}>
       {icon ? <span className="d-settings-row__icon" aria-hidden="true"><Icon name={icon} size={15} /></span> : null}
       <div className="d-settings-row__text">

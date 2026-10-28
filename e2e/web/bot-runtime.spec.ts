@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
   FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, composerBox, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
-  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test,
+  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test, makeRole, roleButton,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
@@ -94,8 +94,8 @@ test('a bot enabled through server settings reaches ready through the native run
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
     await expect(settings.getByText(copy('admin.bot.none'), { exact: true })).toBeVisible();
     // Keep the capability mask empty for this baseline; the rendered chooser is source-current.
-    await expect(settings.getByRole('checkbox', { name: copy('admin.bot.capability.roles'), exact: true })).toBeEnabled();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await expect(settings.getByRole('switch', { name: copy('serverSettings.bot.cap.roles'), exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(account.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -142,9 +142,9 @@ test('literal music command text never executes through the native runtime', asy
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
     await expect(settings.getByText(copy('admin.bot.none'), { exact: true })).toBeVisible();
-    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.music'), exact: true }).check();
-    await expect(settings.getByRole('checkbox', { name: copy('admin.bot.capability.roles'), exact: true })).toBeEnabled();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.music'), exact: true }).click();
+    await expect(settings.getByRole('switch', { name: copy('serverSettings.bot.cap.roles'), exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(account.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -212,8 +212,8 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.warnings'), exact: true }).check();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.warnings'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -352,20 +352,17 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('roles.tab'), exact: true }).click();
-    await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
-    const roleEditor = page.getByRole('dialog', { name: copy('roles.editor.titleNew', { server: SERVER }), exact: true });
-    await roleEditor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(joinRoleName);
-    await roleEditor.getByRole('button', { name: copy('roles.editor.create'), exact: true }).click();
-    await expect(roleEditor).toBeHidden();
-    const roleList = settings.getByRole('list', { name: copy('roles.title'), exact: true });
-    const roleRow = roleList.getByRole('listitem').filter({ hasText: joinRoleName });
-    await expect(roleRow).toContainText(copy('roles.row.other', { count: 0 }));
+    // Signal task 10c: the inline role editor.
+    await makeRole(page, settings, joinRoleName);
+    // The role's button is named "{name}, {count} members" (Signal task 10c).
+    const roleRow = roleButton(settings, joinRoleName);
+    await expect(roleRow).toHaveAccessibleName(copy('serverSettings.roles.row.other', { name: joinRoleName, count: 0 }));
 
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    const rolesCapability = settings.getByRole('checkbox', { name: copy('admin.bot.capability.roles'), exact: true });
+    const rolesCapability = settings.getByRole('switch', { name: copy('serverSettings.bot.cap.roles'), exact: true });
     await expect(rolesCapability).toBeEnabled();
     await rolesCapability.check();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -427,7 +424,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
       settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
         .getByRole('button', { name: copy('roles.tab'), exact: true }).click();
-      return roleRow.innerText();
+      return roleRow.getAttribute('aria-label');
     }, { timeout: 90_000, intervals: [1_000, 2_000] }).toContain(copy('roles.row.one'));
 
     await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage!.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
@@ -440,7 +437,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     await expect(leaveDialog).toBeHidden();
     await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: SERVER, exact: true })).toHaveCount(0);
-    await expect(roleRow).toContainText(copy('roles.row.other', { count: 0 }));
+    await expect(roleRow).toHaveAttribute('aria-label', new RegExp(copy('roles.row.other', { count: 0 })));
 
     await addServerVia(secondPage, 'join');
     const joinDialog = secondPage.getByRole('dialog', { name: copy('join.title'), exact: true });
@@ -449,7 +446,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     await expect(joinDialog).toBeHidden();
     await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: SERVER, exact: true })).toBeVisible();
-    await expect.poll(() => roleRow.innerText(), { timeout: 90_000, intervals: [1_000, 2_000] })
+    await expect.poll(() => roleRow.getAttribute('aria-label'), { timeout: 90_000, intervals: [1_000, 2_000] })
       .toContain(copy('roles.row.one'));
   } finally {
     await secondContext?.close();
@@ -474,16 +471,12 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     let nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('roles.tab'), exact: true }).click();
-    await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
-    const roleEditor = page.getByRole('dialog', { name: copy('roles.editor.titleNew', { server: SERVER }), exact: true });
-    await roleEditor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(roleName);
-    await roleEditor.getByRole('switch', { name: copy('roles.editor.hoist'), exact: true }).click();
-    await roleEditor.getByRole('button', { name: copy('roles.editor.create'), exact: true }).click();
-    await expect(roleEditor).toBeHidden();
+    // Signal task 10c: the inline role editor; "show separately" is in the role's menu.
+    await makeRole(page, settings, roleName, { hoist: true });
 
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.roles'), exact: true }).check();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.roles'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();

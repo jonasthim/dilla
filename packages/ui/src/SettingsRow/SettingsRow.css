@@ -10,7 +10,7 @@
 .d-settings-row__text { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }
 .d-settings-row__label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-sm); font-weight: var(--weight-label); line-height: 1.4; color: var(--fg); }
 .d-settings-row__tag { padding: 0 5px; font-size: var(--text-chip); font-weight: var(--weight-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-2); background: var(--accent-tag); border-radius: var(--r-tag); }
-.d-settings-row__hint { margin: 0; max-width: 60ch; font-size: var(--text-xs); line-height: 1.4; color: var(--fg-2); }
+.d-settings-row__hint { margin: 0; font-size: var(--text-xs); line-height: 1.4; color: var(--fg-2); }
 /* margin-left: auto keeps a control that wrapped under its text (a long note beside the button) on the row's right edge. */
 .d-settings-row__control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; max-width: 100%; margin-left: auto; }
 .d-settings-row.d-settings-row--stacked { flex-direction: column; align-items: stretch; gap: 14px; padding: 16px; }

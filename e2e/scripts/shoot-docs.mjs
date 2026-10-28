@@ -679,18 +679,16 @@ async function main(argv) {
     const settingsDialog = byText(ada, 'dialog', 'admin.title');
     await settingsDialog.getByRole('navigation', { name: t('admin.nav'), exact: true })
       .getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.invites), exact: true }).click();
-    await settingsDialog.getByRole('button', { name: t('admin.invites.create'), exact: true }).click();
-    const inviteDialog = byText(ada, 'dialog', 'invite.title', { server: SERVER });
-    const linkField = inviteDialog.getByRole('textbox', { name: t('invite.link'), exact: true });
+    // Signal task 10c: the link shows once in the Invites card, with Copy (no dialog).
+    await settingsDialog.getByRole('button', { name: t('serverSettings.invites.make'), exact: true }).click();
+    const inviteDialog = settingsDialog;
+    const linkField = inviteDialog.getByRole('textbox', { name: t('serverSettings.invites.link'), exact: true });
     await linkField.waitFor({ timeout: WAIT });
-    await inviteDialog.getByRole('status').filter({ hasText: t('invite.copied') }).waitFor({ timeout: WAIT });
     const inviteLink = await linkField.inputValue();
     const invitePath = new URL(inviteLink).pathname;
     if (!/^\/i\/[^/]+$/.test(invitePath)) throw new Error(`the invite dialog showed ${JSON.stringify(inviteLink)}, not an /i/ link`);
     const invite = decodeURIComponent(invitePath.slice(3));
     await shootBoth('create-invite');
-    await ada.keyboard.press('Escape');
-    await inviteDialog.waitFor({ state: 'hidden', timeout: WAIT });
     await ada.keyboard.press('Escape');
     await settingsDialog.waitFor({ state: 'hidden', timeout: WAIT });
     const missing = CREATE_SHOTS.filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));

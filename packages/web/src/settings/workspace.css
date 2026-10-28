@@ -53,9 +53,6 @@
 .dw-bot-settings .d-settings-row__control > textarea { min-height: 8rem; resize: vertical; }
 .dw-bot-settings .d-settings-row__control > fieldset { width: 100%; min-width: 0; margin: 0; padding: 1rem; border: 1px solid var(--hairline-2); }
 .dw-bot-settings .d-settings-row__control > fieldset label { display: flex; align-items: baseline; gap: 0.625rem; padding-block: 0.375rem; overflow-wrap: anywhere; }
-.dw-bot-settings [data-setting="music-providers"] { display: grid; justify-items: start; gap: 0.75rem; padding-block: 1.5rem; }
-.dw-bot-settings [data-setting="music-providers"] dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem 1.5rem; width: 100%; margin: 0; }
-.dw-bot-settings [data-setting="music-providers"] dd { margin: 0; }
 .d-settings-frame[data-layout="phone"] .dw-bot-identity { gap: 0.75rem; }
 .d-settings-frame[data-layout="phone"] .dw-bot-identity > div { flex-basis: calc(100% - 5rem); }
 .d-settings-frame[data-layout="phone"] .dw-bot-identity > .d-btn { margin-top: 0.25rem; }

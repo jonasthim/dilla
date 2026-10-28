@@ -735,10 +735,12 @@ export function newChannelButton(page: Page): Locator {
 }
 
 /**
- * Server settings → Invites → "Make link" (web3.8, item 11: the sidebar's "invite link" moved here). Returns the invite
- * dialog, open on its link field; the settings dialog stays open behind it. Desktop: the header's "server settings" button.
+ * Server settings → Invites → "Make invite link" (Signal task 10c: the link shows once in the Invites card, with Copy, and
+ * no dialog opens). Returns the settings dialog, which holds the link field ("Invite link") and Copy. `server` names the
+ * server for the callers; the card does not repeat it.
  */
 export async function openInviteDialog(page: Page, server: string): Promise<Locator> {
+  void server;
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
@@ -746,23 +748,80 @@ export async function openInviteDialog(page: Page, server: string): Promise<Loca
   await expect(nav).toBeVisible({ timeout: WAIT });
   const tab = nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true });
   if ((await tab.getAttribute('aria-current')) !== 'page') await tab.click();
-  await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: copy('invite.title', { server }), exact: true });
-  await expect(dialog.getByRole('textbox', { name: copy('invite.link'), exact: true })).toBeVisible({ timeout: WAIT });
-  return dialog;
+  await settings.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+  await expect(settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true })).toBeVisible({ timeout: WAIT });
+  return settings;
 }
 
-/** Makes an invite link under server settings → Invites, reads it from the dialog's field, and closes both dialogs. */
+/** Makes an invite link under server settings → Invites, reads it from the card's field, and closes settings. */
 export async function makeInviteLink(page: Page, server: string): Promise<string> {
-  const dialog = await openInviteDialog(page, server);
-  const field = dialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  const settings = await openInviteDialog(page, server);
+  const field = settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
   await expect.poll(() => field.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
   const link = await field.inputValue();
   await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
-  await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: copy('admin.title'), exact: true })).toBeHidden();
   return link;
+}
+
+// Signal task 10c: server settings → Roles is an inline editor and Bot is a page of switches.
+/** The role list's button for `name` ("{name}, {count} members"). */
+export function roleButton(settings: Locator, name: string): Locator {
+  return settings.getByRole('list', { name: copy('serverSettings.roles.list'), exact: true })
+    .getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}, \\d+ members?`) });
+}
+/** Picks the role `name` in the editor. */
+export async function selectRole(settings: Locator, name: string): Promise<void> {
+  await roleButton(settings, name).click();
+  await expect(roleButton(settings, name)).toHaveAttribute('aria-current', 'true', { timeout: WAIT });
+}
+/** Sets a role permission switch (perm.<key>), which saves at once, and waits for it to stick. */
+export async function setRolePermission(settings: Locator, key: string, on: boolean): Promise<void> {
+  const toggle = settings.getByRole('switch', { name: copy(`perm.${key}`), exact: true });
+  if ((await toggle.getAttribute('aria-checked')) !== String(on)) await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', String(on), { timeout: WAIT });
+}
+/** "New role", then renames the new role (Enter saves) and sets its permissions and options; leaves it selected. */
+export async function makeRole(page: Page, settings: Locator, name: string,
+  options: { color?: string; perms?: readonly string[]; hoist?: boolean; mentionable?: boolean } = {}): Promise<void> {
+  await settings.getByRole('button', { name: copy('serverSettings.roles.new'), exact: true }).click();
+  const field = settings.getByRole('textbox', { name: copy('roles.editor.name'), exact: true });
+  await expect(field).toHaveValue(copy('serverSettings.roles.newName'), { timeout: WAIT });
+  await field.fill(name);
+  await field.press('Enter');
+  await expect(roleButton(settings, name)).toBeVisible({ timeout: WAIT });
+  if (options.color !== undefined) await settings.getByRole('radio', { name: copy(`roles.color.${options.color}`), exact: true }).click();
+  for (const key of options.perms ?? []) await setRolePermission(settings, key, true);
+  for (const [item, on] of [['serverSettings.roles.menu.hoist', options.hoist], ['serverSettings.roles.menu.mentionable', options.mentionable]] as const) {
+    if (on !== true) continue;
+    await roleButton(settings, name).focus();
+    await page.keyboard.press('Shift+F10');
+    const check = page.getByRole('menuitemcheckbox', { name: copy(item), exact: true });
+    await check.click();
+    await expect(check).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+    await page.keyboard.press('Escape');
+  }
+}
+/** Bot page: switches the capabilities on (bot.cap.<name>), then Enable (step-up follows in the caller). */
+export async function chooseBotCapabilities(settings: Locator, names: readonly string[]): Promise<void> {
+  for (const name of names) {
+    const toggle = settings.getByRole('switch', { name: copy(`serverSettings.bot.cap.${name}`), exact: true });
+    if ((await toggle.getAttribute('aria-checked')) !== 'true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  }
+}
+/** The Bot page's Enable (on Glenn's row). */
+export function enableBotButton(settings: Locator): Locator {
+  return settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true });
+}
+/** Glenn's row menu (Shift+F10 on the row): picks `itemKey` (serverSettings.bot.menu.*; Disable carries the bot's name). */
+export async function botRowMenu(page: Page, settings: Locator, itemKey: string): Promise<void> {
+  const row = settings.locator('[role="group"][aria-keyshortcuts="Shift+F10"]').first();
+  await row.focus();
+  await page.keyboard.press('Shift+F10');
+  const [before, after] = (en as Record<string, string>)[itemKey].split('{bot}');
+  const name = after === undefined ? copy(itemKey) : new RegExp(`^${escapeRegExp(before)}.+${escapeRegExp(after)}$`);
+  await page.getByRole('menuitem', { name }).click();
 }
 
 /** The recovery key as written down: its 13 groups joined by `separator`. */

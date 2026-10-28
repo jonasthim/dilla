@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   addServerVia, TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmComposer, dmLog, makeInviteLink,
-  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test, expectRowMenuAction
+  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test, expectRowMenuAction,
+ makeRole,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -114,14 +115,8 @@ test('manual text timeout blocks community writes and recovers while read, voice
     let settings = dialog(page, 'admin.title');
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('roles.tab'), exact: true }).click();
-    const addRole = button(settings, 'roles.new');
-    await addRole.click();
-    let editor = dialog(page, 'roles.editor.titleNew', { server: SERVER });
-    await editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(ROLE);
-    await setSwitch(editor.getByRole('switch', { name: copy('perm.pin'), exact: true }));
-    await setSwitch(editor.getByRole('switch', { name: copy('perm.react'), exact: true }));
-    await button(editor, 'roles.editor.create').click();
-    await expect(editor).toBeHidden({ timeout: WAIT });
+    // Signal task 10c: the inline role editor; each switch saves at once.
+    await makeRole(page, settings, ROLE, { perms: ['pin', 'react'] });
     await page.keyboard.press('Escape');
     await expect(settings).toBeHidden();
     await memberTrigger(page, MEMBER).click();

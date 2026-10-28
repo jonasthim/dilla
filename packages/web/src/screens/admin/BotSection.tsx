@@ -523,7 +523,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
             {busy ? t('admin.bot.enabling') : t('serverSettings.bot.enable')}
           </Button>}
         </SettingsRow>
-        <p className="d-sr-only" role="status" aria-live="polite">{status}</p>
+        <p className="d-sr-only" role="status">{status}</p>
         {CAPABILITY_OPTIONS.map(option => {
           const checked = (selectedCapabilities & option.bit) !== 0;
           const requirement = option.requirement === null ? null : t(`admin.bot.capability.requires.${option.requirement}` as StringKey);

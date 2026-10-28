@@ -44,8 +44,8 @@ async function makeLink(page: Page, h: StartedHost): Promise<string> {
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });
   await nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
-  await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-  const link = page.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  await settings.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+  const link = settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
   await expect(link).toBeVisible({ timeout: WAIT });
   const url = await link.inputValue();
   expect(url).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);

@@ -34,6 +34,7 @@ import {
 import {
   ABORTED_FONT_LINE, ABORTED_JUGGLER_LINE, BY_DESIGN_RESOURCE_LINE, FIREFOX_FAVICON_LINE, TEST_TIMEOUT, WAIT, addServerVia, channelRow, channelsNav, completeSignUp, copy,
   expectAccessible, expectComposerReady, makeInviteLink, newAccount, openChannel, railItem, sendText, signIn, signUp, test, type Account,
+ selectRole, setRolePermission,
 } from './support/app';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { PROFILE_ROOT } from './support/persistent';
@@ -796,13 +797,9 @@ async function restart(people: Person[]): Promise<void> {
 /** Server settings → roles → edit @everyone → the right `perm` (a `perm.*` key) on or off → save. */
 async function setEveryone(a: Person, perm: string, on: boolean): Promise<void> {
   const settings = await serverSettings(a.page, 'roles.tab');
-  await settings.getByRole('button', { name: copy('roles.editLabel', { name: '@everyone' }), exact: true }).click();
-  const editor = dialogOf(a.page, 'roles.editor.titleEdit', { name: '@everyone' });
-  const view = editor.getByRole('switch', { name: copy(perm), exact: true });
-  await expect(view).toBeVisible({ timeout: WAIT });
-  if ((await view.getAttribute('aria-checked')) !== String(on)) await view.click();
-  await expect(view).toHaveAttribute('aria-checked', String(on));
-  await button(editor, 'roles.editor.save').click();
-  await expect(editor).toBeHidden({ timeout: WAIT });
+  // Signal task 10c: the inline role editor; a switch saves at once.
+  await selectRole(settings, copy('roles.everyone'));
+  await setRolePermission(settings, perm.replace(/^perm\./, ''), on);
+  await expect(settings.locator('.d-role-editor__status')).toHaveText(copy('roles.editor.saved', { name: copy('roles.everyone') }), { timeout: WAIT });
   await closeServerSettings(a.page);
 }

@@ -120,26 +120,16 @@ test('from an empty instance: start a server, invite a friend through a link, re
   // with an enabled "copy link". So the dialog must end in one of three states: copied, blocked, or (after the second in
   // which a copy by itself would have spoken) the link with an enabled "copy link" and nothing said.
   // web3.8 (item 11): the link is made under server settings → Invites.
-  const inviteDialog = await openInviteDialog(page, SERVER);
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  const copyLink = button(inviteDialog, 'invite.copy');
-  const inviteStatus = inviteDialog.getByRole('status');
+  // Signal task 10c: the link shows once in the Invites card, with Copy; no dialog opens and nothing is copied by itself.
+  const inviteCard = await openInviteDialog(page, SERVER);
+  const linkField = inviteCard.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
   const LINK = /^https?:\/\/[^/\s]+\/i\/[^/\s]+$/;
   await expect(linkField).toBeVisible({ timeout: WAIT });
-  const shownAt = Date.now();
-  await expect.poll(async () => {
-    const said = (await inviteStatus.textContent())?.trim() ?? '';
-    if (said === copy('invite.copied')) return 'copied';
-    if (said === copy('invite.blocked')) return 'blocked';
-    if (said === '' && Date.now() - shownAt > 1_500 && LINK.test(await linkField.inputValue()) && await copyLink.isEnabled()) return 'by hand';
-    return `not yet ("${said}")`;
-  }, { timeout: WAIT, message: 'the invite dialog says copied or blocked, or offers the link and an enabled copy link' })
-    .toMatch(/^(copied|blocked|by hand)$/);
+  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(LINK);
+  await expect(button(inviteCard, 'serverSettings.invites.copy')).toBeEnabled();
   const link = await linkField.inputValue();
   expect(link).toMatch(LINK);
   await expectAccessible(page, 'the invite link');
-  await page.keyboard.press('Escape');
-  await expect(inviteDialog).toBeHidden();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: copy('admin.title'), exact: true })).toBeHidden();
 

@@ -215,12 +215,10 @@ function Music() {
       <SettingsRow id="music-dj" icon="disc-3" label={t('serverSettings.music.dj')} hint={t('serverSettings.music.djRoles', { roles: 'DJ' })}>
         <Button size="sm" onClick={noop}>{t('serverSettings.music.djEdit')}</Button>
       </SettingsRow>
-      <div data-setting="music-providers">
-        <SettingsRow id="music-provider-youtube" icon="play" label={t('serverSettings.music.youtube')} hint={t('serverSettings.music.youtubeReady')}
+      <SettingsRow id="music-provider-youtube" anchor="music-providers" icon="play" label={t('serverSettings.music.youtube')} hint={t('serverSettings.music.youtubeReady')}
           tag={t('serverSettings.music.youtubeTag')}>
-          <Button size="sm" onClick={noop}>{t('serverSettings.music.checkAgain')}</Button>
-        </SettingsRow>
-      </div>
+        <Button size="sm" onClick={noop}>{t('serverSettings.music.checkAgain')}</Button>
+      </SettingsRow>
       <SettingsRow id="music-volume" icon="volume-2" label={t('serverSettings.music.volume')} hint={t('serverSettings.music.volumeHint')}>
         <Segmented id="music-volume-choice" label={t('serverSettings.music.volume')} value="50" onChange={noop}
           options={[25, 50, 75, 100].map(v => ({ value: String(v), label: String(v) }))} />

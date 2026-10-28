@@ -40,7 +40,7 @@
 .d-settings-frame__body > section > h2[tabindex="-1"]:focus-visible { outline: none; }
 .d-settings-frame__body > section > h3 { margin-top: 22px; font-size: var(--text-micro); font-weight: var(--weight-label); line-height: 1.5; letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-settings-frame__body > section > h3 + * { margin-top: 8px; }
-.d-settings-frame__body > section > p { max-width: 60ch; font-size: var(--text-ui); color: var(--fg-2); }
+.d-settings-frame__body > section > p { font-size: var(--text-ui); color: var(--fg-2); }
 .d-settings-frame__body > section > .d-settings-row + .d-settings-row { margin-top: -1px; }
 .d-settings-frame__footer { position: sticky; bottom: 0; flex: none; z-index: 1; padding: 10px 40px max(10px, env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--hairline); }
 

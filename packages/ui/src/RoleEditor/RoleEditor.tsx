@@ -5,6 +5,7 @@ import { Icon } from '../Icon/Icon.tsx';
 import { PermissionGrid, type PermissionGridGroup, type PermValue } from '../PermissionGrid/PermissionGrid.tsx';
 import { hex } from '../internal/hex.ts';
 import { useContextMenuTrigger } from '../internal/contextMenuTrigger.ts';
+import '../TextField/TextField.css';
 import './RoleEditor.css';
 
 export interface RoleEditorRole {

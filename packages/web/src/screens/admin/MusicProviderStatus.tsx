@@ -88,16 +88,17 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     : phase === 'unavailable' || !authorized ? t('workspace.providers.unavailable')
       : youtube === 'configured' ? t('serverSettings.music.youtubeReady')
         : youtube === 'missing_requirements' ? t('serverSettings.music.youtubeMissing') : t('serverSettings.music.youtubeUnknown');
-  return <div data-setting="music-providers" aria-busy={busy || undefined}>
-    <SettingsRow id="music-provider-youtube" icon="play" label={t('serverSettings.music.youtube')} hint={youtubeHint}
+  // No wrapper: the rows must stay siblings of the page's other rows so they draw one group (README §5.9).
+  return <>
+    <SettingsRow id="music-provider-youtube" anchor="music-providers" icon="play" label={t('serverSettings.music.youtube')} hint={youtubeHint}
       {...(youtube === 'configured' && !stale ? { tag: t('serverSettings.music.youtubeTag') } : {})}>
-      <Button size="sm" aria-disabled={!authorized || installationId === null || busy || undefined}
+      <Button size="sm" aria-busy={busy || undefined} aria-disabled={!authorized || installationId === null || busy || undefined}
         onClick={() => { if (authorized && installationId !== null && !busy) refresh(value => value + 1); }}>{t('serverSettings.music.checkAgain')}</Button>
+      <span className="d-sr-only" role="status">{youtubeHint}</span>
     </SettingsRow>
-    <p className="d-sr-only" role="status">{youtubeHint}</p>
     {shown ? <SettingsRow id="music-provider-spotify" icon="music" label={t('workspace.providers.spotifyAccount')}
       hint={`${t(labels[current ? shown.spotifyAccount : 'unknown'])} · ${t('workspace.providers.spotifySetup')}: ${t(labels[current ? shown.spotifyPlayback : 'unknown'])} · ${t('workspace.providers.observed', { time: new Date(Number(shown.observedAt) * 1000).toLocaleString() })}`}>
       <span />
     </SettingsRow> : null}
-  </div>;
+  </>;
 }

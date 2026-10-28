@@ -73,7 +73,7 @@ async function enableBot(page: Page, password: string, capabilities: string[] = 
   for (const capability of capabilities) {
     await settings.getByRole('checkbox', { name: copy(`admin.bot.capability.${capability}`), exact: true }).check();
   }
-  await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+  await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
   const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
   await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(password);
   await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();

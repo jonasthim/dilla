@@ -892,12 +892,12 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
-  await expect(admin.getByRole('button', { name: copy('admin.invites.create'), exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(admin.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true })).toBeVisible({ timeout: WAIT });
   await expectPrototypeSizes(page, 'server settings, invites at 390', SETTINGS_SIZES.slice(0, 1));
-  await admin.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-  const link = page.locator('.d-invite-link');
-  await expect(link.locator('button').first(), 'the link dialog shows its Copy').toBeVisible({ timeout: WAIT });
-  await expectPrototypeSizes(page, 'the invite link dialog at 390', [['.d-invite-link__field', 36], ['.d-invite-link__row .d-btn[data-variant="accent"]', 36]]);
+  await admin.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+  // Signal task 10c: the link shows once in the Invites card: a 38px field (36px and its 1px ring) beside a 36px Copy.
+  await expect(admin.getByRole('button', { name: copy('serverSettings.invites.copy'), exact: true }), 'the card shows its Copy').toBeVisible({ timeout: WAIT });
+  await expectPrototypeSizes(page, 'the invite link at 390', [['.d-invite-panel__link', 38], ['.d-invite-panel__made .d-invite-panel__primary', 36]]);
 });
 
 

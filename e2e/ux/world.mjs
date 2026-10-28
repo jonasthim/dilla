@@ -159,17 +159,16 @@ await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuit
 const settings = byText(ada, 'dialog', 'admin.title');
 await settings.waitFor({ timeout: WAIT });
 await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('admin.nav.invites'), exact: true }).click();
-await settings.getByRole('button', { name: t('admin.invites.create'), exact: true }).click();
-const inv = byText(ada, 'dialog', 'invite.title', { server: SERVER });
-const link = inv.getByRole('textbox', { name: t('invite.link'), exact: true });
+// Signal task 10c: the link shows once in the Invites card (no dialog).
+await settings.getByRole('button', { name: t('serverSettings.invites.make'), exact: true }).click();
+const inv = settings;
+const link = inv.getByRole('textbox', { name: t('serverSettings.invites.link'), exact: true });
 await link.waitFor({ timeout: WAIT });
 await ada.waitForFunction(() => [...document.querySelectorAll('input')].some((i) => i.value.includes('/i/')), null, { timeout: WAIT });
 const inviteLink = await link.inputValue();
 const invitePath = new URL(inviteLink).pathname;
 const invite = decodeURIComponent(invitePath.slice(3));
 state.invitePath = invitePath;
-await ada.keyboard.press('Escape');
-await inv.waitFor({ state: 'hidden', timeout: WAIT });
 await ada.keyboard.press('Escape');
 await settings.waitFor({ state: 'hidden', timeout: WAIT });
 log('invite', invitePath);
