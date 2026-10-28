@@ -8,7 +8,7 @@ import { createVoiceMusicAdapter, musicPlayheadMs, type CoreClient, type MemberS
 import { NowPlaying, type NowPlayingProps } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
 import { userName } from '../shell-model.ts';
-import { useSlice } from '../../core/use-slice.ts';
+import { useSlice, useSlices } from '../../core/use-slice.ts';
 
 /** NowPlaying's props for one player, without the variant; a control returns the adapter's promise (MusicPlayer reports a refusal). */
 export type MusicPlayerView = Omit<NowPlayingProps, 'variant' | 'onToggle' | 'onSkip' | 'onStop'> & {
@@ -207,10 +207,18 @@ export function useMusicCard({ client, communityId, channelId, room, bot, item, 
   const player = useChannelPlayer(client, communityId, channelId, botInRoom && visible);
   if (!botInRoom) return musicView({ ...player, state: null, room, bot, members, trust, inCall });
   const state = player.state;
-  if (state !== null && state.status === 'available' && state.track !== null && state.track.id !== item) {
+  const controls = { onToggle: player.onToggle, onSkip: player.onSkip, onStop: player.onStop };
+  // Task S1 (8b leftover): the Bot is in the room but nothing has been read yet — the card is not on screen yet, or the first
+  // snapshot is on its way. A neutral card, never "left voice" for a moment.
+  if (state === null) {
+    return { room, bot: { name: bot }, positionS: 0, playing: false, meta: room, canControl: false, queue: [], ...controls,
+      labels: { ...MUSIC_LABELS(), idle: t('music.region') } };
+  }
+  // The announced track is no longer the one playing: another plays, or (Task S1) the queue ran out after it.
+  if (state.status === 'available' && (state.track === null || state.track.id !== item)) {
     const ended = t('music.ended', { bot, room });
     return { room, bot: { name: bot }, positionS: 0, playing: false, meta: ended, canControl: false, blocked: ended, queue: [],
-      onToggle: player.onToggle, onSkip: player.onSkip, onStop: player.onStop, labels: { ...MUSIC_LABELS(), idle: t('music.finished') } };
+      ...controls, labels: { ...MUSIC_LABELS(), idle: t('music.finished') } };
   }
   return musicView({ ...player, room, bot, members, trust, inCall });
 }
@@ -261,16 +269,24 @@ export function MusicMessageCard({ client, communityId, voiceChannelId, item, bo
   const members = useSlice(`members:${communityId ?? ''}`) ?? [];
   const ref = useRef<HTMLDivElement>(null);
   const visible = useOnScreen(ref);
-  const room = musicRoomName(client, communityId, voiceChannelId);
+  const room = useMusicRoomName(communityId, voiceChannelId);
   const botInRoom = voice?.[voiceChannelId]?.participants.some(p => p.bot) === true;
   const view = useMusicCard({ client, communityId, channelId: voiceChannelId, room, bot, item, botInRoom, visible, inCall: call?.channelId === voiceChannelId, members, trust });
   return <div ref={ref} className="dw-music-card"><MusicPlayer view={view} variant="card" /></div>;
 }
 
-/** The voice channel's name, read once (no subscription per message row); "a voice channel" when this viewer cannot see it. */
-export function musicRoomName(client: CoreClient, communityId: string | null, voiceChannelId: string): string {
-  const channels = communityId === null ? undefined : client.get(`channels:${communityId}`);
+/** The voice channel's name in a channel list; "a voice channel" when this viewer cannot see it (or the list is not here yet). */
+export function musicRoomNameIn(channels: readonly { id: string; name: string }[] | undefined, voiceChannelId: string): string {
   return channels?.find(c => c.id === voiceChannelId)?.name ?? t('music.someRoom');
+}
+
+/**
+ * Task S1 (8b leftover): the voice channel's name, re-read when the community's channel list arrives or changes. It subscribes
+ * only while there is a room to name (voiceChannelId non-null), so a message row that is no music announcement holds nothing.
+ */
+export function useMusicRoomName(communityId: string | null, voiceChannelId: string | null): string {
+  const [channels] = useSlices(communityId === null || voiceChannelId === null ? [] : [`channels:${communityId}` as const]);
+  return voiceChannelId === null ? '' : musicRoomNameIn(channels, voiceChannelId);
 }
 
 /**

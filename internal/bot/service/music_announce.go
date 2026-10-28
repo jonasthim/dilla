@@ -38,28 +38,50 @@ type musicAnnounceRecord struct {
 	at   time.Time
 }
 
-func (l *MusicAnnounceLimiter) allow(user id.ID, item string, now time.Time) bool {
+// reserve answers whether the requester may announce item now and, when it may, holds the requester's slot for item so a
+// concurrent request for another track is refused meanwhile. done(sent) settles the slot: an accepted send keeps it; any
+// other outcome (a refusal, an error, a send not accepted) restores what the limiter held before (Task S1, 8b leftover: a
+// failed announcement must not spend the requester's minute).
+func (l *MusicAnnounceLimiter) reserve(user id.ID, item string, now time.Time) (done func(sent bool), ok bool) {
+	noop := func(bool) {}
 	if l == nil {
-		return true
+		return noop, true
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.last == nil {
 		l.last = map[id.ID]musicAnnounceRecord{}
 	}
-	prior, ok := l.last[user]
-	if ok && prior.item != item && now.Sub(prior.at) < musicAnnounceRequesterGap {
-		return false
-	}
-	if !ok || prior.item != item {
-		l.last[user] = musicAnnounceRecord{item: item, at: now}
-	}
 	for key, record := range l.last {
 		if now.Sub(record.at) > musicAnnounceRequesterGap {
 			delete(l.last, key)
 		}
 	}
-	return true
+	prior, had := l.last[user]
+	if had && prior.item != item && now.Sub(prior.at) < musicAnnounceRequesterGap {
+		return noop, false
+	}
+	if had && prior.item == item {
+		// A retry of the recorded track: it resumes its send and changes nothing.
+		return noop, true
+	}
+	held := musicAnnounceRecord{item: item, at: now}
+	l.last[user] = held
+	return func(sent bool) {
+		if sent {
+			return
+		}
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if current, ok := l.last[user]; !ok || current != held {
+			return
+		}
+		if had {
+			l.last[user] = prior
+		} else {
+			delete(l.last, user)
+		}
+	}, true
 }
 
 // NeutralizeBotMarkers keeps text a privileged member authors for the Bot to post (announcements, welcome messages,
@@ -111,7 +133,7 @@ func MusicAnnouncementText(voice, requester id.ID, item string) string {
 	return fmt.Sprintf("Music started.\n[dilla-music:v1:%s:%s:%s]", voice.String(), requester.String(), item)
 }
 
-//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
+// Invalid client input intentionally maps to an unavailable protocol result (a nil error).
 func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if h.Music == nil || h.Music.Store == nil || h.Music.Authority == nil || h.Authority == nil || h.Channels == nil || h.Destination == nil || h.Sender == nil || h.Discovery == nil ||
 		h.Session == nil || h.CommunityID.IsZero() || actor.User.IsZero() || actor.Kind != 0 || request.Operation != protocol.OpMusicAnnounce ||
@@ -186,9 +208,13 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if state.PositionAtMS == 0 || music.PlayheadMS(state, clock().UnixMilli()) > musicAnnounceWindowMS {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	if !h.Limiter.allow(actor.User, state.Current.ID, clock()) {
+	settle, allowed := h.Limiter.reserve(actor.User, state.Current.ID, clock())
+	if !allowed {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
+	// The requester's slot is spent only by an accepted send; every other return below gives it back.
+	sent := false
+	defer func() { settle(sent) }()
 	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, text)
 	if err != nil || group.IsZero() {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -220,6 +246,8 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if receipt.Outcome != protocol.ReceiptAccepted || receipt.SendResponse == nil || receipt.SendResponse.Sequence == 0 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
+	// The message is in the channel: the requester's minute is spent, whatever happens to this answer.
+	sent = true
 	data, err := cborx.Marshal([]any{text, receipt.SendResponse.Sequence})
 	if err != nil {
 		return InteractionResult{}, err

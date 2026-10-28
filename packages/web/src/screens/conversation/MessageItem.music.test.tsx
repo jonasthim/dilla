@@ -48,4 +48,14 @@ describe('a "started music" message', () => {
     expect(rowOf(P1)).toHaveTextContent('Ada L started music in a voice channel');
     expect(rowOf(P1)).not.toHaveTextContent(HARBOUR.slice(0, 8));
   });
+
+  it('Task S1: the room name follows the channel list when it arrives after the message', () => {
+    const { fake } = renderConversation({
+      items: [peerRow(P1, '1', `Music started.\n[dilla-music:v1:${HARBOUR}:${ME.id}:${ITEM}]`, { bot: true, senderUser: GLENN })],
+      before: f => f.set(`members:${A}`, [...MEMBERS, { userId: GLENN, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]),
+    });
+    expect(rowOf(P1)).toHaveTextContent('Ada L started music in a voice channel');
+    fake.publish(`channels:${A}`, [CHANNEL, { ...CHANNEL, id: HARBOUR, kind: 1, name: 'harbour' }]);
+    expect(rowOf(P1)).toHaveTextContent('Ada L started music in harbour');
+  });
 });

@@ -219,6 +219,21 @@ describe('the card after its track (fix round 2)', () => {
     expect(card).toHaveTextContent('Glenn played this in harbour');
     expect(card).not.toHaveTextContent('Sea shanties for rowing');
   });
+  it('Task S1: shows the finished state once the queue ran out after the announced track', async () => {
+    render(<CardHarness botInRoom inCall />);
+    act(() => { adapter.set({ ...playing(), track: null, queue: [] } as VoiceMusicState); });
+    const card = await screen.findByRole('group', { name: 'Music player' });
+    expect(card).toHaveTextContent('Finished');
+    expect(card).toHaveTextContent('Glenn played this in harbour');
+    expect(card).not.toHaveTextContent('is idle in');
+  });
+  it('Task S1: before the card is on screen (nothing read yet) it is neutral, never "left voice"', () => {
+    render(<CardHarness botInRoom inCall={false} visible={false} />);
+    const card = screen.getByRole('group', { name: 'Music player' });
+    expect(card).not.toHaveTextContent('left voice');
+    expect(card).not.toHaveTextContent('Nothing playing');
+    expect(card).toHaveTextContent('harbour');
+  });
   it('an off-screen card does not subscribe', () => {
     render(<CardHarness botInRoom inCall={false} visible={false} />);
     expect(adapter.subscribe).not.toHaveBeenCalled();

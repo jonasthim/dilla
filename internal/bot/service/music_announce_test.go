@@ -225,6 +225,68 @@ func TestMusicAnnounceWindowAndRate(t *testing.T) {
 	}
 }
 
+// Task S1 (8b leftover): the limiter records an announcement only after its send was accepted. A send the delivery service
+// did not accept leaves the requester free to announce the next track within the minute; an accepted one still spends it.
+func TestMusicAnnounceLimiterRecordsOnlyAnAcceptedSend(t *testing.T) {
+	actor := id.New()
+	f := newMusicAnnounceFixture(actor, false)
+	accepted := f.sender.receipt
+	f.sender.receipt.Outcome = protocol.ReceiptClosedNotAccepted
+	if result := f.run(t, actor); result.Status != interactionStatusUnavailable || f.sender.calls != 1 {
+		t.Fatalf("a send that was not accepted: %+v sends=%d", result, f.sender.calls)
+	}
+	next := id.New().String()
+	f.store.snapshot.State.Current.ID = next
+	f.now = f.now.Add(10 * time.Second)
+	f.store.snapshot.State.PositionAtMS = f.now.UnixMilli()
+	operation, attempt := musicAnnounceIDs(f.community, f.voice, next)
+	f.sender.receipt = accepted
+	f.sender.receipt.OperationID, f.sender.receipt.AttemptID = operation, attempt
+	if result := f.run(t, actor); result.Status != 0 || f.sender.calls != 2 {
+		t.Fatalf("the next track after a failed announcement: %+v sends=%d", result, f.sender.calls)
+	}
+	third := id.New().String()
+	f.store.snapshot.State.Current.ID = third
+	f.now = f.now.Add(10 * time.Second)
+	f.store.snapshot.State.PositionAtMS = f.now.UnixMilli()
+	if result := f.run(t, actor); result.Status != interactionStatusUnavailable || f.sender.calls != 2 {
+		t.Fatalf("another track within a minute of an accepted announcement: %+v sends=%d", result, f.sender.calls)
+	}
+}
+
+// The limiter on its own: a refused settle gives back exactly what it held; an accepted one keeps the minute.
+func TestMusicAnnounceLimiterSettle(t *testing.T) {
+	var l MusicAnnounceLimiter
+	user := id.New()
+	now := time.Unix(1_000, 0)
+	done, ok := l.reserve(user, "a", now)
+	if !ok {
+		t.Fatal("first reservation refused")
+	}
+	if _, ok := l.reserve(user, "b", now.Add(time.Second)); ok {
+		t.Fatal("a second track while the first is held")
+	}
+	done(false)
+	doneB, ok := l.reserve(user, "b", now.Add(2*time.Second))
+	if !ok {
+		t.Fatal("the slot was not given back")
+	}
+	doneB(true)
+	if _, ok := l.reserve(user, "c", now.Add(3*time.Second)); ok {
+		t.Fatal("an accepted announcement did not spend the minute")
+	}
+	if _, ok := l.reserve(user, "b", now.Add(4*time.Second)); !ok {
+		t.Fatal("a retry of the announced track was refused")
+	}
+	if _, ok := l.reserve(user, "c", now.Add(2*time.Second+time.Minute+time.Second)); !ok {
+		t.Fatal("another track after the minute was refused")
+	}
+	var nilLimiter *MusicAnnounceLimiter
+	if settle, ok := nilLimiter.reserve(user, "x", now); !ok || settle == nil {
+		t.Fatal("a nil limiter refuses")
+	}
+}
+
 func TestNeutralizeBotMarkersKeepsMembersFromForgingThePlayer(t *testing.T) {
 	forged := "hi\n[dilla-music:v1:" + id.New().String() + ":" + id.New().String() + ":" + id.New().String() + "]"
 	if got := NeutralizeBotMarkers(forged); strings.Contains(got, "[dilla-music:") {

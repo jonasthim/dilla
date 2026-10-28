@@ -9,7 +9,7 @@ import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
 import type { CoreClient } from '@dilla/client-core';
 import { PollCard, finalPollMarker } from '../commands/PollCard.tsx';
-import { isCommunityBot, MusicMessageCard, musicMarker, musicRoomName } from '../voice/music.tsx';
+import { isCommunityBot, MusicMessageCard, musicMarker, useMusicRoomName } from '../voice/music.tsx';
 
 const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
   ok: null, pending: 'shell.message.pending', failed: 'shell.message.failed',
@@ -149,7 +149,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   // Fix round 1 (Jonas 2026-10-28): Glenn's "started music" message: the prototype's line and the live player card.
   // Security review M1: only an unedited message from this community's managed Bot account.
   const music = bot && marker === null && !item.edited ? musicMarker(item.body) : null;
-  const musicRoom = music === null || p.client === undefined ? '' : musicRoomName(p.client, p.communityId ?? null, music.voiceChannelId);
+  const musicRoom = useMusicRoomName(p.communityId ?? null, music === null || p.client === undefined ? null : music.voiceChannelId);
   const displayBody = !shown ? '' : music !== null
     ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
     : markdownParts(marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, ''), p.book, item.mention);
