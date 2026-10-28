@@ -81,8 +81,13 @@ If the server is not created, the name field says why:
 
 Anyone whose roles allow it can make an invite link to a server; by default that is every member. Press **server
 settings** under the server's name. It opens on the first section you may use, so a member who may only invite lands
-on **invites**. Choose "Expires after" and "Max uses" (7 days and 10 uses to start with) and press **Make link**. The
-dialog "Invite people to {server}" says "Making an invite link…", then shows the link and copies it for you:
+on **invites** ("Anyone with a link can join {server}."). Choose "Expires after" (1 hour, 1 day, 7 days or never) and
+"Uses" (1, 10 or ∞; 7 days and 10 to start with) and press **Make invite link**. **never** and **∞** are offered only
+to people who may manage the server: a link that never runs out is a standing way in. The link shows once, with
+**Copy** and "It can be used 10 times and expires in 7 days. The link is shown only once."; **Copy** puts it on your
+clipboard and files it under "Active links", where each link shows its uses and expiry and has **Revoke**.
+
+The **invite people** item in the server's menu still makes a quick link (7 days, 10 uses) in a dialog:
 
 ![The dialog "Invite people to Midgard Crew" over server settings, under invites: the invite link in a field, the
 button copy link, "Expires after: 7 days. Max uses: 10 uses." and "Invite link copied."](screenshots/create-invite-desktop.png)
@@ -282,35 +287,32 @@ edit roles, and **manage channels** to change a channel. The owner can do everyt
 
 ### Make and edit roles
 
-In **server settings**, **roles** sits between **channels** and **invites**. It shows only to someone whose roles
-include manage roles. The list is "Roles": "Roles group what people may do. A higher role outranks the ones below it,
-and you can change only roles below your own highest role. Everyone in the server, and the host, can see every role,
-its permissions and who holds it." Each row has the role's name and "{count} members" (no colour dot), with **edit**,
-**move up**, **move down** and **delete**. "@everyone" is last: "Everyone in the server holds this role. Its
-permissions are where every member starts." A role at or above your highest role says "above your highest role" and
-has no buttons. The screen announces "{name} moved." after a move.
+In **server settings**, **roles** sits between **channels** and **invites** ("Members get the permissions of every
+role they hold."). Everyone can see every role, its permissions and who holds it; changing them needs manage roles.
+On the left is the list of roles, each with its colour dot and member count: "@everyone" first, then the others from
+the highest down, and **New role** under them. On a phone the list sits above the editor. Picking a role opens it on
+the right:
 
-**new role** (or **edit** on a row) opens "New role in {server}" (or "Edit {name}"):
+- "Role name": up to 100 characters (fewer for some letters). It saves when you leave the field or press Enter.
+  "@everyone" cannot be renamed.
+- "Colour": six swatches (pink, blue, amber, green, orange, grey; a role with another colour keeps it as a seventh,
+  "current colour"). The colour shows on the names of people who hold the role in the member list, and on the role's
+  chip in their profile card. The arrow keys move between swatches. A swatch saves at once.
+- "Permissions": five groups (General, Members, Text, Voice, Music), each permission a switch with a hint. A switch
+  saves at once. Music has **Control music (DJ)**: "Play, queue, skip, stop and set volume with Glenn in voice". A
+  permission you do not hold cannot be switched: "You do not hold this permission, so you cannot give or take it." A
+  role at or above your highest role cannot be changed at all.
 
-- "Role name": up to 100 characters (fewer for some letters). Everyone in the server, and the host, can read it.
-- "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
-  grey). The colour shows on the names of people who hold the role in the member list, and on the role's chip in their profile card. The arrow keys
-  move between swatches.
-- **show separately in the member list** gives the role its own group in the member list, highest first.
-- **anyone can mention this role** marks the role mentionable. Anyone can mention a role marked mentionable; other
-  roles can be mentioned only by members allowed to mention @everyone. "People who may mention @everyone can mention
-  any role."
-- "Permissions": four groups (General, Members, Text, Voice), each permission with a hint. A permission you do not
-  hold is switched off: "You do not hold this permission, so you cannot give or take it."
+**New role** makes "new role" (grey, with view channels and send messages) and opens it. A change says "Saving…",
+then "{name} saved."; a refusal says why under the editor ("Give the role a name.", "You cannot change this role.
+It is at or above your highest role, or it carries a permission you do not hold.", "This server already has 250
+roles, the most it can hold." …).
 
-**Create** or **Save** says "Creating…" or "Saving…", then "{name} created." or "{name} saved." A refusal shows in the
-dialog: "Give the role a name.", "That name is too long. A role name is up to 100 characters (fewer for some letters).", "You cannot change this
-role. It is at or above your highest role, or it carries a permission you do not hold.", "Someone else moved this
-role at the same time. Check it and save again.", "This server already has 250 roles, the most it can hold." or
-"This role no longer exists."
-
-**delete** asks "Delete {name}?": "Everyone who holds it loses it, and with it any channel it opened for them. This
-cannot be undone." Focus starts on **Cancel**. **Delete** says "Deleting…", then "{name} deleted."
+The rest is in each role's menu (right-click, a long press, or Shift+F10 on the role): **Move up**, **Move down**,
+**Show separately in the member list** (its own group in the member list), **Anyone can mention this role** (anyone
+can mention a role marked mentionable; other roles can be mentioned only by members allowed to mention @everyone)
+and **Delete role**, which asks "Delete {name}?": "Everyone who holds it loses it, and with it any channel it opened
+for them. This cannot be undone." The screen announces "{name} moved." after a move.
 
 ### Permissions that do nothing yet
 
@@ -429,8 +431,8 @@ upgrade, in an existing server:
 - @everyone and @here from members without **mention @everyone and @here** do not notify.
 
 To give everyone the old behaviour back, the owner opens
-**server settings**, **roles**, **edit** on the "@everyone" row, switches on **pin messages** and **mention @everyone
-and @here** under "Text" and chooses **Save**. To give them to some people only, make a role with them and give it
+**server settings**, **roles**, picks "@everyone" and switches on **pin messages** and **mention @everyone and @here**
+under "Text"; each switch saves at once. To give them to some people only, make a role with them and give it
 from the member list.
 
 ## Slow mode, announcement channels and threads

@@ -6786,7 +6786,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
       [106, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'x'.repeat(101) }],
       [107, { m: 'createChannel', communityId: 'C0'.repeat(16), kind: 'text', name: 'x' }],
       [108, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: ' ' }],
-      [109, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 0, ttlSeconds: 60 }],
+      [109, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: -1, ttlSeconds: 60 }],
       [110, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 30 * 24 * 3600 + 1 }],
       [111, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: '10', ttlSeconds: 60 }],
     ];

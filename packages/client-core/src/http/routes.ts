@@ -109,10 +109,18 @@ export const TOPIC_MAX_BYTES = 1024;
 export const BAN_REASON_MAX_BYTES = 512;
 /** GET /v1/communities/{id}/permissions: the caller's resolved community-wide bits and rank (0..OWNER_TOP). */
 export interface PermissionsRow { bits: bigint; top: number }
+/** The installation (protocol/10). A widened read (the manager's GET and the music-settings answer, Task 10c) adds the
+ *  restart counters, the runtime's reported version and the Music page's defaults; the mutation answers carry only the
+ *  eight base fields, so those are absent there. */
 export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
-  revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
+  revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint;
+  extra?: { restartRequested: bigint; restartHandled: bigint; version: string | null; musicVolume: number; musicIdleMinutes: number } }
 export interface BotJoinRoleRow { roleId: Uint8Array | null; installationId: Uint8Array }
-export interface BotDjRolesRow { roleIds: Uint8Array[]; installationId: Uint8Array }
+/** Capability bits (protocol/10): 0..7 the original byte, 8 polls and 9 reminders (Task 10c). */
+export const BOT_CAPABILITIES_MAX = 0x3ff;
+/** The Music page's options (Task 10c); the instance and the Bot accept nothing else. */
+export const BOT_MUSIC_VOLUMES = [25, 50, 75, 100] as const;
+export const BOT_MUSIC_IDLE_MINUTES = [5, 15, 30] as const;
 export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
 export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
 export interface RolePanelOptionInput { emoji: string; roleId: Uint8Array }
@@ -339,12 +347,22 @@ function banRow(value: CborValue): BanRow {
 }
 function botInstallationRow(value: CborValue, communityId: Uint8Array): BotInstallationRow {
   const a = arr(value);
-  if (a.length !== 8) throw new CborError('E_CBOR_SHAPE', 'expected eight bot installation fields');
+  if (a.length !== 8 && a.length !== 13) throw new CborError('E_CBOR_SHAPE', 'expected eight or thirteen bot installation fields');
   const row: BotInstallationRow = { id: bin(a[0], 16), communityId: bin(a[1], 16), state: oneOf(a[2], [0, 1, 2, 3, 4, 5] as const),
     revision: u64(a[3]), userId: opt(a[4], v => bin(v, 16)), deviceId: opt(a[5], v => bin(v, 16)),
     capabilities: u53(a[6]), updatedAt: u64(a[7]) };
-  if (toHex(row.communityId) !== toHex(communityId) || row.revision === 0n || row.capabilities > 255) {
+  if (toHex(row.communityId) !== toHex(communityId) || row.revision === 0n || row.capabilities > BOT_CAPABILITIES_MAX) {
     throw new CborError('E_CBOR_RANGE', 'bot installation scope, revision or capabilities invalid');
+  }
+  if (a.length === 13) {
+    const version = opt(a[10], str);
+    const extra = { restartRequested: u64(a[8]), restartHandled: u64(a[9]), version, musicVolume: u53(a[11]), musicIdleMinutes: u53(a[12]) };
+    if (extra.restartHandled > extra.restartRequested || (version !== null && (version.length < 1 || version.length > 32))
+      || !(BOT_MUSIC_VOLUMES as readonly number[]).includes(extra.musicVolume)
+      || !(BOT_MUSIC_IDLE_MINUTES as readonly number[]).includes(extra.musicIdleMinutes)) {
+      throw new CborError('E_CBOR_RANGE', 'bot installation restart, version or music settings invalid');
+    }
+    row.extra = extra;
   }
   return row;
 }
@@ -537,9 +555,11 @@ export class Routes {
     return { id: bin(a[0], 16), mode: u53(a[1]), visibility: u53(a[2]) };
   }
   /** POST /v1/communities/{id}/invites: [max_uses, ttl_seconds, grants_admin 0]; the answer's url is the instance's own
-   *  invite link (`<base>/i/<code>`), which the join dialog and the invite landing page both accept. */
+   *  invite link (`<base>/i/<code>`), which the join dialog and the invite landing page both accept. max_uses 0 is any
+   *  number of uses and ttl_seconds 0 never expires (Task 10c; the instance asks manage_community for either); the
+   *  answer's expires is then 0. */
   async createInvite(communityId: Uint8Array, invite: { maxUses: number; ttlSeconds: number }): Promise<InviteCreated> {
-    const body = encode([between('maxUses', invite.maxUses, 1, INVITE_USES_MAX), between('ttlSeconds', invite.ttlSeconds, 1, INVITE_TTL_MAX_S), 0]);
+    const body = encode([between('maxUses', invite.maxUses, 0, INVITE_USES_MAX), between('ttlSeconds', invite.ttlSeconds, 0, INVITE_TTL_MAX_S), 0]);
     const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/invites`, 'write', false, { body });
     const a = atLeast(decode(raw), 4);
     const code = str(a[1]);
@@ -629,22 +649,23 @@ export class Routes {
     }
     return bin(ack[1], 16);
   }
-  /** DJ role policy belongs to the currently ready bot installation; the installation ID fences stale settings forms. */
-  async getBotDjRoles(communityId: Uint8Array): Promise<BotDjRolesRow | null> {
-    try {
-      const a = arr(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'read', true)));
-      if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected DJ role ids and installation id');
-      const roles = bounded(a[0], 250, 'DJ roles').map(value => bin(value, 16));
-      if (new Set(roles.map(toHex)).size !== roles.length) throw new CborError('E_CBOR_SHAPE', 'duplicate DJ role id');
-      return { roleIds: roles, installationId: bin(a[1], 16) };
-    } catch (e) { if (e instanceof DillaHttpError && e.status === 404) return null; throw e; }
+  /** POST /v1/communities/{id}/bot/restart (Task 10c): asks the runtime to restart this installation; a request while
+   *  one is pending joins it. Answers [restart_requested, restart_handled]. */
+  async restartBot(communityId: Uint8Array, installationId: Uint8Array): Promise<{ requested: bigint; handled: bigint }> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/restart`, 'write', true,
+      { body: encode([inputId('installationId', installationId)]), retry429: false })));
+    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected restart counters');
+    const requested = u64(a[0]), handled = u64(a[1]);
+    if (handled > requested) throw new CborError('E_CBOR_RANGE', 'restart counters invalid');
+    return { requested, handled };
   }
-  async configureBotDjRoles(communityId: Uint8Array, requestId: Uint8Array, installationId: Uint8Array, roleIds: Uint8Array[]): Promise<number> {
-    if (roleIds.length > 250 || new Set(roleIds.map(toHex)).size !== roleIds.length) throw new RangeError('E_ROUTE_INPUT: invalid DJ role ids');
-    const a = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'write', true,
-      { body: encode([inputId('requestId', requestId), inputId('installationId', installationId), roleIds.map(role => inputId('roleId', role))]), retry429: false })));
-    if (a.length !== 2 || !bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'invalid DJ role acknowledgement');
-    return u53(a[1]);
+  /** PUT /v1/communities/{id}/bot/music-settings (Task 10c): the Music page's default volume and idle-leave minutes. */
+  async setBotMusicSettings(communityId: Uint8Array, installationId: Uint8Array, volume: number, idleMinutes: number): Promise<BotInstallationRow> {
+    if (!(BOT_MUSIC_VOLUMES as readonly number[]).includes(volume) || !(BOT_MUSIC_IDLE_MINUTES as readonly number[]).includes(idleMinutes)) {
+      throw new RangeError('E_ROUTE_INPUT: volume must be 25, 50, 75 or 100 and idle minutes 5, 15 or 30');
+    }
+    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot/music-settings`, 'write', true,
+      { body: encode([inputId('installationId', installationId), volume, idleMinutes]), retry429: false })), communityId);
   }
   /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
   async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {
@@ -710,7 +731,7 @@ export class Routes {
   async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,
     capabilities: number, stepUp: string): Promise<BotInstallationRow> {
     if (expectedRevision !== null && expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
-    if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > 255) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
+    if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > BOT_CAPABILITIES_MAX) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
     if (typeof stepUp !== 'string' || stepUp.length === 0) throw new RangeError('E_ROUTE_INPUT: step-up token is required');
     const body = encode([inputId('requestId', requestId), expectedRevision, capabilities, stepUp]);
     return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot`,

@@ -34,8 +34,8 @@ export type Command =
   | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
-  | { m: 'getBotDjRoles'; communityId: string }
-  | { m: 'configureBotDjRoles'; communityId: string; requestId: string; installationId: string; roleIds: string[] }
+  | { m: 'restartBot'; communityId: string; installationId: string }
+  | { m: 'setBotMusicSettings'; communityId: string; installationId: string; volume: number; idleMinutes: number }
   | { m: 'listSelfRoles'; communityId: string }
   | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
   | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }

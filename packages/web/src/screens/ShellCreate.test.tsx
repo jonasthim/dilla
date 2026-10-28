@@ -272,12 +272,14 @@ describe('a server’s actions (flow 07)', () => {
     const settings = await screen.findByRole('dialog', { name: 'Server settings' });
     expect(within(settings).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     await user.click(within(settings).getByRole('button', { name: 'Invites' }));
-    await user.click(await within(settings).findByRole('button', { name: 'make link' }));
-    const dialog = screen.getByRole('dialog', { name: 'Invite people to Midgard' });
-    await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Invite link copied.'));
-    expect(within(dialog).getByRole('textbox', { name: 'Invite link' })).toHaveValue('https://dilla.test/i/7KQ2');
+    // Signal task 10c: the link shows once in the Invites card with Copy (the prototype), no dialog.
+    await user.click(await within(settings).findByRole('button', { name: 'Make invite link' }));
+    const link = await within(settings).findByRole('textbox', { name: 'Invite link' });
+    expect(link).toHaveValue('https://dilla.test/i/7KQ2');
     expect(fake.callsOf('createInvite')).toEqual([{ m: 'createInvite', communityId: A, maxUses: 10, ttlSeconds: 604_800 }]);
+    await user.click(within(settings).getByRole('button', { name: 'Copy' }));
     await expect(navigator.clipboard.readText()).resolves.toBe('https://dilla.test/i/7KQ2');
+    await waitFor(() => expect(within(settings).queryByRole('textbox', { name: 'Invite link' })).not.toBeInTheDocument());
   });
 
   it('a server with only you: the picker says to invite people first', async () => {

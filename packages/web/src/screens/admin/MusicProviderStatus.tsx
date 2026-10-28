@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createBotInteractionClient, decodeMusicProviderCapability, decodeMusicProviderStatus, toHex, type MusicProviderStatusSnapshot } from '@dilla/client-core';
-import { Button } from '@dilla/ui';
+import { Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
@@ -80,16 +80,24 @@ export function MusicProviderStatus({ communityId, installationId }: { community
   const shown = authorized ? snapshot : null;
   const stale = shown !== null && now / 1000 - Number(shown.observedAt) > 60;
   const current = phase === 'known' && !stale;
-  return <section aria-labelledby="music-provider-status-title" data-setting="music-providers">
-    <h3 id="music-provider-status-title">{t('workspace.providers.title')}</h3>
-    <p role="status" aria-busy={authorized && phase === 'loading'}>{t(authorized && phase === 'loading' ? 'workspace.providers.loading'
-      : stale ? 'workspace.providers.stale' : phase === 'unavailable' || !authorized ? 'workspace.providers.unavailable' : 'workspace.providers.linkedHelp')}</p>
-    <dl>
-      <dt>{t('workspace.providers.spotifyAccount')}</dt><dd>{t(labels[current && shown ? shown.spotifyAccount : 'unknown'])}</dd>
-      <dt>{t('workspace.providers.spotifySetup')}</dt><dd>{t(labels[current && shown ? shown.spotifyPlayback : 'unknown'])}</dd>
-      <dt>{t('workspace.providers.youtubeSetup')}</dt><dd>{t(labels[current && shown ? shown.youtubePlayback : 'unknown'])}</dd>
-    </dl>
-    {shown ? <p>{t('workspace.providers.observed', { time: new Date(Number(shown.observedAt) * 1000).toLocaleString() })}</p> : null}
-    <Button disabled={!authorized || installationId === null || phase === 'loading'} onClick={() => refresh(value => value + 1)}>{t('workspace.providers.refresh')}</Button>
-  </section>;
+  const youtube = current && shown ? shown.youtubePlayback : 'unknown';
+  const busy = authorized && phase === 'loading';
+  // Task 10c, the prototype's Music page: YouTube is one row (its host status, a READY tag, "Check again"); Spotify's
+  // observed account and setup follow as the row the Spotify link sits under.
+  const youtubeHint = busy ? t('workspace.providers.loading') : stale ? t('workspace.providers.stale')
+    : phase === 'unavailable' || !authorized ? t('workspace.providers.unavailable')
+      : youtube === 'configured' ? t('serverSettings.music.youtubeReady')
+        : youtube === 'missing_requirements' ? t('serverSettings.music.youtubeMissing') : t('serverSettings.music.youtubeUnknown');
+  return <div data-setting="music-providers" aria-busy={busy || undefined}>
+    <SettingsRow id="music-provider-youtube" icon="play" label={t('serverSettings.music.youtube')} hint={youtubeHint}
+      {...(youtube === 'configured' && !stale ? { tag: t('serverSettings.music.youtubeTag') } : {})}>
+      <Button size="sm" aria-disabled={!authorized || installationId === null || busy || undefined}
+        onClick={() => { if (authorized && installationId !== null && !busy) refresh(value => value + 1); }}>{t('serverSettings.music.checkAgain')}</Button>
+    </SettingsRow>
+    <p className="d-sr-only" role="status">{youtubeHint}</p>
+    {shown ? <SettingsRow id="music-provider-spotify" icon="music" label={t('workspace.providers.spotifyAccount')}
+      hint={`${t(labels[current ? shown.spotifyAccount : 'unknown'])} · ${t('workspace.providers.spotifySetup')}: ${t(labels[current ? shown.spotifyPlayback : 'unknown'])} · ${t('workspace.providers.observed', { time: new Date(Number(shown.observedAt) * 1000).toLocaleString() })}`}>
+      <span />
+    </SettingsRow> : null}
+  </div>;
 }

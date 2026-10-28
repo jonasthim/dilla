@@ -26,6 +26,7 @@ import { pane } from './pane.ts';
 import { panel } from './panel.ts';
 import { stage } from './stage.ts';
 import { signalSettings } from './signalSettings.ts';
+import { serverSettings } from './serverSettings.ts';
 import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
@@ -67,6 +68,7 @@ export const en = {
   ...panel,
   ...stage,
   ...signalSettings,
+  ...serverSettings,
   ...afk,
   ...layout,
   ...home,

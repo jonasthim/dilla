@@ -4,6 +4,7 @@ export const perm = {
   'perm.group.members': 'Members',
   'perm.group.text': 'Text',
   'perm.group.voice': 'Voice',
+  'perm.group.music': 'Music',
   'perm.allow': 'Allow',
   'perm.inherit': 'Default',
   'perm.deny': 'Deny',
@@ -57,5 +58,7 @@ export const perm = {
   'perm.nicknames.hint': 'Has no effect in this version.',
   'perm.moderate': 'Warn and time out members',
   'perm.moderate.hint': 'Warn members or temporarily block their messages and reactions.',
+  'perm.music': 'Control music (DJ)',
+  'perm.music.hint': 'Play, queue, skip, stop and set volume with Glenn in voice',
   'perm.pinsNote': 'A pin shows while the person who pinned it may pin in this channel.',
 } as const;

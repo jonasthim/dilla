@@ -1,18 +1,38 @@
 # Music in chat
 
-Enable the bot's Music capability in **Server settings → Bot**, and approve the
-roles allowed to act as DJs. Owners and administrators can control playback
-without a separate DJ-role grant. The bot needs permission to connect and speak in
-the voice channel. Spotify account linking is in **Server settings → Music**; YouTube
-requires the host's yt-dlp playback tools.
+Enable the bot's Music capability in **Server settings → Bot**. Who may DJ is a
+role permission: **Control music (DJ)**, under **Music** in a role's permissions.
+Owners and administrators always can. The bot needs permission to connect and speak
+in the voice channel. Spotify account linking is in **Server settings → Music**;
+YouTube needs the host's yt-dlp playback tools, and its row there says whether they
+were found ("yt-dlp found on the host · playback ready") with **Check again**.
 
 To let another member control music without making them an administrator:
 
-1. Create a normal **DJ** role under **Server settings → Roles**.
-2. Assign that role to the member.
-3. Under **Server settings → Music → DJ roles**, select **DJ** and save.
+1. Under **Server settings → Roles**, pick a role (or **New role**) and switch on
+   **Control music (DJ)**. It saves at once.
+2. Give that role to the member.
 
-DJ access is a bot role approval, not a checkbox in the role's permission list.
+**Server settings → Music** lists the roles that have Control music ("Roles with
+Control music: DJ. Owners and admins always can.") and **Edit in Roles** opens the
+first of them.
+
+The permission is checked for the voice channel you are in, with that channel's
+permission settings: a channel can switch **Control music (DJ)** off for a role (or
+on for one person) in that channel only. Servers that had approved DJ roles under the
+old Music page keep them: on upgrade, every role the server's bot had approved got
+**Control music (DJ)**.
+
+The Music page also sets two defaults for the bot (people who manage the server
+change them; they save as you pick them):
+
+- **Default volume** (25, 50, 75 or 100, "For new sessions"): a track started while
+  nothing plays or waits starts at this volume. A DJ can still change the volume.
+- **Leave voice when idle** (5m, 15m or 30m): once nothing has played for this long
+  (after Stop or Pause, or when the queue ends), the bot leaves the voice channel.
+  The next play brings it back.
+
+Until someone changes them, they are 100 and 30 minutes.
 
 Join a voice channel and open the command picker by typing `/` at the start of a
 community message. Choose a music command and fill its named fields, such as the
@@ -34,8 +54,8 @@ While you are in the voice channel with the bot, the same player sits in your
 voice panel and at the top of the voice stage. Its controls work for DJs, owners
 and administrators who are in that voice channel; anyone else sees a note saying
 why. Commands target the voice channel the requester joined. Playback changes
-require current owner/admin authority or a configured DJ role, and presence in that
-voice channel. The bot needs permission to connect and speak. Polls, reminders, and
+require **Control music (DJ)** in that voice channel (owners and administrators have
+it), and presence in that voice channel. The bot needs permission to connect and speak. Polls, reminders, and
 other command results follow their own visibility rules in [Bot commands](bot-commands.md).
 
 Typing `/play` or another slash expression into an ordinary message does not run
@@ -51,6 +71,6 @@ music publisher.
 
 Pause and Stop release the audio stream and its provider resources. The Bot can
 remain silently in the voice channel so the next track does not disconnect and
-rejoin. This connection lasts at most 30 minutes and ends when the Bot is disabled
-or the channel is removed. A server disconnect stops playback; use a new playback
+rejoin, for the **Leave voice when idle** time at most. This connection lasts at most
+30 minutes and ends when the Bot is disabled or the channel is removed. A server disconnect stops playback; use a new playback
 command to request a fresh connection.

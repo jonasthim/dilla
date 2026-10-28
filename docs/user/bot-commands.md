@@ -41,6 +41,22 @@ control playback; configured DJs need the applicable DJ role. The bot needs acce
 to connect and speak in the voice channel. See [Music](music.md) for setup and
 playback details.
 
+## Turning commands off
+
+**Server settings → Bot** has a switch for each part of the bot: Music, Polls,
+Reminders, Welcome messages, Roles, Announcements, Warnings and timeouts, Message
+removal, Kick and Ban. Turning one off removes its commands from the picker. For
+Polls and Reminders only making new ones stops: polls already posted can still be
+voted on and closed, and reminders already set are still delivered and can be
+listed, cancelled and dismissed. Saving a change asks for your password or second
+factor.
+
+The same page shows the bot's card ("Managed bot · online · v0.4.2"; the version
+shows once the bot reports it). **Restart** asks the bot to restart; it does so the
+next time it checks in with the server, and the page says "Restarting…" until it
+has. Pending results recover on their own. The card's menu (right-click, a long
+press or Shift+F10) has **Rename**, **Refresh status** and **Disable**.
+
 ## Polls
 
 Create polls in bot-enabled community channels and threads. A poll has 2–10

@@ -75,6 +75,7 @@ const PERM_GROUPS: readonly { id: string; keys: readonly string[] }[] = [
   { id: 'members', keys: ['kick', 'ban', 'nicknames', 'moderate'] },
   { id: 'text', keys: ['send', 'attach', 'react', 'history', 'pin', 'everyone', 'manageMessages', 'slowmode'] },
   { id: 'voice', keys: ['connect', 'speak', 'video', 'screen', 'mute', 'move'] },
+  { id: 'music', keys: ['music'] },
 ];
 const EVERYONE_GROUPS: readonly PermissionGridGroup[] = PERM_GROUPS.map(g => ({
   id: g.id, title: t(`perm.group.${g.id}` as StringKey),

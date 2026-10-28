@@ -31,11 +31,12 @@ function setup(status = 0, wrongInstallation = false, age = 0, empty = false, le
   return { fake, view };
 }
 afterEach(() => vi.useRealTimers());
+// Signal task 10c: the status renders as the Music page's YouTube row and the Spotify account row.
 describe('music provider status', () => {
   it('uses runtime evidence and acknowledges the exact leased capability and status responses', async () => {
     const { fake } = setup();
-    expect(await screen.findByText('Linked')).toBeVisible();
-    expect(screen.getByText('Missing requirements')).toBeVisible();
+    expect(await screen.findByText(/^Linked · /)).toBeVisible();
+    expect(screen.getByText(/Spotify playback setup: Missing requirements/)).toBeVisible();
     expect(fake.callsOf('readBotInteractionResponses').map(call => [call.operations, call.requestIds])).toEqual([
       [[0], [fake.callsOf('humanInteractionRequest')[0].requestId]], [[24], [fake.callsOf('humanInteractionRequest')[1].requestId]],
     ]);
@@ -48,7 +49,7 @@ describe('music provider status', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
     expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0]);
     expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1);
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
   });
   it('rejects malformed capability evidence before requesting provider status', async () => {
     const { fake } = setup(0, false, 0, false, false, encode([2, fromHex('44'.repeat(16)), 0, 1, 0, '24']));
@@ -58,30 +59,30 @@ describe('music provider status', () => {
   it('does not equate unsupported responses or wrong installation snapshots with linked', async () => {
     setup(0, true);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
   });
   it('removes the observation and stops protected reads when access is revoked', async () => {
-    const { fake } = setup(); await screen.findByText('Linked');
+    const { fake } = setup(); await screen.findByText(/^Linked · /);
     act(() => fake.publish(`permissions:${cid}`, { ...fake.get(`permissions:${cid}`)!, manageCommunity: false }));
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
   });
   it('shows older observations as stale and unknown with their timestamp', async () => {
     setup(0, false, 70);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('out of date'));
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
-    expect(screen.getByText(/^Observed /)).toBeVisible();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
+    expect(screen.getByText(/ · Observed /)).toBeVisible();
   });
   it('shows unsupported runtime responses as unavailable', async () => {
     setup(1);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
   });
   it('bounds pending reads to thirty seconds and allows retry', async () => {
     vi.useFakeTimers();
     const { fake } = setup(0, false, 0, true);
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(screen.getByRole('status')).toHaveTextContent('unavailable');
-    expect(screen.getByRole('button', { name: 'Refresh provider status' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
     const reads = fake.callsOf('readBotInteractionResponses').length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(reads);
@@ -91,16 +92,16 @@ describe('music provider status', () => {
     setup(0, false, 0, false, false, undefined, true, pending);
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(screen.getByRole('status')).toHaveTextContent('unavailable');
-    expect(screen.getByRole('button', { name: 'Refresh provider status' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
   });
   it('keeps a completed observation until its freshness window expires', async () => {
     vi.useFakeTimers();
     setup();
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
-    expect(screen.getByText('Linked')).toBeVisible();
+    expect(screen.getByText(/^Linked · /)).toBeVisible();
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(screen.getByRole('status')).toHaveTextContent('out of date');
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
   });
   it('reconciles an OAuth return for at most sixty seconds without treating delivery as Linked', async () => {
     vi.useFakeTimers();
@@ -108,15 +109,15 @@ describe('music provider status', () => {
     noteSpotifyReturn(cid);
     const { fake } = setup(0, false, 0, false, false, undefined, false);
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
-    expect(screen.getByText('Not linked')).toBeVisible();
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.getByText(/^Not linked · /)).toBeVisible();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
     expect(fake.callsOf('humanInteractionRequest').filter(call => call.operation === 0)).toHaveLength(1);
     expect(fake.callsOf('humanInteractionRequest').filter(call => call.operation === 24).length).toBeGreaterThan(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     const requests = fake.callsOf('humanInteractionRequest').length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(fake.callsOf('humanInteractionRequest')).toHaveLength(requests);
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
   });
 
 });

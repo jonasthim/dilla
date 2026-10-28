@@ -26,7 +26,7 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
-  INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
+  INVITE_TTL_MAX_S, INVITE_USES_MAX, BOT_CAPABILITIES_MAX, BOT_MUSIC_VOLUMES, BOT_MUSIC_IDLE_MINUTES, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
   type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
@@ -210,8 +210,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'ackHumanInteractionResponses',
   'getBotJoinRole',
   'configureBotJoinRole',
-  'getBotDjRoles',
-  'configureBotDjRoles',
+  'restartBot',
+  'setBotMusicSettings',
   'listSelfRoles',
   'configureSelfRoles',
   'selectSelfRole',
@@ -350,6 +350,9 @@ const botInstallationView = (row: BotInstallationRow) => ({
   revision: row.revision.toString(), userId: row.userId === null ? null : toHex(row.userId),
   deviceId: row.deviceId === null ? null : toHex(row.deviceId), capabilities: row.capabilities,
   updatedAt: row.updatedAt.toString(),
+  // Task 10c: only a widened read carries these; a mutation's answer leaves them out.
+  ...(row.extra === undefined ? {} : { restartRequested: row.extra.restartRequested.toString(), restartHandled: row.extra.restartHandled.toString(),
+    version: row.extra.version, musicVolume: row.extra.musicVolume, musicIdleMinutes: row.extra.musicIdleMinutes }),
 });
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
@@ -400,8 +403,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   ackHumanInteractionResponses: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
-  getBotDjRoles: ['communityId'],
-  configureBotDjRoles: ['communityId', 'requestId', 'installationId'],
+  restartBot: ['communityId', 'installationId'],
+  setBotMusicSettings: ['communityId', 'installationId'],
   listSelfRoles: ['communityId'],
   configureSelfRoles: ['communityId', 'requestId'],
   selectSelfRole: ['communityId', 'roleId', 'requestId'],
@@ -518,8 +521,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'ackHumanInteractionResponses',
     'getBotJoinRole',
     'configureBotJoinRole',
-    'getBotDjRoles',
-    'configureBotDjRoles',
+    'restartBot',
+    'setBotMusicSettings',
     'listSelfRoles',
     'configureSelfRoles',
     'selectSelfRole',
@@ -712,11 +715,12 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'createInvite') {
     const { maxUses, ttlSeconds } = command;
-    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 1 || maxUses > INVITE_USES_MAX) {
-      return `maxUses is not an integer 1..${String(INVITE_USES_MAX)}`;
+    // 0 is "∞" uses and "never" expires (Task 10c); the instance asks manage_community for either.
+    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > INVITE_USES_MAX) {
+      return `maxUses is not an integer 0..${String(INVITE_USES_MAX)}`;
     }
-    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > INVITE_TTL_MAX_S) {
-      return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
+    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > INVITE_TTL_MAX_S) {
+      return `ttlSeconds is not an integer 0..${String(INVITE_TTL_MAX_S)}`;
     }
   }
   if (m === 'configureSelfRoles') {
@@ -725,9 +729,8 @@ function invalid(command: Record<string, unknown>): string | null {
       || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
   }
   if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
-  if (m === 'configureBotDjRoles' && (!Array.isArray(command.roleIds) || command.roleIds.length > 250
-    || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
-    || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
+  if (m === 'setBotMusicSettings' && (!(BOT_MUSIC_VOLUMES as readonly unknown[]).includes(command.volume)
+    || !(BOT_MUSIC_IDLE_MINUTES as readonly unknown[]).includes(command.idleMinutes))) return 'volume or idle minutes are not an option';
   if (m === 'registerRolePanel') {
     const seq = command.messageSeq;
     if (typeof seq !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(seq) || BigInt(seq) > 0x7fff_ffff_ffff_ffffn) return 'messageSeq is invalid';
@@ -807,7 +810,7 @@ function invalid(command: Record<string, unknown>): string | null {
     }
     if (m === 'configureBotInstallation') {
       const caps = command.capabilities;
-      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
+      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > BOT_CAPABILITIES_MAX) return 'capabilities are not 0..1023';
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
@@ -1427,8 +1430,8 @@ export class Controller {
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
-      case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
-      case 'configureBotDjRoles': return this.configureBotDjRoles(command);
+      case 'restartBot': return this.restartBot(command);
+      case 'setBotMusicSettings': return this.setBotMusicSettings(command);
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
       case 'configureSelfRoles': return this.configureSelfRoles(command);
       case 'selectSelfRole': return this.selectSelfRole(command);
@@ -1983,17 +1986,18 @@ export class Controller {
     return { installationId: toHex(installationId) };
   }
 
-  private async getBotDjRoles(communityId: string): Promise<{ roleIds: string[]; installationId: string } | null> {
-    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const row = await this.routes.getBotDjRoles(fromHex(communityId));
-    return row === null ? null : { roleIds: row.roleIds.map(toHex), installationId: toHex(row.installationId) };
+  /** Task 10c: Glenn's Restart. Answers the restart counters as decimal strings. */
+  private async restartBot(command: Extract<Command, { m: 'restartBot' }>): Promise<{ requested: string; handled: string }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.restartBot(fromHex(command.communityId), fromHex(command.installationId));
+    return { requested: row.requested.toString(), handled: row.handled.toString() };
   }
 
-  private async configureBotDjRoles(command: Extract<Command, { m: 'configureBotDjRoles' }>): Promise<{ acceptedCount: number }> {
+  /** Task 10c: the Music page's default volume and idle-leave minutes. */
+  private async setBotMusicSettings(command: Extract<Command, { m: 'setBotMusicSettings' }>): Promise<ReturnType<typeof botInstallationView>> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const acceptedCount = await this.routes.configureBotDjRoles(fromHex(command.communityId), fromHex(command.requestId),
-      fromHex(command.installationId), command.roleIds.map(fromHex));
-    return { acceptedCount };
+    return botInstallationView(await this.routes.setBotMusicSettings(fromHex(command.communityId), fromHex(command.installationId),
+      command.volume, command.idleMinutes));
   }
 
   private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {

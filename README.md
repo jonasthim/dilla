@@ -93,7 +93,7 @@ browser keeps, the app and its keyboard, the app on a phone, slow mode, announce
 pins, mentions, images and files), comparing safety numbers, search, settings, typing and a second tab, and the
 known limits. [Voice, calls and media files](docs/user/voice.md) covers voice channels, the stage, DM calls and ringing,
 camera and screen share, push to talk, the call code, AFK channels, sounds, and audio and video files.
-[Bot commands](docs/user/bot-commands.md) explains the command picker, named fields, private results, polls, and reminders. [Music](docs/user/music.md) covers setup and playback.
+[Bot commands](docs/user/bot-commands.md) explains the command picker, named fields, private results, polls, and reminders. [Music](docs/user/music.md) covers setup and playback. Server settings (Signal): **roles** edits a role in place beside the role list, and who may DJ is its **Control music (DJ)** permission, checked per voice channel (roles the bot had approved as DJs keep it after the upgrade); **invites** can make links that never expire or have no use limit, for people who may manage the server; **bot** has a switch for each part of the bot, including Polls and Reminders (off stops only making new ones), and the bot's card with its version and **Restart**; **music** sets the default volume and how long the bot stays in voice with nothing playing.
 
 ![The app on a phone: the servers tab](docs/user/screenshots/phone-home.png)
 

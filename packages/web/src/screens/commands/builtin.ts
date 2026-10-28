@@ -389,8 +389,8 @@ export function eligibleAssignableRole(client: CoreClient, communityId: string, 
     || target.userId === selfId || target.userId === community.owner || access.everyoneId === '' || role.id === access.everyoneId || role.position === 0) return undefined;
   if (mode === 'add' ? target.roleIds.includes(roleId) : !target.roleIds.includes(roleId)) return undefined;
   if (!access.owner && role.position >= access.top) return undefined;
-  const mine = access.owner ? 0x1ffffff : resolveCommunity({ owner: community.owner, everyoneId: access.everyoneId, roles, held: self.roleIds }, selfId);
-  if (!access.owner && (role.allow & ~mine & 0x1ffffff) !== 0) return undefined;
+  const mine = access.owner ? 0x3ffffff : resolveCommunity({ owner: community.owner, everyoneId: access.everyoneId, roles, held: self.roleIds }, selfId);
+  if (!access.owner && (role.allow & ~mine & 0x3ffffff) !== 0) return undefined;
   return { role, member: { userId: target.userId, name: target.display || target.username } };
 }
 

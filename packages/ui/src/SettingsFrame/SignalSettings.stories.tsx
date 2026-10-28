@@ -9,6 +9,10 @@ import { KeyboardTable } from '../KeyboardTable/KeyboardTable.tsx';
 import { VoiceSettings } from '../VoiceSettings/VoiceSettings.tsx';
 import { DeviceRow } from '../DeviceRow/DeviceRow.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
+import { Button } from '../Button/Button.tsx';
+import { LiveRoleEditor } from '../RoleEditor/RoleEditor.fixture.tsx';
+import { LiveInvites } from '../InvitePanel/InvitePanel.fixture.tsx';
+import type { IconName } from '../Icon/Icon.tsx';
 // The shipped copy and section registry of @dilla/web, so these whole screens draw what Settings draws.
 import { t } from '../../../web/src/strings/index.ts';
 import { SETTINGS_ICONS, SETTINGS_REGISTRY } from '../../../web/src/settings/registry.ts';
@@ -152,3 +156,88 @@ export const KeyboardDesktop: Story = { render: () => <Workspace active="keyboar
 export const DevicesDesktop: Story = { render: () => <Workspace active="devices"><Devices /></Workspace> };
 export const NotificationsPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="notifications"><Notifications /></Workspace> };
 export const VoicePhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="voice"><Voice /></Workspace> };
+
+// Task 10c: Server settings → Roles, Invites, Bot and Music as packages/web composes them (screens/admin/RolesSection.tsx,
+// InvitesSection.tsx and BotSection.tsx's 'bot' and 'music' pages), owner's view, prototype sample data.
+function Roles() {
+  return (
+    <section className="dw-settings-section" aria-labelledby="roles-title">
+      <h2 id="roles-title" tabIndex={-1}>{t('roles.title')}</h2>
+      <p>{t('serverSettings.roles.body')}</p>
+      <LiveRoleEditor />
+    </section>
+  );
+}
+function Invites() {
+  return (
+    <section className="dw-settings-section" aria-labelledby="invites-title">
+      <h2 id="invites-title" tabIndex={-1}>{t('admin.invites.title')}</h2>
+      <p>{t('serverSettings.invites.body', { server: SERVER })}</p>
+      <LiveInvites />
+    </section>
+  );
+}
+const CAPS: readonly { name: string; icon: IconName; on: boolean }[] = [
+  { name: 'music', icon: 'music', on: true }, { name: 'polls', icon: 'vote', on: true }, { name: 'reminders', icon: 'alarm-clock', on: true },
+  { name: 'welcome', icon: 'hand', on: false }, { name: 'roles', icon: 'user-plus', on: false }, { name: 'announcements', icon: 'megaphone', on: false },
+  { name: 'warnings', icon: 'triangle-alert', on: true }, { name: 'removal', icon: 'message-square-x', on: true }, { name: 'kick', icon: 'user-x', on: true },
+  { name: 'ban', icon: 'ban', on: true },
+];
+const GLENN = 'Glenn';
+function Bot() {
+  return (
+    <section className="dw-settings-section dw-bot-settings" aria-labelledby="bot-title">
+      <h2 id="bot-title" tabIndex={-1}>{t('admin.bot.title')}</h2>
+      <p>{t('serverSettings.bot.body', { bot: GLENN, server: SERVER })}</p>
+      <SettingsRow id="bot-glenn" icon="bot" label={GLENN} tag={t('serverSettings.bot.tag')}
+        hint={t('serverSettings.bot.cardVersion', { presence: t('serverSettings.bot.online'), version: '0.4.2' })}
+        menu={{ label: t('serverSettings.bot.menu', { bot: GLENN }), onSelect: noop, items: [{ id: 'rename', label: t('serverSettings.bot.menu.rename') },
+          { id: 'refresh', label: t('serverSettings.bot.menu.refresh') }, { id: 'disable', label: t('serverSettings.bot.menu.disable', { bot: GLENN }), danger: true, sep: true }] }}>
+        <Button size="sm" onClick={noop}>{t('serverSettings.bot.restart')}</Button>
+      </SettingsRow>
+      {CAPS.map(c => (
+        <SettingsRow key={c.name} id={`bot-cap-${c.name}`} icon={c.icon} label={t(`serverSettings.bot.cap.${c.name}` as Parameters<typeof t>[0])}
+          hint={t(`serverSettings.bot.cap.${c.name}.hint` as Parameters<typeof t>[0])}>
+          <Toggle id={`bot-cap-${c.name}-switch`} label={t(`serverSettings.bot.cap.${c.name}` as Parameters<typeof t>[0])} checked={c.on} onChange={noop} />
+        </SettingsRow>
+      ))}
+      <SettingsRow id="bot-voice" icon="lock" label={t('serverSettings.bot.voice')} hint={t('serverSettings.bot.voiceHint', { bot: GLENN })}>
+        <Button size="sm" onClick={noop}>{t('serverSettings.bot.voiceRoles')}</Button>
+      </SettingsRow>
+    </section>
+  );
+}
+function Music() {
+  return (
+    <section className="dw-settings-section dw-bot-settings" aria-labelledby="music-title">
+      <h2 id="music-title" tabIndex={-1}>{t('serverSettings.music.title')}</h2>
+      <p>{t('serverSettings.music.body', { bot: GLENN })}</p>
+      <SettingsRow id="music-dj" icon="disc-3" label={t('serverSettings.music.dj')} hint={t('serverSettings.music.djRoles', { roles: 'DJ' })}>
+        <Button size="sm" onClick={noop}>{t('serverSettings.music.djEdit')}</Button>
+      </SettingsRow>
+      <div data-setting="music-providers">
+        <SettingsRow id="music-provider-youtube" icon="play" label={t('serverSettings.music.youtube')} hint={t('serverSettings.music.youtubeReady')}
+          tag={t('serverSettings.music.youtubeTag')}>
+          <Button size="sm" onClick={noop}>{t('serverSettings.music.checkAgain')}</Button>
+        </SettingsRow>
+      </div>
+      <SettingsRow id="music-volume" icon="volume-2" label={t('serverSettings.music.volume')} hint={t('serverSettings.music.volumeHint')}>
+        <Segmented id="music-volume-choice" label={t('serverSettings.music.volume')} value="50" onChange={noop}
+          options={[25, 50, 75, 100].map(v => ({ value: String(v), label: String(v) }))} />
+      </SettingsRow>
+      <SettingsRow id="music-idle" icon="timer" label={t('serverSettings.music.idle')} hint={t('serverSettings.music.idleHint', { bot: GLENN, minutes: 15 })}>
+        <Segmented id="music-idle-choice" label={t('serverSettings.music.idle')} value="15" onChange={noop}
+          options={[5, 15, 30].map(v => ({ value: String(v), label: t('serverSettings.music.idle.option', { minutes: v }) }))} />
+      </SettingsRow>
+    </section>
+  );
+}
+
+export const RolesDesktop: Story = { render: () => <Workspace active="server:roles"><Roles /></Workspace> };
+export const InvitesDesktop: Story = { render: () => <Workspace active="server:invites"><Invites /></Workspace> };
+export const BotDesktop: Story = { render: () => <Workspace active="server:bot"><Bot /></Workspace> };
+export const MusicDesktop: Story = { render: () => <Workspace active="server:music"><Music /></Workspace> };
+export const RolesPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:roles"><Roles /></Workspace> };
+export const InvitesPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:invites"><Invites /></Workspace> };
+export const BotPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:bot"><Bot /></Workspace> };
+export const MusicPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:music"><Music /></Workspace> };

@@ -139,15 +139,35 @@ it('reads the active bot join-role setting and writes it with a request ID', asy
     body: encode([USER, ROLE, BOT]), idempotent: true });
 });
 
-it('reads and writes DJ roles with the ready installation fence', async () => {
+// Task 10c: Glenn's Restart and the Music page's defaults; DJ is the control_music role bit, not a route any more.
+it('asks for a Bot restart bound to the installation and reads the restart counters', async () => {
   const { routes, t, http } = setup();
-  t.replies.push(cborReply(200, [[ROLE], BOT]));
-  await expect(routes.getBotDjRoles(COMMUNITY)).resolves.toEqual({ roleIds: [ROLE], installationId: BOT });
-  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles` });
-  t.replies.push(cborReply(200, [USER, 1]));
-  await expect(routes.configureBotDjRoles(COMMUNITY, USER, BOT, [ROLE])).resolves.toBe(1);
-  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles`,
-    body: encode([USER, BOT, [ROLE]]), idempotent: true });
+  t.replies.push(cborReply(200, [2, 1]));
+  await expect(routes.restartBot(COMMUNITY, BOT)).resolves.toEqual({ requested: 2n, handled: 1n });
+  expect(http.requests[0]).toMatchObject({ method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/bot/restart`,
+    body: encode([BOT]), idempotent: true });
+  t.replies.push(cborReply(200, [1, 2]));
+  await expect(routes.restartBot(COMMUNITY, BOT)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+});
+
+it('writes the music defaults and reads the widened installation back', async () => {
+  const { routes, t, http } = setup();
+  const widened = [BOT, COMMUNITY, 3, 4, USER, ROLE, 1 | 1 << 8 | 1 << 9, 99, 1, 1, '0.4.2', 50, 15];
+  t.replies.push(cborReply(200, widened));
+  await expect(routes.setBotMusicSettings(COMMUNITY, BOT, 50, 15)).resolves.toMatchObject({
+    capabilities: 0x301, extra: { restartRequested: 1n, restartHandled: 1n, version: '0.4.2', musicVolume: 50, musicIdleMinutes: 15 } });
+  expect(http.requests[0]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/bot/music-settings`,
+    body: encode([BOT, 50, 15]), idempotent: true });
+  await expect(routes.setBotMusicSettings(COMMUNITY, BOT, 60, 15)).rejects.toThrow(/^E_ROUTE_INPUT: /);
+  await expect(routes.setBotMusicSettings(COMMUNITY, BOT, 50, 10)).rejects.toThrow(/^E_ROUTE_INPUT: /);
+  expect(http.requests).toHaveLength(1);
+  for (const bad of [[...widened.slice(0, 11), 60, 15], [...widened.slice(0, 8), 1, 2, null, 50, 15], [...widened.slice(0, 10), '', 50, 15],
+    [...widened.slice(0, 6), 1 << 10, 99]]) {
+    t.replies.push(cborReply(200, bad));
+    await expect(routes.getBotInstallation(COMMUNITY)).rejects.toThrow(/^E_CBOR_(RANGE|SHAPE)/);
+  }
+  t.replies.push(cborReply(200, widened.slice(0, 8)));
+  await expect(routes.getBotInstallation(COMMUNITY)).resolves.not.toHaveProperty('extra');
 });
 
 function member(i: number): Uint8Array {
@@ -969,10 +989,11 @@ describe('Routes: retries and inputs', () => {
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: -1 }),
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 2 ** 31 }),
       () => routes.createChannel(new Uint8Array(15), { kind: 'text', name: 'x', position: 0 }),
-      () => routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 60 }),
+      // 0 uses and 0 ttl are "∞" and "never" (Task 10c); negative ones are not.
+      () => routes.createInvite(COMMUNITY, { maxUses: -1, ttlSeconds: 60 }),
       () => routes.createInvite(COMMUNITY, { maxUses: 1001, ttlSeconds: 60 }),
       () => routes.createInvite(COMMUNITY, { maxUses: 1.5, ttlSeconds: 60 }),
-      () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 0 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: -1 }),
       () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 30 * 24 * 3600 + 1 }),
       () => routes.createInvite(new Uint8Array(17), { maxUses: 10, ttlSeconds: 60 }),
     ];
@@ -2031,7 +2052,7 @@ describe('managed community bot installation routes', () => {
     const rows = [installation.slice(0, 7), [BOT, USER, 1, 3, USER, DEVICE, 1, 1_800_000_000],
       [BOT, COMMUNITY, 1, 0, USER, DEVICE, 1, 1_800_000_000],
       [BOT, COMMUNITY, 6, 3, USER, DEVICE, 1, 1_800_000_000],
-      [BOT, COMMUNITY, 1, 3, USER, DEVICE, 256, 1_800_000_000]];
+      [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1024, 1_800_000_000]];
     for (const row of rows) {
       const { routes, t } = setup();
       t.replies.push(cborReply(200, row));
@@ -2085,4 +2106,12 @@ describe('bot Spotify authorization routes', () => {
     malformedAck.t.replies.push(cborReply(202, [2]));
     await expect(malformedAck.routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
+});
+
+// Task 10c: an open-ended invite is max_uses 0 and ttl_seconds 0 on the wire; the answer's expires is 0 for "never".
+it('sends "never" and "∞" as zeros and reads a never-expiring answer', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(201, [BOT, 'code1234', 'https://dilla.test/i/code1234', 0]));
+  await expect(routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 0 })).resolves.toMatchObject({ expires: 0n });
+  expect(http.requests[0].body).toEqual(encode([0, 0, 0]));
 });

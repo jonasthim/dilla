@@ -255,3 +255,6 @@ All are polite, through the announcer inside settings while the workspace is ope
 - `serverNotify.suppressEveryone='Ignore @everyone and @here'`
 - `perm.moderate='Warn and time out members'`
 - `perm.moderate.hint='Warn members or temporarily block their messages and reactions.'`
+- `perm.group.music='Music'`
+- `perm.music='Control music (DJ)'`
+- `perm.music.hint='Play, queue, skip, stop and set volume with Glenn in voice'`

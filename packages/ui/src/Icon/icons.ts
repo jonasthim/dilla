@@ -89,6 +89,12 @@
  *   icons/monitor.svg  c57d88797dec20426a97b89a681d6b9f10ce24eaca766e5caf680617f01ce22b
  *   icons/app-window.svg  f9483395f089d415deac76611f5965e4464db90846668c478d548a872c98fcb0
  *   icons/globe.svg  ec53caa9a0fcbde692c18e638eb5ded4079788008ede4e98d1cc3e860e8f553e
+ *   icons/vote.svg  85e2683d9b4e3ff9e196dc677b3ab414b363e7307e2c9d01c141386cbe3d87a9
+ *   icons/disc-3.svg  0999011166bff18ba9cc477ab70607bafa887771e4ae58dc7766b5824149e5e0
+ *   icons/timer.svg  d258a860a48e05c6c1aa0984008368ec16a59ff2907695a782ed6ef7f31eed76
+ *   icons/hand.svg  fdd60b469094d42d8abec6ef4afa0552e792fa25047aaeccd5c6f0aded10e05e
+ *   icons/user-x.svg  7fcc94a0ad34c466b6800fee162b447332e6e48e3d3ce9bd40afd2023c0897c7
+ *   icons/message-square-x.svg  2d14420bdf28bf3d41690aebbc20be5e050efcd204d35db41f00c00adfb1b674
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -550,6 +556,39 @@ export const ICONS = {
     ['circle', { cx: '12', cy: '12', r: '10' }],
     ['path', { d: 'M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20' }],
     ['path', { d: 'M2 12h20' }],
+  ],
+  'vote': [
+    ['path', { d: 'm9 12 2 2 4-4' }],
+    ['path', { d: 'M5 7c0-1.1.9-2 2-2h10a2 2 0 0 1 2 2v12H5V7Z' }],
+    ['path', { d: 'M22 19H2' }],
+  ],
+  'disc-3': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M6 12c0-1.7.7-3.2 1.8-4.2' }],
+    ['circle', { cx: '12', cy: '12', r: '2' }],
+    ['path', { d: 'M18 12c0 1.7-.7 3.2-1.8 4.2' }],
+  ],
+  'timer': [
+    ['line', { x1: '10', x2: '14', y1: '2', y2: '2' }],
+    ['line', { x1: '12', x2: '15', y1: '14', y2: '11' }],
+    ['circle', { cx: '12', cy: '14', r: '8' }],
+  ],
+  'hand': [
+    ['path', { d: 'M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2' }],
+    ['path', { d: 'M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2' }],
+    ['path', { d: 'M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8' }],
+    ['path', { d: 'M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15' }],
+  ],
+  'user-x': [
+    ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+    ['line', { x1: '17', x2: '22', y1: '8', y2: '13' }],
+    ['line', { x1: '22', x2: '17', y1: '8', y2: '13' }],
+  ],
+  'message-square-x': [
+    ['path', { d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z' }],
+    ['path', { d: 'm14.5 8.5-5 5' }],
+    ['path', { d: 'm9.5 8.5 5 5' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 
