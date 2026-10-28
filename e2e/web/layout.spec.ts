@@ -1077,12 +1077,14 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
       expect.soft(text, 'J1 the result shows a time').toMatch(/\d{1,2}:\d{2}/);
       const own = (await page.getByRole('option', { name: /lamp from Cleo/ }).innerText()).replace(/\s+/g, ' ');
       expect.soft(own, 'J1 the own result names its author').toContain('Cleo');
-      const hints = await boxes(page, '.d-search-palette__hints .d-keyhint');
-      expect.soft(hints.map(k => k.t), 'J1 the footer lists the three keys').toEqual([`↑↓${copy('layout.search.hint.move')}`, `↵${copy('layout.search.hint.open')}`, `esc${copy('layout.search.hint.close')}`]);
+      // Task 9 (Signal §5.8): the footer is the prototype's "↑↓ move  ↵ open … Searches messages held in this browser"; esc is the input row's cap.
+      const hints = await boxes(page, '.d-search-palette__hints > span');
+      expect.soft(hints.map(k => k.t), 'J1 the footer lists the keys').toEqual([`↑↓ ${copy('layout.search.hint.move')}`, `↵ ${copy('layout.search.hint.open')}`]);
+      await expect.soft(page.locator('.d-search-palette__note')).toHaveText(copy('search.note'));
       const list = (await boxes(page, '.d-search-palette [role="listbox"]'))[0];
       const dialog = (await boxes(page, '.d-search-palette'))[0];
       expect.soft(hints.length > 0 && list !== undefined && hints[0].y >= list.b - TOL, 'J1 the footer stands under the results').toBe(true);
-      expect.soft(dialog?.w ?? 999, 'J1 the palette is at most 40rem (640)').toBeLessThanOrEqual(640 + TOL);
+      expect.soft(dialog?.w ?? 999, 'J1 the palette is at most 600px (Signal §5.8)').toBeLessThanOrEqual(600 + TOL);
       const meta = (await boxes(page, '.d-search-palette__meta'))[0];
       expect.soft(meta !== undefined && meta.h < 24, `J1 the meta line is one line (${String(meta?.h)})`).toBe(true);
     });

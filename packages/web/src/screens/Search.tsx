@@ -56,8 +56,8 @@ export function Search(p: SearchProps): React.JSX.Element | null {
     onScope={p.onScope} onPick={id => { void pick(id); }} onClose={p.onClose}
     status={unavailable ? t('search.unavailable') : undefined}
     labels={{ search: t('search.placeholder'), empty: !current || p.loading === true ? t('search.loading')
-      : p.query.trim() === '' ? '' : p.scope === 'all' ? t('search.empty') : t('search.noResults'),
-      close: t('dialog.close'), hints: { move: t('layout.search.hint.move'), open: t('layout.search.hint.open'), close: t('layout.search.hint.close') }, scope: { channel: t('search.scope.channel'), community: t('search.scope.community'), all: t('search.scope.all') } }} />;
+      : p.query.trim() === '' ? '' : p.scope === 'all' ? t('search.empty', { query: p.query.trim() }) : t('search.noResults'),
+      close: t('dialog.close'), hints: { move: t('layout.search.hint.move'), open: t('layout.search.hint.open') }, note: t('search.note'), group: t('search.group'), scope: { channel: t('search.scope.channel'), community: t('search.scope.community'), all: t('search.scope.all') } }} />;
   if (!phone) return palette;
   return <dialog ref={root} className="dw-search" aria-label={t('search.placeholder')}
     onCancel={event => { event.preventDefault(); p.onClose(); }}>{palette}</dialog>;

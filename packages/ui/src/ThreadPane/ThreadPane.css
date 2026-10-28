@@ -1,7 +1,12 @@
 /* A thread: a column in the shell's aside, or (data-phone) a full-screen sheet. min-width 0 so it fits the aside's width. */
-.d-thread-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--surface); }
-.d-thread-pane__head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-width: 0; padding: 0.75rem 0.75rem 0.5rem var(--row-pad-x); border-bottom: 1px solid var(--hairline); flex-shrink: 0; }
-.d-thread-pane__title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
+.d-thread-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--bg-2); }
+/* Task 9, the prototype's aside head: --bar-h (44px), 0 8px 0 16px, gap 8px, a --hairline under it. */
+.d-thread-pane__head { box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: var(--bar-h); min-width: 0; padding: 0 8px 0 16px; border-bottom: 1px solid var(--hairline); flex-shrink: 0; color: var(--fg); }
+.d-thread-pane__glyph { display: inline-flex; flex: none; }
+.d-thread-pane__title { flex: 1; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: var(--weight-display); color: var(--fg); }
+.d-thread-pane__sub { flex: none; font-size: var(--text-meta); color: var(--fg-3); }
+.d-thread-pane__close { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; }
+.d-thread-pane__close:hover { color: var(--fg); background: var(--hover); }
 .d-thread-pane__scroll { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 /* The root stays in view above its replies, and scrolls by itself when it is long. */
 .d-thread-pane__root { flex: 0 1 auto; max-height: 40%; min-width: 0; overflow-y: auto; border-bottom: 1px solid var(--hairline); }

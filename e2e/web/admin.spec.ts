@@ -71,8 +71,15 @@ async function closeSettings(page: Page): Promise<void> {
   await expect(dialogOf(page, 'admin.title')).toBeHidden();
   await expect(button(page, 'admin.open')).toBeFocused();
 }
-/** Opens the member's profile card from its row and picks the action `item`. */
+/** Picks the action `item` for a member: kick and ban from the row's person menu (a right-click; Signal task 9), the rest from the profile card. */
 async function memberAction(page: Page, server: string, name: string, item: string): Promise<void> {
+  const inMenu = ({ 'members.menu.kick': 'members.menu.kickName', 'members.menu.ban': 'members.menu.banName' } as Record<string, string>)[item];
+  if (inMenu !== undefined) {
+    await memberRow(page, server, name).locator('.d-member-list__open').click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name }), exact: true })
+      .getByRole('menuitem', { name: copy(inMenu, { name }), exact: true }).click();
+    return;
+  }
   await memberRow(page, server, name).locator('.d-member-list__open').click();
   await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
 }
@@ -127,14 +134,16 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(memberRow(page, SERVER, OWNER)).toBeVisible();
     await expectAccessible(page, 'the members pane');
 
-    // 3a. The profile card: a click on a row opens it beside the list (a sheet on a phone), with the owner and "you" words only where they apply.
+    // 3a. The profile card: a click on a row opens it beside the list (a sheet on a phone), the owner's crown (named) after her name;
+    // Signal task 9: the prototype's card draws no "you" mark.
     await memberRow(page, SERVER, OWNER).locator('.d-member-list__open').click();
     const ownerCard = page.getByRole('dialog', { name: OWNER });
     await expect(ownerCard).toBeVisible();
-    await expect(ownerCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
-    await expect(ownerCard.getByText(copy('layout.profile.you'), { exact: true })).toBeVisible();
-    // Her own card: no message, compare, kick or ban, only the roles she may assign.
-    await expect(ownerCard.locator('.d-profile-card__action')).toHaveText([copy('layout.profile.manageRoles')]);
+    await expect(ownerCard.getByRole('img', { name: copy('layout.profile.owner'), exact: true })).toBeVisible();
+    await expect(ownerCard.getByText(copy('layout.profile.you'), { exact: true })).toHaveCount(0);
+    // Her own card: no message, compare, kick or ban, only the roles she may assign (the prototype's edit glyph, named).
+    await expect(ownerCard.locator('.d-profile-card__action')).toHaveCount(0);
+    await expect(ownerCard.locator('.d-profile-card__icon-action')).toHaveAttribute('aria-label', copy('layout.profile.manageRoles'));
     const shots = process.env.DILLA_SHOTS;
     if (shots) {
       await page.setViewportSize({ width: 1440, height: 900 });
@@ -269,8 +278,10 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(membersRegion(page2, RENAMED)).toBeVisible({ timeout: WAIT });
     await memberRow(page2, RENAMED, OWNER).locator('.d-member-list__open').click();
     const seenCard = page2.getByRole('dialog', { name: OWNER });
-    await expect(seenCard.locator('.d-profile-card__action')).toHaveText([copy('members.menu.message'), copy('members.menu.compare')]);
-    await expect(seenCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
+    // Signal task 9: the card's row is Message and the safety-number shield (named); the owner is the crown after the name.
+    await expect(seenCard.locator('.d-profile-card__action')).toHaveText([copy('members.menu.message')]);
+    await expect(seenCard.locator('.d-profile-card__icon-action')).toHaveAttribute('aria-label', copy('members.menu.compare'));
+    await expect(seenCard.getByRole('img', { name: copy('layout.profile.owner'), exact: true })).toBeVisible();
     await expect(seenCard.getByText(copy('layout.profile.you'), { exact: true })).toHaveCount(0);
     await page2.keyboard.press('Escape');
     const mine = await openSettings(page2);

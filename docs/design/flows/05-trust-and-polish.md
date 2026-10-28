@@ -179,7 +179,9 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | dialog.close | Close | compare dialog close; search palette close |
 | search.open | search | shell action |
 | search.placeholder | Search your messages | palette textbox |
-| search.empty | No messages found | global empty state |
+| search.empty | Nothing in this browser matches “{query}”. | global empty state (Signal §5.8, task 9) |
+| search.note | Searches messages held in this browser | palette footer (Signal §5.8, task 9) |
+| search.group | Messages | palette results heading (Signal §5.8, task 9) |
 | search.unavailable | That message is no longer available | stale result status |
 | search.loading | Searching your messages | palette status |
 | search.noResults | No results in this scope | scope empty state |

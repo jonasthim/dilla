@@ -485,7 +485,7 @@ it('says searching while the worker answers, then the scope’s empty text', asy
   act(() => fake.set('search', { requestId: 3, hits: [], cursor: null }));
   expect(screen.getByRole('search')).toHaveTextContent('Searching your messages');
   await act(async () => { answer(null); await Promise.resolve(); });
-  expect(screen.getByRole('search')).toHaveTextContent('No messages found');
+  expect(screen.getByRole('search')).toHaveTextContent('Nothing in this browser matches “z”.');
   await user.click(screen.getByRole('button', { name: 'this conversation' }));
   act(() => fake.set('search', { requestId: 4, hits: [], cursor: null }));
   await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
@@ -1689,7 +1689,7 @@ describe('direct messages', () => {
       expect(within(card).getByText('bob')).toBeInTheDocument();
       expect(within(card).queryByText('owner')).toBeNull();
       expect(within(card).queryByRole('list')).toBeNull();
-      expect(within(card).getAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent)).toEqual(['message', 'compare safety numbers']);
+      expect(within(card).getAllByRole('button').filter(b => b.matches('.d-profile-card__action, .d-profile-card__icon-action')).map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Message', 'compare safety numbers']);
     });
     it('opens from a mention pill', async () => {
       await open(`hello <@${PEER}>`, 'pill');

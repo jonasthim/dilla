@@ -95,6 +95,37 @@ async function checkAsideTransition(page: Page, context: StoryContext): Promise<
 }
 
 /** The top bar's geometry (README §5.2, the prototype's inline sizes), in CSS px at a 16px root. */
+/**
+ * Task 9 (Signal §5.8, Ruling C): the desktop palette is centred by left/right 0 and margin 0 auto, never a transform: once its
+ * entry animation has ended its computed transform is none, its centre is the viewport's, it is min(600px, 92%) wide at 14vh,
+ * its input row is 50px (51 with its hairline), every result at least 38px of content (46 with padding), and the footer reads "Searches messages held in this browser".
+ */
+async function checkPalette(page: Page, context: StoryContext): Promise<void> {
+  const got = await page.evaluate(async () => {
+    const dialog = document.querySelector<HTMLElement>('#storybook-root dialog.d-search-palette-dialog');
+    if (dialog === null) return null;
+    await Promise.all(dialog.getAnimations().map(a => a.finished.catch(() => undefined)));
+    const cs = getComputedStyle(dialog);
+    const r = dialog.getBoundingClientRect();
+    const field = document.querySelector('#storybook-root .d-search-palette__field')?.getBoundingClientRect().height ?? 0;
+    const rows = Array.from(document.querySelectorAll('#storybook-root .d-search-palette [role="option"]')).map(o => o.getBoundingClientRect().height);
+    return { transform: cs.transform, left: cs.left, right: cs.right, centre: r.left + r.width / 2, width: r.width, top: r.top, vw: window.innerWidth, vh: window.innerHeight,
+      field, rows, note: document.querySelector('#storybook-root .d-search-palette__note')?.textContent ?? '' };
+  });
+  const name = `${context.title} / ${context.name}`;
+  if (got === null) throw new Error(`${name}: no palette dialog`);
+  const bad: string[] = [];
+  if (got.transform !== 'none') bad.push(`transform ${got.transform}`);
+  if (got.left !== '0px' || got.right !== '0px') bad.push(`left/right ${got.left}/${got.right}, not 0/0`);
+  if (Math.abs(got.centre - got.vw / 2) > 0.5) bad.push(`centre ${String(got.centre)} vs ${String(got.vw / 2)}`);
+  if (Math.abs(got.width - Math.min(600, got.vw * 0.92)) > 0.5) bad.push(`width ${String(got.width)}`);
+  if (Math.abs(got.top - got.vh * 0.14) > 0.5) bad.push(`top ${String(got.top)}, not 14vh`);
+  if (Math.abs(got.field - 51) > 0.5) bad.push(`input row ${String(got.field)}, not 50 + its hairline`);
+  if (got.rows.length === 0 || got.rows.some(h => h < 45.5)) bad.push(`result rows ${got.rows.join(', ')}`);
+  if (got.note !== 'Searches messages held in this browser') bad.push(`footer "${got.note}"`);
+  if (bad.length > 0) throw new Error(`${name}: ${bad.join('; ')}`);
+}
+
 async function checkTopBar(page: Page, context: StoryContext): Promise<void> {
   const got = await page.evaluate(() => {
     const box = (sel: string) => {
@@ -350,6 +381,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     }
     if (REACTION_HIT_STORIES(context.id)) await checkReactionHitAreas(page, context);
     if (context.id.startsWith('shell-topbar--')) await checkTopBar(page, context);
+    if (context.id === 'search-searchpalette--messages-results') await checkPalette(page, context);
     const solidDot = SOLID_DOTS[context.id];
     if (solidDot !== undefined) await checkSolidDot(page, context, solidDot);
     const signalWants = SIGNAL_GEOMETRY[context.id];

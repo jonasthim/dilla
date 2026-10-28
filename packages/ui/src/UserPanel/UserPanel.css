@@ -15,8 +15,14 @@
 .d-user-panel .d-user-panel__menu { display: flex; }
 .d-user-panel__menu .d-user-panel__who { flex: 1 1 auto; justify-content: flex-start; padding: 3px 6px; border: 0; }
 .d-user-panel__text { display: grid; min-width: 0; }
-.d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; }
-.d-user-panel__menu .d-action-menu__item[aria-checked="true"] { font-weight: var(--weight-display); box-shadow: inset 2px 0 0 var(--accent); }
+/* Task 9: the prototype's status menu: 220px above the block, 8px corners in the --control-edge-field line, its 0 16px 40px shadow, d-modal
+   200ms; an item 0 10px with its 8px status dot, the chosen one ticked. */
+.d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; width: 220px; min-width: 0; border-color: var(--control-edge-field); border-radius: var(--r-lg); box-shadow: var(--shadow-status); animation-duration: var(--duration-popover); }
+.d-user-panel__menu .d-action-menu__item { padding: 0 10px; }
+.d-user-panel__menu .d-action-menu__item::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--fg-3); }
+.d-user-panel__menu .d-action-menu__item[data-id="online"]::before { background: var(--ok); }
+.d-user-panel__menu .d-action-menu__item[data-id="idle"]::before { background: var(--warn); }
+.d-user-panel__menu .d-action-menu__item[data-id="dnd"]::before { background: var(--danger); }
 /* The name 12px/600, the line under it 10.5px --fg-3 (--fg-2 on the hovered fill: README §10.4 keeps --fg-3 off lifted fills). */
 .d-user-panel__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: var(--weight-label); color: var(--fg); }
 .d-user-panel__username { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); color: var(--fg-3); }

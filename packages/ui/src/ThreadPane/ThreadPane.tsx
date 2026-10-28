@@ -1,5 +1,5 @@
 import type { KeyboardEvent, ReactNode } from 'react';
-import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 import { PhoneHeader } from '../PhoneHeader/PhoneHeader.tsx';
 import './ThreadPane.css';
 
@@ -14,6 +14,8 @@ export interface ThreadPaneProps {
   children: ReactNode;
   /** The thread's Composer. */
   composer: ReactNode;
+  /** The place after the title in the head (`#general`, 10.5px --fg-3), as the prototype draws it. */
+  sub?: string;
   /** True: a full-screen sheet with a PhoneHeader (back = close). False: a column in the shell's aside. */
   phone?: boolean;
 }
@@ -30,7 +32,7 @@ export interface ThreadPaneProps {
  * closes on Escape too) never sees it, and a key that something inside already handled (an open mention list, a row
  * returning focus to itself) is left alone.
  */
-export function ThreadPane({ title, closeLabel, onClose, root, children, composer, phone }: ThreadPaneProps) {
+export function ThreadPane({ title, sub, closeLabel, onClose, root, children, composer, phone }: ThreadPaneProps) {
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
     e.preventDefault();
@@ -43,8 +45,11 @@ export function ThreadPane({ title, closeLabel, onClose, root, children, compose
         <PhoneHeader title={title} backLabel={closeLabel} onBack={onClose} />
       ) : (
         <header className="d-thread-pane__head">
+          {/* Task 9, the prototype's thread head: 44px, the 14px glyph, the 12px bold title, the place, a 32px close ×. */}
+          <span className="d-thread-pane__glyph" aria-hidden="true"><Icon name="messages-square" size={14} /></span>
           <h2 className="d-thread-pane__title">{title}</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>{closeLabel}</Button>
+          {sub === undefined ? null : <span className="d-thread-pane__sub">{sub}</span>}
+          <button type="button" className="d-thread-pane__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={15} /></button>
         </header>
       )}
       <div className="d-thread-pane__scroll">

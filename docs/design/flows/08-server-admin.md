@@ -95,9 +95,13 @@ When the person is removed from a server (kicked, banned or its owner deleted it
 Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte.
 
 *Members:*
-- `members.toggle='members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
+- `members.toggle='Members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
 - `members.groupMembers='members'`, `members.groupOffline='Offline'`
-- `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
+- `members.menu.message='Message'`, `members.menu.compare='compare safety numbers'`
+- Signal (task 9), the row's person menu and the status line: `members.menu.profile='Profile'`, `members.menu.copy='Copy username'`,
+  `members.menu.copied='@{name} copied'`, `members.menu.roles='Edit roles'`, `members.menu.kickName='Kick {name}'`,
+  `members.menu.banName='Ban {name}'`, `members.menu.label='actions for {name}'`, `members.inVoice='in voice'`,
+  `members.inChannel='in {channel}'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`
 

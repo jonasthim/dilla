@@ -225,7 +225,7 @@ export function ThreadView(p: {
       const key = el === null ? undefined : ordered.find(i => rowEls.current.get(i.key) === el)?.key;
       if (key !== undefined) setActiveKey(key);
     }} onKeyDown={rowKey}>
-      <ThreadPane title={t('thread.title')} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
+      <ThreadPane title={t('thread.title')} sub={`#${p.channelName}`} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
         composer={
           <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={p.blocked ?? null}
             broadcast bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}

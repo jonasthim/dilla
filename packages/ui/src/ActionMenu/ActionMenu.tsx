@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Icon, type IconName } from '../Icon/Icon.tsx';
 import './ActionMenu.css';
 
@@ -13,6 +13,8 @@ export interface ActionMenuItem {
   icon?: IconName;
   /** An on/off item: a `menuitemcheckbox` with the prototype's 14px box; choosing it toggles and keeps the menu open. */
   check?: boolean;
+  /** A 1px rule above the item (the prototype's separator before Kick, task 9). */
+  sep?: boolean;
 }
 
 export interface ActionMenuProps {
@@ -158,12 +160,13 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
 
   const popupClass = popupClassName === undefined ? 'd-action-menu__popup' : `d-action-menu__popup ${popupClassName}`;
   const itemButtons = items.map(item => (
-    <button key={item.id} type="button" role={item.check !== undefined ? 'menuitemcheckbox' : item.checked === undefined ? 'menuitem' : 'menuitemradio'}
-      aria-checked={item.check ?? item.checked} tabIndex={-1} className="d-action-menu__item"
+    <Fragment key={item.id}>{item.sep === true ? <div className="d-action-menu__sep" role="separator" /> : null}<button type="button" role={item.check !== undefined ? 'menuitemcheckbox' : item.checked === undefined ? 'menuitem' : 'menuitemradio'}
+      aria-checked={item.check ?? item.checked} tabIndex={-1} className="d-action-menu__item" data-id={item.id}
       data-danger={item.danger ? 'true' : undefined} onClick={() => select(item)}>
       {item.icon !== undefined ? <><span className="d-action-menu__icon" aria-hidden="true"><Icon name={item.icon} size={14} /></span><span className="d-action-menu__label">{item.label}</span></> : item.label}
+      {item.checked === true ? <span className="d-action-menu__tick" aria-hidden="true"><Icon name="check" size={13} /></span> : null}
       {item.check !== undefined ? <span className="d-action-menu__check" data-on={item.check ? 'true' : undefined} aria-hidden="true"><Icon name="check" size={10} stroke={3} /></span> : null}
-    </button>
+    </button></Fragment>
   ));
   const style = at
     ? { position: 'fixed' as const, left: `${clamped?.x ?? at.x}px`, top: `${clamped?.y ?? at.y}px` }

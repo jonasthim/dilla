@@ -178,7 +178,8 @@ describe('flow 07 (v0.1.0-web3.1, the create flow)', () => {
 
 describe('flow 08 (v0.1.0-web3.4, server admin and moderation)', () => {
   it('keeps the admin and members chrome lower case', () => {
-    for (const k of ['members.toggle', 'members.menu.message', 'members.menu.compare', 'members.menu.kick', 'members.menu.ban',
+    // Task 9 (Rulings T/AA): the members head and the card's Message follow the prototype's case.
+    for (const k of ['members.menu.compare', 'members.menu.kick', 'members.menu.ban',
       'admin.open', 'admin.nav.overview', 'admin.nav.channels', 'admin.nav.invites', 'admin.nav.bans', 'admin.nav.delete', 'admin.nav.leave', 'admin.nav.transfer',
       'admin.channels.edit', 'admin.channels.up', 'admin.channels.down', 'admin.channels.delete', 'admin.channels.newCategory',
       'admin.invites.new', 'admin.invites.revoke',

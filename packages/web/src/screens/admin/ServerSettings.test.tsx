@@ -99,8 +99,8 @@ describe('ServerSettings tabs', () => {
     expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Bob B/ }));
     const profile = screen.getByRole('dialog', { name: 'Bob B' });
-    const actions = within(profile).queryAllByRole('button').filter(button => button.classList.contains('d-profile-card__action')).map(button => button.textContent);
-    expect(actions).toEqual(['message', 'compare safety numbers']);
+    const actions = within(profile).queryAllByRole('button').filter(button => button.matches('.d-profile-card__action, .d-profile-card__icon-action')).map(button => button.getAttribute('aria-label') ?? button.textContent);
+    expect(actions).toEqual(['Message', 'compare safety numbers']);
   });
   it('shows moderation log from its own audit permission', () => {
     setup({ ...NONE, viewAuditLog: true });

@@ -152,10 +152,10 @@ test('manual text timeout blocks community writes and recovers while read, voice
     const ownerRow = messageRow(member, 'general', ownerText);
     await expect(ownerRow).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // The owner applies a ten minute timeout through Bea's member card.
-    await memberTrigger(page, MEMBER).click();
-    await page.getByRole('dialog', { name: MEMBER, exact: true })
-      .getByRole('button', { name: copy('mod.timeout.menu'), exact: true }).click();
+    // The owner applies a ten minute timeout through Bea's row's person menu (a right-click; Signal task 9).
+    await memberTrigger(page, MEMBER).click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name: MEMBER }), exact: true })
+      .getByRole('menuitem', { name: copy('mod.timeout.menu'), exact: true }).click();
     let timeout = dialog(page, 'mod.timeout.title', { name: MEMBER });
     await timeout.getByLabel(copy('mod.timeout.duration'), { exact: true }).selectOption('tenMinutes');
     await timeout.getByRole('button', { name: copy('mod.timeout.confirm'), exact: true }).click();
@@ -204,9 +204,9 @@ test('manual text timeout blocks community writes and recovers while read, voice
     await expect(dmLog(member).getByText(dmText, { exact: true })).toBeVisible({ timeout: WAIT });
 
     // Clearing the timeout through the same moderator flow restores community posting immediately.
-    await memberTrigger(page, MEMBER).click();
-    await page.getByRole('dialog', { name: MEMBER, exact: true })
-      .getByRole('button', { name: copy('mod.timeout.menu'), exact: true }).click();
+    await memberTrigger(page, MEMBER).click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name: MEMBER }), exact: true })
+      .getByRole('menuitem', { name: copy('mod.timeout.menu'), exact: true }).click();
     timeout = dialog(page, 'mod.timeout.title', { name: MEMBER });
     await timeout.getByLabel(copy('mod.timeout.duration'), { exact: true }).selectOption('clear');
     await timeout.getByRole('button', { name: copy('mod.timeout.confirm'), exact: true }).click();

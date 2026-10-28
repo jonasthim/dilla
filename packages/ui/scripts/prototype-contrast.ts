@@ -24,6 +24,9 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   { selector: '.d-np__item[data-current] .d-np__n', simple: '.d-np__n', why: 'the current queue row\'s number in #767D89 on the accent tint (4.2:1)' },
   { selector: '.d-np__item[data-current] .d-np__by', simple: '.d-np__by', why: 'the current queue row\'s requester in #767D89 on the accent tint (4.2:1)' },
   { selector: '.d-np__item[data-current] .d-np__dur', simple: '.d-np__dur', why: 'the current queue row\'s duration in #767D89 on the accent tint (4.2:1)' },
+  // Task 9 (README §5.7): the members aside's status line is the prototype's #767D89 (--fg-3); on the open member's row (the --hover
+  // fill #14171C, the prototype's p.bg while the card is open) that is 4.33:1. Light and high-contrast keep their accessible pairs.
+  { selector: '.d-member-list__row[data-open] .d-member-list__line2', simple: '.d-member-list__line2', why: 'the open member row\'s status line in #767D89 on #14171C (4.33:1)' },
   // Not listed because axe cannot see it: a code block's line numbers, the prototype's #4A5059 on bg-2 (2.4:1), are CSS-generated
   // (`::before` counters) and decorative (never part of the code's text). Light and high-contrast draw them in fg-3 / #C8C8C8.
 ];

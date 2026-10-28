@@ -1932,12 +1932,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
-              announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)} /> : undefined}
+              announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)} onClose={() => setMembersOpen(false)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}
         onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}
-        asideCloseLabel={sideNow !== null ? undefined : t('members.close')}
+        asideCloseLabel={sideNow !== null || !phone ? undefined : t('members.close')}
         asideReturnRef={sideNow !== null ? sideReturn : membersToggle}
         asideKind={sideNow !== null ? 'thread' : 'members'}
       >

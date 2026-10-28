@@ -40,15 +40,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-trust-state[data-tone="warn"] { border-left-color: var(--warn); }
 .dw-trust-state[data-tone="danger"] { border-left-color: var(--danger); }
 /* W-06: the phone search, a modal <dialog> filling the visual viewport; the top layer makes the shell beneath it inert. A desktop search is the palette's own dialog (R-S4). */
-.dw-search { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; width: 100%; height: var(--d-vvh, 100%); max-width: none; max-height: none; margin: 0; border: 0; box-sizing: border-box; overflow: auto; background: var(--bg); color: var(--fg); padding: var(--group-gap); }
-.dw-search::backdrop { background: var(--bg); }
+/* Task 9: the prototype's phone palette: the card 12px from the top and sides over the --scrim (the dialog still fills the viewport). */
+.dw-search { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; width: 100%; height: var(--d-vvh, 100%); max-width: none; max-height: none; margin: 0; border: 0; box-sizing: border-box; overflow: auto; background: transparent; color: var(--fg); padding: 12px; }
+.dw-search::backdrop { background: var(--scrim); }
+.dw-search > .d-search-palette { max-height: 100%; animation: d-modal var(--duration-normal) var(--ease-out) backwards; }
 .dw-search :focus-visible, .dw-trust-list :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .dw-other-tab { min-height: 100vh; display: grid; place-items: center; padding: var(--group-gap); }
 .dw-other-tab--overlay { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; z-index: 50; background: var(--bg); }
 .dw-trust-key { overflow-wrap: anywhere; word-break: break-all; }
-@media (max-width: 360px) {
-  .dw-search { padding: var(--row-gap); }
-}
+
 /* web-3 (flow 06): the sidebar holds the channel list and, while in voice, the dock under it (above the user panel). */
 .dw-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-sidebar > .d-channel-list { flex: 1 1 auto; min-height: 0; }
@@ -219,7 +219,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
    column is 37rem, so on a window with room the box of codes leaves it by 3rem each side (its label and buttons stay in
    the column), and a dialog that shows codes is wider. */
 @media (min-width: 52rem) { .d-onboarding-frame .dw-factor-codes .d-code-list__grid { margin-inline: -3rem; } }
-.d-dialog:has(.d-code-list) { max-width: min(46rem, calc(100vw - 32px)); }
+.d-dialog:has(.d-code-list) { width: min(46rem, calc(100vw - 24px)); }
 /* Settings → Sign-in, flow 10 state 19 (walk I3): the passkeys as one group, its heading as a row title, its rows set in
    under it and its add button after them. */
 .dw-factor-group { display: grid; gap: var(--row-gap); padding: 0.625rem 0; border-bottom: 1px solid var(--hairline); min-width: 0; }

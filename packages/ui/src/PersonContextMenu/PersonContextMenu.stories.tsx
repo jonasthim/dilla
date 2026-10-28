@@ -23,3 +23,11 @@ export const You: Story = { args: { ...tileMenu('Mira', { own: true, title: 'Mir
 export const Bot: Story = { args: { ...tileMenu('Glenn', { bot: true }) } };
 /** A shared screen: its own stream's volume. */
 export const Screen: Story = { args: { ...tileMenu('Kari', { screen: true }) } };
+/** Task 9: a member row's menu, as MemberCardHost fills it (no voice): Profile, Message, Copy username, Edit roles, then Kick after a rule. */
+export const Member: Story = {
+  args: { person: { name: 'Björn', where: '@bjorn' }, label: 'actions for Björn', volume: undefined, items: [
+    { id: 'profile', label: 'Profile', icon: 'user' }, { id: 'message', label: 'Message', icon: 'message-square' },
+    { id: 'copy', label: 'Copy username', icon: 'copy' }, { id: 'roles', label: 'Edit roles', icon: 'shield' },
+    { id: 'kick', label: 'Kick Björn', icon: 'log-out', danger: true, sep: true },
+  ] },
+};

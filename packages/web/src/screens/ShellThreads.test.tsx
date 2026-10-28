@@ -226,7 +226,7 @@ describe('a profile card from a thread row (MP7, N1)', () => {
     await user.click(await screen.findByRole('button', { name: '2 replies' }));
     const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
     await user.click(await within(sheet).findByRole('button', { name: '@Bob' }));
-    await user.click(within(await screen.findByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'message' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'Message' }));
     expect(screen.queryByRole('dialog', { name: 'Bob' })).toBeNull();
   });
 });

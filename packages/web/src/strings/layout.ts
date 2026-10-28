@@ -2,6 +2,7 @@ export const layout = {
   'layout.dock.where': '{channel} · {server}',
   'layout.members.online': 'online',
   'layout.members.offline': 'offline',
+  'layout.members.bots': 'bots',
   'layout.profile.owner': 'owner',
   'layout.profile.you': 'you',
   'layout.profile.roles': 'roles',
@@ -25,7 +26,6 @@ export const layout = {
   'layout.add.join': 'join a server',
   'layout.add.create': 'new server',
   'layout.ptt.tag': 'PTT',
-  'layout.search.hint.move': 'to move',
-  'layout.search.hint.open': 'to open',
-  'layout.search.hint.close': 'to close',
+  'layout.search.hint.move': 'move',
+  'layout.search.hint.open': 'open',
 };

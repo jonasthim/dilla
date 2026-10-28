@@ -37,7 +37,7 @@ const Column = ({ children }: { children: ReactNode }) => <div style={{ ...colum
 const phoneFrame: CSSProperties = { width: 390, height: 844, margin: 0, position: 'relative' };
 
 export const Aside: Story = {
-  args: { title: 'Thread', closeLabel: 'close thread', onClose: noop, root, children: replies, composer },
+  args: { title: 'Thread', sub: '#general', closeLabel: 'close thread', onClose: noop, root, children: replies, composer },
   render: args => <Column><ThreadPane {...args} /></Column>,
 };
 export const AsideMissingRoot: Story = {

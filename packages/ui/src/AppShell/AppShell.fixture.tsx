@@ -123,11 +123,21 @@ export function SignalShell({ shell, voice, main }: { shell?: Partial<AppShellPr
           items: [{ id: 'online', label: 'online' }, { id: 'idle', label: 'idle' }, { id: 'dnd', label: 'do not disturb' }, { id: 'invisible', label: 'invisible' }] }} />}
       composer={voice !== undefined ? null : <SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}
       aside={shell?.aside === undefined ? undefined : (
-        <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
+        // Task 9 (rule 3d): the members aside as MemberPane composes it on a desktop: "Members" with the close ×, role groups, the
+        // presence group, the bots group, each row with its status line (a custom status, "in voice", or the presence word).
+        <MemberList label="Members" closeLabel="close members" onClose={noop} loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
+          ownerLabel="owner" botLabel="bot" onOpen={noop} onMenu={noop}
           groups={[
-            { id: 'mods', kind: 'role', title: 'raid leads', members: [{ id: 'u1', name: 'Ada', isOwner: true, presence: 'online' }] },
-            { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Björn', presence: 'online' }, { id: 'u3', name: 'Kari', presence: 'online' }] },
-            { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u4', name: 'Ole', presence: 'offline' }] },
+            { id: 'raid', kind: 'role', title: 'raid lead', color: 0xe9b6ec, members: [
+              { id: 'u1', name: 'Ada', isOwner: true, color: 0xe9b6ec, presence: 'online', status: 'planning the raid' },
+              { id: 'u5', name: 'Mira', color: 0xe9b6ec, presence: 'online', status: 'online' },
+            ] },
+            { id: 'members', kind: 'online', title: 'online', members: [
+              { id: 'u2', name: 'Björn', presence: 'online', status: 'bridge troll survivor' },
+              { id: 'u3', name: 'Kari', presence: 'online', status: 'streaming' },
+              { id: 'u4', name: 'Ole', presence: 'online', status: 'afk-ish' },
+            ] },
+            { id: 'bots', kind: 'bots', title: 'bots', members: [{ id: 'g1', name: 'Glenn', isBot: true, presence: 'online', status: 'in voice' }] },
           ]} />
       )}
     >

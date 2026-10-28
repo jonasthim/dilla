@@ -43,6 +43,16 @@ describe('renderCss', () => {
     expect(css).toContain('--duration-popover: 200ms;');
     expect(css).toMatch(/\[data-motion="reduced"\]\s*{[^}]*--duration-popover: 0ms;/);
   });
+  // Task 9
+  it('emits the overlay values (task 9)', () => {
+    expect(css).toContain('--shadow-card: 0 24px 60px rgba(0,0,0,0.6);');
+    expect(css).toContain('--shadow-status: 0 16px 40px rgba(0,0,0,0.55);');
+    expect(css).toMatch(/--text-card: 0\.9375rem;/);
+    expect(css).toContain('--duration-scrim: 160ms;');
+    expect(css).toContain('--duration-dialog: 240ms;');
+    expect(css).toContain('--duration-card: 260ms;');
+    for (const k of ['scrim', 'dialog', 'card']) expect(css).toMatch(new RegExp(`\\[data-motion="reduced"\\]\\s*{[^}]*--duration-${k}: 0ms;`));
+  });
   it('emits the control edges (task 6b, prototype parity in signal)', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge:\s*#2A303A;/);
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge-field:\s*#252A33;/);

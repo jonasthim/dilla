@@ -159,15 +159,21 @@ export const structural = {
     xl: '1.375rem',       // 22px
     preview: '1rem',      // 16px (the voice preview's room name; task 8)
     face: '2.125rem',     // 34px (a focused voice tile's 120px avatar initials; task 8)
+    // Task 9
+    card: '0.9375rem',    // 15px (the profile card's name and a confirmation's title)
   },
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
   trackingSoft: '0.04em',
   labelTrackingWide: '0.12em',
-  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px', menu: '9px' },
+  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px', menu: '9px',
+    // Task 9: the phone bottom sheet's top corners (the profile card).
+    sheet: '16px' },
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
-  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)', menu: '0 18px 48px rgba(0,0,0,0.6)', toast: '0 12px 30px rgba(0,0,0,0.5)' },
+  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)', menu: '0 18px 48px rgba(0,0,0,0.6)', toast: '0 12px 30px rgba(0,0,0,0.5)',
+    // Task 9: the profile card (the prototype's 0 24px 60px .6) and the user panel's status menu (0 16px 40px .55).
+    card: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -201,7 +207,9 @@ export const structural = {
     /** Task 8 (the prototype's voice stage): a tile's width and a speaker's scale, the focused tile's rise, and a caption's live meter beat. */
     stage: '260ms', focusIn: '360ms', beat: '520ms',
     /** Task 8b (the prototype's music player): the card's rise, the dock row's, the stage bar's, the queue's, and the progress fill's 1s linear step. */
-    player: '360ms', playerRow: '260ms', playerBar: '300ms', queue: '200ms', progress: '1s' },
+    player: '360ms', playerRow: '260ms', playerBar: '300ms', queue: '200ms', progress: '1s',
+    // Task 9 (the prototype's overlays): a scrim's fade, a form dialog's entrance and the profile card's entrance.
+    scrim: '160ms', dialog: '240ms', card: '260ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

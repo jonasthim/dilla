@@ -70,15 +70,15 @@ describe('SearchPalette', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onPick).toHaveBeenCalledOnce();
   });
-  // W-06: Escape closes from any control of the palette, not only the textbox; Close is the ui Button with its esc hint.
-  it('closes on Escape from a scope button, with a Close that shows its key', async () => {
+  // W-06: Escape closes from any control of the palette, not only the textbox; Close is the input row's esc key cap (Signal §5.8).
+  it('closes on Escape from a scope button, with a Close that is the esc cap', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<SearchPalette open query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={onClose} />);
     screen.getByRole('button', { name: labels.scope.channel }).focus();
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
-    expect(screen.getByRole('button', { name: labels.close })).toHaveClass('d-btn');
+    expect(screen.getByRole('button', { name: labels.close })).toHaveClass('d-search-palette__esc');
     expect(screen.getByRole('button', { name: labels.close })).toHaveTextContent('esc');
   });
   // M-03: one status node stays mounted and only its text changes, so a new message is announced.
@@ -170,27 +170,31 @@ describe('SearchPalette', () => {
       const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
       css = fs.readFileSync(`${cwd}/src/SearchPalette/SearchPalette.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     });
-    it('a desktop palette is a modal dialog box: centred, at most 40rem wide, with a scrim', () => {
+    // Task 9 (Signal §5.8): 14vh down, min(600px, 92%) wide, centred by left/right 0 and margin 0 auto (no transform), over the --scrim.
+    it('a desktop palette is a modal dialog box: centred without a transform, min(600px, 92%) wide at 14vh, with the scrim', () => {
       const r = /\.d-search-palette-dialog \{([^}]*)\}/.exec(css)?.[1] ?? '';
-      expect(r).toMatch(/width: min\(calc\(100vw - 2rem\), 40rem\);/);
-      expect(r).toMatch(/margin: 12vh auto auto;/);
-      expect(css).toMatch(/\.d-search-palette-dialog::backdrop \{[^}]*background: color-mix/);
+      expect(r).toMatch(/inset: 14vh 0 auto 0;/);
+      expect(r).toMatch(/width: min\(600px, 92%\);/);
+      expect(r).toMatch(/margin: 0 auto;/);
+      expect(r).not.toMatch(/transform/);
+      expect(css).toMatch(/\.d-search-palette-dialog::backdrop \{[^}]*background: var\(--scrim\)/);
     });
   });
-  // J1: a result names its place, its author and its time, and a footer lists the three keys.
-  it('shows #channel, author and time on a result, and a KeyHint footer', async () => {
+  // J1: a result names its place, its author and its time; the footer is the prototype's "↑↓ move  ↵ open … note" (task 9).
+  it('shows #channel, author and time on a result under a group heading, and the prototype footer', async () => {
     const withMeta = [{ id: 'm1', snippet: 'lamp one', location: '#general', author: 'Mira', time: '14:02' }, { id: 'm2', snippet: 'lamp two', location: 'Ada' }];
-    const hinted = { ...labels, hints: { move: 'to move', open: 'to open', close: 'to close' } };
+    const hinted = { ...labels, hints: { move: 'move', open: 'open' }, note: 'Searches messages held in this browser', group: 'Messages' };
     const view = render(<SearchPalette open query="lamp" scope="all" hits={withMeta} labels={hinted} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} />);
     const first = screen.getByRole('option', { name: /lamp one/ });
     expect(first).toHaveTextContent('#general');
     expect(first).toHaveTextContent('Mira');
     expect(first).toHaveTextContent('14:02');
     expect(screen.getByRole('option', { name: /lamp two/ })).not.toHaveTextContent('Mira');
+    expect(first).toHaveTextContent('#general · Mira · 14:02');
+    expect(screen.getByRole('listbox', { name: 'Messages' })).toBeInTheDocument();
     const foot = view.container.querySelector('.d-search-palette__hints')!;
-    expect(Array.from(foot.querySelectorAll('.d-keyhint')).map(k => k.textContent)).toEqual(['↑↓to move', '↵to open', 'escto close']);
-    // The footer carries the esc hint, so the Close button does not repeat it.
-    expect(screen.getByRole('button', { name: labels.close })).not.toHaveTextContent('esc');
+    expect(Array.from(foot.children).map(k => k.textContent)).toEqual(['↑↓ move', '↵ open']);
+    expect(view.container.querySelector('.d-search-palette__note')).toHaveTextContent('Searches messages held in this browser');
     await expectNoAxeViolations(view.container);
   });
 });
