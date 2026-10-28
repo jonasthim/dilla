@@ -11,7 +11,7 @@ import { SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey } from '@dilla/ui';
 import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
-import type { PageCall, PageCallState, ShareSource } from '../../call/session.ts';
+import type { PageCall, PageCallState } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
 import { errorOf } from '../../core/errors.ts';
 import { t, type StringKey } from '../../strings/index.ts';
@@ -170,15 +170,9 @@ export interface CallView {
   selfDeafened: boolean;
   toggleCamera: () => void;
   toggleShare: () => void;
-  /** FX2: the audio inputs the sharer may pick as the share's sound (null while not offered: not sharing, or the browser's
-   *  own sound is the share's), and the pick (null is none); a failed pick is the notice `voice.shareAudio.pickFailed`. */
-  sharePool: { sources: ShareSource[]; labeled: boolean } | null;
-  setShareSource: (id: string | null) => void;
   setVolume: (userId: string, volume: number) => void;
   /** #37 T5: the volume of a person's shared screen sound; 0 is the stream mute. */
   setStreamVolume: (userId: string, volume: number) => void;
-  /** #37 T5: mutes the stream (volume 0, the last volume kept) or brings it back to the last volume. */
-  toggleStreamMute: (userId: string, current: number) => void;
   /** web3.3: the "turn on audio" press while the browser holds call audio back (state.audioBlocked). */
   startAudio: () => void;
 }
@@ -998,26 +992,8 @@ export function useCall(o: UseCallOptions): CallView {
     const s = sessionRef.current;
     if (s !== null) s.setSharing(!s.state.sharing).catch(shareRefused);
   }, [shareRefused]);
-  const setShareSource = useCallback((id: string | null) => {
-    const s = sessionRef.current;
-    const ch = channelRef.current;
-    if (s === null) return;
-    s.setShareSource(id).then(
-      () => setNotice(n => (n?.key === 'voice.shareAudio.pickFailed' ? null : n)),
-      () => { if (ch !== null) setNotice({ channelId: ch, key: 'voice.shareAudio.pickFailed' }); });
-  }, []);
-  // FX2: the inputs a share without sound can take its sound from; read again when a device comes or goes.
-  const [sharePool, setSharePool] = useState<{ sources: ShareSource[]; labeled: boolean } | null>(null);
-  const offerSources = state?.sharing === true && state.shareSource !== 'browser' && session !== null;
-  useEffect(() => {
-    if (!offerSources || session === null) { setSharePool(null); return; }
-    let live = true;
-    const read = () => { session.shareSources().then(p => { if (live) setSharePool(p); }, () => undefined); };
-    read();
-    const media = (navigator as { mediaDevices?: MediaDevices }).mediaDevices;
-    media?.addEventListener?.('devicechange', read);
-    return () => { live = false; media?.removeEventListener?.('devicechange', read); };
-  }, [offerSources, session]);
+  // Fix round 1 (Jonas): no sound-source pick for a share any more (a silent share keeps the default source; the session's
+  // setShareSource stays for wave C's capture work).
   const setVolume = useCallback((userId: string, volume: number) => {
     sessionRef.current?.setVolume(userId, volume);
     client.call({ m: 'setSetting', key: SETTINGS.voiceVolume(userId), value: String(volume) }).catch(() => undefined);
@@ -1026,11 +1002,6 @@ export function useCall(o: UseCallOptions): CallView {
     sessionRef.current?.setVolume(userId, volume, 'stream');
     client.call({ m: 'setSetting', key: SETTINGS.voiceStreamVolume(userId), value: String(volume) }).catch(() => undefined);
   }, [client]);
-  // The stream mute is the stream volume at 0, so there is one value and one gain path; the volume before the mute is kept here.
-  const beforeStreamMute = useRef<Map<string, number>>(new Map());
-  const toggleStreamMute = useCallback((userId: string, now: number) => {
-    if (now > 0) { beforeStreamMute.current.set(userId, now); setStreamVolume(userId, 0); } else setStreamVolume(userId, beforeStreamMute.current.get(userId) ?? 100);
-  }, [setStreamVolume]);
   const startAudio = useCallback(() => {
     // The press is the user activation the browser asks for; a refusal leaves the line on offer (the session never throws).
     sessionRef.current?.startAudio().catch(() => undefined);
@@ -1331,7 +1302,7 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, sharePool, setShareSource, setVolume, setStreamVolume, toggleStreamMute, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, setStreamVolume, startAudio,
   };
 }
 

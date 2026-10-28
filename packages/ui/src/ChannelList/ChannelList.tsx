@@ -141,14 +141,19 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
     const row = li.querySelector<HTMLElement>('.d-chrow, .d-voice-row');
     if (row !== null) setMenu({ id: c.id, name: c.name, at, row });
   };
+  // Fix round 2: only the row's own DOM asks for the row menu: not the people under a voice row (their person menu) and not an
+  // event bubbling through React from a portalled menu.
+  const fromRow = (e: { target: EventTarget; currentTarget: HTMLLIElement }) => e.target instanceof Element && e.currentTarget.contains(e.target)
+    && e.target.closest('.d-voice-row__people') === null;
   const rowHandlers = (c: ChannelListChannel) => menuFor(c).length === 0 ? {} : {
     onContextMenu: (e: MouseEvent<HTMLLIElement>) => {
+      if (!fromRow(e)) return;
       e.preventDefault();
       if (e.timeStamp - keyOpenedAt.current < 500) return;
       openMenu(c, e.currentTarget, { x: e.clientX, y: e.clientY });
     },
     onKeyDown: (e: KeyboardEvent<HTMLLIElement>) => {
-      if (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey)) return;
+      if (!fromRow(e) || (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey))) return;
       e.preventDefault();
       keyOpenedAt.current = e.timeStamp;
       const box = e.currentTarget.getBoundingClientRect();
@@ -157,7 +162,7 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
     onPointerDown: (e: PointerEvent<HTMLLIElement>) => {
       // A new press forgets a long press whose closing click never came (a platform that sends none after a context menu).
       swallowClick.current = false;
-      if (e.pointerType !== 'touch') return;
+      if (e.pointerType !== 'touch' || !fromRow(e)) return;
       const li = e.currentTarget;
       const at = { x: e.clientX, y: e.clientY };
       if (press.current !== null) clearTimeout(press.current.timer);

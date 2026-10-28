@@ -1459,6 +1459,6 @@ describe('fix round 1 (Jonas): no sound-source picker for a share', () => {
     act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
     await waitFor(() => expect(main().getByRole('button', { name: t('callStage.bar.stopShare') })).toBeInTheDocument());
     expect(main().queryByRole('combobox')).toBeNull();
-    expect(main().queryByRole('button', { name: t('voice.shareAudio.pick') })).toBeNull();
+    expect(document.querySelector('.d-call-stage__notice-action')).toBeNull();
   });
 });

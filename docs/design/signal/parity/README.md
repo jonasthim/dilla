@@ -41,7 +41,8 @@ A spec is a JSON array of pairs:
   The prototype reads them from the `data-props` attribute of its `script[data-dc-script]` (`parseDataProps` in
   `support.js`; each entry's `default` becomes `this.props`). The tool rewrites that attribute before the prototype's
   scripts run (a MutationObserver installed with `addInitScript`), so the file on disk is never modified.
-- `prototype.steps` run in order after load: one of `click`, `rightClick`, `hover` (selectors), `press` (a key), `type`
+- `prototype.steps` run in order after load: one of `click`, `rightClick`, `hover`, `waitFor` (selectors; `waitFor` waits up to 30s for a
+  state the prototype reaches on its own clock, such as a speaker), `press` (a key), `type`
   (`[selector, text]`) or `wait` (ms) per step.
 - `clip` (either side) crops to the first element matching the selector; without it the whole viewport is shot.
 - `story.id` is the Storybook story id (`<title-slug>--<story-slug>`, see `storybook-static/index.json`).

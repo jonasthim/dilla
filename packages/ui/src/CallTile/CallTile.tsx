@@ -64,7 +64,7 @@ export interface CallTileProps {
   gridLabel?: string;
   /**
    * `volume` is the filled `voice.volume` ('volume for {name}'); `volumeValue` is `voice.volumeValue` ('{n} %'), the
-   * spoken value of the range, with `{n}` filled here.
+   * caption's volume chip, with `{n}` filled here. The volume itself is set in the person menu (`menu`).
    */
   labels: { state: VoiceStateLabels; volume: string; volumeValue: string };
 }
@@ -141,10 +141,10 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
  * technology. Camera and screen are not glyphs here (the tile shows them); a stream state keeps its glyph and word.
  * A focused tile shows Grid (back to the grid) and full screen over its top right (`gridLabel`, `onGrid`, injected by
  * `CallStage`); a grid tile has neither (double-click still toggles full screen on a tile with media). A person's tile has
- * a native range for their volume, 0 to 200 in steps of 10, shown on hover and focus only (D3) with a quiet chip in the
- * caption while it is not 100; the own tile and a `screen` tile have neither.
+ * no control of its own for their volume (fix round 1): `menu` opens the person menu (right-click, long press, Shift+F10),
+ * and a quiet chip in the caption says the volume while it is not 100; the own tile and a `screen` tile have no chip.
  *
- * The media and caption sit in a focus `<button aria-pressed>`, and the tools and the range are its siblings, never inside
+ * The media and caption sit in a focus `<button aria-pressed>`, and the tools are its siblings, never inside
  * it (R28). Focus only flips `data-focused`: nothing is re-parented (R27). Without `onFocusTile` (the DM call box) the
  * tile is the compact card: the media, then the caption under it.
  */

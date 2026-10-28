@@ -59,8 +59,8 @@ export function validateSpec(spec) {
     if (steps !== undefined && !Array.isArray(steps)) throw new Error(`${at} (${pair.name}): prototype.steps must be an array`);
     (steps ?? []).forEach((s, j) => {
       const keys = Object.keys(s ?? {});
-      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait'].includes(keys[0]);
-      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait`);
+      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor'].includes(keys[0]);
+      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor`);
       if (keys[0] === 'type' && !(Array.isArray(s.type) && s.type.length === 2 && s.type.every(x => typeof x === 'string'))) throw new Error(`${at} (${pair.name}): step ${j} type is [selector, text]`);
       if (keys[0] === 'wait' && typeof s.wait !== 'number') throw new Error(`${at} (${pair.name}): step ${j} wait is milliseconds`);
     });
@@ -113,6 +113,7 @@ async function runSteps(page, steps) {
   for (const s of steps ?? []) {
     if (s.click) await page.click(s.click);
     else if (s.rightClick) await page.click(s.rightClick, { button: 'right' });
+    else if (s.waitFor) await page.waitForSelector(s.waitFor, { timeout: 30_000 });
     else if (s.hover) await page.hover(s.hover);
     else if (s.press) await page.keyboard.press(s.press);
     else if (s.type) await page.fill(s.type[0], s.type[1]);

@@ -30,6 +30,7 @@
 .d-voice-row__join .d-icon-button:focus-visible { outline-offset: -2px; }
 /* The people (Signal §5.4): 26px sub-rows, 30px in from the list's padding edge (the name's x), 8px to the right edge. */
 .d-voice-row__people { margin: 0; padding: 0 0.5rem 0 30px; list-style: none; }
+.d-voice-row__person:focus-visible { outline: var(--focus-ring); outline-offset: -2px; border-radius: var(--r-row); }
 .d-voice-row__person { display: flex; align-items: center; gap: 8px; min-width: 0; height: var(--row-h-sub); box-sizing: border-box; padding: 0; font-size: var(--text-ui); color: var(--fg-strong); }
 .d-voice-row__avatar { display: inline-flex; flex: none; }
 /* Speaking is only a ring on the avatar (0 0 0 2px bg-2, 0 0 0 3.5px --live), over 150ms; the word stays as `.d-sr-only`. */

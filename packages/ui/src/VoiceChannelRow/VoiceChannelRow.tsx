@@ -75,13 +75,26 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
  * One person under a voice row. Fix round 1 (Jonas): with `menu`, a right-click, the ContextMenu key or Shift+F10, or a long
  * press opens the person menu (Signal §5.4) at the pointer; focus comes back to the row.
  */
-function PersonRow({ menu, speaking, away, children }: { menu: TileMenu | undefined; speaking: boolean; away: boolean; children: ReactNode }) {
+function PersonRow({ menu, speaking, away, label, children }: { menu: TileMenu | undefined; speaking: boolean; away: boolean; label: string; children: ReactNode }) {
   const ref = useRef<HTMLLIElement>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const trigger = useContextMenuTrigger<HTMLLIElement>(menu !== undefined ? (_el, point) => { setAt(point); } : undefined);
+  // Fix round 2: with a menu, the person is a keyboard stop outside the tab order (no extra Tab stops in the sidebar): ArrowRight
+  // on the voice row enters its people, ArrowUp/Down move between them, ArrowLeft goes back to the row, and Shift+F10 or the
+  // ContextMenu key opens the menu.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
+    trigger.onKeyDown?.(e);
+    if (e.defaultPrevented || e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const people = Array.from(e.currentTarget.parentElement?.querySelectorAll<HTMLElement>(':scope > .d-voice-row__person[tabindex]') ?? []);
+    const i = people.indexOf(e.currentTarget);
+    const go = (el: HTMLElement | null | undefined) => { if (el) { e.preventDefault(); el.focus(); } };
+    if (e.key === 'ArrowDown') go(people[i + 1]);
+    else if (e.key === 'ArrowUp') go(people[i - 1]);
+    else if (e.key === 'ArrowLeft') go(e.currentTarget.closest('ul')?.parentElement?.querySelector<HTMLElement>(':scope > .d-voice-row'));
+  };
   return (
     <li ref={ref} className="d-voice-row__person" data-row data-speaking={speaking ? 'true' : undefined} data-away={away ? 'true' : undefined}
-      data-menu={at !== null ? 'true' : undefined} {...trigger}>
+      data-menu={at !== null ? 'true' : undefined} {...trigger} {...(menu !== undefined ? { tabIndex: -1, 'aria-label': label, onKeyDown } : {})}>
       {children}
       {menu !== undefined && at !== null ? createPortal(
         <PersonContextMenu {...menu} open at={at} onOpenChange={open => { if (!open) setAt(null); }} returnFocus={() => ref.current} />, document.body) : null}
@@ -107,6 +120,12 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
   return (
     <>
       <button type="button" className="d-voice-row" data-row aria-label={labels.open.replaceAll('{name}', name)}
+        onKeyDown={e => {
+          // Fix round 2: ArrowRight enters the row's people (each opens its person menu from the keyboard).
+          if (e.key !== 'ArrowRight' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+          const first = e.currentTarget.parentElement?.querySelector<HTMLElement>(':scope > .d-voice-row__people > .d-voice-row__person[tabindex]');
+          if (first) { e.preventDefault(); first.focus(); }
+        }}
         aria-describedby={n > 0 || joined ? countId : undefined} aria-current={current ? 'page' : undefined}
         data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} data-afk={afk ? 'true' : undefined} onClick={() => onOpen()}>
         <span className="d-voice-row__bar" aria-hidden="true" />
@@ -131,7 +150,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
           {participants.map(p => {
             const words = rowWords(voiceStateWords(p, labels.state));
             return (
-              <PersonRow key={p.userId} menu={personMenu?.(p)} speaking={p.speaking} away={p.away === true}>
+              <PersonRow key={p.userId} menu={personMenu?.(p)} speaking={p.speaking} away={p.away === true} label={p.name}>
                 <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="voice" shape={p.bot ? 'bot' : 'circle'} /></span>
                 <span className="d-voice-row__person-name">{p.name}</span>
                 <span className="d-voice-row__states">
