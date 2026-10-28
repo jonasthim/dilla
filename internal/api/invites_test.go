@@ -492,9 +492,8 @@ func TestInviteRoutesAreGatedAndBounded(t *testing.T) {
 
 	// Bounds.
 	for name, body := range map[string][]any{
-		"zero uses":      {uint64(0), uint64(60), uint64(0)},
+		// 0 uses and 0 ttl mean unlimited and never (Task 10c; invites_unlimited_test.go).
 		"too many uses":  {uint64(1001), uint64(60), uint64(0)},
-		"zero ttl":       {uint64(1), uint64(0), uint64(0)},
 		"too long a ttl": {uint64(1), uint64(30*24*3600 + 1), uint64(0)},
 		"bad admin flag": {uint64(1), uint64(60), uint64(2)},
 	} {

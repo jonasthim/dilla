@@ -1085,16 +1085,17 @@ func (r *Repo) ClearLoginFailures(ctx context.Context, userID id.ID) error {
 
 func (r *Repo) CreateInvite(ctx context.Context, i store.InviteRow) error {
 	return wrap(r.w.CreateInvite(ctx, pgdb.CreateInviteParams{
-		ID:          i.ID,
-		CodeHash:    i.CodeHash,
-		CommunityID: i.CommunityID,
-		CreatedBy:   i.CreatedBy,
-		GrantsAdmin: int64(i.GrantsAdmin),
-		MaxUses:     int64(i.MaxUses),
-		UsedCount:   int64(i.UsedCount),
-		Created:     i.Created,
-		ExpiresAt:   i.ExpiresAt,
-		RevokedAt:   nullInt64(i.RevokedAt),
+		ID:            i.ID,
+		CodeHash:      i.CodeHash,
+		CommunityID:   i.CommunityID,
+		CreatedBy:     i.CreatedBy,
+		GrantsAdmin:   int64(i.GrantsAdmin),
+		MaxUses:       int64(i.MaxUses),
+		UsedCount:     int64(i.UsedCount),
+		Created:       i.Created,
+		ExpiresAt:     i.ExpiresAt,
+		RevokedAt:     nullInt64(i.RevokedAt),
+		UnlimitedUses: int64(i.UnlimitedUses),
 	}))
 }
 
@@ -1171,6 +1172,7 @@ func inviteRow(row pgdb.Invites) store.InviteRow {
 		ID: row.ID, CodeHash: row.CodeHash, CommunityID: row.CommunityID, CreatedBy: row.CreatedBy,
 		GrantsAdmin: uint8(row.GrantsAdmin), MaxUses: uint64(row.MaxUses), UsedCount: uint64(row.UsedCount),
 		Created: row.Created, ExpiresAt: row.ExpiresAt, RevokedAt: ptrInt64(row.RevokedAt),
+		UnlimitedUses: uint8(row.UnlimitedUses),
 	}
 }
 

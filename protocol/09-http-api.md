@@ -399,9 +399,19 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 - A **community invite** is an invite whose `community_id` is set. Minting and listing need
   `create_invite` community-wide (§ Permissions) and membership of the community (`404 E_NOT_FOUND`
   otherwise, as for every community route); `403 E_FORBIDDEN` without the permission.
-  `max_uses` is 1–1000 and `ttl_seconds` 1–2 592 000 (thirty days); `grants_admin` is 0 or 1, and 1
-  is refused (`403 E_FORBIDDEN`) to anyone who is not an instance admin, because whoever registers
-  with the invite becomes one. Anything else out of range is `400 E_INVALID_REQUEST`.
+  `max_uses` is 1–1000, or 0 for any number of uses ("∞"); `ttl_seconds` is 1–2 592 000 (thirty
+  days), or 0 for an invite that never expires. An open-ended invite (either 0) also needs
+  `manage_community` (owners and administrators hold it): it is a standing way in that only a
+  manager can take back, so a member who holds only `create_invite` gets `403 E_FORBIDDEN` and may
+  still make the finite ones. `grants_admin` is 0 or 1, and 1 is refused (`403 E_FORBIDDEN`) to
+  anyone who is not an instance admin, because whoever registers with the invite becomes one; a
+  `grants_admin` invite is always finite (`400 E_INVALID_REQUEST` with a 0). Anything else out of
+  range is `400 E_INVALID_REQUEST`. On the wire 0 keeps its meaning everywhere an invite is read:
+  the mint's `expires`, the list's `max_uses` and `expires_at`, and the landing CBOR's `expires`
+  say 0 for "never" and "∞". The instance stores an open-ended invite with `max_uses = 1000` and
+  an `unlimited_uses` flag, and "never" as the largest signed 64-bit second, so a reader that
+  ignores the flag still stops at the old bounds. The HTML landing page reads "Never expires" and
+  "No use limit". Revoking stays as it is: the creator or a `manage_community` holder.
 - `code` is the invite's only plaintext, returned once, by the mint. The instance stores its
   SHA-256 and the audit row (`invite.create`) names it by the first four bytes of that hash in
   hex. `url` is the instance's base URL followed by `/i/` and the code.

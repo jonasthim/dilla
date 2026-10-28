@@ -372,16 +372,17 @@ type InviteSignups struct {
 }
 
 type Invites struct {
-	ID          id.ID
-	CodeHash    []byte
-	CommunityID *id.ID
-	CreatedBy   *id.ID
-	GrantsAdmin int64
-	MaxUses     int64
-	UsedCount   int64
-	Created     int64
-	ExpiresAt   int64
-	RevokedAt   sql.NullInt64
+	ID            id.ID
+	CodeHash      []byte
+	CommunityID   *id.ID
+	CreatedBy     *id.ID
+	GrantsAdmin   int64
+	MaxUses       int64
+	UsedCount     int64
+	Created       int64
+	ExpiresAt     int64
+	RevokedAt     sql.NullInt64
+	UnlimitedUses int64
 }
 
 type KeyPackages struct {
