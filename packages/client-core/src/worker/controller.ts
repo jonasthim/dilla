@@ -32,7 +32,7 @@ import {
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { historyFrom, readDeviceListHistory, signedHeadList } from '../state/trust';
+import { historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -4863,7 +4863,10 @@ export class Controller {
         const { head, history } = signed;
         let verdict: { version: bigint; changed: boolean; quarantined: number };
         const own = this.me !== null && toHex(this.me.userId) === user;
-        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
+        try {
+          ingestAccountKind(core, leaf.userId, head);
+          verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS());
+        }
         catch (e) {
           // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
           // The refusal writes nothing in the core, so the worker keeps it. An own-user history under another key is an

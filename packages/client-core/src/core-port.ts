@@ -210,6 +210,8 @@ export interface CorePort {
   deviceListIngestAdd(groupId: Id, proposalsBody: Uint8Array, index: bigint, requestedUser: Id,
     history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
   deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
+  /** Task S1 part 2: store the instance-signed account-kind attestation for one user before its history is ingested. */
+  accountKindIngest(userId: Id, attestation: Uint8Array): void;
   revalidatePending(groupId: Id, leafIndex: number, limit: number): number;
   trustState(): TrustRecord[];
   trustGeneration(): bigint;
@@ -361,6 +363,7 @@ export interface CoreHandle {
       device_list_ingest_add(group_id: Uint8Array, proposals_body: Uint8Array, index: bigint, requested_user: Uint8Array,
         history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
       device_list_ingest(group_id: Uint8Array, leaf_index: number, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+      account_kind_ingest(user_id: Uint8Array, attestation: Uint8Array): void;
       revalidate_pending(group_id: Uint8Array, leaf_index: number, limit: number): number;
       trust_state(): Uint8Array;
       trust_generation(): bigint;
@@ -778,6 +781,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
       readTrustIngest(handle.device_list_ingest_add(groupId, proposalsBody, index, requestedUser, history, headList, now))),
     deviceListIngest: (groupId, leafIndex, requestedUser, history, headList, now) => call(() =>
       readTrustIngest(handle.device_list_ingest(groupId, leafIndex, requestedUser, history, headList, now))),
+    accountKindIngest: (userId, attestation) => call(() => handle.account_kind_ingest(userId, attestation)),
     revalidatePending: (groupId, leafIndex, limit) => call(() => handle.revalidate_pending(groupId, leafIndex, limit)),
     trustState: () => call(() => decodeTrustState(handle.trust_state())),
     trustGeneration: () => call(() => handle.trust_generation()),

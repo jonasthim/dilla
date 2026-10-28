@@ -377,6 +377,7 @@ export function world(opts: {
     deviceListIngestAdd: vi.fn(() => ({ version: 1n, changed: false, quarantined: 0 })),
     deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
       ({ version: 1n, changed: true, quarantined: 1 })),
+    accountKindIngest: vi.fn((_user: Uint8Array, _attestation: Uint8Array) => undefined),
     revalidatePending: vi.fn(() => 0),
     trustState: vi.fn((): TrustRecord[] => []),
     trustGeneration: vi.fn(() => 0n),

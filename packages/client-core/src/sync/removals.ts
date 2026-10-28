@@ -1,7 +1,7 @@
 import { decodeRemovalProof } from '../bot/protocol';
 import type { CorePort, Id, RemovalFeedEntry } from '../core-port';
 import type { Routes } from '../http/routes';
-import { readDeviceListHistory, signedHeadList } from '../state/trust';
+import { ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 
 const PAGE_LIMIT = 250;
 const PAGE_BUDGET = 8;
@@ -32,7 +32,9 @@ export async function recoverModerationRemovals(core: CorePort, routes: Pick<Rou
     // Refresh each previously trusted actor against the signed history chain before proof verification.
     for (const entry of actors.values()) {
       const cachedVersion = core.removalActorHistoryVersion(groupId, entry);
-      const { history, head } = await readDeviceListHistory(routes, decodeRemovalProof(entry.proof).actorUser, cachedVersion);
+      const actor = decodeRemovalProof(entry.proof).actorUser;
+      const { history, head } = await readDeviceListHistory(routes, actor, cachedVersion);
+      ingestAccountKind(core, actor, head);
       core.refreshRemovalActorHistory(groupId, entry, history, signedHeadList(head));
     }
     for (const row of page.rows) {

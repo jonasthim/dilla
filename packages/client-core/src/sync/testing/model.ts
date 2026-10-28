@@ -571,6 +571,11 @@ export class ModelCore implements CorePort {
       throw e;
     }
   }
+  /** Task S1 part 2: the model records the attestations it is handed; the Rust core judges them. */
+  readonly accountKinds: { userId: Id; attestation: Uint8Array }[] = [];
+  accountKindIngest(userId: Id, attestation: Uint8Array): void {
+    this.accountKinds.push({ userId, attestation });
+  }
   deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array,
     now: bigint): { version: bigint; changed: boolean; quarantined: number } {
     const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);

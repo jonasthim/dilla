@@ -45,7 +45,7 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-const WIRE_PREFERENCE = [3n, 2n] as const;
+const WIRE_PREFERENCE = [4n, 3n, 2n] as const;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
   versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };

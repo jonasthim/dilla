@@ -11,7 +11,7 @@ import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
-import { readDeviceListHistory, signedHeadList } from '../state/trust';
+import { ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { recoverModerationRemovals } from './removals';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
@@ -380,6 +380,7 @@ export class SyncEngine implements SyncInternals {
         const { head, history } = await readDeviceListHistory(this.deps.routes, candidate.userId, candidate.cachedVersion);
         if (this.isStopped) return false;
         try {
+          ingestAccountKind(this.deps.core, candidate.userId, head);
           this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, signedHeadList(head), BigInt(Math.floor(this.deps.now() / 1000)));
         } catch (e) {
           // Controller ruling 3: a candidate whose leaf fails is left out of this commit by the core (commit_build), never

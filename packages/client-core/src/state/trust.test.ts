@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { encode, type CborInput } from '../cbor';
 import { readDeviceListHistory } from './trust';
 import { CoreError } from '../core-port';
-import { decodePendingLeaves, decodeTrustState, historyFrom } from './trust';
+import { decodePendingLeaves, decodeTrustState, headAttestation, historyFrom, ingestAccountKind, signedHeadList } from './trust';
 
 const id16 = (n: number): Uint8Array => new Uint8Array(16).fill(n);
 const key32 = (n: number): Uint8Array => new Uint8Array(32).fill(n);
@@ -157,5 +157,48 @@ describe('trust refresh: the history read and its slices', () => {
     // One malformed row makes the whole slice null, not the rows around it.
     expect(historyFrom(encode([[1, new Uint8Array([1]), new Uint8Array(64), key32(1)], [2, new Uint8Array([2])]]), 1n)).toBeNull();
     expect(historyFrom(encode(7), 0n)).toBeNull();
+  });
+});
+
+// Task S1 part 2: a wire-4 head carries the instance-signed account-kind attestation as a fifth element.
+describe('the account-kind attestation on a wire-4 head', () => {
+  const ATTESTATION = encode([1, new Uint8Array(16).fill(3), 0, new Uint8Array(64).fill(4)]);
+  const head4 = (version: number): Uint8Array => encode([version, new Uint8Array([version]), new Uint8Array(64), key32(version), ATTESTATION]);
+  const routes4 = (version: number, pages: Record<number, number[]>) => ({
+    getDeviceList: () => Promise.resolve({ version: BigInt(version), blob: new Uint8Array([version]), raw: head4(version) }),
+    getDeviceListHistory: (_user: Uint8Array, after: bigint) => {
+      void _user;
+      const versions = pages[Number(after)] ?? [];
+      return Promise.resolve({ raw: history(versions), count: versions.length, lastVersion: versions.length ? BigInt(versions[versions.length - 1]) : null });
+    },
+  });
+
+  it('reads the history against the four-element chain row and keeps the full head', async () => {
+    const result = await readDeviceListHistory(routes4(3, { 0: [1, 2, 3] }), id16(2), 0n);
+    expect(result.history).toEqual(history([1, 2, 3]));
+    expect(result.head).toEqual(head4(3));
+    expect(signedHeadList(result.head)).toEqual(new Uint8Array([3]));
+    expect(headAttestation(result.head)).toEqual(ATTESTATION);
+    // The cached anchor path too: the candidate row in the history is the four-element row.
+    const anchored = await readDeviceListHistory(routes4(3, {}), id16(2), 3n);
+    expect(anchored.history).toEqual(history([3]));
+  });
+
+  it('a four-element head has no attestation, and any other length is refused', () => {
+    expect(headAttestation(list(3))).toBeNull();
+    expect(signedHeadList(list(3))).toEqual(new Uint8Array([3]));
+    const six = encode([3, new Uint8Array([3]), new Uint8Array(64), key32(3), ATTESTATION, 0]);
+    expect(() => signedHeadList(six)).toThrow(CoreError);
+    expect(() => headAttestation(six)).toThrow(CoreError);
+  });
+
+  it('hands the attestation to the core before ingest; a core without a pinned key keeps the earlier rule', () => {
+    const seen: Uint8Array[] = [];
+    ingestAccountKind({ accountKindIngest: (_u, a) => { seen.push(a); } }, id16(2), head4(3));
+    expect(seen).toEqual([ATTESTATION]);
+    ingestAccountKind({ accountKindIngest: () => { throw new Error('not called'); } }, id16(2), list(3));
+    expect(() => ingestAccountKind({ accountKindIngest: () => { throw new CoreError('E_CORE_STATE', 'no pin'); } }, id16(2), head4(3))).not.toThrow();
+    expect(() => ingestAccountKind({ accountKindIngest: () => { throw new CoreError('E_CREDENTIAL', 'malformed'); } }, id16(2), head4(3)))
+      .toThrow(CoreError);
   });
 });
