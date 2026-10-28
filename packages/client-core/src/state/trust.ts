@@ -55,6 +55,18 @@ export function signedHeadList(head: Uint8Array): Uint8Array {
   try { return bin(headRow(head)[1]); } catch { return stale(); }
 }
 
+/**
+ * Task S1 fix round 1: the four-element list body [version, list, ssk_signature, prev_hash] of a served head, the one
+ * form every core decoder of a list body takes (enrolComplete, deviceListRevoke, the history chain). A wire-4 head's
+ * fifth element, the account-kind attestation, is no part of it; any other head is returned as served.
+ */
+export function chainRow(head: Uint8Array): Uint8Array {
+  // Only a five-element head is rewritten; anything else is passed as served and the core's decoder judges it.
+  let row: CborValue[];
+  try { row = arr(decode(head)); } catch { return head; }
+  return row.length === 5 ? encode(row.slice(0, 4)) : head;
+}
+
 /** Task S1 part 2: the instance-signed account-kind attestation a wire-4 head carries as its fifth element, else null. */
 export function headAttestation(head: Uint8Array): Uint8Array | null {
   try { const row = headRow(head); return row.length === 5 ? bin(row[4]) : null; } catch { return stale(); }

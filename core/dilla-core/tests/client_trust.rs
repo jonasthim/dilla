@@ -2581,3 +2581,113 @@ fn sec_old_key_traffic_and_refresh_never_end_a_pending_change() {
         .expect("the changed key stays verifiable");
     assert_eq!(sec_state_of(&alice, &bob.user), Some((new_key, 1, None)));
 }
+
+// ---- Task S1 fix round 1: a staged attestation is verified by the ingest that pins the user ----
+
+fn own_umk(peer: &Core) -> [u8; 32] {
+    let raw: Vec<u8> = peer
+        .probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT umk_pub FROM app_trust_pins WHERE user_id=?1",
+            [peer.user.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("own pin");
+    raw.try_into().expect("32 bytes")
+}
+
+fn attestation_for(peer: &Core, kind: u8) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
+    assert_eq!(key.verifying_key().to_bytes(), INSTANCE_SIGNER_PUB);
+    let message =
+        dilla_core::identity::account_kind_message(&INSTANCE, &peer.user, &own_umk(peer), kind);
+    dilla_core::identity::AccountKindAttestation {
+        key_id: [0x53; 16],
+        kind,
+        signature: key.sign(&message).to_bytes(),
+    }
+    .encode()
+}
+
+fn account_kinds(core: &Core, user: &[u8; 16]) -> Option<i64> {
+    core.probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT kind FROM app_account_kinds WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+#[test]
+fn a_first_sight_attestation_is_verified_by_the_ingest_that_pins_the_user() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &attestation_for(&bob, 0))
+        .expect("staged");
+    assert!(
+        !alice.core.account_kind_seen().expect("seen"),
+        "staged, not yet verified"
+    );
+    let (history, head) = list_wire(&bob);
+    let answer = alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &head,
+            NOW,
+        )
+        .expect("ingest");
+    let quarantined = decode_strict(&answer, |d| {
+        d.array(3)?;
+        d.uint()?;
+        d.uint()?;
+        d.uint()
+    })
+    .expect("verdict");
+    assert_eq!(quarantined, 0, "a human attested as a human");
+    assert!(alice.core.account_kind_seen().expect("seen"));
+    assert_eq!(account_kinds(&alice, &bob.user), Some(0));
+}
+
+#[test]
+fn a_human_leaf_attested_as_a_bot_is_refused_at_ingest() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &attestation_for(&bob, 1))
+        .expect("staged");
+    let (history, head) = list_wire(&bob);
+    let answer = alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &head,
+            NOW,
+        )
+        .expect("ingest");
+    let quarantined = decode_strict(&answer, |d| {
+        d.array(3)?;
+        d.uint()?;
+        d.uint()?;
+        d.uint()
+    })
+    .expect("verdict");
+    assert_eq!(
+        quarantined, 1,
+        "the credential's kind is not the attested kind: E_CREDENTIAL"
+    );
+    assert_eq!(account_kinds(&alice, &bob.user), Some(1));
+}

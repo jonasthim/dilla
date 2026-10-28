@@ -1170,6 +1170,35 @@ mod newer_store_tests {
         .expect("intent table");
     }
 
+    /// Task S1 fix round 1: a schema-12 store gains the account-kind tables and reads 13, and the
+    /// "attestation seen" flag is absent: the earlier rule holds until a verified attestation.
+    #[test]
+    fn a_v12_store_gains_the_account_kind_tables_without_the_seen_flag() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh");
+        db.execute_batch(
+            "DROP TABLE app_account_kinds; DROP TABLE app_account_kind_staged; \
+             UPDATE app_meta SET v = x'0c' WHERE k = 'schema';",
+        )
+        .expect("simulate a v12 store");
+        assert_eq!(migrate_conn(&db).expect("migrates"), 12);
+        assert_eq!(schema_of(&db), vec![0x0d]);
+        for table in ["app_account_kinds", "app_account_kind_staged"] {
+            let n: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .expect("sqlite_master");
+            assert_eq!(n, 1, "{table} exists");
+        }
+        assert_eq!(
+            meta_get(&db, super::super::account_kind::ACCOUNT_KIND_SEEN).expect("meta"),
+            None
+        );
+    }
+
     #[test]
     fn a_v13_store_opens_untouched() {
         let db = rusqlite::Connection::open_in_memory().expect("db");

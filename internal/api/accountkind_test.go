@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -69,7 +70,7 @@ func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 	}
 	attestation, _ := got[4].([]byte)
 	pub := accountKindTestKey.Public().(ed25519.PublicKey)
-	kind, err := api.VerifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, human.UMKPub, attestation)
+	kind, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, human.UMKPub, attestation)
 	if err != nil || kind != 0 {
 		t.Fatalf("attested kind %d, %v; want a verifying human (0)", kind, err)
 	}
@@ -82,17 +83,17 @@ func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 		t.Fatal("a second read produced a different attestation")
 	}
 	// Bound to user, instance and UMK: none of them can be swapped.
-	if _, err := api.VerifyAccountKindAttestation(pub, d.Instance.InstanceID, reader.ID, human.UMKPub, attestation); err == nil {
+	if _, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, reader.ID, human.UMKPub, attestation); err == nil {
 		t.Fatal("verified for another user")
 	}
-	if _, err := api.VerifyAccountKindAttestation(pub, id.New(), human.ID, human.UMKPub, attestation); err == nil {
+	if _, err := verifyAccountKindAttestation(pub, id.New(), human.ID, human.UMKPub, attestation); err == nil {
 		t.Fatal("verified for another instance")
 	}
-	if _, err := api.VerifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, bytes.Repeat([]byte{9}, 32), attestation); err == nil {
+	if _, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, bytes.Repeat([]byte{9}, 32), attestation); err == nil {
 		t.Fatal("verified for another UMK")
 	}
 	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)).Public().(ed25519.PublicKey)
-	if _, err := api.VerifyAccountKindAttestation(other, d.Instance.InstanceID, human.ID, human.UMKPub, attestation); err == nil {
+	if _, err := verifyAccountKindAttestation(other, d.Instance.InstanceID, human.ID, human.UMKPub, attestation); err == nil {
 		t.Fatal("verified under another key")
 	}
 }
@@ -108,7 +109,7 @@ func TestABotAccountIsAttestedAsABot(t *testing.T) {
 	}
 	putList(t, d, bot.ID)
 	got := head(t, h, token, bot.ID)
-	kind, err := api.VerifyAccountKindAttestation(accountKindTestKey.Public().(ed25519.PublicKey), d.Instance.InstanceID, bot.ID, bot.UMKPub, got[4].([]byte))
+	kind, err := verifyAccountKindAttestation(accountKindTestKey.Public().(ed25519.PublicKey), d.Instance.InstanceID, bot.ID, bot.UMKPub, got[4].([]byte))
 	if err != nil || kind != 1 {
 		t.Fatalf("Bot account attested kind %d, %v; want 1", kind, err)
 	}
@@ -137,4 +138,47 @@ func TestAWire4ReadWithoutTheSignerFailsClosed(t *testing.T) {
 	if rec := doAuth(h, http.MethodGet, "/v1/users/"+user.ID.String()+"/device-list", token); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d, want 500", rec.Code)
 	}
+}
+
+// Fix round 1: a tombstoned account's UMK is purged, so no attestation is served for it (one over
+// the zeroed key could never verify); the head is the four elements.
+func TestATombstonedAccountHasNoAttestation(t *testing.T) {
+	h, d := accountKindAPI(t)
+	_, _, token := seedAPISession(t, d)
+	negotiateWire(t, h, token, 4)
+	gone, _, _ := seedAPISession(t, d)
+	putList(t, d, gone.ID)
+	if err := d.Repo.TombstoneUser(context.Background(), gone.ID, d.Clock.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if got := head(t, h, token, gone.ID); len(got) != 4 {
+		t.Fatalf("a tombstoned account's head has %d elements, want 4 (no attestation)", len(got))
+	}
+}
+
+// verifyAccountKindAttestation decodes and verifies an attestation for one account against the
+// instance's external-sender public key, returning the attested kind: the check a client makes,
+// kept with the tests that pin the server's side of it.
+func verifyAccountKindAttestation(pub ed25519.PublicKey, instanceID, userID id.ID, umkPub, attestation []byte) (uint8, error) {
+	var a struct {
+		_     struct{} `cbor:",toarray"`
+		V     uint64
+		KeyID []byte
+		Kind  uint64
+		Sig   []byte
+	}
+	if err := cborx.Unmarshal(attestation, &a); err != nil {
+		return 0, err
+	}
+	if a.V != 1 || len(a.KeyID) != id.Size || a.Kind > 1 || len(a.Sig) != ed25519.SignatureSize || len(pub) != ed25519.PublicKeySize {
+		return 0, errors.New("malformed account-kind attestation")
+	}
+	message, err := api.AccountKindMessage(instanceID, userID, umkPub, uint8(a.Kind))
+	if err != nil {
+		return 0, err
+	}
+	if !ed25519.Verify(pub, message, a.Sig) {
+		return 0, errors.New("account-kind attestation does not verify")
+	}
+	return uint8(a.Kind), nil
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { encode, type CborInput } from '../cbor';
 import { readDeviceListHistory } from './trust';
 import { CoreError } from '../core-port';
-import { decodePendingLeaves, decodeTrustState, headAttestation, historyFrom, ingestAccountKind, signedHeadList } from './trust';
+import { chainRow, decodePendingLeaves, decodeTrustState, headAttestation, historyFrom, ingestAccountKind, signedHeadList } from './trust';
 
 const id16 = (n: number): Uint8Array => new Uint8Array(16).fill(n);
 const key32 = (n: number): Uint8Array => new Uint8Array(32).fill(n);
@@ -182,6 +182,15 @@ describe('the account-kind attestation on a wire-4 head', () => {
     // The cached anchor path too: the candidate row in the history is the four-element row.
     const anchored = await readDeviceListHistory(routes4(3, {}), id16(2), 3n);
     expect(anchored.history).toEqual(history([3]));
+  });
+
+  // Fix round 1 (H1): enrolComplete and deviceListRevoke decode a four-element list body; a wire-4 head's attestation is
+  // no part of it.
+  it('chainRow is the four-element list body of a served head', () => {
+    expect(chainRow(head4(3))).toEqual(list(3));
+    expect(chainRow(list(3))).toEqual(list(3));
+    // Anything that is not a five-element head is passed as served: the core's decoder judges it.
+    expect(chainRow(encode([3, new Uint8Array([3])]))).toEqual(encode([3, new Uint8Array([3])]));
   });
 
   it('a four-element head has no attestation, and any other length is refused', () => {

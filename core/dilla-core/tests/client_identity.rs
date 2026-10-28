@@ -741,6 +741,7 @@ fn open_creates_app_schema_v13_and_reopens_idempotently() {
     assert_eq!(
         names,
         [
+            "app_account_kind_staged",
             "app_account_kinds",
             "app_authority",
             "app_authority_known",
@@ -4338,9 +4339,28 @@ fn revoke_refuses_a_served_list_older_than_the_stored_newest() {
     assert_eq!(snapshot(&ac), before);
 }
 
-// ---- Task S1 part 2: account_kind_ingest ----
+// ---- Task S1 part 2 and fix round 1: account_kind_ingest verifies before it stores ----
 
-fn attestation_bytes(v: u64, kind: u64) -> Vec<u8> {
+/// The instance signer of the support fixtures: `INSTANCE_SIGNER_PUB` is the public half of seed 0x41.
+fn instance_signer() -> ed25519_dalek::SigningKey {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
+    assert_eq!(key.verifying_key().to_bytes(), INSTANCE_SIGNER_PUB);
+    key
+}
+
+fn signed_attestation(user: &[u8; 16], umk: &[u8; 32], kind: u8) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    let message = dilla_core::identity::account_kind_message(&INSTANCE, user, umk, kind);
+    let sig = instance_signer().sign(&message).to_bytes();
+    dilla_core::identity::AccountKindAttestation {
+        key_id: [0x53; 16],
+        kind,
+        signature: sig,
+    }
+    .encode()
+}
+
+fn raw_attestation(v: u64, kind: u64) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(4)
         .uint(v)
@@ -4350,45 +4370,115 @@ fn attestation_bytes(v: u64, kind: u64) -> Vec<u8> {
     e.into_vec()
 }
 
+fn pinned_umk(c: &ConnHandle, user: &[u8; 16]) -> [u8; 32] {
+    let raw: Vec<u8> = c
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT umk_pub FROM app_trust_pins WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("own pin");
+    raw.try_into().expect("32 bytes")
+}
+
+fn stored_signature(c: &ConnHandle, user: &[u8; 16]) -> Option<Vec<u8>> {
+    c.lock()
+        .expect("lock")
+        .query_row(
+            "SELECT signature FROM app_account_kinds WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
 #[test]
-fn account_kind_ingest_needs_the_pinned_instance_key_and_records_the_seen_flag() {
-    // A core with no identity (no pinned instance key) cannot store one: it could not judge it.
+fn account_kind_ingest_needs_the_pinned_instance_key() {
     let (mut fresh, _) = core();
     assert_eq!(
-        err(fresh.account_kind_ingest(&USER, &attestation_bytes(1, 0))).code,
+        err(fresh.account_kind_ingest(&USER, &raw_attestation(1, 0))).code,
         "E_CORE_STATE"
     );
     assert!(!fresh.account_kind_seen().expect("seen"));
+}
 
-    let (mut core, _, _, _, _) = signed_up();
-    assert!(!core.account_kind_seen().expect("seen"));
+#[test]
+fn account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then() {
+    let (mut core, c, _, _, _) = signed_up();
+    let umk = pinned_umk(&c, &USER);
+    // Malformed, or well formed but not the instance's statement: refused, nothing stored, no flag.
     assert_eq!(
-        err(core.account_kind_ingest(&[0; 16], &attestation_bytes(1, 0))).code,
+        err(core.account_kind_ingest(&[0; 16], &raw_attestation(1, 0))).code,
         "E_CORE_INPUT"
     );
     assert_eq!(
-        err(core.account_kind_ingest(&USER, &attestation_bytes(2, 0))).code,
+        err(core.account_kind_ingest(&USER, &raw_attestation(2, 0))).code,
         "E_CORE_INPUT"
     );
     assert_eq!(
-        err(core.account_kind_ingest(&USER, &attestation_bytes(1, 2))).code,
+        err(core.account_kind_ingest(&USER, &raw_attestation(1, 2))).code,
+        "E_CORE_INPUT"
+    );
+    assert_eq!(
+        err(core.account_kind_ingest(&USER, &raw_attestation(1, 0))).code,
         "E_CORE_INPUT"
     );
     assert!(
         !core.account_kind_seen().expect("seen"),
         "a refused attestation sets nothing"
     );
-    core.account_kind_ingest(&USER, &attestation_bytes(1, 0))
-        .expect("ingest");
+    assert_eq!(stored_signature(&c, &USER), None);
+
+    // The instance's statement over the pinned UMK: stored, flag set, generation bumped once.
+    let before = core.trust_generation().expect("generation");
+    let good = signed_attestation(&USER, &umk, 0);
+    core.account_kind_ingest(&USER, &good).expect("ingest");
     assert!(core.account_kind_seen().expect("seen"));
-    // Idempotent: the same attestation again is no error.
-    core.account_kind_ingest(&USER, &attestation_bytes(1, 0))
+    let after = core.trust_generation().expect("generation");
+    assert!(after > before, "a new attestation is a trust change");
+    let kept = stored_signature(&c, &USER).expect("stored");
+
+    // I1: the same attestation again is no write and no generation bump.
+    core.account_kind_ingest(&USER, &good)
         .expect("ingest again");
-    // Once seen, a malformed attestation is an input error that stores nothing and leaves the flag:
-    // the user is judged as having none (pending), never as a kind mismatch.
+    assert_eq!(core.trust_generation().expect("generation"), after);
+
+    // M1: never replaced by one that does not verify — a tombstone's zero UMK, or malformed bytes.
+    let tombstone = signed_attestation(&USER, &[0; 32], 0);
+    assert_eq!(
+        err(core.account_kind_ingest(&USER, &tombstone)).code,
+        "E_CORE_INPUT"
+    );
     assert_eq!(
         err(core.account_kind_ingest(&USER, &[0x80])).code,
         "E_CORE_INPUT"
     );
+    assert_eq!(stored_signature(&c, &USER), Some(kept));
     assert!(core.account_kind_seen().expect("seen"));
+    assert_eq!(core.trust_generation().expect("generation"), after);
+}
+
+#[test]
+fn an_attestation_for_a_user_without_a_pin_is_staged_not_trusted() {
+    let (mut core, c, _, _, _) = signed_up();
+    let other = [0x77; 16];
+    core.account_kind_ingest(&other, &signed_attestation(&other, &[0x55; 32], 0))
+        .expect("staged");
+    assert!(
+        !core.account_kind_seen().expect("seen"),
+        "a staged attestation is not seen yet"
+    );
+    assert_eq!(stored_signature(&c, &other), None);
+    let staged: i64 = c
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT count(*) FROM app_account_kind_staged WHERE user_id=?1",
+            [other.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("staged row");
+    assert_eq!(staged, 1);
 }

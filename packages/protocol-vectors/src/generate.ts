@@ -431,6 +431,12 @@ export async function identityVectors() {
       user_id: hex(userId),
       umk_pub: hex(umk.publicKey),
       cases: attestations,
+      // Wire forms a decoder must refuse: version 2, kind 2, and a well-formed attestation with a trailing byte.
+      rejects: [
+        { name: 'version 2', attestation: hex(encode([2, kindKeyId, 0, fill(64, 0x01)])) },
+        { name: 'kind 2', attestation: hex(encode([1, kindKeyId, 2, fill(64, 0x01)])) },
+        { name: 'trailing byte', attestation: hex(new Uint8Array([...encode([1, kindKeyId, 0, fill(64, 0x01)]), 0])) },
+      ],
     },
   };
 }

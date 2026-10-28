@@ -524,6 +524,14 @@ func (d Deps) GetDeviceList(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
+		// A tombstoned account's UMK is purged (zeroed), so an attestation over it could never
+		// verify against the UMK a client pinned: none is served (fix round 1). A client that
+		// verified one before keeps it (a non-verifying one never replaces it); one that never did
+		// leaves the deleted account's remaining leaves pending until their Removes land.
+		if account.DeletedAt != nil {
+			d.write(w, r, http.StatusOK, head)
+			return
+		}
 		attestation, err := AccountKindAttestation(d.SignAccountKind, d.Instance.InstanceID, d.Instance.ExternalSenderKeyID, account)
 		if err != nil {
 			d.logf(r, "api: account-kind attestation", "err", err)

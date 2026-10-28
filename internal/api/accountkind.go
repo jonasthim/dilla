@@ -60,30 +60,3 @@ func AccountKindAttestation(sign func([]byte) ([]byte, error), instanceID, keyID
 	}
 	return cborx.Marshal([]any{uint64(1), keyID[:], uint64(user.Kind), sig})
 }
-
-// VerifyAccountKindAttestation decodes and verifies an attestation for one account against the
-// instance's external-sender public key, returning the attested kind. It is the check a client
-// makes, kept here for the server's own tests and tools.
-func VerifyAccountKindAttestation(pub ed25519.PublicKey, instanceID, userID id.ID, umkPub, attestation []byte) (uint8, error) {
-	var a struct {
-		_     struct{} `cbor:",toarray"`
-		V     uint64
-		KeyID []byte
-		Kind  uint64
-		Sig   []byte
-	}
-	if err := cborx.Unmarshal(attestation, &a); err != nil {
-		return 0, err
-	}
-	if a.V != 1 || len(a.KeyID) != id.Size || a.Kind > 1 || len(a.Sig) != ed25519.SignatureSize || len(pub) != ed25519.PublicKeySize {
-		return 0, errors.New("api: malformed account-kind attestation")
-	}
-	message, err := AccountKindMessage(instanceID, userID, umkPub, uint8(a.Kind))
-	if err != nil {
-		return 0, err
-	}
-	if !ed25519.Verify(pub, message, a.Sig) {
-		return 0, errors.New("api: account-kind attestation does not verify")
-	}
-	return uint8(a.Kind), nil
-}

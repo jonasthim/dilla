@@ -743,6 +743,25 @@ pub fn run_identity() -> SuiteReport {
             "verified",
             if verified { "verified" } else { "rejected" },
         ));
+        // The decoded form re-encodes to the same bytes (deterministic CBOR, no lenient decode).
+        cases.push(CaseReport::compare(
+            "account_kind",
+            "reencode",
+            expect_str(&case["attestation"]),
+            decoded.map(|a| hex(&a.encode())).unwrap_or_default(),
+        ));
+    }
+    for reject in ak["rejects"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let refused = crate::identity::AccountKindAttestation::decode(&unhex(
+            reject["attestation"].as_str().unwrap_or(""),
+        ))
+        .is_err();
+        cases.push(CaseReport::compare(
+            "account_kind",
+            "reject",
+            "refused",
+            if refused { "refused" } else { "accepted" },
+        ));
     }
 
     SuiteReport {

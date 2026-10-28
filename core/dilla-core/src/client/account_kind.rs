@@ -30,6 +30,10 @@ use rusqlite::{OptionalExtension, params};
 /// "attestation seen" flag; a store holds one instance's identity).
 pub(super) const ACCOUNT_KIND_SEEN: &str = "account_kind_seen";
 
+/// `app_account_kinds` holds one verified attestation per user (verified at ingest against the
+/// pinned instance key and the user's validated UMK, and again per leaf). `app_account_kind_staged`
+/// holds the one offered for a user this client has no pin for yet: `ingest_leaf` verifies it against
+/// the UMK the history it validates establishes, in the same unit, before it judges the user's leaves.
 pub(super) const ACCOUNT_KINDS_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS app_account_kinds (
   user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
@@ -38,6 +42,10 @@ CREATE TABLE IF NOT EXISTS app_account_kinds (
   signature BLOB NOT NULL CHECK(length(signature)=64),
   instance_key BLOB NOT NULL CHECK(length(instance_key)=32),
   instance_id BLOB NOT NULL CHECK(length(instance_id)=16)
+);
+CREATE TABLE IF NOT EXISTS app_account_kind_staged (
+  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+  attestation BLOB NOT NULL CHECK(length(attestation)>0)
 );
 ";
 
@@ -115,12 +123,112 @@ pub(super) fn leaf_kind_verdict(
     })
 }
 
+/// Whether `attestation` is the pinned instance's statement about `user` under one of `umks`.
+fn verifies(
+    key: &[u8; 32],
+    instance: &[u8; 16],
+    user: &[u8; 16],
+    umks: &[[u8; 32]],
+    a: &AccountKindAttestation,
+) -> bool {
+    let Ok(k) = VerifyingKey::from_bytes(key) else {
+        return false;
+    };
+    let sig = Signature::from_bytes(&a.signature);
+    umks.iter().any(|umk| {
+        k.verify_strict(&account_kind_message(instance, user, umk, a.kind), &sig)
+            .is_ok()
+    })
+}
+
+/// The outcome of offering an attestation for storage.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Promotion {
+    /// Stored (or already stored): `changed` says the row or the "seen" flag changed.
+    Stored { changed: bool },
+    /// It does not verify: nothing stored, and a verifying row already held is kept.
+    Refused,
+}
+
+/// Store `a` for `user` if it verifies under the pinned instance key over one of `umks`; set the
+/// "seen" flag only then. A verifying row is never replaced by one that does not verify (a refused
+/// one changes nothing), and an identical one is no write (I1: no generation bump).
+pub(super) fn promote(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+    a: &AccountKindAttestation,
+    umks: &[[u8; 32]],
+) -> Result<Promotion, StorageError> {
+    let Some((key, instance)) = pinned_instance(c)? else {
+        return Ok(Promotion::Refused);
+    };
+    if !verifies(&key, &instance, user, umks, a) {
+        return Ok(Promotion::Refused);
+    }
+    let held: Option<StoredAttestation> = c
+        .query_row(
+            "SELECT kind,signature,instance_key,instance_id FROM app_account_kinds WHERE user_id=?1",
+            [user.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let same = held.is_some_and(|(kind, sig, k, i)| {
+        kind == i64::from(a.kind) && sig == a.signature && k == key && i == instance
+    });
+    let mut changed = false;
+    if !same {
+        c.execute(
+            "INSERT INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id) \
+             VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET kind=excluded.kind, \
+             key_id=excluded.key_id,signature=excluded.signature,instance_key=excluded.instance_key, \
+             instance_id=excluded.instance_id",
+            params![
+                user.as_slice(),
+                i64::from(a.kind),
+                a.key_id.as_slice(),
+                a.signature.as_slice(),
+                key.as_slice(),
+                instance.as_slice()
+            ],
+        )?;
+        changed = true;
+    }
+    if schema::meta_get(c, ACCOUNT_KIND_SEEN)?.is_none() {
+        schema::meta_put(c, ACCOUNT_KIND_SEEN, &[1])?;
+        changed = true;
+    }
+    Ok(Promotion::Stored { changed })
+}
+
+/// The attestation staged for `user` (offered before this client held a pin for it), removed.
+pub(super) fn take_staged(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Option<AccountKindAttestation>, StorageError> {
+    let raw: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT attestation FROM app_account_kind_staged WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if raw.is_some() {
+        c.execute(
+            "DELETE FROM app_account_kind_staged WHERE user_id=?1",
+            [user.as_slice()],
+        )?;
+    }
+    Ok(raw.and_then(|b| AccountKindAttestation::decode(&b).ok()))
+}
+
 impl ClientCore {
-    /// Store the instance's account-kind attestation for `user_id` (the fifth element of a wire-4
-    /// device-list head) before that user's signed history is ingested. Its signature is checked
-    /// against each leaf's UMK when the leaf is judged; here only its shape and the pinned key are.
-    /// Storing one records that this client has seen an attestation from its instance: from then
-    /// on, a user without one is untrusted.
+    /// Offer the instance's account-kind attestation for `user_id` (the fifth element of a wire-4
+    /// device-list head) before that user's signed history is ingested. It is verified before it is
+    /// stored (fix round 1, M1): against the pinned instance key and the user's pinned UMK (or a
+    /// pending changed one) when this client holds a pin; for a user it has no pin for yet, it is
+    /// staged and `ingest_leaf` verifies it against the UMK the validated history establishes. A
+    /// verified one sets the "attestation seen" flag; one that does not verify is refused
+    /// (`E_CORE_INPUT`) and never replaces a verifying one.
     pub fn account_kind_ingest(
         &mut self,
         user_id: &[u8; 16],
@@ -132,31 +240,52 @@ impl ClientCore {
         // A malformed attestation is the server's input error (E_CORE_INPUT), never E_CREDENTIAL:
         // that code is the leaf verdict of a verified attestation of another kind, and a server must
         // not be able to steer a client into showing it.
-        let attestation = AccountKindAttestation::decode(attestation)
+        let decoded = AccountKindAttestation::decode(attestation)
             .map_err(|_| ClientError::new(E_CORE_INPUT, "malformed account-kind attestation"))?;
         self.write(|_, u| {
-            let (key, instance) = u.with_conn(pinned_instance)?.ok_or_else(|| {
-                ClientError::new(E_CORE_STATE, "instance signing key is not pinned")
+            if u.with_conn(pinned_instance)?.is_none() {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "instance signing key is not pinned",
+                ));
+            }
+            let pin: Option<(Vec<u8>, Option<Vec<u8>>)> = u.with_conn(|c| {
+                c.query_row(
+                    "SELECT umk_pub,changed_umk FROM app_trust_pins WHERE user_id=?1",
+                    [user_id.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(Into::into)
             })?;
-            u.with_conn(|c| {
-                c.execute(
-                    "INSERT INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id) \
-                     VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET kind=excluded.kind, \
-                     key_id=excluded.key_id,signature=excluded.signature,instance_key=excluded.instance_key, \
-                     instance_id=excluded.instance_id",
-                    params![
-                        user_id.as_slice(),
-                        i64::from(attestation.kind),
-                        attestation.key_id.as_slice(),
-                        attestation.signature.as_slice(),
-                        key.as_slice(),
-                        instance.as_slice()
-                    ],
-                )?;
-                schema::meta_put(c, ACCOUNT_KIND_SEEN, &[1])?;
-                super::trust::bump_generation(c)
-            })?;
-            Ok(())
+            let Some((umk, changed)) = pin else {
+                u.with_conn(|c| {
+                    c.execute(
+                        "INSERT INTO app_account_kind_staged(user_id,attestation) VALUES(?1,?2) \
+                         ON CONFLICT(user_id) DO UPDATE SET attestation=excluded.attestation",
+                        params![user_id.as_slice(), attestation],
+                    )?;
+                    Ok(())
+                })?;
+                return Ok(());
+            };
+            let umks: Vec<[u8; 32]> = [Some(umk), changed]
+                .into_iter()
+                .flatten()
+                .filter_map(|k| <[u8; 32]>::try_from(k.as_slice()).ok())
+                .collect();
+            match u.with_conn(|c| promote(c, user_id, &decoded, &umks))? {
+                Promotion::Refused => Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "account-kind attestation does not verify",
+                )),
+                Promotion::Stored { changed } => {
+                    if changed {
+                        u.with_conn(super::trust::bump_generation)?;
+                    }
+                    Ok(())
+                }
+            }
         })
     }
 

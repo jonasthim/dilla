@@ -25,7 +25,10 @@ pub struct AccountKindAttestation {
 
 impl AccountKindAttestation {
     /// Every shape failure (a version other than 1, a kind other than 0 or 1, a wrong length,
-    /// trailing bytes, a non-minimal encoding) is `E_CREDENTIAL`.
+    /// trailing bytes, a non-minimal encoding) is `ProtocolError::Credential`; the client maps it
+    /// to `E_CORE_INPUT` (`client::account_kind`), never to the leaf verdict `E_CREDENTIAL`.
+    /// `key_id` is carried but bound by nothing the signature covers: it names which instance key
+    /// signed for diagnostics only and must not be trusted for key rotation.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
         let (v, key_id, kind, signature) = decode_strict(bytes, |d| {
             d.array(4)?;

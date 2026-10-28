@@ -202,9 +202,15 @@ the same bytes on every read and the instance signs it when served, for every ac
 (those created before wire 4 included), with nothing stored. It travels as the fifth element of the
 `GET /v1/users/{user_id}/device-list` head on a wire-4 session (`09` § Accounts and devices).
 
-A client stores the attestation of each user it ingests a device list for (one per user) and,
-**in addition to** the rules of § Credential, judges every leaf of that user against it, with the
-leaf's own `umk_pub`, its pinned instance key and its own `instance_id`:
+A client verifies an attestation **before it stores it**: under its pinned instance key and its own
+`instance_id`, over the user's pinned UMK (or a pending changed one). For a user it holds no pin for
+yet, it keeps the attestation aside and verifies it in the same step that validates the user's signed
+history and pins the UMK that history establishes, before it judges that user's leaves. One that does
+not verify is refused and stored nowhere; it never replaces a stored attestation that verified, and it
+never sets the "attestation seen" flag, which only a verified attestation sets. A client then
+stores one attestation per user and, **in addition to** the rules of § Credential, judges every leaf
+of that user against it again, with the leaf's own `umk_pub`, its pinned instance key and its own
+`instance_id`:
 
 - the signature verifies and `kind` equals the credential's `kind`: the leaf passes;
 - the signature verifies and `kind` differs: the leaf fails with `E_CREDENTIAL` (a member whose
@@ -214,6 +220,15 @@ leaf's own `umk_pub`, its pinned instance key and its own `instance_id`:
 - no attestation: once the client has stored **any** attestation from its instance (the per-instance
   "attestation seen" flag), the leaf stays pending; before that, the earlier rule applies (the
   credential's kind is not checked by the core).
+
+A tombstoned account (`DELETE /v1/accounts/me`) has its UMK purged, so an attestation over it
+could never verify; the instance serves none for it (its wire-4 head is the four elements). A
+client that verified the account's attestation before the deletion keeps it, so the account's
+remaining leaves keep their verdict until the deletion's `Remove`s land; a client that never did
+leaves them pending.
+
+`key_id` names the external-sender key that signed, for diagnostics; nothing the signature covers
+binds it, so it must not be trusted to select or rotate keys.
 
 The flag is one-way: a client that has seen wire 4 from its instance never again accepts a leaf
 without an attestation, whatever version a later session negotiates, and a store holding it cannot

@@ -32,7 +32,7 @@ import {
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
+import { chainRow, historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -4136,7 +4136,7 @@ export class Controller {
       if (list === null) throw new Error('E_NO_BACKUP');
       const now = this.nowS();
       const sign = (stateSealed: Uint8Array): SignedLists =>
-        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: list.raw, deviceIds: ids, now });
+        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: chainRow(list.raw), deviceIds: ids, now });
       let signed: SignedLists;
       try {
         try {

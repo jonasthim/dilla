@@ -287,6 +287,7 @@ const CASES: Case[] = [
     method: 'GET', path: `/v1/users/${hex(USER)}/device-list`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [1, BLOB, SIG, ZERO32]), expected: { version: 1n, blob: BLOB, raw: encode([1, BLOB, SIG, ZERO32]) },
   },
+
   {
     name: 'getDeviceList answers null for a 404', call: (r) => r.getDeviceList(USER),
     method: 'GET', path: `/v1/users/${hex(USER)}/device-list`, bucket: 'read', idempotent: true, auth: true, sent: null,
