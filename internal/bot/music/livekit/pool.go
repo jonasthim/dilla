@@ -373,6 +373,29 @@ func (p *Pool) lifecycleError(fallback error) error {
 	return fallback
 }
 
+// ErrPoolIdle is the reason a room was left because nothing played for the idle-leave time.
+var ErrPoolIdle = errors.New("music room left after idle timeout")
+
+// LeaveIdle disconnects a retained room that has no active or starting track (Task 10c: the
+// Music page's "Leave voice when idle"). The next explicit Start connects a fresh room; automatic
+// EOF advancement cannot, exactly as after any other disconnect. A busy, connecting or already
+// empty pool is left alone.
+func (p *Pool) LeaveIdle() error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrPoolClosed
+	}
+	if p.dead || p.connection == nil || p.active != nil || p.connecting || p.connectDone != nil || p.startDone != nil {
+		p.mu.Unlock()
+		return nil
+	}
+	gen := p.generation
+	p.mu.Unlock()
+	p.markDead(gen, ErrPoolIdle)
+	return p.Reset()
+}
+
 // Reset is deliberately a no-op while the room is healthy. A dead or expired
 // room is fully torn down before the next explicit Start may connect again.
 func (p *Pool) Reset() error {

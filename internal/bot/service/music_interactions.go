@@ -70,6 +70,9 @@ type MusicInteractions struct {
 	// commit. startPlayback is true for an explicit Resume or for a Skip that
 	// advances an already-playing queue.
 	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error)
+	// DefaultVolume is the installation's Music page default (Task 10c). A new session, a track
+	// enqueued while nothing is playing or queued, starts at it. Nil keeps the queue's volume.
+	DefaultVolume func() uint8
 }
 
 func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -232,7 +235,14 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		opValue.Enabled = !snapshot.State.Shuffle
 	}
 	opValue.NowMS = h.clock().UnixMilli()
-	next, err := music.Apply(snapshot.State, snapshot.Revision, opValue)
+	base := snapshot.State
+	if (op == protocol.OpMusicEnqueue) && h.DefaultVolume != nil && base.Current == nil && len(base.Queue) == 0 {
+		// A new session: nothing plays and nothing waits, so the default volume applies.
+		if v := h.DefaultVolume(); v >= 1 && v <= 100 {
+			base.Volume = v
+		}
+	}
+	next, err := music.Apply(base, snapshot.Revision, opValue)
 	if errors.Is(err, music.ErrRevisionConflict) {
 		return InteractionResult{Status: interactionStatusConflict}, nil
 	}

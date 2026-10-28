@@ -19,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 const utilityPollSendPermission = uint64(api.PermViewChannel | api.PermSendMessages | api.PermReadHistory)
@@ -452,6 +453,27 @@ func newUtilityRuntime(n *native.Client, session *client.Session, authority *cli
 	reminderStore := reminders.NewStore(n, binding, now)
 	return &utilityRuntime{polls: service.PollInteractions{Store: pollStore, Authority: actor, CommunityID: community, Now: now, Publisher: publisher}, reminders: service.ReminderInteractions{Store: reminderStore, Authority: actor, CommunityID: community, Now: now}}, nil
 }
+
+// gateCreation makes poll and reminder creation read the installation's current capability bit
+// on every create (Task 10c): switching Polls or Reminders off takes effect at once, not at the
+// next reconcile.
+func (u *utilityRuntime) gateCreation(current func(context.Context) (uint16, error)) {
+	if u == nil || current == nil {
+		return
+	}
+	gate := func(bit uint16) func(context.Context) (bool, error) {
+		return func(ctx context.Context) (bool, error) {
+			caps, err := current(ctx)
+			if err != nil {
+				return false, err
+			}
+			return caps&bit != 0, nil
+		}
+	}
+	u.polls.CreateEnabled = gate(service.CommandCapPolls)
+	u.reminders.CreateEnabled = gate(service.CommandCapReminders)
+}
+
 func (u *utilityRuntime) handlers() map[protocol.Operation]service.InteractionHandlerSpec {
 	if u == nil {
 		return nil
@@ -478,7 +500,7 @@ func (u *utilityRuntime) maintain(ctx context.Context) error {
 	}
 	return errors.Join(errs...)
 }
-func addCapabilityDiscoveryHandler(handlers map[protocol.Operation]service.InteractionHandlerSpec, session *client.Session, community, installation, botUser id.ID, capabilities uint8) {
+func addCapabilityDiscoveryHandler(handlers map[protocol.Operation]service.InteractionHandlerSpec, session *client.Session, community, installation, botUser id.ID, capabilities uint16) {
 	if handlers == nil || session == nil || community.IsZero() || installation.IsZero() || botUser.IsZero() {
 		return
 	}
@@ -500,7 +522,7 @@ type runtimeCommandAuthority interface {
 // assembleUtilityInteractionHandlers is the production assembly seam shared by
 // main.go and the dispatcher integration test. Capability discovery is derived
 // only after utility handlers have joined the actual handler map.
-func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint8) map[protocol.Operation]service.InteractionHandlerSpec {
+func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint16) map[protocol.Operation]service.InteractionHandlerSpec {
 	handlers := make(map[protocol.Operation]service.InteractionHandlerSpec, len(existing)+12)
 	for op, handler := range existing {
 		handlers[op] = handler
@@ -523,9 +545,9 @@ func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.
 }
 
 func newRuntimeUtilityDispatcher(nativeBoundary service.InteractionNative, handlers map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint64, now func() uint64, snapshots service.InteractionSnapshotProvider) (*service.InteractionDispatcher, error) {
-	if capabilities > 255 {
-		return nil, errors.New("utility capabilities exceed the wire byte range")
+	if capabilities > uint64(store.BotKnownCapabilities) {
+		return nil, errors.New("utility capabilities exceed the known capability mask")
 	}
-	assembled := assembleUtilityInteractionHandlers(handlers, utilities, authority, community, installation, botUser, uint8(capabilities))
+	assembled := assembleUtilityInteractionHandlers(handlers, utilities, authority, community, installation, botUser, uint16(capabilities))
 	return service.NewInteractionDispatcherWithSnapshots(nativeBoundary, assembled, now, snapshots)
 }

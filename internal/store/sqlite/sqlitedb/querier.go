@@ -418,11 +418,14 @@ type Querier interface {
 	RaisePrunedBelow(ctx context.Context, arg RaisePrunedBelowParams) error
 	RecordLoginAttempt(ctx context.Context, arg RecordLoginAttemptParams) error
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
+	RequestBotRestart(ctx context.Context, arg RequestBotRestartParams) (int64, error)
 	RevokeBotRuntime(ctx context.Context, arg RevokeBotRuntimeParams) (int64, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
 	RotateBotRuntime(ctx context.Context, arg RotateBotRuntimeParams) (int64, error)
 	SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error)
+	SetBotMusicSettings(ctx context.Context, arg SetBotMusicSettingsParams) (int64, error)
+	SetBotRuntimeStatus(ctx context.Context, arg SetBotRuntimeStatusParams) (int64, error)
 	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error

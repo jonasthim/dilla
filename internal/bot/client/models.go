@@ -19,6 +19,13 @@ type Installation struct {
 	State, Revision         uint64
 	BotUser, BotDevice      *id.ID
 	Capabilities, UpdatedAt uint64
+	// Task 10c, present only when the server answered the widened shape (Widened): the manager's
+	// restart request counter and the last one this installation's runtime finished, the version
+	// the runtime last reported, and the Music page's defaults.
+	Widened                          bool
+	RestartRequested, RestartHandled uint64
+	RuntimeVersion                   *string
+	MusicVolume, MusicIdleMinutes    uint64
 }
 
 // KeyPackagePublicationReceipt is the installation's historical acceptance result. It does not

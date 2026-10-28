@@ -129,6 +129,12 @@ type BotInstallations struct {
 	Created              int64
 	Updated              int64
 	RemovedAt            sql.NullInt64
+	FeatureCapabilities  int64
+	MusicVolume          int64
+	MusicIdleMinutes     int64
+	RestartRequested     int64
+	RestartHandled       int64
+	RuntimeVersion       sql.NullString
 }
 
 type BotInteractionEligibilityRevisions struct {

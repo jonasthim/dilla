@@ -209,7 +209,10 @@ a second factor.
 | `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |
-| `GET /v1/bot-runtime/installations` | R | — | `[installations]`; at most 100, after cursor is an installation id |
+| `POST /v1/communities/{community}/bot/restart` | E (human, manage_community, wire v3) | `[installation_id]` | `[restart_requested,restart_handled]`; coalesces while a request is pending; audited (protocol/10 § Restart) |
+| `PUT /v1/communities/{community}/bot/music-settings` | E (human, manage_community, wire v3) | `[installation_id,volume,idle_minutes]` | widened installation; volume 25/50/75/100, idle 5/15/30 minutes |
+| `GET /v1/bot-runtime/installations` | R | — | `[installations]`; at most 100, after cursor is an installation id; `v=2` returns the widened installation (protocol/10) |
+| `PUT /v1/bot-runtime/installations/{installation}/status` | R (owning runtime) | `[version\|null,restart_handled]` | 204 |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation,claim_id,claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R | `[request_id,claim_id,umk_pub,ssk_pub,sig_umk_ssk,device]` | `[bot_user,bot_device,username]`; no bearer token |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B (enrolling; completed retries in joining/ready) | `[request_id,expected_revision,credential]` | installation |

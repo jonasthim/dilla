@@ -164,6 +164,10 @@ func (r *Runtime) ListInstallationsPage(ctx context.Context, after *id.ID) ([]In
 		}
 		q.Set("after", s)
 	}
+	// v=2 (Task 10c): the widened installation with the full capability mask, the restart
+	// counters, the reported version and the music defaults. A server that predates it ignores
+	// the parameter and answers the eight base fields, which still parse.
+	q.Set("v", "2")
 	raw, _, err := r.c.do(ctx, r.token, http.MethodGet, "bot-runtime/installations", q, nil, MaxSmallBody, false)
 	if err != nil {
 		return nil, err
@@ -179,7 +183,7 @@ func (r *Runtime) ListInstallationsPage(ctx context.Context, after *id.ID) ([]In
 	var prev id.ID
 	for i, v := range a {
 		row, ok := v.([]any)
-		if !ok || len(row) != 8 {
+		if !ok || len(row) != 8 && len(row) != 13 {
 			return nil, ErrProtocol
 		}
 		out[i], err = parseInstallation(row)
@@ -258,7 +262,52 @@ func parseInstallation(a []any) (Installation, error) {
 	if x.UpdatedAt, ok = asUint(a[7]); !ok {
 		return x, ErrProtocol
 	}
+	if len(a) == 8 {
+		return x, nil
+	}
+	if len(a) != 13 {
+		return x, ErrProtocol
+	}
+	x.Widened = true
+	if x.RestartRequested, ok = asUint(a[8]); !ok {
+		return x, ErrProtocol
+	}
+	if x.RestartHandled, ok = asUint(a[9]); !ok || x.RestartHandled > x.RestartRequested {
+		return x, ErrProtocol
+	}
+	if a[10] != nil {
+		version, ok := a[10].(string)
+		if !ok || version == "" || len(version) > 32 {
+			return x, ErrProtocol
+		}
+		x.RuntimeVersion = &version
+	}
+	if x.MusicVolume, ok = asUint(a[11]); !ok {
+		return x, ErrProtocol
+	}
+	if x.MusicIdleMinutes, ok = asUint(a[12]); !ok {
+		return x, ErrProtocol
+	}
 	return x, nil
+}
+
+// ReportStatus tells the server, for one installation this runtime owns, the runtime's build
+// version and the last restart request it has finished (Task 10c). version nil reports none.
+func (r *Runtime) ReportStatus(ctx context.Context, installation id.ID, version *string, handled uint64) error {
+	i, err := pathID(installation)
+	if err != nil {
+		return err
+	}
+	var v any
+	if version != nil {
+		v = *version
+	}
+	body, err := encode([]any{v, handled})
+	if err != nil {
+		return err
+	}
+	_, _, err = r.c.do(ctx, r.token, http.MethodPut, "bot-runtime/installations/"+i+"/status", nil, body, MaxSmallBody, true)
+	return err
 }
 func (r *Runtime) Claim(ctx context.Context, installation, request id.ID) (Claim, error) {
 	c, _, err := r.ClaimObserved(ctx, installation, request)

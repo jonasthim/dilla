@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	musicBotCapability     uint8  = 1 << 0 // bot_installations capability bit 0
+	musicBotCapability     uint16 = 1 << 0 // bot_installations capability bit 0
 	musicPermissionConnect uint64 = 1 << 7
 	musicPermissionSpeak   uint64 = 1 << 8
 )

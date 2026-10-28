@@ -29,7 +29,15 @@ const (
 	botCapRemoval
 	botCapKick
 	botCapBan
+	// botCapPolls and botCapReminders (Task 10c) gate creating polls and reminders; existing
+	// polls and reminders keep working with the bit off. They need no community permission.
+	botCapPolls
+	botCapReminders
 	botKnownCaps = botCapMusic | botCapWelcome | botCapRoles | botCapAnnouncements |
+		botCapWarnings | botCapRemoval | botCapKick | botCapBan | botCapPolls | botCapReminders
+	// botLegacyCaps is the original capability byte: what a runtime that does not ask for the
+	// widened installation shape (GET /v1/bot-runtime/installations without v=2) is shown.
+	botLegacyCaps = botCapMusic | botCapWelcome | botCapRoles | botCapAnnouncements |
 		botCapWarnings | botCapRemoval | botCapKick | botCapBan
 	maxBotRuntimeBody      = 16 << 10
 	botRestrictedBits Bits = PermAdministrator | PermManageRoles | PermManageCommunity
@@ -135,6 +143,7 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	d.registerBotWarningReceipt(m)
 	d.registerBotInteractionAdmissions(m)
 	registerBotSpotifyAttempt(m, d)
+	registerBotSettings(m, d)
 }
 
 func botInstallationValue(row store.BotInstallationRow) ([]any, error) {
@@ -151,6 +160,17 @@ func botInstallationValue(row store.BotInstallationRow) ([]any, error) {
 	}
 	return []any{row.ID, row.CommunityID, uint64(row.State), row.Revision, user, device,
 		uint64(row.Capabilities), updated}, nil
+}
+
+// writeRuntimeBotInstallation answers a Bot session's credential and ready mutations with the
+// eight base fields and the original capability byte, the shape every runtime parses.
+func (d Deps) writeRuntimeBotInstallation(w http.ResponseWriter, r *http.Request, status int, row store.BotInstallationRow) {
+	value, err := botRuntimeInstallationValue(row, false)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, status, value)
 }
 
 func (d Deps) writeBotInstallation(w http.ResponseWriter, r *http.Request, status int, row store.BotInstallationRow) {
@@ -216,7 +236,14 @@ func (d Deps) GetBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.writeBotInstallation(w, r, http.StatusOK, row)
+	// The manager's read is the widened shape (Task 10c): restart counters, the runtime's
+	// version and the music defaults follow the eight base fields.
+	value, err := botInstallationValueV2(row)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, value)
 }
 
 func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +262,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if req.RequestID.IsZero() || req.Capabilities > math.MaxUint8 || req.Capabilities&^botKnownCaps != 0 {
+	if req.RequestID.IsZero() || req.Capabilities&^botKnownCaps != 0 {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "invalid request id or capability mask"))
 		return
 	}
@@ -285,7 +312,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if err := requireBotWire(s.WireVersion); err != nil {
 				return err
 			}
-			capabilities, ok := checkedUint8(req.Capabilities)
+			capabilities, ok := checkedUint16(req.Capabilities)
 			if !ok {
 				return server.Errorf(server.CodeInvalidRequest, "invalid capability mask")
 			}
@@ -307,7 +334,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if req.ExpectedRevision == nil || *req.ExpectedRevision != current.Revision {
 				return botConflict("installation revision changed")
 			}
-			capabilities, ok := checkedUint8(req.Capabilities)
+			capabilities, ok := checkedUint16(req.Capabilities)
 			if !ok {
 				return server.Errorf(server.CodeInvalidRequest, "invalid capability mask")
 			}
@@ -447,7 +474,7 @@ func botRoleBits(caps uint64, ceiling Bits) Bits {
 	return bits & ceiling &^ (PermAdministrator | PermManageRoles | PermManageCommunity)
 }
 
-func approvedBotModeratorBits(caps uint8) Bits {
+func approvedBotModeratorBits(caps uint16) Bits {
 	var bits Bits
 	if uint64(caps)&botCapRemoval != 0 {
 		bits |= PermManageMessages
@@ -555,10 +582,10 @@ func decodeBotInstallationResult(raw []byte, row *store.BotInstallationRow) erro
 		return store.ErrConflict
 	}
 	caps, ok := v[6].(uint64)
-	if !ok || caps > 255 {
+	if !ok || caps&^botKnownCaps != 0 {
 		return store.ErrConflict
 	}
-	row.Capabilities = uint8(caps)
+	row.Capabilities = uint16(caps) //nolint:gosec // G115: checked against botKnownCaps (10 bits) above
 	updated, ok := v[7].(uint64)
 	updatedInt64, inRange := checkedInt64(updated)
 	if !ok || !inRange {
@@ -797,6 +824,10 @@ func (d Deps) ListRuntimeInstallations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// v=2 (Task 10c) asks for the widened installation: the full capability mask plus the restart
+	// counters, the reported version and the music defaults. Without it a runtime gets the eight
+	// base fields with the original capability byte.
+	widened := r.URL.Query().Get("v") == "2"
 	rows, err := d.Repo.ListBotInstallationsForRuntime(r.Context(), runtimeID, after, 100)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
@@ -804,7 +835,7 @@ func (d Deps) ListRuntimeInstallations(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]any, len(rows))
 	for i, row := range rows {
-		value, err := botInstallationValue(row)
+		value, err := botRuntimeInstallationValue(row, widened)
 		if err != nil {
 			server.WriteError(w, d.storeError(r, err))
 			return
@@ -1239,7 +1270,7 @@ func (d Deps) FinalizeBotCredential(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.writeBotInstallation(w, r, http.StatusOK, row)
+	d.writeRuntimeBotInstallation(w, r, http.StatusOK, row)
 }
 
 func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
@@ -1392,7 +1423,7 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.writeBotInstallation(w, r, http.StatusOK, row)
+	d.writeRuntimeBotInstallation(w, r, http.StatusOK, row)
 }
 
 func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store.BotInstallationRow) (bool, []id.ID, error) {

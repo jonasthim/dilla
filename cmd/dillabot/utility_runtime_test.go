@@ -628,7 +628,8 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	}}
 	expected := native.InteractionGroupExpected{Instance: state.binding.Instance, Installation: installation, Community: community, BotUser: bot, BotDevice: utilityID(14), ParticipantUser: actor, ParticipantDevice: device, Group: dmGroup, PolicyVersion: 1}
 	snapshotProvider := &utilityIntegrationSnapshot{expected: expected}
-	dispatcher, err := newRuntimeUtilityDispatcher(nativeBoundary, base, utilities, session, community, installation, bot, 1, func() uint64 { return uint64(now.Unix()) }, snapshotProvider)
+	// Music plus Polls and Reminders (Task 10c bits 8 and 9).
+	dispatcher, err := newRuntimeUtilityDispatcher(nativeBoundary, base, utilities, session, community, installation, bot, 1|1<<8|1<<9, func() uint64 { return uint64(now.Unix()) }, snapshotProvider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +787,7 @@ func hasOperation(operations []any, want protocol.Operation) bool {
 }
 
 func TestRuntimeUtilityDispatcherRejectsOverflowCapabilities(t *testing.T) {
-	if _, err := newRuntimeUtilityDispatcher(nil, nil, nil, nil, utilityID(1), utilityID(2), utilityID(3), 256, nil, nil); err == nil {
+	if _, err := newRuntimeUtilityDispatcher(nil, nil, nil, nil, utilityID(1), utilityID(2), utilityID(3), 1024, nil, nil); err == nil {
 		t.Fatal("oversized capabilities were truncated")
 	}
 }

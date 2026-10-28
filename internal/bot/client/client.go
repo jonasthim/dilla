@@ -543,6 +543,9 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "ready" && method == http.MethodPost {
 			return 200, true
 		}
+		if len(parts) == 4 && parts[3] == "status" && method == http.MethodPut {
+			return 204, true
+		}
 		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodPost {
 			return 201, true
 		}

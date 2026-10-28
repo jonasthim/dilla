@@ -90,7 +90,7 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 		if err != nil || installation.ID != installationID || installation.State != store.BotInstallationReady ||
 			installation.RemovedAt != nil || installation.UserID == nil || *installation.UserID != s.UserID ||
 			installation.DeviceID == nil || *installation.DeviceID != s.DeviceID ||
-			installation.Capabilities&uint8(botCapWarnings) == 0 || s.Bot.Capabilities&uint8(botCapWarnings) == 0 {
+			installation.Capabilities&uint16(botCapWarnings) == 0 || s.Bot.Capabilities&uint16(botCapWarnings) == 0 {
 			return server.Errorf(server.CodeForbidden, "ready warning-capable Bot installation required")
 		}
 		prior, priorErr := tx.GetBotOperation(r.Context(), communityID, req.RequestID)

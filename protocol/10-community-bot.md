@@ -943,12 +943,53 @@ capability's corresponding permission and role ceiling. A bit alone never grants
 new authority to the runtime or bot account.
 
 Capabilities are a uint bitmask: bit0 music,1 welcomes,2 roles,3 announcements,
-4 warnings/timeouts,5 message removal,6 kick,7 ban. Unknown bits fail. Enabled
-capabilities are approved constraints in addition to normal current permissions.
-Default automation actions are log-only; automatic bans are unavailable.
+4 warnings/timeouts,5 message removal,6 kick,7 ban, 8 polls, 9 reminders. Unknown
+bits fail. Enabled capabilities are approved constraints in addition to normal
+current permissions. Default automation actions are log-only; automatic bans are
+unavailable. Polls and reminders (bits 8 and 9) need no community permission and
+gate only creation (`poll.create`, op 70, and `reminder.create`, op 80): with the
+bit off, op 3 omits the create operation, so `/poll` or `/remind` leaves the
+picker, and the Bot refuses a create with status 5 after reading the
+installation's current mask. Every other poll and reminder operation stays:
+existing polls can still be voted on and closed, and members still list, cancel,
+dismiss and receive due reminders. Installations from before the bits existed
+have both on (migration 00050), which is how they behaved.
 
 `installation = [installation_id, community_id, state, revision, bot_user|null,
  bot_device|null, capabilities, updated_at]`; state uses the structural event enum.
+The manager's read (`GET /v1/communities/{community}/bot`) and a runtime that asks
+for `GET /v1/bot-runtime/installations?v=2` get the widened installation: those
+eight fields followed by `[restart_requested, restart_handled,
+runtime_version|null, music_volume, music_idle_minutes]`. A runtime that does not
+ask for `v=2`, and every Bot-session credential or ready answer, gets the eight
+fields with only the original capability byte (bits 0..7), which every runtime
+parses.
+
+**Restart.** `POST /v1/communities/{community}/bot/restart` (manage_community)
+counts a restart request on the installation and is audited (`bot.restart`). A
+request while an earlier one is still unhandled joins it, so a double click or
+a repeat restarts once. The runtime sees `restart_requested` above what it last
+honoured on its next poll, tears down everything it holds for the installation
+(native helper, music queues and voice rooms, automatic moderation state,
+gateway connection) and builds them again from durable state. Pending
+interaction results recover through the usual durable outbox. A runtime that
+starts counts any pending request as honoured: starting is the restart. It then
+reports `PUT /v1/bot-runtime/installations/{installation}/status` (R, owning
+runtime) with `[version|null, restart_handled]`: `version` is its build string
+(1..32 of `[0-9A-Za-z.+_-]`), and `restart_handled` is stored as at most
+`restart_requested` and never goes backwards. A runtime that never reports
+leaves `runtime_version` null, and clients show no version.
+
+**Music defaults.** `PUT /v1/communities/{community}/bot/music-settings`
+(manage_community, audited `bot.music_settings`) stores the default volume (25,
+50, 75 or 100) and the idle-leave time (5, 15 or 30 minutes). Installations from
+before them have 100 and 30, which is today's behaviour. The Bot applies them
+and enforces the same options itself: any other value, or a server that does
+not send them, is 100 and 30. A new session (a track enqueued while nothing
+plays or waits) starts at the default volume. Once nothing has played for the
+idle time (paused, stopped or the queue finished), the Bot leaves the voice
+room. Playing again cancels the timer, and the next explicit play reconnects.
+The room's absolute 30-minute connection lifetime still applies.
 A single non-removed installation exists per community; repeat enable with the
 same request id and payload returns the original result. Removed installations
 are never reactivated; a new enable creates a new identity and installation id.
@@ -982,7 +1023,10 @@ restore that right. The music publisher also disables automatic subscriptions.
 | `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
-| `GET /v1/bot-runtime/installations` | R | — | array of installation tuples, at most 100; `after` is last returned installation id |
+| `POST /v1/communities/{community}/bot/restart` | E, manage_community | `[installation_id]` | `[restart_requested, restart_handled]`; 409 for another, disabled or runtime-less installation |
+| `PUT /v1/communities/{community}/bot/music-settings` | E, manage_community | `[installation_id, volume, idle_minutes]` | widened installation; 400 off the options, 409 for another installation |
+| `GET /v1/bot-runtime/installations` | R | — | array of installation tuples, at most 100; `after` is last returned installation id; `v=2` asks for the widened tuple |
+| `PUT /v1/bot-runtime/installations/{installation}/status` | R, owning runtime | `[version|null, restart_handled]` | 204; 404 for an installation this runtime does not own |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation_id, claim_id, claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |

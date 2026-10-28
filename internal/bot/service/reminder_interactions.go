@@ -29,6 +29,10 @@ type ReminderInteractions struct {
 	Authority   ReminderAuthority
 	CommunityID id.ID
 	Now         func() time.Time
+	// CreateEnabled reads the installation's current Reminders capability (bit 9, Task 10c) when
+	// a reminder is created. Off refuses only creation: due reminders are still delivered and
+	// members can list, cancel and dismiss theirs. Nil allows creation.
+	CreateEnabled func(context.Context) (bool, error)
 }
 
 func (h ReminderInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -128,6 +132,15 @@ func (h ReminderInteractions) withVisibleSource(ctx context.Context, actor id.ID
 	return r
 }
 func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {
+	if h.CreateEnabled != nil {
+		enabled, err := h.CreateEnabled(ctx)
+		if err != nil {
+			return InteractionResult{}, err
+		}
+		if !enabled {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+	}
 	if !h.valid(r, protocol.OpReminderCreate, true) || len(r.Args) != 1 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}

@@ -38,6 +38,10 @@ type PollInteractions struct {
 	CommunityID id.ID
 	Now         func() time.Time
 	Publisher   PollPublisher
+	// CreateEnabled reads the installation's current Polls capability (bit 8, Task 10c) when a
+	// poll is created. Off refuses only creation: existing polls stay votable and closable. Nil
+	// allows creation (tests and older wiring).
+	CreateEnabled func(context.Context) (bool, error)
 }
 
 func (h PollInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -197,6 +201,15 @@ func (h PollInteractions) get(ctx context.Context, actor InteractionActor, r pro
 	return InteractionResult{Revision: &rev, Data: data}, nil
 }
 func (h PollInteractions) create(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {
+	if h.CreateEnabled != nil {
+		enabled, err := h.CreateEnabled(ctx)
+		if err != nil {
+			return InteractionResult{}, err
+		}
+		if !enabled {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+	}
 	if !h.validRequest(actor, r, protocol.OpPollCreate, true) || len(r.Args) != 1 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
