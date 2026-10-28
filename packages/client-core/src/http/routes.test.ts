@@ -2037,7 +2037,7 @@ describe('managed community bot installation routes', () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(201, installation));
     await routes.configureBotInstallation(COMMUNITY, USER, null, 1, 'stepup');
-    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
+    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot?v=2` });
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, null, 1, 'stepup'])));
   });
 

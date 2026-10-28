@@ -94,6 +94,27 @@ type botOperationPayload struct {
 	Request      id.ID
 	Revision     *uint64
 	Capabilities uint64
+	// Widened marks a configure request that sent the widened capability mask (PUT ...?v=2,
+	// Task 10c fix round 1). It is omitted when false so a legacy request hashes as it always did.
+	Widened bool `cbor:",omitempty"`
+}
+
+// botPollsReminders are the capability bits a legacy configure request (one without ?v=2) cannot
+// see: such a request keeps them as they are, and a new installation starts with both on.
+const botPollsReminders = botCapPolls | botCapReminders
+
+// effectiveBotCapabilities is the mask a configure request stores. A widened request (?v=2) sets
+// every bit itself. A legacy request (an older web client that knows only the original byte) sets
+// the original eight and keeps Polls and Reminders as they are; a new installation starts with
+// both on, as the prototype shows them.
+func effectiveBotCapabilities(requested uint64, widened bool, current *store.BotInstallationRow) uint64 {
+	if widened {
+		return requested
+	}
+	if current == nil {
+		return requested&botLegacyCaps | botPollsReminders
+	}
+	return requested&botLegacyCaps | uint64(current.Capabilities)&botPollsReminders
 }
 
 // appendBotInstallationEvent runs inside the installation mutation transaction.
@@ -262,7 +283,12 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if req.RequestID.IsZero() || req.Capabilities&^botKnownCaps != 0 {
+	widened := r.URL.Query().Get("v") == "2"
+	known := botKnownCaps
+	if !widened {
+		known = botLegacyCaps
+	}
+	if req.RequestID.IsZero() || req.Capabilities&^known != 0 {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "invalid request id or capability mask"))
 		return
 	}
@@ -275,7 +301,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	semantic := botOperationPayload{Request: req.RequestID, Revision: req.ExpectedRevision, Capabilities: req.Capabilities}
+	semantic := botOperationPayload{Request: req.RequestID, Revision: req.ExpectedRevision, Capabilities: req.Capabilities, Widened: widened}
 	digest := botPayloadHash(semantic)
 	now := d.Clock.Now().Unix()
 	var result store.BotInstallationRow
@@ -312,7 +338,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if err := requireBotWire(s.WireVersion); err != nil {
 				return err
 			}
-			capabilities, ok := checkedUint16(req.Capabilities)
+			capabilities, ok := checkedUint16(effectiveBotCapabilities(req.Capabilities, widened, nil))
 			if !ok {
 				return server.Errorf(server.CodeInvalidRequest, "invalid capability mask")
 			}
@@ -334,7 +360,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if req.ExpectedRevision == nil || *req.ExpectedRevision != current.Revision {
 				return botConflict("installation revision changed")
 			}
-			capabilities, ok := checkedUint16(req.Capabilities)
+			capabilities, ok := checkedUint16(effectiveBotCapabilities(req.Capabilities, widened, &current))
 			if !ok {
 				return server.Errorf(server.CodeInvalidRequest, "invalid capability mask")
 			}

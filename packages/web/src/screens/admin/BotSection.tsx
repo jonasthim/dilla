@@ -31,6 +31,15 @@ const SPOTIFY_ATTEMPT_KEY = 'dilla.spotifyAttempt';
 const BOT_STATUS_POLL_INTERVAL_MS = 2_000;
 const BOT_STATUS_POLL_LIMIT = 30;
 
+// Polls and Reminders (bits 8 and 9) start on, as the prototype shows them: a first enable (no
+// installation yet) offers both switched on (Task 10c fix round 1, I1). A disabled installation keeps
+// the mask it was approved with: migration 00050 already switched both on for every installation
+// that existed, so a bit that is off there was switched off by a manager.
+const POLLS_AND_REMINDERS = (1 << 8) | (1 << 9);
+function startingCapabilities(installation: Installation | null | undefined): number {
+  return installation === null || installation === undefined ? POLLS_AND_REMINDERS : installation.capabilities;
+}
+
 // Task 10c (Jonas, Q5 a): the prototype's Music, Polls and Reminders first, then dilla's other capabilities — ten rows.
 const CAPABILITY_OPTIONS = [
   { name: 'music', bit: 1 << 0, permission: null, requirement: 'music', icon: 'music' },
@@ -90,7 +99,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   const [stepUpPurpose, setStepUpPurpose] = useState<StepUpPurpose>('bot');
   const capabilitySaveResolver = useRef<((saved: boolean) => void) | null>(null);
   const [busyFor, setBusyFor] = useBotDraftState<string | null>(communityId, 'bot.busyFor', null);
-  const [selectedCapabilities, setSelectedCapabilities] = useBotDraftState(communityId, 'bot.capabilities', 0);
+  const [selectedCapabilities, setSelectedCapabilities] = useBotDraftState(communityId, 'bot.capabilities', POLLS_AND_REMINDERS);
   const [editingCapabilities, setEditingCapabilities] = useBotDraftState(communityId, 'bot.editingCapabilities', false);
   const editingCapabilitiesRef = useRef(false);
   const readGeneration = useRef(0);
@@ -125,7 +134,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       const loadedInstallation = value as Installation | null;
       if (loadedInstallation !== null && loadedInstallation.communityId !== communityId) return;
       setInstallation(loadedInstallation);
-      if (!editingCapabilitiesRef.current) setSelectedCapabilities(loadedInstallation?.capabilities ?? 0);
+      if (!editingCapabilitiesRef.current) setSelectedCapabilities(startingCapabilities(loadedInstallation));
       setLoadedFor(communityId);
     }).catch((e: unknown) => {
       if (canceled || generation !== readGeneration.current) return;
@@ -192,7 +201,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
             setInstallation(previous => previous === null || next === null ? next : { ...previous, state: next.state });
           } else {
             setInstallation(next);
-            setSelectedCapabilities(next?.capabilities ?? 0);
+            setSelectedCapabilities(startingCapabilities(next));
           }
           // A state transition restarts this effect; unchanged transient states
           // continue the same bounded loop without creating a second poller.
@@ -226,12 +235,12 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
         editingCapabilitiesRef.current = false;
         setEditingCapabilities(false);
         setInstallation(refreshed);
-        setSelectedCapabilities(refreshed?.capabilities ?? 0);
+        setSelectedCapabilities(startingCapabilities(refreshed));
       } else if (editingCapabilitiesRef.current) {
         setInstallation(previous => previous === null || refreshed === null ? refreshed : { ...previous, state: refreshed.state });
       } else {
         setInstallation(refreshed);
-        setSelectedCapabilities(refreshed?.capabilities ?? 0);
+        setSelectedCapabilities(startingCapabilities(refreshed));
       }
       statusPollAttempts.current = { communityId, attempts: 0 };
       setStatusPollGeneration(value => value + 1);
@@ -414,7 +423,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   const botEditState = useMemo<SettingsEditState>(() => ({ dirty: formDirty, busy, canSave: formDirty && !busy && canSavePage, save: saveBotForm, reset: () => {
       if (page === 'joinRoles' && joinRole !== null) setJoinRoleValue(joinRole.roleId ?? '');
       else {
-        setSelectedCapabilities(currentInstallation?.capabilities ?? 0);
+        setSelectedCapabilities(startingCapabilities(currentInstallation));
         setEditingCapabilities(false);
         editingCapabilitiesRef.current = false;
       }
@@ -547,7 +556,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
         {canEditInstallationCapabilities && capabilityDirty && !managedBotForm ? <div className="dw-settings-actions">
           <Button variant="accent" aria-disabled={busy || enableUnavailable || undefined} onClick={enable}>{t('admin.bot.capabilities.save')}</Button>
           <Button aria-disabled={busy || undefined} onClick={() => {
-            setSelectedCapabilities(currentInstallation?.capabilities ?? 0);
+            setSelectedCapabilities(startingCapabilities(currentInstallation));
             setEditingCapabilities(false);
             editingCapabilitiesRef.current = false;
           }}>{t('admin.bot.capabilities.cancel')}</Button>

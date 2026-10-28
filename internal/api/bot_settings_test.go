@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
@@ -30,6 +31,7 @@ func newBotSettingsFixture(t *testing.T, repo store.Repository) botSettingsFixtu
 	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
 		manager = runtime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
+		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
 	})
 	ctx := context.Background()
 	now := deps.Clock.Now().Unix()
@@ -254,12 +256,17 @@ func TestOlderRuntimesSeeTheOriginalInstallationShape(t *testing.T) {
 // Capability bits 8 (polls) and 9 (reminders) are known to the configure route; bit 10 is not.
 func TestConfigureBotKnowsPollsAndRemindersBits(t *testing.T) {
 	f := newBotSettingsFixture(t, newEnv(t).Repo)
-	path := "/v1/communities/" + f.cid.String() + "/bot"
+	path := "/v1/communities/" + f.cid.String() + "/bot?v=2"
 	revision := uint64(1)
 	if rec := putCBORAuth(f.h, path, mustCBOR(t, []any{id.New(), revision, uint64(1 << 10), ""}), f.ownerToken); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown bit 10 = %d (%x), want 400", rec.Code, rec.Body.Bytes())
 	}
 	if rec := putCBORAuth(f.h, path, mustCBOR(t, []any{id.New(), revision, uint64(1 << 8), ""}), f.memberToken); rec.Code != http.StatusForbidden {
 		t.Fatalf("member switching Polls = %d, want 403", rec.Code)
+	}
+	// A legacy-shaped request (no ?v=2) cannot name bits 8 and 9 at all.
+	legacy := "/v1/communities/" + f.cid.String() + "/bot"
+	if rec := putCBORAuth(f.h, legacy, mustCBOR(t, []any{id.New(), revision, uint64(1 << 8), ""}), f.ownerToken); rec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy request naming Polls = %d, want 400", rec.Code)
 	}
 }

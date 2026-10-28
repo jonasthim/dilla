@@ -190,6 +190,11 @@ func (r *Runtime) ListInstallationsPage(ctx context.Context, after *id.ID) ([]In
 		if err != nil {
 			return nil, err
 		}
+		if !out[i].Widened {
+			// An eight-field row answers v=2 only from a server that predates Polls and Reminders
+			// (Task 10c fix round 1, M2): it has no switch for them, so both are on.
+			out[i].Capabilities |= LegacyServerCapabilities
+		}
 		if i > 0 && strings.Compare(prev.String(), out[i].ID.String()) >= 0 {
 			return nil, ErrProtocol
 		}

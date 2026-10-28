@@ -600,7 +600,7 @@ describe('the server bot settings', () => {
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     expect(await screen.findByText(en['admin.bot.status.pending'])).toBeInTheDocument();
     expect(fake.callsOf('configureBotInstallation')).toEqual([expect.objectContaining({ m: 'configureBotInstallation',
-      communityId: SERVER, expectedRevision: null, capabilities: 0, stepUp: 'short-lived-step-up' })]);
+      communityId: SERVER, expectedRevision: null, capabilities: 256 | 512, stepUp: 'short-lived-step-up' })]);
     expect(announce).toHaveBeenCalledWith(en['admin.bot.enabledNotice']);
   });
 
@@ -618,7 +618,8 @@ describe('the server bot settings', () => {
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
-    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ capabilities: 1 | 8 });
+    // A first enable starts with Polls and Reminders on (bits 8 and 9, Task 10c fix round 1, I1).
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ capabilities: 1 | 8 | 256 | 512 });
   });
 
   it('shows the permission ceiling and disables capabilities the current access summary cannot grant', async () => {

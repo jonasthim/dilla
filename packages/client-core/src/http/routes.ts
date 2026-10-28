@@ -734,7 +734,9 @@ export class Routes {
     if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > BOT_CAPABILITIES_MAX) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
     if (typeof stepUp !== 'string' || stepUp.length === 0) throw new RangeError('E_ROUTE_INPUT: step-up token is required');
     const body = encode([inputId('requestId', requestId), expectedRevision, capabilities, stepUp]);
-    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot`,
+    // v=2 (Task 10c fix round 1): this client sends the widened mask, Polls and Reminders included; without it
+    // the server keeps those two bits as they are.
+    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot?v=2`,
       'write', true, { body, retry429: false })), communityId);
   }
   /** Arms a one-use automatic moderation grant. Config plaintext is represented only by its digest here. */
