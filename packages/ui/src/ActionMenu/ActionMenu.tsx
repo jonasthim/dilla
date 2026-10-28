@@ -15,6 +15,11 @@ export interface ActionMenuItem {
   check?: boolean;
   /** A 1px rule above the item (the prototype's separator before Kick, task 9). */
   sep?: boolean;
+  /**
+   * Consecutive items with the same `group` sit in one `role="group"` named by it (WAI-ARIA APG: a set of menuitemradio
+   * items is a group with a label). Signal task 10: a conversation's or a server's notify mode.
+   */
+  group?: string;
 }
 
 export interface ActionMenuProps {
@@ -159,7 +164,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
   };
 
   const popupClass = popupClassName === undefined ? 'd-action-menu__popup' : `d-action-menu__popup ${popupClassName}`;
-  const itemButtons = items.map(item => (
+  const itemButton = (item: ActionMenuItem) => (
     <Fragment key={item.id}>{item.sep === true ? <div className="d-action-menu__sep" role="separator" /> : null}<button type="button" role={item.check !== undefined ? 'menuitemcheckbox' : item.checked === undefined ? 'menuitem' : 'menuitemradio'}
       aria-checked={item.check ?? item.checked} tabIndex={-1} className="d-action-menu__item" data-id={item.id}
       data-danger={item.danger ? 'true' : undefined} onClick={() => select(item)}>
@@ -169,7 +174,15 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
       {item.checked === true ? <span className="d-action-menu__tick" aria-hidden="true"><Icon name="check" size={13} /></span> : null}
       {item.check !== undefined ? <span className="d-action-menu__check" data-on={item.check ? 'true' : undefined} aria-hidden="true"><Icon name="check" size={10} stroke={3} /></span> : null}
     </button></Fragment>
-  ));
+  );
+  const itemButtons: ReactNode[] = [];
+  for (let i = 0; i < items.length;) {
+    const group = items[i].group;
+    if (group === undefined) { itemButtons.push(itemButton(items[i])); i += 1; continue; }
+    const run: ActionMenuItem[] = [];
+    while (i < items.length && items[i].group === group) { run.push(items[i]); i += 1; }
+    itemButtons.push(<div key={`group:${group}:${run[0].id}`} role="group" aria-label={group} className="d-action-menu__group">{run.map(itemButton)}</div>);
+  }
   const style = at
     ? { position: 'fixed' as const, left: `${clamped?.x ?? at.x}px`, top: `${clamped?.y ?? at.y}px` }
     : undefined;

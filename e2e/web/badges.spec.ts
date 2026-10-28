@@ -96,6 +96,30 @@ test('unopened channels badge their unread messages and mentions, opening reads 
   await expect(channelRow(page, three)).toHaveAttribute('data-unread', '0');
 });
 
+// Signal task 10 fix round 2–3: the device-wide notify default (it governs direct messages) is the DM list head's menu.
+test('the DM list head\u2019s menu sets the device-wide notify default, and it is kept', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await homeTile(page).click();
+  const trigger = page.getByRole('button', { name: copy('signalSettings.menu.dms'), exact: true });
+  const modes = page.getByRole('group', { name: copy('notify.title'), exact: true });
+  const every = modes.getByRole('menuitemradio', { name: copy('signalSettings.menu.everything'), exact: true });
+  await trigger.click();
+  await expect(modes.getByRole('menuitemradio', { name: copy('signalSettings.menu.dmsMentions'), exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expectAccessible(page, 'the DM list head menu');
+  await every.click();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await expect(every).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+  await page.keyboard.press('Escape');
+  await page.reload();
+  await expectShell(page);
+  await homeTile(page).click();
+  await trigger.click();
+  await expect(every).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+});
+
 test('a direct message opened from the DMs tab reaches the peer, and the reply badges it until it is read', async ({ page, context, peer, instanceName }, testInfo) => {
   const chromium = testInfo.project.name === 'chromium-web';
   if (chromium) {

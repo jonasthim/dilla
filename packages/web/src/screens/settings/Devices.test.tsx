@@ -76,6 +76,12 @@ describe('the device list', () => {
     const tie = dev('aa'.repeat(16), { lastSeen: NOW - 60 });
     expect(orderDevices([...DEVICES, tie]).map(d => d.id)).toEqual([OWN, tie.id, PHONE, FORGOTTEN, OLD]);
   });
+  // Signal task 10 fix round 3: Sign out stays reachable while the list is missing.
+  it('draws this browser\u2019s row with Sign out from the local identity while the list has not arrived', () => {
+    setup(undefined, undefined);
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    expect(screen.getByText('This browser')).toBeInTheDocument();
+  });
   it('says when the list did not load', async () => {
     setup(c => (c.m === 'refreshDevices' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null)));
     expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_NETWORK). Try again.');

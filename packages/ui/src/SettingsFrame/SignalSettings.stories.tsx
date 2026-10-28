@@ -122,7 +122,6 @@ function Keyboard() {
         { action: t('keyboard.deafenAction'), keys: caps(t('keyboard.deafen')) },
         { action: t('keyboard.dmCallAction'), keys: caps(t('keyboard.dmCall')) },
       ]} />
-      <p><button type="button" className="d-link">{t('settings.nav.voice')}</button></p>
     </section>
   );
 }

@@ -15,6 +15,20 @@ import { Tooltip } from '../Tooltip/Tooltip.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
+import { ActionMenu } from '../ActionMenu/ActionMenu.tsx';
+
+/**
+ * Signal task 10 fix round 2–3 (rule 3d): the server head's ⌄ as packages/web/src/screens/Shell.tsx composes it, a menu named
+ * "server settings" with the server's settings, Mute server and its notify mode.
+ */
+function ServerHeadMenu() {
+  const [open, setOpen] = useState(false);
+  return <ActionMenu label="server settings" open={open} onOpenChange={setOpen} triggerClassName="d-channel-list__head-btn"
+    triggerContent={<Icon name="chevron-down" size={15} />} onSelect={() => setOpen(false)}
+    items={[{ id: 'settings', label: 'Server settings' }, { id: 'mute', label: 'Mute server', check: false },
+      { id: 'mode:default', label: 'Notify: default', checked: true, group: 'Notifications' }, { id: 'mode:all', label: 'Notify: all messages', checked: false, group: 'Notifications' },
+      { id: 'mode:mentions', label: 'Notify: mentions only', checked: false, group: 'Notifications' }, { id: 'mode:nothing', label: 'Notify: nothing', checked: false, group: 'Notifications' }]} />;
+}
 
 const noop = () => {};
 
@@ -98,7 +112,7 @@ export function SignalShell({ shell, voice, main }: { shell?: Partial<AppShellPr
         addLabel="add a server" onAdd={noop} itemLabel={itemLabel}
         items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Valhalla Kitchen', unread: 2, mentions: 2 }]} />}
       sidebar={<ChannelList label="channels" title="Midgard Crew" activeId={voice !== undefined ? 'harbour' : 'general'} onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
-        headerAction={<Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>}
+        headerAction={<ServerHeadMenu />}
         stats={[{ text: '3 online', live: true }, { text: voice?.joined === true ? '6 in voice' : '5 in voice' }]} newLabel={n => `${n} new`}
         categories={[{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }]} onToggleCategory={noop}
         voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',

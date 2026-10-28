@@ -31,3 +31,5 @@
 }
 .d-action-menu__check[data-on] { border-color: var(--accent); background: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .d-action-menu__popup { animation: none; } }
+/* Signal task 10: a labelled group of items (a notify mode's radios) keeps the popup's one column. */
+.d-action-menu__group { display: grid; }

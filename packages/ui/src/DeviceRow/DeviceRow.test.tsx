@@ -115,6 +115,13 @@ describe('DeviceRow menu', () => {
     fireEvent.contextMenu(screen.getByRole('listitem'), { clientX: 5, clientY: 5 });
     expect(screen.getByRole('menu', { name: 'b2d4e6f8 menu' })).toBeInTheDocument();
   });
+  it('names Shift+F10 on the row, and a right-click on its own button opens no row menu', () => {
+    render(<ul><DeviceRow name="b2d4e6f8" tier="web" action={{ label: 'Remove', onAction: vi.fn(), danger: true }}
+      menu={{ label: 'b2d4e6f8 menu', items: [{ id: 'rename', label: 'Rename' }], onSelect: vi.fn() }} /></ul>);
+    expect(screen.getByRole('listitem')).toHaveAttribute('aria-keyshortcuts', 'Shift+F10');
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Remove' }), { clientX: 5, clientY: 5 });
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
   it('has no menu and no tab stop without one', () => {
     render(<ul><DeviceRow name="b2d4e6f8" tier="web" /></ul>);
     expect(screen.getByRole('listitem')).not.toHaveAttribute('tabindex');

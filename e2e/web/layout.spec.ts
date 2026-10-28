@@ -818,33 +818,40 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
 // (onboarding, sign-in), and the invites section is on the settings grammar.
 
 /** Every visible button, select and switch inside `root` (the whole page when omitted) is at least 44 high on a phone. */
-async function expectPhoneTargets(page: Page, what: string, root?: string, min = 44): Promise<void> {
-  const found = await boxes(page, 'button, select, [role="switch"], a.d-btn', root);
-  expect.soft(found.length, `H4 ${what}: something to measure`).toBeGreaterThan(0);
-  for (const b of found) expect.soft(b.h, `H4 ${what}: "${b.t}" is ${b.h.toFixed(1)} high, want ${min}`).toBeGreaterThanOrEqual(min - TOL);
+/**
+ * Signal task 10 (Jonas 2026-10-27, pixel parity): settings and the sign-in card keep the prototype's sizes on a phone, not the
+ * 44px tier. Each [selector, height] pair names a control and the height the prototype draws it (content plus its 1px edges).
+ */
+async function expectPrototypeSizes(page: Page, what: string, sizes: readonly (readonly [string, number])[], root?: string): Promise<void> {
+  for (const [selector, height] of sizes) {
+    const found = await boxes(page, selector, root);
+    expect.soft(found.length, `${what}: ${selector} is drawn`).toBeGreaterThan(0);
+    for (const b of found) expect.soft(Math.abs(b.h - height), `${what}: "${b.t}" (${selector}) is ${b.h.toFixed(1)} high, want ${height}`).toBeLessThanOrEqual(1);
+  }
 }
-/** Signal task 10 (Jonas 2026-10-27, pixel parity): settings and the sign-in card keep the prototype's sizes on a phone, so
- *  their controls are held to WCAG 2.5.8's 24px, not the 44px tier. */
-const PROTOTYPE_TIER = 24;
+/** The sign-in card: 40px fields and the 40px primary button. */
+const AUTH_SIZES = [['.d-onboarding-frame .d-text-field__input', 40], ['.d-onboarding-frame__footer .d-btn[data-variant="accent"]', 40]] as const;
+/** A settings button is 32 (30 of content); a device select and the push-to-talk key 38. */
+const SETTINGS_SIZES = [['.d-settings-frame__body .d-btn:not(.d-voice-settings__capture)', 32], ['.d-voice-settings__select', 38]] as const;
 
-test('FA1: phone targets are 44 high outside the shell, and the invites section keeps the settings grammar', async ({ page }) => {
+test('FA1: phone controls outside the shell keep the prototype sizes, and the invites section keeps the settings grammar', async ({ page }) => {
   const h = started();
   await page.setViewportSize({ width: 390, height: 844 });
   const account = newAccount('Fia', h.control);
   const invite = h.invite.split(',')[0];
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await expect(page.getByRole('heading', { name: copy('onboarding.connect.title', { instance }), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'onboarding connect step at 390', undefined, PROTOTYPE_TIER);
+  await expectPrototypeSizes(page, 'onboarding connect step at 390', AUTH_SIZES);
   await page.getByRole('button', { name: copy('onboarding.connect.signIn'), exact: true }).click();
   await expect(page.getByRole('heading', { name: copy('signin.login.title', { instance }), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'sign-in at 390', undefined, PROTOTYPE_TIER);
+  await expectPrototypeSizes(page, 'sign-in at 390', AUTH_SIZES);
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await completeSignUp(page, account, instance);
 
   for (const section of ['voice', 'devices', 'notifications'] as const) {
     await page.goto(`/settings/${section}`);
     await expect(page.locator('.d-settings-row, .d-voice-settings').first()).toBeVisible({ timeout: WAIT });
-    await expectPhoneTargets(page, `settings, ${section} at 390`, undefined, PROTOTYPE_TIER);
+    await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? SETTINGS_SIZES : SETTINGS_SIZES.slice(0, 1));
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
 
@@ -867,16 +874,12 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   expect.soft(await admin.locator('.d-select__label').count(), 'I1 no stacked micro-uppercase label is left').toBe(0);
   const labels = await boxes(page, '.d-settings-row__label', '.d-settings-frame__body');
   expectOne('I1 the invites rows share one label x', labels.map(b => b.x), labels.map(b => b.t));
+  // Signal task 10 (README §5.9): a row's control sits at its right edge, so the controls share one right x (widths differ).
   const controls = await boxes(page, '.d-settings-row__control', '.d-settings-frame__body');
-  expectOne('I1 the invites rows share one control x', controls.map(b => b.x), controls.map(b => b.t));
   expectOne('I1 the invites rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
   expect(controls.length).toBe(labels.length);
-  for (const [index, c] of controls.entries()) {
-    expectAt(`I1 the control column "${c.t}" balances its label column`, c.w, labels[index]!.w, 1);
-    expect.soft(c.w, 'I1 fullscreen controls have room beyond the compact 16rem column').toBeGreaterThanOrEqual(320);
-  }
 
-  // On a phone: the same section, its selects, its make button and the link dialog's Copy are 44 high.
+  // On a phone: the same section's buttons and the link dialog's field and Copy keep the prototype's sizes (32; 36 and 36).
   await page.keyboard.press('Escape');
   await expect(admin).toBeHidden({ timeout: WAIT });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -888,11 +891,11 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
   await expect(admin.getByRole('button', { name: copy('admin.invites.create'), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'server settings, invites at 390', '.d-settings-frame__body', PROTOTYPE_TIER);
+  await expectPrototypeSizes(page, 'server settings, invites at 390', SETTINGS_SIZES.slice(0, 1));
   await admin.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
   const link = page.locator('.d-invite-link');
   await expect(link.locator('button').first(), 'the link dialog shows its Copy').toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'the invite link dialog at 390', '.d-invite-link', PROTOTYPE_TIER);
+  await expectPrototypeSizes(page, 'the invite link dialog at 390', [['.d-invite-link__field', 36], ['.d-invite-link__row .d-btn[data-variant="accent"]', 36]]);
 });
 
 

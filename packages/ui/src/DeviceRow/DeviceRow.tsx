@@ -38,12 +38,16 @@ export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state,
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const rowRef = useRef<HTMLLIElement>(null);
   const trigger = useContextMenuTrigger<HTMLLIElement>(menu === undefined ? undefined : (_el, point) => setAt(point));
+  // A press or a right-click on the row's own button (Sign out, Remove) is that button's: it never opens the row's menu.
+  const onButton = (e: { target: EventTarget }) => e.target instanceof Element && e.target.closest('button') !== null;
+  const rowTrigger = Object.fromEntries(Object.entries(trigger).map(([name, handler]) => [name,
+    name === 'onKeyDown' || name === 'onClickCapture' ? handler : (e: { target: EventTarget }) => { if (!onButton(e)) (handler as (ev: unknown) => void)(e); }]));
   const nameId = useId();
   const idId = useId();
   const describedBy = idHint ? `${nameId} ${idId}` : nameId;
   return (
     <li ref={rowRef} className="d-device-row" data-tier={tier} data-own={own ? 'true' : undefined}
-      {...(menu === undefined ? {} : { tabIndex: 0, 'aria-labelledby': nameId, ...trigger })}>
+      {...(menu === undefined ? {} : { tabIndex: 0, 'aria-labelledby': nameId, 'aria-keyshortcuts': 'Shift+F10', ...rowTrigger })}>
       <span className="d-device-row__icon" aria-hidden="true"><Icon name="monitor-smartphone" size={15} /></span>
       <div className="d-device-row__main">
         <div className="d-device-row__head">

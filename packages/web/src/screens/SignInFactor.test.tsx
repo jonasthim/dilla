@@ -301,7 +301,7 @@ describe('the code step (flow 10 state 16)', () => {
     get.mockResolvedValue(assertion());
     await user.click(button(en['factorSignin.usePasskey']));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
-    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
   });
 
   it('Back leaves the backup-code form for the code form', async () => {
@@ -332,7 +332,7 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     await user.click(button(en['factorSignin.usePasskey']));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
     // The passkey was used on the login step, so no factor step was shown (R7).
-    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(fake.callsOf('signInPasskeyBegin')).toEqual([{ m: 'signInPasskeyBegin' }]);
     expect(get.mock.calls[0]?.[0].publicKey.userVerification).toBe('required');
     const sent = fake.callsOf('signInPasskey');

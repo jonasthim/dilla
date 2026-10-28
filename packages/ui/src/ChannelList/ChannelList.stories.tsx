@@ -5,6 +5,21 @@ import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
+import { ActionMenu } from '../ActionMenu/ActionMenu.tsx';
+import { useState } from 'react';
+
+/**
+ * Signal task 10 fix round 2–3 (rule 3d): the server head's ⌄ as packages/web/src/screens/Shell.tsx composes it, a menu named
+ * "server settings" with the server's settings, Mute server and its notify mode.
+ */
+function ServerHeadMenu() {
+  const [open, setOpen] = useState(false);
+  return <ActionMenu label="server settings" open={open} onOpenChange={setOpen} triggerClassName="d-channel-list__head-btn"
+    triggerContent={<Icon name="chevron-down" size={15} />} onSelect={() => setOpen(false)}
+    items={[{ id: 'settings', label: 'Server settings' }, { id: 'mute', label: 'Mute server', check: false },
+      { id: 'mode:default', label: 'Notify: default', checked: true, group: 'Notifications' }, { id: 'mode:all', label: 'Notify: all messages', checked: false, group: 'Notifications' },
+      { id: 'mode:mentions', label: 'Notify: mentions only', checked: false, group: 'Notifications' }, { id: 'mode:nothing', label: 'Notify: nothing', checked: false, group: 'Notifications' }]} />;
+}
 
 const meta = {
   title: 'Shell/ChannelList', component: ChannelList, excludeStories: ['expectOneGrid'],
@@ -193,8 +208,8 @@ const SIGNAL_VOICE = {
 const SIGNAL_ARGS = {
   title: 'Midgard Crew', stats: [{ text: '3 online', live: true }, { text: '5 in voice' }], activeId: 'general', newLabel: (n: string) => `${n} new`, voice: SIGNAL_VOICE,
   categories: [{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }], onToggleCategory: () => {},
-  // The head the web passes (packages/web/src/screens/Shell.tsx headerAction, Ruling AB): the 26px ⌄ that opens server settings.
-  headerAction: <Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>,
+  // The head the web passes (packages/web/src/screens/Shell.tsx headerAction, Ruling AB): the 26px ⌄, the server's menu.
+  headerAction: <ServerHeadMenu />,
   channels: [
     { id: 'general', name: 'general', kind: 'text', readable: false },
     { id: 'hv', name: 'general', kind: 'voice', readable: false },

@@ -9,6 +9,11 @@
 .d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; padding: 0; }
 /* The head's icon buttons: 26px on desktop (the prototype's chevron), 44px on a phone. */
 .d-channel-list__head-btn { flex: none; height: 1.625rem; min-width: 1.625rem; min-height: 1.625rem; padding: 0; justify-content: center; }
+/* Signal task 10 fix round 3: the ⌄ is the server's (and the DM list's) menu trigger, drawn as the prototype's 26px square:
+   radius 6, --fg-2, on hover or while its menu is open --hover behind --fg; no edge. */
+.d-channel-list__head-btn.d-action-menu__trigger { box-sizing: border-box; width: 1.625rem; color: var(--fg-2); border: 0; border-radius: var(--r-md); transition: background var(--duration-fast), color var(--duration-fast); }
+.d-channel-list__head-btn.d-action-menu__trigger:hover, .d-channel-list__head-btn.d-action-menu__trigger[aria-expanded="true"] { color: var(--fg); background: var(--hover); }
+@media (prefers-reduced-motion: reduce) { .d-channel-list__head-btn.d-action-menu__trigger { transition: none; } }
 /* Ruling AB: the ⌄ stays the prototype's 26px on a phone too (Jonas 2026-10-27). */
 /* The stat line: 10.5px --fg-3, padding 0 14px 10px, 10px gaps; the first item after a 6px --ok dot. */
 .d-channel-list__stats { display: flex; flex: none; gap: 10px; margin: 0; padding: 0 14px 10px; font-size: var(--text-meta); color: var(--fg-3); white-space: nowrap; overflow: hidden; }

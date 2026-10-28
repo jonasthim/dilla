@@ -396,7 +396,7 @@ export const en = {
   'notify.mode.mentions': 'Mentions',
   'notify.mode.nothing': 'Nothing',
   'notify.everyone.label': '@everyone and @here',
-  'notify.everyone.hint': 'Notify when someone allowed to uses them',
+  'notify.everyone.hint': 'Notify when someone allowed to use them',
   'notify.desktop.label': 'Desktop notifications',
   'notify.desktop.hint': 'Only while a dilla tab is open',
   'notify.sounds.label': 'Join, leave and ring sounds',

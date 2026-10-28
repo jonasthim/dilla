@@ -1187,7 +1187,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const notifyItems = (id: string) => {
       const mode = settings?.[SETTINGS.notifyChannel(id)] ?? 'default';
       return [{ id: 'mute', label: t('notify.mute'), check: muted(id) },
-        ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: mode === m.value }))];
+        ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: mode === m.value, group: t('notify.title') }))];
     };
     const notifyChoice = (id: string, item: string): boolean => {
       if (item === 'mute') {
@@ -1217,7 +1217,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       <ActionMenu label={t('admin.open')} focusKey="admin-open" open={headMenu === 'server'} onOpenChange={open => setHeadMenu(open ? 'server' : null)}
         triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
         items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') }, { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
-          ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: serverMode === m.value }))]}
+          ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: serverMode === m.value, group: t('notify.title') }))]}
         onSelect={item => {
           if (item === 'settings') { openAdmin(null); return; }
           if (serverHex === null) return;
@@ -1230,7 +1230,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const dmsMenu = (
       <ActionMenu label={t('signalSettings.menu.dms')} open={headMenu === 'dms'} onOpenChange={open => setHeadMenu(open ? 'dms' : null)}
         triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
-        items={DM_DEFAULTS.map(m => ({ id: m.value, label: t(m.key), checked: dmDefault === m.value }))}
+        items={DM_DEFAULTS.map(m => ({ id: m.value, label: t(m.key), checked: dmDefault === m.value, group: t('notify.title') }))}
         onSelect={value => { client.call({ m: 'setSetting', key: SETTINGS.notifyDefault, value: value === 'dms-mentions' ? null : value }).catch(report); }} />
     );
     const headerAction = onDms ? (

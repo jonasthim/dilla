@@ -40,7 +40,7 @@ test('native edit is searched by prefix and deleted text disappears after a posi
   await expectAccessible(page, 'search after delete');
 });
 
-test('Privacy, Keyboard and Diagnostics use the phone settings index and return with focus', async ({ page, peer, instanceName }) => {
+test('Privacy, Keyboard and Diagnostics open on a phone with the nav as chips and close with Escape', async ({ page, peer, instanceName }) => {
   await page.setViewportSize({ width: 360, height: 740 });
   const setup = await peer.setup({});
   await peer.register();
@@ -259,11 +259,11 @@ test('settings rows align their controls, and the sign-out button holds its text
   // Signal task 10 fix round 1: Sign out is on this browser's own device row (README §5.9).
   const out = dialog.locator('.d-device-row__actions').getByRole('button', { name: copy('workspace.signOut'), exact: true }).first();
   await expect(out).toBeVisible({ timeout: WAIT });
-  const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-settings-row__control')?.getBoundingClientRect().right ?? 0) + 1);
+  const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-device-row')?.getBoundingClientRect().right ?? 0) + 1);
   expect(fits, 'the sign-out label is inside its button and its column').toBe(true);
   await closeSettings(page);
-  // M-3: every row keeps its own hairline, also two rows that are each the last child of their parent (Voice).
-  dialog = await openSettings(page, 'voice');
+  // M-3: every row keeps its own hairline (Signal task 10: the Voice page is groups, not rows, so Notifications' rows are measured).
+  dialog = await openSettings(page, 'notifications');
   await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
   const hairlines = await dialog.locator('.d-settings-row').evaluateAll(els => els.map(el => getComputedStyle(el).borderBottomWidth));
   expect(hairlines.length).toBeGreaterThan(1);

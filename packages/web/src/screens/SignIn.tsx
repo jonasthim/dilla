@@ -101,6 +101,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [backupHeld, setBackupHeld] = useState(false);
   // R7: a factor step (code, passkey or backup code) was shown in this ceremony, so the key is step 3, not 2.
   const [factorShown, setFactorShown] = useState(false);
+  // Signal task 10 fix round 3: this ceremony reached a factor set-up (login, key, set-up, done: four dots).
+  const [setupSeen, setSetupSeen] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Field, StringKey>>>({});
   const [banner, setBanner] = useState<BannerState | null>(null);
   // The no-backup view's banner after a refusal of this mount; null otherwise.
@@ -163,7 +165,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // R7: the factor step counts from when it shows until the ceremony returns to the login.
   useEffect(() => {
     if (phase === 'signin-totp' || phase === 'signin-passkey') setFactorShown(true);
-    else if (phase === 'signin-login' || phase === 'needs-signup') { setFactorShown(false); setUsedBackup(false); }
+    else if (phase === 'signin-login' || phase === 'needs-signup') { setFactorShown(false); setSetupSeen(false); setUsedBackup(false); }
+    if (phase === 'factor-setup') setSetupSeen(true);
   }, [phase]);
   // The typed key belongs to one person's attempt: back at the login, whoever signs in next starts with an empty field.
   // A refusal at the key step itself (a wrong key) keeps the text for the same person's retry.
@@ -324,11 +327,11 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     client.call({ m: 'signInCancel' }).catch((e: unknown) => { apply(errorOf(e), 'login'); });
   };
 
-  // R7: login 1, the second factor 2, the key 3 (or 2 when no factor step was shown), done 4. Signal task 10 fix round 1:
-  // the prototype's "Sign in · step 1 of 4" and its dots; the flow is four steps (whether a factor step shows is known only
-  // after the login), so the count stays 4.
+  // R7: login 1, the second factor 2, the key 3 (or 2 when no factor step was shown), done last. Signal task 10 fix round 3:
+  // the prototype's "Sign in · step 1 of 4" and its dots count only the steps this ceremony shows, so no dot is skipped: 4 with
+  // a factor step or a factor set-up (login, key, set-up, done), 3 without one. The login step cannot know yet and says 4.
   const keyStep = factorShown ? 3 : 2;
-  const total = 4;
+  const total = shown === 'login' || factorShown || setupSeen || shown === 'factor' ? 4 : 3;
   const stepLabel = (n: number) => t('signin.step', { n, total });
   const progress = (n: number) => ({ n, total });
   const errorText = (field: Field) => {
@@ -367,7 +370,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     content = (
       <>
         {factorDone.problem === null ? null : <Banner tone="danger">{t(factorDone.problem.key, factorDone.problem.vars)}</Banner>}
-        <FactorSetup origin="signin" stepLabel={t('signin.step', { n: 3, total: 4 })} progress={{ n: 3, total: 4 }} instanceName={name}
+        <FactorSetup origin="signin" stepLabel={stepLabel(3)} progress={progress(3)} instanceName={name}
           username={account.user?.username ?? account.signIn?.username ?? username.trim().toLowerCase()}
           announce={announce} onDone={finishFactor} />
         <ForgetBrowser />

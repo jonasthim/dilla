@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -228,5 +228,17 @@ describe('ActionMenu without a trigger (a context menu, Ruling X)', () => {
     expect(onSelect).toHaveBeenCalledWith('ban');
     expect(screen.queryByRole('menu')).toBeNull();
     expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+});
+
+// Signal task 10 fix round 3 (WAI-ARIA APG): radio items that share a `group` sit in one labelled role="group".
+describe('ActionMenu groups', () => {
+  it('wraps consecutive items of one group in a labelled group and keeps aria-checked on the current one', () => {
+    render(<ActionMenu label="general menu" open onOpenChange={() => {}} onSelect={() => {}}
+      items={[{ id: 'pins', label: 'Pinned' }, { id: 'all', label: 'All', checked: false, group: 'Notifications' }, { id: 'none', label: 'Nothing', checked: true, group: 'Notifications' }]} />);
+    const group = screen.getByRole('group', { name: 'Notifications' });
+    expect(within(group).getAllByRole('menuitemradio')).toHaveLength(2);
+    expect(within(group).getByRole('menuitemradio', { name: 'Nothing' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(group).queryByRole('menuitem', { name: 'Pinned' })).toBeNull();
   });
 });

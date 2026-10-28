@@ -1973,6 +1973,10 @@ describe('the channel header actions (web3.9)', () => {
   it('the server ⌄ menu mutes the server and sets its notify mode', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     await user.click(await screen.findByRole('button', { name: en['admin.open'] }));
+    // The current mode is the checked radio of the labelled group (no server value yet: default).
+    const modes = await screen.findByRole('group', { name: en['notify.title'] });
+    expect(within(modes).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyDefault'] })).toHaveAttribute('aria-checked', 'true');
+    expect(within(modes).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyAll'] })).toHaveAttribute('aria-checked', 'false');
     await user.click(await screen.findByRole('menuitemcheckbox', { name: en['signalSettings.menu.muteServer'] }));
     await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `mute.community.${A}`, value: '1' }));
     await user.click(await screen.findByRole('menuitemradio', { name: en['signalSettings.menu.notifyAll'] }));

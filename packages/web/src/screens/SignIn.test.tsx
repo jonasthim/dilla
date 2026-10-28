@@ -95,7 +95,7 @@ describe('the ceremony', () => {
     expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse' }]);
     expect(h1()).toHaveTextContent('Your recovery key');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
     expect(button('Cancel')).toHaveAttribute('type', 'button');
     expect(button('Add this browser')).toHaveAttribute('type', 'submit');
@@ -107,7 +107,7 @@ describe('the ceremony', () => {
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Sign in · step 4 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 3 of 3')).toBeInTheDocument();
     expect(screen.getByText('This browser is now a device of ada on dilla.test. Messages sent before now are not shown here.')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     await expectNoAxeViolations(view.container);
@@ -283,7 +283,7 @@ describe('the ceremony', () => {
   it('keeps its place after a reload into a registered enrolment, as step 2', () => {
     setup('signin-key');
     expect(h1()).toHaveTextContent('Your recovery key');
-    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(field('Recovery key')).toHaveValue('');
     expect(button('Cancel')).toHaveAttribute('type', 'button');
   });

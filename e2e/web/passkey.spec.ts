@@ -125,7 +125,7 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
     await button(page2, 'factorSignin.usePasskey').click();
     // web3.8 (R7): the passkey was used on the login step, so the key is step 2.
     await expectHeading(page2, SIGNIN.keyTitle);
-    await expect(page2.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+    await expect(page2.getByText(copy(SIGNIN.step, { n: 2, total: 3 }), { exact: true })).toBeVisible();
     await keyField(page2).fill(keyText(bjorn));
     await keySubmit(page2).click();
     await expectHeading(page2, SIGNIN.doneTitle);

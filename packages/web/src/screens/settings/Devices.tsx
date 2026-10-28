@@ -133,6 +133,12 @@ export function Devices(): React.JSX.Element {
       {loadError === null ? null : <Banner tone="danger">{t('settings.error.other', { code: loadError.code })}</Banner>}
       <p>{t('devices.body')}</p>
       <ul className="dw-device-list">
+        {/* Signal task 10 fix round 3: Sign out lives on this browser's row, so while the list is missing (not loaded yet, or
+            refused) this browser's row is drawn from the local identity and stays reachable. */}
+        {!ordered.some(d => d.own) && account?.deviceId != null ? (
+          <DeviceRow key="own" name={account.deviceId.slice(0, 8)} tier="web" own ownLabel={t('devices.thisBrowser')}
+            action={{ label: t('workspace.signOut'), onAction: signOut.requestOpen }} />
+        ) : null}
         {ordered.map(d => (
           <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} idHint={d.label === null ? undefined : d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}

@@ -27,6 +27,19 @@ import { HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
 import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 import '../../../web/src/app.css';
 
+/**
+ * Signal task 10 fix round 2–3 (rule 3d): the server head's ⌄ as packages/web/src/screens/Shell.tsx composes it, a menu named
+ * "server settings" with the server's settings, Mute server and its notify mode.
+ */
+function ServerHeadMenu() {
+  const [open, setOpen] = useState(false);
+  return <ActionMenu label="server settings" open={open} onOpenChange={setOpen} triggerClassName="d-channel-list__head-btn"
+    triggerContent={<Icon name="chevron-down" size={15} />} onSelect={() => setOpen(false)}
+    items={[{ id: 'settings', label: 'Server settings' }, { id: 'mute', label: 'Mute server', check: false },
+      { id: 'mode:default', label: 'Notify: default', checked: true, group: 'Notifications' }, { id: 'mode:all', label: 'Notify: all messages', checked: false, group: 'Notifications' },
+      { id: 'mode:mentions', label: 'Notify: mentions only', checked: false, group: 'Notifications' }, { id: 'mode:nothing', label: 'Notify: nothing', checked: false, group: 'Notifications' }]} />;
+}
+
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
 const meta = { title: 'Shell/Phone', parameters: { layout: 'fullscreen' } } satisfies Meta;
@@ -208,7 +221,7 @@ export const ServersList: Story = {
 // the stat line, the categories and rows; no search, no reminders. The voice rooms' people are sample-free here (empty rooms).
 const signalChannels = (
   <ChannelList label="channels" title="Midgard Crew" activeId="general" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
-    headerAction={<Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>}
+    headerAction={<ServerHeadMenu />}
     stats={[{ text: '3 online', live: true }, { text: '5 in voice' }]} newLabel={n => `${n} new`}
     categories={[{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }]} onToggleCategory={noop}
     voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
