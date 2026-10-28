@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { encode } from '../cbor';
 import type { CoreClient } from '../bridge';
-import { createVoiceMusicAdapter, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter } from './music.ts';
+import { createVoiceMusicAdapter, musicPlayheadMs, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter, type VoiceMusicState } from './music.ts';
 
 const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
@@ -96,6 +96,45 @@ describe('authenticated voice music adapter', () => {
     expect(state.queue[0]?.track.requesterId).toBeUndefined();
     expect(state.positionMs).toBe(30_000);
     unsubscribe();
+  });
+
+  it('Ruling AI: runs the playhead on from the Bot stamp and its own receipt time, never from its clock against the Bot\'s', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const f = fixture();
+      const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+      await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+      // The Bot's clock runs 5 minutes ahead of this device; the track has played 2 s since its 30 s stamp.
+      f.answer(f.getRequest(10), 0, '1', encode([1n, 1n, ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, ''], [],
+        30_000n, 0n, 75n, 0n, 0n, 1n, 1_298_000n, 1_300_000n]));
+      await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+      const state = f.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>;
+      expect(state.clock?.elapsedMs).toBe(2_000);
+      const arrived = state.clock!.receivedAtMs;
+      expect(musicPlayheadMs(state, arrived)).toBe(32_000);
+      expect(musicPlayheadMs(state, arrived + 5_000)).toBe(37_000);
+      expect(musicPlayheadMs(state, arrived + 500_000)).toBe(120_000);
+      expect(musicPlayheadMs({ ...state, paused: true }, arrived + 5_000)).toBe(30_000);
+      unsubscribe();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an older Bot without the stamp keeps the static position', () => {
+    const state: Extract<VoiceMusicState, { status: 'available' }> = { status: 'available', track: { id: 'a', title: 'T', artist: 'A', durationMs: 60_000 },
+      queue: [], positionMs: 12_000, volume: 50, paused: false, shuffle: false, repeat: 'off', permissions: { control: true, manageQueue: true } };
+    expect(musicPlayheadMs(state, Date.now() + 9_000)).toBe(12_000);
+  });
+
+  it('announces through operation 25 on the voice channel, naming the text channel at revision 0', async () => {
+    const f = fixture();
+    const TEXT = '9a'.repeat(16);
+    const done = f.adapter.announce(CHANNEL, TEXT);
+    await vi.waitFor(() => expect(f.getRequest(25)).toBeDefined());
+    const request = f.getRequest(25);
+    expect(request).toMatchObject({ channelId: CHANNEL, args: [TEXT], revision: '0' });
+    f.answer(request, 0, null, encode([]));
+    await expect(done).resolves.toBeUndefined();
+    await expect(f.adapter.announce(CHANNEL, 'nope')).rejects.toThrow(/announcement channel/);
   });
 
   it('searches YouTube through authenticated operation 11 and returns stable result IDs', async () => {

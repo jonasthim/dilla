@@ -34,7 +34,22 @@ export class VoiceMusicAcceptedUnconfirmedError extends Error {
 export type VoiceMusicState =
   | { status: 'unavailable'; reason: 'authenticated-transport-missing' | 'bot-unavailable' }
   | { status: 'available'; track: VoiceMusicTrack | null; queue: readonly VoiceMusicQueueItem[]; positionMs: number;
-      volume: number; paused: boolean; shuffle: boolean; repeat: 'off' | 'one' | 'all'; permissions: VoiceMusicPermissions };
+      volume: number; paused: boolean; shuffle: boolean; repeat: 'off' | 'one' | 'all'; permissions: VoiceMusicPermissions;
+      /** Ruling AI: the Bot's elapsed ms since `positionMs` was the playhead, as of the snapshot (absent from an older Bot), and
+       *  this device's clock (Date.now) when the snapshot arrived. The playhead runs on from both without trusting either clock. */
+      clock?: { elapsedMs: number; receivedAtMs: number } };
+
+/**
+ * Ruling AI: the playhead to show at `nowMs` (this device's Date.now): the snapshot's position plus the Bot's elapsed time at
+ * the snapshot plus the local time since it arrived, while playing, clamped to the track. Paused, idle or from an older Bot
+ * (no stamp): the snapshot's position as it is.
+ */
+export function musicPlayheadMs(state: Extract<VoiceMusicState, { status: 'available' }>, nowMs: number): number {
+  const duration = state.track?.durationMs ?? 0;
+  if (state.track === null || state.paused || state.clock === undefined) return Math.min(state.positionMs, duration || state.positionMs);
+  const position = state.positionMs + state.clock.elapsedMs + Math.max(0, nowMs - state.clock.receivedAtMs);
+  return duration > 0 ? Math.min(position, duration) : position;
+}
 
 export interface VoiceMusicAdapter {
   state(channelId: string): VoiceMusicState;
@@ -52,6 +67,9 @@ export interface VoiceMusicAdapter {
   clearQueue(channelId: string, attempt?: VoiceMusicAttempt): void | Promise<void>;
   search(channelId: string, query: string, attempt?: VoiceMusicAttempt): Promise<readonly VoiceMusicSearchResult[]>;
   enqueue(channelId: string, input: string, attempt?: VoiceMusicAttempt): void | Promise<void>;
+  /** Jonas 2026-10-28: Glenn posts "{you} started music in {room}" with the live card in the text channel where /play ran. The Bot
+   *  posts only for the requester of the playing track, once per track, where the requester may post. */
+  announce(channelId: string, textChannelId: string, attempt?: VoiceMusicAttempt): Promise<void>;
 }
 export interface VoiceMusicAttempt { requestId: string; expectedScope?: BotInteractionScope; }
 
@@ -276,6 +294,12 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       return decodeSearchResults(response.data);
     },
     enqueue: (id, input, attempt) => mutate(id, 12, [validatedInput(input, 2048, 'queue input')], attempt),
+    announce: async (id, textChannelId, attempt) => {
+      if (!ID.test(id) || !ID.test(textChannelId)) throw new Error('Invalid music announcement channel.');
+      const result = await interactions.request({ requestId: attempt?.requestId ?? newRequestId(), operation: 25, channelId: id, args: [textChannelId],
+        revision: '0', ...(attempt?.expectedScope === undefined ? {} : { expectedScope: attempt.expectedScope }) });
+      if (result.status !== 0) throw responseError(result.status);
+    },
     move: (id, queueId, destinationIndex, attempt) => {
       const existing = attempt === undefined ? undefined : attempts.get(attempt.requestId);
       if (existing !== undefined) return mutate(id, 22, existing.args, attempt);
@@ -300,7 +324,7 @@ export const voiceMusicAdapter: VoiceMusicAdapter = {
   state: () => EMPTY, refresh: () => Promise.reject(new Error('Authenticated voice music transport is unavailable.')), subscribe: () => () => undefined,
   pause: unavailable, skip: unavailable, stop: unavailable, seek: unavailable, setVolume: unavailable,
   setShuffle: unavailable, setRepeat: unavailable, remove: unavailable, move: unavailable, clearQueue: unavailable,
-  search: unavailable, enqueue: unavailable,
+  search: unavailable, enqueue: unavailable, announce: unavailable,
 };
 
 interface InteractionResponse { requestId: string; channelId: string | null; operation: number; status: number; revision: string | null; data: Uint8Array; }
@@ -374,7 +398,9 @@ function track(value: CborValue): VoiceMusicTrack | null {
   return result;
 }
 function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: string } {
-  const row = array(decode(data), 10);
+  const row = array(decode(data));
+  // v1 has 10 slots; a Bot with Ruling AI adds slot 10 (Unix ms when slot 4 was the playhead, 0 unknown) and 11 (its Unix ms now).
+  if (row.length !== 10 && row.length !== 12) throw new Error('Malformed music snapshot.');
   if (uint(field(row, 0), 1) !== 1) throw new Error('Unsupported music snapshot version.');
   const revisionValue = field(row, 1);
   if (typeof revisionValue !== 'bigint') throw new Error('Malformed music snapshot.');
@@ -389,7 +415,15 @@ function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: s
   const canControl = uint(field(row, 9), 1) === 1;
   return { revision, state: { status: 'available', track: current, queue, positionMs: uint(field(row, 4)), paused: uint(field(row, 5), 1) === 1,
     volume: uint(field(row, 6), 100), shuffle: uint(field(row, 7), 1) === 1,
-    repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: canControl, manageQueue: canControl } } };
+    repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: canControl, manageQueue: canControl },
+    ...playheadClock(row) } };
+}
+function playheadClock(row: CborValue[]): { clock?: { elapsedMs: number; receivedAtMs: number } } {
+  if (row.length !== 12) return {};
+  const at = uint(field(row, 10));
+  const now = uint(field(row, 11));
+  if (at === 0 || now < at) return {};
+  return { clock: { elapsedMs: now - at, receivedAtMs: Date.now() } };
 }
 function decodeSearchResults(data: Uint8Array): VoiceMusicSearchResult[] {
   const result = array(decode(data), 2);

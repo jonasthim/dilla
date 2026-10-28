@@ -747,14 +747,14 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 24 || operation === 31
+      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 25 || operation === 31
         || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
         || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
-    const music = operation >= 10 && operation <= 23;
+    const music = operation >= 10 && operation <= 23 || operation === 25;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
     if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
+    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 25, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
       : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
         : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
     if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
@@ -778,8 +778,9 @@ function invalid(command: Record<string, unknown>): string | null {
     if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
       || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
     if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
+    if (operation === 25 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]) || command.revision !== '0')) return 'music announcement is invalid';
     if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
       || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
       || operation === 82 || operation === 83;
     const revision = command.revision;
@@ -788,7 +789,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
     || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52
+    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 25 || op === 31 || op >= 50 && op <= 52
       || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
     || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined
@@ -1617,11 +1618,11 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
       || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
       || operation === 82 || operation === 83;
     const idArgument = (index: number): boolean =>
-      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
+      ((operation === 21 || operation === 25) && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
         || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
         || operation === 71 && index === 0 || operation === 72 && (index === 0 || index === 1) || operation === 73 && index === 0
         || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);

@@ -70,7 +70,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   10:{channel:true,mutation:false,count:0},11:{channel:true,mutation:false,count:1},12:{channel:true,mutation:true,count:1},
   13:{channel:true,mutation:true,count:0},14:{channel:true,mutation:true,count:0},15:{channel:true,mutation:true,count:0},16:{channel:true,mutation:true,count:0},
   17:{channel:true,mutation:true,count:1},18:{channel:true,mutation:true,count:1},19:{channel:true,mutation:true,count:0},20:{channel:true,mutation:true,count:1},
-  21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},24:{channel:false,mutation:false,count:0},
+  21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},24:{channel:false,mutation:false,count:0},25:{channel:true,mutation:true,count:1},
   30:{channel:false,mutation:false,count:1},31:{channel:false,mutation:true,count:2},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
   51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
   62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},64:{channel:false,mutation:false,count:1},
@@ -117,7 +117,7 @@ function validateArgs(op: number, a: unknown[]): void {
     case 1: case 2: u(0,0n,5n); if(op===2) a[1]=cborBytes(a[1],1,2400); break;
     case 11: t(0,1,200,true); break; case 12: t(0,1,2048,true); break;
     case 17: u(0); break; case 18: u(0,0n,100n); break; case 20: u(0,0n,2n); break;
-    case 21: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
+    case 21: case 25: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
     case 30: t(0,1,2000); break;
     case 31: {
       ident(0); const payload = cborBytes(a[1], 1, 2200); const rows = arr(decode(payload));
@@ -159,7 +159,7 @@ function requestValue(x: BotRequest): CborInput[] {
   if (spec.channel !== (x.channelId !== null)) fail('E_BOT_CHANNEL');
   if (spec.mutation ? x.revision === null || x.expires === null : x.revision !== null || x.expires !== null) fail('E_BOT_CONTEXT');
   if(x.revision!==null)uint(x.revision); if(x.expires!==null)uint(x.expires);
-  if ((x.operation === 31 || x.operation === 70 || x.operation === 80) && x.revision !== 0n) fail('E_BOT_CONTEXT');
+  if ((x.operation === 25 || x.operation === 31 || x.operation === 70 || x.operation === 80) && x.revision !== 0n) fail('E_BOT_CONTEXT');
   if (!Array.isArray(x.args)) fail('E_BOT_SHAPE');
   const args=[...x.args]; validateArgs(x.operation,args);
   return [1n,x.requestId,x.communityId,x.channelId,BigInt(x.operation),x.revision,x.expires,args];

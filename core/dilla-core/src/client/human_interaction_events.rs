@@ -138,7 +138,7 @@ fn response_matches_request(
             && request.channel_id.is_some()
             && request.revision.is_none()
             && request.expires.is_none())
-        || ((12..=23).contains(&request.operation)
+        || (((12..=23).contains(&request.operation) || request.operation == 25)
             && request.channel_id.is_some()
             && request.revision.is_some()
             && request.expires.is_some()))

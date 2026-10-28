@@ -8,7 +8,7 @@ export type { CoreClient } from './bridge';
 export type * from './state/types';
 export { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './state/settings';
 export { CALL_IDLE, VOICE_EMPTY, RINGS_EMPTY } from './state/types';
-export { createVoiceMusicAdapter, voiceMusicAdapter } from './voice/music';
+export { createVoiceMusicAdapter, musicPlayheadMs, voiceMusicAdapter } from './voice/music';
 export { VoiceMusicError, VoiceMusicAcceptedUnconfirmedError } from './voice/music';
 export { createBotInteractionClient, BotInteractionUncertainError, BotInteractionRejectedError, BotInteractionBindingMismatchError } from './bot/interactions';
 export type { BotInteractionClient, BotInteractionRequest, BotInteractionResult, BotInteractionScope } from './bot/interactions';

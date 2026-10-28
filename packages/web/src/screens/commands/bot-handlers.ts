@@ -281,6 +281,12 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             }
           }
           clearMusicCommandAttempt(client, cid, context.requestId);
+          // Jonas 2026-10-28: a /play that started the music is announced where it ran: Glenn posts "{name} started music in
+          // {room}" with the live player card. The Bot checks the requester, the track and this channel's permissions; the
+          // command's own private result does not wait for it.
+          const afterPlay = adapter.state(channelId);
+          if (fresh.track === null && afterPlay.status === 'available' && afterPlay.track !== null && !afterPlay.paused && context.binding.channelId !== channelId)
+            void (async () => { await adapter.announce(channelId, context.binding.channelId, attempt('announce')); })().catch(() => undefined);
           return ok('Track added to the music queue.');
         }
         case 'pause': return await applyControl(() => adapter.pause(channelId, true, attempt('pause')))

@@ -36,6 +36,9 @@ export const stage = {
   'music.stopped': 'Stopped',
   'music.idle': 'Nothing playing',
   'music.idleIn': '{bot} is idle in {room}. /play starts the next one.',
+  'music.left': '{bot} left voice',
+  // Fix round 1 (Jonas 2026-10-28): Glenn's public message where /play ran, the prototype's copy.
+  'music.started': '{name} started music in {room}',
   'music.play': 'Play',
   'music.pause': 'Pause',
   'music.skip': 'Skip',

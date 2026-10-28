@@ -8,6 +8,8 @@ import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
 import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
 import { Composer, type ComposerProps } from '../Composer/Composer.tsx';
 import { DateDivider, MessageLog } from '../MessageLog/MessageLog.tsx';
+import { NowPlaying } from '../NowPlaying/NowPlaying.tsx';
+import { npHarbour } from '../NowPlaying/np.fixture.tsx';
 
 const noop = () => {};
 
@@ -42,7 +44,8 @@ export const RAID_YAML = 'raid:\n  when: "2026-10-30T20:00"\n  where: the bridge
 export const RAID_JSON = '{\n  "raid": {\n    "when": "2026-10-30T20:00",\n    "party": ["Ada", "Björn", "Mira"],\n    "troll": true,\n    "max_party": 6\n  }\n}';
 export const yamlBody: BodyPart[] = [{ kind: 'text', text: 'put it in the raid file so nobody argues later:' }, { kind: 'codeblock', lang: 'yaml', text: RAID_YAML }];
 
-/** The prototype's #general (mc:general), as rows of the log, without the now-playing card (Task 8b). */
+/** The prototype's #general (mc:general), as rows of the log, ending with Glenn's "started music" message and its card (Task 8b
+ *  fix round 1: MessageItem renders the Bot's marker as that line and MusicMessageCard; Mira is not in harbour, so no control). */
 export function GeneralLog({ welcome = true }: { welcome?: boolean }) {
   return (
     <MessageLog label="messages in #general" emptyLabel="No messages yet."
@@ -56,6 +59,7 @@ export function GeneralLog({ welcome = true }: { welcome?: boolean }) {
       <Row author="Ada" time="20:29" body="the map from saturday is in #loot, the one with the coffee stain" nameColor={0xE9B6EC} />
       <Row author="Ada" time="20:29" grouped body="see you at the bridge" nameColor={0xE9B6EC} />
       <Row author="Björn" time="20:29" body={yamlBody} />
+      <Row author="Glenn" time="20:30" tag="bot" body="Ada started music in harbour" card={<NowPlaying {...npHarbour} canControl={false} />} />
     </MessageLog>
   );
 }

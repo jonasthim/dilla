@@ -21,7 +21,17 @@ permissions before sending. The complete music command list is in
 [Bot commands](bot-commands.md).
 
 Music results are private to the requester. Playback itself is heard in the voice
-channel. Commands target the voice channel the requester joined. Playback changes
+channel. One thing is public: when your `/play` starts the music, the bot posts
+"{you} started music in {voice channel}" in the channel where you ran it, with a live
+player card (title, who asked for it, progress, the queue under **Up next**). Everyone
+in that channel sees it; the card keeps showing the current player until the bot
+leaves voice. The bot posts it only for the person whose track started, once per
+track, and only in a channel where that person may post. Queuing more tracks, pausing,
+skipping and the other commands stay private.
+
+While you are in the voice channel with the bot, the same player sits in your voice
+panel and at the top of the voice stage. Its controls work for DJs, owners and
+administrators who are in that voice channel; anyone else sees a note saying why. Commands target the voice channel the requester joined. Playback changes
 require current owner/admin authority or a configured DJ role, and presence in that
 voice channel. The bot needs permission to connect and speak. Polls, reminders, and
 other command results follow their own visibility rules in [Bot commands](bot-commands.md).

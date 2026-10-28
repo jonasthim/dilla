@@ -19,7 +19,7 @@ const adapter = vi.hoisted(() => {
 });
 vi.mock('@dilla/client-core', async importOriginal => ({ ...await importOriginal<object>(), createVoiceMusicAdapter: () => adapter }));
 
-const { MusicPlayer, useMusicPlayer } = await import('./music.tsx');
+const { MusicPlayer, musicMarker, useMusicCard, useMusicPlayer } = await import('./music.tsx');
 
 const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
@@ -123,6 +123,48 @@ describe('useMusicPlayer', () => {
       adapter.refresh.mockClear();
       act(() => { vi.advanceTimersByTime(20_000); });
       expect(adapter.refresh).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+function CardHarness({ botInRoom, inCall }: { botInRoom: boolean; inCall: boolean }) {
+  const view = useMusicCard({ client: {} as CoreClient, communityId: COMMUNITY, channelId: CHANNEL, room: 'harbour', bot: 'Glenn', botInRoom, inCall, members, trust: undefined });
+  return <MusicPlayer view={view} variant="card" />;
+}
+
+describe('the "started music" card', () => {
+  it('parses the player marker only at the end of the body', () => {
+    expect(musicMarker(`Music started.\n[dilla-music:v1:${CHANNEL}:${ADA}]`)).toEqual({ voiceChannelId: CHANNEL, requesterId: ADA });
+    expect(musicMarker(`[dilla-music:v1:${CHANNEL}:${ADA}] and more`)).toBeNull();
+    expect(musicMarker('[dilla-music:v1:xyz:abc]')).toBeNull();
+  });
+
+  it('reads the room\'s player while the Bot is there; out of the call a press says to join the room', async () => {
+    render(<CardHarness botInRoom inCall={false} />);
+    act(() => { adapter.set(playing(false)); });
+    const card = await screen.findByRole('group', { name: 'Music player' });
+    expect(card).toHaveTextContent('Sea shanties for rowing');
+    await userEvent.click(within(card).getByRole('button', { name: 'Pause' }));
+    expect(adapter.pause).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('Join harbour to control playback');
+  });
+
+  it('once the Bot left the room the card says so and reads nothing', () => {
+    render(<CardHarness botInRoom={false} inCall={false} />);
+    expect(adapter.subscribe).not.toHaveBeenCalled();
+    const card = screen.getByRole('group', { name: 'Music player' });
+    expect(card).toHaveTextContent('Nothing playing');
+    expect(card).toHaveTextContent('Glenn left voice');
+  });
+
+  it('Ruling AI: the playhead runs on from the Bot stamp while playing', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    try {
+      render(<Harness variant="stage" />);
+      act(() => { adapter.set({ ...playing(), clock: { elapsedMs: 3_000, receivedAtMs: Date.now() } } as VoiceMusicState); });
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40');
+      act(() => { vi.advanceTimersByTime(5_000); });
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '45');
     } finally { vi.useRealTimers(); }
   });
 });

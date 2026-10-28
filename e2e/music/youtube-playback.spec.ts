@@ -196,7 +196,9 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   await joinVoice(djPage, SERVER, 'general');
   await joinVoice(djTwoPage, SERVER_TWO, 'general');
-  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp) => {
+  // Jonas 2026-10-28: results stay private; only a /play that starts the music adds Glenn's one public "started music" message
+  // (with the live player card) in the channel where it ran.
+  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp, announces = 0) => {
     await openChannel(musicPage, server, 'general');
     const commandId = commandText.slice(1).split(/\s/u, 1)[0] ?? '';
     const argument = commandText.slice(commandId.length + 2).trim();
@@ -215,19 +217,25 @@ test('two communities run isolated YouTube playback with independent Bot identit
       await expect(query).toHaveValue(argument);
     }
     const log = musicPage.getByRole('log', { name: 'messages in #general', exact: true });
-    const publicBotMessages = log.locator('[data-kind="bot"]');
+    // A bot-authored row (MessageRow marks its author `data-bot`; the old `[data-kind="bot"]` matched nothing since Signal).
+    const publicBotMessages = log.locator('.d-message-row:has(.d-message-row__author[data-bot])');
     const publicCount = await publicBotMessages.count();
     await region.getByRole('button', { name: 'Run command', exact: true }).click();
     const status = region.getByRole('status');
     await expect(status).toContainText(expected, { timeout: 90_000 });
     const result = await status.innerText();
-    await expect(publicBotMessages).toHaveCount(publicCount);
+    await expect(publicBotMessages).toHaveCount(publicCount + announces, { timeout: 30_000 });
+    if (announces > 0) {
+      const announcement = publicBotMessages.last();
+      await expect(announcement).toContainText('started music in general');
+      await expect(announcement.getByRole('group', { name: 'Music player', exact: true })).toBeVisible();
+    }
     await region.getByRole('button', { name: 'Cancel', exact: true }).click();
     await voiceRow(musicPage, 'general').click();
     return result;
   };
-  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Track added to the music queue\./);
-  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
+  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Track added to the music queue\./, 1);
+  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./, 1);
   await command(djPage, SERVER, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
   const queueA = await command(djPage, SERVER, '/queue', /Now playing:/);
   expect(queueA).toContain('Deep Learning State of the Art (2020)');
