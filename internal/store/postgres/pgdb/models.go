@@ -681,9 +681,9 @@ type Sessions struct {
 	Created      int64
 	Expires      int64
 	IdleExpires  int64
-	WireVersion  int64
 	E2eeVersion  int64
 	MediaVersion int64
+	WireVersion  int64
 }
 
 type SlowmodeMarks struct {

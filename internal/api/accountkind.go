@@ -1,0 +1,89 @@
+package api
+
+// accountkind.go is the instance-signed account-kind attestation (protocol/03 § Account kind
+// attestation, Task S1 part 2). A leaf credential's `kind` is signed by its own user's SSK, so it
+// is the user's claim; the attestation is the instance's statement of the account's kind, signed
+// with the instance's current external-sender key, which a client pins (protocol/03 § Instance
+// keys) and checks every leaf's credential kind against.
+//
+//	message     = "dilla account kind v1" || CBOR([1, instance_id(16), user_id(16), umk_pub(32), kind])
+//	attestation = CBOR([1, key_id(16), kind, sig(64)])
+//
+// Ed25519 signatures are deterministic, so the attestation of an account is the same bytes on
+// every request: it is signed when served rather than stored, and every account the instance holds,
+// one created before this change included, has one without a backfill pass.
+
+import (
+	"crypto/ed25519"
+	"errors"
+
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// AccountKindDomain is the attestation's signature domain.
+const AccountKindDomain = "dilla account kind v1"
+
+// accountKindWire is the first wire version whose GET /v1/users/{id}/device-list head carries the
+// attestation as its fifth element (protocol/07, wire 4).
+const accountKindWire = 4
+
+// AccountKindMessage is the signed message of an account-kind attestation.
+func AccountKindMessage(instanceID, userID id.ID, umkPub []byte, kind uint8) ([]byte, error) {
+	if len(umkPub) != ed25519.PublicKeySize || kind > 1 {
+		return nil, errors.New("api: account-kind attestation fields out of range")
+	}
+	body, err := cborx.Marshal([]any{uint64(1), instanceID[:], userID[:], umkPub, uint64(kind)})
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(AccountKindDomain), body...), nil
+}
+
+// AccountKindAttestation signs the account's kind with sign (the instance's current external-sender
+// key, named by keyID) and encodes the attestation.
+func AccountKindAttestation(sign func([]byte) ([]byte, error), instanceID, keyID id.ID, user store.UserRow) ([]byte, error) {
+	if sign == nil {
+		return nil, errors.New("api: account-kind signer is not wired")
+	}
+	message, err := AccountKindMessage(instanceID, user.ID, user.UMKPub, user.Kind)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := sign(message)
+	if err != nil {
+		return nil, err
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return nil, errors.New("api: account-kind signature has the wrong length")
+	}
+	return cborx.Marshal([]any{uint64(1), keyID[:], uint64(user.Kind), sig})
+}
+
+// VerifyAccountKindAttestation decodes and verifies an attestation for one account against the
+// instance's external-sender public key, returning the attested kind. It is the check a client
+// makes, kept here for the server's own tests and tools.
+func VerifyAccountKindAttestation(pub ed25519.PublicKey, instanceID, userID id.ID, umkPub, attestation []byte) (uint8, error) {
+	var a struct {
+		_     struct{} `cbor:",toarray"`
+		V     uint64
+		KeyID []byte
+		Kind  uint64
+		Sig   []byte
+	}
+	if err := cborx.Unmarshal(attestation, &a); err != nil {
+		return 0, err
+	}
+	if a.V != 1 || len(a.KeyID) != id.Size || a.Kind > 1 || len(a.Sig) != ed25519.SignatureSize || len(pub) != ed25519.PublicKeySize {
+		return 0, errors.New("api: malformed account-kind attestation")
+	}
+	message, err := AccountKindMessage(instanceID, userID, umkPub, uint8(a.Kind))
+	if err != nil {
+		return 0, err
+	}
+	if !ed25519.Verify(pub, message, a.Sig) {
+		return 0, errors.New("api: account-kind attestation does not verify")
+	}
+	return uint8(a.Kind), nil
+}

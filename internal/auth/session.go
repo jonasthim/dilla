@@ -997,7 +997,7 @@ func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionR
 // RecordCapabilities persists a negotiated selection against the exact bearer session hash.
 // The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
 func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
-	if len(tokenHash) != 32 || (wire != 2 && wire != 3) || e2ee != 1 || media != 1 {
+	if len(tokenHash) != 32 || wire < 2 || wire > 4 || e2ee != 1 || media != 1 {
 		return errors.New("auth: invalid negotiated capabilities")
 	}
 	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)

@@ -515,7 +515,24 @@ func (d Deps) GetDeviceList(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, []any{row.Version, row.Blob, row.SSKSignature, row.PrevHash})
+	head := []any{row.Version, row.Blob, row.SSKSignature, row.PrevHash}
+	// Wire 4 (Task S1 part 2): the head carries the instance-signed account-kind attestation as
+	// its fifth element; a wire-2 or wire-3 session reads the four elements it always has.
+	if sess.WireVersion >= accountKindWire {
+		account, err := d.Repo.GetUser(r.Context(), userID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		attestation, err := AccountKindAttestation(d.SignAccountKind, d.Instance.InstanceID, d.Instance.ExternalSenderKeyID, account)
+		if err != nil {
+			d.logf(r, "api: account-kind attestation", "err", err)
+			server.WriteError(w, server.Errorf(server.CodeInternal, "account-kind attestation unavailable"))
+			return
+		}
+		head = append(head, attestation)
+	}
+	d.write(w, r, http.StatusOK, head)
 }
 
 // nullableTime renders a nullable unix second as a CBOR uint or null.
