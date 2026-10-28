@@ -10,6 +10,9 @@ writes, and the Proxmox LXC helper. There is no container image.
 
 ### Open tabs during an upgrade
 
+Music player (task 8b): upgrade `dillad` with its web client first and reload open tabs, then `dillabot`. An older
+web client cannot read the newer Bot's music snapshot; an older Bot simply does not post the "started music" message.
+
 For upgrades already running the media sidecar, the normal path is:
 
 ```mermaid

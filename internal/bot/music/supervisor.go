@@ -206,9 +206,10 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
 		return errors.New("music track starter returned invalid playback")
 	}
 	s.playback = p
-	// Ruling AI: the audio starts now, so the stored position is the playhead from this moment (a slow provider start
-	// would otherwise run the client's playhead ahead of the audio). Same revision: the next commit persists it.
-	s.state.PositionAtMS = time.Now().UnixMilli()
+	// Ruling AI (fix round 2): the provider has just started this track from its beginning, so the playhead is 0 from this
+	// moment (a slow provider start would otherwise run the client's playhead ahead of the audio). Same revision: the
+	// next commit persists it, and snapshots read this live state (MusicInteractions.CurrentState).
+	s.state.PositionMS, s.state.PositionAtMS = 0, time.Now().UnixMilli()
 	go s.monitor(p)
 	return nil
 }

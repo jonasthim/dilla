@@ -141,6 +141,10 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 			startNext(&next)
 		}
 		if next.Current != nil {
+			// Fix round 2 (Ruling AI, the truth): a provider starts a track from its beginning; it has no offset.
+			if next.Paused {
+				next.PositionMS = 0
+			}
 			next.Paused = false
 		}
 	case OpStop:
@@ -155,9 +159,9 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 	case OpSeek:
 		if next.Current == nil || op.PositionMS < 0 || (next.Current.DurationMS > 0 && op.PositionMS > next.Current.DurationMS) {
 			err = ErrInvalidOperation
-		} else {
-			next.PositionMS = op.PositionMS
 		}
+		// Fix round 2: no provider applies a seek to the audio yet, so the playhead does not move; the request is
+		// validated and acknowledged (a provider that seeks will move PositionMS here).
 	case OpSetVolume:
 		if op.Volume > 100 {
 			err = ErrInvalidOperation

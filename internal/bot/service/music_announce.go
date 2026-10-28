@@ -4,7 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/music"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
@@ -14,6 +18,55 @@ import (
 
 // View channel, send messages and read history (api.PermViewChannel|PermSendMessages|PermReadHistory), as a poll needs.
 const musicAnnounceChannelSend = uint64(1<<0 | 1<<1 | 1<<6)
+
+const (
+	// musicAnnounceWindowMS: only a track that started at most this long ago is announced (security review L6).
+	musicAnnounceWindowMS = 30_000
+	// musicAnnounceRequesterGap: one announcement of a new track per requester per minute (L6).
+	musicAnnounceRequesterGap = time.Minute
+)
+
+// MusicAnnounceLimiter remembers each requester's last announced track, so a retry of that track resumes its send while
+// another track within a minute is refused. One per installation; the zero value is ready.
+type MusicAnnounceLimiter struct {
+	mu   sync.Mutex
+	last map[id.ID]musicAnnounceRecord
+}
+
+type musicAnnounceRecord struct {
+	item string
+	at   time.Time
+}
+
+func (l *MusicAnnounceLimiter) allow(user id.ID, item string, now time.Time) bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last == nil {
+		l.last = map[id.ID]musicAnnounceRecord{}
+	}
+	prior, ok := l.last[user]
+	if ok && prior.item != item && now.Sub(prior.at) < musicAnnounceRequesterGap {
+		return false
+	}
+	if !ok || prior.item != item {
+		l.last[user] = musicAnnounceRecord{item: item, at: now}
+	}
+	for key, record := range l.last {
+		if now.Sub(record.at) > musicAnnounceRequesterGap {
+			delete(l.last, key)
+		}
+	}
+	return true
+}
+
+// NeutralizeBotMarkers keeps text a privileged member authors for the Bot to post (announcements, welcome messages,
+// role panels) from carrying a player marker clients would draw a card from (security review, L-related).
+func NeutralizeBotMarkers(text string) string {
+	return strings.ReplaceAll(text, "[dilla-music:", "(dilla-music:")
+}
 
 // musicAnnounceChannelAuthority resolves the actor's effective bits in one channel, overrides included.
 type musicAnnounceChannelAuthority interface {
@@ -28,7 +81,7 @@ type musicAnnounceChannelAuthority interface {
 // The destination: /play runs in the requester's client and reaches the Bot through the requester's private interaction
 // group, so the Bot never sees the text channel itself; the request names it. That name is never trusted on its own: the
 // Bot posts only where the requester's effective permissions for that very channel (role overrides included, resolved by
-// the server) allow viewing, sending and reading history, Owner and Administrator excepted as elsewhere, and only in a
+// the server) allow viewing, sending and reading history (owners and administrators too: no shortcut), and only in a
 // text channel of this community (ResolveTextGroup). A channel the requester cannot post in gets a refusal, no message.
 //
 // Only the member who requested the current track may announce it, only while they may DJ in that voice call. One message per (voice channel, current track): the operation id is derived from both, so a
@@ -37,6 +90,7 @@ type MusicAnnouncements struct {
 	Music       *MusicInteractions
 	Authority   rolePanelAuthority
 	Channels    musicAnnounceChannelAuthority
+	Limiter     *MusicAnnounceLimiter
 	Destination rolePanelDestination
 	Sender      rolePanelSender
 	Discovery   rolePanelDiscovery
@@ -51,9 +105,10 @@ func (h MusicAnnouncements) Handlers() map[protocol.Operation]InteractionHandler
 	}
 }
 
-// MusicAnnouncementText is the message body: a plain fallback line, then the marker clients render the card from.
-func MusicAnnouncementText(voice, requester id.ID) string {
-	return fmt.Sprintf("Music started.\n[dilla-music:v1:%s:%s]", voice.String(), requester.String())
+// MusicAnnouncementText is the message body: a plain fallback line, then the marker clients render the card from. The
+// queue item binds the card to this track: once another track plays, clients show the ended state (task review 2).
+func MusicAnnouncementText(voice, requester id.ID, item string) string {
+	return fmt.Sprintf("Music started.\n[dilla-music:v1:%s:%s:%s]", voice.String(), requester.String(), item)
 }
 
 //nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
@@ -83,21 +138,21 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if !dj {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
-	authority, present, err := h.Authority.BotActorAuthority(ctx, h.CommunityID, actor.User)
+	_, present, err := h.Authority.BotActorAuthority(ctx, h.CommunityID, actor.User)
 	if err != nil {
 		return InteractionResult{}, err
 	}
 	if !present {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
-	if !authority.Owner && !authority.Administrator {
-		bits, visible, err := h.Channels.BotActorChannelAuthority(ctx, h.CommunityID, actor.User, text)
-		if err != nil {
-			return InteractionResult{}, err
-		}
-		if !visible || bits&musicAnnounceChannelSend != musicAnnounceChannelSend {
-			return InteractionResult{Status: interactionStatusForbidden}, nil
-		}
+	// Security review L4: always the server's channel resolver, owners and administrators included (it returns their
+	// full bits for a channel they can see, and keeps a timed-out member out).
+	bits, visible, err := h.Channels.BotActorChannelAuthority(ctx, h.CommunityID, actor.User, text)
+	if err != nil {
+		return InteractionResult{}, err
+	}
+	if !visible || bits&musicAnnounceChannelSend != musicAnnounceChannelSend {
+		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	snapshot, err := h.Music.Store.Load(ctx, voice)
 	if err != nil {
@@ -109,15 +164,30 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 		if err != nil {
 			return InteractionResult{}, err
 		}
-		if revision == snapshot.Revision && live.Revision == snapshot.Revision {
-			state = live
+		// Security review L5: a live state that is not the stored revision is a race, as in MusicInteractions.handle.
+		if revision != snapshot.Revision || live.Revision != snapshot.Revision {
+			current := snapshot.Revision
+			return InteractionResult{Status: interactionStatusConflict, Revision: &current}, nil
 		}
+		state = live
 	}
 	if state.Current == nil || state.Paused {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	if state.Current.RequesterID != actor.User.String() {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
+	}
+	clock := time.Now
+	if h.Now != nil {
+		clock = h.Now
+	}
+	// Security review L6: only a track that has just started (a stamped playhead within 30 s), and one new track per
+	// requester per minute; a retry of the same track still resumes its first send.
+	if state.PositionAtMS == 0 || music.PlayheadMS(state, clock().UnixMilli()) > musicAnnounceWindowMS {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	if !h.Limiter.allow(actor.User, state.Current.ID, clock()) {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, text)
 	if err != nil || group.IsZero() {
@@ -130,15 +200,11 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if discovery.Generation == 0 || discovery.InstanceID.IsZero() {
 		return InteractionResult{}, client.ErrProtocol
 	}
-	now := time.Now
-	if h.Now != nil {
-		now = h.Now
-	}
-	created := now().UTC().Unix()
+	created := clock().UTC().Unix()
 	if created < 0 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	body, err := cborx.Marshal([]any{uint64(0), nil, MusicAnnouncementText(voice, actor.User), []any{}, nil})
+	body, err := cborx.Marshal([]any{uint64(0), nil, MusicAnnouncementText(voice, actor.User, state.Current.ID), []any{}, nil})
 	if err != nil {
 		return InteractionResult{}, err
 	}

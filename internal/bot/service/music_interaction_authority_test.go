@@ -18,6 +18,15 @@ type musicAuthoritySessionFake struct {
 	call               client.ChannelCallState
 	permissions        uint64
 	permissionSequence []uint64
+	// hidden makes the voice channel invisible to the actor (its effective channel bits lack view).
+	hidden bool
+}
+
+func (s *musicAuthoritySessionFake) BotActorChannelAuthority(context.Context, id.ID, id.ID, id.ID) (uint64, bool, error) {
+	if s.hidden {
+		return 0, true, nil
+	}
+	return musicPermissionView, true, nil
 }
 
 func (s *musicAuthoritySessionFake) BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error) {
@@ -246,3 +255,20 @@ func TestMusicAuthorityRejectsMissingCapabilityAndPermissionLostAtFinalDJCheck(t
 }
 
 func ptrID(value id.ID) *id.ID { return &value }
+
+// Security review M2: a member who cannot view the voice channel cannot read its player (op 10) or act on it.
+func TestMusicAuthorityRequiresViewOnTheVoiceChannel(t *testing.T) {
+	community, installationID, channel, actorID, callID := id.New(), id.New(), id.New(), id.New(), id.New()
+	installation := store.BotInstallationRow{ID: installationID, CommunityID: community, State: store.BotInstallationReady, Capabilities: musicBotCapability}
+	session := &musicAuthoritySessionFake{present: true, permissions: musicPermissionConnect | musicPermissionSpeak,
+		call: client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actorID}}}}
+	authority := &CommunityMusicInteractionAuthority{Session: session, Store: &musicAuthorityStoreFake{installation: installation}, InstallationID: installationID, CommunityID: community}
+	call := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
+	if ok, err := authority.CanUse(context.Background(), InteractionActor{User: actorID}, call); err != nil || !ok {
+		t.Fatalf("a member who sees the channel may read its player: %v %v", ok, err)
+	}
+	session.hidden = true
+	if ok, err := authority.CanUse(context.Background(), InteractionActor{User: actorID}, call); err != nil || ok {
+		t.Fatalf("a member who cannot see the channel must not read its player: %v %v", ok, err)
+	}
+}

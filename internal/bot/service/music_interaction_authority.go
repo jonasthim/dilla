@@ -19,7 +19,11 @@ type musicAuthoritySession interface {
 	BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error)
 	ChannelCall(context.Context, id.ID) (client.ChannelCallState, error)
 	ChannelPermissions(context.Context, id.ID) (uint64, error)
+	BotActorChannelAuthority(context.Context, id.ID, id.ID, id.ID) (uint64, bool, error)
 }
+
+// musicPermissionView is api.PermViewChannel: who may read a voice channel's player (security review M2).
+const musicPermissionView uint64 = 1 << 0
 
 type musicAuthorityStore interface {
 	GetActiveBotInstallationByCommunity(context.Context, id.ID) (store.BotInstallationRow, error)
@@ -71,6 +75,12 @@ func (a *CommunityMusicInteractionAuthority) CanUse(ctx context.Context, actor I
 	}
 	_, present, err := a.Session.BotActorAuthority(ctx, a.CommunityID, actor.User)
 	if err != nil || !present {
+		return false, err
+	}
+	// Security review M2: the player (title, requester, queue) is only for members who can see this voice channel,
+	// resolved per channel with its overrides.
+	view, visible, err := a.Session.BotActorChannelAuthority(ctx, a.CommunityID, actor.User, call.ChannelID)
+	if err != nil || !visible || view&musicPermissionView == 0 {
 		return false, err
 	}
 	// Managers can issue an emergency stop while away from the call. All other

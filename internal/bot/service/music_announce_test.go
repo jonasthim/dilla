@@ -35,6 +35,10 @@ func (f *musicAnnounceAuthorityFake) BotActorChannelAuthority(_ context.Context,
 
 type musicAnnounceFixture struct {
 	community, actor, voice, text, group, request id.ID
+	item                                          string
+	now                                           time.Time
+	live                                          *music.State
+	limiter                                       *MusicAnnounceLimiter
 	store                                         *musicInteractionStoreFake
 	authority                                     *musicInteractionAuthorityFake
 	sender                                        *rolePanelSendFake
@@ -42,10 +46,12 @@ type musicAnnounceFixture struct {
 }
 
 func newMusicAnnounceFixture(requester id.ID, paused bool) *musicAnnounceFixture {
-	f := &musicAnnounceFixture{community: id.New(), actor: requester, voice: id.New(), text: id.New(), group: id.New(), request: id.New()}
+	f := &musicAnnounceFixture{community: id.New(), actor: requester, voice: id.New(), text: id.New(), group: id.New(), request: id.New(),
+		item: id.New().String(), now: time.Unix(100, 0), limiter: &MusicAnnounceLimiter{}}
 	state := music.InitialState()
-	track := music.Track{ID: "item-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Sea shanties", RequesterID: requester.String(), DurationMS: 214000}
-	state.Current, state.Paused, state.Revision = &track, paused, 3
+	track := music.Track{ID: f.item, Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Sea shanties", RequesterID: requester.String(), DurationMS: 214000}
+	// The track started 5 s before the request (security review L6: within 30 s).
+	state.Current, state.Paused, state.Revision, state.PositionAtMS = &track, paused, 3, 95_000
 	f.store = &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: 3}}
 	f.authority = &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: f.voice, Active: true}, user: true, dj: true}
 	operation, attempt := musicAnnounceIDs(f.community, f.voice, track.ID)
@@ -58,9 +64,16 @@ func newMusicAnnounceFixture(requester id.ID, paused bool) *musicAnnounceFixture
 
 func (f *musicAnnounceFixture) run(t *testing.T, actor id.ID) InteractionResult {
 	t.Helper()
-	h := MusicAnnouncements{Music: &MusicInteractions{Store: f.store, Authority: f.authority, CommunityID: f.community}, Authority: f.member, Channels: f.member,
+	musicHandler := &MusicInteractions{Store: f.store, Authority: f.authority, CommunityID: f.community}
+	if f.live != nil {
+		live := *f.live
+		musicHandler.CurrentState = func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+			return live, live.Revision, nil
+		}
+	}
+	h := MusicAnnouncements{Music: musicHandler, Authority: f.member, Channels: f.member, Limiter: f.limiter,
 		Destination: &rolePanelDestinationFake{group: f.group}, Sender: f.sender, Discovery: &rolePanelDiscoveryFake{generation: 7},
-		Session: &client.Session{}, CommunityID: f.community, Now: func() time.Time { return time.Unix(100, 0) }}
+		Session: &client.Session{}, CommunityID: f.community, Now: func() time.Time { return f.now }}
 	zero, expires := uint64(0), uint64(130)
 	result, err := h.Handlers()[protocol.OpMusicAnnounce].Handle(context.Background(), InteractionActor{User: actor}, protocol.Request{
 		RequestID: f.request, CommunityID: f.community, ChannelID: &f.voice, Operation: protocol.OpMusicAnnounce, Revision: &zero, Expires: &expires, Args: []any{f.text}})
@@ -85,7 +98,7 @@ func TestMusicAnnouncePostsTheMarkerInTheTextChannelForTheRequester(t *testing.T
 		t.Fatalf("body=%v err=%v", body, err)
 	}
 	text, _ := body[2].(string)
-	if !strings.HasSuffix(text, "\n[dilla-music:v1:"+f.voice.String()+":"+actor.String()+"]") {
+	if !strings.HasSuffix(text, "\n[dilla-music:v1:"+f.voice.String()+":"+actor.String()+":"+f.item+"]") {
 		t.Fatalf("body text %q lacks the player marker", text)
 	}
 	var identity []any
@@ -160,10 +173,65 @@ func TestMusicAnnounceChecksTheNamedChannelsOwnPermissions(t *testing.T) {
 	if len(f.member.asked) != 1 || f.member.asked[0] != f.text {
 		t.Fatalf("channel authority asked for %v, want exactly the named text channel %s", f.member.asked, f.text)
 	}
+	// Security review L4: an administrator goes through the channel resolver too (no shortcut).
 	admin := newMusicAnnounceFixture(actor, false)
 	admin.member.admin = true
 	admin.member.channel = map[id.ID]uint64{}
-	if result := admin.run(t, actor); result.Status != 0 || admin.sender.calls != 1 {
-		t.Fatalf("an administrator is excepted as elsewhere: result=%+v sends=%d", result, admin.sender.calls)
+	if result := admin.run(t, actor); result.Status != interactionStatusForbidden || admin.sender.calls != 0 {
+		t.Fatalf("an administrator who cannot see the channel: result=%+v sends=%d", result, admin.sender.calls)
+	}
+}
+
+// Security review L5: a live state that is not the stored revision is a conflict, never announced.
+func TestMusicAnnounceRefusesARevisionRace(t *testing.T) {
+	actor := id.New()
+	f := newMusicAnnounceFixture(actor, false)
+	live := f.store.snapshot.State
+	live.Revision = 4
+	f.live = &live
+	if result := f.run(t, actor); result.Status != interactionStatusConflict || f.sender.calls != 0 {
+		t.Fatalf("result=%+v sends=%d, want conflict and no send", result, f.sender.calls)
+	}
+}
+
+// Security review L6: only a track that started within 30 s, and one new track per requester per minute.
+func TestMusicAnnounceWindowAndRate(t *testing.T) {
+	actor := id.New()
+	late := newMusicAnnounceFixture(actor, false)
+	late.store.snapshot.State.PositionAtMS = 60_000
+	if result := late.run(t, actor); result.Status != interactionStatusUnavailable || late.sender.calls != 0 {
+		t.Fatalf("a track 40 s in: result=%+v sends=%d", result, late.sender.calls)
+	}
+	f := newMusicAnnounceFixture(actor, false)
+	if result := f.run(t, actor); result.Status != 0 {
+		t.Fatalf("first announcement: %+v", result)
+	}
+	if result := f.run(t, actor); result.Status != 0 || f.sender.calls != 2 {
+		t.Fatalf("a retry of the same track resumes its send: %+v sends=%d", result, f.sender.calls)
+	}
+	next := id.New().String()
+	f.store.snapshot.State.Current.ID = next
+	f.now = f.now.Add(10 * time.Second)
+	f.store.snapshot.State.PositionAtMS = f.now.UnixMilli()
+	if result := f.run(t, actor); result.Status != interactionStatusUnavailable || f.sender.calls != 2 {
+		t.Fatalf("another track within a minute: %+v sends=%d", result, f.sender.calls)
+	}
+	f.now = f.now.Add(time.Minute)
+	f.store.snapshot.State.PositionAtMS = f.now.UnixMilli()
+	operation, attempt := musicAnnounceIDs(f.community, f.voice, next)
+	f.sender.receipt.OperationID, f.sender.receipt.AttemptID = operation, attempt
+	if result := f.run(t, actor); result.Status != 0 || f.sender.calls != 3 {
+		t.Fatalf("another track after a minute: %+v sends=%d", result, f.sender.calls)
+	}
+}
+
+func TestNeutralizeBotMarkersKeepsMembersFromForgingThePlayer(t *testing.T) {
+	forged := "hi\n[dilla-music:v1:" + id.New().String() + ":" + id.New().String() + ":" + id.New().String() + "]"
+	if got := NeutralizeBotMarkers(forged); strings.Contains(got, "[dilla-music:") {
+		t.Fatalf("marker survived: %q", got)
+	}
+	text, err := rolePanelMessage([]rolePanelOption{{Emoji: "x", Name: "[dilla-music:v1:a:b:c]", Role: id.New()}})
+	if err != nil || strings.Contains(text, "[dilla-music:") {
+		t.Fatalf("role panel text %q err %v", text, err)
 	}
 }

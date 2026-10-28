@@ -745,7 +745,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													}
 													// Jonas 2026-10-28: /play that starts music is announced publicly with the live player card.
 													for operation, handler := range runtimeMusicAnnounceHandlers(musicInteractions, service.MusicAnnouncements{
-														Music: musicInteractions, Authority: result.Session, Channels: result.Session,
+														Music: musicInteractions, Authority: result.Session, Channels: result.Session, Limiter: &service.MusicAnnounceLimiter{},
 														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
 													}) {

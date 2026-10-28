@@ -46,6 +46,7 @@ Operation, arguments, channel requirement, mutation:
 - 22 music.move: [queue_item_id, before_item_id|null], channel required, mutation
 - 23 music.clear: [], channel required, mutation
 - 24 music.providers.status: [], no channel, read; returns a fresh bounded provider snapshot
+- 25 music.announce: [text_channel_id], channel required (the voice channel), mutation, revision must be 0
 - 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read; requires current `manage_community` and returns data `[1, rendered_text]` using the sample references `member`, `server`, and `channel` without posting
 - 31 roles.panel.publish: [destination_channel_id, mappings_bstr], no interaction channel, mutation; requires current `manage_roles`, ready Roles-capable Bot, and a readable destination; sends a normal Bot-authored encrypted text message through the send coordinator and returns `[destination_channel_id, accepted_message_seq]` only after its accepted send receipt
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
@@ -268,6 +269,40 @@ search and enqueue remain unavailable until separately qualified. The existing
 YouTube resolver accepts only its bounded search/video/playlist grammar and
 runs extraction in its public-YouTube-only network sandbox; arbitrary extractor
 syntax and other hosts are rejected.
+
+`music.state` data is `[1, revision, current_track|null, queue, position_ms,
+paused, volume, shuffle, repeat, can_control, position_at_ms, now_ms]`. The last
+two slots: the Bot's Unix milliseconds at which `position_ms` was the playhead
+(0 unknown) and the Bot's Unix milliseconds when it answered. While a track
+plays, a client shows `position_ms + (now_ms - position_at_ms)` plus its own
+time since receipt, clamped to the track; it never compares its clock with the
+Bot's. The Bot settles the reached playhead at every mutation and restarts it at
+0 when a provider starts a track (providers start from the beginning; `seek` is
+validated and acknowledged but moves nothing until a provider applies seeks).
+Readers accept arrays of at least 10 slots (and track tuples of at least 8),
+read the stamp only when slots 10 and 11 are present, and ignore later slots.
+Reading the state requires the actor's current View channel permission on the
+voice channel, resolved with its overrides.
+
+`music.announce` posts the one public "started music" message: body
+`Music started.\n[dilla-music:v1:<voice_channel>:<requester>:<queue_item>]`,
+sent through the Bot's MLS group with a durable receipt, into the named text
+channel's group. The Bot accepts it only from the requester of the current,
+playing track that started at most 30 seconds ago, who may DJ in that call and
+whose effective permissions in the named text channel (overrides included, no
+owner/administrator shortcut) allow view, send and read history; at most one new
+track per requester per minute. The operation id derives from (community, voice
+channel, queue item), so a repeat resumes the first message instead of posting
+again. A conflict between live and stored state answers 4. Clients draw the live
+card only for an unedited message from the community's managed Bot account
+(member kind 1) and only while that queue item plays. Text other members author
+for the Bot to post (announcements, welcome messages, role panels) has
+`[dilla-music:` neutralized.
+
+Upgrade order for this change: update `dillad` and its web client first, reload
+open tabs, then update `dillabot`. A web client from before it rejects a snapshot
+longer than 10 slots; a Bot from before it refuses operation 25 (no announcement
+appears).
 
 ## Signed moderation removal
 
