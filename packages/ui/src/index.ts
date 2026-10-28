@@ -121,6 +121,7 @@ export type { VoiceChannelRowProps } from './VoiceChannelRow/VoiceChannelRow.tsx
 export { UserPanel } from './UserPanel/UserPanel.tsx';
 export type { UserPanelProps } from './UserPanel/UserPanel.tsx';
 export { VoiceDock } from './VoiceDock/VoiceDock.tsx';
+export { NowPlaying, playerTime, type NowPlayingProps, type NowPlayingLabels, type NowPlayingTrack, type NowPlayingQueueItem } from './NowPlaying/NowPlaying.tsx';
 export type { VoiceDockProps } from './VoiceDock/VoiceDock.tsx';
 export { CallControls, VOICE_ICONS, VOICE_SHORTCUTS, voiceWhy } from './CallControls/CallControls.tsx';
 export type { CallControlsProps, VoiceWhyLabels } from './CallControls/CallControls.tsx';

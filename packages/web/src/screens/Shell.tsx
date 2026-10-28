@@ -29,6 +29,7 @@ import {
 import { useCall } from './voice/useCall.tsx';
 import { callPhase, DmCall, dmCallStart, Dock, personMenu, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { isApplePlatform } from './voice/shortcuts.ts';
+import { useMusicPlayer } from './voice/music.tsx';
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
@@ -1033,8 +1034,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     speaking: false, muted: false, deafened: false, video: false, screen: false, web: false, bot: false, away: true,
   }));
   const selfAway = self !== null && (afkHere?.away ?? []).some(row => row.userId === self.id);
+  // Task 8b: one music player for this device's call (README §9), read while the Bot is in that call.
+  const callCommunityId = call.channelId === null ? null
+    : (railSlices.flat() as ChannelSummary[]).find(ch => ch.id === call.channelId && ch.kind === 1)?.communityId ?? null;
+  const callBot = call.channelId === null ? null : voiceSlice?.[call.channelId]?.participants.find(p => p.bot)?.name ?? null;
+  const music = useMusicPlayer({ client, communityId: callCommunityId, channelId: call.channelId, room: call.channelId === null ? '' : whereOf(call.channelId),
+    bot: callBot, members: allMembers, trust });
   const voiceCtx: VoiceContext = {
-    client, call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
+    client, call, slice: callSlice, music, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => void navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),

@@ -78,6 +78,9 @@
  *   icons/smile-plus.svg  394b13141695981e7cb6e0684bdd92c98dea8ec48cc0b2b771303323d7cf7c69
  *   icons/code-xml.svg  f0782c1c2078078fe8017b713d7da1e118023caeff579f6f1de177b608da2ce9
  *   icons/layout-grid.svg  ae25ece718b9968c27a80c68f91e75bb2cf625764aa2cbf9cd78a31179614bc2
+ *   icons/skip-forward.svg  f6bdc4b8d453332bafcf1366a48d5ece4bd4f15eced97c85c3676bd22c5cadf9
+ *   icons/list-music.svg  e86c9d93aab1828013afca1ecc679f9eea432881ea373f97064801b5768d2580
+ *   icons/music.svg  8721b8a3594219c1313c4083049e5a5c049f49c47b1cd93fdb61d52a0803e42b
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -475,6 +478,22 @@ export const ICONS = {
     ['rect', { width: '7', height: '7', x: '14', y: '3', rx: '1' }],
     ['rect', { width: '7', height: '7', x: '14', y: '14', rx: '1' }],
     ['rect', { width: '7', height: '7', x: '3', y: '14', rx: '1' }],
+  ],
+  'skip-forward': [
+    ['path', { d: 'M21 4v16' }],
+    ['path', { d: 'M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z' }],
+  ],
+  'list-music': [
+    ['path', { d: 'M16 5H3' }],
+    ['path', { d: 'M11 12H3' }],
+    ['path', { d: 'M11 19H3' }],
+    ['path', { d: 'M21 16V5' }],
+    ['circle', { cx: '18', cy: '16', r: '3' }],
+  ],
+  'music': [
+    ['path', { d: 'M9 18V5l12-2v13' }],
+    ['circle', { cx: '6', cy: '18', r: '3' }],
+    ['circle', { cx: '18', cy: '16', r: '3' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

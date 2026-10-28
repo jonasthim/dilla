@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ComposedShell, fixtureTopBar, SignalShell } from './AppShell.fixture.tsx';
 import { HarbourPreview, HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
+import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 // The web's voice pane classes (dw-voice-channel, dw-voice-stage): app.css lays the stage out in the main pane.
 import '../../../web/src/app.css';
 import { TopBar } from '../TopBar/TopBar.tsx';
@@ -219,12 +220,12 @@ const voiceMain = (stage: React.ReactNode) => <div className="dw-voice-channel">
 export const FrameVoice: Story = {
   parameters: { layout: 'fullscreen' },
   render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
-    main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" />)} /></div>,
+    main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} />)} /></div>,
 };
 export const FrameVoiceGrid: Story = {
   parameters: { layout: 'fullscreen' },
   render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
-    main={voiceMain(<HarbourStage tiles={harbourTiles()} focus={null} />)} /></div>,
+    main={voiceMain(<HarbourStage tiles={harbourTiles()} focus={null} nowPlaying={harbourStageBar} />)} /></div>,
 };
 export const FrameVoicePreview: Story = {
   parameters: { layout: 'fullscreen' },

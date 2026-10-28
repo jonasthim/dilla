@@ -30,6 +30,11 @@ export type ColorTokens = {
    * tile's caption and buttons (okEdgeShare: a focused share's edge while its owner speaks; accentHalo: the person menu's range thumb; scrimCaption: a grid tile's caption at 0.8; light themes draw both light, under dark text), a speaking focused tile's edge, Leave's hover, and Join voice's ink on --ok.
    */
   stageTile: string; stageStripe: string; scrimTile: string; scrimCaption: string; okEdge: string; okEdgeShare: string; accentHalo: string; dangerHover: string; okInk: string;
+  /**
+   * The music player (task 8b), each the prototype's literal: the card's edge (#252A33), the open queue toggle's 0.1 accent
+   * tint, the hairline over the dock's player row (0.15 --live) and a toast's fill (#141820).
+   */
+  cardEdge: string; accentOpen: string; okDivider: string; toast: string;
   linkUnderline: 0 | 1;
 };
 
@@ -48,6 +53,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     codeLineNo: '#4A5059', codeComment: '#6C737E', codeBool: '#E9B6EC', codeKeyword: '#C4A7FF', codeRowHover: 'rgba(255,255,255,0.02)',
     dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E', patternStripe: 'rgba(255,255,255,0.04)',
     stageTile: '#0E1116', stageStripe: 'rgba(255,255,255,0.03)', scrimTile: 'rgba(8,9,11,0.82)', scrimCaption: 'rgba(8,9,11,0.8)', okEdge: 'rgba(124,255,142,0.7)', okEdgeShare: 'rgba(124,255,142,0.55)', accentHalo: 'rgba(90,168,230,0.35)', dangerHover: '#FF8585', okInk: '#06150A',
+    cardEdge: '#252A33', accentOpen: 'rgba(90,168,230,0.1)', okDivider: 'rgba(124,255,142,0.15)', toast: '#141820',
     linkUnderline: 0,
   },
   light: {
@@ -64,6 +70,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     codeLineNo: '#5C635C', codeComment: '#5C635C', codeBool: '#8A2E8F', codeKeyword: '#5B3BA8', codeRowHover: 'rgba(0,0,0,0.03)',
     dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F', patternStripe: 'rgba(0,0,0,0.04)',
     stageTile: '#FFFFFF', stageStripe: 'rgba(0,0,0,0.03)', scrimTile: 'rgba(255,255,255,0.88)', scrimCaption: 'rgba(255,255,255,0.88)', okEdge: 'rgba(27,115,52,0.7)', okEdgeShare: 'rgba(27,115,52,0.55)', accentHalo: 'rgba(0,87,153,0.35)', dangerHover: '#8F1E18', okInk: '#FFFFFF',
+    cardEdge: '#B4BBB4', accentOpen: 'rgba(0,87,153,0.1)', okDivider: 'rgba(27,115,52,0.15)', toast: '#FFFFFF',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -80,6 +87,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     codeLineNo: '#C8C8C8', codeComment: '#C8C8C8', codeBool: '#F5C2F7', codeKeyword: '#D9C8FF', codeRowHover: 'rgba(255,255,255,0.08)',
     dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8', patternStripe: 'rgba(255,255,255,0.08)',
     stageTile: '#000000', stageStripe: 'rgba(255,255,255,0.06)', scrimTile: 'rgba(0,0,0,0.85)', scrimCaption: 'rgba(0,0,0,0.85)', okEdge: '#9BFFA8', okEdgeShare: '#9BFFA8', accentHalo: 'rgba(156,203,255,0.5)', dangerHover: '#FFB8B8', okInk: '#000000',
+    cardEdge: '#FFFFFF', accentOpen: 'rgba(156,203,255,0.2)', okDivider: 'rgba(155,255,168,0.3)', toast: '#000000',
     linkUnderline: 1,
   },
 };
@@ -159,7 +167,7 @@ export const structural = {
   radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px', menu: '9px' },
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
-  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)', menu: '0 18px 48px rgba(0,0,0,0.6)' },
+  shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)', menu: '0 18px 48px rgba(0,0,0,0.6)', toast: '0 12px 30px rgba(0,0,0,0.5)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -191,7 +199,9 @@ export const structural = {
     /** Task 7 (the prototype's conversation): the feed's channel-switch fade, the composer's focus ring, the toolbar's rise and the 40ms entrance stagger. */
     switch: '140ms', switchRise: '240ms', focus: '160ms', rise: '180ms', stagger: '40ms',
     /** Task 8 (the prototype's voice stage): a tile's width and a speaker's scale, the focused tile's rise, and a caption's live meter beat. */
-    stage: '260ms', focusIn: '360ms', beat: '520ms' },
+    stage: '260ms', focusIn: '360ms', beat: '520ms',
+    /** Task 8b (the prototype's music player): the card's rise, the dock row's, the stage bar's, the queue's, and the progress fill's 1s linear step. */
+    player: '360ms', playerRow: '260ms', playerBar: '300ms', queue: '200ms', progress: '1s' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

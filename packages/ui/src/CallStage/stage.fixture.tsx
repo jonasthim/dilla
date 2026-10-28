@@ -115,15 +115,17 @@ export const harbourHeader = (topic: string) => <ChannelHeader kind="voice" name
 
 /** The stage of a joined channel, as VoiceView's Stage renders it, with its own focus state. */
 export function HarbourStage({ tiles, focus = null, controls, header = true, stats = '24 ms · ↑ 38 ↓ 71 kb/s · hearing 5 of 5', topic = '6 in voice',
-  name = 'harbour' }: {
+  name = 'harbour', nowPlaying }: {
   tiles: readonly StageTile[]; focus?: string | null; controls?: ReactNode; header?: boolean; stats?: string; topic?: string; name?: string;
+  /** Task 8b: the now-playing bar VoiceView passes while the bot plays in this room (the prototype's harbour: `harbourStageBar`). */
+  nowPlaying?: ReactNode;
 }) {
   const [focusedId, setFocusedId] = useState<string | null>(focus);
   return (
     <WithPictures tiles={tiles}>
       {pictured => (
         <CallStage title={`voice ${name}`} tiles={pictured} {...(header ? { header: <ChannelHeader kind="voice" name={name} topic={topic} /> } : {})}
-          focusedId={focusedId} onFocus={setFocusedId} code={null} notice={null} outgoing={null}
+          focusedId={focusedId} onFocus={setFocusedId} code={null} notice={null} outgoing={null} nowPlaying={nowPlaying}
           bar={{ name, stats }} controls={controls ?? stageControls()} labels={STAGE_LABELS} />
       )}
     </WithPictures>

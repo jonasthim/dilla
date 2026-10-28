@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import { VOICE_ICONS, voiceWhy, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 import { Icon } from '../Icon/Icon.tsx';
@@ -59,6 +59,8 @@ export interface VoiceDockProps {
     /** The reasons an inert camera or share gives (`voice.why.*`), read as its description; none without it. */
     why?: VoiceWhyLabels;
   };
+  /** Task 8b (README §5.4, §6.6): the compact now-playing row under the dock's row while the bot plays in this call (NowPlaying `compact`). */
+  music?: ReactNode;
   /** False renders the two status lines and the status region, and no controls (the phone's call bar holds the controls). Default true. */
   controls?: boolean;
   /** Ignored since web3.9 (R26). */
@@ -93,7 +95,7 @@ const PHASE_GLYPH = {
  */
 export function VoiceDock({
   phase, where, stats, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused,
-  announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
+  announcement, labels, controls: showControls = true, music, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
@@ -152,6 +154,7 @@ export function VoiceDock({
         </div>
       ) : null}
       </div>
+      {music ?? null}
       <p className="d-sr-only" role="status">{announcement}</p>
     </div>
   );

@@ -9,6 +9,10 @@ export interface VoiceMusicTrack {
   album?: string;
   artworkUrl?: string;
   durationMs: number;
+  /** The provider the snapshot names for a queued or current track ('youtube' or 'spotify'); absent for search results. */
+  provider?: 'youtube' | 'spotify';
+  /** The 32-hex user id of the member who queued it (snapshot row slot 7), when the Bot recorded one. */
+  requesterId?: string;
 }
 
 export interface VoiceMusicQueueItem { id: string; track: VoiceMusicTrack; }
@@ -361,8 +365,12 @@ function track(value: CborValue): VoiceMusicTrack | null {
     || provider === 'spotify' && /^spotify:track:[A-Za-z0-9]{22}$/u.test(canonicalId);
   if (!supported || !ID.test(itemId)) throw new Error('Unsupported music track.');
   const album = text(field(row, 5));
-  const result: VoiceMusicTrack = { id: itemId, title: text(field(row, 3)), artist: text(field(row, 4)), durationMs: uint(field(row, 6)) };
+  const result: VoiceMusicTrack = { id: itemId, title: text(field(row, 3)), artist: text(field(row, 4)), durationMs: uint(field(row, 6)),
+    provider: provider === 'spotify' ? 'spotify' : 'youtube' };
   if (album !== '') result.album = album;
+  // Slot 7 is the requester the Bot recorded (a user id; other markers, such as a search placeholder, are not a person).
+  const requester = row[7];
+  if (typeof requester === 'string' && ID.test(requester)) result.requesterId = requester;
   return result;
 }
 function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: string } {

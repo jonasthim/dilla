@@ -82,6 +82,22 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
+  it('exposes the provider and the requester the Bot recorded for a queued track', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    const ada = '0a'.repeat(16);
+    f.answer(f.getRequest(10), 0, '1', encode([1n, 1n, ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, ada],
+      [['12'.repeat(16), 'youtube', 'bcdefghijkl', 'Next', 'Other', '', 60_000n, 'search']], 30_000n, 0n, 75n, 0n, 0n, 1n]));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const state = f.adapter.state(CHANNEL);
+    if (state.status !== 'available') throw new Error('unavailable');
+    expect(state.track).toMatchObject({ provider: 'youtube', requesterId: ada, durationMs: 120_000 });
+    expect(state.queue[0]?.track.requesterId).toBeUndefined();
+    expect(state.positionMs).toBe(30_000);
+    unsubscribe();
+  });
+
   it('searches YouTube through authenticated operation 11 and returns stable result IDs', async () => {
     const f = fixture();
     const search = f.adapter.search(CHANNEL, 'harbor north');

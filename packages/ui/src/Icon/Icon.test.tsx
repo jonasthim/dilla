@@ -39,6 +39,10 @@ const SIGNAL_ICONS = {
   'code-xml': ['m18 16 4-4-4-4', 'm6 8-4 4 4 4', 'm14.5 4-5 16'],
   // Task 8: the focused voice tile's Grid button (the prototype's layout-grid).
   'layout-grid': ['rect', 'rect', 'rect', 'rect'],
+  // Task 8b: the NowPlaying player's skip, queue toggle and art placeholder.
+  'skip-forward': ['M21 4v16', 'M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z'],
+  'list-music': ['M16 5H3', 'M11 12H3', 'M11 19H3', 'M21 16V5', 'circle'],
+  'music': ['M9 18V5l12-2v13', 'circle', 'circle'],
 } as const;
 const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
 

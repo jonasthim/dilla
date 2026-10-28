@@ -4,6 +4,7 @@ import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
+import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 import { HarbourPreview, HarbourStage, harbourTiles, personTile, STAGE_LABELS, STAGE_STATE, stageControls, tileMenu, WithPictures } from './stage.fixture.tsx';
 
 // Every string is the shipped copy, quoted (packages/web/src/strings: voice.*, stage.*, callStage.*).
@@ -73,7 +74,7 @@ export const Grid5: Story = {
 /** The prototype's harbour after Grid: two shares and six people, min(31.5%, 340px) each, the last row centred. */
 export const GridHarbour: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={harbourTiles()} focus={null} />,
+  render: () => <HarbourStage tiles={harbourTiles()} focus={null} nowPlaying={harbourStageBar} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'GridHarbour'); },
 };
 /** A speaker: the 2px --ok edge, the avatar's 5px ring and scale(1.06), the caption's meter. */
@@ -85,18 +86,18 @@ export const SpeakingTile: Story = {
 /** A share focused (the prototype's harbour as you join): 16:9 at the row's height, Grid and full screen, the 188px filmstrip. */
 export const FocusShare: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" />,
+  render: () => <HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'FocusShare'); },
 };
 /** Review 1: a focused share whose owner speaks: the 0.55 --ok edge and the caption's meter (the prototype's focusShare). */
 export const FocusShareSpeaking: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={harbourTiles('Ada').map(t => (t.source === 'screen' && t.view.name === 'Ada' ? { ...t, view: { ...t.view, speaking: true } } : t))} focus="d-Ada:screen" />,
+  render: () => <HarbourStage tiles={harbourTiles('Ada').map(t => (t.source === 'screen' && t.view.name === 'Ada' ? { ...t, view: { ...t.view, speaking: true } } : t))} focus="d-Ada:screen" nowPlaying={harbourStageBar} />,
 };
 /** A person focused (Ole): the 120px avatar. */
 export const FocusPerson: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={harbourTiles()} focus="d-Ole:person" />,
+  render: () => <HarbourStage tiles={harbourTiles()} focus="d-Ole:person" nowPlaying={harbourStageBar} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'FocusPerson'); },
 };
 /** Not joined: the overlapping 48px faces, the room, who is there and the green Join voice. */
@@ -104,11 +105,11 @@ export const NotJoinedPreview: Story = { decorators: [desk], render: () => <Harb
 /** The phone (390): one 16:9 tile per row, a focused share over the 150px filmstrip, the call bar's icons centred. */
 export const Phone: Story = {
   decorators: [phone],
-  render: () => <HarbourStage header={false} tiles={harbourTiles('Björn')} focus="d-Ada:screen" />,
+  render: () => <HarbourStage header={false} tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} />,
 };
 export const PhoneGrid: Story = {
   decorators: [phone],
-  render: () => <HarbourStage header={false} tiles={harbourTiles()} focus={null} />,
+  render: () => <HarbourStage header={false} tiles={harbourTiles()} focus={null} nowPlaying={harbourStageBar} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'PhoneGrid'); },
 };
 

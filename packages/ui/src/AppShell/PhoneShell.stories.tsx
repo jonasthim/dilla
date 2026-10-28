@@ -24,6 +24,7 @@ import { GeneralLog, SignalComposer } from '../MessageRow/conversation.fixture.t
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
+import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 import '../../../web/src/app.css';
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
@@ -353,11 +354,11 @@ export const SignalVoice: Story = {
   globals: { theme: 'signal' },
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
     header={voiceHeader}><div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">
-      <HarbourStage header={false} tiles={harbourTiles('Björn')} focus="d-Ada:screen" /></div></div></AppShell></Phone>,
+      <HarbourStage header={false} tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} /></div></div></AppShell></Phone>,
 };
 export const SignalVoiceGrid: Story = {
   globals: { theme: 'signal' },
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
     header={voiceHeader}><div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">
-      <HarbourStage header={false} tiles={harbourTiles()} focus={null} /></div></div></AppShell></Phone>,
+      <HarbourStage header={false} tiles={harbourTiles()} focus={null} nowPlaying={harbourStageBar} /></div></div></AppShell></Phone>,
 };

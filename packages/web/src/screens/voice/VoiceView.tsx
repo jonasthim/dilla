@@ -12,6 +12,7 @@ import { linkQuality } from '../../call/stats.ts';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
+import { MusicPlayer, type MusicPlayerView } from './music.tsx';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
 
@@ -37,6 +38,9 @@ export interface VoiceContext {
    * it) and whether this user is away there; null for any other channel. `onJoinVoice` on it chooses AFK (useCall).
    */
   afkPage?(channelId: string): { people: readonly VoiceParticipantView[]; away: boolean } | null;
+  /** Task 8b: the music player of this device's call (useMusicPlayer), null while the Bot plays nothing there; the dock's row and
+   *  the stage's bar both read it. */
+  music?: MusicPlayerView | null;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -443,6 +447,7 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
         // Ruling Z: the prototype's voice header: the name and its topic ("{n} in voice" once joined, else "voice channel"), no controls.
         topic={joined ? t('voice.count', { n: v.voice?.[channelId]?.participants.length ?? 0 }) : t('voice.header.idle')} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
+        {...(joined && !dm && v.music != null && v.music.track !== undefined ? { nowPlaying: <MusicPlayer view={v.music} variant="stage" /> } : {})}
         {...(preview !== undefined ? { preview } : {})}
         {...(joined && !dm ? { bar: { name: name ?? title, stats: <StatsLine v={v} /> } } : {})}
         controls={joined ? <>{<Controls v={v} paused={paused} dm={dm} />}{dm ? <StageLines v={v} /> : null}</>
@@ -667,6 +672,7 @@ export function Dock({ v, where, server, stageShown }: {
         canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
         {...(link === undefined ? {} : { stats: { rttMs: link.rttMs, upKbps: link.upKbps, downKbps: link.downKbps, quality: linkQuality(link.rttMs, link.lossPct) } })}
         announcement={call.announcement}
+        {...(server !== null && !stageShown && v.music != null && v.music.track !== undefined ? { music: <MusicPlayer view={v.music} variant="compact" /> } : {})}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
           ping: en['voice.dock.ping'], pingSub: en['voice.dock.pingSub'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
           quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },

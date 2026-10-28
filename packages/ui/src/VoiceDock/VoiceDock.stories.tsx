@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { DOCK_STATS_CONTRAST } from './dockStatsContrast.ts';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { VoiceDock } from './VoiceDock.tsx';
+import { harbourCompact } from '../NowPlaying/np.fixture.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
 
@@ -210,3 +211,5 @@ export const PhonePaused: Story = { ...phone, args: { phase: 'paused', canCamera
 
 /** Signal parity (§5.4): the prototype's dock, leave only, harbour at 24 ms. */
 export const Signal: Story = { args: { onCamera: undefined, onShare: undefined, onStatus: undefined, stats: { rttMs: 24, upKbps: 38, downKbps: 71, quality: 'good' } }, globals: { theme: 'signal' } };
+/** Task 8b (§5.4, §6.6): the prototype's dock while Glenn plays in harbour: the compact now-playing row under the dock's row. */
+export const SignalMusic: Story = { args: { ...Signal.args, music: harbourCompact }, globals: { theme: 'signal' } };

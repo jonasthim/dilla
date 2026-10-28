@@ -18,6 +18,12 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   // Task 6b's ruling (Jonas 2026-10-27, prototype parity): the voice dock's stats in --fg-3 on the --ok tint (4.38:1). Listed here,
   // not only in story-a11y's dock stories, because the e2e axe runs (e2e/web/support/axe.ts) see the real dock beside a DM call.
   { selector: '.d-voice-dock__stats', simple: '.d-voice-dock__stats', why: 'the voice dock stats in #767D89 on the --ok tint (4.38:1)' },
+  // Task 8b (README §6.6): the dock's now-playing row says "Now playing · 0:37 / 3:34" in the prototype's #767D89 on the same tint.
+  { selector: '.d-np--compact .d-np__sub', simple: '.d-np__sub', why: 'the dock player\'s state line in #767D89 on the --ok tint (4.38:1)' },
+  // Task 8b: the open queue's current row keeps the prototype's #767D89 number, requester and duration on its 0.08 accent tint.
+  { selector: '.d-np__item[data-current] .d-np__n', simple: '.d-np__n', why: 'the current queue row\'s number in #767D89 on the accent tint (4.2:1)' },
+  { selector: '.d-np__item[data-current] .d-np__by', simple: '.d-np__by', why: 'the current queue row\'s requester in #767D89 on the accent tint (4.2:1)' },
+  { selector: '.d-np__item[data-current] .d-np__dur', simple: '.d-np__dur', why: 'the current queue row\'s duration in #767D89 on the accent tint (4.2:1)' },
   // Not listed because axe cannot see it: a code block's line numbers, the prototype's #4A5059 on bg-2 (2.4:1), are CSS-generated
   // (`::before` counters) and decorative (never part of the code's text). Light and high-contrast draw them in fg-3 / #C8C8C8.
 ];

@@ -57,7 +57,9 @@ export function validateSpec(spec) {
     const { props, steps } = pair.prototype;
     if (props !== undefined && !isObject(props)) throw new Error(`${at} (${pair.name}): prototype.props must be an object`);
     if (steps !== undefined && !Array.isArray(steps)) throw new Error(`${at} (${pair.name}): prototype.steps must be an array`);
-    (steps ?? []).forEach((s, j) => {
+    // Task 8b: a story may take the same steps (a press that shows a toast), run after it settles.
+    if (pair.story.steps !== undefined && !Array.isArray(pair.story.steps)) throw new Error(`${at} (${pair.name}): story.steps must be an array`);
+    [...(steps ?? []), ...(pair.story.steps ?? [])].forEach((s, j) => {
       const keys = Object.keys(s ?? {});
       const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor'].includes(keys[0]);
       if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor`);
@@ -153,6 +155,7 @@ async function shootStory(browser, pair, base, out) {
     if (!response?.ok()) throw new Error(`story ${pair.story.id}: HTTP ${response?.status()}`);
     await page.waitForSelector('#storybook-root > *', { state: 'attached', timeout: 30_000 });
     await settle(page);
+    await runSteps(page, pair.story.steps);
     await capture(page, out, pair.story.clip);
   } finally { await context.close(); }
 }

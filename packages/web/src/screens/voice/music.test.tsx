@@ -1,0 +1,128 @@
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { CoreClient, MemberSummary, VoiceMusicState } from '@dilla/client-core';
+
+const adapter = vi.hoisted(() => {
+  let state: VoiceMusicState = { status: 'unavailable', reason: 'bot-unavailable' };
+  const listeners = new Set<() => void>();
+  return {
+    set(next: VoiceMusicState) { state = next; for (const l of listeners) l(); },
+    state: vi.fn(() => state),
+    subscribe: vi.fn((_: string, on: () => void) => { listeners.add(on); return () => { listeners.delete(on); }; }),
+    refresh: vi.fn(() => Promise.resolve()),
+    pause: vi.fn(() => Promise.resolve()),
+    skip: vi.fn(() => Promise.resolve()),
+    stop: vi.fn(() => Promise.resolve()),
+    reset() { state = { status: 'unavailable', reason: 'bot-unavailable' }; listeners.clear(); },
+  };
+});
+vi.mock('@dilla/client-core', async importOriginal => ({ ...await importOriginal<object>(), createVoiceMusicAdapter: () => adapter }));
+
+const { MusicPlayer, useMusicPlayer } = await import('./music.tsx');
+
+const COMMUNITY = 'ab'.repeat(16);
+const CHANNEL = 'cd'.repeat(16);
+const ADA = '0a'.repeat(16);
+const BJORN = '0b'.repeat(16);
+const members: MemberSummary[] = [
+  { userId: ADA, username: 'ada', display: 'Ada', kind: 0, roleIds: [] },
+  { userId: BJORN, username: 'bjorn', display: 'Björn', kind: 0, roleIds: [] },
+];
+const track = (title: string, requesterId: string | undefined, durationMs: number) =>
+  ({ id: 'ef'.repeat(16), title, artist: 'Artist', durationMs, provider: 'youtube' as const, ...(requesterId === undefined ? {} : { requesterId }) });
+const playing = (control = true): VoiceMusicState => ({
+  status: 'available', track: track('Sea shanties for rowing', ADA, 214_000),
+  queue: [{ id: '12'.repeat(16), track: track('Fjord ambience, 4 hours', BJORN, 252_000) }],
+  positionMs: 37_000, volume: 60, paused: false, shuffle: false, repeat: 'off', permissions: { control, manageQueue: control },
+});
+
+function Harness({ bot = 'Glenn', variant = 'card' as const }: { bot?: string | null; variant?: 'card' | 'compact' | 'stage' }) {
+  const view = useMusicPlayer({ client: {} as CoreClient, communityId: COMMUNITY, channelId: CHANNEL, room: 'harbour', bot, members, trust: undefined });
+  return view === null ? <p>no player</p> : <MusicPlayer view={view} variant={variant} />;
+}
+
+afterEach(() => { adapter.reset(); vi.clearAllMocks(); });
+
+describe('useMusicPlayer', () => {
+  it('reads nothing while the Bot is not in the call', () => {
+    render(<Harness bot={null} />);
+    expect(adapter.subscribe).not.toHaveBeenCalled();
+    expect(screen.getByText('no player')).toBeInTheDocument();
+  });
+
+  it('maps the Bot snapshot: title, requester, provider, room, position, volume and the queue', async () => {
+    render(<Harness />);
+    expect(adapter.subscribe).toHaveBeenCalledWith(CHANNEL, expect.any(Function));
+    act(() => { adapter.set(playing()); });
+    const card = await screen.findByRole('group', { name: 'Music player' });
+    expect(card).toHaveTextContent('Now playing');
+    expect(card).toHaveTextContent('Sea shanties for rowing');
+    expect(card).toHaveTextContent('YouTube · requested by Ada · harbour');
+    expect(within(card).getByRole('progressbar')).toHaveAttribute('aria-valuetext', '0:37 of 3:34');
+    expect(card).toHaveTextContent('60%');
+    await userEvent.click(within(card).getByRole('button', { name: 'Up next · 1' }));
+    const rows = within(within(card).getByRole('list', { name: 'Queue' })).getAllByRole('listitem');
+    expect(rows[0]).toHaveAttribute('aria-current', 'true');
+    expect(rows[1]).toHaveTextContent('Fjord ambience, 4 hours');
+    expect(rows[1]).toHaveTextContent('Björn');
+    expect(rows[1]).toHaveTextContent('4:12');
+  });
+
+  it('controls act on the call channel through the adapter', async () => {
+    render(<Harness variant="stage" />);
+    act(() => { adapter.set(playing()); });
+    const bar = await screen.findByRole('group', { name: 'Music player' });
+    await userEvent.click(within(bar).getByRole('button', { name: 'Pause' }));
+    await userEvent.click(within(bar).getByRole('button', { name: 'Skip' }));
+    await userEvent.click(within(bar).getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(adapter.pause).toHaveBeenCalledWith(CHANNEL, true));
+    expect(adapter.skip).toHaveBeenCalledWith(CHANNEL);
+    expect(adapter.stop).toHaveBeenCalledWith(CHANNEL);
+  });
+
+  it('without the Bot\'s control grant the controls are inert and say the DJ rule', async () => {
+    render(<Harness variant="compact" />);
+    act(() => { adapter.set(playing(false)); });
+    const row = await screen.findByRole('group', { name: 'Music player' });
+    const pause = within(row).getByRole('button', { name: 'Pause' });
+    expect(pause).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(pause);
+    expect(adapter.pause).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('A DJ, owner, or administrator must control music in this voice channel.');
+  });
+
+  it('a refused control says why in the toast', async () => {
+    adapter.skip.mockImplementationOnce(() => Promise.reject(new Error('You do not have permission to control this Bot.')));
+    render(<Harness variant="stage" />);
+    act(() => { adapter.set(playing()); });
+    await userEvent.click(await screen.findByRole('button', { name: 'Skip' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('You do not have permission to control this Bot.'));
+  });
+
+  it('idle: the card says the Bot is idle in the room; the compact row draws nothing', async () => {
+    const idle: VoiceMusicState = { ...playing(), track: null, queue: [], positionMs: 0, paused: true } as VoiceMusicState;
+    const { unmount } = render(<Harness />);
+    act(() => { adapter.set(idle); });
+    const card = await screen.findByRole('group', { name: 'Music player' });
+    expect(card).toHaveTextContent('Nothing playing');
+    expect(card).toHaveTextContent('Glenn is idle in harbour. /play starts the next one.');
+    unmount();
+    render(<Harness variant="compact" />);
+    act(() => { adapter.set(idle); });
+    expect(screen.queryByRole('group', { name: 'Music player' })).toBeNull();
+  });
+
+  it('re-reads the snapshot every 10 s while open', () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<Harness />);
+      act(() => { vi.advanceTimersByTime(10_000); });
+      expect(adapter.refresh).toHaveBeenCalledWith(CHANNEL);
+      unmount();
+      adapter.refresh.mockClear();
+      act(() => { vi.advanceTimersByTime(20_000); });
+      expect(adapter.refresh).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
