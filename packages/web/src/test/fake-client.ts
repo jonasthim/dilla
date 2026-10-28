@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import type { CallKeys, CallState, ChannelSummary, Command, CoreClient, DmSummary, MemberSummary, Ring, SliceName, SliceTypes,
   SendBlocksState, TrustSummary, VoiceState } from '@dilla/client-core';
 import { CALL_IDLE } from '@dilla/client-core';
-import type { PageCall, PageCallState } from '../call/session.ts';
+import type { PageCall, PageCallState, ShareOptions, TileStats } from '../call/session.ts';
 import type { UiError } from '../core/errors.ts';
 import { CoreProvider } from '../core/context.tsx';
 import { Shell } from '../screens/Shell.tsx';
@@ -127,7 +127,7 @@ export function bobChanged(): TrustSummary {
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
     tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, shareSource: null, noise: 'on', audioBlocked: false,
-    audio: { attached: 0, expected: 0 } };
+    audio: { attached: 0, expected: 0 }, shareCapBps: 2_500_000 };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
@@ -166,7 +166,16 @@ export class FakeSession implements PageCall {
   setMuted(on: boolean): void { this.log.push(`muted:${String(on)}`); this.update({ muted: on }); }
   setDeafened(on: boolean): void { this.log.push(`deafened:${String(on)}`); this.update({ deafened: on, muted: on || this.state.muted }); }
   readonly setCamera = vi.fn((on: boolean): Promise<void> => { this.update({ camera: on }); return Promise.resolve(); });
-  setSharing(on: boolean): Promise<void> { this.update({ sharing: on }); return Promise.resolve(); }
+  /** Task 8c: the options of the last share start and Apply. */
+  shareOptions: ShareOptions | undefined;
+  setSharing(on: boolean, options?: ShareOptions): Promise<void> {
+    if (on) this.shareOptions = options;
+    this.update({ sharing: on });
+    return Promise.resolve();
+  }
+  readonly setShareOptions = vi.fn((options: ShareOptions): Promise<void> => { this.shareOptions = options; return Promise.resolve(); });
+  tileStatsValue: TileStats = { ownAudio: null, ownScreen: null, screens: {} };
+  readonly tileStats = vi.fn((): Promise<TileStats> => Promise.resolve(this.tileStatsValue));
 }
 
 export interface FakeSounds { played: ('join' | 'leave')[]; ringing: boolean; starts: number }

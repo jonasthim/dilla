@@ -10,6 +10,7 @@ import type { CallState, CoreClient } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey } from '@dilla/ui';
 import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
+import { DEFAULT_SHARE_OPTIONS, type ShareOptions } from '../../call/share-options.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
 import type { PageCall, PageCallState } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
@@ -170,6 +171,11 @@ export interface CallView {
   selfDeafened: boolean;
   toggleCamera: () => void;
   toggleShare: () => void;
+  /** Task 8c: the share picker's choices, kept for this page (the next share starts with them). */
+  shareOptions: ShareOptions;
+  /** Task 8c: the picker's Go live (starts a share with `options`) and Apply while sharing (`setShareOptions`). */
+  startShare: (options: ShareOptions) => void;
+  applyShare: (options: ShareOptions) => void;
   setVolume: (userId: string, volume: number) => void;
   /** #37 T5: the volume of a person's shared screen sound; 0 is the stream mute. */
   setStreamVolume: (userId: string, volume: number) => void;
@@ -988,9 +994,21 @@ export function useCall(o: UseCallOptions): CallView {
     const s = sessionRef.current;
     if (s !== null) s.setCamera(!s.state.camera).catch(shareRefused);
   }, [shareRefused]);
+  const [shareOptions, setShareOptions] = useState<ShareOptions>(DEFAULT_SHARE_OPTIONS);
+  const shareOptionsRef = useRef(shareOptions);
+  shareOptionsRef.current = shareOptions;
   const toggleShare = useCallback(() => {
     const s = sessionRef.current;
-    if (s !== null) s.setSharing(!s.state.sharing).catch(shareRefused);
+    if (s !== null) s.setSharing(!s.state.sharing, shareOptionsRef.current).catch(shareRefused);
+  }, [shareRefused]);
+  const startShare = useCallback((options: ShareOptions) => {
+    setShareOptions(options);
+    const s = sessionRef.current;
+    if (s !== null && !s.state.sharing) s.setSharing(true, options).catch(shareRefused);
+  }, [shareRefused]);
+  const applyShare = useCallback((options: ShareOptions) => {
+    setShareOptions(options);
+    sessionRef.current?.setShareOptions(options).catch(shareRefused);
   }, [shareRefused]);
   // Fix round 1 (Jonas): no sound-source pick for a share any more (a silent share keeps the default source; the session's
   // setShareSource stays for wave C's capture work).
@@ -1302,7 +1320,7 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, setStreamVolume, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, shareOptions, startShare, applyShare, setVolume, setStreamVolume, startAudio,
   };
 }
 

@@ -15,6 +15,8 @@ import {
 import { reportProcessorStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
+import { DEFAULT_SHARE_OPTIONS, shareEncoding, shareVideoConstraints, type ShareOptions } from './share-options.ts';
+import { readTileStats, type TileStats } from './tile-stats.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
@@ -24,6 +26,8 @@ import {
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
 export { isVoiceSupported, localDecodeList } from '@dilla/media';
+export type { ShareOptions } from './share-options.ts';
+export type { TileStats } from './tile-stats.ts';
 export { bindPushToTalk } from './ptt.ts';
 export { streamVolumesFromSettings, volumesFromSettings } from './volume.ts';
 
@@ -78,6 +82,9 @@ export interface PageCallState {
   /** MP5: the latest local link read (every 2 s while connected): the ping and what this device sends and receives. Absent
    *  before the first read, while not connected, and after leave. */
   link?: LinkSample | undefined;
+  /** Task 8c: the instance's share bitrate cap in bit/s (the calls response's caps), which the share's encoding and the
+   *  picker's estimate keep under; null before the join answered. */
+  shareCapBps: number | null;
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -93,7 +100,17 @@ export interface PageCall {
   setMuted(on: boolean): void;
   setDeafened(on: boolean): void;
   setCamera(on: boolean): Promise<void>;
-  setSharing(on: boolean): Promise<void>;
+  /** Starts (with the picker's `options`, the defaults without) or stops this device's screen share. */
+  setSharing(on: boolean, options?: ShareOptions): Promise<void>;
+  /**
+   * Task 8c: the picker's Apply while sharing. A new resolution or frame rate is applied to the running capture
+   * (`applyConstraints`) and to the sender's encoding (`setParameters`: the same encrypted sender, no new track); a new source
+   * or sound choice needs the browser's picker again, so the share restarts through the same encrypted publish. Not sharing:
+   * the options are kept for the next start.
+   */
+  setShareOptions(options: ShareOptions): Promise<void>;
+  /** Task 8c: one read of the stage's per-tile stats (the own microphone's codec, every screen's frame size and rate). */
+  tileStats(): Promise<TileStats>;
   /** FX2: the audio inputs a running share can take its sound from (the call's own microphone left out), and whether the
    *  browser gave them labels. */
   shareSources(): Promise<{ sources: ShareSource[]; labeled: boolean }>;
@@ -570,7 +587,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
       shareAudio: null, shareSource: null, noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false, audio: { attached: 0, expected: 0 },
+      audioBlocked: false, audio: { attached: 0, expected: 0 }, shareCapBps: caps.maxShareBitrateBps,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -995,7 +1012,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** The settle of a share waiting for the SFU's permission (WB client m3): a leave settles it with false. */
     let waitingShare: ((ok: boolean) => void) | null = null;
     let camera: { track: MediaStreamTrack } | null = null;
+    /** Task 8c: the share options in force, or kept for the next start (the picker's Apply while not sharing). */
+    let shareOpts: ShareOptions = DEFAULT_SHARE_OPTIONS;
     let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void;
+      /** Task 8c: the video's publication, whose sender takes a new encoding on Apply; its options. */
+      pub: LocalPub | null; opts: ShareOptions;
       /** FX2: the audio input the person picked as the share's sound, while one is published. */
       device: { track: MediaStreamTrack; pub: LocalPub | null; onEnded: () => void } | null } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
@@ -1099,26 +1120,33 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       set({ camera: true, localCamera: viewOf(track) });
     });
 
-    const setSharing = (on: boolean): Promise<void> => inLane(async () => {
+    const setSharing = (on: boolean, options?: ShareOptions): Promise<void> => inLane(async () => {
       if (!on) { await stopScreen(); await shareOffIfIdle(); return; }
       usable();
       if (screen !== null) return;
+      await startScreen(options ?? shareOpts);
+    });
+    /** Captures and publishes a screen with `o` (in the lane, not sharing). The encoding goes with the publish, so the
+     *  screen's sender gets the dilla transform as every sender does (attachSender); no option takes another path. */
+    const startScreen = async (o: ShareOptions): Promise<void> => {
+      shareOpts = o;
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
       if (!getDisplayMedia) throw new PageCallError('E_UNAVAILABLE');
       await ensureShare('screen');
       let tracks: ScreenCapture;
       try {
         usable();
-        tracks = await acquireScreen({ getDisplayMedia });
+        tracks = await acquireScreen({ getDisplayMedia }, o);
       } catch (err) {
         await shareOffIfIdle();
         throw pageCallError(err);
       }
       // #37: the sound the share carries, as published: none when the browser gave no audio or the grant did not allow it.
       let shareAudio: ShareAudioKind = 'none';
+      let videoPub: LocalPub | null = null;
       try {
         usable();
-        await local.publishTrack(tracks.video, { source: SOURCE.screen });
+        videoPub = await local.publishTrack(tracks.video, { source: SOURCE.screen, screenShareEncoding: shareEncoding(o, caps.maxShareBitrateBps) });
         if (tracks.audio !== null && permitted('screenAudio')) {
           await local.publishTrack(tracks.audio, screenAudioOptions(caps));
           shareAudio = tracks.audioKind;
@@ -1152,8 +1180,40 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         void local.unpublishTrack(audioTrack).catch(() => undefined).then(() => { if (!ended) refresh(); });
       };
       audioTrack?.addEventListener('ended', onAudioEnded);
-      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded, device: null };
+      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded, device: null, pub: videoPub, opts: o };
       set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio, shareSource: shareAudio === 'none' ? null : 'browser' });
+    };
+    const setShareOptions = (o: ShareOptions): Promise<void> => inLane(async () => {
+      const s = screen;
+      if (s === null) { shareOpts = o; return; }
+      usable();
+      // A new source or sound choice is a new capture: the browser's picker again (the press is its activation).
+      if (o.surface !== s.opts.surface || o.systemAudio !== s.opts.systemAudio) {
+        await stopScreen();
+        try {
+          await startScreen(o);
+        } catch (err) {
+          await shareOffIfIdle();
+          throw err;
+        }
+        return;
+      }
+      shareOpts = o;
+      s.opts = o;
+      // A browser that cannot reshape a running capture keeps the frame it has; the encoding below still caps the rate.
+      await s.video.applyConstraints?.(shareVideoConstraints(o, false)).catch(() => undefined);
+      const sender = (s.pub?.track as { sender?: RTCRtpSender } | undefined)?.sender;
+      if (sender === undefined) return;
+      const params = sender.getParameters();
+      const layers = params.encodings ?? [];
+      if (layers.length === 0) return;
+      // The top layer (the least scaled) takes the encoding; a simulcast layer under it keeps its bitrate and takes the rate cap.
+      const top = layers.reduce((a, b) => ((b.scaleResolutionDownBy ?? 1) < (a.scaleResolutionDownBy ?? 1) ? b : a));
+      const enc = shareEncoding(o, caps.maxShareBitrateBps);
+      for (const layer of layers) {
+        if (layer === top) { layer.maxBitrate = enc.maxBitrate; layer.maxFramerate = enc.maxFramerate; } else layer.maxFramerate = Math.min(layer.maxFramerate ?? enc.maxFramerate, enc.maxFramerate);
+      }
+      await sender.setParameters(params).catch(() => undefined);
     });
 
     // FX2: the share's sound from an audio input the person picked (a PipeWire/Pulse monitor, a virtual source).
@@ -1555,6 +1615,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       setCamera,
       setSharing,
+      setShareOptions,
+      tileStats: () => readTileStats({ ended: () => ended, micPub: () => micPub, screenPub: () => screen?.pub ?? null,
+        shareAudio: () => state.shareAudio !== null && state.shareAudio !== 'none', remotes, screenSource: SOURCE.screen }),
       shareSources,
       setShareSource,
       setVolume(userId, volume, source = 'voice') {

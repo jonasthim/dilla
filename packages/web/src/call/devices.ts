@@ -1,6 +1,7 @@
 // Capture for a call (flow 06 § States): the microphone, with listen-only outcomes instead of errors, the camera and
 // the screen with whatever sound the browser gives (#37). Nothing here publishes; the session does.
 import { MIC_CAPTURE, SCREEN_AUDIO_CAPTURE, SCREEN_DISPLAY_HINTS } from '@dilla/media';
+import { DEFAULT_SHARE_OPTIONS, shareVideoConstraints, type ShareOptions } from './share-options.ts';
 
 export interface CaptureMedia {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
@@ -78,9 +79,14 @@ export interface ScreenCapture { video: MediaStreamTrack; audio: MediaStreamTrac
  * - On Linux only a tab's sound; Firefox and Safari give none (https://bugzilla.mozilla.org/show_bug.cgi?id=1541425).
  * The call's own playback is asked to be left out (`restrictOwnAudio`, Chrome 141+) and never checked (D5). The audio
  * hints are stated, not left to defaults. Whatever audio comes back is returned, and the session publishes it.
+ *
+ * Signal task 8c: the picker's options shape the request: the surface the browser's picker opens on, the largest frame and
+ * the frame rate (`shareVideoConstraints`), and sound only with `systemAudio` (off: `audio: false`, and the system and window
+ * sound hints say exclude, so the browser offers none).
  */
-export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture> {
-  const stream = await media.getDisplayMedia({ video: true, audio: { ...SCREEN_AUDIO_CAPTURE }, ...SCREEN_DISPLAY_HINTS });
+export async function acquireScreen(media: DisplayMedia, o: ShareOptions = DEFAULT_SHARE_OPTIONS): Promise<ScreenCapture> {
+  const hints = o.systemAudio ? SCREEN_DISPLAY_HINTS : { ...SCREEN_DISPLAY_HINTS, systemAudio: 'exclude' as const, windowAudio: 'exclude' as const };
+  const stream = await media.getDisplayMedia({ video: shareVideoConstraints(o), audio: o.systemAudio ? { ...SCREEN_AUDIO_CAPTURE } : false, ...hints });
   const video = stream.getVideoTracks()[0];
   if (video === undefined) {
     stopAll(stream);

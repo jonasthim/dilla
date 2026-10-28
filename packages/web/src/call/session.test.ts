@@ -3749,3 +3749,113 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
   });
 
 });
+
+// ---------------------------------------------------------------------------------------------
+// Signal task 8c: the share picker's options reach the capture and the screen track's encoding, on the encrypted path.
+// ---------------------------------------------------------------------------------------------
+
+describe('task 8c: screen-share options', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    open.push(call);
+    return call;
+  };
+  /** A screen track that records applyConstraints, and a publication whose sender records setParameters. */
+  const screenSetup = (f: ReturnType<typeof fakes>) => {
+    const applyConstraints = vi.fn<(c: MediaTrackConstraints) => Promise<void>>(async () => undefined);
+    const track = Object.assign(videoTrack(), { applyConstraints });
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(track));
+    const params = { encodings: [{ rid: 'q', scaleResolutionDownBy: 2, maxBitrate: 500_000, maxFramerate: 30 }, { rid: 'f', maxBitrate: 2_500_000, maxFramerate: 30 }] };
+    const sender = { getParameters: vi.fn(() => structuredClone(params)), setParameters: vi.fn(async () => undefined) };
+    const publish = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (t: MediaStreamTrack, o: { source: string }) => {
+      const pub = await publish(t, o);
+      if (o.source === 'screen_share') Object.assign(pub.track, { sender });
+      return pub;
+    });
+    return { track, sender, applyConstraints };
+  };
+  const surfaceOf = (f: ReturnType<typeof fakes>, call: number) =>
+    ((vi.mocked(f.deps.media.getDisplayMedia!).mock.calls[call]?.[0] as { video?: { displaySurface?: string } } | undefined)?.video?.displaySurface);
+  const OPTS = { surface: 'window', resolution: '720p', fps: 15, systemAudio: false } as const;
+
+  it('a share starts with the picker’s capture options and its encoding, capped by the instance', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    expect(call.state.shareCapBps).toBe(2_500_000);
+    await call.setSharing(true, OPTS);
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
+      video: { displaySurface: 'window', width: { max: 1280 }, height: { max: 720 }, frameRate: { ideal: 15, max: 15 } }, audio: false,
+    }));
+    const screenPublish = f.room.localParticipant.publishTrack.mock.calls.find(([, o]) => o.source === 'screen_share');
+    // 720p at 15 fps is 1.5 Mb/s, under the 2.5 Mb/s cap.
+    expect(screenPublish?.[1]).toEqual({ source: 'screen_share', screenShareEncoding: { maxBitrate: 1_500_000, maxFramerate: 15 } });
+  });
+
+  it('without options a share uses the defaults (1080p at 30 fps → 4.5 Mb/s, capped to the instance’s 2.5)', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true);
+    const screenPublish = f.room.localParticipant.publishTrack.mock.calls.find(([, o]) => o.source === 'screen_share');
+    expect(screenPublish?.[1]).toEqual({ source: 'screen_share', screenShareEncoding: { maxBitrate: 2_500_000, maxFramerate: 30 } });
+  });
+
+  it('Apply with a new resolution or rate reshapes the running capture and the same sender: no new track, no new publish', async () => {
+    const f = fakes();
+    const { sender, applyConstraints } = screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const publishes = f.room.localParticipant.publishTrack.mock.calls.length;
+    await call.setShareOptions({ ...OPTS, resolution: '1080p', fps: 60 });
+    expect(applyConstraints).toHaveBeenCalledWith({ width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 60, max: 60 } });
+    expect(sender.setParameters).toHaveBeenCalledWith({ encodings: [
+      { rid: 'q', scaleResolutionDownBy: 2, maxBitrate: 500_000, maxFramerate: 30 },
+      { rid: 'f', maxBitrate: 2_500_000, maxFramerate: 60 },
+    ] });
+    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(publishes);
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalledTimes(1);
+    expect(call.state.sharing).toBe(true);
+  });
+
+  it('Apply with a new source or sound choice asks the browser again and publishes the new capture through publishTrack', async () => {
+    const f = fakes();
+    const { track } = screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    await call.setShareOptions({ ...OPTS, surface: 'browser', systemAudio: true });
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalledTimes(2);
+    expect(surfaceOf(f, 1)).toBe('browser');
+    expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(track);
+    expect(f.room.localParticipant.publishTrack.mock.calls.filter(([, o]) => o.source === 'screen_share')).toHaveLength(2);
+    expect(call.state.sharing).toBe(true);
+  });
+
+  it('Apply while not sharing keeps the options for the next start', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    await call.setShareOptions(OPTS);
+    expect(f.deps.media.getDisplayMedia).not.toHaveBeenCalled();
+    await call.setSharing(true);
+    expect(surfaceOf(f, 0)).toBe('window');
+  });
+
+  it('tileStats reads the own microphone and screen from their senders', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const results = f.room.localParticipant.publishTrack.mock.results.map((r) => r.value as Promise<{ source: string; track: Record<string, unknown> }>);
+    const pubs = await Promise.all(results);
+    const mic = pubs.find((p) => p.source === 'microphone');
+    const screen = pubs.find((p) => p.source === 'screen_share');
+    const report = (e: Array<Record<string, unknown>>) => new Map(e.map((x) => [x.id, x]));
+    Object.assign(mic!.track, { getRTCStatsReport: async () => report([{ id: 'c', type: 'codec', mimeType: 'audio/opus', clockRate: 48000 }, { id: 'o', type: 'outbound-rtp', kind: 'audio', codecId: 'c' }]) });
+    Object.assign(screen!.track, { getRTCStatsReport: async () => report([{ id: 'v', type: 'outbound-rtp', kind: 'video', frameHeight: 720, framesPerSecond: 15 }]) });
+    expect(await call.tileStats()).toEqual({ ownAudio: { codec: 'opus', clockRate: 48000 }, ownScreen: { height: 720, fps: 15, audio: false }, screens: {} });
+  });
+});
