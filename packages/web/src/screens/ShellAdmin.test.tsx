@@ -163,7 +163,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a member reaches leave through server settings; the owner finds delete there', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Ownership / Leave' }));
     expect(within(dialog).getByRole('heading', { level: 2, name: 'leave server' })).toBeInTheDocument();
@@ -184,7 +184,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
     expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
   });
@@ -192,7 +192,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a removal from one server leaves the settings of another open', async () => {
     const { fake, user } = setup(OTHER, `/c/${B}/${GEN_B}`);
     act(() => { fake.publish(`permissions:${B}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     act(() => { fake.publish('removals', [{ id: 3, communityId: A, name: 'Midgard' }]); });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
@@ -229,7 +229,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a removal shows the notice, leaves the server and closes its settings', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     act(() => {
       fake.publish('communities', [{ id: B, name: 'Valhalla', owner: OTHER }]);
@@ -245,7 +245,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a removal closes the invites settings of that server even before the list changes', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     expect(await screen.findByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     act(() => { fake.publish('removals', [{ id: 7, communityId: A, name: 'Midgard' }]); });
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -274,7 +274,7 @@ describe('fullscreen server settings routes', () => {
   it('opens server settings at its route while retaining the conversation', async () => {
     const { fake, user } = setup();
     act(() => fake.publish(`permissions:${A}`, access({ manageCommunity: true })));
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     expect(location.pathname).toBe(`/c/${A}/settings`);
     expect(history.state).toMatchObject({ settingsFrom: `/c/${A}/${GEN}` });
     expect(screen.getByRole('dialog', { name: 'Server settings' })).toHaveAttribute('aria-modal', 'true');

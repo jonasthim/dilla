@@ -24,7 +24,7 @@ import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, settingsProvider, type PaletteProvider } from './palette.ts';
 import { messageTime } from './shell-model.ts';
-import { TrustAlert, TypingIndicator } from '@dilla/ui';
+import { ActionMenu, TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
   nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody, userName,
@@ -117,6 +117,18 @@ function focusLost(): boolean {
  * The search palette is a modal dialog, so the shell beneath it is inert and cannot take focus: a picked hit closes that
  * top layer first, then focuses its row (the palette's React state follows when the pick resolves).
  */
+/** Signal task 10 fix round 2: a conversation's or a server's own notify mode in its menu; default deletes the stored value. */
+const NOTIFY_MODES: readonly { value: string; key: StringKey }[] = [
+  { value: 'default', key: 'signalSettings.menu.notifyDefault' }, { value: 'all', key: 'signalSettings.menu.notifyAll' },
+  { value: 'mentions', key: 'signalSettings.menu.notifyMentions' }, { value: 'nothing', key: 'signalSettings.menu.notifyNothing' },
+];
+
+/** The device-wide default (it governs direct messages), in the DM list head's menu. */
+const DM_DEFAULTS: readonly { value: string; key: StringKey }[] = [
+  { value: 'dms-mentions', key: 'signalSettings.menu.dmsMentions' }, { value: 'everything', key: 'signalSettings.menu.everything' },
+  { value: 'nothing', key: 'signalSettings.menu.notifyNothing' },
+];
+
 function leaveSearchLayer(): void {
   document.querySelector<HTMLDialogElement>('dialog.d-search-palette-dialog[open], dialog.dw-search[open]')?.close();
 }
@@ -373,7 +385,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const opener = adminOpener.current;
     adminOpener.current = null;
     if (opener?.isConnected) { opener.focus(); return; }
-    const settingsButton = document.querySelector<HTMLElement>('[data-admin-open]');
+    const settingsButton = document.querySelector<HTMLElement>('[data-focus-key="admin-open"]');
     if (settingsButton !== null) settingsButton.focus();
     else focusComposer();
   }, [adminFor]);
@@ -381,6 +393,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const [editChannelId, setEditChannelId] = useState<string | null>(null);
   // Fix round 1 (Jonas): the call code of the voice channel whose row menu asked for it, in a dialog.
   const [codeFor, setCodeFor] = useState<string | null>(null);
+  // Signal task 10 fix round 2: the server head's ⌄ and the DM list head's menus.
+  const [headMenu, setHeadMenu] = useState<'server' | 'dms' | null>(null);
   const access = useSlice(`permissions:${communityId ?? ''}`);
   // The toggle is found by its marker: the shared Button takes no ref, and AppShell reads `current` only when the drawer closes.
   const membersToggle = useMemo<RefObject<HTMLElement | null>>(
@@ -1168,10 +1182,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
     // Signal task 10 fix round 1: Settings → Notifications keeps only the prototype's rows, so muting a channel or a
     // conversation moves to its row's context menu (Ruling X's invisible route). The stored key is the one it always was.
+    // Fix round 2 (Jonas): the menu also holds the conversation's own notify mode (default deletes it, as Settings did).
     const muted = (id: string) => settings?.[SETTINGS.muteChannel(id)] === '1';
-    const muteItem = (id: string) => ({ id: 'mute', label: t(muted(id) ? 'notify.unmute' : 'notify.mute') });
-    const toggleMute = (id: string) => {
-      client.call({ m: 'setSetting', key: SETTINGS.muteChannel(id), value: muted(id) ? null : '1' }).catch(report);
+    const notifyItems = (id: string) => {
+      const mode = settings?.[SETTINGS.notifyChannel(id)] ?? 'default';
+      return [{ id: 'mute', label: t('notify.mute'), check: muted(id) },
+        ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: mode === m.value }))];
+    };
+    const notifyChoice = (id: string, item: string): boolean => {
+      if (item === 'mute') {
+        client.call({ m: 'setSetting', key: SETTINGS.muteChannel(id), value: muted(id) ? null : '1' }).catch(report);
+        return true;
+      }
+      if (!item.startsWith('mode:')) return false;
+      const value = item.slice(5);
+      client.call({ m: 'setSetting', key: SETTINGS.notifyChannel(id), value: value === 'default' ? null : value }).catch(report);
+      return true;
     };
     const openDmPicker = () => {
       if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
@@ -1181,15 +1207,43 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     // Ruling AB (Jonas 2026-10-27): a server's head is the prototype's: its name and the ⌄ that opens the server's settings (and
     // the "+" while it has no categories, the one place a channel is made then). Search is the top bar's and Control/⌘+K, or a
     // conversation's phone header; settings the top bar's gear or the You tab; reminders the bell or the Activity tab.
+    // Signal task 10 fix round 2 (Jonas): the ⌄ is the server's menu: its settings, Mute server and the server's notify mode
+    // (Settings → Notifications keeps only the prototype's rows). The DM list head's menu holds the device-wide default, which
+    // governs direct messages. Same stored keys as Settings wrote them.
+    const serverHex = community?.id ?? null;
+    const serverMode = serverHex === null ? 'default' : settings?.[SETTINGS.notifyCommunity(serverHex)] ?? 'default';
+    const serverMuted = serverHex !== null && settings?.[SETTINGS.muteCommunity(serverHex)] === '1';
+    const serverMenu = (
+      <ActionMenu label={t('admin.open')} focusKey="admin-open" open={headMenu === 'server'} onOpenChange={open => setHeadMenu(open ? 'server' : null)}
+        triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
+        items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') }, { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
+          ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: serverMode === m.value }))]}
+        onSelect={item => {
+          if (item === 'settings') { openAdmin(null); return; }
+          if (serverHex === null) return;
+          if (item === 'mute') { client.call({ m: 'setSetting', key: SETTINGS.muteCommunity(serverHex), value: serverMuted ? null : '1' }).catch(report); return; }
+          const value = item.slice(5);
+          client.call({ m: 'setSetting', key: SETTINGS.notifyCommunity(serverHex), value: value === 'default' ? null : value }).catch(report);
+        }} />
+    );
+    const dmDefault = settings?.[SETTINGS.notifyDefault] ?? 'dms-mentions';
+    const dmsMenu = (
+      <ActionMenu label={t('signalSettings.menu.dms')} open={headMenu === 'dms'} onOpenChange={open => setHeadMenu(open ? 'dms' : null)}
+        triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
+        items={DM_DEFAULTS.map(m => ({ id: m.value, label: t(m.key), checked: dmDefault === m.value }))}
+        onSelect={value => { client.call({ m: 'setSetting', key: SETTINGS.notifyDefault, value: value === 'dms-mentions' ? null : value }).catch(report); }} />
+    );
     const headerAction = onDms ? (
-      <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} />
+      <>
+        <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} />
+        {dmsMenu}
+      </>
     ) : !voiceHere ? undefined : (
       <>
         {canManageChannels && categoryRows.length === 0 ? (
           <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
         ) : null}
-        <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin(null)}>
-          <Icon name={SERVER_MENU} size={15} /></Button>
+        {serverMenu}
       </>
     );
     sidebar = (<div className="dw-sidebar">
@@ -1228,10 +1282,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           label: (name: string) => t('nav.channel.menuOf', { name }),
           items: (id: string) => {
             const start = dmCallStart(voiceCtx, id);
-            return [...(start === null ? [] : [{ id: 'call', label: start.label }]), { id: 'pins', label: t('shell.pins.open') }, muteItem(id)];
+            return [...(start === null ? [] : [{ id: 'call', label: start.label }]), { id: 'pins', label: t('shell.pins.open') }, ...notifyItems(id)];
           },
           onSelect: (id: string, item: string) => {
-            if (item === 'mute') { toggleMute(id); return; }
+            if (notifyChoice(id, item)) return;
             if (item === 'call') {
               dmCallStart(voiceCtx, id)?.onStart();
               if (id !== dmId) void navigate({ name: 'dm', channelId: id });
@@ -1245,9 +1299,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           label: (name: string) => t('nav.channel.menuOf', { name }),
           // Fix round 1 (Jonas): a voice row's menu holds the call code while this device is in its call (the stage has none).
           items: (id: string) => voiceRooms[id] !== undefined ? (callCodeOf(id) === null ? [] : [{ id: 'code', label: t('voice.code') }])
-            : [{ id: 'pins', label: t('shell.pins.open') }, muteItem(id), ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
+            : [{ id: 'pins', label: t('shell.pins.open') }, ...notifyItems(id), ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
           onSelect: (id: string, item: string) => {
-            if (item === 'mute') { toggleMute(id); return; }
+            if (notifyChoice(id, item)) return;
             if (item === 'code') { setCodeFor(id); return; }
             if (item === 'edit') { setEditChannelId(id); return; }
             if (id === openId) { dispatch({ type: 'pins', open: true }); return; }

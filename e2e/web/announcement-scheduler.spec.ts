@@ -180,7 +180,7 @@ appTest('creates and sends a one-off announcement through the browser client, th
     await expect(textChannel).toBeVisible();
     await textChannel.click();
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -260,7 +260,7 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     const channelId = channel.channelId;
     await page.getByRole('button', { name: 'general', exact: true }).click();
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();

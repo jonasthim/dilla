@@ -138,7 +138,9 @@ export function Devices(): React.JSX.Element {
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}
             state={d.revokedAt !== null ? t('devices.revoked') : !d.listed ? t('devices.unlisted') : undefined}
             lastSeen={d.lastSeen > 0 ? t('devices.lastSeen', { when: messageTime(d.lastSeen, now) }) : undefined}
-            extraAction={d.revokedAt === null ? { label: t('devices.rename'), onAction: () => choose({ kind: 'rename', deviceId: d.id }) } : undefined}
+            // Signal task 10 fix round 2 (Jonas): Rename is in the row's context menu (right-click, long press, Shift+F10).
+            menu={d.revokedAt === null ? { label: t('signalSettings.menu.device', { name: d.label ?? d.id.slice(0, 8) }), items: [{ id: 'rename', label: t('devices.rename') }],
+              onSelect: () => choose({ kind: 'rename', deviceId: d.id }) } : undefined}
             // README §5.9: this browser's row signs out (the prototype's plain button); every other live device is removed.
             action={d.revokedAt !== null ? undefined : d.own ? { label: t('workspace.signOut'), onAction: signOut.requestOpen } : {
               label: t('devices.revoke'), danger: true,

@@ -739,7 +739,7 @@ export function newChannelButton(page: Page): Locator {
  * dialog, open on its link field; the settings dialog stays open behind it. Desktop: the header's "server settings" button.
  */
 export async function openInviteDialog(page: Page, server: string): Promise<Locator> {
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   // Until the permissions are read the dialog shows no tab; the nav fills in when they arrive.

@@ -1550,7 +1550,7 @@ describe('sidebar actions and pane widths (web3.8)', () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
       banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
     expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Invites' }));
@@ -1948,7 +1948,9 @@ describe('the channel header actions (web3.9)', () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const menu = await openRowMenu(user, 'general');
     // Signal task 10 fix round 1: Mute moved from Settings → Notifications into the row's menu.
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['notify.mute'], en['admin.channel.open']]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['admin.channel.open']]);
+    expect(within(menu).getByRole('menuitemcheckbox', { name: en['notify.mute'] })).toBeInTheDocument();
+    expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual([en['signalSettings.menu.notifyDefault'], en['signalSettings.menu.notifyAll'], en['signalSettings.menu.notifyMentions'], en['signalSettings.menu.notifyNothing']]);
     await user.click(within(menu).getByRole('menuitem', { name: en['shell.pins.open'] }));
     await waitFor(() => expect(fake.callsOf('loadPins')).toHaveLength(1));
   });
@@ -1956,8 +1958,33 @@ describe('the channel header actions (web3.9)', () => {
   it('the row menu mutes a channel with mute.channel.<hex>', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const menu = await openRowMenu(user, 'general');
-    await user.click(within(menu).getByRole('menuitem', { name: en['notify.mute'] }));
+    await user.click(within(menu).getByRole('menuitemcheckbox', { name: en['notify.mute'] }));
     await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `mute.channel.${GEN}`, value: '1' }));
+  });
+  // Signal task 10 fix round 2 (Jonas): the channel's own notify mode is in its row menu; default deletes it.
+  it('the row menu sets the channel\u2019s notify mode with notify.channel.<hex>', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    await user.click(within(await openRowMenu(user, 'general')).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyNothing'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `notify.channel.${GEN}`, value: 'nothing' }));
+    await user.click(within(await openRowMenu(user, 'general')).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyDefault'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `notify.channel.${GEN}`, value: null }));
+  });
+  // Signal task 10 fix round 2 (Jonas): the server's ⌄ menu holds its settings, Mute server and the server's notify mode.
+  it('the server ⌄ menu mutes the server and sets its notify mode', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    await user.click(await screen.findByRole('button', { name: en['admin.open'] }));
+    await user.click(await screen.findByRole('menuitemcheckbox', { name: en['signalSettings.menu.muteServer'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `mute.community.${A}`, value: '1' }));
+    await user.click(await screen.findByRole('menuitemradio', { name: en['signalSettings.menu.notifyAll'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `notify.community.${A}`, value: 'all' }));
+  });
+  it('the DM list head\u2019s menu sets the device-wide default that governs direct messages', async () => {
+    const { fake, user } = setup('/dm', { communities: OWNED });
+    await user.click(await screen.findByRole('button', { name: en['signalSettings.menu.dms'] }));
+    const everything = await screen.findByRole('menuitemradio', { name: en['signalSettings.menu.everything'] });
+    expect(screen.getByRole('menuitemradio', { name: en['signalSettings.menu.dmsMentions'] })).toHaveAttribute('aria-checked', 'true');
+    await user.click(everything);
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: 'notify.default', value: 'everything' }));
   });
   it('pins from the row of another channel open that channel, then its pins', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
@@ -1971,7 +1998,7 @@ describe('the channel header actions (web3.9)', () => {
   it('a member without manage channels has no edit action, in the bar or the row menu', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
     const menu = await openRowMenu(user, 'general');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['notify.mute']]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open']]);
     await user.keyboard('{Escape}');
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });

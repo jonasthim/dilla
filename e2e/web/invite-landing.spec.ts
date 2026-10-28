@@ -39,7 +39,7 @@ async function makeLink(page: Page, h: StartedHost): Promise<string> {
   await expect(start).toBeHidden({ timeout: WAIT });
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
 
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });

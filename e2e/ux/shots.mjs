@@ -103,7 +103,9 @@ export const steps = {
   } },
   'server-settings': { ...desktop, async run(h, v) {
     await desktopHome(h);
-    await h.page.locator('[data-admin-open]').first().click();
+    // Signal task 10 fix round 2: the server ⌄ is a menu; its first item opens the server's settings.
+    await h.page.locator('[data-focus-key="admin-open"]').first().click();
+    await h.page.getByRole('menuitem', { name: h.t('signalSettings.menu.serverSettings'), exact: true }).click();
     const admin = h.page.getByRole('dialog', { name: h.t('admin.title'), exact: true });
     await admin.waitFor();
     const nav = admin.getByRole('navigation', { name: h.t('admin.nav'), exact: true }).getByRole('button');

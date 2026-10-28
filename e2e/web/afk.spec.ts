@@ -208,7 +208,7 @@ const panelMute = (p: Person) => p.page.locator('.d-user-panel').getByRole('butt
 
 /** Opens server settings and its `section` tab; returns the dialog. */
 async function serverSettings(page: Page, section: 'admin.nav.overview' | 'admin.nav.channels' | 'roles.tab'): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible({ timeout: WAIT });
   const tab = navItem(dialog, section);

@@ -59,7 +59,7 @@ const switchOf = (scope: Locator, key: string) => scope.getByRole('switch', { na
 
 /** Opens "server settings" in the sidebar and returns the dialog, with the permissions read. */
 async function openSettings(page: Page): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await expect(dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible({ timeout: WAIT });

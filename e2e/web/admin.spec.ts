@@ -56,7 +56,7 @@ function anyOf(key: string, vars: Record<string, string>, open: string): RegExp 
 
 /** Opens "server settings" in the sidebar and returns the dialog. */
 async function openSettings(page: Page): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog).toBeVisible({ timeout: WAIT });
   // Until the permissions are read the dialog shows no tab; the nav fills in when they arrive.

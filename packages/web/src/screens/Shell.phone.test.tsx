@@ -68,7 +68,9 @@ describe('the phone shell: the servers list', () => {
     expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
     manage(client);
     expect(screen.getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
+    // Signal task 10 fix round 2: the ⌄ is the server's menu; its first item opens the server's settings.
     await user.click(menu);
+    await user.click(await screen.findByRole('menuitem', { name: t('signalSettings.menu.serverSettings') }));
     const dialog = await screen.findByRole('dialog', { name: t('admin.title') });
     expect(within(dialog).getByRole('button', { name: t('workspace.danger') })).toBeInTheDocument();
   });
@@ -163,18 +165,22 @@ describe('the phone shell: pushed views', () => {
     const { user, client } = phone({ path: `/c/${A}` });
     let menu = await openRowMenu(user, 'lobby');
     // Signal task 10 fix round 1: Mute moved from Settings → Notifications into the row's menu.
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('notify.mute')]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open')]);
+    // Signal task 10 fix rounds 1–2: Mute and the conversation's notify mode are in the row menu too.
+    expect(within(menu).getByRole('menuitemcheckbox', { name: t('notify.mute') })).toHaveAttribute('aria-checked', 'false');
+    expect(within(menu).getByRole('menuitemradio', { name: t('signalSettings.menu.notifyDefault') })).toHaveAttribute('aria-checked', 'true');
     await user.keyboard('{Escape}');
     manage(client);
     menu = await openRowMenu(user, 'lobby');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('notify.mute'), t('admin.channel.open')]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('admin.channel.open')]);
   });
 
   // Ruling Z: a DM's phone header is back, name, topic and Search; its pins (and call) are in the DM row's context menu.
   it('opens a DM as a pushed view whose header has search alone; pins are in its row menu', async () => {
     const { user } = phone({ path: '/dm' });
     let menu = await openRowMenu(user, 'bob', 'dms');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('call.start'), t('shell.pins.open'), t('notify.mute')]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('call.start'), t('shell.pins.open')]);
+    expect(within(menu).getByRole('menuitemcheckbox', { name: t('notify.mute') })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
@@ -324,7 +330,7 @@ describe('the phone shell: tabs', () => {
 
   it('hides the tab bar while server settings is open', async () => {
     const { user } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('admin.open') }));
+    await user.click(await screen.findByRole('button', { name: t('admin.open') })); await user.click(await screen.findByRole('menuitem', { name: t('signalSettings.menu.serverSettings') })); // Signal task 10 fix round 2: the ⌄ is a menu
     expect(await screen.findByRole('dialog', { name: t('admin.title') })).toBeInTheDocument();
     expect(tabs()).toBeNull();
     expect(here()).toBe(`/c/${A}/settings`);
@@ -607,7 +613,8 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
   it('Home on @ has no search in its head, only "message someone"', async () => {
     phone({ path: '/dm' });
     const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.label') })).closest('.d-channel-list__head') as HTMLElement;
-    expect(within(head).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('shell.dms.new')]);
+    // Signal task 10 fix round 2: beside "message someone", the DM list head's menu (the device-wide notify default).
+    expect(within(head).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('shell.dms.new'), t('signalSettings.menu.dms')]);
   });
 
   it('Activity and You each open with a phone header holding their title', async () => {

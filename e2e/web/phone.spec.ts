@@ -491,7 +491,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     // Server settings is a fullscreen modal; section URLs are scoped under the community.
     await test.step('server settings follows index → section and closes on Escape', async () => {
       await tab(page, 'home.tab').tap();
-      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
       await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });

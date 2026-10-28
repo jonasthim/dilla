@@ -86,7 +86,7 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     await openChannel(targetPage, SERVER, 'general');
 
     // The bot needs only its warnings capability for the later warning action.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     let nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -106,7 +106,7 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
 
     await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('workspace.automoderation'), exact: true }).click();

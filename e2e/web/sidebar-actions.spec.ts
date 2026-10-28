@@ -82,7 +82,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await expect(newChannelButton(page2)).toHaveCount(0);
     await expect(button(page2, 'invite.open')).toHaveCount(0);
     await expect(button(page2, 'admin.leave.open')).toHaveCount(0);
-    await button(page2, 'admin.open').click();
+    await button(page2, 'admin.open').click().then(() => page2.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await expect(nav).toBeVisible({ timeout: WAIT });
@@ -123,7 +123,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
       await expect(button(p, 'admin.leave.open')).toHaveCount(0);
     }
     // A member reaches leave through the gear: server settings → leave server.
-    await button(page2, 'admin.open').click();
+    await button(page2, 'admin.open').click().then(() => page2.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const phoneSettings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await expect(phoneSettings.getByRole('button', { name: copy('admin.nav.leave'), exact: true })).toBeVisible({ timeout: WAIT });
     await page2.keyboard.press('Escape');

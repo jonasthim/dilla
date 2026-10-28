@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { Command, DeviceSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
@@ -37,6 +37,11 @@ function setup(handler: (c: Command) => Promise<unknown> = () => Promise.resolve
   return { fake, user, view };
 }
 const rows = () => within(screen.getByRole('list')).getAllByRole('listitem');
+// Signal task 10 fix round 2 (Jonas): Rename is in the device row's context menu (right-click, long press, Shift+F10).
+async function renameFrom(user: UserEvent, row: HTMLElement): Promise<void> {
+  fireEvent.contextMenu(row, { clientX: 10, clientY: 10 });
+  await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
+}
 const rowOf = (id: string) => {
   const row = rows().find(r => within(r).queryByText(id.slice(0, 8)) !== null);
   if (row === undefined) throw new Error(`no row for ${id}`);
@@ -52,13 +57,13 @@ describe('the device list', () => {
     const { fake, view } = setup();
     expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
-    expect(screen.getByText('Every browser and app signed in to your account. Removing a device needs your recovery key.')).toBeInTheDocument();
+    expect(screen.getByText('Every browser that holds your keys.')).toBeInTheDocument();
     expect(rows().map(r => within(r).getByText(/^[0-9a-f]{8}$/).textContent)).toEqual([OWN, PHONE, FORGOTTEN, OLD].map(id => id.slice(0, 8)));
     const own = rowOf(OWN);
     expect(within(own).getByText('This browser')).toBeInTheDocument();
     // Signal task 10 fix round 1 (README §5.9): no tier tags; this browser's row signs out, and every live device can be named.
     expect(within(own).queryByText('Browser')).toBeNull();
-    expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['Rename', 'Sign out']);
+    expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['Sign out']);
     expect(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     expect(within(rowOf(FORGOTTEN)).getByText('not yet in the device list')).toBeInTheDocument();
     expect(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
@@ -194,9 +199,12 @@ describe('naming a device', () => {
   it('shows the name where there is one and the first eight characters where there is not, and offers rename on live devices only', () => {
     setup(undefined, list());
     expect(within(rowNamed('work laptop')).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
-    expect(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'Rename' })).toBeInTheDocument();
-    expect(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'Rename' })).toBeInTheDocument();
-    expect(within(rowNamed(OLD.slice(0, 8))).queryByRole('button', { name: 'Rename' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
+    fireEvent.contextMenu(rowNamed(PHONE.slice(0, 8)), { clientX: 10, clientY: 10 });
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Rename' }), { key: 'Escape' });
+    fireEvent.contextMenu(rowNamed(OLD.slice(0, 8)), { clientX: 10, clientY: 10 });
+    expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull();
   });
   it('keeps the id beside a name, in an isolated span, so a swapped name does not hide which device it is', () => {
     setup(undefined, list());
@@ -226,7 +234,7 @@ describe('naming a device', () => {
   });
   it('opens on the current name, saves it trimmed with the device, and closes', async () => {
     const { fake, user, view } = setup(undefined, list());
-    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'Rename' }));
+    await renameFrom(user, rowNamed('work laptop'));
     const dialog = screen.getByRole('dialog', { name: 'Name this device' });
     expect(within(dialog).getByText('The server can change it, so check a device by its id before you remove it.')).toBeInTheDocument();
     // web3.12.1: a quiet line under the field says the server can read the name, and it is part of the field's description.
@@ -246,7 +254,7 @@ describe('naming a device', () => {
   });
   it('clears the name when the field is emptied', async () => {
     const { fake, user } = setup(undefined, list());
-    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'Rename' }));
+    await renameFrom(user, rowNamed('work laptop'));
     await user.clear(field());
     await user.keyboard('{Enter}');
     expect(fake.callsOf('renameDevice')).toEqual([{ m: 'renameDevice', deviceId: NAMED, label: null }]);
@@ -256,16 +264,16 @@ describe('naming a device', () => {
     const spy = vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua);
     try {
       const { user } = setup(undefined, list());
-      await user.click(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'Rename' }));
+      await renameFrom(user, rowNamed(OWN.slice(0, 8)));
       expect(field()).toHaveValue('Firefox on Linux');
       await user.click(screen.getByRole('button', { name: 'Close' }));
-      await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'Rename' }));
+      await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
       expect(field()).toHaveValue('');
     } finally { spy.mockRestore(); }
   });
   it('shows a refusal by its code and keeps the dialog and the text', async () => {
     const { user } = setup(c => (c.m === 'renameDevice' ? Promise.reject(refusal({ code: 'E_NOT_FOUND' })) : Promise.resolve(null)), list());
-    await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'Rename' }));
+    await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
     await user.type(field(), 'tablet');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = screen.getByRole('dialog', { name: 'Name this device' });
@@ -274,7 +282,7 @@ describe('naming a device', () => {
   });
   it('sends one rename while in flight and cannot be closed meanwhile', async () => {
     const { fake, user } = setup(c => (c.m === 'renameDevice' ? new Promise(() => {}) : Promise.resolve(null)), list());
-    await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'Rename' }));
+    await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
     await user.type(field(), 'tablet');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(screen.getByRole('button', { name: 'Working…' })).toHaveAttribute('aria-disabled', 'true');

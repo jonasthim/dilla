@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import {
-  CLASS, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, channelRow, channelRowMenuItem, clickNotification, closeSettings, copy, dmComposer,
+  CLASS, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, channelRow, clickNotification, closeSettings, copy, dmComposer,
   dmLog, dmsNav, expectAccessible, expectComposerReady, expectShell, homeTile, instanceInvite, joinCommunity, messageRow,
   notificationsShown, openChannel, openSettings, permissionRequests, railItem, recordNotifications, sendText,
   setNotifyDefault, shownName, signUp, tag, test, type Peer,
@@ -75,8 +75,13 @@ test('unopened channels badge their unread messages and mentions, opening reads 
   await expect(rail).toHaveAttribute('data-unread', '1', { timeout: WAIT });
 
   // Mute channel three: its count goes, its mention stays.
-  // Signal task 10 fix round 1: Settings → Notifications keeps the prototype's rows; a channel mutes from its row's menu.
-  await channelRowMenuItem(page, three, 'notify.mute');
+  // Signal task 10 fix rounds 1–2: Settings → Notifications keeps the prototype's rows; a channel mutes from its row's menu
+  // (Mute is a menuitemcheckbox, which keeps the menu open: Escape closes it).
+  await channelRow(page, three).click({ button: 'right' });
+  const rowMenu = page.getByRole('menu', { name: copy('nav.channel.menuOf', { name: three }), exact: true });
+  await rowMenu.getByRole('menuitemcheckbox', { name: copy('notify.mute'), exact: true }).click();
+  await expect(rowMenu.getByRole('menuitemcheckbox', { name: copy('notify.mute'), exact: true })).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+  await page.keyboard.press('Escape');
   await expect(row3).toHaveAttribute('data-muted', 'true', { timeout: WAIT });
   await expect(row3).toHaveAttribute('data-unread', '0');
   await expect(row3).toHaveAttribute('data-mentions', '1');

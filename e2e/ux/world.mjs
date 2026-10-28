@@ -155,7 +155,7 @@ await addChannel('announce', 'news');
 for (const n of ['harbour', 'Late night lounge for people who never sleep']) await addChannel('voice', n);
 
 // Invite link.
-await byText(ada, 'button', 'admin.open').click();
+await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
 const settings = byText(ada, 'dialog', 'admin.title');
 await settings.waitFor({ timeout: WAIT });
 await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('admin.nav.invites'), exact: true }).click();

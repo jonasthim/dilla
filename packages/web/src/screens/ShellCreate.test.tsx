@@ -268,7 +268,7 @@ describe('a server’s actions (flow 07)', () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
     act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
       createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const settings = await screen.findByRole('dialog', { name: 'Server settings' });
     expect(within(settings).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     await user.click(within(settings).getByRole('button', { name: 'Invites' }));

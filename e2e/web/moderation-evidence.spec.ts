@@ -36,7 +36,7 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await openChannel(targetPage, SERVER, 'general');
 
     // Enable the bot through the same server settings flow used by a moderator.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -67,7 +67,7 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await expect(warningNotice).toBeVisible();
 
     // Retrieve through the actual Bot settings panel and assert the returned evidence is rendered.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();

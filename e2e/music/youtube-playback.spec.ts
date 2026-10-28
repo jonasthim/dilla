@@ -102,7 +102,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   await channelRow(page, 'general').click();
 
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   let settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'roles.tab').click();
   await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
@@ -145,7 +145,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
   await page.keyboard.press('Enter');
   await expect(createServerTwo).toBeHidden({ timeout: WAIT });
   await expect(page.getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true })).toBeVisible({ timeout: WAIT });
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'roles.tab').click();
   await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
@@ -350,7 +350,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
   // Disable only community A's Bot through its owner controls. Community B must keep its
   // authenticated Bot stream and audible output while A's stream disappears.
   await railItem(page, SERVER).click();
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'admin.nav.bot').click();
   await settings.getByRole('button', { name: copy('admin.bot.disable'), exact: true }).click();

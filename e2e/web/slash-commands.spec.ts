@@ -65,7 +65,7 @@ async function createCommunity(page: Page): Promise<void> {
 
 /** Enable the built-in Bot through the shipped settings, then wait for the native daemon to install it. */
 async function enableBot(page: Page, password: string, capabilities: string[] = []): Promise<void> {
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });
@@ -84,7 +84,7 @@ async function enableBot(page: Page, password: string, capabilities: string[] = 
 }
 
 async function disableBot(page: Page): Promise<void> {
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });

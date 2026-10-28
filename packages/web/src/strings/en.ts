@@ -331,7 +331,7 @@ export const en = {
   'settings.nav.notifications': 'Notifications',
   'settings.nav.appearance': 'Appearance',
   'devices.title': 'Devices',
-  'devices.body': 'Every browser and app signed in to your account. Removing a device needs your recovery key.',
+  'devices.body': 'Every browser that holds your keys.',
   'devices.thisBrowser': 'This browser',
   'devices.tier.web': 'Browser',
   'devices.tier.native': 'App',

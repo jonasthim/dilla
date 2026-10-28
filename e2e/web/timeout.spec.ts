@@ -110,7 +110,7 @@ test('manual text timeout blocks community writes and recovers while read, voice
     await expect(memberRow(member, OWNER)).toBeVisible({ timeout: WAIT });
 
     // Give Bea pin rights through the real roles panel so a later pin refusal is attributable to the timeout.
-    await button(page, 'admin.open').click();
+    await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = dialog(page, 'admin.title');
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('roles.tab'), exact: true }).click();

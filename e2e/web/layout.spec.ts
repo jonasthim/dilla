@@ -278,7 +278,7 @@ const nav = (page: Page) => channelsNav(page);
 /** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
 const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
 async function makeCategory(page: Page, name: string): Promise<void> {
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.channels'), exact: true }).click();
   await settings.getByRole('button', { name: copy('admin.channels.newCategory'), exact: true }).click();
@@ -749,7 +749,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await openPath(page, serverPath);
   await toList();
   const serverSettingsOrigin = page.url();
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await expect(admin).toBeVisible({ timeout: WAIT });
   await expectTargets(page, tag, 'the server settings index');
@@ -792,7 +792,7 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   const afk = nav(page).getByRole('button', { name: copy('voice.open', { name: 'AFK' }), exact: true });
   await expect(afk, 'the built-in AFK channel is a voice row').toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, 'AFK 1440x900', '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list with the AFK row');
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nameRow = settings.locator('.d-settings-row').filter({ hasText: copy('admin.overview.name') });
   const timeout = settings.locator('.d-settings-row').filter({ hasText: copy('afk.timeout.label') });
@@ -858,7 +858,7 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   await page.keyboard.press('Enter');
   await expect(start).toBeHidden({ timeout: WAIT });
   await expectComposerReady(page, 'general');
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
   const rows = admin.locator('.d-settings-frame__body .d-settings-row');
@@ -884,7 +884,7 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
   if (await back.isVisible().catch(() => false)) await back.click();
   await expect(page.locator('.d-app-shell')).toHaveAttribute('data-pane', 'list', { timeout: WAIT });
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
   await expect(admin.getByRole('button', { name: copy('admin.invites.create'), exact: true })).toBeVisible({ timeout: WAIT });
@@ -1096,7 +1096,7 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     await expect(page.locator('dialog.d-search-palette-dialog')).toBeHidden({ timeout: WAIT });
 
     // I6: move up/down are 32px arrow icon buttons in trailing slots; one right edge; the long name is cut to one line.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.channels'), exact: true }).click();
     await expect(admin.locator('.dw-admin-row').first()).toBeVisible({ timeout: WAIT });

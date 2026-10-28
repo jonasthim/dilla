@@ -639,7 +639,7 @@ async function main(argv) {
 
     // web3.9: Server settings → overview holds the inactive timeout of the built-in AFK channel (there is no picker), then
     // channels → new category: "Raids" holds #loot and "Boats" holds the voice channel harbour; Boats is collapsed for the shot.
-    await byText(ada, 'button', 'admin.open').click();
+    await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
     const prepDialog = byText(ada, 'dialog', 'admin.title');
     const prepNav = prepDialog.getByRole('navigation', { name: t('admin.nav'), exact: true });
     await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.overview), exact: true }).click();
@@ -675,7 +675,7 @@ async function main(argv) {
 
     // Server settings → Invites → "Make link": the dialog makes the link and copies it; the link is read from its field,
     // never the clipboard.
-    await byText(ada, 'button', 'admin.open').click();
+    await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
     const settingsDialog = byText(ada, 'dialog', 'admin.title');
     await settingsDialog.getByRole('navigation', { name: t('admin.nav'), exact: true })
       .getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.invites), exact: true }).click();
@@ -1198,7 +1198,7 @@ async function main(argv) {
       const adaPage = pages.ada;
       await adaPage.setViewportSize({ width: 1440, height: 900 });
       await railServer(adaPage, SERVER).click();
-      await byText(adaPage, 'button', 'admin.open').click();
+      await byText(adaPage, 'button', 'admin.open').click().then(() => byText(adaPage, 'menuitem', 'signalSettings.menu.serverSettings').click());
       const serverSettings = adaPage.getByRole('dialog', { name: t('admin.title'), exact: true });
       await serverSettings.waitFor({ timeout: WAIT });
       for (const [section, name] of [

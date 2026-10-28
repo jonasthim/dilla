@@ -57,7 +57,7 @@ const switchOf = (scope: Locator, key: string) => scope.getByRole('switch', { na
 
 /** Opens "server settings" in the sidebar and returns the dialog, with the permissions read. */
 async function openSettings(page: Page): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await expect(dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible({ timeout: WAIT });
@@ -272,8 +272,15 @@ test('private channels run from an empty instance: create, gain, lose, make priv
     // Ada still sees #general public: nothing was changed.
     await expect(channelRow(page, 'general')).toBeVisible();
 
-    // 6. (Signal task 10 fix round 1: muting a whole server left Settings → Notifications with its per-server rows; the
-    // step that muted "Midgard Crew" there is gone. A channel mutes from its row's menu, badges.spec.ts.)
+    // 6. Björn mutes "Midgard Crew" from the server's ⌄ menu (Signal task 10 fix round 2; Settings → Notifications keeps the
+    // prototype's rows): his #general row reads as muted.
+    await button(page2, 'admin.open').click();
+    const muteServer = page2.getByRole('menuitemcheckbox', { name: copy('signalSettings.menu.muteServer'), exact: true });
+    await expect(muteServer).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
+    await muteServer.click();
+    await expect(muteServer).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+    await page2.keyboard.press('Escape');
+    await expect(channelRow(page2, 'general')).toHaveAccessibleName(copy('shell.channels.rowLabelMuted', { name: 'general', mentions: 0 }), { timeout: WAIT });
     await guard.collectWorkers();
   } finally {
     await second.close();

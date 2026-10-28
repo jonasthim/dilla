@@ -913,7 +913,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `settings.nav.notifications` | `Notifications` | navigation button |
 | `settings.nav.appearance` | `Appearance` | navigation button |
 | `devices.title` | `Devices` | section heading (`<h2>`, `tabIndex=-1`), Devices |
-| `devices.body` | `Every browser and app signed in to your account. Removing a device needs your recovery key.` | paragraph under the heading, Devices |
+| `devices.body` | `Every browser that holds your keys.` | paragraph under the heading, Devices (Signal task 10, Ruling AM: the prototype's line) |
 | `devices.thisBrowser` | `This browser` | tag on this browser's row |
 | `devices.tier.web` | `Browser` | tier tag of a browser |
 | `devices.tier.native` | `App` | tier tag of an app |

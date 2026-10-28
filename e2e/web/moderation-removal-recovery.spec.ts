@@ -78,7 +78,7 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     const unauthorized = await openMember(unauthorizedInvite, UNAUTHORIZED);
 
     // Make a real community role with manage-messages authority and assign it through the role UI.
-    await button(page, 'admin.open').click();
+    await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = dialog(page, 'admin.title');
     await settingsNav(settings).getByRole('button', { name: copy('roles.tab'), exact: true }).click();
     await button(settings, 'roles.new').click();

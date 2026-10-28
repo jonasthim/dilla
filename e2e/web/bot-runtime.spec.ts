@@ -87,7 +87,7 @@ test('a bot enabled through server settings reaches ready through the native run
     await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
     await page.keyboard.press('Enter');
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await expect(settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible();
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
@@ -114,7 +114,7 @@ test('a bot enabled through server settings reaches ready through the native run
 
     await expect.poll(async () => {
       await page.keyboard.press('Escape');
-      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
       const refreshed = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await refreshed.getByRole('navigation', { name: copy('admin.nav'), exact: true })
         .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -136,7 +136,7 @@ test('literal music command text never executes through the native runtime', asy
     await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
     await page.keyboard.press('Enter');
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await expect(settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible();
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
@@ -163,7 +163,7 @@ test('literal music command text never executes through the native runtime', asy
 
     await expect.poll(async () => {
       await page.keyboard.press('Escape');
-      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
       const refreshed = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await refreshed.getByRole('navigation', { name: copy('admin.nav'), exact: true })
         .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -208,7 +208,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(RECOVERY_SERVER);
     await page.keyboard.press('Enter');
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -229,7 +229,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     // Device 1 submits a real encrypted request while the Bot is offline. The pending response
     // must remain available in this device's native journal after both processes restart.
     await host.stopBotRuntime();
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
@@ -265,7 +265,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await expect(deviceOne.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: RECOVERY_SERVER, exact: true })).toBeVisible({ timeout: 90_000 });
     await host.startBotRuntimeNow();
-    await deviceOne.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await deviceOne.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => deviceOne.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = deviceOne.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
@@ -301,7 +301,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await signIn(secondPage, owner, instanceName);
     await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: RECOVERY_SERVER, exact: true })).toBeVisible({ timeout: 90_000 });
-    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage!.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const secondSettings = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
@@ -348,7 +348,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
     await page.keyboard.press('Enter');
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('roles.tab'), exact: true }).click();
@@ -382,7 +382,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
       return rows.length === 1 ? arr(rows[0])[2] : `count ${rows.length}`;
     }, { timeout: 90_000, intervals: [1_000, 2_000] }).toBe(3n);
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -398,7 +398,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     await saveJoinRole.click();
     await expect(saveJoinRole).toHaveCount(0, { timeout: WAIT });
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -423,14 +423,14 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
         await openSettings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
         await expect(openSettings).toBeHidden();
       }
-      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
       settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
         .getByRole('button', { name: copy('roles.tab'), exact: true }).click();
       return roleRow.innerText();
     }, { timeout: 90_000, intervals: [1_000, 2_000] }).toContain(copy('roles.row.one'));
 
-    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage!.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const secondSettings = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.leave'), exact: true }).click();
@@ -470,7 +470,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
     await page.keyboard.press('Enter');
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     let nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('roles.tab'), exact: true }).click();
@@ -501,7 +501,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     }, { timeout: 90_000, intervals: [1_000, 2_000] }).toBe(3n);
 
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
@@ -528,7 +528,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
     await openChannel(secondPage, SERVER, 'general');
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.selfRoles'), exact: true }).click();
@@ -561,7 +561,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await expect(memberRole(1)).toBeVisible({ timeout: 30_000 });
 
     // The panel reaction and the member's ordinary self-service choice are separate grants.
-    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage!.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const memberSettings = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await memberSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.selfRoles'), exact: true }).click();
@@ -575,7 +575,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     const removePicker = secondPage.getByRole('dialog', { name: copy('shell.emoji.label'), exact: true });
     await removePicker.getByRole('button', { name: copy('shell.emoji.01'), exact: true }).click();
     await expect(reactionChip(secondPanel, copy('shell.emoji.01'), 1)).toHaveCount(0);
-    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage!.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settingsAfterRemoval = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settingsAfterRemoval.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.selfRoles'), exact: true }).click();

@@ -230,7 +230,7 @@ describe('the role flows', () => {
   });
   it('the roles tab of server settings routes with manageRoles', async () => {
     const { user } = setup({ acc: { manageRoles: true } });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = screen.getByRole('dialog', { name: /settings/i });
     expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Roles' }));

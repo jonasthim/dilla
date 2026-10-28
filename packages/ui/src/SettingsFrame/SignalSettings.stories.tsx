@@ -127,7 +127,8 @@ function Keyboard() {
   );
 }
 
-// screens/settings/Devices.tsx (fix round 1) with this browser and one more: the prototype's rows, Sign out on this browser's.
+// screens/settings/Devices.tsx (fix rounds 1–2) with this browser and one more: the prototype's rows, Sign out on this browser's,
+// Rename in each row's context menu.
 function Devices() {
   return (
     <section className="dw-settings-section" aria-labelledby="devices-title">
@@ -135,9 +136,11 @@ function Devices() {
       <p>{t('devices.body')}</p>
       <ul className="dw-device-list">
         <DeviceRow name="3f9a2c1d" tier="web" own ownLabel={t('devices.thisBrowser')} lastSeen={t('devices.lastSeen', { when: '21:04' })}
-          extraAction={{ label: t('devices.rename'), onAction: noop }} action={{ label: t('workspace.signOut'), onAction: noop }} />
+          menu={{ label: t('signalSettings.menu.device', { name: '3f9a2c1d' }), items: [{ id: 'rename', label: t('devices.rename') }], onSelect: noop }}
+          action={{ label: t('workspace.signOut'), onAction: noop }} />
         <DeviceRow name="b2d4e6f8" tier="native" lastSeen={t('devices.lastSeen', { when: '21:02' })}
-          extraAction={{ label: t('devices.rename'), onAction: noop }} action={{ label: t('devices.revoke'), onAction: noop, danger: true }} />
+          menu={{ label: t('signalSettings.menu.device', { name: 'b2d4e6f8' }), items: [{ id: 'rename', label: t('devices.rename') }], onSelect: noop }}
+          action={{ label: t('devices.revoke'), onAction: noop, danger: true }} />
       </ul>
     </section>
   );
