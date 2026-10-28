@@ -164,13 +164,12 @@ test('scopes and keyboard selection stay on the textbox until a target is chosen
   await page.keyboard.press('ControlOrMeta+/');
   const textbox = page.getByRole('combobox', { name: copy('search.placeholder') });
   await textbox.fill('cafe');
-  for (const scope of ['this conversation', 'this community', 'everything']) {
-    await page.getByRole('button', { name: scope }).click();
-    await expect(page.getByRole('option', { name: /café compass/ })).toBeVisible({ timeout: WAIT });
-    await textbox.focus();
-    await page.keyboard.press('ArrowDown');
-    await expect(textbox).toBeFocused();
-  }
+  // Task 9 fix round 1 (Jonas): the palette has no scope control; messages are searched everywhere, this conversation's first.
+  await expect(page.getByRole('button', { name: 'this conversation' })).toHaveCount(0);
+  await expect(page.getByRole('option', { name: /café compass/ })).toBeVisible({ timeout: WAIT });
+  await page.keyboard.press('ArrowDown');
+  await expect(textbox).toBeFocused();
+  await expect(page.getByRole('option', { name: /café compass/ })).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('Enter');
   await expect(rowById(page, peer.channelName, sent.msg_id)).toBeFocused();
 });

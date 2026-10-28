@@ -49,6 +49,8 @@ export interface MemberCardHostProps {
   /** The person menu open on a member row, and how to close it (the member pane's right-click, Shift+F10, held touch). */
   menu?: OpenMenu | null;
   onMenu?: (next: OpenMenu | null) => void;
+  /** The person menu's Mention (fix round 1): "@username " into the open channel's composer; absent, no Mention item. */
+  onMention?: (username: string) => void;
 }
 
 export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
@@ -150,6 +152,7 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
   const menuItems: ActionMenuItem[] = menuData === null ? [] : [
     { id: 'profile', label: t('members.menu.profile'), icon: 'user' },
     ...(menuData.actions.includes('message') ? [{ id: 'message', label: t('members.menu.message'), icon: 'message-square' as const }] : []),
+    ...(props.onMention !== undefined && !menuData.isYou ? [{ id: 'mention', label: t('members.menu.mention'), icon: 'at-sign' as const }] : []),
     { id: 'copy', label: t('members.menu.copy'), icon: 'copy' },
     ...(menuData.actions.includes('roles') ? [{ id: 'roles', label: t('members.menu.roles'), icon: 'shield' as const }] : []),
     ...menuData.actions.filter(id => MOD[id] !== undefined).map((id, i) => ({
@@ -161,6 +164,7 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
     if (menu === null || menuData === null) return;
     props.onMenu?.(null);
     if (id === 'profile') { onCard({ id: menu.id, source: 'list', anchor: menu.row }); return; }
+    if (id === 'mention') { props.onMention?.(menuData.username); return; }
     if (id === 'copy') {
       const text = `@${menuData.username}`;
       void navigator.clipboard?.writeText(text).then(() => props.announce(t('members.menu.copied', { name: menuData.username })), () => undefined);
@@ -172,7 +176,7 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
     <>
       {card !== null && data !== null ? (
         <ProfileCard name={data.name} username={data.username} presence={presence?.[data.userId] ?? 'offline'} status={data.status} bio={data.bio} isOwner={data.isOwner} isYou={data.isYou}
-          isBot={member?.kind === 1} roles={data.roles} actions={cardActions(data.actions)}
+          isBot={member?.kind === 1} client={member?.kind === 1 ? undefined : t('layout.profile.web')} roles={data.roles} actions={cardActions(data.actions)}
           onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement={card.source === 'list' ? 'side' : 'below'} fallbackFocus={card.source === 'list' ? undefined : messageFallback(card)} focusScope={props.focusScope} {...labels} />
       ) : card !== null && card.source !== 'list' && card.name !== undefined && members !== undefined ? (
         <ProfileCard name={card.name === '' ? t('layout.profile.formerMember') : card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" fallbackFocus={messageFallback(card)} focusScope={props.focusScope} {...labels} />

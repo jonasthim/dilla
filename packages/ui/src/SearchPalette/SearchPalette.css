@@ -17,17 +17,8 @@
 .d-search-palette input { flex: 1; min-width: 0; height: 40px; padding: 0; font: inherit; font-size: var(--text-md); color: var(--fg); background: transparent; border: 0; outline: none; }
 .d-search-palette input::placeholder { color: var(--fg-3); }
 .d-search-palette[data-layout="phone"] input { font-size: 16px; }
-/* A phone has no room beside the textbox: the scope words wrap to a row of their own under it. */
-.d-search-palette[data-layout="phone"] .d-search-palette__field { flex-wrap: wrap; height: auto; min-height: 50px; row-gap: 0; }
-.d-search-palette[data-layout="phone"] .d-search-palette__scopes { order: 1; width: 100%; padding-bottom: 8px; }
 .d-search-palette__esc { flex: none; padding: 0 6px; font: inherit; font-size: var(--text-micro); line-height: 18px; color: var(--fg-2); background: transparent; border: 1px solid var(--line-strong); border-radius: var(--r-sm); cursor: pointer; }
 .d-search-palette__esc:hover { color: var(--fg); }
-/* The search scope (this conversation, this community, everything): a quiet word row in the input row. */
-.d-search-palette__scopes { display: flex; flex: none; gap: 2px; }
-.d-search-palette__scopes button { padding: 0 6px; font: inherit; font-size: var(--text-meta); line-height: 24px; color: var(--fg-3); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.d-search-palette__scopes button:hover { color: var(--fg); background: var(--hover); }
-/* The chosen scope is not colour alone: --fg and an accent underline. */
-.d-search-palette__scopes button[aria-pressed="true"] { color: var(--fg); box-shadow: inset 0 -2px 0 0 var(--accent); }
 /* The results: at most 380px, 6px in; the group heading 10px 600 uppercase --fg-3 at 0.12em, 8px 10px 4px. */
 .d-search-palette__results { flex: 0 1 auto; min-height: 0; max-height: 380px; overflow: auto; padding: 6px; }
 .d-search-palette__group { padding: 8px 10px 4px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
@@ -36,8 +27,10 @@
 .d-search-palette [role="option"] { display: flex; align-items: center; gap: 10px; min-height: 38px; box-sizing: content-box; padding: 4px 10px; border-radius: var(--r-seg); cursor: pointer; transition: background var(--duration-press); }
 .d-search-palette [role="option"][aria-selected="true"] { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--accent); }
 .d-search-palette__tile { display: flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: var(--r-md); color: var(--fg-2); background: var(--hover); }
+.d-search-palette__avatar { display: inline-flex; flex: none; }
+.d-search-palette__avatar .d-avatar[data-shape="circle"] { border-radius: var(--r-avatar); }
 .d-search-palette__text { display: grid; flex: 1; min-width: 0; line-height: 1.35; }
-.d-search-palette__snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--fg); }
+.d-search-palette__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--fg); }
 /* J1: one sub-line (#channel · author · time), 10.5px --fg-3 (--fg-2 on the selected row: README §10.4 keeps --fg-3 off --surface-hi). */
 .d-search-palette__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); color: var(--fg-3); }
 [aria-selected="true"] .d-search-palette__meta { color: var(--fg-2); }
@@ -51,4 +44,7 @@
 .d-search-palette__spacer { flex: 1; }
 .d-search-palette__note { min-width: 0; }
 .d-search-palette :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* Ruling AK (Jonas): the textbox draws no ring, as the prototype; it holds focus the whole time the palette is open and the caret shows it.
+   The outline stays, transparent, so Windows forced colors still paint it. */
+.d-search-palette input:focus-visible { outline: 2px solid transparent; }
 @media (prefers-reduced-motion: reduce) { .d-search-palette-dialog, .d-search-palette-dialog::backdrop { animation: none; } }

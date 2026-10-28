@@ -98,7 +98,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `members.toggle='Members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
 - `members.groupMembers='members'`, `members.groupOffline='Offline'`
 - `members.menu.message='Message'`, `members.menu.compare='compare safety numbers'`
-- Signal (task 9), the row's person menu and the status line: `members.menu.profile='Profile'`, `members.menu.copy='Copy username'`,
+- Signal (task 9), the row's person menu and the status line: `members.menu.profile='Profile'`, `members.menu.mention='Mention'`, `members.menu.copy='Copy username'`,
   `members.menu.copied='@{name} copied'`, `members.menu.roles='Edit roles'`, `members.menu.kickName='Kick {name}'`,
   `members.menu.banName='Ban {name}'`, `members.menu.label='actions for {name}'`, `members.inVoice='in voice'`,
   `members.inChannel='in {channel}'`

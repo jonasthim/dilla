@@ -14,6 +14,7 @@ export const members = {
   'presence.error': 'Could not change your status. Try again.',
   'members.menu.message': 'Message',
   'members.menu.profile': 'Profile',
+  'members.menu.mention': 'Mention',
   'members.menu.copy': 'Copy username',
   'members.menu.copied': '@{name} copied',
   'members.menu.roles': 'Edit roles',

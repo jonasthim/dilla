@@ -40,12 +40,12 @@ describe('flow 11 (v0.1.0-web3.7, slow mode, announcements and threads)', () => 
     'announce.kind',
     'thread.open',
     'thread.close',
-    'thread.composer',
+    // Task 9 fix round 1 (Ruling AL): the reply input reads the prototype's "Reply in thread".
     'thread.list',
   ];
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(7);
+    expect(LOWER.length).toBe(6);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

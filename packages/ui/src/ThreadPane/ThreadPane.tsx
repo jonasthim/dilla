@@ -14,6 +14,8 @@ export interface ThreadPaneProps {
   children: ReactNode;
   /** The thread's Composer. */
   composer: ReactNode;
+  /** The rule between the root and the replies ("3 replies", drawn uppercase with a hairline; Ruling AL). Absent: no rule. */
+  repliesLabel?: string;
   /** The place after the title in the head (`#general`, 10.5px --fg-3), as the prototype draws it. */
   sub?: string;
   /** True: a full-screen sheet with a PhoneHeader (back = close). False: a column in the shell's aside. */
@@ -32,7 +34,7 @@ export interface ThreadPaneProps {
  * closes on Escape too) never sees it, and a key that something inside already handled (an open mention list, a row
  * returning focus to itself) is left alone.
  */
-export function ThreadPane({ title, sub, closeLabel, onClose, root, children, composer, phone }: ThreadPaneProps) {
+export function ThreadPane({ title, sub, repliesLabel, closeLabel, onClose, root, children, composer, phone }: ThreadPaneProps) {
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
     e.preventDefault();
@@ -54,6 +56,7 @@ export function ThreadPane({ title, sub, closeLabel, onClose, root, children, co
       )}
       <div className="d-thread-pane__scroll">
         <div className="d-thread-pane__root">{root}</div>
+        {repliesLabel === undefined || root === null ? null : <div className="d-thread-pane__rule">{repliesLabel}</div>}
         <div className="d-thread-pane__replies">{children}</div>
       </div>
       <div className="d-thread-pane__composer">{composer}</div>

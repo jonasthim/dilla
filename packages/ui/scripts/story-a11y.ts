@@ -425,7 +425,9 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const sides = [b.borderTopColor, b.borderRightColor, b.borderBottomColor, b.borderLeftColor];
         composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent, outlineColor: s.outlineColor };
       }
-      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer };
+      // Ruling AK (Jonas, task 9 fix round 1): the search palette's textbox draws no ring either (the caret shows focus).
+      const palette = el.matches('.d-search-palette input') ? s.outlineColor : null;
+      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette };
     });
     if (focused?.composer) {
       const { composer } = focused;
@@ -453,6 +455,8 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
           `with only a transparent ring (${bad.join('; ')})`,
         );
       }
+    } else if (focused?.palette != null) {
+      if (focused.palette !== 'rgba(0, 0, 0, 0)') throw new Error(`${context.title} / ${context.name}: the palette textbox draws a ring (${focused.palette}); Ruling AK wants none`);
     } else if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {
       throw new Error(
         `${context.title} / ${context.name}: the focused <${focused.tag}> has no visible focus ring ` +

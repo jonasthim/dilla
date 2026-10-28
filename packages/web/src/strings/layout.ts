@@ -8,6 +8,7 @@ export const layout = {
   'layout.profile.roles': 'roles',
   'layout.profile.close': 'close',
   'layout.profile.bot': 'bot',
+  'layout.profile.web': 'WEB',
   'layout.profile.manageRoles': 'edit roles',
   'layout.profile.formerMember': 'former member',
   'layout.log.older': 'viewing older messages',

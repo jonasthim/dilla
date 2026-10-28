@@ -27,7 +27,7 @@ export const Screen: Story = { args: { ...tileMenu('Kari', { screen: true }) } }
 export const Member: Story = {
   args: { person: { name: 'Björn', where: '@bjorn' }, label: 'actions for Björn', volume: undefined, items: [
     { id: 'profile', label: 'Profile', icon: 'user' }, { id: 'message', label: 'Message', icon: 'message-square' },
-    { id: 'copy', label: 'Copy username', icon: 'copy' }, { id: 'roles', label: 'Edit roles', icon: 'shield' },
+    { id: 'mention', label: 'Mention', icon: 'at-sign' }, { id: 'copy', label: 'Copy username', icon: 'copy' }, { id: 'roles', label: 'Edit roles', icon: 'shield' },
     { id: 'kick', label: 'Kick Björn', icon: 'log-out', danger: true, sep: true },
   ] },
 };

@@ -7,7 +7,7 @@ export const thread = {
   'thread.summary.last': 'last {time}',
   'thread.title': 'Thread',
   'thread.close': 'close thread',
-  'thread.composer': 'reply in thread',
+  'thread.composer': 'Reply in thread',
   'thread.list': 'threads',
   'thread.empty': 'No threads in #{name} yet.',
   'thread.loadFailed': 'Threads could not be loaded.',

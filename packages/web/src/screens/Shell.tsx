@@ -21,6 +21,8 @@ import type { ProfileOpener } from './conversation/MessageItem.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
 import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
+import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, type PaletteProvider } from './palette.ts';
+import { messageTime } from './shell-model.ts';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
@@ -963,6 +965,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
 
   // The channels whose send is in flight: a second Enter or a click on send meanwhile posts nothing (WEB-APP-01).
   const sending = useRef(new Set<string>());
+  // Task 9 fix round 1 (Jonas): the member menu's Mention puts "@username " at the end of the open text channel's draft and
+  // focuses the composer (on a phone the member sheet closes first). Absent where there is no composer to write in.
+  const mentionFromMembers = channel !== null && channel.kind === 0 && voiceChannel === null && targetId !== null && canSend ? (username: string) => {
+    const id = targetId;
+    const base = draft.channelId === id ? draft.text : ordinaryDrafts.current.get(id) ?? '';
+    const text = `${base}${base === '' || /\s$/.test(base) ? '' : ' '}@${username} `;
+    rememberDraft(ordinaryDrafts.current, id, text);
+    setDraft({ channelId: id, text, typed: true });
+    if (phone) memberSheet.close();
+    requestAnimationFrame(() => {
+      const box = document.querySelector<HTMLTextAreaElement>('.d-app-shell__main .d-composer textarea');
+      if (box === null) return;
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    });
+  } : undefined;
   // The text stays until the send resolves; a refused send keeps it (pre-flight ruling (d)).
   const send = (m: OutgoingMessage) => {
     if (targetId === null) return;
@@ -1445,6 +1463,36 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       : (railSlices.flat() as ChannelSummary[]).find(row => row.id === hit.channelId)?.name;
     return { ...hit, id: `${hit.channelId}:${hit.seq}`, location: location ?? hit.channelId };
   });
+  // Task 9 fix round 1 (Jonas): the palette's groups, as the prototype: Channels, People, Messages, Actions. The message search
+  // runs everywhere; the open conversation's hits come first. Another group joins by adding a provider here.
+  const paletteNow = Date.now();
+  const paletteProviders: PaletteProvider[] = [
+    channelsProvider(communities ?? [], railSlices.flat().filter((c): c is ChannelSummary => c != null), afkChannels, c => {
+      void navigate({ name: 'channel', communityId: c.communityId, channelId: c.id });
+      leaveSearchLayer();
+      searchOpener.current = null;
+      return true;
+    }),
+    peopleProvider(dms ?? [], d => (d.kind === 4 ? t('search.palette.groupDm', { count: d.members.length }) : dmTopic(d) ?? ''), d => {
+      void navigate({ name: 'dm', channelId: d.id });
+      leaveSearchLayer();
+      searchOpener.current = null;
+      return true;
+    }),
+    messagesProvider((searchRequest === (search?.requestId ?? 0) ? searchHits : []).map(hit => ({
+      id: hit.id, snippet: hit.snippet, location: hit.communityId === null ? hit.location : `#${hit.location}`, current: hit.channelId === targetId,
+      ...(hit.author === undefined ? {} : { author: hit.author }), ...(hit.ts === undefined ? {} : { time: messageTime(hit.ts, paletteNow) }),
+      run: async () => { const opened = await pickSearchHit(hit); if (opened) searchOpener.current = null; return opened; },
+    }))),
+    actionsProvider([
+      { id: 'settings', label: t('search.action.settings'), sub: t('search.action.settingsSub'), icon: 'settings', keywords: 'profile devices voice',
+        run: () => { void navigate({ name: 'settings', section: 'profile', from: null }); return true; } },
+      { id: 'mute', label: t(call.selfMuted ? 'search.action.unmute' : 'search.action.mute'), sub: isApplePlatform() ? '⌘⇧M' : 'Ctrl+Shift+M',
+        icon: call.selfMuted ? 'mic' : 'mic-off', keywords: 'microphone', run: () => { call.selfMute(); return true; } },
+      { id: 'dm', label: t('search.action.dm'), sub: t('search.action.dmSub'), icon: 'message-square', keywords: 'direct message dm',
+        run: () => { setPickerOpen(true); return true; } },
+    ]),
+  ];
   const pickSearchHit = async (hit: SearchHitView): Promise<boolean> => {
     const known = hit.communityId === null ? dms?.some(row => row.id === hit.channelId)
       : (railSlices.flat() as ChannelSummary[]).some(row => row.id === hit.channelId && row.communityId === hit.communityId);
@@ -1932,6 +1980,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
+              onMention={mentionFromMembers}
               announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)} onClose={() => setMembersOpen(false)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
           : community === null ? undefined : t('members.region', { server: community.name })}
@@ -1954,12 +2003,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           {...(dm !== null ? { dm: { members: allMembers, peerId: dm.kind === 3 ? dm.members.find(id => id !== self.id) ?? null : null, peerName: dm.name } } : {})} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
           onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
       ) : null}
-      <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
-        requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
-        hits={searchHits} onQuery={query => { setSearchQuery(query); issueSearch(query, searchScope, searchId); }}
-        onScope={scope => { setSearchScope(scope); client.call({ m: 'setSetting', key: 'searchScope', value: scope }).catch(report);
-          issueSearch(searchQuery, scope, scope === 'all' ? null : scope === 'community' ? communityId : targetId); }}
-        onPick={async hit => { const opened = await pickSearchHit(hit); if (opened) searchOpener.current = null; return opened; }}
+      <Search open={searchOpen} query={searchQuery} loading={searchBusy || searchRequest !== (search?.requestId ?? 0)}
+        groups={searchOpen ? paletteGroups(paletteProviders, searchQuery) : []}
+        onQuery={query => { setSearchQuery(query); if (query.trim().length >= 2) issueSearch(query, 'all', null); }}
         onClose={() => { restoreSearchFocus.current = searchOpener.current; searchOpener.current = null; setSearchOpen(false); }} />
       <AddServerDialog open={addOpen} title={t('layout.add.title')} joinLabel={t('layout.add.join')} createLabel={t('layout.add.create')}
         closeLabel={t('dialog.close')} onClose={() => setAddOpen(false)} onJoin={() => setJoinOpen(true)} onCreate={() => setCreateOpen(true)} />

@@ -463,3 +463,34 @@ describe('role assignment focus', () => {
     expect(row('bob')).toHaveFocus();
   });
 });
+
+describe('task 9 fix round 1', () => {
+  it('the person menu offers Mention only with a composer to write in, and hands the username over', async () => {
+    const fake = new FakeClient();
+    fake.set('communities', [{ id: CID, name: 'Midgard', owner: OWNER }]);
+    fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob'), m(CAL, 'carol', [MOD.id])]);
+    fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' });
+    fake.set(`roles:${CID}`, [MOD]);
+    fake.set(`permissions:${CID}`, access());
+    const onMention = vi.fn();
+    const pane = (mention?: (u: string) => void) => <div className="d-root"><CoreProvider client={fake}>
+      <MemberPane communityId={CID} selfId={ME} onMessage={vi.fn()} onCompare={vi.fn()} announce={vi.fn()} onMention={mention} /></CoreProvider></div>;
+    const view = render(pane());
+    const user = userEvent.setup();
+    expect(modActions('bob')).toEqual(['Kick bob', 'Ban bob']);
+    fireEvent.contextMenu(row('bob'), { clientX: 10, clientY: 10 });
+    expect(within(screen.getByRole('menu')).queryByRole('menuitem', { name: 'Mention' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    view.rerender(pane(onMention));
+    fireEvent.contextMenu(row('bob'), { clientX: 10, clientY: 10 });
+    await user.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Mention' }));
+    expect(onMention).toHaveBeenCalledExactlyOnceWith('bob');
+    fireEvent.contextMenu(row('ada'), { clientX: 10, clientY: 10 });
+    expect(within(screen.getByRole('menu')).queryByRole('menuitem', { name: 'Mention' })).toBeNull();
+  });
+  it('the card carries the WEB tag for a person', async () => {
+    const { user } = setup();
+    await user.click(row('bob'));
+    expect(card().querySelector('.d-profile-card__client')).toHaveTextContent('WEB');
+  });
+});

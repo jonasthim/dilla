@@ -74,6 +74,7 @@
 `layout.members.online='online'`
 `layout.members.offline='offline'`
 `layout.members.bots='bots'`
+`layout.profile.web='WEB'`
 `layout.profile.owner='owner'`
 `layout.profile.you='you'`
 `layout.profile.roles='roles'`

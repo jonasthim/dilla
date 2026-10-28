@@ -304,14 +304,15 @@ it('reopens the search dialog with its query after an update', async () => {
     store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { search: { open: true, query: 'lantern', scope: 'all' } }, files: [] }),
       remove: () => Promise.resolve() }, reload: () => undefined };
   setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
-  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveValue('lantern'));
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Search channels, people and messages' })).toHaveValue('lantern'));
 });
 it('opens scoped search with a modifier and sends the typed query', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}/{/Control}');
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.type(input, 'lamp');
-  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+  // Task 9 fix round 1: the scope is implicit (everywhere, the open conversation's hits first).
+  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
   expect(input).toHaveFocus();
 });
 
@@ -322,7 +323,7 @@ it('has no search in the desktop channel header; the top bar opens it', async ()
   expect(within(header).queryByRole('button', { name: 'search' })).toBeNull();
   expect(within(header).queryByRole('button', { name: 'more' })).toBeNull();
   await user.click(screen.getByRole('button', { name: en['topbar.search'] }));
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.type(input, 'lamp');
   await waitFor(() => expect(fake.callsOf('search').some(c => c.query === 'lamp')).toBe(true));
 });
@@ -343,11 +344,15 @@ it('shows the link banner when the browser goes offline, and empties it when it 
     expect(line()).toBeEmptyDOMElement();
   } finally { online.mockRestore(); }
 });
-it('persists a chosen search scope through the worker setting', async () => {
-  const { fake, user } = setup(`/c/${A}/${GEN}`);
+// Task 9 fix round 1 (Jonas): the palette is the prototype's: channels, people and actions with nothing typed, no scope control.
+it('lists channels, people and actions with nothing typed, draws no scope control, and opens a channel result', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
-  await user.click(screen.getByRole('button', { name: 'this community' }));
-  expect(fake.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: 'searchScope', value: 'community' });
+  const search = screen.getByRole('search');
+  expect(within(search).queryByRole('button', { name: 'this community' })).toBeNull();
+  expect(within(search).getByRole('group', { name: 'Channels' })).toBeInTheDocument();
+  expect(within(search).getByRole('group', { name: 'Actions' })).toBeInTheDocument();
+  expect(within(search).getByRole('option', { name: /Open settings/ })).toBeInTheDocument();
 });
 
 it('takes a picked community search hit to its channel and focuses the row', async () => {
@@ -355,7 +360,7 @@ it('takes a picked community search hit to its channel and focuses the row', asy
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'found', seq: '5', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
@@ -368,7 +373,7 @@ it('focuses the destination row when the previous channel has the same sequence'
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'target-five', seq: '5', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
@@ -386,7 +391,7 @@ it('accepts the worker request id after invalidation and loads earlier pages for
     return Promise.resolve(null);
   };
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: RAND }));
@@ -396,11 +401,11 @@ it('accepts the worker request id after invalidation and loads earlier pages for
 it('reports a search hit unavailable if its channel never loads a timeline', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'gone');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'gone');
   act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /gone/ }));
   await waitFor(() => expect(screen.getByText('That message is no longer available')).toBeInTheDocument(), { timeout: 2500 });
-  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+  expect(screen.getByRole('combobox', { name: 'Search channels, people and messages' })).toHaveFocus();
 });
 
 it('takes a keyboard-picked DM hit to its DM route and focuses the row', async () => {
@@ -409,7 +414,7 @@ it('takes a keyboard-picked DM hit to its DM route and focuses the row', async (
     client.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 'dm-found', seq: '8', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.type(input, 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.keyboard('{Enter}');
@@ -440,9 +445,9 @@ it('returns focus to where search was opened when Escape closes it', async () =>
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   await user.click(composer());
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+  expect(screen.getByRole('combobox', { name: 'Search channels, people and messages' })).toHaveFocus();
   await user.keyboard('{Escape}');
-  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Search channels, people and messages' })).toBeNull();
   expect(composer()).toHaveFocus();
 });
 
@@ -451,12 +456,12 @@ it('opens search as a modal dialog, once, and never under another open dialog', 
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   await user.click(composer());
   await user.keyboard('{Control>}k{/Control}');
-  const dialog = screen.getByRole('dialog', { name: 'Search your messages' });
+  const dialog = screen.getByRole('dialog', { name: 'Search channels, people and messages' });
   expect(dialog.tagName).toBe('DIALOG');
   expect(dialog).toHaveAttribute('open');
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.getAllByRole('dialog', { name: 'Search your messages' })).toHaveLength(1);
+  expect(screen.getAllByRole('dialog', { name: 'Search channels, people and messages' })).toHaveLength(1);
   await user.keyboard('{Escape}');
   expect(input).not.toBeInTheDocument();
   expect(composer()).toHaveFocus();
@@ -465,30 +470,29 @@ it('opens search as a modal dialog, once, and never under another open dialog', 
   document.body.append(other);
   try {
     await user.keyboard('{Control>}k{/Control}');
-    expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Search channels, people and messages' })).toBeNull();
   } finally { other.remove(); }
 });
 
 it('opens no search under the Settings dialog', async () => {
   const { user } = setup('/settings/devices');
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Search channels, people and messages' })).toBeNull();
 });
 
-it('says searching while the worker answers, then the scope’s empty text', async () => {
+// Task 9 fix round 1: the message search starts at two characters and runs everywhere (no visible scope).
+it('says searching while the worker answers, then the empty text', async () => {
   let answer!: (value: null) => void;
   const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   fake.handler = command => command.m === 'search' && command.scope === 'all'
     ? new Promise(resolve => { answer = resolve; }) : Promise.resolve(null);
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'z');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'zq');
   act(() => fake.set('search', { requestId: 3, hits: [], cursor: null }));
   expect(screen.getByRole('search')).toHaveTextContent('Searching your messages');
   await act(async () => { answer(null); await Promise.resolve(); });
-  expect(screen.getByRole('search')).toHaveTextContent('Nothing in this browser matches “z”.');
-  await user.click(screen.getByRole('button', { name: 'this conversation' }));
-  act(() => fake.set('search', { requestId: 4, hits: [], cursor: null }));
-  await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
+  expect(screen.getByRole('search')).toHaveTextContent('Nothing in this browser matches “zq”.');
+  expect(screen.queryByRole('button', { name: 'this conversation' })).toBeNull();
 });
 
 // The docs shoot's shell-not-member image showed "(E_NOT_READY)" in the error banner: a typing signal the worker refuses
@@ -2014,7 +2018,7 @@ describe('the top bar', () => {
   it('search opens the palette, as Control+K does', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
     await user.click(screen.getByRole('button', { name: en['topbar.search'] }));
-    expect(await screen.findByRole('combobox', { name: 'Search your messages' })).toBeInTheDocument();
+    expect(await screen.findByRole('combobox', { name: 'Search channels, people and messages' })).toBeInTheDocument();
   });
   it('the gear opens Settings', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);

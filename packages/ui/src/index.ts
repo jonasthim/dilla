@@ -103,7 +103,7 @@ export type { BodyPart } from './MessageRow/MessageRow.tsx';
 export { SafetyCompare } from './SafetyCompare/SafetyCompare.tsx';
 export type { SafetyCompareProps } from './SafetyCompare/SafetyCompare.tsx';
 export { SearchPalette } from './SearchPalette/SearchPalette.tsx';
-export type { SearchPaletteProps } from './SearchPalette/SearchPalette.tsx';
+export type { SearchPaletteProps, SearchPaletteGroup, SearchPaletteItem } from './SearchPalette/SearchPalette.tsx';
 export { TrustAlert } from './TrustAlert/TrustAlert.tsx';
 export type { TrustAlertProps } from './TrustAlert/TrustAlert.tsx';
 export { TypingIndicator } from './TypingIndicator/TypingIndicator.tsx';

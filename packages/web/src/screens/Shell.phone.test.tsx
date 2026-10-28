@@ -114,7 +114,8 @@ describe('the phone shell: search (walk 1)', () => {
     const header = (await screen.findByRole('heading', { level: 2, name: 'lobby' })).closest('.d-phone-header') as HTMLElement;
     await user.click(within(header).getByRole('button', { name: t('search.open') }));
     await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
-    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: TEXT, query: 'lamp', cursor: null }));
+    // Task 9 fix round 1: the scope is implicit (everywhere, the open conversation's hits first).
+    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
   });
 });
 

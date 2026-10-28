@@ -172,7 +172,7 @@ describe('threads on a desktop shell (one aside)', () => {
     const { fake, user } = setup();
     await screen.findByRole('button', { name: '2 replies' });
     await user.keyboard('{Control>}k{/Control}');
-    await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'reply');
+    await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'reply');
     act(() => fake.set('search', { requestId: 4, hits: [{ channelId: GEN, communityId: A, seq: '4', snippet: 'a reply', rank: '1', threadRoot: ROOT }], cursor: null }));
     const hit = await screen.findByRole('option', { name: /a reply/ });
     await user.click(hit);
@@ -328,7 +328,7 @@ const pinFor = (fake: FakeClient) => act(() => fake.set(`pins:${GEN}`, [{ msgId:
 async function searchThread(fake: FakeClient, user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole('button', { name: '2 replies' });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'reply');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'reply');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: GEN, communityId: A, seq: '4', snippet: 'a reply', rank: '1', threadRoot: ROOT }], cursor: null }));
   await user.click(await screen.findByRole('option', { name: /a reply/ }));
   return screen.findByRole('complementary', { name: en['thread.title'] });

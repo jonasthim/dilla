@@ -1,25 +1,29 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
-import { Icon } from '../Icon/Icon.tsx';
+import { Avatar } from '../Avatar/Avatar.tsx';
+import { Icon, type IconName } from '../Icon/Icon.tsx';
 import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './SearchPalette.css';
+
+/** One result: a 24px glyph tile (`icon`) or a 24px avatar (`avatar`), the label and its sub-line. `id` is unique across the groups. */
+export interface SearchPaletteItem { id: string; label: string; sub?: string; icon?: IconName; avatar?: { name: string; bot?: boolean } }
+/** A group of results under its 10px uppercase heading (Channels, People, Messages, Actions, …), in the order given. */
+export interface SearchPaletteGroup { id: string; label: string; items: readonly SearchPaletteItem[] }
 
 export type SearchPaletteProps = {
   open: boolean;
   query: string;
-  scope: 'channel' | 'community' | 'all';
-  /** `location` is the shown place (`#general`); `author` and `time` are optional and left out of the row when unknown (J1). */
-  hits: readonly { id: string; snippet: string; location: string; author?: string; time?: string }[];
+  /** The result groups, in order; an empty group is not drawn. The arrows move through every item of every group. */
+  groups: readonly SearchPaletteGroup[];
   /**
-   * `hints` are the footer's key words ("move", "open"; the prototype's footer), `note` its right-hand line ("Searches messages held in
-   * this browser"), `group` the results' heading ("Messages"). `close` names the esc key cap, which closes.
+   * `search` names the textbox and the palette, `placeholder` is its hint, `empty` the line when nothing is listed, `close` names the
+   * esc key cap (which closes), `hints` the footer's key words ("move", "open"), `note` the footer's right-hand line.
    */
-  labels: { search: string; empty: string; close: string; scope: { channel: string; community: string; all: string }; hints?: { move: string; open: string }; note?: string; group?: string };
-  /** A status that replaces the empty text, such as a picked hit that is no longer available. */
+  labels: { search: string; placeholder?: string; empty: string; close: string; hints?: { move: string; open: string }; note?: string };
+  /** A status that replaces the empty text, such as a picked result that is no longer available. */
   status?: string;
   /** True: a desktop palette is a modal native dialog with a scrim, focus moves in on open and back to the opener on close (R-S4). Default: the inline section. */
   modal?: boolean;
   onQuery(s: string): void;
-  onScope(s: 'channel' | 'community' | 'all'): void;
   onPick(id: string): void;
   onClose(): void;
 };
@@ -29,17 +33,15 @@ function composing(event: KeyboardEvent): boolean {
   return event.nativeEvent.isComposing || event.keyCode === 229;
 }
 
-const SCOPES = ['channel', 'community', 'all'] as const;
-
 /**
- * The search palette (Signal §5.8): a 50px input row (the accent glyph, the combobox textbox, the scope and the esc key cap that
- * closes), the results (a 10px uppercase group heading, then rows of at least 38px: a 24px glyph tile, the snippet over its
- * `#place · author · time` line, the selected row on --surface-hi with a 2px accent bar and ↵), and the footer of key words and the
- * note. The textbox keeps focus while the arrows move the active result. One polite status stays mounted and only its text
+ * The search palette (Signal §5.8): a 50px input row (the accent glyph, the combobox textbox, the esc key cap that closes), the
+ * results in groups (a 10px uppercase heading, then rows of at least 38px: a 24px glyph tile or avatar, the label over its
+ * sub-line, the selected row on --surface-hi with a 2px accent bar and ↵), and the footer of key words and the note. The textbox
+ * keeps focus while the arrows move the active result across the groups. One polite status stays mounted and only its text
  * changes (M-03). On a desktop it is a modal native dialog at 14vh, centred by `margin: 0 auto` (never a transform), over the
  * --scrim; opening focuses the textbox and closing returns focus to the opener.
  */
-export function SearchPalette({ open, query, scope, hits, labels, status, modal = false, onQuery, onScope, onPick, onClose }: SearchPaletteProps) {
+export function SearchPalette({ open, query, groups, labels, status, modal = false, onQuery, onPick, onClose }: SearchPaletteProps) {
   const [active, setActive] = useState(0);
   const listId = useId();
   const phone = usePhoneLayout();
@@ -47,6 +49,11 @@ export function SearchPalette({ open, query, scope, hits, labels, status, modal 
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const picked = useRef(false);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  // The active row stays in view as the arrows move it.
+  useEffect(() => {
+    resultsRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  });
   // A desktop palette is a modal <dialog> (R-S1): the browser traps focus, makes the shell inert and draws the ::backdrop scrim.
   useEffect(() => {
     const el = dialogRef.current;
@@ -63,14 +70,16 @@ export function SearchPalette({ open, query, scope, hits, labels, status, modal 
     return () => { if (!picked.current && opener?.isConnected) opener.focus(); };
   }, [open, modal]);
   const pick = (id: string) => { picked.current = true; onPick(id); };
-  const options = hits.slice(0, 50);
+  const shown = groups.filter(g => g.items.length > 0);
+  const items = shown.flatMap(g => g.items);
   if (!open) return null;
-  const activeIndex = Math.min(active, Math.max(0, options.length - 1));
+  const activeIndex = Math.min(active, Math.max(0, items.length - 1));
+  const domId = (id: string) => `${listId}-${id}`;
   const handleInputKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (composing(event)) return;
-    if (event.key === 'ArrowDown' && options.length) { event.preventDefault(); setActive((activeIndex + 1) % options.length); }
-    else if (event.key === 'ArrowUp' && options.length) { event.preventDefault(); setActive((activeIndex - 1 + options.length) % options.length); }
-    else if (event.key === 'Enter' && options.length) { event.preventDefault(); pick(options[activeIndex].id); }
+    if (event.key === 'ArrowDown' && items.length) { event.preventDefault(); setActive((activeIndex + 1) % items.length); }
+    else if (event.key === 'ArrowUp' && items.length) { event.preventDefault(); setActive((activeIndex - 1 + items.length) % items.length); }
+    else if (event.key === 'Enter' && items.length) { event.preventDefault(); pick(items[activeIndex].id); }
   };
   // Escape closes from anywhere in the palette (Flow 05 "any top overlay"), never during IME composition.
   const handleKey = (event: KeyboardEvent<HTMLElement>) => {
@@ -78,29 +87,40 @@ export function SearchPalette({ open, query, scope, hits, labels, status, modal 
     event.preventDefault();
     if (!composing(event)) onClose();
   };
-  const text = status ?? (options.length ? '' : labels.empty);
+  const text = status ?? (items.length ? '' : labels.empty);
+  let index = -1;
   const palette = <section className="d-search-palette" data-layout={phone ? 'phone' : undefined} role="search" aria-label={labels.search} onKeyDown={handleKey}>
     <div className="d-search-palette__field">
       <span className="d-search-palette__glyph" aria-hidden="true"><Icon name="search" size={16} /></span>
-      <input ref={inputRef} type="text" role="combobox" aria-label={labels.search} aria-expanded={options.length > 0} aria-autocomplete="list"
-        aria-controls={options.length ? listId : undefined} aria-activedescendant={options.length ? options[activeIndex].id : undefined}
+      <input ref={inputRef} type="text" role="combobox" aria-label={labels.search} placeholder={labels.placeholder} aria-expanded={items.length > 0} aria-autocomplete="list"
+        aria-controls={items.length ? listId : undefined} aria-activedescendant={items.length ? domId(items[activeIndex].id) : undefined}
         value={query} onChange={event => { setActive(0); onQuery(event.target.value); }} onKeyDown={handleInputKey} />
-      <div className="d-search-palette__scopes" role="group" aria-label={labels.scope[scope]}>{SCOPES.map(item => <button type="button" key={item} aria-pressed={scope === item} onClick={() => onScope(item)}>{labels.scope[item]}</button>)}</div>
       <button type="button" className="d-search-palette__esc" aria-label={labels.close} onClick={onClose}>esc</button>
     </div>
-    <div className="d-search-palette__results">
-      {options.length ? <>
-        {labels.group ? <div className="d-search-palette__group" aria-hidden="true">{labels.group}</div> : null}
-        <div id={listId} role="listbox" aria-label={labels.group ?? labels.search}>{options.map((hit, index) => <div role="option" id={hit.id} key={hit.id} aria-selected={index === activeIndex}
-          onClick={() => pick(hit.id)} onMouseEnter={() => setActive(index)}>
-          <span className="d-search-palette__tile" aria-hidden="true"><Icon name="message-square" size={13} /></span>
-          <span className="d-search-palette__text">
-            <span className="d-search-palette__snippet">{hit.snippet}</span>
-            <span className="d-search-palette__meta"><span className="d-search-palette__where">{hit.location}</span>{hit.author ? <> · <span className="d-search-palette__author">{hit.author}</span></> : null}{hit.time ? <> · <span className="d-search-palette__time">{hit.time}</span></> : null}</span>
-          </span>
-          {index === activeIndex ? <span className="d-search-palette__enter" aria-hidden="true">↵</span> : null}
-        </div>)}</div>
-      </> : null}
+    {/* A long list scrolls: the region is a tab stop so a keyboard can scroll it too (the arrows in the textbox keep the active row in view). */}
+    <div ref={resultsRef} className="d-search-palette__results" tabIndex={items.length > 0 ? 0 : undefined}>
+      {items.length ? <div id={listId} role="listbox" aria-label={labels.search}>{shown.map(group => (
+        <div key={group.id} role="group" aria-label={group.label} className="d-search-palette__section" data-group={group.id}>
+          <div className="d-search-palette__group" aria-hidden="true">{group.label}</div>
+          {group.items.map(item => {
+            index += 1;
+            const at = index;
+            const selected = at === activeIndex;
+            return (
+              <div role="option" id={domId(item.id)} key={item.id} aria-selected={selected} onClick={() => pick(item.id)} onMouseEnter={() => setActive(at)}>
+                {item.avatar !== undefined
+                  ? <span className="d-search-palette__avatar" aria-hidden="true"><Avatar name={item.avatar.name} size="xs" shape={item.avatar.bot === true ? 'bot' : 'circle'} /></span>
+                  : <span className="d-search-palette__tile" aria-hidden="true"><Icon name={item.icon ?? 'search'} size={13} /></span>}
+                <span className="d-search-palette__text">
+                  <span className="d-search-palette__label">{item.label}</span>
+                  {item.sub ? <span className="d-search-palette__meta">{item.sub}</span> : null}
+                </span>
+                {selected ? <span className="d-search-palette__enter" aria-hidden="true">↵</span> : null}
+              </div>
+            );
+          })}
+        </div>
+      ))}</div> : null}
       <div className="d-search-palette__status" role="status" aria-live="polite">{text}</div>
     </div>
     {labels.hints || labels.note ? <div className="d-search-palette__foot">

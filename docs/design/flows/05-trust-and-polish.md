@@ -178,9 +178,20 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.verifyFailed | This could not be marked as verified. Close this and compare again. | compare dialog alert |
 | dialog.close | Close | compare dialog close; search palette close |
 | search.open | search | shell action |
-| search.placeholder | Search your messages | palette textbox |
+| search.placeholder | Search channels, people and messages | palette textbox (Signal §5.8, task 9) |
 | search.empty | Nothing in this browser matches “{query}”. | global empty state (Signal §5.8, task 9) |
 | search.note | Searches messages held in this browser | palette footer (Signal §5.8, task 9) |
+| search.group.channels | Channels | palette results heading (task 9 fix round 1) |
+| search.group.people | People | palette results heading (task 9 fix round 1) |
+| search.group.actions | Actions | palette results heading (task 9 fix round 1) |
+| search.palette.voiceSub | {server} · voice | a voice channel result's sub-line |
+| search.palette.groupDm | group DM · {count} people | a group DM result's sub-line |
+| search.action.settings | Open settings | palette action |
+| search.action.settingsSub | Profile, devices, voice… | palette action sub-line |
+| search.action.mute | Mute | palette action |
+| search.action.unmute | Unmute | palette action |
+| search.action.dm | Message someone | palette action |
+| search.action.dmSub | Start a direct message | palette action sub-line |
 | search.group | Messages | palette results heading (Signal §5.8, task 9) |
 | search.unavailable | That message is no longer available | stale result status |
 | search.loading | Searching your messages | palette status |

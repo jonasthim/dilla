@@ -37,7 +37,7 @@ function Beside(props: Omit<ProfileCardProps, 'anchor'> & { row: string }) {
 const meta = {
   title: 'Shell/ProfileCard', component: ProfileCard,
   args: {
-    name: 'Björn', username: 'bjorn', presence: 'online', status: 'bridge troll survivor', bio: 'Carries shields, loses them.',
+    name: 'Björn', username: 'bjorn', presence: 'online', client: 'WEB', status: 'bridge troll survivor', bio: 'Carries shields, loses them.',
     roles: [{ name: 'DJ', color: 0xffd16a }, { name: '@everyone', color: null }], actions: [message, compare], onAction: noop, onClose: noop,
   },
 } satisfies Meta<typeof ProfileCard>;
@@ -100,7 +100,7 @@ export const Owner: Story = {
 /** A bot: the rounded-square avatar. */
 export const Bot: Story = {
   ...beside('g1'),
-  args: { name: 'Glenn', username: 'glenn', status: undefined, presence: 'idle', isBot: true, bio: 'Managed bot. Music, polls, reminders and moderation for this server.',
+  args: { name: 'Glenn', username: 'glenn', status: undefined, presence: 'idle', isBot: true, client: undefined, bio: 'Managed bot. Music, polls, reminders and moderation for this server.',
     roles: [{ name: '@everyone', color: null }], actions: [message, compare] },
 };
 /** Your own card: no actions (the prototype's). */

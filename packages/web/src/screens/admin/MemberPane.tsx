@@ -22,6 +22,8 @@ export interface MemberPaneProps {
   onCardOpen?: () => void;
   /** Namespaces focus restoration to a settings workspace instead of the covered application shell. */
   focusScope?: string;
+  /** The person menu's Mention: puts "@username " in the open channel's composer. Absent where there is no composer (no item). */
+  onMention?: (username: string) => void;
   /** The members head's close × (the shell's aside on a desktop; Signal §5.7). Absent: no ×. */
   onClose?: () => void;
 }
@@ -123,7 +125,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} presenceLabels={presenceLabels()}
         ownerLabel={t('layout.profile.owner')} botLabel={t('layout.profile.bot')} openId={card?.id ?? null} onOpen={onOpen} onMenu={onMenu} />
       <MemberCardHost communityId={communityId} selfId={selfId} card={card} onCard={next => { if (next !== null) props.onCardOpen?.(); setCard(next); }}
-        menu={menu} onMenu={setMenu} onMessage={props.onMessage} onCompare={props.onCompare}
+        menu={menu} onMenu={setMenu} onMention={props.onMention} onMessage={props.onMessage} onCompare={props.onCompare}
         announce={props.announce} fallbackFocus={() => region.current} focusScope={props.focusScope ? region.current ?? undefined : undefined} />
     </div>
   );
