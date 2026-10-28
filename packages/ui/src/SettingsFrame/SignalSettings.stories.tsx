@@ -115,9 +115,8 @@ function Keyboard() {
     <section className="dw-settings-section" aria-labelledby="keyboard-title">
       <h2 id="keyboard-title" tabIndex={-1}>{t('keyboard.title')}</h2>
       <p>{t('signalSettings.keyboard.body')}</p>
-      <KeyboardTable caption={t('keyboard.title')} rows={[
-        { action: t('signalSettings.keyboard.search'), keys: caps(t('keyboard.searchAll')) },
-        { action: t('signalSettings.keyboard.searchChannel'), keys: caps(t('keyboard.searchChannel')) },
+      <KeyboardTable caption={t('keyboard.title')} orLabel={t('keyboard.or')} rows={[
+        { action: t('signalSettings.keyboard.search'), keys: caps(t('keyboard.searchAll')), alt: caps(t('keyboard.searchChannel')) },
         { action: t('keyboard.muteAction'), keys: caps(t('keyboard.mute')) },
         { action: t('keyboard.deafenAction'), keys: caps(t('keyboard.deafen')) },
         { action: t('keyboard.dmCallAction'), keys: caps(t('keyboard.dmCall')) },

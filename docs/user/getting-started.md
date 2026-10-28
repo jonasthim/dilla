@@ -1381,17 +1381,19 @@ this conversation failed the identity check. Sending is paused here until it’s
 
 ![Search results for "bridge" across everything](screenshots/search-results-desktop.png)
 
-Search opens as a window over the app. It looks only through the messages this browser holds and has decrypted; nothing is
-sent to the instance. Each result shows the #channel (or the person, in a direct message), the author and the time, with
-the message under them.
+Search opens as a window over the app. It finds channels, people (your direct messages), settings, a few actions, and
+messages. Messages are looked up only in what this browser holds and has decrypted; nothing is sent to the instance. Each
+message result shows the #channel (or the person, in a direct message), the author and the time under the message.
 
-1. Press **Control+K** (⌘+K on a Mac) for "everything", or **Control+/** in a conversation for "this conversation".
-2. Type into "Search your messages". The scope buttons are "this conversation", "this community" and "everything".
+1. Press **Control+K** (⌘+K on a Mac) or **Control+/**; both open the same search.
+2. Type into "Search channels, people and messages". With nothing typed it lists your channels, people and actions; from
+   two characters it also searches messages, those of the open conversation first. Matching settings appear under
+   "Settings" and open their page.
 3. Arrow Down and Arrow Up move through the results while the cursor stays in the field; Enter or a click opens the
-   message and puts the focus on it. The window's footer reminds you: arrows to move, Enter to open, Escape to close. Escape
+   result (a message gets the focus). The window's footer reminds you: arrows to move, Enter to open. Escape
    closes search from anywhere in it, and gives the focus back to where it was. While search is open, the rest of the app cannot be reached with Tab.
 
-"Searching your messages" shows while it searches, "No results in this scope" when nothing matched, and "That
+"Searching your messages" shows while it searches, "Nothing in this browser matches …" when nothing matched, and "That
 message is no longer available" when the message was deleted or its conversation is gone. On a computer the **search** icon
 in the channel header opens it too, and on a phone the magnifier beside the server's name does.
 

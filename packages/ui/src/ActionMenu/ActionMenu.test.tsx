@@ -241,4 +241,18 @@ describe('ActionMenu groups', () => {
     expect(within(group).getByRole('menuitemradio', { name: 'Nothing' })).toHaveAttribute('aria-checked', 'true');
     expect(within(group).queryByRole('menuitem', { name: 'Pinned' })).toBeNull();
   });
+
+  // Merge of lanes 9 and 10: the group keeps task 9's tick on the current radio, its separator and the label's title.
+  it('draws the tick on the checked radio inside a group, a separator before a sep item, and titles each label', () => {
+    render(<ActionMenu label="general menu" open onOpenChange={() => {}} onSelect={() => {}}
+      items={[{ id: 'mute', label: 'Mute', check: false }, { id: 'all', label: 'Notify me about every message in this conversation', checked: false, group: 'Notifications', sep: true },
+        { id: 'none', label: 'Nothing', checked: true, group: 'Notifications' }]} />);
+    const group = screen.getByRole('group', { name: 'Notifications' });
+    const nothing = within(group).getByRole('menuitemradio', { name: 'Nothing' });
+    expect(nothing.querySelector('.d-action-menu__tick')).not.toBeNull();
+    expect(within(group).getByRole('menuitemradio', { name: /every message/ }).querySelector('.d-action-menu__tick')).toBeNull();
+    expect(within(group).getByRole('separator')).toBeInTheDocument();
+    expect(within(group).getByRole('menuitemradio', { name: /every message/ }).querySelector('.d-action-menu__label'))
+      .toHaveAttribute('title', 'Notify me about every message in this conversation');
+  });
 });

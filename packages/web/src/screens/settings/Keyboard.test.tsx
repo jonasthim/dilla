@@ -3,9 +3,10 @@ import { it, expect } from 'vitest';
 import { Keyboard } from './Keyboard.tsx';
 
 // Task 10 (README §5.9): a chord is drawn one keycap per key, so a row is found by its keycaps joined with '+'.
-const chordOf = (row: Element) => Array.from(row.querySelectorAll('kbd')).map(k => k.textContent).join('+');
+// A row may carry a second chord (Control+/ beside Control/⌘+K), each its own keycap run (.d-keyhint).
+const chordsOf = (row: Element) => Array.from(row.querySelectorAll('.d-keyhint')).map(h => Array.from(h.querySelectorAll('kbd')).map(k => k.textContent).join('+'));
 const rowOf = (chord: string) => {
-  const row = Array.from(document.querySelectorAll('tr')).find(r => chordOf(r) === chord);
+  const row = Array.from(document.querySelectorAll('tr')).find(r => chordsOf(r).includes(chord));
   if (row === undefined) throw new Error(`no row with ${chord}`);
   return row as HTMLElement;
 };
@@ -29,7 +30,7 @@ it('names the modifier one way, under a sentence-case heading', () => {
   render(<Keyboard />);
   expect(screen.getByRole('heading', { name: 'Keyboard', level: 2 })).toBeInTheDocument();
   expect(rowOf('Control/⌘+K')).toBeInTheDocument();
-  expect(rowOf('Control+/')).toBeInTheDocument();
+  expect(rowOf('Control+/')).toBe(rowOf('Control/⌘+K'));
   expect(Array.from(rowOf('Control/⌘+Shift+M').querySelectorAll('kbd')).map(k => k.textContent)).toEqual(['Control/⌘', 'Shift', 'M']);
   expect(document.body).not.toHaveTextContent('Ctrl');
 });

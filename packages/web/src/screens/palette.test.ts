@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChannelSummary, DmSummary } from '@dilla/client-core';
-import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider } from './palette.ts';
+import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, settingsProvider } from './palette.ts';
 
 const ch = (id: string, communityId: string, name: string, kind: 0 | 1 | 2 = 0): ChannelSummary => ({ id, communityId, kind, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' });
 const communities = [{ id: 'a', name: 'Midgard Crew', owner: 'o' }, { id: 'b', name: 'Valhalla Kitchen', owner: 'o' }];
@@ -35,5 +35,23 @@ describe('palette providers (task 9 fix round 1)', () => {
     const item = paletteGroups(providers, 'general')[0].items[0];
     expect(item.run()).toBe(true);
     expect(open).toHaveBeenCalledWith(channels[0]);
+  });
+});
+
+describe('settings provider (merge of lanes 9 and 10)', () => {
+  const run = vi.fn(() => true);
+  const rows = Array.from({ length: 10 }, (_, i) => ({ id: `user|s${i}|`, label: `Voice ${i}`, breadcrumb: 'You / Voice', run }));
+  const search = vi.fn((q: string) => rows.filter(r => r.label.toLowerCase().includes(q)));
+  it('says nothing with nothing typed', () => {
+    expect(paletteGroups([settingsProvider(search)], '')).toEqual([]);
+    expect(search).not.toHaveBeenCalled();
+  });
+  it('lists up to 8 matches as "Settings" with the breadcrumb under each, and a pick runs its opener', () => {
+    const [group] = paletteGroups([settingsProvider(search)], 'Voice');
+    expect(group.label).toBe('Settings');
+    expect(group.items).toHaveLength(8);
+    expect(group.items[0]).toMatchObject({ id: 'set:user|s0|', label: 'Voice 0', sub: 'You / Voice', icon: 'settings' });
+    expect(group.items[0].run()).toBe(true);
+    expect(run).toHaveBeenCalled();
   });
 });

@@ -355,6 +355,20 @@ it('lists channels, people and actions with nothing typed, draws no scope contro
   expect(within(search).getByRole('option', { name: /Open settings/ })).toBeInTheDocument();
 });
 
+// Merge of lanes 9 and 10: settings search moved to ⌘K as the palette's Settings group, only for a query; a pick opens its section.
+it('lists matching settings under Settings for a query, none with nothing typed, and opens the section', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}k{/Control}');
+  const search = screen.getByRole('search');
+  expect(within(search).queryByRole('group', { name: 'Settings' })).toBeNull();
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'voice');
+  const group = within(search).getByRole('group', { name: 'Settings' });
+  expect(within(group).getAllByRole('option').length).toBeLessThanOrEqual(8);
+  await user.click(within(group).getAllByRole('option', { name: /Voice/ })[0]);
+  await waitFor(() => expect(window.location.pathname).toBe('/settings/voice'));
+  expect(screen.queryByRole('search')).toBeNull();
+});
+
 it('takes a picked community search hit to its channel and focuses the row', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'found', seq: '5', body: 'lamp' })] }));

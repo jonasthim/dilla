@@ -8,3 +8,6 @@
 .d-keyboard-table__action { padding: 10px 14px 10px 16px; text-align: left; font-size: var(--text-sm); font-weight: var(--weight-label); line-height: 1.4; color: var(--fg); overflow-wrap: anywhere; }
 .d-keyboard-table__keys { padding: 10px 16px; text-align: right; white-space: nowrap; }
 .d-keyboard-table__keys .d-keyhint { justify-content: flex-end; }
+/* A second chord for the same action: the two keycap runs side by side with a quiet "or" between. */
+.d-keyboard-table__keys > .d-keyhint { display: inline-flex; vertical-align: middle; }
+.d-keyboard-table__or { margin: 0 8px; font-size: var(--text-xs); color: var(--fg-2); vertical-align: middle; }

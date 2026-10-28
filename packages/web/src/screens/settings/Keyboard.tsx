@@ -9,9 +9,9 @@ const caps = (chord: string): string[] => chord.split(/\+(?=.)/);
  */
 export function Keyboard(): React.JSX.Element {
   return <section className="dw-settings-section" aria-labelledby="keyboard-title"><h2 id="keyboard-title" tabIndex={-1}>{t('keyboard.title')}</h2><p>{t('signalSettings.keyboard.body')}</p>
-    <KeyboardTable caption={t('keyboard.title')} rows={[
+    <KeyboardTable caption={t('keyboard.title')} orLabel={t('keyboard.or')} rows={[
       // Task 9 fix round 2: both chords open the one palette (no scoped search any more), so one Search row carries both.
-      { action: t('signalSettings.keyboard.search'), keys: [t('keyboard.searchAll'), t('keyboard.searchChannel')] },
+      { action: t('signalSettings.keyboard.search'), keys: caps(t('keyboard.searchAll')), alt: caps(t('keyboard.searchChannel')) },
       { action: t('keyboard.muteAction'), keys: caps(t('keyboard.mute')) },
       { action: t('keyboard.deafenAction'), keys: caps(t('keyboard.deafen')) },
       // Ruling Z: the DM call lives in the DM row's menu and under this chord, not as a header button.

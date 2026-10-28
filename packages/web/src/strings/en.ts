@@ -80,6 +80,7 @@ export const en = {
   'keyboard.title': 'Keyboard',
   'keyboard.searchAll': 'Control/⌘+K',
   'keyboard.searchChannel': 'Control+/',
+  'keyboard.or': 'or',
   'search.placeholder': 'Search channels, people and messages',
   'search.empty': 'Nothing in this browser matches “{query}”.',
   'search.note': 'Searches messages held in this browser',

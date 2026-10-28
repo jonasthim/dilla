@@ -22,6 +22,5 @@ export const signalSettings = {
   'signalSettings.menu.device': '{name} menu',
   'signalSettings.menu.dms': 'Direct messages menu',
   'signalSettings.keyboard.search': 'Search',
-  'signalSettings.keyboard.searchChannel': 'Search this conversation',
   'signalSettings.keyboard.body': 'Shortcuts work while the dilla tab is active.',
 } as const;
