@@ -558,9 +558,6 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 5 && parts[3] == "interaction-admissions" && parts[4] == "context" && method == http.MethodPost {
 			return 200, true
 		}
-		if len(parts) == 5 && parts[3] == "music" && parts[4] == "dj-roles" && method == http.MethodGet {
-			return 200, true
-		}
 		if len(parts) == 5 && parts[3] == "moderation" && parts[4] == "actions" && method == http.MethodPost {
 			return 200, true
 		}

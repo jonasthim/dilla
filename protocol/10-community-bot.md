@@ -952,14 +952,15 @@ Default automation actions are log-only; automatic bans are unavailable.
 A single non-removed installation exists per community; repeat enable with the
 same request id and payload returns the original result. Removed installations
 are never reactivated; a new enable creates a new identity and installation id.
-Soft disable retains the installation ID and its DJ role approvals, but the DJ
-role policy routes stay unavailable while the installation is disabled or
-re-enrolling. Explicitly enabling that same installation and returning it to
-ready makes the saved approvals available again. Permanent removal tombstones
-the old installation; a later installation does not inherit its policy.
+Soft disable retains the installation ID. Who may DJ is not installation
+state: it is the `control_music` role permission (09 § Permissions), so it
+survives disable, re-enable and replacing the installation.
 
-Music playback controls require current community owner/administrator authority
-or an approved DJ role, plus membership in the target's current voice call. The
+Music playback controls require `view_channel` and `control_music` in the
+target call's voice channel, resolved now by the server with that channel's
+overwrites (`GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority`;
+owners and administrators resolve to every bit), plus membership in the
+target's current voice call. The
 Bot must retain connect and speak permissions and an active, ready Music-enabled
 installation. These checks run again before a queue mutation is committed,
 including after provider lookup. Owners and administrators may additionally
@@ -994,7 +995,6 @@ restore that right. The music publisher also disables automatic subscriptions.
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
 | `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B, ready, wire 3 | — | CBOR boolean; true only while the matching admission is live and its exact group ID is absent |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
-| `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B, ready, Music capability | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current approved DJ roles, `Cache-Control: no-store` |
 | `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer

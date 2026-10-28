@@ -360,24 +360,6 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 	return store.BotInstallationRow{ID: found.ID, CommunityID: found.CommunityID, State: uint8(found.State), Capabilities: uint8(found.Capabilities)}, nil
 }
 
-func (s runtimeMusicAuthorityStore) ListDJRolePolicy(ctx context.Context, installation id.ID) ([]store.DJRolePolicyRow, error) {
-	if s.session == nil || installation.IsZero() || installation != s.installation {
-		return nil, errors.New("music DJ policy session unavailable")
-	}
-	policy, err := s.session.MusicDJRolePolicy(ctx, installation)
-	if err != nil {
-		return nil, err
-	}
-	if policy.CommunityID != s.community || policy.InstallationID != s.installation || policy.Capabilities&botMusicCapability == 0 {
-		return nil, errors.New("music DJ policy binding changed")
-	}
-	rows := make([]store.DJRolePolicyRow, len(policy.RoleIDs))
-	for i, role := range policy.RoleIDs {
-		rows[i] = store.DJRolePolicyRow{InstallationID: installation, RoleID: role}
-	}
-	return rows, nil
-}
-
 // newMusicSupervisor is the per-channel persistence integration point.
 func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.Store, starter session.QueueStarter) (*music.Supervisor, error) {
 	if store == nil || starter.OptionsFor == nil {

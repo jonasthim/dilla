@@ -137,16 +137,15 @@ func TestCommandCapabilitiesKeepsCreatorPollCloseDiscoverable(t *testing.T) {
 
 func TestCommandCapabilitiesKeepsMusicDiscoverableForCurrentCallDJ(t *testing.T) {
 	ctx := context.Background()
-	community, installation, channel, actor, callID, djRole := id.New(), id.New(), id.New(), id.New(), id.New(), id.New()
-	resolved := client.ActorAuthority{RoleIDs: []id.ID{djRole}} // no community-wide connect permission
+	community, installation, channel, actor, callID := id.New(), id.New(), id.New(), id.New(), id.New()
+	resolved := client.ActorAuthority{} // no community-wide connect permission
 	session := &musicAuthoritySessionFake{
-		actor: resolved, present: true,
+		actor: resolved, present: true, channel: musicPermissionControl,
 		call:        client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actor}}},
 		permissions: musicPermissionConnect | musicPermissionSpeak,
 	}
 	state := &musicAuthorityStoreFake{
 		installation: store.BotInstallationRow{ID: installation, CommunityID: community, State: store.BotInstallationReady, Capabilities: musicBotCapability},
-		policy:       []store.DJRolePolicyRow{{InstallationID: installation, RoleID: djRole}},
 	}
 	authority := &CommunityMusicInteractionAuthority{Session: session, Store: state, InstallationID: installation, CommunityID: community}
 	binding := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
@@ -154,7 +153,7 @@ func TestCommandCapabilitiesKeepsMusicDiscoverableForCurrentCallDJ(t *testing.T)
 		t.Fatalf("CanUse = %v, %v; want current call member", ok, err)
 	}
 	if ok, err := authority.CanDJ(ctx, InteractionActor{User: actor}, binding); err != nil || !ok {
-		t.Fatalf("CanDJ = %v, %v; want current approved DJ", ok, err)
+		t.Fatalf("CanDJ = %v, %v; want control_music in the voice channel", ok, err)
 	}
 	operations := commandCapabilityOperations(t, CommandCapabilitiesInteractions{
 		Authority: &commandCapabilitiesAuthorityFake{result: resolved, present: true}, CommunityID: community,

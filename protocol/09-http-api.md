@@ -336,9 +336,6 @@ CBOR API request, not a public redirect endpoint.
 | `PUT /v1/communities/{id}/role-panels` | E (manage_roles) | `[request_id, channel_id, message_seq, options]`; each option is `[emoji, role_id]` | `[request_id, option_count]` |
 | `PUT /v1/communities/{id}/bot-join-role` | E (manage_roles) | `[request_id, role_id, expected_installation_id]`; zero `role_id` clears the approval | `[request_id, installation_id]`; configuration only, no immediate role grant; 409 if the active installation changed |
 | `GET /v1/communities/{id}/bot-join-role` | E (manage_roles) | Empty | `[role_id/null, installation_id]` for a ready installation; 404 when none is ready |
-| `GET /v1/communities/{id}/music/dj-roles` | E (manage_community + manage_roles) | Empty | `[role_ids, installation_id]` for the active ready installation |
-| `PUT /v1/communities/{id}/music/dj-roles` | E (manage_community + manage_roles) | `[request_id, expected_installation_id, role_ids]` | `[request_id, accepted_count]`; role IDs must be in the community and below the actor's highest role (owner exempt); 409 if the active installation changed |
-| `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B (ready, Music capability, owning installation) | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current policy, `Cache-Control: no-store` |
 | `GET /v1/communities/{community}/bot/members/{member}/episode` | B (ready, wire v3, current installed bot/member) | Empty | `[member_id, episode_id]` for the current membership episode; 404 when the member is absent |
 | `POST /v1/communities/{community}/bot/join-role-grants` | E (ready Bot session, wire v3, roles capability) | `[request_id, member_id, episode_id]` | `[request_id, installation_id, community_id, member_id, episode_id, role_id]` immutable grant receipt; 204 when the episode is current but no join role is configured; 404 for a stale episode; repeated identical requests return the same receipt |
 | `PUT /v1/communities/{id}/role-panels` | E (current manage_roles session; ready Roles-capable Bot) | `[request_id, channel_id, accepted_message_seq, [[emoji, role_id]...]]` | `[request_id, accepted_option_count]`; requires an accepted Bot send receipt for the channel and every role must remain approved and eligible; readable rows, when present, must match the receipt |
@@ -369,11 +366,13 @@ group. The Bot attaches the case only when the authoritative receipt matches the
 request, actor, device, community, and target. The encrypted case expires after
 90 days; plaintext reason is never stored by the server.
 
-DJ role policy is retained when an installation is soft-disabled, but both
-routes return 404 while it is disabled or not ready. Explicitly re-enabling and
-bringing the same installation back to ready makes its saved approvals
-available again. Permanent removal uses a tombstone; a later installation has
-a new ID and starts without the prior policy.
+Who may control the Bot's music is the role permission `control_music` (bit 25,
+§ Permissions), not a per-installation list: the former DJ role routes
+(`GET`/`PUT /v1/communities/{id}/music/dj-roles` and the Bot's
+`GET /v1/bot-runtime/installations/{installation}/music/dj-roles`) are gone.
+Migration 00048 gave `control_music` to every role the community's current,
+non-removed installation had approved, then dropped the approval table; roles
+approved only by a removed installation were not mapped.
 
 The Spotify begin route replaces any pending attempt for that installation.
 Attempts expire after ten minutes and bind the initiating enrolled session;
@@ -1743,6 +1742,14 @@ are stored in a signed 64-bit integer on Postgres. A stored bit outside this tab
 | 22 | `move_members` | channel |
 | 23 | `manage_nicknames` | community |
 | 24 | `moderate_members` | community |
+| 25 | `control_music` | channel |
+
+`control_music` lets a member control the managed Bot's music in a voice channel: play,
+queue, skip, stop, seek and volume. The Bot resolves it for the call's voice channel with
+that channel's overwrites (the actor must also hold `view_channel` there and be in the
+call), so an overwrite can grant or deny DJ in one channel. Owners and administrators hold
+it as they hold every bit. A Bot account never holds it. New communities do not give it to
+`@everyone`.
 
 `moderate_members` allows warning a member and applying or removing a text timeout. It is a
 community permission, so channel overwrites cannot grant or remove it. In a community that

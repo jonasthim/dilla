@@ -134,7 +134,6 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	d.registerBotRemovalReceipt(m)
 	d.registerBotWarningReceipt(m)
 	d.registerBotInteractionAdmissions(m)
-	d.registerBotRuntimeDJRoles(m)
 	registerBotSpotifyAttempt(m, d)
 }
 

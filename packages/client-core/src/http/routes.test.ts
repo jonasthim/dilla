@@ -1713,12 +1713,12 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, color: 0x1000000 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 0 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 2 ** 31 }),
-      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x2000000 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x4000000 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, deny: -1 }),
       () => routes.patchRole(ROLE_2, { color: -1 }),
       () => routes.patchRole(ROLE_2, { deny: 1.5 }),
       () => routes.putOverwrite(CHANNEL, 2 as 0, TARGET, { allow: 0, deny: 0 }),
-      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x2000000, deny: 0 }),
+      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x4000000, deny: 0 }),
       () => routes.deleteOverwrite(CHANNEL, 2 as 0, TARGET),
       () => routes.grantRole(new Uint8Array(15), TARGET, ROLE_2),
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ kind: 0, targetId: new Uint8Array(15), allow: 0, deny: 1 }] }),
@@ -1732,9 +1732,9 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
   it('accepts moderate_members on create and a role row masks only the next unknown bit', async () => {
     const created = await one(cborReply(201, [ROLE_2]), (r) => r.createRole(COMMUNITY, { ...NEW_ROLE, allow: 1 << 24 }));
     expect(created.seen.body).toEqual(encode(['Crew', 0x30a46c, 1, 1 << 24, 0, 1, 1]));
-    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 2 ** 24 + 8, 2 ** 40 + 2 ** 25, 0, 1];
+    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 2 ** 25 + 2 ** 24 + 8, 2 ** 40 + 2 ** 26, 0, 1];
     const { result } = await one(cborReply(200, [row]), (r) => r.listRoles(COMMUNITY));
-    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: (1 << 24) + 8, deny: 0, hoist: false, mentionable: true }]);
+    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 2 ** 25 + (1 << 24) + 8, deny: 0, hoist: false, mentionable: true }]);
   });
   it('listOverwrites reads [channel_id, kind, target_id, allow, deny] rows', async () => {
     const { result, seen, http } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 0, 1], [CHANNEL, 1, TARGET, 2, 0]]), (r) => r.listOverwrites(COMMUNITY));
@@ -1746,8 +1746,8 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
     expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['read', true]);
   });
   it('an overwrite row keeps moderate_members and masks the next unknown bit', async () => {
-    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 2 ** 24 + 8, 2 ** 25 + 1]]), (r) => r.listOverwrites(COMMUNITY));
-    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: (1 << 24) + 8, deny: 1 }]);
+    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 2 ** 25 + 2 ** 24 + 8, 2 ** 26 + 1]]), (r) => r.listOverwrites(COMMUNITY));
+    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: 2 ** 25 + (1 << 24) + 8, deny: 1 }]);
   });
   it('listOverwrites refuses a kind of 2, a short row and 10 001 rows', async () => {
     const bad = async (reply: Response, code: string) => {
@@ -1778,7 +1778,7 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
     await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, kind: 2 as 0 }] }))
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
-    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x2000000 }] }))
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x4000000 }] }))
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
     expect(t.seen).toHaveLength(0);
     t.replies.push(cborReply(201, [CHANNEL, 0, 0]));

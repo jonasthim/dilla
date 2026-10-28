@@ -340,13 +340,6 @@ type Devices struct {
 	Label            sql.NullString
 }
 
-type DjRolePolicy struct {
-	InstallationID id.ID
-	RoleID         id.ID
-	ApprovedBy     []byte
-	ApprovedAt     int64
-}
-
 type ForkReports struct {
 	GroupID        id.ID
 	Seq            int64

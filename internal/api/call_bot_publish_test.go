@@ -157,3 +157,23 @@ func TestManagedBotCallDemotionNeverEnablesSubscribe(t *testing.T) {
 		})
 	}
 }
+func createReadyDJBot(t *testing.T, e *env, community, owner id.ID) store.BotInstallationRow {
+	t.Helper()
+	now := e.Clk.Now().Unix()
+	botID, deviceID := id.New(), id.New()
+	if err := e.Repo.CreateUser(t.Context(), store.UserRow{ID: botID, Username: "dj-policy-" + botID.String()[:8], Display: "DJ Policy Bot", Kind: 1, UMKPub: append(botID[:], make([]byte, 16)...), SSKPub: append(deviceID[:], make([]byte, 16)...), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: community, UserID: botID, Joined: now}); err != nil {
+		t.Fatal(err)
+	}
+	verified := now
+	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: append(deviceID[:], make([]byte, 16)...), CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now, LastSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: community, UserID: &botID, DeviceID: &deviceID, State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}
+	if err := e.Repo.CreateBotInstallation(t.Context(), installation); err != nil {
+		t.Fatal(err)
+	}
+	return installation
+}

@@ -84,6 +84,32 @@ func TestBotActorChannelAuthorityReturnsHumanBitsAndAppliesFreshChannelPolicy(t 
 		!channelOK || !bytes.Equal(channelBytes, channel[:]) || got[3] != wantBits {
 		t.Fatalf("channel authority tuple = %#v, want human bits %d", got, wantBits)
 	}
+	// Task 10c: the Bot's DJ check reads control_music from this route, so a channel overwrite
+	// that grants it reaches the Bot, and one that denies it is honoured on the next read.
+	for _, tc := range []struct {
+		name         string
+		allow, deny  api.Bits
+		wantControls bool
+	}{
+		{name: "overwrite grants control_music", allow: api.PermControlMusic, deny: api.PermSendMessages | api.PermManageMessages, wantControls: true},
+		{name: "overwrite denies control_music", deny: api.PermSendMessages | api.PermManageMessages | api.PermControlMusic},
+	} {
+		if err := deps.Repo.PutOverwrite(ctx, store.OverwriteRow{ChannelID: channel, TargetKind: 1, TargetID: actor, Allow: uint64(tc.allow), Deny: uint64(tc.deny)}); err != nil {
+			t.Fatal(err)
+		}
+		var tuple []any
+		res := getAuth(h, path, token)
+		if res.Code != http.StatusOK || cborx.Unmarshal(res.Body.Bytes(), &tuple) != nil || len(tuple) != 4 {
+			t.Fatalf("%s: channel authority = %d %x", tc.name, res.Code, res.Body.Bytes())
+		}
+		bits, _ := tuple[3].(uint64)
+		if got := api.Bits(bits).Has(api.PermControlMusic); got != tc.wantControls {
+			t.Fatalf("%s: control_music = %v, want %v (bits %#x)", tc.name, got, tc.wantControls, bits)
+		}
+	}
+	if err := deps.Repo.PutOverwrite(ctx, store.OverwriteRow{ChannelID: channel, TargetKind: 1, TargetID: actor, Deny: uint64(api.PermSendMessages | api.PermManageMessages)}); err != nil {
+		t.Fatal(err)
+	}
 
 	// The bot itself cannot see a channel hidden by a role overwrite, even when
 	// the target member's own overwrite grants it back.
