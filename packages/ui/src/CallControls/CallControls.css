@@ -77,7 +77,9 @@
   margin-left: 0.5rem; padding: 0 0.875rem; font-weight: var(--weight-display); color: var(--danger-ink); background: var(--danger); border: 0;
 }
 .d-call-controls--bar .d-voice-toolbar__control.d-btn[data-variant="danger"]:hover { background: var(--danger-hover); }
-.d-voice-toolbar__keycap { font-size: var(--text-micro); opacity: 0.6; }
+.d-voice-toolbar__keycap { font-size: var(--text-micro); }
+/* The prototype's 0.6 keycap is signal's alone (Ruling Y); light and high-contrast draw it at full strength. */
+:root[data-theme="signal"] .d-voice-toolbar__keycap { opacity: 0.6; }
 .d-call-controls--bar .d-voice-toolbar__control[aria-disabled="true"] { border-style: dashed; }
 @media (max-width: 77.49rem) {
   .d-call-controls--bar .d-voice-toolbar__control:not([data-variant="danger"]) :is(.d-voice-toolbar__text, .d-voice-toolbar__keycap) {

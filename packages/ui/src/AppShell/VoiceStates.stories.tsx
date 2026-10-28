@@ -42,7 +42,7 @@ const ADA = person('ada', { speaking: true });
 const BO = person('bo', { muted: true });
 const HELPER = person('helper', { bot: true, web: false });
 const tile = (view: VoiceParticipantView, own = false): CallTileProps => ({
-  view, own, volume: 100, media: null, onVolume: noop,
+  view, own, volume: 100, media: null,
   labels: { state: STATE, volume: t('voice.volume', { name: view.name }), volumeValue: en['voice.volumeValue'] },
 });
 const STAGE_LABELS = { code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') };

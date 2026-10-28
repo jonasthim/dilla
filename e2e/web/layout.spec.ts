@@ -136,8 +136,9 @@ const PRIMARY = [
   // Ruling AB: the server head's ⌄ is the prototype's 26px (secondary tier); the DM head's "message someone" stays primary.
   // Task 7 (rule 0): the composer's send (28) and footer tools (26 x 24) are the prototype's sizes, so they are secondary.
   '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)',
-  // Task 8 (rule 0): the stage's call bar is the prototype's 44 x 40 controls (Signal §5.6), so it is secondary.
-  '.d-call-bar button',
+  // Task 8 (rule 0): the stage's call bar is the prototype's 44 x 40 controls (Signal §5.6), so it is secondary; the DM call box
+  // (no call bar) keeps the 44px check.
+  '.d-call-bar button', '.d-call-stage__controls:not([data-bar]) button',
 ].join(', ');
 
 async function expectTargets(page: Page, tag: string, state: string): Promise<void> {

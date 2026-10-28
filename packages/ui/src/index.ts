@@ -113,7 +113,9 @@ export type { DiagnosticsPanelProps } from './DiagnosticsPanel/DiagnosticsPanel.
 export { TabHandover } from './TabHandover/TabHandover.tsx';
 export type { TabHandoverProps } from './TabHandover/TabHandover.tsx';
 export { CallTile, voiceStateWords } from './CallTile/CallTile.tsx';
-export type { CallTileProps, VoiceTileState, VoiceParticipantView, VoiceStateLabels, VoiceStateWord } from './CallTile/CallTile.tsx';
+export type { CallTileProps, VoiceTileState, VoiceParticipantView, VoiceStateLabels, VoiceStateWord, TileMenu } from './CallTile/CallTile.tsx';
+export { PersonContextMenu } from './PersonContextMenu/PersonContextMenu.tsx';
+export type { PersonContextMenuProps } from './PersonContextMenu/PersonContextMenu.tsx';
 export { VoiceChannelRow } from './VoiceChannelRow/VoiceChannelRow.tsx';
 export type { VoiceChannelRowProps } from './VoiceChannelRow/VoiceChannelRow.tsx';
 export { UserPanel } from './UserPanel/UserPanel.tsx';

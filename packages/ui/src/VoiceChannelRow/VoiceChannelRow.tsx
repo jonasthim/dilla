@@ -1,5 +1,8 @@
-import { useId, type ReactNode } from 'react';
-import { voiceStateWords, VoiceStates, type VoiceParticipantView, type VoiceStateLabels, type VoiceStateWord } from '../CallTile/CallTile.tsx';
+import { useId, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { voiceStateWords, VoiceStates, type TileMenu, type VoiceParticipantView, type VoiceStateLabels, type VoiceStateWord } from '../CallTile/CallTile.tsx';
+import { PersonContextMenu } from '../PersonContextMenu/PersonContextMenu.tsx';
+import { useContextMenuTrigger } from '../internal/contextMenuTrigger.ts';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { Tag } from '../Tag/Tag.tsx';
@@ -28,6 +31,8 @@ export interface VoiceChannelRowProps {
   onOpen(): void;
   /** The trailing join icon; without it, or when `joined`, the row has none. Its own click never opens the row (Shell decides, R24). */
   onJoin?(): void;
+  /** Fix round 1: the person menu of an occupant (right-click, long press, Shift+F10); none for a person without one. */
+  personMenu?(person: VoiceParticipantView): TileMenu | undefined;
 }
 
 /** The mute and deafen glyphs sit in a participant's trailing slot; every other state stays beside the name. */
@@ -67,6 +72,24 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
 }
 
 /**
+ * One person under a voice row. Fix round 1 (Jonas): with `menu`, a right-click, the ContextMenu key or Shift+F10, or a long
+ * press opens the person menu (Signal §5.4) at the pointer; focus comes back to the row.
+ */
+function PersonRow({ menu, speaking, away, children }: { menu: TileMenu | undefined; speaking: boolean; away: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLLIElement>(null);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const trigger = useContextMenuTrigger<HTMLLIElement>(menu !== undefined ? (_el, point) => { setAt(point); } : undefined);
+  return (
+    <li ref={ref} className="d-voice-row__person" data-row data-speaking={speaking ? 'true' : undefined} data-away={away ? 'true' : undefined}
+      data-menu={at !== null ? 'true' : undefined} {...trigger}>
+      {children}
+      {menu !== undefined && at !== null ? createPortal(
+        <PersonContextMenu {...menu} open at={at} onOpenChange={open => { if (!open) setAt(null); }} returnFocus={() => ref.current} />, document.body) : null}
+    </li>
+  );
+}
+
+/**
  * A voice channel in the sidebar (Signal, README §5.4), on ChannelRow's grammar: the 14px speaker (the moon for AFK), the name,
  * and the occupant count at the right (10.5px). The row you are in has a --fg 600 name and the --live glyph; the row the main
  * pane shows has the selected fill, the accent glyph and the 2px accent bar. The join icon is a sibling drawn over the
@@ -77,7 +100,7 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
  * row and its parts are siblings, so the button stays the first element of a list item (the roving lists find it there);
  * a caller outside ChannelList wraps them in `.d-voice-item`.
  */
-export function VoiceChannelRow({ name, current, joined, participants: devices, readable, afk = false, labels, onOpen, onJoin }: VoiceChannelRowProps) {
+export function VoiceChannelRow({ name, current, joined, participants: devices, readable, afk = false, labels, onOpen, onJoin, personMenu }: VoiceChannelRowProps) {
   const countId = useId();
   const participants = groupPeople(devices);
   const n = participants.length;
@@ -108,8 +131,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
           {participants.map(p => {
             const words = rowWords(voiceStateWords(p, labels.state));
             return (
-              <li key={p.userId} className="d-voice-row__person" data-row data-speaking={p.speaking ? 'true' : undefined}
-                data-away={p.away === true ? 'true' : undefined}>
+              <PersonRow key={p.userId} menu={personMenu?.(p)} speaking={p.speaking} away={p.away === true}>
                 <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="voice" shape={p.bot ? 'bot' : 'circle'} /></span>
                 <span className="d-voice-row__person-name">{p.name}</span>
                 <span className="d-voice-row__states">
@@ -128,7 +150,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
                 <TrailingSlot>
                   <VoiceStates words={words.filter(w => SLOT_STATES.has(w.key))} prefix="d-voice-row" />
                 </TrailingSlot>
-              </li>
+              </PersonRow>
             );
           })}
         </ul>

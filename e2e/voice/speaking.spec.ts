@@ -64,6 +64,8 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
     await test.step('a mute through the stage toolbar puts alice\'s own tile out within 400 ms', async () => {
       await mute.click();
       await expect(mute).toHaveAttribute('data-on', 'true');
+      // Signal §5.6: the call bar's word carries the state (the prototype's Unmute), so the role and name say it too.
+      await expect(controls.getByRole('button', { name: copy('callStage.bar.unmute'), exact: true })).toBeVisible();
       await expect.poll(() => ownSpeaking(alice.page), { timeout: MUTED_BOUND, message: 'alice is muted: her own tile is not speaking' }).toBe(false);
       // Bob's tile follows once the last audio has played out (the 300 ms hold and the jitter buffer), within a state's wait.
       await expect(seen).toHaveAttribute('data-speaking', 'false', { timeout: WAIT });

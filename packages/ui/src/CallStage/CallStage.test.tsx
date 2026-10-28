@@ -19,7 +19,7 @@ function tile(name: string, media: MediaStream | null): CallTileProps {
   return {
     view: { deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
       video: media !== null, screen: false, web: true, bot: false },
-    own: false, volume: 100, media, labels: { state: stateLabels, volume: `volume for ${name}`, volumeValue: '{n} %' }, onVolume: () => {},
+    own: false, volume: 100, media, labels: { state: stateLabels, volume: `volume for ${name}`, volumeValue: '{n} %' },
   };
 }
 const labels: CallStageProps['labels'] = {
@@ -238,13 +238,12 @@ describe('CallStage', () => {
       expect(set).toHaveBeenCalledTimes(2);
     });
 
-    it('the focus button holds no button, input or link (R28); the volume and full screen are its siblings', () => {
+    it('the focus button holds no button, input or link (R28); a tile has no range of its own (fix round 1: the person menu)', () => {
       const { container } = render(<Harness />);
       const buttons = container.querySelectorAll('.d-call-tile__focus');
       expect(buttons).toHaveLength(3);
       buttons.forEach(b => expect(b.querySelector('button, input, a, [tabindex]')).toBeNull());
-      const li = buttons[0].closest('li')!;
-      expect(li.querySelector('input[type="range"]')!.closest('.d-call-tile__focus')).toBeNull();
+      expect(container.querySelector('input[type="range"]')).toBeNull();
     });
 
     it('data-source is on the li and on .d-call-tile, and one device with two sources has distinct keys', () => {
@@ -256,13 +255,13 @@ describe('CallStage', () => {
       expect(err.mock.calls.flat().join(' ')).not.toMatch(/same key|unique "key"/);
     });
 
-    it('a screen tile has no volume and no state glyphs; a person tile keeps both', () => {
+    it('a screen tile has no state glyphs; a person tile keeps them; neither has a range', () => {
       const t = src('bo', 'screen', sB, { view: { ...tile('bo', sB).view, muted: true, screen: true } });
       const { container } = render(<CallStage {...base} tiles={[t, src('bo', 'camera', null, { view: { ...tile('bo', null).view, muted: true } })]} focusedId={null} onFocus={() => {}} />);
       const [screenLi, personLi] = container.querySelectorAll('li');
       expect(screenLi.querySelector('input[type="range"]')).toBeNull();
       expect(screenLi.querySelector('[data-state]')).toBeNull();
-      expect(personLi.querySelector('input[type="range"]')).not.toBeNull();
+      expect(personLi.querySelector('input[type="range"]')).toBeNull();
       expect(personLi.querySelector('[data-state="muted"]')).not.toBeNull();
     });
 
@@ -396,15 +395,14 @@ describe('CallStage', () => {
       expect(screen.queryByRole('button', { name: 'Join voice' })).toBeNull();
     });
 
-    it('with bar the controls region is the call bar: the room, the stats, the code and the controls', () => {
+    it('with bar the controls region is the call bar: the room, the stats and the controls; no call code (fix round 1: the voice row menu)', () => {
       const { container } = render(<CallStage {...base} code="284719306451873920465128390715" bar={{ name: 'harbour', stats: '24 ms · ↑ 38 ↓ 71 kb/s' }}
         controls={<button type="button">Mute</button>} />);
       const bar = container.querySelector('.d-call-stage__controls[data-bar]')!;
       expect(bar).not.toBeNull();
       expect(bar.querySelector('.d-call-stage__room')).toHaveTextContent('harbour');
       expect(bar.querySelector('.d-call-stage__stats')).toHaveTextContent('24 ms · ↑ 38 ↓ 71 kb/s');
-      expect(bar.querySelector('.d-call-stage__code')).not.toBeNull();
-      expect(container.querySelector('.d-call-stage__head .d-call-stage__code')).toBeNull();
+      expect(container.querySelector('.d-call-stage__code')).toBeNull();
       expect(bar).toContainElement(screen.getByRole('button', { name: 'Mute' }));
     });
   });

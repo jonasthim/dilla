@@ -4,7 +4,7 @@ import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
-import { HarbourPreview, HarbourStage, harbourTiles, personTile, STAGE_LABELS, STAGE_STATE, stageControls, WithPictures } from './stage.fixture.tsx';
+import { HarbourPreview, HarbourStage, harbourTiles, personTile, STAGE_LABELS, STAGE_STATE, stageControls, tileMenu, WithPictures } from './stage.fixture.tsx';
 
 // Every string is the shipped copy, quoted (packages/web/src/strings: voice.*, stage.*, callStage.*).
 const CONTROL_LABELS: CallControlsProps['labels'] = {
@@ -19,7 +19,7 @@ function tile(name: string, more: Partial<VoiceParticipantView> = {}, own = fals
   return {
     view: { deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
       video: false, screen: false, web: false, bot: false, ...more },
-    own, volume: 100, media: null, labels: { state: STAGE_STATE, volume: `volume for ${name}`, volumeValue: '{n} %' }, onVolume: noop,
+    own, volume: 100, media: null, labels: { state: STAGE_STATE, volume: `volume for ${name}`, volumeValue: '{n} %' },
   };
 }
 const PAUSED = 'ada’s identity changed, so this call is paused for you: nothing you say is sent and nothing is played. Compare safety numbers in Privacy to continue, or wait until ada leaves.';
@@ -88,6 +88,11 @@ export const FocusShare: Story = {
   render: () => <HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'FocusShare'); },
 };
+/** Review 1: a focused share whose owner speaks: the 0.55 --ok edge and the caption's meter (the prototype's focusShare). */
+export const FocusShareSpeaking: Story = {
+  decorators: [desk],
+  render: () => <HarbourStage tiles={harbourTiles('Ada').map(t => (t.source === 'screen' && t.view.name === 'Ada' ? { ...t, view: { ...t.view, speaking: true } } : t))} focus="d-Ada:screen" />,
+};
 /** A person focused (Ole): the 120px avatar. */
 export const FocusPerson: Story = {
   decorators: [desk],
@@ -112,14 +117,14 @@ export const PhoneGrid: Story = {
 function Notice(props: Partial<CallStageProps>) {
   return (
     <WithPictures tiles={harbourTiles().slice(2, 5)}>
-      {tiles => <CallStage title="voice harbour" tiles={tiles} focusedId={null} onFocus={noop} code="284719306451873920465128390715" notice={null}
+      {tiles => <CallStage title="voice harbour" tiles={tiles} focusedId={null} onFocus={noop} code={null} notice={null}
         outgoing={null} bar={{ name: 'harbour', stats: '24 ms · ↑ 38 ↓ 71 kb/s · hearing 2 of 2' }} controls={stageControls()} labels={STAGE_LABELS} {...props} />}
     </WithPictures>
   );
 }
-/** The call code: a disclosure in the call bar after the stats; opened, it rises over the stage. */
+/** A DM call box's call code (a channel's is in its voice row's menu, fix round 1): the disclosure in the head, opened. */
 export const CodeOpen: Story = {
-  decorators: [desk], render: () => <Notice />,
+  args: { title: 'ada', tiles: [tile('ada'), tile('you', {}, true)], code: '284719306451873920465128390715' },
   play: ({ canvasElement }) => { canvasElement.querySelector('summary')?.click(); },
 };
 /** RV-3: paused on this device. The banner and its action, no media in any tile, camera and share aria-disabled. */
@@ -150,16 +155,15 @@ export const Joining: Story = {
   render: () => <HarbourStage tiles={[personTile('Ada', { state: 'connecting' }), personTile('Mira', { own: true, title: 'Mira (you)', state: 'connecting' })]}
     controls={stageControls({ busy: true })} />,
 };
-/** A person at 70 %: the quiet chip in the caption; hover or focus shows the range over the tile's top left. */
+/** A person at 70 %: the quiet chip in the caption (the range is in the tile's person menu, fix round 1). */
 export const VolumeChip: Story = {
   decorators: [desk],
   render: () => <HarbourStage tiles={[{ ...personTile('Ada'), volume: 70 }, personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
 };
-/** #37: remote screens: one without sound (the mark), one with its own range and mute (shown on hover and focus). */
+/** #37: remote screens: one without sound (the mark); a screen's own volume and mute are in its person menu (fix round 1). */
 export const ScreensSound: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={[{ ...harbourTiles()[0], silent: true },
-    { ...harbourTiles()[1], stream: { volume: 100, labels: { volume: 'stream volume for Kari', mute: 'mute stream' }, onVolume: noop, onMute: noop } },
+  render: () => <HarbourStage tiles={[{ ...harbourTiles()[0], silent: true, menu: tileMenu('Ada', { silent: true }) }, harbourTiles()[1],
     personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
 };
 /** A DM call ringing others (the compact box: no stage mode, the icon toolbar). */

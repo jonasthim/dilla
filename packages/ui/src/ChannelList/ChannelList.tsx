@@ -5,7 +5,7 @@ import { Icon } from '../Icon/Icon.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { TrailingSlot } from '../TrailingSlot/TrailingSlot.tsx';
 import { VoiceChannelRow, type VoiceChannelRowProps } from '../VoiceChannelRow/VoiceChannelRow.tsx';
-import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
+import type { TileMenu, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { useRovingFocus } from '../internal/roving.ts';
 import './ChannelList.css';
 
@@ -64,6 +64,8 @@ export interface ChannelListProps {
     /** `count` (AW6 fix round 1): this room's own `labels.count`, as the AFK row's `voice.afk.count` ('{n} in AFK'). */
     rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[]; count?: string }>>;
     onJoin?(id: string): void;
+    /** Fix round 1 (Jonas): an occupant's person menu (Signal §5.4); `roomId` is the voice channel. */
+    personMenu?(roomId: string, person: VoiceParticipantView): TileMenu | undefined;
   };
   /**
    * A text row's context menu (Ruling X: the channel's pins and edit channel live here, since the header has no "⋯"). It opens on a
@@ -133,9 +135,10 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
   const swallowClick = useRef(false);
   useEffect(() => () => { if (press.current !== null) clearTimeout(press.current.timer); }, []);
-  const menuFor = (c: ChannelListChannel) => (rowMenu === undefined || c.kind === 'voice' ? [] : rowMenu.items(c.id));
+  // Fix round 1 (Jonas): a voice row has the row menu too (its call code), from the same handlers on its list item.
+  const menuFor = (c: ChannelListChannel) => (rowMenu === undefined ? [] : rowMenu.items(c.id));
   const openMenu = (c: ChannelListChannel, li: HTMLElement, at: { x: number; y: number }) => {
-    const row = li.querySelector<HTMLElement>('.d-chrow');
+    const row = li.querySelector<HTMLElement>('.d-chrow, .d-voice-row');
     if (row !== null) setMenu({ id: c.id, name: c.name, at, row });
   };
   const rowHandlers = (c: ChannelListChannel) => menuFor(c).length === 0 ? {} : {
@@ -190,9 +193,10 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       // Final review M4: the AFK row hosts no call, so it offers no join icon (its page has go AFK; a desktop click goes AFK).
       const canJoin = voice.onJoin !== undefined && !joined && room?.held !== true && c.afk !== true;
       return (
-        <li key={c.id} className="d-voice-item" data-joined={joined ? 'true' : undefined}>
+        <li key={c.id} className="d-voice-item" data-joined={joined ? 'true' : undefined} {...rowHandlers(c)}>
           <VoiceChannelRow name={c.name} current={c.id === activeId} joined={joined} participants={room?.participants ?? []} afk={c.afk === true}
-            readable={c.readable} labels={room?.count === undefined ? voice.labels : { ...voice.labels, count: room.count }} onOpen={() => onSelect(c.id)} onJoin={canJoin ? () => voice.onJoin?.(c.id) : undefined} />
+            readable={c.readable} labels={room?.count === undefined ? voice.labels : { ...voice.labels, count: room.count }} onOpen={() => onSelect(c.id)} onJoin={canJoin ? () => voice.onJoin?.(c.id) : undefined}
+            {...(voice.personMenu !== undefined ? { personMenu: (p: VoiceParticipantView) => voice.personMenu?.(c.id, p) } : {})} />
         </li>
       );
     }

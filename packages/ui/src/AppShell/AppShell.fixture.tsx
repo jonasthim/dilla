@@ -76,10 +76,11 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
  */
 /** The prototype's harbour occupants as the sidebar row lists them (VoiceView's participantView: web false, the bot's tag). */
 const harbourPeople = (joined: boolean): VoiceParticipantView[] => [
-  ...[['Ada', { screen: true }], ['Björn', { video: true }], ['Kari', { video: true, screen: true }], ['Ole', {}]] as const,
+  // Björn speaks while you are in the call, as the stage shows (Shell.tsx passes the speaking devices of your call's room only).
+  ...[['Ada', { screen: true }], ['Björn', { video: true, speaking: true }], ['Kari', { video: true, screen: true }], ['Ole', {}]] as const,
   ...(joined ? [['Mira', {}]] as const : []), ['Glenn', { bot: true }] as const,
-].map(([name, more]) => ({ deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok' as const, speaking: false, muted: false, deafened: false,
-  video: false, screen: false, web: false, bot: false, ...more }));
+].map(([name, more]) => ({ deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok' as const, muted: false, deafened: false,
+  video: false, screen: false, web: false, bot: false, ...more, speaking: joined && 'speaking' in more }));
 
 /**
  * `voice` (task 8): the desktop frame on the voice channel harbour as Shell.tsx composes it there: the harbour row current with

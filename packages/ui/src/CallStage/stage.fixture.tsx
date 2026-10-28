@@ -5,7 +5,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
-import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
+import type { CallTileProps, TileMenu, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
 
 const noop = () => {};
@@ -39,17 +39,29 @@ const view = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePart
 });
 const labels = (name: string): CallTileProps['labels'] => ({ state: STAGE_STATE, volume: `volume for ${name}`, volumeValue: '{n} %' });
 
+/** The person menu VoiceView gives a tile (fix round 1): the volume (not your own), Mute for me, Copy username. */
+export function tileMenu(name: string, o: { own?: boolean; bot?: boolean; screen?: boolean; silent?: boolean; volume?: number; muted?: boolean; title?: string } = {}): TileMenu {
+  const volume = o.volume ?? 100;
+  return {
+    person: { name: o.title ?? name, avatarName: name, where: 'in harbour', ...(o.bot === true ? { bot: true } : {}) }, label: `actions for ${name}`, onSelect: noop,
+    ...(o.own === true || o.silent === true ? {} : { volume: { label: o.screen === true ? 'Stream volume' : 'User volume', value: volume, valueText: `${String(volume)}%`, onChange: noop } }),
+    items: [...(o.own === true || o.silent === true ? [] : [{ id: 'mute', label: 'Mute for me', icon: 'volume-x' as const, check: o.muted === true }]),
+      { id: 'copy', label: 'Copy username', icon: 'copy' as const }],
+  };
+}
+
 /** A person's tile as VoiceView's deviceTiles makes it: camera with a stream, else avatar; one id either way. */
 export function personTile(name: string, more: Partial<VoiceParticipantView> & { own?: boolean; title?: string } = {}): StageTile {
   const { own = false, title, ...v } = more;
   const vw = view(name, v);
-  return { view: vw, own, volume: 100, media: null, labels: labels(name), onVolume: noop, id: `${vw.deviceId}:person`,
-    source: vw.video ? 'camera' : 'avatar', title: title ?? name, fullscreenLabel: 'full screen', mirror: own && vw.video };
+  return { view: vw, own, volume: 100, media: null, labels: labels(name), id: `${vw.deviceId}:person`,
+    source: vw.video ? 'camera' : 'avatar', title: title ?? name, fullscreenLabel: 'full screen', mirror: own && vw.video,
+    menu: tileMenu(name, { own, bot: vw.bot, ...(title !== undefined ? { title } : {}) }) };
 }
 export function screenTile(name: string): StageTile {
   const vw = view(name, { screen: true });
-  return { view: vw, own: false, volume: 100, media: null, labels: labels(name), onVolume: noop, id: `${vw.deviceId}:screen`,
-    source: 'screen', title: `${name}’s screen`, fullscreenLabel: 'full screen', mirror: false };
+  return { view: vw, own: false, volume: 100, media: null, labels: labels(name), id: `${vw.deviceId}:screen`,
+    source: 'screen', title: `${name}’s screen`, fullscreenLabel: 'full screen', mirror: false, menu: tileMenu(name, { screen: true }) };
 }
 
 /** The prototype's harbour, joined: the two shares first, then the people in the room's order, Mira (you) and Glenn last. */

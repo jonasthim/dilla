@@ -72,7 +72,7 @@ describe('WCAG AA guard', () => {
 describe('structural tokens', () => {
   it('has the Signal radii and layout dimensions', () => {
     expect(structural.radius).toEqual({
-      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px',
+      sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px', menu: '9px',
     });
     expect(structural.layout.railW).toBe('56px');
   });

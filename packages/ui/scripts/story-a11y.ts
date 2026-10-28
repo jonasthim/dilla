@@ -223,6 +223,12 @@ const SIGNAL_GEOMETRY: Record<string, Want[]> = {
     { sel: '.d-call-stage__join', h: 40, background: 'rgb(124, 255, 142)', color: 'rgb(6, 21, 10)' },
   ],
   'voice-callstage--phone': [{ sel: '.d-call-stage__tile[data-focused="false"]', w: 150 }],
+  // Fix round 1: the focused share of a speaking owner (the prototype's 0.55 edge), and the person menu (236px, 9px corners, 32px items).
+  'voice-callstage--focus-share-speaking': [{ sel: '.d-call-stage__tile[data-focused="true"] > .d-call-tile', shadow: 'rgba(124, 255, 142, 0.55)' }],
+  'voice-personcontextmenu--person': [
+    { sel: '.d-person-menu', w: 236, radius: 9, background: 'rgb(15, 18, 22)' },
+    { sel: '.d-person-menu .d-action-menu__item', h: 32 }, { sel: '.d-person-menu__head .d-avatar', w: 28, h: 28 },
+  ],
   'shell-phoneheader--signal': [{ sel: '.d-phone-header', h: 52 }, { sel: '.d-phone-header__back', w: 44, h: 44 },
     { sel: '.d-phone-header__actions .d-btn[aria-label="Threads"]', w: 30, h: 28 }, { sel: '.d-phone-header__actions .d-icon-button', w: 36, h: 28 }],
 };

@@ -19,4 +19,13 @@ export const stage = {
   'callStage.preview.many': '{names} are here',
   'callStage.preview.and': ' and ',
   'callStage.preview.nobody': 'Nobody is here yet',
+  // Fix round 1 (Jonas): the person menu of a voice occupant or a stage tile, and the call code in a voice row's menu.
+  'callStage.menu.label': 'actions for {name}',
+  'callStage.menu.where': 'in {room}',
+  'callStage.menu.volume': 'User volume',
+  'callStage.menu.streamVolume': 'Stream volume',
+  'callStage.menu.value': '{n}%',
+  'callStage.menu.muteForMe': 'Mute for me',
+  'callStage.menu.copy': 'Copy username',
+  'callStage.menu.copied': '@{name} copied',
 };

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dmMenuItems, startDmCall } from '../../test/row-menu.ts';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { en, t } from '../../strings/index.ts';
+import { t } from '../../strings/index.ts';
 import {
   A, BOB, BOB_DEV, CAROL, CAROL_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
@@ -1136,14 +1136,14 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     expect(document.querySelector('.d-call-tile__inset')).toBeNull();
   });
 
-  it('a participant who shares only a screen keeps an avatar tile with the volume and the muted glyph', async () => {
+  it('a participant who shares only a screen keeps an avatar tile with the muted glyph; neither tile has a range of its own', async () => {
     const app = await inVoice({ voice: room(FLAG_MUTE | FLAG_SCREEN) });
     act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
     await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
     const person = li(`${BOB_DEV}:person`);
     expect(person).toHaveAttribute('data-source', 'avatar');
     expect(within(person).getByRole('img', { name: 'muted' })).toBeInTheDocument();
-    expect(within(person).getByRole('slider')).toBeInTheDocument();
+    expect(within(person).queryByRole('slider')).toBeNull();
     expect(within(li(`${BOB_DEV}:screen`)).queryByRole('slider')).toBeNull();
     expect(within(li(`${BOB_DEV}:screen`)).queryByRole('img', { name: 'muted' })).toBeNull();
   });
@@ -1162,21 +1162,28 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     expect(li(`${BOB_DEV}:person`).querySelector('[data-state="no-sound"]')).toBeNull();
   });
 
-  it('#37 T5: a screen with sound has its own volume and mute; the mute sets the stream volume to 0, then restores it', async () => {
+  it('#37 T5, fix round 1: a screen with sound has its own volume and Mute for me in its person menu; muting sets the stream volume to 0', async () => {
     const app = await inVoice({ voice: room(FLAG_SCREEN), settings: { [`voice.streamVolume.${BOB}`]: '70' } });
     act(() => app.session.update({ tiles: [{ ...tile(BOB_DEV, BOB, null, new MediaStream()), screenAudio: true }] }));
     await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
-    const screenLi = within(li(`${BOB_DEV}:screen`));
-    expect(screenLi.getByRole('slider', { name: t('voice.streamVolume', { name: 'bob' }) })).toHaveValue('70');
-    expect(screenLi.queryByRole('img', { name: t('voice.state.noSound') })).toBeNull();
-    // the person's own voice range is a different range and a different key
-    expect(within(li(`${BOB_DEV}:person`)).getByRole('slider', { name: t('voice.volume', { name: 'bob' }) })).toHaveValue('100');
-    const mute = screenLi.getByRole('button', { name: t('voice.streamMute') });
-    expect(mute).toHaveAttribute('aria-pressed', 'false');
-    await app.user.click(mute);
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('img', { name: t('voice.state.noSound') })).toBeNull();
+    fireEvent.contextMenu(li(`${BOB_DEV}:screen`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+    expect(screen.getByRole('slider', { name: t('callStage.menu.streamVolume') })).toHaveValue('70');
+    await app.user.click(within(menu).getByRole('menuitemcheckbox', { name: t('callStage.menu.muteForMe') }));
     expect(app.session.setVolume).toHaveBeenCalledWith(BOB, 0, 'stream');
     expect(app.client.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: `voice.streamVolume.${BOB}`, value: '0' });
     expect(app.client.callsOf('setSetting').some(c => c.key === `voice.volume.${BOB}`)).toBe(false);
+    await app.user.keyboard('{Escape}');
+    // The person's own voice: User volume in the person tile's menu, a different key.
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    expect(await screen.findByRole('slider', { name: t('callStage.menu.volume') })).toHaveValue('100');
+  });
+
+  it('fix round 1: a roster entry without an SFU tile renders data-voice-state="connecting"', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [{ ...tile(BOB_DEV, BOB, null, null), state: 'connecting' }] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`).querySelector('.d-call-tile')).toHaveAttribute('data-voice-state', 'connecting'));
   });
 
   it('an audio-only participant gives one avatar tile', async () => {
@@ -1417,101 +1424,41 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     expect(dockEl().querySelector('[data-speaking], [data-state="speaking"]')).toBeNull();
   });
 
-  it('push to talk and the hearing count stand on the stage, not in the dock', async () => {
+  it('the hearing count stands in the call bar\'s stats, not in the dock; no push-to-talk line (fix round 1)', async () => {
     const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
     act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
     const stage = main().getByRole('toolbar', { name: 'voice channel controls' }).closest('.dw-voice-stage')!;
-    await waitFor(() => expect(stage.querySelector('.dw-voice-dock__mode')).toHaveTextContent(t('voice.dock.ptt', { key: 'Pause' })));
-    expect(stage.querySelector('[data-audio-expected]')).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 }));
-    expect(dockEl().querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
+    await waitFor(() => expect(stage.querySelector('.d-call-stage__stats [data-audio-expected]')).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 })));
+    expect(document.querySelector('.dw-voice-dock__mode')).toBeNull();
+    expect(dockEl().querySelector('[data-audio-expected]')).toBeNull();
   });
 });
 
-describe('FX2: a "sound from" picker for a share', () => {
-  const from = () => main().queryByRole('combobox', { name: t('voice.shareAudio.from') });
-  const POOL = { labeled: true, sources: [
-    { id: 'mon-1', label: 'Monitor of Built-in Audio', monitor: true },
-    { id: 'app-1', label: 'Browser sink', monitor: false },
-  ] };
-  const silentShare = async () => {
+describe('fix round 1 (Jonas): the sidebar\'s person menu and the voice row\'s call code', () => {
+  it('a right-click on a voice occupant opens the person menu; the voice row\'s menu holds the call code in a call', async () => {
+    const app = await inVoice({ voice: { [GENV]: { callId: GENV, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    const person = document.querySelector<HTMLElement>('.d-voice-row__person')!;
+    fireEvent.contextMenu(person, { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+    expect(within(menu).getByRole('menuitemcheckbox', { name: t('callStage.menu.muteForMe') })).toHaveAttribute('aria-checked', 'false');
+    await app.user.click(within(menu).getByRole('menuitemcheckbox', { name: t('callStage.menu.muteForMe') }));
+    expect(app.client.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: `voice.volume.${BOB}`, value: '0' });
+    await app.user.keyboard('{Escape}');
+    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV, code: '123451234512345123451234512345' }));
+    fireEvent.contextMenu(document.querySelector<HTMLElement>('.d-voice-item')!, { clientX: 20, clientY: 20 });
+    await app.user.click(await screen.findByRole('menuitem', { name: t('voice.code') }));
+    expect(await screen.findByText('12345 12345 12345 12345 12345 12345')).toBeInTheDocument();
+  });
+});
+
+describe('fix round 1 (Jonas): no sound-source picker for a share', () => {
+  it('a share without the browser\'s own sound offers no select and no pick: the default source stands', async () => {
     const app = await inVoice();
-    app.session.sharePool = POOL;
+    app.session.sharePool = { labeled: true, sources: [{ id: 'mic2', label: 'USB mic', monitor: false }] };
     act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
-    return app;
-  };
-
-  it('offers none and the devices while the share has no sound, and a pick goes to the session', async () => {
-    const app = await silentShare();
-    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
-    expect([...select.querySelectorAll('option')].map(o => o.textContent)).toEqual([
-      t('voice.shareAudio.fromNone'), 'Monitor of Built-in Audio', 'Browser sink']);
-    await app.user.selectOptions(select, 'app-1');
-    expect(app.session.setShareSource).toHaveBeenCalledWith('app-1');
-    act(() => app.session.update({ shareSource: 'app-1', shareAudio: 'device' }));
-    await waitFor(() => expect(from()).toHaveValue('app-1'));
-    await app.user.selectOptions(from()!, '');
-    expect(app.session.setShareSource).toHaveBeenLastCalledWith(null);
-  });
-
-  it('is not there before a share, nor while the browser gives the share its sound', async () => {
-    const app = await inVoice();
-    app.session.sharePool = POOL;
-    expect(from()).toBeNull();
-    act(() => app.session.update({ sharing: true, shareAudio: 'tab', shareSource: 'browser', localScreen: new MediaStream() }));
-    // Signal §5.6: a live share's word says it (Stop sharing), with no aria-pressed.
-    await waitFor(() => expect(main().getByRole('button', { name: t('callStage.bar.stopShare') })).not.toHaveAttribute('aria-pressed'));
-    expect(from()).toBeNull();
-  });
-
-  it('warns about a monitor by its label, and still lets it be picked', async () => {
-    const app = await silentShare();
-    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
-    expect(main().queryByText(t('voice.shareAudio.monitorWarn'))).toBeNull();
-    await app.user.selectOptions(select, 'mon-1');
-    expect(app.session.setShareSource).toHaveBeenCalledWith('mon-1');
-    act(() => app.session.update({ shareSource: 'mon-1', shareAudio: 'device' }));
-    expect(await main().findByText(t('voice.shareAudio.monitorWarn'))).toBeInTheDocument();
-  });
-
-  it('says the microphone must be allowed when the browser hides the labels', async () => {
-    const app = await inVoice();
-    app.session.sharePool = { labeled: false, sources: [{ id: 'x', label: '', monitor: false }] };
-    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
-    expect(await main().findByText(t('voice.shareAudio.needsPermission'))).toBeInTheDocument();
-    expect(from()).toBeNull();
-  });
-
-  it('M1: unlabeled inputs ask for the microphone in any browser, even when the list is otherwise empty', async () => {
-    const app = await inVoice();
-    app.session.sharePool = { labeled: false, sources: [] };
-    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
-    expect(await main().findByText(t('voice.shareAudio.needsPermission'))).toBeInTheDocument();
-  });
-
-  it('M2: with no source to pick, the notice offers no pick button', async () => {
-    const app = await inVoice();
-    app.session.sharePool = { labeled: true, sources: [] };
-    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
-    await main().findByText(/Your screen is shared without sound/);
+    await waitFor(() => expect(main().getByRole('button', { name: t('callStage.bar.stopShare') })).toBeInTheDocument());
+    expect(main().queryByRole('combobox')).toBeNull();
     expect(main().queryByRole('button', { name: t('voice.shareAudio.pick') })).toBeNull();
-    expect(document.querySelector('.d-call-stage__notice')?.textContent).not.toContain(en['voice.shareAudio.pickHint']);
-    expect(from()).toBeNull();
-  });
-
-  it('M3: a pick that fails is said in the stage’s status region', async () => {
-    const app = await silentShare();
-    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
-    app.session.setShareSource.mockRejectedValueOnce(new Error('E_UNAVAILABLE'));
-    await app.user.selectOptions(select, 'app-1');
-    expect(await main().findByText(t('voice.shareAudio.pickFailed'))).toBeInTheDocument();
-  });
-
-  it('the notice offers "pick a sound source", which moves focus to the select', async () => {
-    const app = await silentShare();
-    const pick = await main().findByRole('button', { name: t('voice.shareAudio.pick') });
-    expect(document.querySelector('.d-call-stage__notice')?.textContent).toContain(en['voice.shareAudio.pickHint']);
-    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
-    await app.user.click(pick);
-    expect(select).toHaveFocus();
   });
 });

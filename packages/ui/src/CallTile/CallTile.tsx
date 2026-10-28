@@ -3,6 +3,9 @@ import './CallTile.css';
 import { Icon } from '../Icon/Icon.tsx';
 import { StateDot } from '../StateDot/StateDot.tsx';
 import { Avatar } from '../Avatar/Avatar.tsx';
+import { PersonContextMenu, type PersonContextMenuProps } from '../PersonContextMenu/PersonContextMenu.tsx';
+import { useContextMenuTrigger } from '../internal/contextMenuTrigger.ts';
+import { createPortal } from 'react-dom';
 import { Tag } from '../Tag/Tag.tsx';
 
 /** How far a participant's stream got (L-UI-60); shared with the page call session's tiles (L-WEB-50). */
@@ -45,12 +48,11 @@ export interface CallTileProps {
    *  stream, never about the viewer's own choice: a muted stream (see `stream`) does not show it. */
   silent?: boolean;
   /**
-   * #37 T5: the stream's own volume and mute, on a remote `screen` tile that carries sound. The range is the stream volume
-   * (0..200, as the person's voice range); the toggle is the stream at volume 0 (`aria-pressed` when it is 0), so there
-   * is one value behind both. `labels.volume` is the filled `voice.streamVolume`, `labels.mute` the fixed `voice.streamMute`
-   * (the label never swaps; the WAI-ARIA toggle pattern).
+   * Fix round 1 (Jonas): the person menu of this tile (Signal §5.4), opened by a right-click, the ContextMenu key or
+   * Shift+F10, or a long press: the person's volume, Mute for me, Copy username (a screen's: its own stream's volume and
+   * mute). The tile draws no volume control of its own.
    */
-  stream?: { volume: number; labels: { volume: string; mute: string }; onVolume(volume: number): void; onMute(): void };
+  menu?: TileMenu;
   /** The name of the full-screen button. Without it the tile renders no full-screen button. */
   fullscreenLabel?: string;
   /** Injected by `CallStage`: this tile is the focused one. */
@@ -65,8 +67,10 @@ export interface CallTileProps {
    * spoken value of the range, with `{n}` filled here.
    */
   labels: { state: VoiceStateLabels; volume: string; volumeValue: string };
-  onVolume(volume: number): void;
 }
+
+/** What the tile's person menu shows; the tile owns where and whether it is open. */
+export type TileMenu = Omit<PersonContextMenuProps, 'open' | 'at' | 'onOpenChange' | 'returnFocus'>;
 
 /**
  * One participant state. A glyph-only state (muted, deafened, camera, screen, speaking: R29) has no visible word: its
@@ -144,11 +148,10 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
  * it (R28). Focus only flips `data-focused`: nothing is re-parented (R27). Without `onFocusTile` (the DM call box) the
  * tile is the compact card: the media, then the caption under it.
  */
-export function CallTile({ view, own, volume, media, mirror = false, labels, onVolume, id, source = 'camera', title,
-  fullscreenLabel, focused = false, onFocusTile, onGrid, gridLabel, silent = false, stream }: CallTileProps) {
-  const ticks = useId();
-  const streamTicks = useId();
-  const popTicks = useId();
+export function CallTile({ view, own, volume, media, mirror = false, labels, id, source = 'camera', title,
+  fullscreenLabel, focused = false, onFocusTile, onGrid, gridLabel, silent = false, menu }: CallTileProps) {
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const trigger = useContextMenuTrigger<HTMLLIElement>(menu !== undefined ? (_el, at) => { setMenuAt(at); } : undefined);
   const statesId = useId();
   const moreId = useId();
   const liRef = useRef<HTMLLIElement>(null);
@@ -200,7 +203,7 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
           {stage ? <VoiceStates words={words.filter(w => w.glyphOnly)} prefix="d-call-tile" /> : null}
         </span>
         <span className="d-call-tile__name">{name}</span>
-        {stage && !isScreen ? <span className="d-call-tile__meter" data-on={speaking ? 'true' : 'false'} aria-hidden="true"><i /><i /><i /></span> : null}
+        {stage ? <span className="d-call-tile__meter" data-on={speaking || (isScreen && focused && view.speaking) ? 'true' : 'false'} aria-hidden="true"><i /><i /><i /></span> : null}
         <span id={moreId} className="d-call-tile__more">
           <VoiceStates words={stage ? words.filter(w => !w.glyphOnly) : words} prefix="d-call-tile" />
           {speaking ? <span className="d-sr-only">{labels.state.speaking}</span> : null}
@@ -213,7 +216,7 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   );
   return (
     <li ref={liRef} className="d-call-stage__tile" data-source={source} data-focused={focused ? 'true' : 'false'} data-tile-id={id}
-      data-stage={stage ? 'true' : undefined}>
+      data-stage={stage ? 'true' : undefined} {...trigger}>
       <div className="d-call-tile" data-source={source} data-voice-state={view.state} data-speaking={view.speaking ? 'true' : 'false'}
         data-own={own ? 'true' : undefined} data-media={showMedia ? 'true' : undefined} data-stage={stage ? 'true' : undefined}
         data-bot={view.bot ? 'true' : undefined}>
@@ -234,75 +237,10 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
             ) : null}
           </span>
         ) : null}
-        {own || isScreen ? null : (
-          <VolumeRange label={labels.volume} valueText={volumeText} volume={volume} ticks={ticks} onVolume={onVolume} />
-        )}
-        {isScreen && !own && stream !== undefined ? (
-          <StreamControls stream={stream} valueText={labels.volumeValue.replaceAll('{n}', String(stream.volume))} ticks={streamTicks} popTicks={popTicks} />
-        ) : null}
       </div>
+      {menu !== undefined && menuAt !== null ? createPortal(
+        <PersonContextMenu {...menu} open at={menuAt} onOpenChange={open => { if (!open) setMenuAt(null); }}
+          returnFocus={() => liRef.current?.querySelector<HTMLElement>('.d-call-tile__focus') ?? liRef.current} />, document.body) : null}
     </li>
-  );
-}
-
-/** The native range of a volume (0..200 in steps of 10) with its value beside it and 100 % marked (product walk M6). */
-function VolumeRange({ label, valueText, volume, ticks, onVolume }: {
-  label: string; valueText: string; volume: number; ticks: string; onVolume(volume: number): void;
-}) {
-  return (
-    <label className="d-call-tile__volume">
-      <span className="d-call-tile__volume-label">{label}</span>
-      <span className="d-call-tile__volume-row">
-        <input type="range" min={0} max={200} step={10} value={volume} list={ticks}
-          aria-valuetext={valueText} style={{ '--d-volume': `${volume / 2}%` } as React.CSSProperties}
-          onChange={e => onVolume(Number(e.target.value))} />
-        <span className="d-call-tile__volume-value" aria-hidden="true">{valueText}</span>
-      </span>
-      <datalist id={ticks}><option value="100" /></datalist>
-    </label>
-  );
-}
-
-/**
- * The stream's controls. Desktop: the range and the mute (shown on hover and focus). Phone (CSS swaps them, 44 px): the mute
- * and a volume button showing the value; the button opens a small popover with the range, anchored to the tile. The popover
- * is a keyboard-operable group: focus moves to its range, Escape or a press outside closes it (focus returns to the button),
- * and so does tabbing out of it. It sits in the tile's bottom row, over the buttons, so it spans the tile and never covers the caption.
- */
-function StreamControls({ stream, valueText, ticks, popTicks }: {
-  stream: NonNullable<CallTileProps['stream']>; valueText: string; ticks: string; popTicks: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const button = useRef<HTMLButtonElement>(null);
-  const box = useRef<HTMLDivElement>(null);
-  const popId = useId();
-  useEffect(() => {
-    if (!open) return;
-    box.current?.querySelector('input')?.focus();
-    const away = (e: PointerEvent) => {
-      const target = e.target as Node;
-      if (!box.current?.contains(target) && !button.current?.contains(target)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', away);
-    return () => { document.removeEventListener('pointerdown', away); };
-  }, [open]);
-  // The buttons are hidden while the popover covers them, so focus goes back to the button once it shows again.
-  const refocus = useRef(false);
-  useEffect(() => { if (!open && refocus.current) { refocus.current = false; button.current?.focus(); } }, [open]);
-  const close = () => { refocus.current = true; setOpen(false); };
-  return (
-    <div className="d-call-tile__stream" data-open={open ? 'true' : undefined} onKeyDown={e => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }}>
-      <VolumeRange label={stream.labels.volume} valueText={valueText} volume={stream.volume} ticks={ticks} onVolume={stream.onVolume} />
-      <button type="button" className="d-call-tile__mute" aria-pressed={stream.volume === 0} aria-label={stream.labels.mute}
-        onClick={stream.onMute}><Icon name={stream.volume === 0 ? 'volume-x' : 'volume-2'} size={16} /></button>
-      <button ref={button} type="button" className="d-call-tile__streamvol" aria-label={stream.labels.volume} aria-haspopup="true"
-        aria-expanded={open} aria-controls={open ? popId : undefined} onClick={() => { setOpen(o => !o); }}>{valueText}</button>
-      {open ? (
-        <div ref={box} id={popId} role="group" aria-label={stream.labels.volume} className="d-call-tile__popover"
-          onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget !== button.current) setOpen(false); }}>
-          <VolumeRange label={stream.labels.volume} valueText={valueText} volume={stream.volume} ticks={popTicks} onVolume={stream.onVolume} />
-        </div>
-      ) : null}
-    </div>
   );
 }

@@ -46,7 +46,8 @@ export interface CallStageProps {
   header?: ReactNode;
   /** Task 8b's slot: the now-playing bar at the top of the stage, above the tiles. */
   nowPlaying?: ReactNode;
-  /** The call code, 30 digits (spaces are ignored), or null when there is none yet. */
+  /** The call code, 30 digits (spaces are ignored), or null when there is none yet. A DM call box shows it in its head; a
+   *  channel's stage (with `bar`) does not: fix round 1 (Jonas) moved it to the voice row's context menu. */
   code: string | null;
   /** A notice on the stage: the RV-3 pause banner (with its `voice.pausedAction`), a block notice or a transient one. */
   notice: CallStageNotice | null;
@@ -57,8 +58,6 @@ export interface CallStageProps {
    * hearing 2 of 2"). Given, the controls region is the 64px call bar; absent (a DM call box, the AFK page), it is plain.
    */
   bar?: { name: string; stats: ReactNode };
-  /** Under the tiles, above the call bar: what a call needs now and then (a share's sound source). */
-  extra?: ReactNode;
   /** Not in the call: the preview stands where the tiles and the call bar would. */
   preview?: CallStagePreview;
   /** The DM call strip while this device's call rings others ('ringing {names}', '{name} declined.', 'No answer.'). */
@@ -83,7 +82,7 @@ function band(n: number): 'two' | 'four' | 'many' {
 /**
  * The call stage: the bar (the voice header), the heading, the outgoing ring, a notice region, then the stage body (the
  * now-playing slot, the tiles as a list named `voice.tiles`, or `voice.empty`, or the not-joined preview), then the controls:
- * with `bar` the 64px call bar (the room, the stats, the call code and the controls). The notice region is a
+ * with `bar` the 64px call bar (the room, the stats and the controls). The notice region is a
  * `role="status"` that is always present, so its text is announced; a notice with `focusOnce` takes focus once per text.
  * While a pause or block notice shows, no tile renders media, no screen tile renders and the focus is cleared; while any
  * notice shows, the stage does not also say that nobody is in voice.
@@ -92,7 +91,7 @@ function band(n: number): 'two' | 'four' | 'many' {
  * `data-focused` on the tile, and CSS does the rest (R27): a wrapping row of 16:9 tiles in the grid, the focused tile over
  * a filmstrip when focused. Escape unfocuses a tile, unless full screen is on.
  */
-export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, nowPlaying, code, notice, controls, bar, extra, preview,
+export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, nowPlaying, code, notice, controls, bar, preview,
   outgoing, labels }: CallStageProps) {
   const titleId = useId();
   const detailsRef = useRef<HTMLDetailsElement>(null);
@@ -219,7 +218,6 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
       <div className="d-call-stage__body">
         {nowPlaying ?? null}
         {body}
-        {extra ?? null}
       </div>
       {preview !== undefined ? null : bar !== undefined ? (
         <div className="d-call-stage__controls" data-bar="true">
@@ -227,7 +225,6 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
             <span className="d-call-stage__room"><span className="d-call-stage__dot" aria-hidden="true" />{bar.name}</span>
             <span className="d-call-stage__stats">{bar.stats}</span>
           </div>
-          {codeBox}
           {controls}
         </div>
       ) : <div className="d-call-stage__controls">{controls}</div>}

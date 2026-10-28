@@ -27,7 +27,7 @@ import {
   nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody, userName,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
-import { callPhase, DmCall, dmCallStart, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { callPhase, DmCall, dmCallStart, Dock, personMenu, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { isApplePlatform } from './voice/shortcuts.ts';
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
@@ -365,6 +365,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   }, [adminFor]);
   // Final fix M2: the channel whose edit dialog the header's "edit channel" opened.
   const [editChannelId, setEditChannelId] = useState<string | null>(null);
+  // Fix round 1 (Jonas): the call code of the voice channel whose row menu asked for it, in a dialog.
+  const [codeFor, setCodeFor] = useState<string | null>(null);
   const access = useSlice(`permissions:${communityId ?? ''}`);
   // The toggle is found by its marker: the shared Button takes no ref, and AppShell reads `current` only when the drawer closes.
   const membersToggle = useMemo<RefObject<HTMLElement | null>>(
@@ -1109,6 +1111,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const owner = community !== null && self !== null && community.owner === self.id;
   const canManageChannels = access?.loaded === true ? access.manageChannels : owner;
   const editing = editChannelId === null ? null : (channels ?? []).find(c => c.id === editChannelId) ?? null;
+  /** The call code of this device's call in `id`, once the call is in (30 digits), else null. */
+  const callCodeOf = (id: string): string | null => (callSlice?.channelId === id && callSlice.phase === 'in' ? callSlice.code : null);
+  const shownCode = codeFor === null ? null : callCodeOf(codeFor);
   // The sidebar with its tabs stands whenever a server is shown, DMs exist or a DM route is open (WORKER-WEB-02). On the
   // channels tab, a server that did not load and the absence of any server are said inside the tab panel, so the
   // DMs tab stays reachable (A11Y-DESIGN-02).
@@ -1178,7 +1183,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join'), joined: t('voice.row.joined') }, rooms: voiceRooms,
-          onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
+          onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); },
+          // Fix round 1 (Jonas): an occupant's person menu (right-click, long press, Shift+F10); the AFK roster is nobody in voice.
+          personMenu: (roomId, person) => afkChannels.has(roomId) ? undefined : personMenu(voiceCtx, voiceRows.find(r => r.id === roomId)?.name ?? '',
+            { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id,
+              ...(person.userId === self?.id ? { title: t('callStage.tile.you', { name: person.name }) } : {}) }) }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => {
           void navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
@@ -1209,8 +1218,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           },
         } } : serverId === null ? {} : { rowMenu: {
           label: (name: string) => t('nav.channel.menuOf', { name }),
-          items: () => [{ id: 'pins', label: t('shell.pins.open') }, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
+          // Fix round 1 (Jonas): a voice row's menu holds the call code while this device is in its call (the stage has none).
+          items: (id: string) => voiceRooms[id] !== undefined ? (callCodeOf(id) === null ? [] : [{ id: 'code', label: t('voice.code') }])
+            : [{ id: 'pins', label: t('shell.pins.open') }, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
           onSelect: (id: string, item: string) => {
+            if (item === 'code') { setCodeFor(id); return; }
             if (item === 'edit') { setEditChannelId(id); return; }
             if (id === openId) { dispatch({ type: 'pins', open: true }); return; }
             pinsFor.current = id;
@@ -1925,6 +1937,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         {main}
       </AppShell>
       {/* The message card sits beside the shell, not inside it: main, the rail and the aside go inert while an overlay (the thread sheet) is open, and the card must stay live above it. */}
+      {/* Fix round 1 (Jonas): the call code, from the voice row's menu: six groups of five digits and how to compare them. */}
+      <Dialog open={shownCode !== null} title={t('voice.code')} closeLabel={t('dialog.close')} onClose={() => setCodeFor(null)}>
+        <p className="dw-call-code__digits">{(shownCode ?? '').replace(/\s+/g, '').match(/\d{5}/g)?.join(' ') ?? shownCode}</p>
+        <p className="dw-call-code__help">{t('voice.codeHelp')}</p>
+      </Dialog>
       {self !== null && (dm !== null || community !== null) ? (
         <MemberCardHost communityId={dm !== null ? null : community?.id ?? null}
           {...(dm !== null ? { dm: { members: allMembers, peerId: dm.kind === 3 ? dm.members.find(id => id !== self.id) ?? null : null, peerName: dm.name } } : {})} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}

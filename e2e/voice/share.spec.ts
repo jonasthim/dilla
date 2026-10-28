@@ -276,8 +276,12 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(mark).toHaveAccessibleName(copy('voice.state.noSound'));
     await expect(mark.locator('svg[data-icon="volume-off"]')).toHaveCount(1);
     await expect(shared.getByRole('img', { name: copy('voice.state.noSound'), exact: true })).toHaveCount(1);
-    // Nothing to mute on a stream without sound (T5: the stream's controls show only on a screen that carries sound).
-    await expect(shared.getByRole('button', { name: copy('voice.streamMute'), exact: true })).toHaveCount(0);
+    // Nothing to mute on a stream without sound (fix round 1: its person menu has no volume and no Mute for me).
+    await shared.click({ button: 'right' });
+    const silentMenu = bob.page.getByRole('menu', { name: copy('callStage.menu.label', { name: 'alice' }), exact: true });
+    await expect(silentMenu).toBeVisible();
+    await expect(silentMenu.getByRole('menuitemcheckbox')).toHaveCount(0);
+    await bob.page.keyboard.press('Escape');
     // E2EE: the screen's frames went out encrypted (slot 2), and no screen-audio frame was sent at all (slot 3).
     expect(await slotSent(alice.page, 2), 'screen frames alice encrypted').toBeGreaterThan(0);
     expect(await slotSent(alice.page, 3), 'screen-audio frames alice encrypted (none published)').toBe(0);
@@ -287,54 +291,6 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(share).not.toHaveAttribute('data-on', { timeout: WAIT });
     await expect(notice).not.toContainText(copy(noticeKey), { timeout: WAIT });
     await expect(mark).toHaveCount(0, { timeout: WAIT });
-    await expect(shared).toHaveCount(0, { timeout: WAIT });
-  } finally {
-    await peerBrowser.close(bob);
-    await peerBrowser.close(alice);
-    await peer.close();
-  }
-});
-
-// FX2 (#37): a share the browser gave no sound can take it from any audio input. Chromium's fake devices
-// (--use-fake-device-for-media-stream) stand in for a PipeWire monitor: pick one in "sound from", and the other browser's
-// tile for the screen loses its no-sound mark while the sound goes out encrypted in the screen-audio slot.
-test('a share without sound takes its sound from a picked audio input', async ({ peerBrowser, browserName }) => {
-  // Firefox's fake devices (media.navigator.streams.fake) list ONE audio input, "Default Audio Device", which is the call's own
-  // microphone and so never offered: the picker has nothing to show there (measured). Firefox's label shapes are pinned by
-  // session.test.ts instead ("Firefox device shapes").
-  test.skip(browserName !== 'chromium', 'Firefox fake devices list one audio input, the call microphone: no source to pick');
-  const peer = peerBrowser.track(await VoicePeer.start());
-  const alice = await peerBrowser.open('alice');
-  const bob = await peerBrowser.open('bob');
-  try {
-    await alice.context.addInitScript(silentDisplayMedia, false);
-    await peer.setup();
-    await onboard(alice, peer, 'alice');
-    await onboard(bob, peer, 'bob');
-    await peer.seat(2);
-    const a = await self(alice.page);
-    await joinVoice(alice.page, peer.communityName, peer.voiceName);
-    await joinVoice(bob.page, peer.communityName, peer.voiceName);
-    await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
-    await heard(bob.page, a.device);
-    const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
-      .locator('[data-control="share"]');
-    const shared = screenTile(bob.page, 'alice');
-    const mark = stateWord(shared, 'no-sound');
-    await share.click();
-    await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
-    await expect(mark).toBeVisible({ timeout: WAIT });
-    const from = stage(alice.page).getByRole('combobox', { name: copy('voice.shareAudio.from'), exact: true });
-    await expect(from).toBeVisible({ timeout: WAIT });
-    const options = await from.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
-    expect(options.length, 'none plus at least one audio input').toBeGreaterThan(1);
-    await from.selectOption(options[1]!);
-    await expect(mark).toHaveCount(0, { timeout: WAIT });
-    await expect.poll(() => slotSent(alice.page, 3), { timeout: WAIT }).toBeGreaterThan(0);
-    // None unpublishes it: the mark returns.
-    await from.selectOption('');
-    await expect(mark).toBeVisible({ timeout: WAIT });
-    await share.click();
     await expect(shared).toHaveCount(0, { timeout: WAIT });
   } finally {
     await peerBrowser.close(bob);
@@ -438,12 +394,12 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
         await expect(stateWord(seen, 'muted')).toHaveCount(0, { timeout: WAIT });
         await expect.poll(async () => (await toneOf(bob.page, 1000))?.level ?? 0, { ...POLL, message: 'bob plays alice’s voice' })
           .toBeGreaterThan(AUDIBLE_RMS);
-        const mute = shared.getByRole('button', { name: copy('voice.streamMute'), exact: true });
-        await expect(mute).toHaveAttribute('aria-pressed', 'false');
-        // The stream's controls show on hover and focus (flow 06): the pointer comes over the tile first, as a person's does.
-        await shared.hover();
+        // Fix round 1 (Jonas): the stream's own Mute for me is in the screen tile's person menu (a right-click).
+        await shared.click({ button: 'right' });
+        const mute = bob.page.getByRole('menuitemcheckbox', { name: copy('callStage.menu.muteForMe'), exact: true });
+        await expect(mute).toHaveAttribute('aria-checked', 'false');
         await mute.click();
-        await expect(mute).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+        await expect(mute).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
         // The stream's gain falls to 0 and nothing of it plays; the voice keeps its gain and its sound.
         await expect.poll(async () => (await played(bob.page)).find((g) => g.track === streamTrack)?.gain ?? -1,
           { ...POLL, message: 'the gain of alice’s stream on bob’s page' }).toBeLessThan(0.001);
@@ -460,7 +416,8 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
         // Unmute, from the keyboard this time: the stream plays again.
         await mute.focus();
         await mute.press('Space');
-        await expect(mute).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+        await expect(mute).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
+        await bob.page.keyboard.press('Escape');
         await expect.poll(async () => (await played(bob.page)).find((g) => g.track === streamTrack)?.level ?? 0,
           { ...POLL, message: 'the level bob’s page plays of alice’s unmuted stream' }).toBeGreaterThan(AUDIBLE_RMS);
       });

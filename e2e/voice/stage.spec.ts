@@ -72,6 +72,8 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       const cameraOn = controls.locator('[data-control="camera"]');
       await cameraOn.click();
       await expect(cameraOn).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+      // Camera keeps its word, so its state is aria-pressed (Signal §5.6).
+      await expect(controls.getByRole('button', { name: copy('callStage.bar.camera'), exact: true })).toHaveAttribute('aria-pressed', 'true');
       const share = controls.locator('[data-control="share"]');
       await share.click();
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
@@ -85,7 +87,9 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       await expect(focusButton(shared)).toHaveAttribute('aria-pressed', 'true');
       await expect(focusButton(camera)).toHaveAttribute('aria-pressed', 'false');
       const stageWidth = await widthOf(bob.page.locator('.d-call-stage'));
-      expect(await widthOf(itemOf(shared)), 'the focused screen tile’s width against the stage').toBeGreaterThanOrEqual(stageWidth * 0.7);
+      // The tile's width eases over 260ms (Signal §5.6), so it is read once it has settled.
+      await expect.poll(() => widthOf(itemOf(shared)), { timeout: WAIT, message: 'the focused screen tile’s width against the stage' })
+        .toBeGreaterThanOrEqual(stageWidth * 0.7);
       await expect.poll(() => videoWidthOf(shared), { timeout: WAIT }).toBeGreaterThan(0);
       await expect.poll(() => videoWidthOf(camera), { timeout: WAIT }).toBeGreaterThan(0);
       await bob.page.screenshot({ path: join(SHOTS, 'stage-focused.png') });
