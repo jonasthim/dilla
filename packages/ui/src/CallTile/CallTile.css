@@ -79,6 +79,14 @@
 .d-call-tile[data-stage] .d-call-tile__state[data-state="unverified"] { color: var(--warn); }
 .d-call-tile[data-stage] .d-call-tile__state:is([data-state="connecting"], [data-state="not-heard"], [data-state="no-sound"]) { color: var(--fg-2); }
 
+/* Task 8c: the tile's stats (the prototype's): 9.5px tabular --fg-3, 8px from the right and 7px from the top of a grid or strip tile,
+   over the picture; the focused tile's at 10px, 10px from its bottom right. The phone draws none (the prototype's dLabels). */
+.d-call-tile__stat {
+  position: absolute; right: 8px; top: 7px; z-index: 2; font-size: var(--text-chip); font-variant-numeric: tabular-nums; color: var(--fg-3);
+  white-space: nowrap; pointer-events: none;
+}
+.d-call-stage__tile[data-focused="true"] .d-call-tile__stat { top: auto; right: 10px; bottom: 10px; font-size: var(--text-micro); }
+[data-layout="phone"] .d-call-tile__stat { display: none; }
 /* The focused tile's tools over its top right (10px in): Grid (28px, 13px icon and its word) and full screen (28 x 28). */
 .d-call-tile__tools { position: absolute; top: 0.625rem; right: 0.625rem; display: flex; gap: 0.25rem; }
 .d-call-tile__tool {

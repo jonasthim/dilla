@@ -87,7 +87,7 @@ export const TooltipOnFocus: Story = {
 const inBar = (controls: React.ReactNode) => (
   <div style={{ width: 980, height: 756, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)', background: 'var(--bg)', margin: -16 }}>
     <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1" controls={controls}
-      tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)' })]} />
+      tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />
   </div>
 );
 const barPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => { expectOneRow(canvasElement, 'CallBar'); };

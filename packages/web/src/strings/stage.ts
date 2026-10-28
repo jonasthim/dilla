@@ -52,6 +52,10 @@ export const stage = {
   'callStage.share.estimateHeavy': '≈ {mbps} Mb/s up · may drop frames on your link',
   'callStage.share.go': 'Go live',
   'callStage.share.apply': 'Apply',
+  // Tile stats (the prototype's): the own microphone's codec and rate, a screen's frame height and rate.
+  'callStage.stat.codec': '{codec} {khz}k',
+  'callStage.stat.frame': '{height}p · {fps} fps',
+  'callStage.stat.frameAudio': '{height}p · {fps} fps · audio',
   // Task 8b (README §6.6): the music player (NowPlaying), the prototype's copy. 'music.blocked.dj' is today's DJ rule (the
   // "Control music" role permission is wave C), worded like the /play refusal.
   'music.region': 'Music player',

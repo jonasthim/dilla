@@ -28,6 +28,19 @@ const rest = { own: false, volume: 100, media: null, labels };
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CallTile', () => {
+  it('task 8c: a stage tile shows its stat; a screen only while focused; a compact tile and an empty stat show none', () => {
+    const { container, rerender } = render(<CallTile view={view} {...rest} onFocusTile={() => {}} stat="opus 48k" />);
+    expect(container.querySelector('.d-call-tile__stat')).toHaveTextContent('opus 48k');
+    rerender(<CallTile view={view} {...rest} source="screen" onFocusTile={() => {}} stat="1440p · 30 fps" />);
+    expect(container.querySelector('.d-call-tile__stat')).toBeNull();
+    rerender(<CallTile view={view} {...rest} source="screen" focused onFocusTile={() => {}} stat="1440p · 30 fps" />);
+    expect(container.querySelector('.d-call-tile__stat')).toHaveTextContent('1440p · 30 fps');
+    rerender(<CallTile view={view} {...rest} stat="opus 48k" />);
+    expect(container.querySelector('.d-call-tile__stat')).toBeNull();
+    rerender(<CallTile view={view} {...rest} onFocusTile={() => {}} />);
+    expect(container.querySelector('.d-call-tile__stat')).toBeNull();
+  });
+
   it('CallTile never attaches media for an unverified stream', () => {
     const { container } = render(<CallTile view={{ ...view, state: 'unverified' }} own={false} volume={100} media={new MediaStream()} labels={labels} />);
     expect(container.querySelector('video, audio')).toBeNull();

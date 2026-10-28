@@ -15,6 +15,8 @@ import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
 import { MusicPlayer, type MusicPlayerView } from './music.tsx';
+import { codecStat, frameStat, useTileStats } from './tile-stats.ts';
+import type { TileStats } from '../../call/session.ts';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
 
@@ -170,6 +172,21 @@ function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTi
   return [...own, ...others].map((tile, i) => ({ tile, i }))
     .sort((a, b) => Number(b.tile.source === 'screen') - Number(a.tile.source === 'screen') || rank(a.tile) - rank(b.tile) || a.i - b.i)
     .map(x => x.tile);
+}
+
+/**
+ * Task 8c (Signal §5.6): the tiles' stats from one read: the own person tile says what its microphone sends ("opus 48k"), a
+ * screen what is sent or received ("1440p · 30 fps", "· audio" with the own share's sound). Another person's tile has none: the
+ * prototype's ping there is that person's latency, which this client cannot measure (it knows only its own link), and the own
+ * link is never shown as someone else's.
+ */
+export function withTileStats(tiles: readonly CallTileProps[], stats: TileStats | null): CallTileProps[] {
+  if (stats === null) return [...tiles];
+  return tiles.map(tile => {
+    const stat = tile.own ? (tile.source === 'screen' ? frameStat(stats.ownScreen) : codecStat(stats.ownAudio))
+      : tile.source === 'screen' ? frameStat(stats.screens[tile.view.deviceId]) : undefined;
+    return stat === undefined ? tile : { ...tile, stat };
+  });
 }
 
 /** Signal §5.6: the not-joined preview's line: "Ada is here", "Ada and Björn are here", or that nobody is. */
@@ -501,7 +518,10 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
     join: held ? null : { label: t('callStage.preview.join'), onJoin: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } },
   } : undefined;
   // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
-  const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
+  // Task 8c: a channel's stage samples its tiles' stats about once a second while it shows (not on a phone, which draws none,
+  // and not while paused, when no stream is shown).
+  const tileStats = useTileStats(v.call.session, joined && !dm && !phone && !paused);
+  const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : withTileStats(allTiles, tileStats);
   // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
   const [focusedId, setFocusedId] = useState<string | null>(null);
   useAutoFocus(tiles, liveScreenIds(v, channelId, tiles), joined, dm, focusedId, setFocusedId);

@@ -107,6 +107,16 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
         .toBeGreaterThanOrEqual(stageWidth * 0.7);
       await expect.poll(() => videoWidthOf(shared), { timeout: WAIT }).toBeGreaterThan(0);
       await expect.poll(() => videoWidthOf(camera), { timeout: WAIT }).toBeGreaterThan(0);
+      // Task 8c: the focused share's stats as bob receives it ("720p · 15 fps" at most), and alice's own tile's sent codec.
+      const stat = itemOf(shared).locator('.d-call-tile__stat');
+      await expect(stat).toHaveText(/^\d+p · \d+ fps$/, { timeout: WAIT });
+      const [height, fps] = ((await stat.textContent()) ?? '').match(/\d+/g)!.map(Number);
+      expect(height, 'the received screen’s height').toBeLessThanOrEqual(720);
+      expect(fps, 'the received screen’s frame rate').toBeLessThanOrEqual(16);
+      await expect(alice.page.locator('.d-call-tile[data-own]:not([data-source="screen"])').locator('xpath=ancestor::li[1]').locator('.d-call-tile__stat'))
+        .toHaveText('opus 48k', { timeout: WAIT });
+      // No stat stands for another person's ping (the client cannot measure it): bob's view of alice's person tile has none.
+      await expect(itemOf(camera).locator('.d-call-tile__stat')).toHaveCount(0);
       await bob.page.screenshot({ path: join(SHOTS, 'stage-focused.png') });
       await expectAccessible(bob.page, 'the focused stage');
     });

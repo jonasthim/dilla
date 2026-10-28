@@ -83,16 +83,16 @@ export function tileMenu(name: string, o: { own?: boolean; bot?: boolean; screen
 }
 
 /** A person's tile as VoiceView's deviceTiles makes it: camera with a stream, else avatar; one id either way. */
-export function personTile(name: string, more: Partial<VoiceParticipantView> & { own?: boolean; title?: string } = {}): StageTile {
-  const { own = false, title, ...v } = more;
+export function personTile(name: string, more: Partial<VoiceParticipantView> & { own?: boolean; title?: string; stat?: string } = {}): StageTile {
+  const { own = false, title, stat, ...v } = more;
   const vw = view(name, v);
-  return { view: vw, own, volume: 100, media: null, labels: labels(name), id: `${vw.deviceId}:person`,
+  return { view: vw, own, volume: 100, media: null, labels: labels(name), id: `${vw.deviceId}:person`, ...(stat !== undefined ? { stat } : {}),
     source: vw.video ? 'camera' : 'avatar', title: title ?? name, fullscreenLabel: 'full screen', mirror: own && vw.video,
     menu: tileMenu(name, { own, bot: vw.bot, ...(title !== undefined ? { title } : {}) }) };
 }
-export function screenTile(name: string): StageTile {
+export function screenTile(name: string, stat?: string): StageTile {
   const vw = view(name, { screen: true });
-  return { view: vw, own: false, volume: 100, media: null, labels: labels(name), id: `${vw.deviceId}:screen`,
+  return { view: vw, own: false, volume: 100, media: null, labels: labels(name), id: `${vw.deviceId}:screen`, ...(stat !== undefined ? { stat } : {}),
     source: 'screen', title: `${name}’s screen`, fullscreenLabel: 'full screen', mirror: false, menu: tileMenu(name, { screen: true }) };
 }
 
@@ -100,9 +100,11 @@ export function screenTile(name: string): StageTile {
 export function harbourTiles(speaking: string | null = null): StageTile[] {
   const s = (n: string) => (speaking === n ? { speaking: true } : {});
   return [
-    screenTile('Ada'), screenTile('Kari'),
+    // Task 8c: the stats VoiceView passes (withTileStats): a received screen's frame, the own microphone's codec; another person's
+    // tile none (their ping is not measurable here: NEEDS_CONTEXT in the task 8c report).
+    screenTile('Ada', '1440p · 30 fps'), screenTile('Kari', '1440p · 30 fps'),
     personTile('Ada', s('Ada')), personTile('Björn', { video: true, ...s('Björn') }), personTile('Kari', { video: true, ...s('Kari') }),
-    personTile('Ole', s('Ole')), personTile('Mira', { own: true, title: 'Mira (you)', ...s('Mira') }),
+    personTile('Ole', s('Ole')), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', ...s('Mira') }),
     personTile('Glenn', { bot: true, title: 'Glenn · playback only', ...s('Glenn') }),
   ];
 }

@@ -57,18 +57,18 @@ const settle = async () => { await nextFrame(); await nextFrame(); };
 export const Grid2: Story = {
   decorators: [desk],
   render: () => <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1"
-    tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)', speaking: true })]} />,
+    tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', speaking: true })]} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'Grid2'); },
 };
 export const Grid3: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={[personTile('Ada'), personTile('Björn', { video: true }), personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
+  render: () => <HarbourStage tiles={[personTile('Ada'), personTile('Björn', { video: true }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'Grid3'); },
 };
 export const Grid5: Story = {
   decorators: [desk],
   render: () => <HarbourStage tiles={[personTile('Ada'), personTile('Björn', { video: true }), personTile('Kari', { video: true }), personTile('Ole'),
-    personTile('Mira', { own: true, title: 'Mira (you)', muted: true })]} />,
+    personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', muted: true })]} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'Grid5'); },
 };
 /** The prototype's harbour after Grid: two shares and six people, min(31.5%, 340px) each, the last row centred. */
@@ -81,7 +81,7 @@ export const GridHarbour: Story = {
 export const SpeakingTile: Story = {
   decorators: [desk],
   render: () => <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1"
-    tiles={[personTile('Liv', { speaking: true }), personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
+    tiles={[personTile('Liv', { speaking: true }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
 };
 /** A share focused (the prototype's harbour as you join): 16:9 at the row's height, Grid and full screen, the 188px filmstrip. */
 export const FocusShare: Story = {
@@ -148,24 +148,24 @@ export const MicDenied: Story = {
 };
 export const Unverified: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={[personTile('Ada', { state: 'unverified' }), personTile('Björn', { state: 'not-heard' }), personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
+  render: () => <HarbourStage tiles={[personTile('Ada', { state: 'unverified' }), personTile('Björn', { state: 'not-heard' }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
 };
 /** Joining: the call bar's controls stay aria-disabled while the tiles connect. */
 export const Joining: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={[personTile('Ada', { state: 'connecting' }), personTile('Mira', { own: true, title: 'Mira (you)', state: 'connecting' })]}
+  render: () => <HarbourStage tiles={[personTile('Ada', { state: 'connecting' }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', state: 'connecting' })]}
     controls={stageControls({ busy: true })} />,
 };
 /** A person at 70 %: the quiet chip in the caption (the range is in the tile's person menu, fix round 1). */
 export const VolumeChip: Story = {
   decorators: [desk],
-  render: () => <HarbourStage tiles={[{ ...personTile('Ada'), volume: 70 }, personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
+  render: () => <HarbourStage tiles={[{ ...personTile('Ada'), volume: 70 }, personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
 };
 /** #37: remote screens: one without sound (the mark); a screen's own volume and mute are in its person menu (fix round 1). */
 export const ScreensSound: Story = {
   decorators: [desk],
   render: () => <HarbourStage tiles={[{ ...harbourTiles()[0], silent: true, menu: tileMenu('Ada', { silent: true }) }, harbourTiles()[1],
-    personTile('Mira', { own: true, title: 'Mira (you)' })]} />,
+    personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
 };
 /** A DM call ringing others (the compact box: no stage mode, the icon toolbar). */
 export const DmRinging: Story = {

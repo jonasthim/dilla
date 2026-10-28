@@ -55,6 +55,12 @@ export interface CallTileProps {
   menu?: TileMenu;
   /** The name of the full-screen button. Without it the tile renders no full-screen button. */
   fullscreenLabel?: string;
+  /**
+   * Task 8c (Signal §5.6, the prototype's tile stats): this tile's stream as measured ("opus 48k", "1440p · 30 fps"), 9.5px tabular
+   * --fg-3 over the top right of a grid or strip tile and 10px over the bottom right of the focused one; a shared screen shows it
+   * only while focused (the prototype's grid share has none), and the phone shows none. Absent: nothing (no placeholder).
+   */
+  stat?: string;
   /** Injected by `CallStage`: this tile is the focused one. */
   focused?: boolean;
   /** Injected by `CallStage`: toggles this tile's focus. Without it the tile has no focus button. */
@@ -149,7 +155,7 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
  * tile is the compact card: the media, then the caption under it.
  */
 export function CallTile({ view, own, volume, media, mirror = false, labels, id, source = 'camera', title,
-  fullscreenLabel, focused = false, onFocusTile, onGrid, gridLabel, silent = false, menu }: CallTileProps) {
+  fullscreenLabel, focused = false, onFocusTile, onGrid, gridLabel, silent = false, menu, stat }: CallTileProps) {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const trigger = useContextMenuTrigger<HTMLLIElement>(menu !== undefined ? (_el, at) => { setMenuAt(at); } : undefined);
   const statesId = useId();
@@ -224,6 +230,7 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, id,
           <button type="button" className="d-call-tile__focus" aria-pressed={focused} aria-label={name} aria-describedby={`${statesId} ${moreId}`}
             onClick={onFocusTile} onDoubleClick={canFullscreen && showMedia ? toggleFullscreen : undefined}>{body}</button>
         ) : body}
+        {stage && stat !== undefined && stat !== '' && (!isScreen || focused) ? <span className="d-call-tile__stat">{stat}</span> : null}
         {stage && focused && (onGrid !== undefined || canFullscreen) ? (
           <span className="d-call-tile__tools">
             {onGrid !== undefined && gridLabel !== undefined ? (
