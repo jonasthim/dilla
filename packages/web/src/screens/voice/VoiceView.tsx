@@ -6,9 +6,11 @@ import type { CallState, CoreClient, MemberSummary, SendBlocksState, TrustSummar
 import { SETTINGS } from '@dilla/client-core';
 import {
   Avatar, Button, CallControls, CallStage, ChannelHeader, VoiceDock,
-  type CallStageNotice, type CallTileProps, type TileMenu, type VoiceDockProps, type VoiceParticipantView,
+  type CallControlsProps, type CallStageNotice, type CallTileProps, type SharePickerSource, type SharePickerValue, type TileMenu, type VoiceDockProps,
+  type VoiceParticipantView,
 } from '@dilla/ui';
 import { linkQuality } from '../../call/stats.ts';
+import { shareEstimate, shareSupport, supportedOptions, type ShareOptions, type ShareSupport, type ShareSurface } from '../../call/share-options.ts';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
@@ -347,11 +349,71 @@ function StatsLine({ v }: { v: VoiceContext }) {
   );
 }
 
+/** Task 8c: what this browser's screen capture can act on, read once (the share picker draws only those controls). */
+const SHARE_SUPPORT: ShareSupport = (() => {
+  if (typeof navigator === 'undefined') return shareSupport({ ua: '' });
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string; brands?: Array<{ brand: string }> } }).userAgentData;
+  return shareSupport({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand) });
+})();
+const PICKER_SOURCE: Record<ShareSurface, SharePickerSource> = { monitor: 'screen', window: 'window', browser: 'tab' };
+const SURFACE: Record<SharePickerSource, ShareSurface> = { screen: 'monitor', window: 'window', tab: 'browser' };
+const toPicker = (o: ShareOptions): SharePickerValue => ({ source: PICKER_SOURCE[o.surface], resolution: o.resolution, fps: o.fps, audio: o.systemAudio });
+const fromPicker = (p: SharePickerValue): ShareOptions => ({ surface: SURFACE[p.source], resolution: p.resolution, fps: p.fps, systemAudio: p.audio });
+
+/** The display's size in device pixels, as the share would capture it ("Display · 2560×1440"). */
+function displaySize(): { w: number; h: number } {
+  const ratio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
+  const scr = typeof screen === 'undefined' ? { width: 0, height: 0 } : screen;
+  return { w: Math.round(scr.width * ratio), h: Math.round(scr.height * ratio) };
+}
+
+/**
+ * Task 8c (Signal §5.6): the call bar's share picker. It edits a draft of the call's share options (only what this browser can
+ * act on: SHARE_SUPPORT) and shows the upload estimate from the same table the session encodes with, under the instance's cap.
+ * Go live starts the share with them; Apply (while sharing) hands them to the running share.
+ */
+export function useSharePicker(v: VoiceContext, support: ShareSupport = SHARE_SUPPORT): NonNullable<CallControlsProps['picker']> {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<ShareOptions>(v.call.shareOptions);
+  const sharing = v.call.state?.sharing ?? false;
+  const onOpenChange = (next: boolean) => {
+    if (next) setDraft(supportedOptions(v.call.shareOptions, support));
+    setOpen(next);
+  };
+  const value = supportedOptions(draft, support);
+  const tab = value.surface === 'browser';
+  const audio: 'toggle' | 'note' | 'none' = !support.surface ? 'none' : support.audio[value.surface] ? 'toggle' : 'note';
+  const estimate = shareEstimate(value, v.call.state?.shareCapBps ?? null);
+  const size = displaySize();
+  return {
+    open, onOpenChange, quality: t('callStage.share.quality'),
+    value: toPicker(value), onChange: p => { setDraft(fromPicker(p)); },
+    sources: support.surface ? ['screen', 'window', 'tab'] : [],
+    audio,
+    preview: value.surface === 'monitor' ? t('callStage.share.previewScreen', { w: size.w, h: size.h })
+      : t(tab ? 'callStage.share.previewTab' : 'callStage.share.previewWindow'),
+    estimate: { text: t(estimate.heavy ? 'callStage.share.estimateHeavy' : 'callStage.share.estimate', { mbps: estimate.mbps }), heavy: estimate.heavy },
+    labels: {
+      title: t('callStage.share.title'), titleSharing: t('callStage.share.titleSharing'), close: t('callStage.share.close'),
+      source: t('callStage.share.source'), resolution: t('callStage.share.resolution'), frameRate: t('callStage.share.frameRate'),
+      sources: { screen: t('callStage.share.screen'), window: t('callStage.share.window'), tab: t('callStage.share.tab') },
+      native: t('callStage.share.native'), audio: t('callStage.share.audio'),
+      audioNote: t(tab ? 'callStage.share.audioTab' : support.tabOnly ? 'callStage.share.audioTabOnly' : 'callStage.share.audioScreen'),
+      go: t('callStage.share.go'), apply: t('callStage.share.apply'),
+    },
+    // CallControls closes the picker first and hands focus back to its control.
+    onSubmit: () => {
+      if (sharing) v.call.applyShare(value); else v.call.startShare(value);
+    },
+  };
+}
+
 function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
   const s = v.call.state;
   const canShare = canCapture();
   const phone = usePhoneLayout();
   const hideShare = phone && !canShare;
+  const picker = useSharePicker(v);
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
@@ -363,6 +425,9 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
         // Signal §5.6: a channel's call bar shows the prototype's words (the DM call box keeps the icon toolbar).
         ...(dm ? {} : { bar: { mute: t('callStage.bar.mute'), unmute: t('callStage.bar.unmute'), deafen: t('callStage.bar.deafen'), undeafen: t('callStage.bar.undeafen'),
           camera: t('callStage.bar.camera'), share: t('callStage.bar.share'), stopShare: t('callStage.bar.stopShare'), leave: t('callStage.bar.leave') } }) }}
+      // Task 8c: a channel's call bar opens the share picker; the DM call box (no prototype counterpart) shares at once with the
+      // options last chosen there.
+      {...(dm ? {} : { picker })}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );

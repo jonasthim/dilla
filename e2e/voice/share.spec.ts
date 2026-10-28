@@ -10,7 +10,7 @@ import { expect, mediaWorkers, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   AUDIBLE_RMS, POLL, VoicePeer, WAIT, audible, audibleLevel, copy, framesPass, heard, joinVoice, noiseOff, onboard, screenTile, self,
-  sentCount, stage, tile,
+  sentCount, stage, startShare, tile,
 } from './support/voice';
 import { chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 
@@ -18,10 +18,17 @@ watchContexts(test);
 
 // #37 (T4): what the share asks the browser for (T1): the capture constraints without processing and with the call's own
 // playback left out (`restrictOwnAudio`), and every audio hint stated, never left to a browser default.
+// Task 8c: the share starts from the picker with Tab picked (its sound on, the default), so the capture asks for the tab's sound
+// at 1080p and 30 fps. Firefox's picker has no source or sound row (it ignores both), so it asks for no sound.
 const SHARE_OPTIONS = {
-  video: true,
+  video: { displaySurface: 'browser', width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } },
   audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
   systemAudio: 'include', windowAudio: 'system', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
+};
+const SHARE_OPTIONS_FIREFOX = {
+  video: { displaySurface: 'monitor', width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } },
+  audio: false,
+  systemAudio: 'exclude', windowAudio: 'exclude', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
 };
 
 /**
@@ -190,7 +197,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
 
     await test.step('share the screen after a click, then stop', async () => {
       const share = controls.locator('[data-control="share"]');
-      await share.click();
+      await startShare(alice.page);
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
       // web3.8: the screen is a tile of its own; alice's person tile stays an avatar (she shares no camera).
       const shared = screenTile(bob.page, 'alice');
@@ -258,10 +265,10 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     // Before the share: no notice (D4, nothing before the picker).
     await expect(notice).not.toContainText(copy(noticeKey));
 
-    await share.click();
+    await startShare(alice.page, firefox ? [] : [copy('callStage.share.tab')]);
     await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     const opts = await alice.page.evaluate(() => (globalThis as unknown as { __dmOpts?: unknown }).__dmOpts);
-    expect(opts, 'the options the share gave getDisplayMedia').toEqual(SHARE_OPTIONS);
+    expect(opts, 'the options the share gave getDisplayMedia').toEqual(firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
     if (!firefox) {
       // The fake picker's stream carried sound, so the silence below is the wrapper's, as a Linux window share's is.
       expect(await alice.page.evaluate(() => (globalThis as unknown as { __dmStripped: number }).__dmStripped), 'audio tracks stripped')
@@ -366,7 +373,8 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
 
       const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
         .locator('[data-control="share"]');
-      await share.click();
+      // Task 8c: the picker's Tab with its sound (on by default).
+      await startShare(alice.page, [copy('callStage.share.tab')]);
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
       await expect(rowState(bob.page, 'alice', 'screen')).toBeVisible({ timeout: WAIT });
       await expect(screenTile(bob.page, 'alice')).toHaveAttribute('data-media', 'true', { timeout: WAIT });

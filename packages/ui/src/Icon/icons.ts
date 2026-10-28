@@ -86,6 +86,9 @@
  *   icons/ban.svg  4fdd1a1ec4c5e9a805291cc78a8a3c4e3a961b9ddffddaded7869c33ee303448
  *   icons/scroll-text.svg  6ee58b7cd70b4e5c8f088532bd4d179401ef523c27ad82c7aed2d3f9e9812150
  *   icons/user-plus.svg  d240a2837b326aa764cbac57dba3d3edea17dd05d32379eb6a0cd416874936c2
+ *   icons/monitor.svg  c57d88797dec20426a97b89a681d6b9f10ce24eaca766e5caf680617f01ce22b
+ *   icons/app-window.svg  f9483395f089d415deac76611f5965e4464db90846668c478d548a872c98fcb0
+ *   icons/globe.svg  ec53caa9a0fcbde692c18e638eb5ded4079788008ede4e98d1cc3e860e8f553e
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -105,7 +108,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right, monitor are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -530,6 +533,23 @@ export const ICONS = {
     ['circle', { cx: '9', cy: '7', r: '4' }],
     ['line', { x1: '19', y1: '8', x2: '19', y2: '14' }],
     ['line', { x1: '22', y1: '11', x2: '16', y2: '11' }],
+  ],
+  // Task 8c: the share picker's sources.
+  'monitor': [
+    ['rect', { width: '20', height: '14', x: '2', y: '3', rx: '2' }],
+    ['line', { x1: '8', x2: '16', y1: '21', y2: '21' }],
+    ['line', { x1: '12', x2: '12', y1: '17', y2: '21' }],
+  ],
+  'app-window': [
+    ['rect', { x: '2', y: '4', width: '20', height: '16', rx: '2' }],
+    ['path', { d: 'M10 4v4' }],
+    ['path', { d: 'M2 8h20' }],
+    ['path', { d: 'M6 4v4' }],
+  ],
+  'globe': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20' }],
+    ['path', { d: 'M2 12h20' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

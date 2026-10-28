@@ -82,6 +82,7 @@
   --accent-ring: rgba(90,168,230,0.15);
   --brand-glow: rgba(0,87,153,0.28);
   --accent-pick: rgba(90,168,230,0.06);
+  --accent-split: rgba(3,18,30,0.25);
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
@@ -288,6 +289,7 @@
   --accent-ring: rgba(90,168,230,0.15);
   --brand-glow: rgba(0,87,153,0.28);
   --accent-pick: rgba(90,168,230,0.06);
+  --accent-split: rgba(3,18,30,0.25);
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -374,6 +376,7 @@
   --accent-ring: rgba(0,87,153,0.2);
   --brand-glow: rgba(0,87,153,0.12);
   --accent-pick: rgba(0,87,153,0.06);
+  --accent-split: rgba(255,255,255,0.25);
   --link-underline: 0;
   color-scheme: light;
 }
@@ -460,6 +463,7 @@
   --accent-ring: rgba(156,203,255,0.35);
   --brand-glow: rgba(0,0,0,0);
   --accent-pick: rgba(156,203,255,0.1);
+  --accent-split: rgba(0,0,0,0.25);
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -547,6 +551,7 @@
     --accent-ring: rgba(0,87,153,0.2);
     --brand-glow: rgba(0,87,153,0.12);
     --accent-pick: rgba(0,87,153,0.06);
+    --accent-split: rgba(255,255,255,0.25);
     --link-underline: 0;
     color-scheme: light;
   }
@@ -635,6 +640,7 @@
     --accent-ring: rgba(156,203,255,0.35);
     --brand-glow: rgba(0,0,0,0);
     --accent-pick: rgba(156,203,255,0.1);
+    --accent-split: rgba(0,0,0,0.25);
     --link-underline: 1;
     color-scheme: dark;
   }

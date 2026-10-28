@@ -3751,7 +3751,7 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
 });
 
 // ---------------------------------------------------------------------------------------------
-// Signal task 8c: the share picker's options reach the capture and the screen track's encoding, on the encrypted path.
+// Signal task 8c: the share picker's options reach the capture and the screen track's encoding, through the dilla transform's publish path.
 // ---------------------------------------------------------------------------------------------
 
 describe('task 8c: screen-share options', () => {

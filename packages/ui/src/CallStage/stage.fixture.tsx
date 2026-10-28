@@ -5,6 +5,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
+import type { SharePickerValue } from '../SharePicker/SharePicker.tsx';
 import type { CallTileProps, TileMenu, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
 
@@ -24,10 +25,41 @@ export const BAR_CONTROL_LABELS: CallControlsProps['labels'] = {
   bar: { mute: 'Mute', unmute: 'Unmute', deafen: 'Deafen', undeafen: 'Undeafen', camera: 'Camera', share: 'Share', stopShare: 'Stop sharing', leave: 'Leave' },
 };
 
+/**
+ * Task 8c: the share picker as VoiceView's useSharePicker builds it on Chromium (every source, sound by source), with the web's
+ * copy and its estimate (packages/web/src/call/share-options.ts: 1080p at 30 fps is 4.5 Mb/s; the prototype's table). The story
+ * keeps its own state so the controls can be tried.
+ */
+const KBPS: Record<SharePickerValue['resolution'], number> = { '720p': 2500, '1080p': 4500, '1440p': 8000, source: 12000 };
+const FPS_FACTOR: Record<SharePickerValue['fps'], number> = { 15: 0.6, 30: 1, 60: 1.6 };
+export const PICKER_DEFAULT: SharePickerValue = { source: 'screen', resolution: '1080p', fps: 30, audio: true };
+export function pickerProps(value: SharePickerValue, o: { open?: boolean; onChange?(v: SharePickerValue): void; tabOnly?: boolean; noSource?: boolean } = {}): NonNullable<CallControlsProps['picker']> {
+  const kbps = KBPS[value.resolution] * FPS_FACTOR[value.fps];
+  const heavy = kbps > 9000;
+  const mbps = (kbps / 1000).toFixed(1);
+  const tab = value.source === 'tab';
+  return {
+    open: o.open ?? true, onOpenChange: noop, quality: 'Stream quality', value, onChange: o.onChange ?? noop,
+    sources: o.noSource === true ? [] : ['screen', 'window', 'tab'],
+    audio: o.noSource === true ? 'none' : o.tabOnly === true && !tab ? 'note' : 'toggle',
+    preview: value.source === 'screen' ? 'Display · 2560×1440' : tab ? 'Tab · you pick it next' : 'Window · you pick it next',
+    estimate: { text: heavy ? `≈ ${mbps} Mb/s up · may drop frames on your link` : `≈ ${mbps} Mb/s up`, heavy },
+    labels: {
+      title: 'Share your screen', titleSharing: 'Stream quality', close: 'Close', source: 'Source', resolution: 'Resolution', frameRate: 'Frame rate',
+      sources: { screen: 'Screen', window: 'Window', tab: 'Tab' }, native: 'Source', audio: 'Also share system audio',
+      audioNote: tab ? 'Sound from this tab' : o.tabOnly === true ? 'Chrome on Linux can share sound only from a tab' : 'Sound from the whole system',
+      go: 'Go live', apply: 'Apply',
+    },
+    onSubmit: noop,
+  };
+}
+
 export function stageControls(more: Partial<CallControlsProps> = {}): ReactNode {
   return (
     <CallControls muted={false} deafened={false} camera={false} sharing={false} canCamera canShare busy={false} paused={false}
       labels={BAR_CONTROL_LABELS} shortcuts={{ mute: '⌘⇧M', deafen: '⌘⇧D' }} keyshortcuts={false}
+      // Task 8c: a channel's call bar always carries the share picker (VoiceView's useSharePicker), closed until Share.
+      picker={pickerProps(PICKER_DEFAULT, { open: false })}
       onMute={noop} onDeafen={noop} onCamera={noop} onShare={noop} onLeave={noop} {...more} />
   );
 }

@@ -42,6 +42,8 @@ export type ColorTokens = {
    * picked choice card's 0.06 tint.
    */
   accentTag: string; dangerEdge: string; dangerFaint: string; accentRing: string; brandGlow: string; accentPick: string;
+  /** Task 8c: the seam between a live Share and its Stream quality chevron (the prototype's rgba(3,18,30,.25), --accent-ink at 0.25). */
+  accentSplit: string;
   linkUnderline: 0 | 1;
 };
 
@@ -63,6 +65,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     cardEdge: '#252A33', accentOpen: 'rgba(90,168,230,0.1)', okDivider: 'rgba(124,255,142,0.15)', toast: '#141820',
     // Task 10
     accentTag: 'rgba(90,168,230,0.14)', dangerEdge: 'rgba(255,110,110,0.4)', dangerFaint: 'rgba(255,110,110,0.08)', accentRing: 'rgba(90,168,230,0.15)', brandGlow: 'rgba(0,87,153,0.28)', accentPick: 'rgba(90,168,230,0.06)',
+    accentSplit: 'rgba(3,18,30,0.25)',
     linkUnderline: 0,
   },
   light: {
@@ -82,6 +85,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     cardEdge: '#B4BBB4', accentOpen: 'rgba(0,87,153,0.1)', okDivider: 'rgba(27,115,52,0.15)', toast: '#FFFFFF',
     // Task 10
     accentTag: 'rgba(0,87,153,0.12)', dangerEdge: 'rgba(179,38,30,0.45)', dangerFaint: 'rgba(179,38,30,0.08)', accentRing: 'rgba(0,87,153,0.2)', brandGlow: 'rgba(0,87,153,0.12)', accentPick: 'rgba(0,87,153,0.06)',
+    accentSplit: 'rgba(255,255,255,0.25)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -101,6 +105,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     cardEdge: '#FFFFFF', accentOpen: 'rgba(156,203,255,0.2)', okDivider: 'rgba(155,255,168,0.3)', toast: '#000000',
     // Task 10
     accentTag: 'rgba(156,203,255,0.2)', dangerEdge: '#FF9A9A', dangerFaint: 'rgba(255,154,154,0.12)', accentRing: 'rgba(156,203,255,0.35)', brandGlow: 'rgba(0,0,0,0)', accentPick: 'rgba(156,203,255,0.1)',
+    accentSplit: 'rgba(0,0,0,0.25)',
     linkUnderline: 1,
   },
 };

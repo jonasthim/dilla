@@ -81,6 +81,17 @@
 /* The prototype's 0.6 keycap is signal's alone (Ruling Y); light and high-contrast draw it at full strength. */
 :root[data-theme="signal"] .d-voice-toolbar__keycap { opacity: 0.6; }
 .d-call-controls--bar .d-voice-toolbar__control[aria-disabled="true"] { border-style: dashed; }
+/* Task 8c: a live Share with the prototype's Stream quality chevron 2px after it: Share's right corners go square; the chevron is
+   30 × 40, --accent with --accent-ink, its left edge the 0.25 ink seam, 7px corners on the right, a 14px glyph. */
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-control="share"]:has(+ [data-control="quality"]) { border-radius: var(--r-seg) 0 0 var(--r-seg); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-control="quality"] {
+  width: 30px; min-width: 0; padding: 0; margin-left: calc(2px - 0.375rem);
+  color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); border-left-color: var(--accent-split); border-radius: 0 var(--r-seg) var(--r-seg) 0;
+}
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-control="quality"]:hover { background: var(--accent); }
+.d-call-controls--bar .d-voice-toolbar__control[data-control="quality"] .d-icon { width: 14px; height: 14px; }
+/* The share picker hangs above its control (VoiceToolbar places it: right and bottom in px). */
+.d-voice-toolbar__popover { position: absolute; z-index: 12; }
 @media (max-width: 77.49rem) {
   .d-call-controls--bar .d-voice-toolbar__control:not([data-variant="danger"]) :is(.d-voice-toolbar__text, .d-voice-toolbar__keycap) {
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;

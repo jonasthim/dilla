@@ -104,8 +104,8 @@ export interface PageCall {
   setSharing(on: boolean, options?: ShareOptions): Promise<void>;
   /**
    * Task 8c: the picker's Apply while sharing. A new resolution or frame rate is applied to the running capture
-   * (`applyConstraints`) and to the sender's encoding (`setParameters`: the same encrypted sender, no new track); a new source
-   * or sound choice needs the browser's picker again, so the share restarts through the same encrypted publish. Not sharing:
+   * (`applyConstraints`) and to the sender's encoding (`setParameters`: the same transformed sender, no new track); a new source
+   * or sound choice needs the browser's picker again, so the share restarts through the same publishTrack path (the dilla transform). Not sharing:
    * the options are kept for the next start.
    */
   setShareOptions(options: ShareOptions): Promise<void>;

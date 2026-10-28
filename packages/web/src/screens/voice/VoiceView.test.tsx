@@ -964,7 +964,36 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     await onStage();
     await waitFor(() => expect(stage().getByRole('button', { name: t('callStage.bar.camera') })).toHaveAttribute('aria-pressed', 'true'));
     await app.user.click(stage().getByRole('button', { name: t('callStage.bar.share') }));
+    // Task 8c: Share opens the picker; Go live starts the share.
+    await app.user.click(main().getByRole('button', { name: t('callStage.share.go') }));
     await waitFor(() => expect(app.session.state.sharing).toBe(true));
+  });
+
+  // Task 8c (Signal §5.6): the picker's choices reach the session; the estimate is the encoding's own, under the instance's cap.
+  it('the share picker starts the share with its options, and Apply hands new ones to the running share', async () => {
+    withCapture();
+    const app = await inVoice();
+    await app.user.click(stage().getByRole('button', { name: t('callStage.bar.share') }));
+    const picker = within(main().getByRole('dialog', { name: t('callStage.share.title') }));
+    // jsdom is no Chromium: no source row and no sound row (the browser would ignore both).
+    expect(picker.queryByRole('radiogroup', { name: t('callStage.share.source') })).toBeNull();
+    expect(picker.queryByRole('switch')).toBeNull();
+    expect(picker.getByText(t('callStage.share.estimate', { mbps: '2.5' }))).toBeInTheDocument();
+    await app.user.click(picker.getByRole('radio', { name: '720p' }));
+    await app.user.click(picker.getByRole('radio', { name: '15' }));
+    expect(picker.getByText(t('callStage.share.estimate', { mbps: '1.5' }))).toBeInTheDocument();
+    await app.user.click(picker.getByRole('button', { name: t('callStage.share.go') }));
+    await waitFor(() => expect(app.session.state.sharing).toBe(true));
+    expect(app.session.shareOptions).toEqual({ surface: 'monitor', resolution: '720p', fps: 15, systemAudio: false });
+    expect(main().queryByRole('dialog')).toBeNull();
+    await app.user.click(stage().getByRole('button', { name: t('callStage.share.quality') }));
+    const quality = within(main().getByRole('dialog', { name: t('callStage.share.titleSharing') }));
+    expect(quality.getByRole('radio', { name: '720p' })).toHaveAttribute('aria-checked', 'true');
+    await app.user.click(quality.getByRole('radio', { name: '1080p' }));
+    await app.user.click(quality.getByRole('button', { name: t('callStage.share.apply') }));
+    expect(app.session.setShareOptions).toHaveBeenCalledWith({ surface: 'monitor', resolution: '1080p', fps: 15, systemAudio: false });
+    await app.user.click(stage().getByRole('button', { name: t('callStage.bar.stopShare') }));
+    await waitFor(() => expect(app.session.state.sharing).toBe(false));
   });
 
   it('without screen capture, share is aria-disabled on the stage, and the dock has none', async () => {

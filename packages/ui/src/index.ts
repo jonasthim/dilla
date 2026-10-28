@@ -21,6 +21,7 @@ export { ChannelRow } from './ChannelRow/ChannelRow.tsx';
 export type { ChannelRowProps } from './ChannelRow/ChannelRow.tsx';
 export { TopBar, BrandMark, type TopBarProps } from './TopBar/TopBar.tsx';
 export { RemindersPopover, type RemindersPopoverProps, type ReminderItem } from './RemindersPopover/RemindersPopover.tsx';
+export { SharePicker, type SharePickerProps, type SharePickerSource, type SharePickerResolution, type SharePickerFps, type SharePickerValue } from './SharePicker/SharePicker.tsx';
 export { Dialog, focusReturnTarget } from './Dialog/Dialog.tsx';
 export type { DialogProps } from './Dialog/Dialog.tsx';
 export { TextField } from './TextField/TextField.tsx';

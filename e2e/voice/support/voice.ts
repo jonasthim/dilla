@@ -374,6 +374,19 @@ export function screenTile(page: Page, name: string): Locator {
     has: page.locator('.d-call-tile__name', { hasText: new RegExp(`^${escapeRegExp(copy('stage.screen', { name }))}$`) }),
   });
 }
+/**
+ * Task 8c: starts this page's screen share from a channel's call bar: Share opens the share picker, `pick` names the choices
+ * to click there by their words (e.g. 'Tab', '720p', '15'), and Go live starts it (the click is getDisplayMedia's activation).
+ */
+export async function startShare(page: Page, pick: readonly string[] = []): Promise<void> {
+  const controls = page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
+  await controls.locator('[data-control="share"]').click();
+  const picker = page.getByRole('dialog', { name: copy('callStage.share.title'), exact: true });
+  await expect(picker).toBeVisible();
+  for (const word of pick) await picker.getByRole('radio', { name: word, exact: true }).click();
+  await picker.getByRole('button', { name: copy('callStage.share.go'), exact: true }).click();
+  await expect(picker).toHaveCount(0);
+}
 /** `tileState`: the `data-voice-state` of that tile ('connecting', 'not-heard', 'ok' or 'unverified'). */
 export async function tileState(page: Page, name: string): Promise<string | null> {
   return tile(page, name).getAttribute('data-voice-state', { timeout: WAIT });

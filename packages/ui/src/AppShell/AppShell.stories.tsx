@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ComposedShell, fixtureTopBar, SignalShell } from './AppShell.fixture.tsx';
-import { HarbourPreview, HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
+import { HarbourPreview, HarbourStage, harbourTiles, PICKER_DEFAULT, pickerProps, stageControls } from '../CallStage/stage.fixture.tsx';
 import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 // The web's voice pane classes (dw-voice-channel, dw-voice-stage): app.css lays the stage out in the main pane.
 import '../../../web/src/app.css';
@@ -221,6 +221,13 @@ export const FrameVoice: Story = {
   parameters: { layout: 'fullscreen' },
   render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
     main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} />)} /></div>,
+};
+/** Task 8c: the same frame with Share pressed: the share picker open over the call bar (VoiceView's useSharePicker). */
+export const FrameVoiceSharePicker: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
+    main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar}
+      controls={stageControls({ picker: pickerProps(PICKER_DEFAULT) })} />)} /></div>,
 };
 export const FrameVoiceGrid: Story = {
   parameters: { layout: 'fullscreen' },

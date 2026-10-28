@@ -14,7 +14,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, connected, copy, dmPair, heard, joinVoice, onboard, rings, screenTile, self, stage, stripButton, tile,
+  VoicePeer, WAIT, connected, copy, dmPair, heard, joinVoice, onboard, rings, screenTile, self, stage, startShare, stripButton, tile,
 } from './support/voice';
 import { expectAccessible } from '../web/support/app';
 import { REPO_ROOT } from '../web/support/host';
@@ -75,8 +75,23 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       // Camera keeps its word, so its state is aria-pressed (Signal §5.6).
       await expect(controls.getByRole('button', { name: copy('callStage.bar.camera'), exact: true })).toHaveAttribute('aria-pressed', 'true');
       const share = controls.locator('[data-control="share"]');
-      await share.click();
+      // Task 8c: the share picker's options: 720p at 15 fps (the estimate says so before Go live).
+      await controls.locator('[data-control="share"]').click();
+      await expect(alice.page.getByText(copy('callStage.share.estimate', { mbps: '2.5' }), { exact: true })).toBeVisible();
+      await alice.page.keyboard.press('Escape');
+      await startShare(alice.page, ['720p', '15']);
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+      // The capture took the options: no frame over 720 lines, at most 15 frames a second.
+      await expect.poll(() => alice.page.evaluate(() => {
+        const v = document.querySelector<HTMLVideoElement>('.d-call-tile[data-own][data-source="screen"] video');
+        return (v?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.getSettings().height ?? 0;
+      }), { timeout: WAIT }).toBeGreaterThan(0);
+      const settings = await alice.page.evaluate(() => {
+        const v = document.querySelector<HTMLVideoElement>('.d-call-tile[data-own][data-source="screen"] video');
+        return (v?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.getSettings() ?? null;
+      });
+      expect(settings?.height ?? 9999, 'the captured screen’s height').toBeLessThanOrEqual(720);
+      expect(settings?.frameRate ?? 999, 'the captured screen’s frame rate').toBeLessThanOrEqual(15);
     });
 
     await test.step('2. bob sees two tiles for alice; the screen is focused and takes most of the stage', async () => {

@@ -49,6 +49,10 @@ const SIGNAL_ICONS = {
   'ban': ['circle', 'M4.929 4.929 19.07 19.071'],
   'scroll-text': ['M15 12h-5', 'M15 8h-5', 'M19 17V5a2 2 0 0 0-2-2H4', 'M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3'],
   'user-plus': ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', 'circle', 'line', 'line'],
+  // Task 8c: the share picker's sources.
+  'monitor': ['rect', 'line', 'line'],
+  'app-window': ['rect', 'M10 4v4', 'M2 8h20', 'M6 4v4'],
+  'globe': ['circle', 'M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20', 'M2 12h20'],
 } as const;
 const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
 
