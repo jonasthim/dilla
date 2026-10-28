@@ -2,6 +2,8 @@ export const settingsWorkspace = {
   'workspace.signOut': 'Sign out',
   'workspace.botSetup': 'Open Bot settings',
   'workspace.username': '@{username}',
+  // Signal task 10 fix round 1: the one settings workspace's first group (README §5.9); the server's group is its name.
+  'workspace.group.you': 'You',
   'workspace.group.account': 'Account',
   'workspace.group.preferences': 'Preferences',
   'workspace.group.support': 'Privacy & support',

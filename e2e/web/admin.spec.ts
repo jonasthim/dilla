@@ -286,7 +286,10 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await page2.keyboard.press('Escape');
     const mine = await openSettings(page2);
     const nav = mine.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button');
+    // Signal task 10 fix round 1: one settings workspace; "You" comes first, then this server's sections.
     await expect(nav).toHaveText([
+      copy('workspace.profile'), copy('workspace.signin'), copy('workspace.devices'), copy('workspace.notifications'), copy('workspace.voice'),
+      copy('workspace.keyboard'), copy('workspace.appearance'), copy('workspace.privacy'), copy('workspace.diagnostics'),
       copy('workspace.members'), copy('workspace.invites'), copy('workspace.selfRoles'), copy('workspace.danger'),
     ]);
     // WS8: the sidebar has no leave button; leave is a section of server settings.

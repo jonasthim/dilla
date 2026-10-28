@@ -21,10 +21,12 @@ describe('flow 17 (EOD E6, profile)', () => {
     const added = Object.keys(en).filter(k => /^(profile\.|settings\.nav\.profile$)/.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
   });
-  it('chrome is lower case and surfaces are sentence case (Mesh style); no exclamation, no reassurance', () => {
-    for (const k of ['settings.nav.profile', 'profile.display.label', 'profile.status.label', 'profile.bio.label', 'profile.save', 'profile.card.about'] as const) {
-      expect(en[k], k).toMatch(/^[a-z]/);
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+  it('settings chrome is sentence case, the card label lower case; no exclamation, no reassurance', () => {
+    for (const k of ['settings.nav.profile', 'profile.display.label', 'profile.status.label', 'profile.bio.label', 'profile.save'] as const) {
+      expect(en[k], k).toMatch(/^[A-Z]/);
     }
+    expect(en['profile.card.about']).toMatch(/^[a-z]/);
     for (const k of ['profile.title', 'profile.body', 'profile.status.hint', 'profile.bio.hint', 'profile.saved', 'profile.error.display', 'profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.wait', 'profile.error.save'] as const) {
       expect(en[k], k).toMatch(/^[A-Z]/);
     }

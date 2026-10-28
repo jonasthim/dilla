@@ -25,7 +25,9 @@ test('beta requires opt-in, enhances preview and encrypted calls, and can be lef
     await dialog.getByRole('button',{name:copy('settings.voice.testClose'),exact:true}).click();
     expect(assets).toEqual([]);
     await alice.page.screenshot({path:test.info().outputPath('noise-beta-settings.png')});
-    await dialog.getByRole('radio',{name:copy('settings.voice.automaticBeta'),exact:true}).click();
+    await dialog.getByRole('radio',{name:copy('settings.voice.automatic'),exact:true}).click();
+    // Signal task 10 fix round 1 (README §5.9): the beta is the row's BETA tag, no longer the option's name.
+    await expect(dialog.getByText(copy('signalSettings.voice.noiseTag'),{exact:true})).toBeVisible();
     await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:'DeepFilterNet3'}),{exact:false})).toBeVisible({timeout:WAIT});
     await expect(dialog.getByText(copy('settings.voice.fallback.beta'),{exact:false})).toBeVisible();

@@ -139,12 +139,12 @@ export function Voice(): React.JSX.Element {
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
-          pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t(noiseBuildMode === 'beta' ? 'settings.voice.automaticBeta' : 'settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
+          pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t('settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
           level: t('settings.voice.level'), devices: t('signalSettings.voice.devices'), test: t('signalSettings.voice.test'), inputMode: t('signalSettings.voice.inputMode'),
           processing: t('signalSettings.voice.processing'), pttHint: t('signalSettings.voice.pttHint'),
           noiseHints: { automatic: t('signalSettings.voice.noiseHint.automatic'), lightweight: t('signalSettings.voice.noiseHint.lightweight'), off: t('signalSettings.voice.noiseHint.off') },
-          // The prototype's BETA tag on the row waits for Jonas (task 10 report, NEEDS_CONTEXT): the option keeps saying "(beta)".
-        }}
+          // README §5.9: while Automatic is a beta, the row's label carries the prototype's BETA tag when it is picked.
+          noiseTag: noiseBuildMode === 'beta' && noise === 'automatic' ? t('signalSettings.voice.noiseTag') : undefined }}
         test={<div data-setting="voice-test"><MicrophoneTest input={settings[SETTINGS.voiceInput] ?? ''} noise={noise} disabled={inCall} onOpen={setTestOpen} /></div>}
         onInput={id => write(SETTINGS.voiceInput, id === '' ? null : id)}
         onOutput={id => write(SETTINGS.voiceOutput, id === '' ? null : id)}

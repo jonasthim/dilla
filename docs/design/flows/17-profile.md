@@ -39,16 +39,16 @@ Opening the section focuses its heading (as every settings section). A refused s
 
 ## Copy
 
-`settings.nav.profile='profile'`
+`settings.nav.profile='Profile'`
 `profile.title='Profile'`
 `profile.body='Your display name, status message and bio are readable by the server and by everyone you share a server with.'`
-`profile.display.label='display name'`
-`profile.status.label='status message'`
+`profile.display.label='Display name'`
+`profile.status.label='Status message'`
 `profile.status.hint='One line, up to 190 characters.'`
-`profile.bio.label='bio'`
+`profile.bio.label='Bio'`
 `profile.bio.hint='Up to 500 characters. Shown on your profile card.'`
 `profile.serverReads='The server can read this, like your display name.'` (web3.12.1: a second quiet hint line under the status message and the bio, in the field's description after the hint)
-`profile.save='save'`
+`profile.save='Save'`
 `profile.saved='Profile saved'`
 `profile.error.display='Enter a display name.'`
 `profile.error.chars='That has characters dilla can’t show.'`

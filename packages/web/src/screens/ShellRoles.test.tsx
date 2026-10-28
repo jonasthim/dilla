@@ -54,7 +54,7 @@ it('keeps account presence in the user panel, no select in the sidebar, and no c
   expect(screen.queryByRole('combobox', { name: 'Your status' })).toBeNull();
   expect(screen.getByRole('button', { name: /your status: online$/ }).closest('.d-user-panel')).not.toBeNull();
   expect(screen.queryByText('online', { selector: '.d-chunk__v' })).toBeNull();
-  expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Connection' })).toBeNull();
 });
 const box = () => screen.getByRole('textbox', { name: 'message #general' });
 // Waits in real time outside act, so React flushes each announcer step instead of batching them.
@@ -118,7 +118,7 @@ describe('the channel edit dialog', () => {
     await rowMenuItem(user, 'general', 'edit channel');
     const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
     await user.click(within(dialog).getByRole('button', { name: /^Game Night/ }));
-    await user.click(within(within(dialog).getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(within(dialog).getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
     expect(await screen.findByText('Permissions of #general saved.', { selector: '[data-testid="shell-announcer"]' })).toBeInTheDocument();
   });
 });

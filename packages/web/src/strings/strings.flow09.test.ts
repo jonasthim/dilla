@@ -52,8 +52,12 @@ describe('flow 09 (v0.1.0-web3.5, roles and private channels)', () => {
     'serverNotify.mode.nothing', 'serverNotify.mute', 'serverNotify.suppressEveryone',
   ];
   it('chrome: 63 lower-case keys are pinned', () => { expect(LOWER.length).toBe(63); });
-  it('chrome: the lower-case chrome keys are lower case', () => {
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+  it('chrome: the pinned chrome keys keep their case (lower case, or the settings sentence case of Signal task 10)', () => {
     const table = en as Readonly<Record<string, string>>;
-    for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
+    for (const key of LOWER) {
+      const value = table[key];
+      expect(value, key).toBe(/^(perm|serverNotify)\./.test(key) && !/^perm\.group\./.test(key) ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() : value.toLowerCase());
+    }
   });
 });

@@ -12,7 +12,7 @@ const rowOf = (chord: string) => {
 
 it('lists only bound modifier shortcuts', () => {
   render(<Keyboard />);
-  expect(rowOf('Control/⌘+K')).toHaveTextContent('search');
+  expect(rowOf('Control/⌘+K')).toHaveTextContent('Search');
   // No unmodified shortcut: every chord has a modifier key before its key.
   for (const row of Array.from(document.querySelectorAll('tbody tr'))) expect(row.querySelectorAll('kbd').length).toBeGreaterThan(1);
 });
@@ -20,8 +20,8 @@ it('lists only bound modifier shortcuts', () => {
 // Flow 06 § Keyboard map: mute and deafen need Control/⌘ and Shift, each followed by its action (decision 1).
 it('lists the two voice shortcuts with their actions', () => {
   render(<Keyboard />);
-  expect(rowOf('Control/⌘+Shift+M')).toHaveTextContent('mute or unmute');
-  expect(rowOf('Control/⌘+Shift+D')).toHaveTextContent('deafen or undeafen');
+  expect(rowOf('Control/⌘+Shift+M')).toHaveTextContent('Mute or unmute');
+  expect(rowOf('Control/⌘+Shift+D')).toHaveTextContent('Deafen or undeafen');
 });
 
 // M-14: one name for the key, as the guide's Keyboard table writes it; the heading is sentence case like the others.
@@ -41,5 +41,5 @@ it('is a table with a caption and four rows', () => {
   render(<Keyboard />);
   const table = screen.getByRole('table', { name: 'Keyboard' });
   expect(within(table).getAllByRole('row')).toHaveLength(4);
-  expect(within(table).getAllByRole('rowheader').map(h => h.textContent)).toEqual(['search', 'mute or unmute', 'deafen or undeafen', 'call the open direct message']);
+  expect(within(table).getAllByRole('rowheader').map(h => h.textContent)).toEqual(['Search', 'Mute or unmute', 'Deafen or undeafen', 'Call the open direct message']);
 });

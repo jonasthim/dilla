@@ -11,7 +11,7 @@ test('a missing enhanced model visibly falls back; Off avoids all enhancement as
     await alice.context.route('**/assets/noise-model-*.bin',route=>route.fulfill({status:404,body:'fixture: model unavailable'}));
     alice.context.on('request',r=>{if(/noise-(model|wasm|glue)-/.test(r.url()))assets.push(r.url());});
     const dialog=await openVoiceSettings(alice.page);
-    await dialog.getByRole('radio',{name:copy(process.env.DILLA_NOISE_MODE==='beta'?'settings.voice.automaticBeta':'settings.voice.automatic'),exact:true}).click();
+    await dialog.getByRole('radio',{name:copy('settings.voice.automatic'),exact:true}).click();
     await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:'RNNoise'}),{exact:false})).toBeVisible({timeout:WAIT});
     await expect(dialog.getByText(copy('settings.voice.fallback.enhanced-failed'),{exact:false})).toBeVisible();

@@ -144,9 +144,9 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 
 | key | English | placement |
 |---|---|---|
-| settings.nav.privacy | privacy | settings nav |
-| settings.nav.keyboard | keyboard | settings nav |
-| settings.nav.diagnostics | diagnostics | settings nav |
+| settings.nav.privacy | Privacy | settings nav |
+| settings.nav.keyboard | Keyboard | settings nav |
+| settings.nav.diagnostics | Diagnostics | settings nav |
 | privacy.section | Privacy | Privacy heading |
 | privacy.compare | Compare with {name} | contact row |
 | privacy.title | Compare safety numbers | dialog title |
@@ -184,6 +184,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | search.group.channels | Channels | palette results heading (task 9 fix round 1) |
 | search.group.people | People | palette results heading (task 9 fix round 1) |
 | search.group.actions | Actions | palette results heading (task 9 fix round 1) |
+| search.group.settings | Settings | palette results heading: matching settings sections, only for a query (task 10, merged into the palette) |
 | search.palette.voiceSub | {server} · voice | a voice channel result's sub-line |
 | search.palette.groupDm | group DM · {count} people | a group DM result's sub-line |
 | search.action.settings | Open settings | palette action |
@@ -202,14 +203,14 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | keyboard.title | Keyboard | Keyboard settings heading |
 | keyboard.searchAll | Control/⌘+K | Keyboard settings, opens search |
 | keyboard.dmCall | Control/⌘+Shift+Enter | Keyboard settings, calls the open direct message (Ruling Z, task 6b) |
-| keyboard.dmCallAction | call the open direct message | Keyboard settings, the action of keyboard.dmCall |
+| keyboard.dmCallAction | Call the open direct message | Keyboard settings, the action of keyboard.dmCall |
 | keyboard.searchChannel | Control+/ | Keyboard settings, searches this conversation |
 | diagnostics.title | Diagnostics | heading |
 | diagnostics.copy | Copy codes | diagnostics action |
-| diagnostics.connection | connection | diagnostics field |
-| diagnostics.generation | generation | diagnostics field |
-| diagnostics.instance | instance | diagnostics field |
-| diagnostics.devices | devices | diagnostics field (own-device count is its value) |
+| diagnostics.connection | Connection | diagnostics field |
+| diagnostics.generation | Generation | diagnostics field |
+| diagnostics.instance | Instance | diagnostics field |
+| diagnostics.devices | Devices | diagnostics field (own-device count is its value) |
 | diagnostics.empty | No errors recorded | diagnostics, no stored code |
 | tabs.use | Use this tab | follower action |
 | tabs.wait | Moving to this tab… | waiting status |

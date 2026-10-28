@@ -43,6 +43,12 @@ const SIGNAL_ICONS = {
   'skip-forward': ['M21 4v16', 'M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z'],
   'list-music': ['M16 5H3', 'M11 12H3', 'M11 19H3', 'M21 16V5', 'circle'],
   'music': ['M9 18V5l12-2v13', 'circle', 'circle'],
+  // Task 10 fix round 1: the settings nav's Bot, Appearance, Bans, Moderation log and Join roles.
+  'bot': ['M12 8V4H8', 'rect', 'M2 14h2', 'M20 14h2', 'M15 13v2', 'M9 13v2'],
+  'palette': ['M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z', 'circle', 'circle', 'circle', 'circle'],
+  'ban': ['circle', 'M4.929 4.929 19.07 19.071'],
+  'scroll-text': ['M15 12h-5', 'M15 8h-5', 'M19 17V5a2 2 0 0 0-2-2H4', 'M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3'],
+  'user-plus': ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', 'circle', 'line', 'line'],
 } as const;
 const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
 

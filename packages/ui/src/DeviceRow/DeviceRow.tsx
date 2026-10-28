@@ -11,7 +11,8 @@ export interface DeviceRowProps {
    */
   idHint?: string;
   tier: 'web' | 'native';
-  tierLabel: string;
+  /** The tier tag; Settings draws none (the prototype's row, Signal task 10), so it is optional. */
+  tierLabel?: string;
   own?: boolean;
   ownLabel?: string;
   state?: string;
@@ -38,7 +39,7 @@ export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state,
           {/* A label is free text: <bdi> keeps its direction from reordering the id and tags around it. */}
           <span id={nameId} className="d-device-row__name">{idHint ? <bdi>{name}</bdi> : name}</span>
           {idHint ? <span id={idId} className="d-device-row__id">{idHint}</span> : null}
-          <span className="d-device-row__tag" data-kind="tier">{tierLabel}</span>
+          {tierLabel ? <span className="d-device-row__tag" data-kind="tier">{tierLabel}</span> : null}
           {own && ownLabel ? <span className="d-device-row__tag" data-kind="own">{ownLabel}</span> : null}
         </div>
         {state || lastSeen ? (

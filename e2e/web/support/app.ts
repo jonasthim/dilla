@@ -993,11 +993,15 @@ export async function clickNotification(page: Page, index: number): Promise<void
 }
 
 export type NotifyDefault = 'dmsMentions' | 'everything' | 'nothing';
-/** Settings → Notifications → the default; waits for the radio to be checked from the settings slice, then closes. */
+/**
+ * Settings → Notifications → the selected server's mode (Signal task 10 fix round 1: the prototype's row replaced the device
+ * default; for the server's channels the two mean the same). Waits for the radio to be checked, then closes.
+ */
 export async function setNotifyDefault(page: Page, mode: NotifyDefault): Promise<void> {
   const dialog = await openSettings(page, 'notifications');
-  const radio = dialog.getByRole('radiogroup', { name: copy('notify.default.label'), exact: true })
-    .getByRole('radio', { name: copy(`notify.default.${mode}`), exact: true });
+  const key = mode === 'everything' ? 'notify.mode.all' : mode === 'nothing' ? 'notify.mode.nothing' : 'notify.mode.mentions';
+  const radio = dialog.getByRole('radiogroup', { name: new RegExp(`^${copy('notify.server.hint')} `) })
+    .getByRole('radio', { name: copy(key), exact: true });
   await radio.click();
   await expect(radio).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
   await closeSettings(page);

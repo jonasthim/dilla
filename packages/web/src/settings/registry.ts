@@ -43,33 +43,35 @@ const server = (id: ServerSettingsSection, group: StringKey, visible: SettingsEn
 
 /** Static metadata only. Search must never index configuration, account or member values. */
 export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
-  user('profile', 'workspace.group.account', ['account', 'identity'], [
+  user('profile', 'workspace.group.you', ['account', 'identity'], [
     anchor('profile-display', 'profile.display.label', 'name', 'nickname'),
     anchor('profile-status', 'profile.status.label', 'presence', 'message'),
     anchor('profile-bio', 'profile.bio.label', 'biography', 'about'),
   ]),
-  user('signin', 'workspace.group.account', ['password', 'authentication', 'totp', 'passkey', 'recovery', 'security', 'two factor'], [
+  user('signin', 'workspace.group.you', ['password', 'authentication', 'totp', 'passkey', 'recovery', 'security', 'two factor'], [
     anchor('signin-password', 'factorSettings.password', 'change', 'password'),
     anchor('signin-totp', 'factorSettings.totp', 'authenticator', 'two factor'),
     anchor('signin-passkeys', 'factorSettings.passkeys', 'security key', 'webauthn'),
     anchor('signin-codes', 'factorSettings.codes', 'backup', 'recovery'),
   ]),
-  user('devices', 'workspace.group.account', ['rename', 'revoke', 'recovery key', 'sign out', 'forget', 'sessions']),
-  user('appearance', 'workspace.group.preferences', ['theme', 'dark', 'light', 'contrast', 'density', 'motion'], [
+  user('devices', 'workspace.group.you', ['rename', 'revoke', 'recovery key', 'sign out', 'forget', 'sessions']),
+  user('notifications', 'workspace.group.you', ['sound', 'mute', 'browser', 'permission', 'mentions', 'channel', 'server'], [
+    anchor('notify-server', 'notify.server.hint', 'server', 'mentions', 'default'),
+    anchor('notify-everyone', 'notify.everyone.label', 'everyone', 'here'),
+    anchor('notify-desktop', 'notify.desktop.label', 'browser', 'permission', 'desktop'),
+    anchor('notify-sounds', 'notify.sounds.label', 'join', 'leave', 'ring', 'sound'),
+  ]),
+  user('voice', 'workspace.group.you', ['microphone', 'input', 'output', 'speaker', 'permission', 'push to talk', 'ptt', 'noise', 'test'], [
+    anchor('voice-test', 'settings.voice.test', 'microphone', 'input', 'test'),
+  ]),
+  user('keyboard', 'workspace.group.you', ['shortcut', 'binding', 'keys', 'push to talk']),
+  user('appearance', 'workspace.group.you', ['theme', 'dark', 'light', 'contrast', 'density', 'motion'], [
     anchor('appearance-theme', 'appearance.theme.label', 'dark', 'light', 'system', 'contrast'),
     anchor('appearance-density', 'workspace.density', 'compact', 'regular'),
     anchor('appearance-motion', 'workspace.motion', 'animation', 'accessibility'),
   ]),
-  user('notifications', 'workspace.group.preferences', ['sound', 'mute', 'browser', 'permission', 'mentions', 'channel', 'server'], [
-    anchor('notify-permission', 'notify.permission.label', 'browser', 'permission'),
-    anchor('notify-default-row', 'notify.default.label', 'default', 'mentions'),
-  ]),
-  user('voice', 'workspace.group.preferences', ['microphone', 'input', 'output', 'speaker', 'permission', 'push to talk', 'ptt', 'noise', 'test'], [
-    anchor('voice-test', 'settings.voice.test', 'microphone', 'input', 'test'),
-  ]),
-  user('keyboard', 'workspace.group.preferences', ['shortcut', 'binding', 'keys', 'push to talk']),
-  user('privacy', 'workspace.group.support', ['contact', 'verification', 'safety number', 'changed key', 'compare']),
-  user('diagnostics', 'workspace.group.support', ['connection', 'instance', 'device', 'error', 'copy', 'debug']),
+  user('privacy', 'workspace.group.you', ['contact', 'verification', 'safety number', 'changed key', 'compare']),
+  user('diagnostics', 'workspace.group.you', ['connection', 'instance', 'device', 'error', 'copy', 'debug']),
   server('overview', 'workspace.group.server', can('manageCommunity'), ['name', 'afk', 'timeout', 'idle']),
   server('channels', 'workspace.group.server', can('manageChannels'), ['category', 'text', 'voice', 'order', 'permissions'], [], true),
   server('gifs', 'workspace.group.server', can('manageCommunity'), ['giphy', 'provider', 'key', 'rating']),
@@ -92,14 +94,13 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
 /**
  * Each section's 15px nav glyph (README §5.9; task 10). The prototype's own: Profile user, Sign-in lock, Devices
  * monitor-smartphone, Notifications bell, Voice mic, Keyboard keyboard, Overview server, Roles shield, Invites link,
- * Music music. The others are the closest glyph the vendored Lucide set holds. Bot has none yet: Lucide's `bot` is not
- * vendored (task 10 report, NEEDS_CONTEXT), so its row keeps an empty glyph column.
+ * Bot bot, Music music. The others are the closest glyph the vendored Lucide set holds.
  */
 export const SETTINGS_ICONS: Readonly<Partial<Record<SettingsEntry['id'], IconName>>> = {
-  profile: 'user', signin: 'lock', devices: 'monitor-smartphone', appearance: 'eye', notifications: 'bell', voice: 'mic',
+  profile: 'user', signin: 'lock', devices: 'monitor-smartphone', appearance: 'palette', notifications: 'bell', voice: 'mic',
   keyboard: 'keyboard', privacy: 'fingerprint', diagnostics: 'activity',
   overview: 'server', channels: 'hash', gifs: 'smile', members: 'users', roles: 'shield', invites: 'link', selfRoles: 'user',
-  welcome: 'megaphone', joinRoles: 'arrow-right', music: 'music', automoderation: 'shield', moderationLog: 'inbox', bans: 'x',
+  bot: 'bot', welcome: 'megaphone', joinRoles: 'user-plus', music: 'music', automoderation: 'shield', moderationLog: 'scroll-text', bans: 'ban',
   danger: 'triangle-alert',
 };
 

@@ -919,7 +919,8 @@ async function main(argv) {
     await byText(second, 'navigation', 'settings.nav.label').getByRole('button', { name: t(WORKSPACE_SETTINGS.devices), exact: true }).click();
     await byText(second, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await second.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
-    await second.locator('.d-settings-frame__body .d-settings-row__control').getByRole('button', { name: t('devices.signOut'), exact: true }).click();
+    // Signal task 10 fix round 1: Sign out is on this browser's own device row (README §5.9).
+    await second.locator('.d-settings-frame__body .d-device-row__actions').getByRole('button', { name: t('workspace.signOut'), exact: true }).click();
     await byText(second, 'heading', 'devices.signOutTitle').waitFor({ timeout: WAIT });
     await settle(second, { keepFocus: true });
     await shootSecond('settings-devices-signout');
@@ -928,7 +929,7 @@ async function main(argv) {
     await byText(second, 'button', 'settings.close').click();
     await byText(mira, 'button', WORKSPACE_SETTINGS.notifications).click();
     await byText(mira, 'heading', 'notify.title').waitFor({ timeout: WAIT });
-    await byText(mira, 'button', 'notify.permission.ask').waitFor({ timeout: WAIT });
+    await mira.getByRole('switch', { name: t('notify.desktop.label'), exact: true }).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-notifications');
     // web3.6: Settings -> Sign-in lists the factors mira set up at sign-up.
@@ -1144,11 +1145,7 @@ async function main(argv) {
         await mira.waitForURL(new RegExp(`/settings/${section}$`));
         await capture(mira, `${name}-desktop-signal`);
       }
-      const search = userSettings.getByRole('searchbox', { name: t('workspace.search'), exact: true });
-      await search.fill('microphone test');
-      await userSettings.getByRole('button', { name: /Voice.*Preferences \/ Voice/u }).waitFor({ timeout: WAIT });
-      await capture(mira, 'search-result');
-      await search.fill('');
+      // Signal task 10 fix round 1: settings search is the ⌘K palette's; the workspace has no search field to shoot.
       await byText(mira, 'navigation', 'settings.nav.label')
         .getByRole('button', { name: t(WORKSPACE_SETTINGS.profile), exact: true }).click();
       await mira.waitForURL(/\/settings\/profile$/);
@@ -1181,8 +1178,8 @@ async function main(argv) {
       await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await mira.setViewportSize(PHONE_APP);
       await mira.waitForTimeout(250);
-      // Task 10: no Back on a phone section (README §5.10); the browser's back reaches the index when the section was
-      // pushed over it. FIXME(task 11): if this capture opened the section with a replace, open the index from the You tab.
+      // Task 10 fix round 1: a phone has no settings index; /settings opens Profile with the nav's chips (README §5.10).
+      // FIXME(task 11): this capture is now Profile, not an index; rename the shot.
       await mira.goBack();
       await mira.waitForURL(/\/settings$/);
       await capture(mira, 'phone-index');

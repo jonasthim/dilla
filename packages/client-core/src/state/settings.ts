@@ -35,6 +35,8 @@ export const SETTINGS = {
   voiceSelf: 'voice.self',
   soundVoice: 'sound.voice',                                 // join and leave sounds: 'on' (default) | 'off'
   soundRing: 'sound.ring',                                   // the ring: 'on' (default) | 'off'
+  // Signal task 10 (README §5.9 Notifications): desktop notifications on this device: 'on' (default) | 'off'.
+  notifyDesktop: 'notify.desktop',
   // web3.9 (R36): '1' when a category is collapsed on this device; absent = expanded.
   channelCollapsed: (categoryHex: string) => `channels.collapsed.${categoryHex}`,
 } as const;
@@ -62,7 +64,7 @@ const ON_OFF: readonly string[] = ['on', 'off'];
 const FIXED_KEYS: ReadonlySet<string> = new Set([
   SETTINGS.notifyDefault, SETTINGS.density, SETTINGS.reduceMotion, SETTINGS.searchScope,
   SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
-  SETTINGS.soundVoice, SETTINGS.soundRing, SETTINGS.voiceSelf,
+  SETTINGS.soundVoice, SETTINGS.soundRing, SETTINGS.voiceSelf, SETTINGS.notifyDesktop,
 ]);
 
 export function isSettingKey(key: string): boolean {
@@ -90,7 +92,7 @@ export function isSettingValue(key: string, value: string): boolean {
   if (key === SETTINGS.voiceSelf) return value === 'muted' || value === 'deafened';
   if (key === SETTINGS.voicePttKey) return PTT_KEY.test(value);
   if (key === SETTINGS.voiceNoise) return ['on', 'off', 'automatic', 'lightweight'].includes(value);
-  if (key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
+  if (key === SETTINGS.soundVoice || key === SETTINGS.soundRing || key === SETTINGS.notifyDesktop) return ON_OFF.includes(value);
   if (key.startsWith(VOICE_VOLUME) || key.startsWith(VOICE_STREAM_VOLUME)) return VOLUME.test(value);
   if (key.startsWith(NOTIFY_CHANNEL) || key.startsWith(NOTIFY_COMMUNITY)) return MODES.includes(value);
   return value === '1';

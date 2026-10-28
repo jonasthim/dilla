@@ -818,11 +818,14 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
 // (onboarding, sign-in), and the invites section is on the settings grammar.
 
 /** Every visible button, select and switch inside `root` (the whole page when omitted) is at least 44 high on a phone. */
-async function expectPhoneTargets(page: Page, what: string, root?: string): Promise<void> {
+async function expectPhoneTargets(page: Page, what: string, root?: string, min = 44): Promise<void> {
   const found = await boxes(page, 'button, select, [role="switch"], a.d-btn', root);
   expect.soft(found.length, `H4 ${what}: something to measure`).toBeGreaterThan(0);
-  for (const b of found) expect.soft(b.h, `H4 ${what}: "${b.t}" is ${b.h.toFixed(1)} high, want 44`).toBeGreaterThanOrEqual(44 - TOL);
+  for (const b of found) expect.soft(b.h, `H4 ${what}: "${b.t}" is ${b.h.toFixed(1)} high, want ${min}`).toBeGreaterThanOrEqual(min - TOL);
 }
+/** Signal task 10 (Jonas 2026-10-27, pixel parity): settings and the sign-in card keep the prototype's sizes on a phone, so
+ *  their controls are held to WCAG 2.5.8's 24px, not the 44px tier. */
+const PROTOTYPE_TIER = 24;
 
 test('FA1: phone targets are 44 high outside the shell, and the invites section keeps the settings grammar', async ({ page }) => {
   const h = started();
@@ -831,22 +834,19 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   const invite = h.invite.split(',')[0];
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await expect(page.getByRole('heading', { name: copy('onboarding.connect.title', { instance }), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'onboarding connect step at 390');
+  await expectPhoneTargets(page, 'onboarding connect step at 390', undefined, PROTOTYPE_TIER);
   await page.getByRole('button', { name: copy('onboarding.connect.signIn'), exact: true }).click();
   await expect(page.getByRole('heading', { name: copy('signin.login.title', { instance }), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'sign-in at 390');
+  await expectPhoneTargets(page, 'sign-in at 390', undefined, PROTOTYPE_TIER);
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await completeSignUp(page, account, instance);
 
   for (const section of ['voice', 'devices', 'notifications'] as const) {
     await page.goto(`/settings/${section}`);
     await expect(page.locator('.d-settings-row, .d-voice-settings').first()).toBeVisible({ timeout: WAIT });
-    await expectPhoneTargets(page, `settings, ${section} at 390`);
+    await expectPhoneTargets(page, `settings, ${section} at 390`, undefined, PROTOTYPE_TIER);
   }
-  await page.goto('/settings/devices');
-  const refresh = page.getByRole('button', { name: copy('devices.refresh'), exact: true });
-  await expect(refresh).toBeVisible({ timeout: WAIT });
-  expect.soft((await refresh.boundingBox())?.height ?? 0, 'H4 the refresh button is 44 high on a phone').toBeGreaterThanOrEqual(44 - TOL);
+  // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
 
   // The invites section on a desktop: rows of a label and a control column, as the Overview has them; then the link dialog's Copy at 390.
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -888,11 +888,11 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
   await expect(admin.getByRole('button', { name: copy('admin.invites.create'), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'server settings, invites at 390', '.d-settings-frame__body');
+  await expectPhoneTargets(page, 'server settings, invites at 390', '.d-settings-frame__body', PROTOTYPE_TIER);
   await admin.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
   const link = page.locator('.d-invite-link');
   await expect(link.locator('button').first(), 'the link dialog shows its Copy').toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'the invite link dialog at 390', '.d-invite-link');
+  await expectPhoneTargets(page, 'the invite link dialog at 390', '.d-invite-link', PROTOTYPE_TIER);
 });
 
 

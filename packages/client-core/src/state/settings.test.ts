@@ -117,6 +117,14 @@ describe('voice and sound settings (L-TS-54)', () => {
     }
   });
 
+  // Signal task 10 fix round 1: the Desktop notifications switch of Settings → Notifications.
+  it('admits notify.desktop as on or off', () => {
+    expect(SETTINGS.notifyDesktop).toBe('notify.desktop');
+    expect(isSettingValue('notify.desktop', 'off')).toBe(true);
+    expect(isSettingValue('notify.desktop', 'on')).toBe(true);
+    expect(isSettingValue('notify.desktop', '1')).toBe(false);
+  });
+
   it('names the keys and refuses near misses', () => {
     expect([SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
       SETTINGS.voiceVolume(ID), SETTINGS.soundVoice, SETTINGS.soundRing]).toEqual(['voice.input', 'voice.output', 'voice.mode',

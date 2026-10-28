@@ -20,7 +20,7 @@ const blocked = { 'aria-disabled': true } as const;
 function Step({ n, title, footer, children }: { n: number; title: string; footer: ReactNode; children: ReactNode }) {
   return (
     <form noValidate onSubmit={e => e.preventDefault()}>
-      <OnboardingFrame title={title} stepLabel={t('signin.step', { n })} footer={footer}>{children}</OnboardingFrame>
+      <OnboardingFrame title={title} stepLabel={t('signin.step', { n, total: 4 })} progress={{ n, total: 4 }} footer={footer}>{children}</OnboardingFrame>
     </form>
   );
 }
@@ -68,7 +68,7 @@ export const RecoveryKey: Story = { render: () => <Key value={GROUPED.slice(0, 2
 export const RecoveryKeyWrong: Story = { render: () => <Key value={GROUPED.replace('7K2M', '7K2N')} error={t('signin.error.wrongKey')} /> };
 export const NoBackup: Story = {
   render: () => (
-    <OnboardingFrame title={t('signin.key.title')} stepLabel={t('signin.step', { n: 3 })} footer={<Button variant="ghost" type="button">{t('signin.cancel')}</Button>}>
+    <OnboardingFrame title={t('signin.key.title')} stepLabel={t('signin.step', { n: 3, total: 4 })} progress={{ n: 3, total: 4 }} footer={<Button variant="ghost" type="button">{t('signin.cancel')}</Button>}>
       <Banner tone="danger">{t('signin.error.noBackup', { instance })}</Banner>
     </OnboardingFrame>
   ),
@@ -76,7 +76,7 @@ export const NoBackup: Story = {
 export const Adding: Story = { render: () => <Key value={GROUPED} working /> };
 export const Done: Story = {
   render: () => (
-    <OnboardingFrame title={t('signin.done.title')} stepLabel={t('signin.step', { n: 4 })}
+    <OnboardingFrame title={t('signin.done.title')} stepLabel={t('signin.step', { n: 4, total: 4 })} progress={{ n: 4, total: 4 }}
       footer={<Button variant="accent" type="button">{t('signin.done.next')}</Button>}>
       <p>{t('signin.done.body', { username: 'ada', instance })}</p>
     </OnboardingFrame>

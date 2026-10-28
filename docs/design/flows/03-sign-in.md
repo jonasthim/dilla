@@ -750,7 +750,7 @@ zero-width character (the display-name rule); the page and the worker refuse the
 dialogs (listed and not yet listed) show the device first as its name, when it has one, and the first eight characters
 of its id, so the person confirms the id and not a name the server could have swapped. Under the list stand
 the count line and `devices.refresh`; under a hairline, `devices.signOut` and `devices.forget`. The count
-line is `devices.cap.other` (`{n} devices`), or `devices.cap.one` (`one device`) when the count is 1; it
+line is `devices.cap.other` (`{n} devices`), or `devices.cap.one` (`One device`) when the count is 1; it
 counts the devices that are not removed, this browser included, and the instance's cap is not shown
 (ruling 33).
 
@@ -871,7 +871,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `onboarding.connect.signIn` | `Use an existing account` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
 | `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` | second paragraph, onboarding step 3 (changed for web-2a) |
 | `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
-| `signin.step` | `Step {n} of 4` | step line, steps 1–4 |
+| `signin.step` | `Sign in · step {n} of {total}` | step line, steps 1–4 (Signal task 10: {total} is 4, or 3 with no factor step shown; the dots follow it) |
 | `signin.login.title` | `Sign in to {instance}` | step heading, step 1 |
 | `signin.login.body` | `Use the username and password of your account on {instance}.` | paragraph, step 1 |
 | `signin.login.username` | `Username` | field label, step 1 |
@@ -908,32 +908,32 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `shell.rail.settings` | `settings` | the rail's last button, which opens Settings |
 | `settings.title` | `Settings` | the settings frame's `<h1>` |
 | `settings.close` | `Close settings` | the settings frame's close button |
-| `settings.nav.label` | `settings sections` | accessible name of the settings navigation |
-| `settings.nav.devices` | `devices` | navigation button |
-| `settings.nav.notifications` | `notifications` | navigation button |
-| `settings.nav.appearance` | `appearance` | navigation button |
+| `settings.nav.label` | `Settings sections` | accessible name of the settings navigation |
+| `settings.nav.devices` | `Devices` | navigation button |
+| `settings.nav.notifications` | `Notifications` | navigation button |
+| `settings.nav.appearance` | `Appearance` | navigation button |
 | `devices.title` | `Devices` | section heading (`<h2>`, `tabIndex=-1`), Devices |
 | `devices.body` | `Every browser and app signed in to your account. Removing a device needs your recovery key.` | paragraph under the heading, Devices |
-| `devices.thisBrowser` | `this browser` | tag on this browser's row |
-| `devices.tier.web` | `browser` | tier tag of a browser |
-| `devices.tier.native` | `app` | tier tag of an app |
+| `devices.thisBrowser` | `This browser` | tag on this browser's row |
+| `devices.tier.web` | `Browser` | tier tag of a browser |
+| `devices.tier.native` | `App` | tier tag of an app |
 | `devices.lastSeen` | `last seen {when}` | second line of every row |
 | `devices.unlisted` | `not yet in the device list` | state of a device the newest device list does not name |
 | `devices.revoked` | `removed` | state of a removed device |
-| `devices.cap.one` | `one device` | line under the list when one device is not removed |
+| `devices.cap.one` | `One device` | line under the list when one device is not removed |
 | `devices.cap.other` | `{n} devices` | line under the list; `{n}` counts the devices that are not removed, when that is not 1 |
 | `devices.keyLabel` | `Recovery key` | field label, the two key dialogs of Settings → Devices |
-| `devices.refresh` | `refresh` | button under the list; sends `refreshDevices` |
-| `devices.revoke` | `remove` | button on the row of every other device that is not removed |
-| `devices.rename` | `rename` | button on the row of every device that is not removed, this browser included; opens the name dialog |
+| `devices.refresh` | `Refresh` | button under the list; sends `refreshDevices` |
+| `devices.revoke` | `Remove` | button on the row of every other device that is not removed |
+| `devices.rename` | `Rename` | button on the row of every device that is not removed, this browser included; opens the name dialog |
 | `devices.renameTitle` | `Name this device` | dialog title, the name dialog |
 | `devices.renameBody` | `The server can change it, so check a device by its id before you remove it.` | dialog body, the name dialog |
 | `devices.renameLabel` | `Device name` | field label, the name dialog (at most 64 characters) |
 | `devices.renameServerReads` | `The server can read this, like your display name.` | a second quiet hint line under the name field, in its description after `devices.renameBody` (web3.12.1) |
 | `devices.renameSave` | `Save` | submit, the name dialog |
 | `devices.renameSuggestion` | `{browser} on {os}` | the name dialog's start text on this browser when it has no name yet, e.g. `Firefox on Linux`; nothing when the browser or system is not recognised |
-| `devices.signOut` | `sign out and remove this browser` | button under the hairline |
-| `devices.forget` | `forget this browser` | button under the hairline |
+| `devices.signOut` | `Sign out and remove this browser` | button under the hairline |
+| `devices.forget` | `Forget this browser` | button under the hairline |
 | `devices.revokeTitle` | `Remove this device?` | dialog title, remove another device |
 | `devices.revokeBody` | `The device is signed out everywhere and leaves every conversation. Enter your recovery key to confirm.` | dialog body, remove another device |
 | `devices.removeUnlistedTitle` | `Remove this device?` | dialog title, remove a device that is not in the device list |

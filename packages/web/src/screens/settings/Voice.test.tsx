@@ -38,40 +38,40 @@ const settingCalls = (fake: FakeClient) => fake.callsOf('setSetting').map(c => [
 describe('Settings → Voice', () => {
   it('Settings → Voice and → Notifications store their keys through setSetting (the Voice half)', async () => {
     const { fake, user } = setup();
-    await user.click(screen.getByRole('radio', { name: 'push to talk' }));
+    await user.click(screen.getByRole('radio', { name: 'Push to talk' }));
     expect(settingCalls(fake)).toEqual([['voice.mode', 'ptt']]);
     // The capture prompt; F13 is the key.
-    await user.click(await screen.findByRole('button', { name: 'set key' }));
+    await user.click(await screen.findByRole('button', { name: 'Set key' }));
     expect(screen.getByText('Press the key to use. Escape cancels. It works only while dilla is the active tab.')).toBeInTheDocument();
     fireEvent.keyDown(document.activeElement!, { key: 'F13', code: 'F13' });
     expect(settingCalls(fake)).toEqual([['voice.mode', 'ptt'], ['voice.pttKey', 'F13']]);
     expect(await screen.findByText('F13')).toBeInTheDocument();
     // Escape in the prompt stores nothing.
-    await user.click(screen.getByRole('button', { name: 'set key' }));
+    await user.click(screen.getByRole('button', { name: 'Set key' }));
     await user.keyboard('{Escape}');
     expect(settingCalls(fake)).toHaveLength(2);
     expect(screen.queryByText(/Press the key to use/)).toBeNull();
-    await user.click(screen.getByRole('radio', { name: 'off' }));
+    await user.click(screen.getByRole('radio', { name: 'Off' }));
     expect(settingCalls(fake).at(-1)).toEqual(['voice.noise', 'off']);
   });
 
   it('shows a stored key that is not one key on its own as unset', () => {
     setup({ 'voice.mode': 'ptt', 'voice.pttKey': 'KeyV' });
-    expect(screen.getByText('no key set')).toBeInTheDocument();
+    expect(screen.getByText('No key set')).toBeInTheDocument();
     expect(screen.queryByText('KeyV')).toBeNull();
   });
 
   it('lists devices only after the microphone permission was granted', async () => {
     const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
     const first = setup({}, { permission: 'prompt', devices: [mic] });
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'input device' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Input device' })).toBeInTheDocument());
     expect(first.enumerateDevices).not.toHaveBeenCalled();
     expect(screen.queryByRole('option', { name: 'Desk mic' })).toBeNull();
     first.view.unmount();
     const second = setup({}, { permission: 'granted', devices: [mic] });
     expect(await screen.findByRole('option', { name: 'Desk mic' })).toBeInTheDocument();
     expect(second.enumerateDevices).toHaveBeenCalled();
-    await second.user.selectOptions(screen.getByRole('combobox', { name: 'input device' }), 'mic-1');
+    await second.user.selectOptions(screen.getByRole('combobox', { name: 'Input device' }), 'mic-1');
     expect(settingCalls(second.fake).at(-1)).toEqual(['voice.input', 'mic-1']);
   });
 
@@ -97,10 +97,10 @@ describe('Settings → Voice', () => {
     const stream = { getTracks: () => [{ stop: stopped }] } as unknown as MediaStream;
     const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
     const { fake, view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
-    await waitFor(() => expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '12'), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByRole('meter', { name: 'Input level' })).toHaveAttribute('aria-valuenow', '12'), { timeout: 2000 });
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'mic-1' } } });
     act(() => fake.publish('call', callState({ phase: 'in' })));
-    expect(screen.queryByRole('meter', { name: 'input level' })).toBeNull();
+    expect(screen.queryByRole('meter', { name: 'Input level' })).toBeNull();
     expect(screen.getByText('The input meter is paused during calls and microphone tests.')).toBeVisible();
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     view.unmount();
@@ -110,7 +110,7 @@ describe('Settings → Voice', () => {
 
   it('never opens the microphone for the meter before the permission was granted', async () => {
     const { getUserMedia } = setup({}, { permission: 'prompt', devices: [] });
-    await screen.findByRole('meter', { name: 'input level' });
+    await screen.findByRole('meter', { name: 'Input level' });
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(getUserMedia).not.toHaveBeenCalled();
   });
@@ -121,7 +121,7 @@ describe('Settings → Voice: the output device (web3.3 fix round 1, I1)', () =>
   it('offers the output picker where AudioContext can choose an output', () => {
     vi.stubGlobal('AudioContext', class { setSinkId() { return Promise.resolve(); } });
     setup();
-    expect(screen.getByRole('combobox', { name: 'output device' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Output device' })).toBeInTheDocument();
     expect(screen.queryByText('This browser plays voice on the system default device.')).toBeNull();
   });
 
@@ -132,7 +132,7 @@ describe('Settings → Voice: the output device (web3.3 fix round 1, I1)', () =>
     proto.setSinkId = () => Promise.resolve();
     try {
       setup();
-      expect(screen.queryByRole('combobox', { name: 'output device' })).toBeNull();
+      expect(screen.queryByRole('combobox', { name: 'Output device' })).toBeNull();
       expect(screen.getByText('This browser plays voice on the system default device.')).toBeInTheDocument();
     } finally {
       if (!had) delete proto.setSinkId;
@@ -142,9 +142,9 @@ describe('Settings → Voice: the output device (web3.3 fix round 1, I1)', () =>
 
 it('keeps legacy On on Lightweight and offers Automatic explicitly', async () => {
   const {fake,user}=setup({'voice.noise':'on'});
-  expect(screen.getByRole('radio',{name:'lightweight'})).toHaveAttribute('aria-checked','true');
+  expect(screen.getByRole('radio',{name:'Lightweight'})).toHaveAttribute('aria-checked','true');
   expect(settingCalls(fake)).toHaveLength(0);
-  await user.click(screen.getByRole('radio',{name:'automatic'}));
+  await user.click(screen.getByRole('radio',{name:'Automatic'}));
   expect(settingCalls(fake).at(-1)).toEqual(['voice.noise','automatic']);
 });
 
@@ -153,7 +153,7 @@ describe('Settings → Voice grammar', () => {
   it('puts the microphone test in the Mic test group', () => {
     const { view } = setup();
     const group = screen.getByRole('region', { name: 'Mic test' });
-    expect(group).toContainElement(screen.getByRole('button', { name: 'test microphone' }));
+    expect(group).toContainElement(screen.getByRole('button', { name: 'Test microphone' }));
     expect(group.querySelector('[data-setting="voice-test"]')).not.toBeNull();
     expect(view.container.querySelectorAll('.d-voice-settings__group')).toHaveLength(4);
   });

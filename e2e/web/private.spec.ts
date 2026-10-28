@@ -272,14 +272,8 @@ test('private channels run from an empty instance: create, gain, lose, make priv
     // Ada still sees #general public: nothing was changed.
     await expect(channelRow(page, 'general')).toBeVisible();
 
-    // 6. Björn mutes "Midgard Crew" in Settings, Notifications: his #general row reads as muted.
-    const prefs = await openAppSettings(page2, 'notifications');
-    const mute = prefs.getByRole('switch', { name: copy('serverNotify.mute'), exact: true });
-    await expect(mute).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
-    await mute.click();
-    await expect(mute).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
-    await closeAppSettings(page2);
-    await expect(channelRow(page2, 'general')).toHaveAccessibleName(copy('shell.channels.rowLabelMuted', { name: 'general', mentions: 0 }), { timeout: WAIT });
+    // 6. (Signal task 10 fix round 1: muting a whole server left Settings → Notifications with its per-server rows; the
+    // step that muted "Midgard Crew" there is gone. A channel mutes from its row's menu, badges.spec.ts.)
     await guard.collectWorkers();
   } finally {
     await second.close();

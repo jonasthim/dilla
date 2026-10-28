@@ -229,6 +229,23 @@ describe('SettingsFrame', () => {
     expect(seen.at(-1)).toBe('false:false:0');
   });
 
+  // Signal task 10 fix round 1: the user's and a server's settings are one workspace; swapping frames in one commit keeps
+  // the entrance still and hands the opener over, so closing the second frame still returns focus there.
+  it('hands its opener to a frame that replaces it in the same commit, without replaying the entrance', () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'gear';
+    document.body.append(opener);
+    opener.focus();
+    const { rerender } = render(<SettingsFrame key="user" {...props()} />);
+    rerender(<SettingsFrame key="server" {...props()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    expect(dialog).toHaveAttribute('data-handoff', 'true');
+    expect(opener).not.toHaveFocus();
+    rerender(<SettingsFrame key="server" {...props({ open: false })} />);
+    expect(opener).toHaveFocus();
+    opener.remove();
+  });
+
   it('renders no content while closed', () => {
     render(<SettingsFrame {...props({ open: false })} />);
     expect(screen.queryByRole('dialog')).toBeNull();

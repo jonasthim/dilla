@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { PERM } from '@dilla/client-core';
+import { PERM, SETTINGS } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, DmSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner,
@@ -10,7 +10,8 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
-import { baseRoute, goBack, subscribeCommittedTraversal, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
+import { baseRoute, goBack, subscribeCommittedTraversal, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route, type SettingsSection } from '../router.ts';
+import { searchSettings } from '../settings/registry.ts';
 import { phoneNow, readPaneWidths, rememberedTab, rememberTab, usePhoneLayout, writePaneWidths, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, formatTime, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
@@ -21,7 +22,7 @@ import type { ProfileOpener } from './conversation/MessageItem.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
 import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
-import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, type PaletteProvider } from './palette.ts';
+import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, settingsProvider, type PaletteProvider } from './palette.ts';
 import { messageTime } from './shell-model.ts';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
@@ -1165,6 +1166,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     // Web3.8 (WS8): the gear sits beside the server's name (leave and delete live in server settings); the phone adds search.
     // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
     // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
+    // Signal task 10 fix round 1: Settings → Notifications keeps only the prototype's rows, so muting a channel or a
+    // conversation moves to its row's context menu (Ruling X's invisible route). The stored key is the one it always was.
+    const muted = (id: string) => settings?.[SETTINGS.muteChannel(id)] === '1';
+    const muteItem = (id: string) => ({ id: 'mute', label: t(muted(id) ? 'notify.unmute' : 'notify.mute') });
+    const toggleMute = (id: string) => {
+      client.call({ m: 'setSetting', key: SETTINGS.muteChannel(id), value: muted(id) ? null : '1' }).catch(report);
+    };
     const openDmPicker = () => {
       if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
       setPickerOpen(true);
@@ -1220,9 +1228,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           label: (name: string) => t('nav.channel.menuOf', { name }),
           items: (id: string) => {
             const start = dmCallStart(voiceCtx, id);
-            return [...(start === null ? [] : [{ id: 'call', label: start.label }]), { id: 'pins', label: t('shell.pins.open') }];
+            return [...(start === null ? [] : [{ id: 'call', label: start.label }]), { id: 'pins', label: t('shell.pins.open') }, muteItem(id)];
           },
           onSelect: (id: string, item: string) => {
+            if (item === 'mute') { toggleMute(id); return; }
             if (item === 'call') {
               dmCallStart(voiceCtx, id)?.onStart();
               if (id !== dmId) void navigate({ name: 'dm', channelId: id });
@@ -1236,8 +1245,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           label: (name: string) => t('nav.channel.menuOf', { name }),
           // Fix round 1 (Jonas): a voice row's menu holds the call code while this device is in its call (the stage has none).
           items: (id: string) => voiceRooms[id] !== undefined ? (callCodeOf(id) === null ? [] : [{ id: 'code', label: t('voice.code') }])
-            : [{ id: 'pins', label: t('shell.pins.open') }, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
+            : [{ id: 'pins', label: t('shell.pins.open') }, muteItem(id), ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
           onSelect: (id: string, item: string) => {
+            if (item === 'mute') { toggleMute(id); return; }
             if (item === 'code') { setCodeFor(id); return; }
             if (item === 'edit') { setEditChannelId(id); return; }
             if (id === openId) { dispatch({ type: 'pins', open: true }); return; }
@@ -1464,6 +1474,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
 
+  // Signal task 10 fix round 1: settings are searched from ⌘K (the merge of lanes 9 and 10: a provider of lane 9's palette).
+  // The user's sections, then the selected server's allowed ones; picking one opens its section (anchors are not focused).
+  const openSetting = (scope: 'user' | 'server', section: string): boolean => {
+    leaveSearchLayer();
+    searchOpener.current = null;
+    if (scope === 'server' && communityId !== null) void navigate({ name: 'serverSettings', communityId, section: section as AdminTab, from: null });
+    else void navigate({ name: 'settings', section: section as SettingsSection, from: null });
+    return true;
+  };
+  const settingsPalette = settingsProvider(query => [
+    ...searchSettings('user', query).map(r => ({ id: `user|${r.section.id}|${r.anchor ?? ''}`, label: r.label, breadcrumb: r.breadcrumb,
+      run: () => openSetting('user', r.section.id) })),
+    ...(communityId === null || access?.loaded !== true ? [] : searchSettings('server', query, access)
+      .map(r => ({ id: `server|${r.section.id}|${r.anchor ?? ''}`, label: r.label,
+        breadcrumb: `${community?.name ?? t(r.section.group)} / ${t(r.section.labelKey)}`, run: () => openSetting('server', r.section.id) }))),
+  ]);
   const searchHits: SearchHitView[] = (search?.hits ?? []).map(hit => {
     const location = hit.communityId === null ? dms?.find(row => row.id === hit.channelId)?.name
       : (railSlices.flat() as ChannelSummary[]).find(row => row.id === hit.channelId)?.name;
@@ -1485,6 +1511,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       searchOpener.current = null;
       return true;
     }),
+    settingsPalette,
     messagesProvider((searchRequest === (search?.requestId ?? 0) ? searchHits : []).map(hit => ({
       id: hit.id, snippet: hit.snippet, location: hit.communityId === null ? hit.location : `#${hit.location}`, current: hit.channelId === targetId,
       ...(hit.author === undefined ? {} : { author: hit.author }), ...(hit.ts === undefined ? {} : { time: messageTime(hit.ts, paletteNow) }),
@@ -1912,7 +1939,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onTab={section => void navigate({ name: 'serverSettings', communityId: adminFor, section, from: null }, !phone || section === null)}
     onClose={closeSettings} announce={announce} activity={settingsActivity} activityVisible={settingsActivityVisible}
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
-  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} activityVisible={settingsActivityVisible} /> : adminPage;
+  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} activityVisible={settingsActivityVisible} communityId={communityId} /> : adminPage;
   return (
     <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate: route => { void navigate(route); }, openThread, openSearch: openCommandSearch }} handlers={commandHandlers} suggest={commandSuggest}>
     <>

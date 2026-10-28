@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Command, DeviceSummary } from '@dilla/client-core';
-import { Banner, Button, DeviceRow, Dialog, SettingsRow } from '@dilla/ui';
+import { Banner, Button, DeviceRow, Dialog } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -9,13 +9,12 @@ import { messageTime } from '../shell-model.ts';
 import { suggestDeviceName } from './device-name.ts';
 import { RenameDialog } from './RenameDialog.tsx';
 import { KeyDialog } from './KeyDialog.tsx';
-import { SignOutAction } from './SignOut.tsx';
-import { useSettingsPendingOperation, useSettingsWorkspace } from '../../settings/edit-state.tsx';
+import { useSignOut } from './SignOut.tsx';
 
 const TITLE_ID = 'devices-title';
 
 type Target = { kind: 'revoke'; deviceId: string } | { kind: 'removeUnlisted'; deviceId: string }
-  | { kind: 'rename'; deviceId: string } | { kind: 'forget' } | null;
+  | { kind: 'rename'; deviceId: string } | null;
 
 function byId(a: DeviceSummary, b: DeviceSummary): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -44,25 +43,23 @@ function suggestedName(): string {
 /**
  * Settings → Devices (flow 03; Q13, rulings 17, 30, 33). It asks the worker for a fresh list once per mount. A
  * listed device is removed with the recovery key; a live device in no signed list is removed without it (the
- * worker decides from its own refreshed list, so this page's choice of dialog grants nothing). After a sign-out
- * or a forget the worker wipes the store and publishes `cleared`, which the App answers with a reload: nothing
+ * worker decides from its own refreshed list, so this page's choice of dialog grants nothing). This browser's row
+ * signs out (Signal task 10 fix round 1, the prototype's row); after a sign-out the worker wipes the store and publishes `cleared`, which the App answers with a reload: nothing
  * here navigates. After a removal the opener's row has no button any more, so focus goes to the heading.
  */
 export function Devices(): React.JSX.Element {
   const client = useCore();
   const devices = useSlice('devices');
   const account = useSlice('account');
-  const workspace = useSettingsWorkspace();
+  const signOut = useSignOut();
   const [target, setTarget] = useState<Target>(null);
   const [loadError, setLoadError] = useState<UiError | null>(null);
   const [plainBusy, setPlainBusy] = useState(false);
-  const [forgetPending, setForgetPending] = useState(false);
   const [plainError, setPlainError] = useState<UiError | null>(null);
   const plainRunning = useRef(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   // Set by a resolved removal; read once the dialog has closed (its own close effect runs first, as a child's).
   const focusHeading = useRef(false);
-  useSettingsPendingOperation(forgetPending);
 
   const refresh = useCallback(() => {
     setLoadError(null);
@@ -80,11 +77,6 @@ export function Devices(): React.JSX.Element {
     setPlainError(null);
     setTarget(next);
   };
-  const requestForget = () => {
-    const openDialog = () => choose({ kind: 'forget' });
-    if (workspace) void workspace.requestNavigation(openDialog);
-    else openDialog();
-  };
   const close = () => { if (!plainRunning.current) setTarget(null); };
 
   const confirmPlain = async (command: Command, removal: boolean) => {
@@ -92,7 +84,6 @@ export function Devices(): React.JSX.Element {
     plainRunning.current = true;
     setPlainBusy(true);
     setPlainError(null);
-    if (command.m === 'forgetBrowser') setForgetPending(true);
     try {
       await client.call(command);
       if (removal) focusHeading.current = true;
@@ -100,16 +91,12 @@ export function Devices(): React.JSX.Element {
     } catch (e) {
       setPlainError(errorOf(e));
     } finally {
-      if (command.m === 'forgetBrowser') setForgetPending(false);
       plainRunning.current = false;
       setPlainBusy(false);
     }
   };
 
   const ordered = devices === undefined ? [] : orderDevices(devices);
-  const live = devices?.filter(d => d.revokedAt === null).length;
-  const count = live === undefined ? t('devices.cap.other', { n: t('shell.status.unknown') })
-    : live === 1 ? t('devices.cap.one') : t('devices.cap.other', { n: live });
   const now = Date.now();
 
   // The name dialog starts on the current name; this browser without one starts on "Firefox on Linux" and the like.
@@ -127,7 +114,7 @@ export function Devices(): React.JSX.Element {
   const revokeId = target?.kind === 'revoke' ? target.deviceId : null;
   const unlistedId = target?.kind === 'removeUnlisted' ? target.deviceId : null;
   const plainBanner = plainError === null ? null : <Banner tone="danger">{t('settings.error.other', { code: plainError.code })}</Banner>;
-  const plainConfirm = (label: 'devices.confirmRevoke' | 'devices.confirmForget', onPress: () => void) => (
+  const plainConfirm = (label: 'devices.confirmRevoke', onPress: () => void) => (
     <Button variant="danger" onClick={onPress} {...(plainBusy ? { 'aria-disabled': true } : {})}>
       {plainBusy ? t('devices.working') : t(label)}
     </Button>
@@ -148,26 +135,18 @@ export function Devices(): React.JSX.Element {
       <ul className="dw-device-list">
         {ordered.map(d => (
           <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} idHint={d.label === null ? undefined : d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
-            tierLabel={t(d.tier === 1 ? 'devices.tier.web' : 'devices.tier.native')}
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}
             state={d.revokedAt !== null ? t('devices.revoked') : !d.listed ? t('devices.unlisted') : undefined}
             lastSeen={d.lastSeen > 0 ? t('devices.lastSeen', { when: messageTime(d.lastSeen, now) }) : undefined}
             extraAction={d.revokedAt === null ? { label: t('devices.rename'), onAction: () => choose({ kind: 'rename', deviceId: d.id }) } : undefined}
-            action={d.revokedAt === null && !d.own ? {
+            // README §5.9: this browser's row signs out (the prototype's plain button); every other live device is removed.
+            action={d.revokedAt !== null ? undefined : d.own ? { label: t('workspace.signOut'), onAction: signOut.requestOpen } : {
               label: t('devices.revoke'), danger: true,
               onAction: () => choose(d.listed ? { kind: 'revoke', deviceId: d.id } : { kind: 'removeUnlisted', deviceId: d.id }),
-            } : undefined} />
+            }} />
         ))}
       </ul>
-      <SettingsRow id="devices-count" icon="monitor-smartphone" label={count}>
-        <Button size="sm" onClick={refresh}>{t('devices.refresh')}</Button>
-      </SettingsRow>
-      <SettingsRow id="devices-signout" icon="log-out" label={t('devices.signOutTitle')}>
-        <SignOutAction />
-      </SettingsRow>
-      <SettingsRow id="devices-forget" icon="trash-2" label={t('devices.forgetTitle')}>
-        <Button onClick={requestForget}>{t('devices.forget')}</Button>
-      </SettingsRow>
+      {signOut.dialog}
 
       <KeyDialog open={revokeId !== null} id="devices-revoke" subject={subjectOf(revokeId)} title={t('devices.revokeTitle')} body={t('devices.revokeBody')}
         confirmLabel={t('devices.confirmRevoke')} onClose={() => setTarget(null)}
@@ -185,11 +164,6 @@ export function Devices(): React.JSX.Element {
         {plainBanner}
         <p className="dw-device-subject">{subjectOf(unlistedId)}</p>
         <p>{t('devices.removeUnlistedBody')}</p>
-      </Dialog>
-      <Dialog open={target?.kind === 'forget'} title={t('devices.forgetTitle')} closeLabel={t('dialog.close')} onClose={close}
-        footer={plainConfirm('devices.confirmForget', () => { void confirmPlain({ m: 'forgetBrowser' }, false); })}>
-        {plainBanner}
-        <p>{t('devices.forgetBody')}</p>
       </Dialog>
     </section>
   );

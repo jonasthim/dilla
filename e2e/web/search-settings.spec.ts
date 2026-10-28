@@ -66,22 +66,23 @@ test('Privacy, Keyboard and Diagnostics use the phone settings index and return 
   }
 });
 
-test('settings search opens a registry result and focuses its setting anchor', async ({ page, peer, instanceName }) => {
+// Signal task 10 fix round 1 (Jonas): settings search moved from the workspace to the ⌘K palette.
+test('the search palette finds a setting and opens its section', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
-  const settings = await openSettings(page, 'profile');
-  const search = settings.getByRole('searchbox', { name: copy('workspace.search'), exact: true });
-  await search.fill('microphone test');
-  const result = settings.getByRole('button', { name: /Voice.*Preferences \/ Voice/u });
+  await page.keyboard.press('ControlOrMeta+k');
+  const query = page.getByRole('combobox', { name: copy('search.placeholder'), exact: true });
+  await query.fill('microphone test');
+  const result = page.getByRole('option', { name: new RegExp(`${copy('workspace.group.you')} / ${copy('workspace.voice')}`) }).first();
   await expect(result).toBeVisible({ timeout: WAIT });
-  await expect(result).toContainText(copy('workspace.voice'));
-  await search.press('Enter');
+  await result.click();
   await expect(page).toHaveURL('/settings/voice', { timeout: WAIT });
-  await expect(settings.getByRole('heading', { name: copy('workspace.voice'), exact: true })).toBeFocused();
+  const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
+  await expect(settings.getByRole('heading', { name: copy('settings.voice.section'), exact: true })).toBeVisible();
   await closeSettings(page);
 });
 
@@ -255,7 +256,8 @@ test('settings rows align their controls, and the sign-out button holds its text
   expect(new Set(signin.map(c => c.x + c.width)).size, 'one control right edge in Sign-in').toBe(1);
   await closeSettings(page);
   dialog = await openSettings(page, 'devices');
-  const out = dialog.locator('.d-settings-row__control').getByRole('button', { name: copy('devices.signOut'), exact: true }).first();
+  // Signal task 10 fix round 1: Sign out is on this browser's own device row (README §5.9).
+  const out = dialog.locator('.d-device-row__actions').getByRole('button', { name: copy('workspace.signOut'), exact: true }).first();
   await expect(out).toBeVisible({ timeout: WAIT });
   const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-settings-row__control')?.getBoundingClientRect().right ?? 0) + 1);
   expect(fits, 'the sign-out label is inside its button and its column').toBe(true);

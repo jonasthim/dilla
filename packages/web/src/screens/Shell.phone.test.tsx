@@ -162,18 +162,19 @@ describe('the phone shell: pushed views', () => {
   it('a channel row\'s context menu on the list holds pins, and edit channel for a person who may (Ruling X)', async () => {
     const { user, client } = phone({ path: `/c/${A}` });
     let menu = await openRowMenu(user, 'lobby');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open')]);
+    // Signal task 10 fix round 1: Mute moved from Settings → Notifications into the row's menu.
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('notify.mute')]);
     await user.keyboard('{Escape}');
     manage(client);
     menu = await openRowMenu(user, 'lobby');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('admin.channel.open')]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('notify.mute'), t('admin.channel.open')]);
   });
 
   // Ruling Z: a DM's phone header is back, name, topic and Search; its pins (and call) are in the DM row's context menu.
   it('opens a DM as a pushed view whose header has search alone; pins are in its row menu', async () => {
     const { user } = phone({ path: '/dm' });
     let menu = await openRowMenu(user, 'bob', 'dms');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('call.start'), t('shell.pins.open')]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('call.start'), t('shell.pins.open'), t('notify.mute')]);
     await user.keyboard('{Escape}');
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
@@ -724,7 +725,7 @@ describe('the phone shell: one channel list (web3.8 item 12)', () => {
     expect(within(nav).getByRole('button', { name: 'voice general' })).toBeInTheDocument();
     expect(within(nav).getByRole('button', { name: /^lobby/ })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'active voice' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'voice' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Voice' })).toBeNull();
     expect(document.querySelector('.d-active-voice, .dw-voice-section')).toBeNull();
     expect(nav.querySelectorAll('ul[role="list"]:not(.d-voice-row__people)').length).toBe(1);
   });

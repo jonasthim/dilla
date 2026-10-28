@@ -1947,9 +1947,17 @@ describe('the channel header actions (web3.9)', () => {
   it('the channel row\'s context menu holds pins and edit channel (Ruling X), and pins opens them', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const menu = await openRowMenu(user, 'general');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['admin.channel.open']]);
+    // Signal task 10 fix round 1: Mute moved from Settings → Notifications into the row's menu.
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['notify.mute'], en['admin.channel.open']]);
     await user.click(within(menu).getByRole('menuitem', { name: en['shell.pins.open'] }));
     await waitFor(() => expect(fake.callsOf('loadPins')).toHaveLength(1));
+  });
+  // Signal task 10 fix round 1: muting a channel lives in its row's menu (Settings → Notifications keeps the prototype's rows).
+  it('the row menu mutes a channel with mute.channel.<hex>', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const menu = await openRowMenu(user, 'general');
+    await user.click(within(menu).getByRole('menuitem', { name: en['notify.mute'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `mute.channel.${GEN}`, value: '1' }));
   });
   it('pins from the row of another channel open that channel, then its pins', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
@@ -1963,7 +1971,7 @@ describe('the channel header actions (web3.9)', () => {
   it('a member without manage channels has no edit action, in the bar or the row menu', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
     const menu = await openRowMenu(user, 'general');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open']]);
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['notify.mute']]);
     await user.keyboard('{Escape}');
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });

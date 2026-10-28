@@ -81,6 +81,11 @@
  *   icons/skip-forward.svg  f6bdc4b8d453332bafcf1366a48d5ece4bd4f15eced97c85c3676bd22c5cadf9
  *   icons/list-music.svg  e86c9d93aab1828013afca1ecc679f9eea432881ea373f97064801b5768d2580
  *   icons/music.svg  8721b8a3594219c1313c4083049e5a5c049f49c47b1cd93fdb61d52a0803e42b
+ *   icons/bot.svg  2f2c5f54b3bebde64e6b512907a47ff02eae0a121b2291df70e9663adec127b0
+ *   icons/palette.svg  2f4d3f7b955a0fbe480ab1fd0fdc892f3af1520b209438db1f3ecbbea699ac0b
+ *   icons/ban.svg  4fdd1a1ec4c5e9a805291cc78a8a3c4e3a961b9ddffddaded7869c33ee303448
+ *   icons/scroll-text.svg  6ee58b7cd70b4e5c8f088532bd4d179401ef523c27ad82c7aed2d3f9e9812150
+ *   icons/user-plus.svg  d240a2837b326aa764cbac57dba3d3edea17dd05d32379eb6a0cd416874936c2
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -494,6 +499,37 @@ export const ICONS = {
     ['path', { d: 'M9 18V5l12-2v13' }],
     ['circle', { cx: '6', cy: '18', r: '3' }],
     ['circle', { cx: '18', cy: '16', r: '3' }],
+  ],
+  'bot': [
+    ['path', { d: 'M12 8V4H8' }],
+    ['rect', { x: '4', y: '8', width: '16', height: '12', rx: '2' }],
+    ['path', { d: 'M2 14h2' }],
+    ['path', { d: 'M20 14h2' }],
+    ['path', { d: 'M15 13v2' }],
+    ['path', { d: 'M9 13v2' }],
+  ],
+  'palette': [
+    ['path', { d: 'M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z' }],
+    ['circle', { cx: '13.5', cy: '6.5', r: '.5' }],
+    ['circle', { cx: '17.5', cy: '10.5', r: '.5' }],
+    ['circle', { cx: '6.5', cy: '12.5', r: '.5' }],
+    ['circle', { cx: '8.5', cy: '7.5', r: '.5' }],
+  ],
+  'ban': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M4.929 4.929 19.07 19.071' }],
+  ],
+  'scroll-text': [
+    ['path', { d: 'M15 12h-5' }],
+    ['path', { d: 'M15 8h-5' }],
+    ['path', { d: 'M19 17V5a2 2 0 0 0-2-2H4' }],
+    ['path', { d: 'M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3' }],
+  ],
+  'user-plus': [
+    ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+    ['line', { x1: '19', y1: '8', x2: '19', y2: '14' }],
+    ['line', { x1: '22', y1: '11', x2: '16', y2: '11' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

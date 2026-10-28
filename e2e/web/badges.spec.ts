@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import {
-  CLASS, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, channelRow, clickNotification, closeSettings, copy, dmComposer,
+  CLASS, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, channelRow, channelRowMenuItem, clickNotification, closeSettings, copy, dmComposer,
   dmLog, dmsNav, expectAccessible, expectComposerReady, expectShell, homeTile, instanceInvite, joinCommunity, messageRow,
   notificationsShown, openChannel, openSettings, permissionRequests, railItem, recordNotifications, sendText,
   setNotifyDefault, shownName, signUp, tag, test, type Peer,
@@ -75,16 +75,8 @@ test('unopened channels badge their unread messages and mentions, opening reads 
   await expect(rail).toHaveAttribute('data-unread', '1', { timeout: WAIT });
 
   // Mute channel three: its count goes, its mention stays.
-  const settings = await openSettings(page, 'notifications');
-  // Task 19's DOM: the per-channel row is a group named `#<channel> · <server>` holding a switch named `notify.mute`.
-  const mute = settings.getByRole('group', { name: `#${three} · ${peer.communityName}`, exact: true })
-    .getByRole('switch', { name: copy('notify.mute'), exact: true });
-  expect(`#${three} · ${peer.communityName}`).toBe(copy('notify.title.channel', { channel: three, server: peer.communityName }));
-  await expect(mute).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
-  await mute.click();
-  await expect(mute).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
-  await expectAccessible(page, 'settings: notifications');
-  await closeSettings(page);
+  // Signal task 10 fix round 1: Settings → Notifications keeps the prototype's rows; a channel mutes from its row's menu.
+  await channelRowMenuItem(page, three, 'notify.mute');
   await expect(row3).toHaveAttribute('data-muted', 'true', { timeout: WAIT });
   await expect(row3).toHaveAttribute('data-unread', '0');
   await expect(row3).toHaveAttribute('data-mentions', '1');
@@ -180,10 +172,11 @@ test('desktop notifications follow the default and the channel on screen', async
   // The browser's permission is shown; nothing asked for one.
   const settings = await openSettings(page, 'notifications');
   await context.grantPermissions(['notifications'], { origin: PUBLIC_URL });
-  await settings.getByRole('button', { name: copy('notify.permission.ask'), exact: true }).click();
-  await expect(settings.getByText(copy('notify.permission.granted'), { exact: true })).toBeVisible({ timeout: WAIT });
-  await expect(settings.getByRole('radiogroup', { name: copy('notify.default.label'), exact: true })
-    .getByRole('radio', { name: copy('notify.default.dmsMentions'), exact: true })).toHaveAttribute('aria-checked', 'true');
+  // Signal task 10 fix round 1 (README §5.9): the permission is asked from the Desktop notifications switch.
+  const desktop = settings.getByRole('switch', { name: copy('notify.desktop.label'), exact: true });
+  await desktop.click();
+  await expect(desktop).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+  await expect(settings.getByRole('radio', { name: copy('notify.mode.mentions'), exact: true })).toHaveAttribute('aria-checked', 'true');
   await closeSettings(page);
   await expect(page).toHaveURL(onChannel(id1), { timeout: WAIT });
   expect(await permissionRequests(page)).toBe(1);

@@ -41,7 +41,7 @@ describe('the copy rules', () => {
     expect(en['onboarding.keys.loss']).toBe('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.');
     expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.');
     expect(en['signin.done.body']).toBe('This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.');
-    expect(en['signin.step']).toBe('Step {n} of 4');
+    expect(en['signin.step']).toBe('Sign in · step {n} of {total}');
     expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');
     expect(en['signin.error.required']).toBe('Fill in this field.');
     expect(en['signin.error.evicted']).toBe('Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.');
@@ -52,12 +52,12 @@ describe('the copy rules', () => {
   it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
     for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.rename', 'devices.refresh',
       'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast',
-      'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
+      'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[A-Z#]/); // Signal task 10: sentence case
     for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
       'devices.forgetTitle', 'devices.keyLabel', 'notify.title', 'appearance.title', 'notify.channels.title'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
     expect(en['notify.title.channel']).toBe('#{channel} · {server}');
     expect(en['devices.cap.other']).toBe('{n} devices');
-    expect(en['devices.cap.one']).toBe('one device');
+    expect(en['devices.cap.one']).toBe('One device');
     // EOD E7: a device can be named; the body says who can read the name.
     expect(en['devices.renameBody']).toBe('The server can change it, so check a device by its id before you remove it.');
     expect(en['devices.renameSuggestion']).toBe('{browser} on {os}');
@@ -66,7 +66,7 @@ describe('the copy rules', () => {
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
     // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(150); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(161); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads; Signal task 10 fix round 1 adds the twelve notify.* of the prototype's rows and drops settings.voice.automaticBeta
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
@@ -132,8 +132,9 @@ describe('flow 06 (L-COPY-05)', () => {
   });
   it('fills each placeholder the flow names and keeps chrome lower case', () => {
     expect(en['voice.paused'].match(/\{name\}/g)).toHaveLength(2);
-    for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
-      'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+    for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+    // Signal task 10: the settings chrome is sentence case.
+    for (const k of ['settings.nav.voice', 'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
   });
   it('MP5: the dock names the channel and shows ping and rates; the flow lists the eight keys, and "voice connected" is gone', () => {
     const table = en as Readonly<Record<string, string>>;

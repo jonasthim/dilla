@@ -72,7 +72,11 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
 }
 /** The pane beside the tab list: "delete server" is both a tab and a button, so a query for the button looks only here. */
 const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame__body')!);
-const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button').map(b => b.textContent);
+// Signal task 10 fix round 1: one workspace nav, "You" then this server; the server's own items are the ones after "You".
+const USER_ITEMS = new Set(['profile', 'signin', 'devices', 'notifications', 'voice', 'keyboard', 'appearance', 'privacy', 'diagnostics']
+  .map(id => (en as Readonly<Record<string, string>>)[`workspace.${id}`]));
+const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button')
+  .map(b => b.textContent).filter(name => !USER_ITEMS.has(name ?? ''));
 
 describe('ServerSettings tabs', () => {
   it('keeps loading feedback and the live announcer accessible on the phone index', () => {

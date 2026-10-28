@@ -10,12 +10,12 @@ const meta = {
     input: '', output: '', canSelectOutput: true, mode: 'vad', pttKey: null, capturing: false, noise: 'automatic', level: 5,
     // The shipped copy (packages/web/src/strings/en.ts, the prototype's Voice page), as Settings → Voice passes it.
     labels: {
-      input: 'input device', output: 'output device', systemDefault: 'system default',
-      outputUnsupported: 'This browser plays voice on the system default device.', mode: 'input mode', vad: 'voice activity', ptt: 'push to talk',
-      pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
+      input: 'Input device', output: 'Output device', systemDefault: 'System default',
+      outputUnsupported: 'This browser plays voice on the system default device.', mode: 'Input mode', vad: 'Voice activity', ptt: 'Push to talk',
+      pttKey: 'Push-to-talk key', pttNone: 'No key set', pttSet: 'Set key',
       pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
       pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
-      noise: 'noise suppression', automatic: 'automatic', lightweight: 'lightweight', off: 'off', level: 'input level',
+      noise: 'Noise suppression', automatic: 'Automatic', lightweight: 'Lightweight', off: 'Off', level: 'Input level',
       devices: 'Devices', test: 'Mic test', inputMode: 'Input mode', processing: 'Processing',
       pttHint: 'Works only while the dilla tab is active. F13–F24, Pause, Scroll Lock or Insert.',
       noiseHints: { automatic: 'Picks the best processor this device can run. Falls back to RNNoise.', lightweight: 'Lower CPU, removes less', off: 'Raw microphone, nothing removed' },
@@ -47,5 +47,5 @@ export const CapturingRefused: Story = {
 };
 /** Firefox: the output follows the system default. */
 export const OutputUnsupported: Story = { args: { canSelectOutput: false, noise: 'off' } };
-/** Automatic while it is a beta (the app's beta build names the option so). */
-export const NoiseBeta: Story = { args: { labels: { ...meta.args.labels, automatic: 'automatic (beta)' } } };
+/** Automatic while it is a beta: the row's BETA tag (the app's beta build, Automatic picked). */
+export const NoiseBeta: Story = { args: { labels: { ...meta.args.labels, noiseTag: 'BETA' } } };

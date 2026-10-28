@@ -10,5 +10,8 @@ export const signalSettings = {
   'signalSettings.voice.noiseHint.automatic': 'Picks the best processor this device can run. Falls back to RNNoise.',
   'signalSettings.voice.noiseHint.lightweight': 'Lower CPU, removes less',
   'signalSettings.voice.noiseHint.off': 'Raw microphone, nothing removed',
+  'signalSettings.voice.noiseTag': 'BETA',
+  'signalSettings.keyboard.search': 'Search',
+  'signalSettings.keyboard.searchChannel': 'Search this conversation',
   'signalSettings.keyboard.body': 'Shortcuts work while the dilla tab is active.',
 } as const;

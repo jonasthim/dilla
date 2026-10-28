@@ -144,7 +144,9 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
   await expectShell(b);
 });
 
-test('forget this browser clears the second browser and leaves its device in the list', async ({ page, second, instanceName }) => {
+// Signal task 10 fix round 1 (Jonas): Settings → Devices draws exactly the prototype's rows; Forget left Settings (it stays in the
+// required-factor screen, required-factor.spec.ts). FIXME(controller): rework against that route or drop.
+test.fixme('forget this browser clears the second browser and leaves its device in the list', async ({ page, second, instanceName }) => {
   const account = await signUp(page, instanceInvite(), instanceName);
   const b = (await second.open()).page;
   await signIn(b, account, instanceName);
@@ -191,7 +193,8 @@ test('sign out and remove takes this browser out of the account and out of the g
   expect(deviceC).toMatch(HEX32);
 
   const settingsC = await openSettings(c, 'devices');
-  await settingsC.getByRole('button', { name: copy('devices.signOut'), exact: true }).click();
+  // Signal task 10 fix round 1 (README §5.9): Sign out is on this browser's own device row.
+  await settingsC.getByRole('button', { name: copy('workspace.signOut'), exact: true }).click();
   const confirm = c.getByRole('dialog', { name: copy('devices.signOutTitle'), exact: true });
   await expect(confirm).toBeVisible({ timeout: WAIT });
   await expectAccessible(c, 'settings: sign out and remove');

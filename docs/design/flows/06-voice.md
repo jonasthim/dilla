@@ -366,17 +366,17 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `media.error='This browser cannot play this file.'`, `media.save='save'`
 
 *Settings:*
-- `settings.nav.voice='voice'`, `settings.voice.section='Voice'`
-- `settings.voice.input='input device'`, `settings.voice.output='output device'`, `settings.voice.systemDefault='system default'`
+- `settings.nav.voice='Voice'`, `settings.voice.section='Voice'`
+- `settings.voice.input='Input device'`, `settings.voice.output='Output device'`, `settings.voice.systemDefault='System default'`
 - `settings.voice.outputUnsupported='This browser plays voice on the system default device.'` (the output picker shows only where `AudioContext.prototype.setSinkId` exists, Chromium; Firefox and Safari show this line and play on the system default; noted 2026-10-14, web3.3)
-- `settings.voice.mode='input mode'`, `settings.voice.vad='voice activity'`, `settings.voice.ptt='push to talk'`
-- `settings.voice.pttKey='push-to-talk key'`, `settings.voice.pttNone='no key set'`, `settings.voice.pttSet='set key'`
+- `settings.voice.mode='Input mode'`, `settings.voice.vad='Voice activity'`, `settings.voice.ptt='Push to talk'`
+- `settings.voice.pttKey='Push-to-talk key'`, `settings.voice.pttNone='No key set'`, `settings.voice.pttSet='Set key'`
 - `settings.voice.pttPrompt='Press the key to use. Escape cancels. It works only while dilla is the active tab.'`
 - `settings.voice.pttRefused='That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.'` (added 2026-10-13, task-7 review M9; reworded 2026-10-13, task-8b review I2; 2026-10-14, WB a11y m2: Insert is no longer suggested, since NVDA and JAWS use it as their modifier key; it is still accepted)
-- `settings.voice.noise='noise suppression'`, `settings.voice.level='input level'`
-- `settings.notify.sounds='sounds'`, `settings.sound.voice='join and leave sounds'`, `settings.sound.ring='ring for calls'`
+- `settings.voice.noise='Noise suppression'`, `settings.voice.level='Input level'`
+- `settings.notify.sounds='Sounds'`, `settings.sound.voice='Join and leave sounds'`, `settings.sound.ring='Ring for calls'`
 - `voice.diag.tracks='hearing {attached} of {expected}'`, `voice.outputFailed='The output device did not change. Call sound plays where it did before.'`
 
 *Keyboard:*
 - `keyboard.mute='Control/⌘+Shift+M'`, `keyboard.deafen='Control/⌘+Shift+D'` (aligned 2026-10-13 to `keyboard.searchAll='Control/⌘+K'`, task-7 review M4)
-- `keyboard.muteAction='mute or unmute'`, `keyboard.deafenAction='deafen or undeafen'`
+- `keyboard.muteAction='Mute or unmute'`, `keyboard.deafenAction='Deafen or undeafen'`

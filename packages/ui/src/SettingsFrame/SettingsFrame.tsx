@@ -53,6 +53,14 @@ function visibleFocusFallback(): HTMLElement | null {
   return null;
 }
 
+/**
+ * The one settings workspace (Signal task 10 fix round 1): the user's and a server's settings are two frames, and moving
+ * between them swaps one for the other in a single commit. The leaving frame hands its opener to the arriving one, which
+ * then neither replays the entrance nor loses where focus returns on close.
+ */
+let handoff: { opener: HTMLElement | null; at: number } | null = null;
+const HANDOFF_MS = 100;
+
 /** A native modal workspace for settings; browser modal behavior keeps the mounted app inert. */
 export function SettingsFrame({
   open, title, closeLabel, onClose, nav, children, footer, identity, search,
@@ -72,7 +80,12 @@ export function SettingsFrame({
     if (!el) return;
     if (open && !el.open) {
       const active = document.activeElement;
-      opener.current = active instanceof HTMLElement && active !== document.body && !el.contains(active) ? active : null;
+      const taken = handoff !== null && performance.now() - handoff.at < HANDOFF_MS ? handoff : null;
+      handoff = null;
+      opener.current = taken !== null ? taken.opener
+        : active instanceof HTMLElement && active !== document.body && !el.contains(active) ? active : null;
+      if (taken !== null) el.dataset.handoff = 'true';
+      else delete el.dataset.handoff;
       el.showModal();
       titleRef.current?.focus();
       // The nav scrolled its current item into view before the dialog was shown; a phone's chip row needs it now (README §5.10).
@@ -96,11 +109,19 @@ export function SettingsFrame({
     target?.focus();
   }, [open, phone, phonePage]);
 
+  // Runs in the commit that unmounts this frame, before an arriving frame's open effect.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    return () => { if (el?.open) handoff = { opener: opener.current, at: performance.now() }; };
+  }, []);
+
   useEffect(() => {
     const el = ref.current;
     return () => {
       if (el?.open) {
         el.close();
+        // Another settings frame took over (the workspace's other scope): focus stays with it.
+        if (document.querySelector('dialog.d-settings-frame[open]') !== null) return;
         const target = opener.current?.isConnected ? opener.current : visibleFocusFallback();
         if (target) {
           if (!target.hasAttribute('tabindex') && !(target instanceof HTMLButtonElement || target instanceof HTMLInputElement || target instanceof HTMLAnchorElement)) target.tabIndex = -1;

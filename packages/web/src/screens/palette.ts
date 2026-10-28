@@ -45,6 +45,19 @@ export function peopleProvider(dms: readonly DmSummary[], line: (d: DmSummary) =
   });
 }
 
+export interface PaletteSetting { id: string; label: string; breadcrumb: string; run: () => boolean }
+/**
+ * Settings (Signal task 10 fix round 1: settings search moved from the workspace to ⌘K): up to 8 sections or rows whose words
+ * hold the query, "{group} / {section}" under each; nothing while the query is empty. Picking one opens its section.
+ */
+export function settingsProvider(search: (query: string) => readonly PaletteSetting[]): PaletteProvider {
+  return q => {
+    if (q === '') return null;
+    return { id: 'settings', label: t('search.group.settings'), items: search(q).slice(0, 8)
+      .map(s => ({ id: `set:${s.id}`, label: s.label, sub: s.breadcrumb, icon: 'settings' as const, run: s.run })) };
+  };
+}
+
 export interface PaletteMessage { id: string; snippet: string; location: string; author?: string; time?: string; current: boolean; run: () => Promise<boolean> }
 /**
  * Messages: the worker's hits for two or more characters, the open conversation's first (the scope is implicit: here, then

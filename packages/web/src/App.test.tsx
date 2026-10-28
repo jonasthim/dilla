@@ -504,7 +504,7 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
     // web3.8 (R6, R7): the login first, then the recovery key, which adds this browser.
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -530,9 +530,9 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
-    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
-    expect(screen.queryByText('Step 4 of 4')).toBeNull();
+    expect(screen.queryByText('Sign in · step 4 of 4')).toBeNull();
   });
   // web3.8 (C1): the held assertion lives only in the worker, so a reload at the key step before the registration boots
   // to needs-signup. The page starts over at onboarding step 1, and the entry leads to the login, not to the key.
@@ -553,7 +553,7 @@ describe('App sign-in', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Username' })).toHaveValue('');
   });
 });
