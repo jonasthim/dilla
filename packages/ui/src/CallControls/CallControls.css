@@ -55,3 +55,39 @@
 .d-voice-toolbar__keys { font: inherit; color: var(--fg-2); }
 
 .d-call-controls { justify-content: center; }
+
+/* Signal's call bar (§5.6, `labels.bar`): 40px controls 6px apart, each the glyph (16px), its word (11.5px) and, for mute and
+   deafen, the shortcut (10px at 0.6); idle on --surface-tile with a --hairline-2 edge, 7px corners. A toggled-on mute or
+   deafen is the --danger tint (the 0.1 fill, the 0.45 edge, --danger glyph and word); Camera and a live Share are --accent with
+   --accent-ink. Leave is set 8px apart, --danger with --danger-ink, 700. Below a 1240px window the words and shortcuts are
+   hidden (they still name the controls); on the phone only the glyphs show, Leave's word too. The tooltip shows only then. */
+.d-call-controls--bar { flex-wrap: nowrap; align-items: center; gap: 0.375rem; }
+.d-call-controls--bar .d-voice-toolbar__divider { display: none; }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn {
+  gap: 0.5rem; height: 2.5rem; min-height: 0; min-width: 2.75rem; padding: 0 0.75rem; box-sizing: border-box; justify-content: center;
+  font-size: var(--text-btn); color: var(--fg); background: var(--surface-tile); border: 1px solid var(--hairline-2); border-radius: var(--r-seg);
+  box-shadow: none; transition: all var(--duration-fast);
+}
+.d-call-controls--bar .d-voice-toolbar__control.d-btn:hover { background: var(--surface-tile); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn:active:not([aria-disabled="true"]) { transform: scale(0.96); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn > .d-btn__label { display: inline-flex; align-items: center; gap: 0.5rem; }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-on="true"] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-tint="accent"][data-on="true"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-variant="danger"] {
+  margin-left: 0.5rem; padding: 0 0.875rem; font-weight: var(--weight-display); color: var(--danger-ink); background: var(--danger); border: 0;
+}
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-variant="danger"]:hover { background: var(--danger-hover); }
+.d-voice-toolbar__keycap { font-size: var(--text-micro); opacity: 0.6; }
+.d-call-controls--bar .d-voice-toolbar__control[aria-disabled="true"] { border-style: dashed; }
+@media (max-width: 77.49rem) {
+  .d-call-controls--bar .d-voice-toolbar__control:not([data-variant="danger"]) :is(.d-voice-toolbar__text, .d-voice-toolbar__keycap) {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
+@media (min-width: 77.5rem) {
+  .d-call-controls--bar .d-voice-toolbar__tip { display: none; }
+}
+[data-layout="phone"] .d-call-controls--bar { flex-wrap: wrap; justify-content: center; }
+[data-layout="phone"] .d-call-controls--bar .d-voice-toolbar__control :is(.d-voice-toolbar__text, .d-voice-toolbar__keycap) {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}

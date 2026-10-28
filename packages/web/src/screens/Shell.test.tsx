@@ -797,8 +797,8 @@ describe('selection', () => {
   });
   it('shows a voice channel as its voice view, with no timeline and no composer (web-3)', () => {
     const { fake } = setup(`/c/${A}/${VOICE}`);
-    expect(within(screen.getByRole('main')).getByRole('button', { name: 'join voice' })).toBeInTheDocument();
-    expect(within(screen.getByRole('main')).getByText('Nobody is in voice yet.')).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByRole('button', { name: 'Join voice' })).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByText('Nobody is here yet')).toBeInTheDocument();
     expect(screen.queryByRole('log')).toBeNull();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(fake.callsOf('openChannel')).toEqual([]);

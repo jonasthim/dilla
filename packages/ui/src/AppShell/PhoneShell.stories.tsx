@@ -23,6 +23,8 @@ import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { GeneralLog, SignalComposer } from '../MessageRow/conversation.fixture.tsx';
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
+import { HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
+import '../../../web/src/app.css';
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
@@ -282,7 +284,7 @@ export const ChannelViewInCall: Story = {
 };
 // A ring shows above the list pane, whose main is hidden.
 const ring = (
-  <RingBanner rings={[{ callId: 'c1', text: 'ada is calling', busy: false }]} labels={{ region: 'incoming calls', answer: 'answer', decline: 'decline' }} onAnswer={noop} onDecline={noop} />
+  <RingBanner rings={[{ callId: 'c1', text: 'ada is calling', busy: false, name: 'ada' }]} labels={{ region: 'incoming calls', answer: 'answer', decline: 'decline' }} onAnswer={noop} onDecline={noop} />
 );
 export const RingOnList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')} ring={ring}>{null}</AppShell></Phone>,
@@ -341,4 +343,21 @@ export const SignalConversation: Story = {
   globals: { theme: 'signal' },
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
     header={signalPhoneHeader} composer={<SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}><GeneralLog /></AppShell></Phone>,
+};
+
+// Task 8 (rule 3e): the phone on the joined voice channel harbour as Shell.tsx composes it: the phone voice header (back, the
+// name and "6 in voice"), VoiceView's stage without its own header (a focused share over the 150px filmstrip, the call bar's
+// icons centred), the tab bar.
+const voiceHeader = <ChannelHeader kind="voice" name="harbour" topic="6 in voice" phone={{ backLabel: 'back to channels', onBack: noop }} />;
+export const SignalVoice: Story = {
+  globals: { theme: 'signal' },
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
+    header={voiceHeader}><div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">
+      <HarbourStage header={false} tiles={harbourTiles('Björn')} focus="d-Ada:screen" /></div></div></AppShell></Phone>,
+};
+export const SignalVoiceGrid: Story = {
+  globals: { theme: 'signal' },
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
+    header={voiceHeader}><div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">
+      <HarbourStage header={false} tiles={harbourTiles()} focus={null} /></div></div></AppShell></Phone>,
 };

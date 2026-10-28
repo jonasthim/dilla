@@ -539,7 +539,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   await micLive(b);
   await expect(panelMute(b)).toHaveAttribute('aria-pressed', 'false');
   await expect(stage(b.page).locator('.d-call-tile[data-own] .d-call-tile__state[data-state="muted"]')).toHaveCount(0, { timeout: WAIT });
-  const mute = stage(b.page).getByRole('button', { name: copy('voice.mute'), exact: true });
+  const mute = stage(b.page).locator('[data-control="mute"]');
   await expect(mute).not.toHaveAttribute('aria-disabled', 'true');
   // R-AW4: his admission cleared his away row everywhere.
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
@@ -556,7 +556,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   await expect(stage(a.page).locator('.dw-afk-roster .d-voice-row__person').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
   await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible();
   await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
-  await expect(button(stage(a.page), 'voice.join')).toHaveCount(0);
+  await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK channel with its away roster');
   // A second click while away does nothing (no second PUT, no call).
   const puts = a.awayPuts;
@@ -586,7 +586,7 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
       && body !== null && body.length === 19 && body[0] === 0x82 && body[18] === 0x01;
   } });
   // On a phone a voice row opens the stage (no one-click join, R24): join from the stage.
-  await button(stage(ph.page), 'voice.join').click();
+  await button(stage(ph.page), 'callStage.preview.join').click();
   expect((await (await exempt).response())?.status(), 'the exempt report').toBe(204);
   // A phone has no dock (flow 12): the stage's phase says it is in.
   await expect(phaseOf(ph.page)).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
@@ -718,7 +718,8 @@ test('9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge a
   await voiceRow(b.page, 'lounge').click();
   await connected(b.page);
   await sendsAudio(b);
-  await button(dock(b.page), 'voice.leave').click();
+  // Signal §5.6: on the joined channel's stage the dock draws nothing; leave from the call bar.
+  await stage(b.page).locator('[data-control="leave"]').click();
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
 
   // The old Idle is a plain voice channel too: it has its delete and its permissions; only the new AFK has neither.
@@ -757,7 +758,7 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   // The AFK page opened by its path (no click on the row): nobody is away yet, and go AFK stands in place of join voice.
   await a.page.goto(`/c/${communityId}/${afkId}`);
   await expect(stage(a.page).getByText(copy('afk.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
-  await expect(button(stage(a.page), 'voice.join')).toHaveCount(0);
+  await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK page with nobody away');
   const posts = a.afkPosts;
   await button(stage(a.page), 'afk.go').click();

@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallControls } from './CallControls.tsx';
+import { HarbourStage, personTile, stageControls } from '../CallStage/stage.fixture.tsx';
 
 /**
  * Flow 06 and task 7 step 3: every voice or player control (button, disclosure summary, volume range) is at least
@@ -7,7 +8,8 @@ import { CallControls } from './CallControls.tsx';
  */
 export function expectVoiceTargets(root: HTMLElement, story: string): void {
   const min = window.innerWidth < 768 ? 44 : 40;
-  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]'))) {
+  // Signal (rule 0): the call bar's controls and the tile tools are the prototype's sizes, measured in scripts/story-a11y.ts instead.
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]')).filter(e => e.closest('.d-call-controls--bar, .d-call-tile__tools, .d-call-stage__code') === null)) {
     if (el.getClientRects().length === 0) continue; // not drawn (a phone-only control on a desktop width): no target
     const r = el.getBoundingClientRect();
     const range = el instanceof HTMLInputElement;
@@ -77,3 +79,18 @@ export const TooltipOnFocus: Story = {
     expectTipTakesNoPointer(canvasElement, 'CallControls');
   },
 };
+
+// ---- Signal §5.6: the call bar (the web's channel stage passes `labels.bar`): 40px controls with their words and keycaps ----
+/** The call bar as it ends the stage (the prototype's stove, joined): the room, the stats, the controls. */
+const inBar = (controls: React.ReactNode) => (
+  <div style={{ width: 980, height: 756, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)', background: 'var(--bg)', margin: -16 }}>
+    <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1" controls={controls}
+      tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)' })]} />
+  </div>
+);
+const barPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => { expectOneRow(canvasElement, 'CallBar'); };
+export const Default: Story = { render: () => inBar(stageControls()), play: barPlay };
+export const Muted: Story = { render: () => inBar(stageControls({ muted: true })), play: barPlay };
+export const Deafened: Story = { render: () => inBar(stageControls({ muted: true, deafened: true })), play: barPlay };
+export const CameraOn: Story = { render: () => inBar(stageControls({ camera: true })), play: barPlay };
+export const Sharing: Story = { render: () => inBar(stageControls({ sharing: true })), play: barPlay };

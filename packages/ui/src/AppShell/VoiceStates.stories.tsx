@@ -53,7 +53,10 @@ function controls(p: { paused?: boolean; busy?: boolean; dm?: boolean } = {}) {
     <CallControls muted={false} deafened={false} camera={false} sharing={false} canCamera={p.paused !== true} canShare={p.paused !== true}
       busy={p.busy === true}
       labels={{ region: t(p.dm === true ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
-        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'),
+        ...(p.dm === true ? {} : { bar: { mute: t('callStage.bar.mute'), unmute: t('callStage.bar.unmute'), deafen: t('callStage.bar.deafen'),
+          undeafen: t('callStage.bar.undeafen'), camera: t('callStage.bar.camera'), share: t('callStage.bar.share'), stopShare: t('callStage.bar.stopShare'),
+          leave: t('callStage.bar.leave') } }) }}
       onMute={noop} onDeafen={noop} onCamera={noop} onShare={noop} onLeave={noop} />
   );
 }
@@ -74,7 +77,7 @@ function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', ann
 
 const ring = (busy: boolean) => (
   <div className="dw-ring" data-doc-state="call-ring">
-    <RingBanner rings={[{ callId: 'r1', busy, text: busy ? t('call.ring.busy', { name: 'eve', where: 'harbour' }) : t('call.ring.incoming', { name: 'eve' }) }]}
+    <RingBanner rings={[{ callId: 'r1', busy, name: 'eve', text: busy ? t('call.ring.busy', { name: 'eve', where: 'harbour' }) : t('call.ring.incoming', { name: 'eve' }) }]}
       labels={{ region: t('call.ring.region'), answer: t('call.ring.answer'), decline: t('call.ring.decline') }} onAnswer={noop} onDecline={noop} />
   </div>
 );
@@ -118,8 +121,13 @@ const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgo
       tiles={p.empty === true ? p.joined === false ? [] : [tile(person('you'), true)]
         : p.joined === false ? [tile(ADA), tile(BO), tile(HELPER)] : [tile(person('you'), true), tile(ADA), tile(BO), tile(HELPER)]}
       code={p.code ?? null} notice={p.notice ?? null} outgoing={p.outgoing !== undefined ? { text: p.outgoing } : null}
+      // Task 8: a channel not joined is the preview (VoiceView), a joined channel ends in the call bar; the AFK page and a DM keep theirs.
+      {...(p.joined === false && p.afk !== true && p.dm !== true ? { preview: { name: 'harbour', join: p.notice?.kind === 'blocked' ? null : { label: t('callStage.preview.join'), onJoin: noop },
+        text: p.empty === true ? t('callStage.preview.nobody') : t('callStage.preview.many', { names: ['ada', 'bo', 'helper'].join(t('callStage.preview.and')) }),
+        people: p.empty === true ? [] : [ADA, BO, HELPER].map(v => ({ id: v.deviceId, name: v.name, speaking: v.speaking })) } } : {})}
+      {...(p.joined !== false && p.dm !== true ? { bar: { name: 'harbour', stats: '24 ms · ↑ 38 ↓ 71 kb/s' } } : {})}
       controls={p.afk === true ? <div className="dw-afk-page"><Button variant="accent" className="dw-voice-join">{t('afk.go')}</Button></div>
-        : p.joined === false ? <Button variant="accent" className="dw-voice-join">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })}
+        : p.joined === false ? null : controls({ paused: p.paused, dm: p.dm })}
       labels={p.afk === true ? { ...STAGE_LABELS, empty: t('afk.empty') } : STAGE_LABELS} />
   </div>
 );

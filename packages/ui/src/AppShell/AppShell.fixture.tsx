@@ -14,6 +14,7 @@ import { Icon } from '../Icon/Icon.tsx';
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
+import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 
 const noop = () => {};
 
@@ -73,7 +74,19 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
  * name), and the members aside. The messages, the composer and the member list are later tasks' (7, 9) and the people are
  * sample data (Task 11).
  */
-export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
+/** The prototype's harbour occupants as the sidebar row lists them (VoiceView's participantView: web false, the bot's tag). */
+const harbourPeople = (joined: boolean): VoiceParticipantView[] => [
+  ...[['Ada', { screen: true }], ['Björn', { video: true }], ['Kari', { video: true, screen: true }], ['Ole', {}]] as const,
+  ...(joined ? [['Mira', {}]] as const : []), ['Glenn', { bot: true }] as const,
+].map(([name, more]) => ({ deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok' as const, speaking: false, muted: false, deafened: false,
+  video: false, screen: false, web: false, bot: false, ...more }));
+
+/**
+ * `voice` (task 8): the desktop frame on the voice channel harbour as Shell.tsx composes it there: the harbour row current with
+ * its people (Mira among them once joined), no channel header (the stage carries the voice header), no composer, no aside,
+ * the user panel; `main` is the stage.
+ */
+export function SignalShell({ shell, voice, main }: { shell?: Partial<AppShellProps>; voice?: { joined: boolean }; main?: ReactNode }) {
   const membersOpen = shell?.asideOpen === true;
   return (
     <AppShell
@@ -83,20 +96,21 @@ export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
         home={{ label: 'direct messages', itemLabel: 'direct messages, unread 0, mentions 0', selected: false, unread: 0, mentions: 0, onSelect: noop }}
         addLabel="add a server" onAdd={noop} itemLabel={itemLabel}
         items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Valhalla Kitchen', unread: 2, mentions: 2 }]} />}
-      sidebar={<ChannelList label="channels" title="Midgard Crew" activeId="general" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
+      sidebar={<ChannelList label="channels" title="Midgard Crew" activeId={voice !== undefined ? 'harbour' : 'general'} onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
         headerAction={<Button variant="ghost" className="d-channel-list__head-btn" aria-label="server settings"><Icon name="chevron-down" size={15} /></Button>}
-        stats={[{ text: '3 online', live: true }, { text: '5 in voice' }]} newLabel={n => `${n} new`}
+        stats={[{ text: '3 online', live: true }, { text: voice?.joined === true ? '6 in voice' : '5 in voice' }]} newLabel={n => `${n} new`}
         categories={[{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }]} onToggleCategory={noop}
         voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
           state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting',
             video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } },
-          rooms: { hv: { joined: false, participants: [] }, harbour: { joined: false, participants: [] }, afk: { joined: false, participants: [] } } }}
+          rooms: { hv: { joined: false, participants: [] }, afk: { joined: false, participants: [] },
+            harbour: { joined: voice?.joined === true, participants: voice !== undefined ? harbourPeople(voice.joined) : [] } } }}
         channels={[
           { id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'hv', name: 'general', kind: 'voice', readable: false },
           { id: 'loot', name: 'loot', kind: 'text', readable: false, parentId: 'raids', unread: 1 },
           { id: 'harbour', name: 'harbour', kind: 'voice', readable: false, parentId: 'boats' }, { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true },
         ]} />}
-      header={<ChannelHeader name="general" topic="raids, plans and the bridge troll" actions={<>
+      header={voice !== undefined ? null : <ChannelHeader name="general" topic="raids, plans and the bridge troll" actions={<>
         <Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={false}><Icon name="messages-square" size={14} />Threads</Button>
         <Tooltip label="Members">
           <Button variant="ghost" mark={false} data-members-toggle="" aria-label="Members, 6" pressed={membersOpen}><Icon name="users" size={14} /><span aria-hidden="true">6</span></Button>
@@ -106,7 +120,7 @@ export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
         labels={{ region: 'your account', mute: 'mute', deafen: 'deafen' }} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
         status={{ current: 'online', label: 'your status: online', onChoose: noop,
           items: [{ id: 'online', label: 'online' }, { id: 'idle', label: 'idle' }, { id: 'dnd', label: 'do not disturb' }, { id: 'invisible', label: 'invisible' }] }} />}
-      composer={<SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}
+      composer={voice !== undefined ? null : <SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}
       aside={shell?.aside === undefined ? undefined : (
         <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
           groups={[
@@ -117,7 +131,7 @@ export function SignalShell({ shell }: { shell?: Partial<AppShellProps> }) {
       )}
     >
       {/* Task 7: the conversation as packages/web composes it (MessageItem, ComposerArea; conversation.fixture.tsx). */}
-      <GeneralLog />
+      {main ?? <GeneralLog />}
     </AppShell>
   );
 }

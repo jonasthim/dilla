@@ -1,4 +1,22 @@
 export const stage = {
   'stage.screen': '{name}’s screen',
   'stage.fullscreen': 'full screen',
+  // Signal task 8 (README §5.6), the prototype's copy and case: the focused tile's Grid, the call bar's words, its stats line,
+  // the tiles' own and bot names, and the not-joined preview.
+  'callStage.grid': 'Grid',
+  'callStage.bar.mute': 'Mute',
+  'callStage.bar.unmute': 'Unmute',
+  'callStage.bar.deafen': 'Deafen',
+  'callStage.bar.undeafen': 'Undeafen',
+  'callStage.bar.camera': 'Camera',
+  'callStage.bar.share': 'Share',
+  'callStage.bar.stopShare': 'Stop sharing',
+  'callStage.bar.leave': 'Leave',
+  'callStage.tile.you': '{name} (you)',
+  'callStage.tile.bot': '{name} · playback only',
+  'callStage.preview.join': 'Join voice',
+  'callStage.preview.one': '{name} is here',
+  'callStage.preview.many': '{names} are here',
+  'callStage.preview.and': ' and ',
+  'callStage.preview.nobody': 'Nobody is here yet',
 };

@@ -37,6 +37,8 @@ const SIGNAL_ICONS = {
   // Task 7: the reaction bar's add button and the composer's </> button.
   'smile-plus': ['M13.267 2.08a10 10 0 108.653 8.653', 'M15 10V9', 'M16 5h6', 'M16.472 15a6 6 0 01-8.943 0', 'M19 2v6', 'M9 10V9'],
   'code-xml': ['m18 16 4-4-4-4', 'm6 8-4 4 4 4', 'm14.5 4-5 16'],
+  // Task 8: the focused voice tile's Grid button (the prototype's layout-grid).
+  'layout-grid': ['rect', 'rect', 'rect', 'rect'],
 } as const;
 const SIGNAL_NAMES = Object.keys(SIGNAL_ICONS) as (keyof typeof SIGNAL_ICONS)[];
 

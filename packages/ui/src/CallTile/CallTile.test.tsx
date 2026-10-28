@@ -50,9 +50,10 @@ describe('CallTile', () => {
     expect(container.querySelector('.d-call-tile__avatar-ring')).toHaveAttribute('data-speaking', 'true');
     expect(container.querySelector('.d-state-dot')).toBeNull();
     expect(container.querySelector('[data-state="speaking"]')).toBeNull();
-    expect(container.querySelector('.d-call-tile__states .d-sr-only')).toHaveTextContent('speaking');
-    expect(css).toMatch(/\.d-call-tile\[data-speaking="true"\] \{[^}]*outline: 2px solid var\(--accent\)/);
-    expect(css).toMatch(/\.d-call-tile__avatar-ring\[data-speaking="true"\] \{[^}]*outline: 2px solid var\(--accent\)/);
+    expect(container.querySelector('.d-call-tile__more .d-sr-only')).toHaveTextContent('speaking');
+    // Signal §5.6 (the prototype's tile): a 2px --ok edge, and the avatar's 5px --ok ring past a 3px tile-coloured gap with scale(1.06).
+    expect(css).toMatch(/\.d-call-tile\[data-stage\]\[data-speaking="true"\] \{ box-shadow: inset 0 0 0 2px var\(--ok\); \}/);
+    expect(css).toMatch(/\.d-call-tile__avatar-ring\[data-speaking="true"\] \{ box-shadow: 0 0 0 3px var\(--stage-tile\), 0 0 0 5px var\(--ok\); transform: scale\(1\.06\); \}/);
   });
 
   it('not speaking: no ring, no speaking word', () => {
@@ -78,7 +79,7 @@ describe('CallTile', () => {
     expect(container.querySelector('.d-call-tile__chip')).toBeNull();
     rerender(<CallTile view={view} {...rest} volume={150} />);
     expect(container.querySelector('.d-call-tile__chip')).toHaveTextContent('150 %');
-    expect(css).toMatch(/\.d-call-tile__chip \{[^}]*font-family: var\(--font-mono\);[^}]*background: var\(--surface-hi\)/);
+    expect(css).toMatch(/\.d-call-tile__chip \{[^}]*background: var\(--surface-hi\)/);
   });
 
   it('#37: a screen tile marked silent shows the glyph-only no-sound state; a screen with sound, a camera or an avatar does not', () => {
@@ -148,20 +149,18 @@ describe('CallTile', () => {
     fireEvent.click(open);
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
-    // CSS pins: only the mute and the volume button show on the phone, both 44 px; the desktop range is hidden there.
-    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__stream > \.d-call-tile__volume \{ display: none; \}/);
-    expect(css).toMatch(/\.d-call-tile__streamvol \{[^}]*height: 2\.75rem/);
+    // CSS pins: only the mute and the volume button show on the phone (28px, the prototype's tile tools); the desktop range is hidden there.
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-call-tile\[data-stage\] \.d-call-tile__stream > \.d-call-tile__volume \{ display: none; \}/);
+    expect(css).toMatch(/\.d-call-tile__mute, \.d-call-tile__streamvol \{[^}]*height: 1\.75rem/);
   });
 
-  it('#37 round 2: the phone caption starts at its start edge and wraps only when needed (no 8ch name box, no centring)', () => {
-    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__name \{ max-width: 100%; min-width: 0; text-align: start; \}/);
-    expect(css).toMatch(/flex-wrap: wrap; justify-content: flex-start; text-align: start;/);
+  it('Signal §5.6: the caption is a 22px chip over the bottom left, 8px in, on the 0.8 scrim', () => {
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__caption \{[^}]*position: absolute; left: 0\.5rem; bottom: 0\.5rem;[^}]*height: 1\.375rem;[^}]*background: var\(--scrim-tag\)/);
   });
 
-  it('#37 T5: the mute is a 40 px square on a desktop and 44 px on a phone, shown while pressed (CSS pins)', () => {
-    expect(css).toMatch(/\.d-call-tile__mute \{[^}]*width: 2\.5rem; height: 2\.5rem/);
-    expect(css).toMatch(/\.d-call-tile \.d-call-tile__mute \{ width: 2\.75rem; height: 2\.75rem; \}/);
-    expect(css).toMatch(/\.d-call-tile__mute\[aria-pressed="true"\] \{ opacity: 1; pointer-events: auto; \}/);
+  it('#37 T5: the mute is the prototype\'s 28px tile tool, shown while pressed (CSS pins)', () => {
+    expect(css).toMatch(/\.d-call-tile__mute, \.d-call-tile__streamvol \{[^}]*min-width: 1\.75rem; height: 1\.75rem/);
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__stream \.d-call-tile__mute\[aria-pressed="true"\] \{ opacity: 1; pointer-events: auto; \}/);
   });
 
   it('the own tile and a screen tile have no chip', () => {

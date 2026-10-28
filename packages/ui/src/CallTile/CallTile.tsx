@@ -3,6 +3,7 @@ import './CallTile.css';
 import { Icon } from '../Icon/Icon.tsx';
 import { StateDot } from '../StateDot/StateDot.tsx';
 import { Avatar } from '../Avatar/Avatar.tsx';
+import { Tag } from '../Tag/Tag.tsx';
 
 /** How far a participant's stream got (L-UI-60); shared with the page call session's tiles (L-WEB-50). */
 export type VoiceTileState = 'connecting' | 'not-heard' | 'ok' | 'unverified';
@@ -54,10 +55,11 @@ export interface CallTileProps {
   fullscreenLabel?: string;
   /** Injected by `CallStage`: this tile is the focused one. */
   focused?: boolean;
-  /** Injected by `CallStage`: this tile sits in a partial last row of the grid, which the stage centres (D1). */
-  orphan?: boolean;
   /** Injected by `CallStage`: toggles this tile's focus. Without it the tile has no focus button. */
   onFocusTile?(): void;
+  /** Injected by `CallStage` on the focused tile: back to the grid (the prototype's Grid button, `gridLabel` its text). */
+  onGrid?(): void;
+  gridLabel?: string;
   /**
    * `volume` is the filled `voice.volume` ('volume for {name}'); `volumeValue` is `voice.volumeValue` ('{n} %'), the
    * spoken value of the range, with `{n}` filled here.
@@ -126,22 +128,29 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
 }
 
 /**
- * One tile on the call stage, as its own `<li class="d-call-stage__tile">` (pre-flight C-23). Speaking is a 2px accent
- * ring on the tile's edge and on its avatar (R25), with the word kept for assistive technology and no dot; every other
- * state is a glyph, a stream state keeps its word. A camera or screen stream is shown only for a verified stream: an `unverified` tile never renders a
- * media element (L-UI-61…69), and a tile without media shows the `Avatar`. A person's tile has a native range for their
- * volume, 0 to 200 in steps of 10, shown on hover and focus only (D3) with a quiet chip in the caption while it is not 100; the
- * own tile and a `screen` tile have neither, and a `screen` tile shows only its title.
+ * One tile on the call stage, as its own `<li class="d-call-stage__tile">` (pre-flight C-23).
  *
- * With `onFocusTile` the media and caption sit in a focus `<button aria-pressed>`, and the full-screen button and the
- * range are its siblings, never inside it (R28). Focus only flips `data-focused`: nothing is re-parented (R27).
+ * On the stage (`onFocusTile` given; Signal §5.6, the prototype's tiles): a 16:9 tile with the face (a 64px avatar, 34px in
+ * the filmstrip, 120px focused), the video, or a shared screen's striped placeholder until its picture arrives. The caption
+ * sits over the bottom left: the LIVE tag on a screen, the mute glyph, the name and a three-bar live meter while speaking.
+ * Speaking is the tile's 2px --ok edge and the avatar's 5px ring with scale(1.06), with the word kept for assistive
+ * technology. Camera and screen are not glyphs here (the tile shows them); a stream state keeps its glyph and word.
+ * A focused tile shows Grid (back to the grid) and full screen over its top right (`gridLabel`, `onGrid`, injected by
+ * `CallStage`); a grid tile has neither (double-click still toggles full screen on a tile with media). A person's tile has
+ * a native range for their volume, 0 to 200 in steps of 10, shown on hover and focus only (D3) with a quiet chip in the
+ * caption while it is not 100; the own tile and a `screen` tile have neither.
+ *
+ * The media and caption sit in a focus `<button aria-pressed>`, and the tools and the range are its siblings, never inside
+ * it (R28). Focus only flips `data-focused`: nothing is re-parented (R27). Without `onFocusTile` (the DM call box) the
+ * tile is the compact card: the media, then the caption under it.
  */
 export function CallTile({ view, own, volume, media, mirror = false, labels, onVolume, id, source = 'camera', title,
-  fullscreenLabel, focused = false, orphan = false, onFocusTile, silent = false, stream }: CallTileProps) {
+  fullscreenLabel, focused = false, onFocusTile, onGrid, gridLabel, silent = false, stream }: CallTileProps) {
   const ticks = useId();
   const streamTicks = useId();
   const popTicks = useId();
   const statesId = useId();
+  const moreId = useId();
   const liRef = useRef<HTMLLIElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
@@ -151,35 +160,52 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   }, []);
   const name = title ?? view.name;
   const isScreen = source === 'screen';
+  const stage = onFocusTile !== undefined;
   const showMedia = media !== null && view.state !== 'unverified' && source !== 'avatar';
   // R25: speaking is the ring, not a dot; the word stays for assistive technology (sr-only below).
   const noSound: VoiceStateWord[] = isScreen && silent
-    ? [{ key: 'no-sound', glyph: <Icon name="volume-off" size={14} />, text: labels.state.noSound, glyphOnly: true }] : [];
-  const words = isScreen ? noSound : voiceStateWords(view, labels.state).filter(w => w.key !== 'speaking');
+    ? [{ key: 'no-sound', glyph: <Icon name="volume-off" size={12} />, text: labels.state.noSound, glyphOnly: true }] : [];
+  // Signal: the stage caption carries the mute glyph (muted or deafened, as the prototype) and stream states, never the camera
+  // or screen glyph: the tile itself is the camera or the screen.
+  const words = isScreen ? noSound : voiceStateWords(view, labels.state).filter(w => w.key !== 'speaking' && (!stage || (w.key !== 'video' && w.key !== 'screen')));
   const speaking = !isScreen && view.speaking;
   const volumeText = labels.volumeValue.replaceAll('{n}', String(volume));
-  // web3.8 FX m8: full screen only for a tile that shows media (never an avatar), and only where the document can do it.
-  const canFullscreen = fullscreenLabel !== undefined && showMedia && document.fullscreenEnabled === true;
+  // Full screen: a stage tile offers it while focused (the prototype's corner button), a tile with media also by double-click.
+  const canFullscreen = fullscreenLabel !== undefined && document.fullscreenEnabled === true;
   const toggleFullscreen = () => {
     const li = liRef.current;
     if (!li) return;
     if (document.fullscreenElement === li) void document.exitFullscreen().catch(() => {});
     else void li.requestFullscreen().catch(() => {});
   };
+  const face = showMedia ? (
+    <div className="d-call-tile__media">
+      <StreamVideo stream={media} className="d-call-tile__video" mirror={mirror} />
+    </div>
+  ) : stage && isScreen ? (
+    <div className="d-call-tile__placeholder" aria-hidden="true"><Icon name="monitor-up" size={13} /><span>{labels.state.screen}</span></div>
+  ) : stage ? (
+    <div className="d-call-tile__avatar">
+      <span className="d-call-tile__avatar-ring" data-speaking={speaking ? 'true' : 'false'} data-shape={view.bot ? 'bot' : undefined}>
+        <Avatar name={view.name} size="lg" shape={view.bot ? 'bot' : 'circle'} />
+      </span>
+    </div>
+  ) : null;
   const body = (
     <>
-      {showMedia ? (
-        <div className="d-call-tile__media">
-          <StreamVideo stream={media} className="d-call-tile__video" mirror={mirror} />
-        </div>
-      ) : onFocusTile ? <div className="d-call-tile__avatar"><span className="d-call-tile__avatar-ring" data-speaking={speaking ? 'true' : 'false'}><Avatar name={name} size="lg" /></span></div> : null}
+      {face}
       <span className="d-call-tile__caption">
-        <span className="d-call-tile__name">{name}</span>
+        {stage && isScreen ? <span className="d-call-tile__live" aria-hidden="true"><Tag kind="live" /></span> : null}
         <span id={statesId} className="d-call-tile__states">
-          <VoiceStates words={words} prefix="d-call-tile" />
+          {stage ? <VoiceStates words={words.filter(w => w.glyphOnly)} prefix="d-call-tile" /> : null}
+        </span>
+        <span className="d-call-tile__name">{name}</span>
+        {stage && !isScreen ? <span className="d-call-tile__meter" data-on={speaking ? 'true' : 'false'} aria-hidden="true"><i /><i /><i /></span> : null}
+        <span id={moreId} className="d-call-tile__more">
+          <VoiceStates words={stage ? words.filter(w => !w.glyphOnly) : words} prefix="d-call-tile" />
           {speaking ? <span className="d-sr-only">{labels.state.speaking}</span> : null}
           {!isScreen && view.web ? <span className="d-call-tile__tag">{labels.state.web}</span> : null}
-          {!isScreen && view.bot ? <span className="d-call-tile__tag">{labels.state.bot}</span> : null}
+          {!stage && !isScreen && view.bot ? <span className="d-call-tile__tag">{labels.state.bot}</span> : null}
           {!own && !isScreen && volume !== 100 ? <span className="d-call-tile__chip" aria-hidden="true">{volumeText}</span> : null}
         </span>
       </span>
@@ -187,16 +213,26 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   );
   return (
     <li ref={liRef} className="d-call-stage__tile" data-source={source} data-focused={focused ? 'true' : 'false'} data-tile-id={id}
-      data-stage={onFocusTile ? 'true' : undefined} data-orphan={orphan ? 'true' : undefined}>
+      data-stage={stage ? 'true' : undefined}>
       <div className="d-call-tile" data-source={source} data-voice-state={view.state} data-speaking={view.speaking ? 'true' : 'false'}
-        data-own={own ? 'true' : undefined} data-media={showMedia ? 'true' : undefined} data-stage={onFocusTile ? 'true' : undefined}>
-        {onFocusTile ? (
-          <button type="button" className="d-call-tile__focus" aria-pressed={focused} aria-label={name} aria-describedby={statesId}
-            onClick={onFocusTile} onDoubleClick={canFullscreen ? toggleFullscreen : undefined}>{body}</button>
+        data-own={own ? 'true' : undefined} data-media={showMedia ? 'true' : undefined} data-stage={stage ? 'true' : undefined}
+        data-bot={view.bot ? 'true' : undefined}>
+        {stage ? (
+          <button type="button" className="d-call-tile__focus" aria-pressed={focused} aria-label={name} aria-describedby={`${statesId} ${moreId}`}
+            onClick={onFocusTile} onDoubleClick={canFullscreen && showMedia ? toggleFullscreen : undefined}>{body}</button>
         ) : body}
-        {canFullscreen ? (
-          <button type="button" className="d-call-tile__fullscreen" aria-pressed={fullscreen} aria-label={fullscreenLabel}
-            onClick={toggleFullscreen}><Icon name={fullscreen ? 'minimize' : 'maximize'} size={16} /></button>
+        {stage && focused && (onGrid !== undefined || canFullscreen) ? (
+          <span className="d-call-tile__tools">
+            {onGrid !== undefined && gridLabel !== undefined ? (
+              <button type="button" className="d-call-tile__tool d-call-tile__grid" aria-label={gridLabel} onClick={onGrid}>
+                <Icon name="layout-grid" size={13} /><span className="d-call-tile__tool-label" aria-hidden="true">{gridLabel}</span>
+              </button>
+            ) : null}
+            {canFullscreen ? (
+              <button type="button" className="d-call-tile__tool d-call-tile__fullscreen" aria-pressed={fullscreen} aria-label={fullscreenLabel}
+                onClick={toggleFullscreen}><Icon name={fullscreen ? 'minimize' : 'maximize'} size={14} /></button>
+            ) : null}
+          </span>
         ) : null}
         {own || isScreen ? null : (
           <VolumeRange label={labels.volume} valueText={volumeText} volume={volume} ticks={ticks} onVolume={onVolume} />

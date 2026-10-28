@@ -47,7 +47,7 @@ const writes = (app: ReturnType<typeof shell>) => app.client.callsOf('setSetting
 
 async function joinVoice(app: ReturnType<typeof shell>) {
   act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -245,7 +245,7 @@ describe('one set of shortcuts and the call panel (R3)', () => {
     expect(carriers).toHaveLength(1);
     expect(panel()!.contains(carriers[0])).toBe(true);
     expect(document.querySelectorAll('[aria-keyshortcuts*="Shift+D"]')).toHaveLength(1);
-    expect(stageBar().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(stageBar().getByRole('button', { name: t('callStage.bar.mute') })).not.toHaveAttribute('aria-keyshortcuts');
   });
 
   it('the call panel has leave alone (Signal §5.4, Ruling U: camera and share are the stage\'s) and no mute, and sits above the user panel', async () => {
@@ -287,7 +287,7 @@ describe('fail closed (security round 1)', () => {
     await screen.findByRole('main');
     act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
     const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
     await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
     expect(writes(app)).toEqual(['muted']);
@@ -327,7 +327,7 @@ describe('fail closed (security round 1)', () => {
   async function openVoiceChannel() {
     await screen.findByRole('main');
     act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
-    return main().findByRole('button', { name: 'join voice' });
+    return main().findByRole('button', { name: 'Join voice' });
   }
   /** setSetting answers only when its turn is released, one by one, in the order sent. */
   function holdWrites(app: ReturnType<typeof shell>) {

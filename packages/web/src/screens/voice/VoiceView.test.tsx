@@ -29,7 +29,7 @@ const UMK = { code: 'E_UMK_CHANGED', detail: '', status: 0, retryAfterMs: null }
 /** Joins voice 'general' from its voice view; the worker then reports the call in. */
 async function inVoice(o: VoiceHarnessOptions = {}) {
   const app = renderVoiceShell(o);
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -46,7 +46,7 @@ describe('voice in the shell', () => {
     renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
       { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
     const app = screen.getByRole('main');
-    expect(await within(app).findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(await within(app).findByRole('button', { name: 'Join voice' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'AFK channel' })).toBeNull();
   });
 
@@ -54,12 +54,12 @@ describe('voice in the shell', () => {
     await inVoice();
     const dock = within(screen.getByRole('toolbar', { name: t('voice.dock.region') }));
     expect(dock.queryByRole('button', { name: 'camera' })).toBeNull();
-    expect(main().getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-disabled', 'true');
+    expect(main().getByRole('button', { name: 'Camera' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
   it('an ordinary voice call keeps its controls live', async () => {
     await inVoice();
-    for (const name of ['mute', 'camera']) expect(main().getByRole('button', { name })).not.toHaveAttribute('aria-disabled', 'true');
+    for (const name of ['Mute', 'Camera']) expect(main().getByRole('button', { name })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
   it('reports actual input while a voice call remains open on another page', async () => {
@@ -133,7 +133,7 @@ describe('voice in the shell', () => {
       expect(await main().findByText(t('voice.leftWhileAway'), {}, { timeout: 4_000 })).toBeInTheDocument();
       expect(app.sessions).toHaveLength(1);
       expect(screen.queryByText(t('update.rejoiningVoice'))).toBeNull();
-      await app.user.click(main().getByRole('button', { name: 'join voice' }));
+      await app.user.click(main().getByRole('button', { name: 'Join voice' }));
       await waitFor(() => expect(app.sessions).toHaveLength(2));
       expect(app.client.callsOf('callJoin')).toHaveLength(2);
     } finally {
@@ -201,7 +201,7 @@ describe('voice in the shell', () => {
 
   it('binds no shortcut outside voice', async () => {
     const app = renderVoiceShell();
-    await main().findByRole('button', { name: 'join voice' });
+    await main().findByRole('button', { name: 'Join voice' });
     await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
     expect(app.sessions).toHaveLength(0);
     expect(app.client.calls.filter(c => c.m === 'voiceSelf')).toHaveLength(0);
@@ -228,9 +228,9 @@ describe('voice in the shell', () => {
     const action = main().getByRole('button', { name: 'compare safety numbers' });
     await waitFor(() => expect(action).toHaveFocus());
     // A re-render does not move focus again.
-    main().getByRole('button', { name: 'leave' }).focus();
+    main().getByRole('button', { name: 'Leave' }).focus();
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
-    expect(main().getByRole('button', { name: 'leave' })).toHaveFocus();
+    expect(main().getByRole('button', { name: 'Leave' })).toHaveFocus();
     expect(screen.getByText('paused in general')).toBeInTheDocument();
     expect(app.session.setPaused).toHaveBeenCalledWith(true);
     expect(app.session.setPaused).toHaveBeenCalledTimes(1);
@@ -258,14 +258,14 @@ describe('voice in the shell', () => {
 
   it('an unsupported browser shows the dialog instead of joining, and focus returns to join voice', async () => {
     const app = renderVoiceShell({ supported: false });
-    const join = await main().findByRole('button', { name: 'join voice' });
+    const join = await main().findByRole('button', { name: 'Join voice' });
     await app.user.click(join);
     expect(await screen.findByRole('dialog', { name: 'Voice does not work in this browser' })).toBeInTheDocument();
     expect(app.client.callsOf('callJoin')).toEqual([]);
     expect(app.module.startPageCall).not.toHaveBeenCalled();
     await app.user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(main().getByRole('button', { name: 'join voice' })).toHaveFocus();
+    expect(main().getByRole('button', { name: 'Join voice' })).toHaveFocus();
   });
 
   it('switching voice channels leaves the first call before joining the second', async () => {
@@ -274,7 +274,7 @@ describe('voice in the shell', () => {
     app.session.leaveGate = new Promise<void>(resolve => { release = resolve; });
     await app.user.click(screen.getByRole('button', { name: 'voice music' }));
     await waitFor(() => expect(window.location.pathname).toContain(MUSIC));
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.log).toContain('leave:switch'));
     expect(app.log).not.toContain(`callJoin:${MUSIC}`);
     release();
@@ -291,7 +291,7 @@ describe('voice in the shell', () => {
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
     expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
     expect(document.querySelector('.dw-voice-dock .d-voice-dock__text')).toHaveTextContent(/^general$/);
-    await app.user.click(main().getByRole('button', { name: 'leave' }));
+    await app.user.click(main().getByRole('button', { name: 'Leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
     expect(screen.getByRole('button', { name: 'voice general' })).toHaveFocus();
@@ -328,7 +328,7 @@ describe('the session follows the call slice', () => {
   const start = async (o: VoiceHarnessOptions = {}) => {
     const app = renderVoiceShell(o);
     const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
     return { app, release };
   };
@@ -473,7 +473,7 @@ describe('review round 1', () => {
   it('f10app m2: a rejoin that waits for its earlier Remove is announced in the dock status', async () => {
     const app = renderVoiceShell();
     const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     const status = () => document.querySelector('.d-voice-dock [role="status"]');
     await waitFor(() => expect(status()).not.toBeNull());
     app.client.publish('call', callState({ phase: 'joining', channelId: GENV }));
@@ -528,7 +528,7 @@ describe('review round 1', () => {
 
   it('"You left {where}." is announced in a status region that outlives the dock', async () => {
     const app = await inVoice();
-    await app.user.click(main().getByRole('button', { name: 'leave' }));
+    await app.user.click(main().getByRole('button', { name: 'Leave' }));
     await waitFor(() => expect(lasting()).toHaveTextContent('You left general.'));
     expect(lasting()).toHaveAttribute('role', 'status');
   });
@@ -536,7 +536,7 @@ describe('review round 1', () => {
   it('m9: no join button while the sendBlocks slice is not known yet (a block counts as held)', () => {
     renderVoiceShell({ call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }) });
     expect(main().getByText(t('voice.blockedJoin'))).toBeInTheDocument();
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
   });
 
   // Integration ruling (2026-10-13): a block that came only from the call group (the channel's own sendBlocks entry is
@@ -548,7 +548,7 @@ describe('review round 1', () => {
     const app = renderVoiceShell({ sendBlocks: {},
       call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' }, changedUser: null }) });
     expect(main().getByText(t('voice.blockedRetry'))).toBeInTheDocument();
-    await app.user.click(main().getByRole('button', { name: 'join voice' }));
+    await app.user.click(main().getByRole('button', { name: 'Join voice' }));
     expect(app.client.calls.filter(c => c.m === 'callJoin')).toHaveLength(1);
   });
 
@@ -564,7 +564,7 @@ describe('review round 1', () => {
 
   it('a changed identity keeps the join hidden even with the sendBlocks entry clear', () => {
     renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()], call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: null }) });
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
   });
 
   // Web-3 task 10, concern 3: the block's cause verified clears it without a reload, named or not.
@@ -572,23 +572,23 @@ describe('review round 1', () => {
     const app = renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()],
       call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: BOB }) });
     expect(main().getByText(t('voice.blockedChanged', { name: 'bob' }))).toBeInTheDocument();
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
     act(() => app.client.publish('trust', [{ ...bobChanged(), umk: 'cd'.repeat(32), verified: true, changedUmk: null }]));
-    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(await main().findByRole('button', { name: 'Join voice' })).toBeInTheDocument();
   });
 
   it('an unnamed changed-identity block offers the join again once no contact is changed any more', async () => {
     const app = renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()],
       call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: null }) });
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
     act(() => app.client.publish('trust', [{ ...bobChanged(), umk: 'cd'.repeat(32), verified: true, changedUmk: null }]));
-    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(await main().findByRole('button', { name: 'Join voice' })).toBeInTheDocument();
   });
 
   it('a block by a changed contact keeps the join hidden while that contact is changed', () => {
     renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()],
       call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: BOB }) });
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
   });
 
   it('the voice row’s join is reachable from the keyboard: Tab from the row reaches it', async () => {
@@ -648,7 +648,7 @@ describe('AW5: the AFK channel in the shell never hosts a call', () => {
     app.client.publish(`afk:${A}`, afkSlice());
     go(`/c/${A}/${MUSIC}`);
     expect(await screen.findByRole('toolbar', { name: t('voice.dock.region') })).toBeInTheDocument();
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
     await app.user.click(await main().findByRole('button', { name: t('afk.go') }));
     await waitFor(() => expect(app.client.callsOf('afkAway')).toHaveLength(1));
     expect(app.session.leave).toHaveBeenCalledWith('user');
@@ -723,7 +723,7 @@ describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
     app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }, { userId: CAROL, since }]));
     await waitFor(() => expect(rosterOf()).toEqual([`bob:${t('afk.away')}`, `carol:${t('afk.away')}`]));
     expect(main().getByRole('button', { name: t('afk.go') })).toBeInTheDocument();
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
     expect(main().queryByText(t('afk.empty'))).toBeNull();
     await expectNoAxeViolations(screen.getByRole('main'));
   });
@@ -740,7 +740,7 @@ describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
     app.client.publish(`afk:${A}`, afkSlice([{ userId: ME.id, since }]));
     expect(await main().findByText(t('afk.youAway'))).toBeInTheDocument();
     expect(main().queryByRole('button', { name: t('afk.go') })).toBeNull();
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
     expect(rosterOf()).toEqual([`ada:${t('afk.away')}`]);
   });
 
@@ -848,7 +848,7 @@ describe('web3.4 V2: the stage says how many it hears (web3.9: it left the dock)
     expect(shown).toHaveAttribute('data-audio-expected', '2');
     // A diagnostic, not news: no status region of its own (the dock's one region says what changes).
     expect(shown.closest('[role="status"]')).toBeNull();
-    await expectNoAxeViolations(document.querySelector('.dw-voice-stage__lines')!);
+    await expectNoAxeViolations(document.querySelector('.d-call-stage__stats')!);
     act(() => app.session.update({ audio: { attached: 2, expected: 2 } }));
     await waitFor(() => expect(line()).toHaveAttribute('data-audio-attached', '2'));
     expect(line()).toHaveTextContent(t('voice.diag.tracks', { attached: 2, expected: 2 }));
@@ -875,7 +875,7 @@ describe('web3.4 V2: the stage says how many it hears (web3.9: it left the dock)
 describe('web3.3 fix round 2: the call context is made in the press (Minor 1); the hold joins the join announcement (Nit 3)', () => {
   it('makes the call’s AudioContext synchronously in the join press and hands that one to the session', async () => {
     const app = renderVoiceShell();
-    const button = await main().findByRole('button', { name: 'join voice' });
+    const button = await main().findByRole('button', { name: 'Join voice' });
     fireEvent.click(button);
     // Nothing of the join was awaited yet: the leave in flight, the module load and a switch’s leave all come after.
     expect(app.callContexts).toHaveLength(1);
@@ -886,7 +886,7 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
 
   it('closes the context when the browser cannot do voice, and never starts a call', async () => {
     const app = renderVoiceShell({ supported: false });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     expect(await screen.findByRole('dialog', { name: 'Voice does not work in this browser' })).toBeInTheDocument();
     expect(app.callContexts).toHaveLength(1);
     expect(app.callContexts[0].closed).toBe(true);
@@ -895,7 +895,7 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
 
   it('closes the context when the call module fails to load', async () => {
     const app = renderVoiceShell({ loadFails: true });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.callContexts[0]?.closed).toBe(true));
     expect(app.startedWith).toEqual([]);
   });
@@ -903,7 +903,7 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
   it('closes the context when building the start’s arguments throws before the session gets it', async () => {
     const app = renderVoiceShell();
     app.module.browserDeps = () => { throw new Error('E_INTERNAL'); };
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.callContexts[0]?.closed).toBe(true));
     expect(app.startedWith).toEqual([]);
   });
@@ -916,12 +916,12 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
     const go = (id: string) => act(() => { window.history.pushState(null, '', `/c/${A}/${id}`); window.dispatchEvent(new PopStateEvent('popstate')); });
     go(MUSIC);
     await waitFor(() => expect(window.location.pathname).toContain(MUSIC));
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.log).toContain('leave:switch'));
     // While the switch’s leave runs, the person picks general again: the music join is superseded before it started.
     go(GENV);
     await waitFor(() => expect(window.location.pathname).toContain(GENV));
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     expect(app.callContexts).toHaveLength(3);
     release();
     await waitFor(() => expect(app.sessions).toHaveLength(2));
@@ -933,7 +933,7 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
   for (const when of ['at-start', 'same-tick'] as const) {
     it(`a hold ${when === 'at-start' ? 'the call starts in' : 'that arrives in the same tick as the join'} is said with "You joined", not instead of it`, async () => {
       const app = renderVoiceShell({ audioBlocked: when });
-      await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+      await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
       await waitFor(() => expect(app.sessions).toHaveLength(1));
       const said = () => [...document.querySelectorAll('.dw-voice-dock [role="status"]')].map(r => r.textContent ?? '');
       await waitFor(() => expect(said().some(s => /^You joined /.test(s) && s.endsWith(` ${t('voice.audioBlocked')}`))).toBe(true));
@@ -957,19 +957,19 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
   it('the dock holds leave alone; camera and share are the stage’s toggles', async () => {
     withCapture();
     const app = await inVoice();
-    await app.user.click(stage().getByRole('button', { name: t('voice.cameraOn') }));
+    await app.user.click(stage().getByRole('button', { name: t('callStage.bar.camera') }));
     await waitFor(() => expect(app.session.state.camera).toBe(true));
     await offStage();
     expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('voice.leave')]);
     await onStage();
-    await waitFor(() => expect(stage().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true'));
-    await app.user.click(stage().getByRole('button', { name: t('voice.shareOn') }));
+    await waitFor(() => expect(stage().getByRole('button', { name: t('callStage.bar.camera') })).toHaveAttribute('aria-pressed', 'true'));
+    await app.user.click(stage().getByRole('button', { name: t('callStage.bar.share') }));
     await waitFor(() => expect(app.session.state.sharing).toBe(true));
   });
 
   it('without screen capture, share is aria-disabled on the stage, and the dock has none', async () => {
     await inVoice();
-    expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
+    expect(stage().getByRole('button', { name: t('callStage.bar.share') })).toHaveAttribute('aria-disabled', 'true');
     await offStage();
     expect(dock().queryByRole('button', { name: t('voice.shareOn') })).toBeNull();
   });
@@ -979,7 +979,7 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     const app = await inVoice({ trust: [bobChanged()], withSettings: true });
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await screen.findByText('paused in general');
-    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(stage().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+    for (const name of [t('callStage.bar.camera'), t('callStage.bar.share')]) expect(stage().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
     await offStage();
     expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
     for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
@@ -990,7 +990,7 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     withCapture();
     const app = renderVoiceShell();
     const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
     await offStage();
     expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
@@ -1001,8 +1001,8 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
 
   it('only the user panel’s mute and deafen carry aria-keyshortcuts and are described by their shortcut; the stage’s tip shows it and they carry none', async () => {
     await inVoice();
-    expect(stage().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
-    expect(stage().getByRole('button', { name: t('voice.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(stage().getByRole('button', { name: t('callStage.bar.mute') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(stage().getByRole('button', { name: t('callStage.bar.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
     expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl Shift M');
     expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl Shift D');
     await offStage();
@@ -1015,13 +1015,13 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
   // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*) on the stage; the name stays. (The dock has none, Ruling U.)
   it('a disabled camera or share says why: not available, paused', async () => {
     const app = await inVoice();
-    const share = stage().getByRole('button', { name: t('voice.shareOn') });
-    expect(share).toHaveAccessibleName(t('voice.shareOn'));
+    const share = stage().getByRole('button', { name: t('callStage.bar.share') });
+    expect(share).toHaveAccessibleName(t('callStage.bar.share'));
     expect(share).toHaveAccessibleDescription(t('voice.why.noShare'));
-    expect(stage().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby');
+    expect(stage().getByRole('button', { name: t('callStage.bar.camera') })).not.toHaveAttribute('aria-describedby');
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await screen.findByText('paused in general');
-    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
+    for (const name of [t('callStage.bar.camera'), t('callStage.bar.share')]) {
       expect(stage().getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.paused'));
     }
   });
@@ -1088,22 +1088,22 @@ describe('screen share without getDisplayMedia', () => {
     asPhone(true);
     await inVoice();
     const stage = within(main().getByRole('toolbar', { name: 'voice channel controls' }));
-    expect(stage.queryByRole('button', { name: t('voice.shareOn') })).toBeNull();
-    expect(stage.getByRole('button', { name: t('voice.cameraOn') })).toBeInTheDocument();
+    expect(stage.queryByRole('button', { name: t('callStage.bar.share') })).toBeNull();
+    expect(stage.getByRole('button', { name: t('callStage.bar.camera') })).toBeInTheDocument();
   });
 
   it('on a phone the stage’s mute and deafen carry aria-keyshortcuts', async () => {
     asPhone(true);
     await inVoice();
     const bar = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
-    expect(bar().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
-    expect(bar().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
+    expect(bar().getByRole('button', { name: t('callStage.bar.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(bar().getByRole('button', { name: t('callStage.bar.deafen') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
   });
 
   it('on desktop the share button stays, aria-disabled', async () => {
     asPhone(false);
     await inVoice();
-    const share = within(main().getByRole('toolbar', { name: 'voice channel controls' })).getByRole('button', { name: t('voice.shareOn') });
+    const share = within(main().getByRole('toolbar', { name: 'voice channel controls' })).getByRole('button', { name: t('callStage.bar.share') });
     expect(share).toHaveAttribute('aria-disabled', 'true');
   });
 });
@@ -1186,10 +1186,11 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     expect(ids().filter(i => i?.startsWith(BOB_DEV))).toEqual([`${BOB_DEV}:person`]);
   });
 
-  it('the people of a call this device has not joined are avatar tiles', async () => {
+  it('Signal §5.6: the people of a call this device has not joined are the preview\'s faces, not tiles', async () => {
     renderVoiceShell({ voice: room(0) });
-    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
-    expect(ids()).toContain('c1:person');
+    await waitFor(() => expect(document.querySelectorAll('.d-call-stage__face').length).toBeGreaterThan(0));
+    expect(ids()).toEqual([]);
+    expect(main().getByRole('button', { name: t('callStage.preview.join') })).toBeInTheDocument();
   });
 
   it('the own camera tile is mirrored and the own screen tile is not', async () => {
@@ -1223,7 +1224,8 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     app.client.publish(`members:${A}`, MEMBERS.map(m => m.userId === ME.id ? { ...m, display: 'Ada L' } : m));
     act(() => app.session.update({ sharing: true, localScreen: new MediaStream() }));
     await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
-    expect(within(li(`${OWN_DEV}:person`)).getByRole('button', { name: 'Ada L' })).toBeInTheDocument();
+    // Signal §5.6: the own tile is "{name} (you)", as the prototype's "Mira (you)".
+    expect(within(li(`${OWN_DEV}:person`)).getByRole('button', { name: t('callStage.tile.you', { name: 'Ada L' }) })).toBeInTheDocument();
     expect(within(li(`${OWN_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'Ada L' }) })).toBeInTheDocument();
   });
 
@@ -1299,9 +1301,9 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
       within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
       await app.user.keyboard('{Escape}');
       await waitFor(() => expect(focusedIds()).toEqual([]));
-      await app.user.click(main().getByRole('button', { name: 'leave' }));
-      await main().findByRole('button', { name: 'join voice' });
-      await app.user.click(main().getByRole('button', { name: 'join voice' }));
+      await app.user.click(main().getByRole('button', { name: 'Leave' }));
+      await main().findByRole('button', { name: 'Join voice' });
+      await app.user.click(main().getByRole('button', { name: 'Join voice' }));
       await waitFor(() => expect(app.sessions).toHaveLength(2));
       app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
       await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -1327,7 +1329,7 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
 describe('the voice stage header (web3.9)', () => {
   it('shows the voice channel header in the stage bar on a desktop, with the volume glyph', async () => {
     renderVoiceShell({ path: `/c/${A}/${GENV}` });
-    const stage = (await main().findByRole('button', { name: 'join voice' })).closest('section') as HTMLElement;
+    const stage = (await main().findByRole('button', { name: 'Join voice' })).closest('section') as HTMLElement;
     const bar = stage.querySelector('.d-call-stage__bar') as HTMLElement;
     expect(within(bar).getByRole('heading', { name: 'general' })).toBeInTheDocument();
     expect(bar.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
@@ -1456,7 +1458,8 @@ describe('FX2: a "sound from" picker for a share', () => {
     app.session.sharePool = POOL;
     expect(from()).toBeNull();
     act(() => app.session.update({ sharing: true, shareAudio: 'tab', shareSource: 'browser', localScreen: new MediaStream() }));
-    await waitFor(() => expect(main().getByRole('button', { name: 'share screen' })).toHaveAttribute('aria-pressed', 'true'));
+    // Signal §5.6: a live share's word says it (Stop sharing), with no aria-pressed.
+    await waitFor(() => expect(main().getByRole('button', { name: t('callStage.bar.stopShare') })).not.toHaveAttribute('aria-pressed'));
     expect(from()).toBeNull();
   });
 

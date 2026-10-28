@@ -67,6 +67,8 @@ type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fulls
  */
 function deviceTiles(base: TileBase, o: {
   camera: MediaStream | null; screen: MediaStream | null; sharing: boolean; mirrorCamera: boolean; name: string;
+  /** The person tile's shown name when it is not `name` (the own tile's "(you)", a bot's "· playback only"). */
+  title?: string;
   /** #37: a remote screen: whether it carries sound (the mark when not) and, when it does, its own volume and mute. */
   remoteScreen?: { screenAudio: boolean; stream: NonNullable<CallTileProps['stream']> };
 }): CallTileProps[] {
@@ -75,7 +77,7 @@ function deviceTiles(base: TileBase, o: {
   const camera = o.camera !== null && view.state !== 'unverified';
   const out: CallTileProps[] = [{
     ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, 'person'),
-    title: o.name, fullscreenLabel, mirror: camera && o.mirrorCamera,
+    title: o.title ?? o.name, fullscreenLabel, mirror: camera && o.mirrorCamera,
   }];
   if (o.screen !== null || o.sharing) {
     out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
@@ -93,6 +95,7 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
   const ownName = selfName(v.self, v.members);
+  // Signal §5.6: the own tile is "{name} (you)" and a bot "{name} · playback only", the prototype's tile names.
   const own = v.self === null ? [] : deviceTiles({
     view: {
       deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: ownName, state: 'ok' as const,
@@ -101,7 +104,7 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
     },
     own: true, volume: 100, labels: tileLabels(ownName), onVolume: () => undefined,
   }, { camera: state?.localCamera ?? null, screen: state?.localScreen ?? null, sharing: state?.sharing ?? false, mirrorCamera: true,
-    name: ownName });
+    name: ownName, title: t('callStage.tile.you', { name: ownName }) });
   const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
@@ -110,20 +113,25 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
       onVolume: (n: number) => call.setVolume(tile.userId, n) },
-    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name,
+    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name, ...(view.bot ? { title: t('callStage.tile.bot', { name }) } : {}),
       remoteScreen: { screenAudio: tile.screenAudio, stream: {
         volume: streamVolumeOf(v.settings, tile.userId), labels: { volume: t('voice.streamVolume', { name }), mute: en['voice.streamMute'] },
         onVolume: (n: number) => call.setStreamVolume(tile.userId, n), onMute: () => call.toggleStreamMute(tile.userId, streamVolumeOf(v.settings, tile.userId)) } } });
   });
-  return [...own, ...others];
+  // Signal §5.6 (the prototype's stage): the shared screens first, then the people in the room's own order (yours where the room
+  // lists you); a device the room does not list yet keeps its place after them. One stable order, keyed by id (R27).
+  const order = new Map((room?.participants ?? []).map((p, i) => [p.deviceId, i]));
+  const rank = (tile: CallTileProps) => order.get(tile.view.deviceId) ?? order.size;
+  return [...own, ...others].map((tile, i) => ({ tile, i }))
+    .sort((a, b) => Number(b.tile.source === 'screen') - Number(a.tile.source === 'screen') || rank(a.tile) - rank(b.tile) || a.i - b.i)
+    .map(x => x.tile);
 }
 
-/** The people of a live call this device is not in, as avatar tiles without media. */
-function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
-  return (v.voice?.[channelId]?.participants ?? []).map(p => ({
-    view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
-    onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'person'), title: p.name,
-  }));
+/** Signal §5.6: the not-joined preview's line: "Ada is here", "Ada and Björn are here", or that nobody is. */
+export function previewText(names: readonly string[]): string {
+  if (names.length === 0) return t('callStage.preview.nobody');
+  if (names.length === 1) return t('callStage.preview.one', { name: names[0] });
+  return t('callStage.preview.many', { names: names.join(t('callStage.preview.and')) });
 }
 
 /**
@@ -256,7 +264,7 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
   if (root === null) return null;
   if (joined) return root.querySelector<HTMLElement>('[role="toolbar"] button');
   return root.querySelector<HTMLElement>('.d-call-stage__notice-action, .d-call-stage__notice[tabindex]')
-    ?? root.querySelector<HTMLElement>('.dw-voice-join');
+    ?? root.querySelector<HTMLElement>('.d-call-stage__join, .dw-voice-join');
 }
 
 /** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
@@ -270,17 +278,38 @@ function canCapture(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
-/** web3.9 R26: the push-to-talk key and the hearing count left the dock; they stand under the stage's controls. */
-function StageLines({ v }: { v: VoiceContext }) {
+/** web3.9 R26: the push-to-talk key left the dock; it stands under the tiles, above the call bar. */
+function StageLines({ v, hearing = false }: { v: VoiceContext; /** The DM call box, which has no call bar: the hearing line too. */ hearing?: boolean }) {
   const s = v.call.state;
-  const ptt = s?.mode === 'ptt';
-  const hearing = s?.audio !== undefined && s.audio.expected > 0 && s.deafened !== true && s.paused !== true;
-  if (!ptt && !hearing) return null;
+  const heard = hearing && hears(s);
+  if (s?.mode !== 'ptt' && !heard) return null;
   return (
     <div className="dw-voice-stage__lines">
-      {ptt ? <PttLine v={v} /> : null}
-      <HearingLine audio={s?.audio} silent={s?.deafened === true || s?.paused === true} />
+      {s?.mode === 'ptt' ? <PttLine v={v} /> : null}
+      {heard ? <p><HearingLine audio={s?.audio} silent={false} /></p> : null}
     </div>
+  );
+}
+
+/** Whether the hearing count shows: remote audio is expected, and nothing holds playback back (deafened, paused). */
+function hears(s: CallView['state']): boolean {
+  return s?.audio !== undefined && s.audio.expected > 0 && s.deafened !== true && s.paused !== true;
+}
+
+/**
+ * Signal §5.6: the call bar's stats line, "24 ms · ↑ 38 ↓ 71 kb/s · hearing 2 of 2": this device's link (as the dock reads it,
+ * call.state.link; "— ms" before the first read) and, while any is expected, how many remote tracks it plays.
+ */
+function StatsLine({ v }: { v: VoiceContext }) {
+  const s = v.call.state;
+  const link = s?.link;
+  const ping = link === undefined ? en['voice.dock.pingNone'] : link.rttMs < 1 ? en['voice.dock.pingSub'] : t('voice.dock.ping', { ms: link.rttMs });
+  const rate = link !== undefined && link.upKbps !== null && link.downKbps !== null ? t('voice.dock.rate', { up: link.upKbps, down: link.downKbps }) : null;
+  return (
+    <>
+      {[ping, rate].filter((x): x is string => x !== null).join(' · ')}
+      {hears(s) ? <>{' · '}<HearingLine audio={s?.audio} silent={false} /></> : null}
+    </>
   );
 }
 
@@ -321,7 +350,10 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
       canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null}
       paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
-        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY(),
+        // Signal §5.6: a channel's call bar shows the prototype's words (the DM call box keeps the icon toolbar).
+        ...(dm ? {} : { bar: { mute: t('callStage.bar.mute'), unmute: t('callStage.bar.unmute'), deafen: t('callStage.bar.deafen'), undeafen: t('callStage.bar.undeafen'),
+          camera: t('callStage.bar.camera'), share: t('callStage.bar.share'), stopShare: t('callStage.bar.stopShare'), leave: t('callStage.bar.leave') } }) }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );
@@ -362,7 +394,7 @@ function useAutoFocus(tiles: readonly CallTileProps[], live: readonly string[], 
   }, [dm, joined, idsKey, screensKey, liveKey, focusedId, setFocusedId]);
 }
 
-const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') });
+const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles'), grid: t('callStage.grid') });
 
 /**
  * The stage of a voice channel or a DM call, whether this device is in its call, joining it or not (WB a11y I1, I2):
@@ -386,7 +418,14 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
-  const allTiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
+  const allTiles = joined ? callTiles(v, channelId) : [];
+  // Signal §5.6: a channel this device is not in shows the preview (who is inside, Join voice); a DM shows its strip instead.
+  const people = v.voice?.[channelId]?.participants ?? [];
+  const preview = !joined && !dm ? {
+    people: people.map(p => ({ id: p.deviceId, name: p.name, speaking: false, bot: p.bot })), name: name ?? title,
+    text: previewText(people.map(p => p.name)),
+    join: held ? null : { label: t('callStage.preview.join'), onJoin: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } },
+  } : undefined;
   // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
   const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
   // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
@@ -399,8 +438,10 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
         // Ruling Z: the prototype's voice header: the name and its topic ("{n} in voice" once joined, else "voice channel"), no controls.
         topic={joined ? t('voice.count', { n: v.voice?.[channelId]?.participants.length ?? 0 }) : t('voice.header.idle')} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
-        controls={joined ? <><Controls v={v} paused={paused} dm={dm} /><ShareSound v={v} /><StageLines v={v} /></>
-          : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
+        {...(preview !== undefined ? { preview } : {})}
+        {...(joined && !dm ? { bar: { name: name ?? title, stats: <StatsLine v={v} /> }, extra: <><ShareSound v={v} /><StageLines v={v} /></> } : {})}
+        controls={joined ? <>{<Controls v={v} paused={paused} dm={dm} />}{dm ? <><ShareSound v={v} /><StageLines v={v} hearing /></> : null}</>
+          : null}
         labels={STAGE_LABELS()} />
     </div>
   );
@@ -556,9 +597,9 @@ function HearingLine({ audio, silent }: { audio: { attached: number; expected: n
   // Fix round 1: deafened or paused nothing plays, whatever is attached, so no line says it is heard.
   if (audio === undefined || audio.expected <= 0 || silent) return null;
   return (
-    <p className="dw-voice-dock__hearing" data-audio-attached={audio.attached} data-audio-expected={audio.expected}>
+    <span className="dw-voice-dock__hearing" data-audio-attached={audio.attached} data-audio-expected={audio.expected}>
       {t('voice.diag.tracks', { attached: audio.attached, expected: audio.expected })}
-    </p>
+    </span>
   );
 }
 
@@ -610,7 +651,9 @@ export function Dock({ v, where, server, stageShown }: {
   const phase = callPhase(v);
   const link = call.state?.link;
   return (
-    <div className="dw-voice-dock" data-doc-state="voice-dock">
+    // Signal §5.6 (the prototype's showDock): while this channel's own stage is on screen, its call bar says where and how
+    // the call is, so the dock draws nothing; its status region stays (the one polite region of the call). A DM keeps it.
+    <div className="dw-voice-dock" data-doc-state="voice-dock" data-on-stage={stageShown && server !== null ? 'true' : undefined}>
       {banner !== null ? (
         <div ref={bannerRef} className="dw-voice-dock__paused" role="status">
           <p id="dw-voice-dock-paused">{banner.text}</p>

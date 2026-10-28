@@ -136,7 +136,8 @@ const PRIMARY = [
   // Ruling AB: the server head's ⌄ is the prototype's 26px (secondary tier); the DM head's "message someone" stays primary.
   // Task 7 (rule 0): the composer's send (28) and footer tools (26 x 24) are the prototype's sizes, so they are secondary.
   '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)',
-  '.d-call-bar button', '.d-call-stage__controls button',
+  // Task 8 (rule 0): the stage's call bar is the prototype's 44 x 40 controls (Signal §5.6), so it is secondary.
+  '.d-call-bar button',
 ].join(', ');
 
 async function expectTargets(page: Page, tag: string, state: string): Promise<void> {
@@ -995,7 +996,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
     await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
     await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
-    const phoneJoin = cy.locator('.dw-voice-join');
+    const phoneJoin = cy.locator('.d-call-stage__join');
     await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });

@@ -197,6 +197,32 @@ const SIGNAL_GEOMETRY: Record<string, Want[]> = {
     { sel: '.d-reminders__row[data-due="true"] .d-reminders__icon', w: 26, h: 26, color: 'rgb(255, 209, 106)', background: 'rgba(255, 209, 106, 0.14)' },
     { sel: '.d-reminders__action', h: 26 },
   ],
+  // Task 8 (Ruling C, README §5.6, the prototype's values): the 64px call bar on --bg-2, its 40px controls (7px corners, --surface-tile
+  // idle, the danger tint on, --accent for Camera, Leave --danger on --danger-ink); the stage's 16:9 tiles on #0E1116 with 10px
+  // corners, 64px faces and the 22px caption; the focused tile's 28px Grid and full screen over a 188px filmstrip (150 on a phone),
+  // its 120px face; the preview's 48px faces and its 40px green Join voice.
+  'voice-callcontrols--default': [
+    { sel: '.d-call-stage__controls[data-bar]', h: 64, background: 'rgb(11, 13, 16)' },
+    { sel: '.d-call-controls--bar [data-control="mute"]', h: 40, radius: 7, background: 'rgb(17, 21, 26)', color: 'rgb(228, 232, 238)' },
+    { sel: '.d-call-controls--bar [data-control="leave"]', h: 40, background: 'rgb(255, 110, 110)', color: 'rgb(26, 6, 6)' },
+  ],
+  'voice-callcontrols--muted': [{ sel: '.d-call-controls--bar [data-control="mute"]', h: 40, color: 'rgb(255, 110, 110)', background: 'rgba(255, 110, 110, 0.1)' }],
+  'voice-callcontrols--camera-on': [{ sel: '.d-call-controls--bar [data-control="camera"]', h: 40, color: 'rgb(3, 18, 30)', background: 'rgb(90, 168, 230)' }],
+  'voice-callstage--grid-2': [
+    { sel: '.d-call-tile[data-stage]', radius: 10, background: 'rgb(14, 17, 22)' },
+    { sel: '.d-call-tile__avatar .d-avatar', w: 64, h: 64 },
+    { sel: '.d-call-tile[data-stage] .d-call-tile__caption', h: 22 },
+  ],
+  'voice-callstage--focus-share': [
+    { sel: '.d-call-tile__grid', h: 28 }, { sel: '.d-call-tile__fullscreen', w: 28, h: 28 },
+    { sel: '.d-call-stage__tile[data-focused="false"]', w: 188 },
+  ],
+  'voice-callstage--focus-person': [{ sel: '.d-call-stage__tile[data-focused="true"] .d-call-tile__avatar .d-avatar', w: 120, h: 120 }],
+  'voice-callstage--not-joined-preview': [
+    { sel: '.d-call-stage__face .d-avatar', w: 48, h: 48 },
+    { sel: '.d-call-stage__join', h: 40, background: 'rgb(124, 255, 142)', color: 'rgb(6, 21, 10)' },
+  ],
+  'voice-callstage--phone': [{ sel: '.d-call-stage__tile[data-focused="false"]', w: 150 }],
   'shell-phoneheader--signal': [{ sel: '.d-phone-header', h: 52 }, { sel: '.d-phone-header__back', w: 44, h: 44 },
     { sel: '.d-phone-header__actions .d-btn[aria-label="Threads"]', w: 30, h: 28 }, { sel: '.d-phone-header__actions .d-icon-button', w: 36, h: 28 }],
 };

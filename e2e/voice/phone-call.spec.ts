@@ -20,7 +20,8 @@ test('on a phone the call bar opens the stage, which holds the one mute button, 
 
     const bar = page.locator('.d-call-bar');
     const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
-    const mute = page.getByRole('button', { name: copy('voice.mute'), exact: true });
+    // Signal §5.6: the stage's mute is named by its word (Mute), the call bar's by voice.mute; one of them is in the DOM.
+    const mute = page.getByRole('button', { name: new RegExp(`^(${copy('voice.mute')}|${copy('callStage.bar.mute')})$`) });
     const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
     const title = page.locator('.d-app-shell__main .d-phone-header__title');
 
@@ -72,8 +73,8 @@ test('on a phone without getDisplayMedia the stage offers no share button', asyn
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(stage(page)).toBeVisible({ timeout: WAIT });
     const toolbar = stage(page).getByRole('toolbar');
-    const share = toolbar.getByRole('button', { name: copy('voice.shareOn'), exact: true });
-    const mute = toolbar.getByRole('button', { name: copy('voice.mute'), exact: true });
+    const share = toolbar.locator('[data-control="share"]');
+    const mute = toolbar.locator('[data-control="mute"]');
     await expect(mute).toBeVisible({ timeout: WAIT });
     await expect(share).toHaveCount(1);
 
@@ -81,11 +82,11 @@ test('on a phone without getDisplayMedia the stage offers no share button', asyn
     expect(await page.evaluate(() => typeof navigator.mediaDevices.getDisplayMedia)).toBe('undefined');
     // Any change of the call renders the toolbar again: a mute and an unmute.
     await mute.click();
-    await expect(mute).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+    await expect(mute).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     await mute.click();
-    await expect(mute).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+    await expect(mute).not.toHaveAttribute('data-on', { timeout: WAIT });
     await expect(share).toHaveCount(0);
-    const leave = toolbar.getByRole('button', { name: copy('voice.leave'), exact: true });
+    const leave = toolbar.locator('[data-control="leave"]');
     await expect(leave).toBeVisible();
     await leave.click();
     await expect(toolbar).toHaveCount(0, { timeout: WAIT });

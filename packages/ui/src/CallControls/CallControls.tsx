@@ -73,6 +73,15 @@ export interface ToolbarControl {
   shortcut?: string;
   /** Why an inert control is inert (`voice.why.*`): shown in the tooltip after the label and read as its description. */
   why?: string;
+  /**
+   * Signal's call bar (§5.6): the visible word after the glyph, which is then the control's name (no `aria-label`). With
+   * `swap`, the word carries the state ("Unmute" while muted, the prototype's copy) and the control is a plain button with
+   * no `aria-pressed`: a label and a pressed state must not both say it (WCAG 2.5.3, 4.1.2).
+   */
+  text?: string;
+  swap?: boolean;
+  /** The shortcut drawn after the word (10px at 0.6), e.g. ⌘⇧M. Decorative: `keys` and the description say it. */
+  keycap?: string;
   onAction(): void;
 }
 
@@ -176,7 +185,8 @@ export function VoiceToolbar({ label, controls, className, keyshortcuts = true }
         <Fragment key={c.id}>
           {c.apart === true ? <span className="d-voice-toolbar__divider" aria-hidden="true" /> : null}
           <Button variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
-            data-tint={c.on === undefined ? undefined : (c.tint ?? 'danger')} pressed={c.on} mark={false} aria-label={c.label}
+            data-tint={c.on === undefined ? undefined : (c.tint ?? 'danger')} data-on={c.on === true ? 'true' : undefined}
+            pressed={c.swap === true ? undefined : c.on} mark={false} aria-label={c.text === undefined ? c.label : undefined}
             aria-keyshortcuts={keyshortcuts ? c.keys : undefined} aria-describedby={describedBy(c)}
             aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
             onFocus={e => {
@@ -200,7 +210,9 @@ export function VoiceToolbar({ label, controls, className, keyshortcuts = true }
               setHovered(h => (h === c.id ? null : h));
             }}
             onClick={() => { if (c.inert !== true) c.onAction(); }}>
-            <Icon name={c.on === true ? c.iconOn ?? c.icon : c.icon} />
+            <Icon name={c.on === true ? c.iconOn ?? c.icon : c.icon} size={16} />
+            {c.text !== undefined ? <span className="d-voice-toolbar__text">{c.text}</span> : null}
+            {c.keycap !== undefined ? <span className="d-voice-toolbar__keycap" aria-hidden="true">{c.keycap}</span> : null}
           </Button>
         </Fragment>
       ))}
@@ -220,7 +232,7 @@ export function VoiceToolbar({ label, controls, className, keyshortcuts = true }
           lastHover.current = null;
           setHovered(null);
         }}>
-        {shown !== null ? <span>{shown.why !== undefined ? `${shown.label} — ${shown.why}` : shown.label}</span> : null}
+        {shown !== null ? <span>{shown.why !== undefined ? `${shown.text ?? shown.label} — ${shown.why}` : shown.text ?? shown.label}</span> : null}
         {shown?.shortcut !== undefined ? <kbd className="d-voice-toolbar__keys">{shown.shortcut}</kbd> : null}
       </span>
     </div>
@@ -240,7 +252,14 @@ export interface CallControlsProps {
   /** True while the call is paused or held; it picks the reason camera and share give. Absent, `!canCamera` stands for it. */
   paused?: boolean;
   /** `why`: the reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
-  labels: { region: string; mute: string; deafen: string; camera: string; share: string; leave: string; why?: VoiceWhyLabels };
+  labels: { region: string; mute: string; deafen: string; camera: string; share: string; leave: string; why?: VoiceWhyLabels;
+    /**
+     * Signal's call bar (§5.6): the visible words, which name the controls. Mute, deafen and share swap their word with the
+     * state (Mute / Unmute, Deafen / Undeafen, Share / Stop sharing) and carry no `aria-pressed`; Camera keeps its word and
+     * `aria-pressed`. Without them the controls are the icon-only toolbar named by the labels above.
+     */
+    bar?: { mute: string; unmute: string; deafen: string; undeafen: string; camera: string; share: string; stopShare: string; leave: string };
+  };
   /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
   shortcuts?: { mute: string; deafen: string };
   /**
@@ -260,13 +279,22 @@ export function CallControls({
   muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, keyshortcuts, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? !canCamera, canCamera, canShare });
+  const bar = labels.bar;
+  // The prototype's mute shows on (mic-off, Unmute) while deafened too: deafened is muted as well.
+  const muteOn = bar !== undefined ? muted || deafened : muted;
+  const words = (text: string | undefined, keycap?: string) => (bar === undefined ? {} : { text, swap: true, ...(keycap !== undefined ? { keycap } : {}) });
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: labels.mute, on: muted, inert: busy, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute },
-    { id: 'deafen', label: labels.deafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen },
-    { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera },
-    { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare },
-    { id: 'leave', label: labels.leave, inert: busy, danger: true, ...VOICE_ICONS.leave, onAction: onLeave },
+    { id: 'mute', label: labels.mute, on: muteOn, inert: busy, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute,
+      ...words(muteOn ? bar?.unmute : bar?.mute, shortcuts?.mute), onAction: onMute },
+    { id: 'deafen', label: labels.deafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen,
+      ...words(deafened ? bar?.undeafen : bar?.deafen, shortcuts?.deafen), onAction: onDeafen },
+    { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera,
+      ...(bar === undefined ? {} : { text: bar.camera }), onAction: onCamera },
+    { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share,
+      ...(bar === undefined ? {} : { iconOn: 'monitor-up' as const }), ...words(sharing ? bar?.stopShare : bar?.share), onAction: onShare },
+    { id: 'leave', label: labels.leave, inert: busy, danger: true, ...VOICE_ICONS.leave, ...(bar === undefined ? {} : { text: bar.leave }), onAction: onLeave },
   ].filter(c => c.id !== 'share' || hideShare !== true);
-  return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" keyshortcuts={keyshortcuts} />;
+  return <VoiceToolbar label={labels.region} controls={controls} className={bar === undefined ? 'd-call-controls' : 'd-call-controls d-call-controls--bar'}
+    keyshortcuts={keyshortcuts} />;
 }
 

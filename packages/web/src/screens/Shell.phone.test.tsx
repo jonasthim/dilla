@@ -499,7 +499,7 @@ describe('the phone shell: the call bar', () => {
   /** Joins voice 'general' from its stage, as the shell does; the call bar follows the person off the stage. */
   async function joined() {
     const app = phone({ path: `/c/${A}/${GENV}` });
-    await app.user.click(await screen.findByRole('button', { name: 'join voice' }));
+    await app.user.click(await screen.findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
     return app;
@@ -563,7 +563,7 @@ describe('the phone shell: settings', () => {
   });
   it('keeps the voice session running when settings opens and returns to the call', async () => {
     const app = phone({ path: `/c/${A}/${GENV}` });
-    await app.user.click(await screen.findByRole('button', { name: 'join voice' }));
+    await app.user.click(await screen.findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     act(() => app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV })));
     goto('/settings', { settingsFrom: `/c/${A}/${GENV}` });
@@ -644,7 +644,7 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
   describe('while typing', () => {
     async function inCall() {
       const app = phone({ path: `/c/${A}/${GENV}` });
-      await app.user.click(await screen.findByRole('button', { name: 'join voice' }));
+      await app.user.click(await screen.findByRole('button', { name: 'Join voice' }));
       await waitFor(() => expect(app.sessions).toHaveLength(1));
       app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
       goto(`/c/${A}/${TEXT}`);
@@ -729,7 +729,7 @@ describe('web3.9 WEB-AFK: a phone is exempt from the AFK move (R5)', () => {
   it('the first activity report after a join carries exempt, the second does not', async () => {
     const app = phone({ path: `/c/${A}/${GENV}` });
     act(() => app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false }));
-    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'join voice' }));
+    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     act(() => app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV })));
     await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(1));
@@ -749,7 +749,7 @@ describe('web3.9 WEB-AFK: a phone is exempt from the AFK move (R5)', () => {
     app.client.handler = command => command.m === 'afkActivity' && failures-- > 0
       ? Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' })) : base(command);
     act(() => app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false }));
-    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'join voice' }));
+    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     act(() => app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV })));
     await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(1));

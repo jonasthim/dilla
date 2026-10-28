@@ -69,12 +69,12 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
     const camera = tile(bob.page, 'alice');
 
     await test.step('1. alice shares her camera and her screen', async () => {
-      const cameraOn = controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true });
+      const cameraOn = controls.locator('[data-control="camera"]');
       await cameraOn.click();
-      await expect(cameraOn).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
-      const share = controls.getByRole('button', { name: copy('voice.shareOn'), exact: true });
+      await expect(cameraOn).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+      const share = controls.locator('[data-control="share"]');
       await share.click();
-      await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+      await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     });
 
     await test.step('2. bob sees two tiles for alice; the screen is focused and takes most of the stage', async () => {
@@ -128,8 +128,8 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
     });
 
     await test.step('alice stops her camera and screen; the focus and the tiles go', async () => {
-      await controls.getByRole('button', { name: copy('voice.shareOn'), exact: true }).click();
-      await controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true }).click();
+      await controls.locator('[data-control="share"]').click();
+      await controls.locator('[data-control="camera"]').click();
       await expect(shared).toHaveCount(0, { timeout: WAIT });
       await expect(camera).toHaveAttribute('data-source', 'avatar', { timeout: WAIT });
       await expect(tiles(bob.page)).toHaveCount(2);

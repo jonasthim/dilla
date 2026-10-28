@@ -77,6 +77,7 @@
  *   icons/alarm-clock.svg  b6d5c6298468151d429c184ccb404fae746f4abe34579289d9946aab167a078b
  *   icons/smile-plus.svg  394b13141695981e7cb6e0684bdd92c98dea8ec48cc0b2b771303323d7cf7c69
  *   icons/code-xml.svg  f0782c1c2078078fe8017b713d7da1e118023caeff579f6f1de177b608da2ce9
+ *   icons/layout-grid.svg  ae25ece718b9968c27a80c68f91e75bb2cf625764aa2cbf9cd78a31179614bc2
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -468,6 +469,12 @@ export const ICONS = {
     ['path', { d: 'm18 16 4-4-4-4' }],
     ['path', { d: 'm6 8-4 4 4 4' }],
     ['path', { d: 'm14.5 4-5 16' }],
+  ],
+  'layout-grid': [
+    ['rect', { width: '7', height: '7', x: '3', y: '3', rx: '1' }],
+    ['rect', { width: '7', height: '7', x: '14', y: '3', rx: '1' }],
+    ['rect', { width: '7', height: '7', x: '14', y: '14', rx: '1' }],
+    ['rect', { width: '7', height: '7', x: '3', y: '14', rx: '1' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

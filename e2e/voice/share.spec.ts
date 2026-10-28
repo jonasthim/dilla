@@ -187,9 +187,9 @@ test('a screen share and a camera reach the other browser verified, and stop', a
     const video = seen.locator('video.d-call-tile__video');
 
     await test.step('share the screen after a click, then stop', async () => {
-      const share = controls.getByRole('button', { name: copy('voice.shareOn'), exact: true });
+      const share = controls.locator('[data-control="share"]');
       await share.click();
-      await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+      await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
       // web3.8: the screen is a tile of its own; alice's person tile (an avatar, she shares no camera) keeps the glyph.
       const shared = screenTile(bob.page, 'alice');
       await expect(word('screen')).toBeVisible({ timeout: WAIT });
@@ -203,12 +203,12 @@ test('a screen share and a camera reach the other browser verified, and stop', a
     });
 
     await test.step('camera on, then off', async () => {
-      const camera = controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true });
+      const camera = controls.locator('[data-control="camera"]');
       await camera.click();
       await expect(word('video')).toBeVisible({ timeout: WAIT });
       await expect(seen).toHaveAttribute('data-media', 'true', { timeout: WAIT });
       await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: WAIT }).toBeGreaterThan(0);
-      await expect(camera).toHaveAttribute('aria-pressed', 'true');
+      await expect(camera).toHaveAttribute('data-on', 'true');
       await camera.click();
       await expect(word('video')).toHaveCount(0, { timeout: WAIT });
       await expect(seen).not.toHaveAttribute('data-media', 'true', { timeout: WAIT });
@@ -249,7 +249,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     await heard(bob.page, a.device);
     const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
-      .getByRole('button', { name: copy('voice.shareOn'), exact: true });
+      .locator('[data-control="share"]');
     const notice = stage(alice.page).locator('.d-call-stage__notice[role="status"]');
     const shared = screenTile(bob.page, 'alice');
     const mark = stateWord(shared, 'no-sound');
@@ -257,7 +257,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(notice).not.toContainText(copy(noticeKey));
 
     await share.click();
-    await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+    await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     const opts = await alice.page.evaluate(() => (globalThis as unknown as { __dmOpts?: unknown }).__dmOpts);
     expect(opts, 'the options the share gave getDisplayMedia').toEqual(SHARE_OPTIONS);
     if (!firefox) {
@@ -282,7 +282,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
 
     // Stop: the notice, the mark and the tile go.
     await share.click();
-    await expect(share).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+    await expect(share).not.toHaveAttribute('data-on', { timeout: WAIT });
     await expect(notice).not.toContainText(copy(noticeKey), { timeout: WAIT });
     await expect(mark).toHaveCount(0, { timeout: WAIT });
     await expect(shared).toHaveCount(0, { timeout: WAIT });
@@ -316,11 +316,11 @@ test('a share without sound takes its sound from a picked audio input', async ({
     await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     await heard(bob.page, a.device);
     const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
-      .getByRole('button', { name: copy('voice.shareOn'), exact: true });
+      .locator('[data-control="share"]');
     const shared = screenTile(bob.page, 'alice');
     const mark = stateWord(shared, 'no-sound');
     await share.click();
-    await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+    await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     await expect(mark).toBeVisible({ timeout: WAIT });
     const from = stage(alice.page).getByRole('combobox', { name: copy('voice.shareAudio.from'), exact: true });
     await expect(from).toBeVisible({ timeout: WAIT });
@@ -403,9 +403,9 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
       expect(await audibleLevel(bob.page), 'the level bob’s page plays of alice’s muted microphone').toBeLessThan(AUDIBLE_RMS);
 
       const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
-        .getByRole('button', { name: copy('voice.shareOn'), exact: true });
+        .locator('[data-control="share"]');
       await share.click();
-      await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+      await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
       await expect(stateWord(seen, 'screen')).toBeVisible({ timeout: WAIT });
       await expect(screenTile(bob.page, 'alice')).toHaveAttribute('data-media', 'true', { timeout: WAIT });
       await audible(bob.page);

@@ -48,7 +48,7 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
     const seen = tile(bob.page, 'alice');
     const controls = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
     // Since web3.8 the user panel owns mute; the stage toolbar keeps its own toggle (C-20).
-    const mute = controls.getByRole('button', { name: copy('voice.mute'), exact: true });
+    const mute = controls.locator('[data-control="mute"]');
 
     if (browserName === 'firefox') {
       // Firefox's fake microphone is not a tone on every build; where it is silent there is nothing to light.
@@ -63,7 +63,7 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
 
     await test.step('a mute through the stage toolbar puts alice\'s own tile out within 400 ms', async () => {
       await mute.click();
-      await expect(mute).toHaveAttribute('aria-pressed', 'true');
+      await expect(mute).toHaveAttribute('data-on', 'true');
       await expect.poll(() => ownSpeaking(alice.page), { timeout: MUTED_BOUND, message: 'alice is muted: her own tile is not speaking' }).toBe(false);
       // Bob's tile follows once the last audio has played out (the 300 ms hold and the jitter buffer), within a state's wait.
       await expect(seen).toHaveAttribute('data-speaking', 'false', { timeout: WAIT });
@@ -72,7 +72,7 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
     await test.step('an unmute lights them again within a beat, far under the old second', async () => {
       const t0 = Date.now();
       await mute.click();
-      await expect(mute).toHaveAttribute('aria-pressed', 'false');
+      await expect(mute).not.toHaveAttribute('data-on');
       await expect.poll(() => ownSpeaking(alice.page), { timeout: ONSET_BOUND, message: 'alice is speaking again on her own tile' }).toBe(true);
       const own = Date.now() - t0;
       await expect(seen).toHaveAttribute('data-speaking', 'true', { timeout: REMOTE_BOUND });

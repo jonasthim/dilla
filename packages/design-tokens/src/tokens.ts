@@ -25,6 +25,11 @@ export type ColorTokens = {
   fgQuiet: string;
   /** The prototype's striped tile (a GIF in the tray, the art placeholder): rgba(255,255,255,.04) in signal. */
   patternStripe: string;
+  /**
+   * The voice stage (task 8), each the prototype's literal: a tile's fill, its 0.03 stripe, the 0.82 scrim under a focused
+   * tile's caption and buttons, a speaking focused tile's edge, Leave's hover, and Join voice's ink on --ok.
+   */
+  stageTile: string; stageStripe: string; scrimTile: string; okEdge: string; dangerHover: string; okInk: string;
   linkUnderline: 0 | 1;
 };
 
@@ -42,6 +47,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentFaint: 'rgba(90,168,230,0.07)', accentFlash: 'rgba(90,168,230,0.18)', accentHover: 'rgba(90,168,230,0.08)', fgFaint: '#636A75', scrimTag: 'rgba(8,9,11,0.8)',
     codeLineNo: '#4A5059', codeComment: '#6C737E', codeBool: '#E9B6EC', codeKeyword: '#C4A7FF', codeRowHover: 'rgba(255,255,255,0.02)',
     dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E', patternStripe: 'rgba(255,255,255,0.04)',
+    stageTile: '#0E1116', stageStripe: 'rgba(255,255,255,0.03)', scrimTile: 'rgba(8,9,11,0.82)', okEdge: 'rgba(124,255,142,0.7)', dangerHover: '#FF8585', okInk: '#06150A',
     linkUnderline: 0,
   },
   light: {
@@ -57,6 +63,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentFaint: 'rgba(0,87,153,0.07)', accentFlash: 'rgba(0,87,153,0.18)', accentHover: 'rgba(0,87,153,0.08)', fgFaint: '#5C635C', scrimTag: 'rgba(20,23,26,0.8)',
     codeLineNo: '#5C635C', codeComment: '#5C635C', codeBool: '#8A2E8F', codeKeyword: '#5B3BA8', codeRowHover: 'rgba(0,0,0,0.03)',
     dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F', patternStripe: 'rgba(0,0,0,0.04)',
+    stageTile: '#FFFFFF', stageStripe: 'rgba(0,0,0,0.03)', scrimTile: 'rgba(20,23,26,0.82)', okEdge: 'rgba(27,115,52,0.7)', dangerHover: '#8F1E18', okInk: '#FFFFFF',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -72,6 +79,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentFaint: 'rgba(156,203,255,0.12)', accentFlash: 'rgba(156,203,255,0.3)', accentHover: 'rgba(156,203,255,0.16)', fgFaint: '#C8C8C8', scrimTag: 'rgba(0,0,0,0.85)',
     codeLineNo: '#C8C8C8', codeComment: '#C8C8C8', codeBool: '#F5C2F7', codeKeyword: '#D9C8FF', codeRowHover: 'rgba(255,255,255,0.08)',
     dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8', patternStripe: 'rgba(255,255,255,0.08)',
+    stageTile: '#000000', stageStripe: 'rgba(255,255,255,0.06)', scrimTile: 'rgba(0,0,0,0.85)', okEdge: '#9BFFA8', dangerHover: '#FFB8B8', okInk: '#000000',
     linkUnderline: 1,
   },
 };
@@ -85,7 +93,7 @@ export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['fgBody', 'bg'], ['fgStrong', 'surface2'], ['okText', 'bg2'], ['fgChip', 'surface2'],
   ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'], ['fg3', 'surface2'],
   ['fgLink', 'bg'], ['danger', 'bg'], ['warn', 'bg'], ['ok', 'bg2'],
-  ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'], ['brandInk', 'brand'],
+  ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'], ['brandInk', 'brand'], ['okInk', 'ok'], ['dangerInk', 'danger'], ['dangerInk', 'dangerHover'],
 ];
 /** UI component and large-text pairs (≥ 3:1). */
 /**
@@ -141,12 +149,14 @@ export const structural = {
     welcome: '1.125rem',  // 18px (the feed's "Welcome to #general"; task 7)
     title: '1.1875rem',   // 19px (the server name at the top of the sidebar)
     xl: '1.375rem',       // 22px
+    preview: '1rem',      // 16px (the voice preview's room name; task 8)
+    face: '2.125rem',     // 34px (a focused voice tile's 120px avatar initials; task 8)
   },
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
   trackingSoft: '0.04em',
   labelTrackingWide: '0.12em',
-  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px' },
+  radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px' },
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
   shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)' },
@@ -179,7 +189,9 @@ export const structural = {
   focusRing: '2px solid var(--accent)',
   motion: { toggle: '240ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', aside: '280ms', bar: '600ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms', hover: '140ms', tab: '160ms', spin: '180ms', dock: '340ms', railBadge: '500ms', popover: '200ms',
     /** Task 7 (the prototype's conversation): the feed's channel-switch fade, the composer's focus ring, the toolbar's rise and the 40ms entrance stagger. */
-    switch: '140ms', switchRise: '240ms', focus: '160ms', rise: '180ms', stagger: '40ms' },
+    switch: '140ms', switchRise: '240ms', focus: '160ms', rise: '180ms', stagger: '40ms',
+    /** Task 8 (the prototype's voice stage): a tile's width and a speaker's scale, the focused tile's rise, and a caption's live meter beat. */
+    stage: '260ms', focusIn: '360ms', beat: '520ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

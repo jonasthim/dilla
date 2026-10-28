@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ComposedShell, fixtureTopBar, SignalShell } from './AppShell.fixture.tsx';
+import { HarbourPreview, HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
+// The web's voice pane classes (dw-voice-channel, dw-voice-stage): app.css lays the stage out in the main pane.
+import '../../../web/src/app.css';
 import { TopBar } from '../TopBar/TopBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
@@ -208,4 +211,23 @@ export const FrameMembersClosed: Story = {
 export const FrameInVoice: Story = {
   parameters: { layout: 'fullscreen' },
   render: () => <div style={frame}><ComposedShell shell={{ topBar: topBar({ voice: true, due: 2 }), bottom: <>{dock}{userPanel}</> }} /></div>,
+};
+
+// Task 8 (rule 3e): the whole desktop frame on the voice channel harbour, as Shell.tsx composes it (no channel header, no
+// composer, no aside; VoiceView's stage in main with the voice header, the call bar and, joined, the top bar's voice chip).
+const voiceMain = (stage: React.ReactNode) => <div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">{stage}</div></div>;
+export const FrameVoice: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
+    main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" />)} /></div>,
+};
+export const FrameVoiceGrid: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
+    main={voiceMain(<HarbourStage tiles={harbourTiles()} focus={null} />)} /></div>,
+};
+export const FrameVoicePreview: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: false }} shell={{ topBar: topBar({ due: 1 }) }}
+    main={<div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="idle"><HarbourPreview /></div></div>} /></div>,
 };
