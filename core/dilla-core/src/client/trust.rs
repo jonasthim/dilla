@@ -1963,6 +1963,12 @@ impl ClientCore {
                 for key in &released {
                     c.execute("DELETE FROM app_quarantine WHERE user_id=?1 AND signature_key=?2 AND code='E_UMK_CHANGED'",params![user_id.as_slice(),key.as_slice()])?;
                 }
+                // Fix round 2: an attestation staged during the change is verified over the
+                // approved UMK now, before the user's leaves are judged; one that does not verify
+                // is dropped (the next device-list read brings it again).
+                if let Some(staged) = super::account_kind::take_staged(c, user_id)? {
+                    super::account_kind::promote(c, user_id, &staged, &[*expected_umk])?;
+                }
                 for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();

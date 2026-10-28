@@ -74,20 +74,19 @@ export function headAttestation(head: Uint8Array): Uint8Array | null {
 
 /**
  * Task S1 part 2: hand the head's account-kind attestation to the core before the user's history is ingested, so the
- * ingest's leaf verdicts judge the credential's kind against it. A core with no pinned instance key (E_CORE_STATE) cannot
- * judge one and keeps the earlier rule. Every other refusal of a server-supplied attestation (malformed, or anything the
- * core answers) is a withheld attestation: E_DEVICE_LIST_STALE, the same as a stale read, so the ingest does not run and
- * the user's leaves stay pending once an attestation was seen. It is never surfaced as a leaf verdict (E_CREDENTIAL is the
- * core's verdict on a verified attestation of another kind), so a server cannot steer which verdict the client shows.
+ * ingest's leaf verdicts judge the credential's kind against it. The core stores one only once it verifies; one it cannot
+ * verify yet (no pin, or a UMK change not yet recorded) it stages, and the history ingest verifies it over the UMK that
+ * history establishes. Fix round 2: this never throws. Any refusal (a malformed attestation, a core with no pinned
+ * instance key) is handled exactly like a withheld attestation: nothing is stored and the history ingest still runs, so a
+ * key change is still recorded and the removal feed never stalls; a user without a verified attestation stays pending once
+ * one was seen. No refusal ever surfaces as a leaf verdict (E_CREDENTIAL is the core's verdict on a verified attestation
+ * of another kind), so a server cannot steer which verdict the client shows.
  */
 export function ingestAccountKind(core: { accountKindIngest(userId: Id, attestation: Uint8Array): void }, userId: Id, head: Uint8Array): void {
-  const attestation = headAttestation(head);
+  let attestation: Uint8Array | null;
+  try { attestation = headAttestation(head); } catch { return; }
   if (attestation === null) return;
-  try { core.accountKindIngest(userId, attestation); }
-  catch (e) {
-    if (e instanceof CoreError && e.code === 'E_CORE_STATE') return;
-    throw new CoreError('E_DEVICE_LIST_STALE', 'account-kind attestation refused');
-  }
+  try { core.accountKindIngest(userId, attestation); } catch { /* withheld: the ingest runs without it */ }
 }
 
 /**

@@ -203,14 +203,20 @@ the same bytes on every read and the instance signs it when served, for every ac
 `GET /v1/users/{user_id}/device-list` head on a wire-4 session (`09` § Accounts and devices).
 
 A client verifies an attestation **before it stores it**: under its pinned instance key and its own
-`instance_id`, over the user's pinned UMK (or a pending changed one). For a user it holds no pin for
-yet, it keeps the attestation aside and verifies it in the same step that validates the user's signed
-history and pins the UMK that history establishes, before it judges that user's leaves. One that does
-not verify is refused and stored nowhere; it never replaces a stored attestation that verified, and it
-never sets the "attestation seen" flag, which only a verified attestation sets. A client then
-stores one attestation per user and, **in addition to** the rules of § Credential, judges every leaf
-of that user against it again, with the leaf's own `umk_pub`, its pinned instance key and its own
-`instance_id`:
+`instance_id`, over the user's pinned UMK (or a pending changed one). One it cannot verify that way —
+the client holds no pin for the user yet, or the served list is under a UMK the client has not
+recorded (a key change) — it keeps aside and verifies in the step that validates the user's signed
+history and pins (or records as the pending change) the UMK that history establishes, before it
+judges that user's leaves; approving a changed UMK verifies a kept one over the approved key too. A
+kept attestation that does not verify there is dropped, and the next device-list read offers it
+again. Only a verified attestation is stored, and only it sets the "attestation seen" flag.
+Replacement is per UMK: an attestation never replaces one verified over the same UMK unless it
+verifies too, and one verified over a newly recorded changed UMK replaces the old key's. A
+malformed attestation, or one the client cannot handle at all, is treated exactly like a withheld
+one: nothing is stored and the history read still proceeds, so a key change is still recorded and
+nothing that waits on that read (the removal feed) stalls. A client then stores one attestation per
+user and, **in addition to** the rules of § Credential, judges every leaf of that user against it
+again, with the leaf's own `umk_pub`, its pinned instance key and its own `instance_id`:
 
 - the signature verifies and `kind` equals the credential's `kind`: the leaf passes;
 - the signature verifies and `kind` differs: the leaf fails with `E_CREDENTIAL` (a member whose

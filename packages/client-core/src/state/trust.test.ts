@@ -206,17 +206,14 @@ describe('the account-kind attestation on a wire-4 head', () => {
     ingestAccountKind({ accountKindIngest: (_u, a) => { seen.push(a); } }, id16(2), head4(3));
     expect(seen).toEqual([ATTESTATION]);
     ingestAccountKind({ accountKindIngest: () => { throw new Error('not called'); } }, id16(2), list(3));
-    expect(() => ingestAccountKind({ accountKindIngest: () => { throw new CoreError('E_CORE_STATE', 'no pin'); } }, id16(2), head4(3))).not.toThrow();
-    // Security fix: any other refusal of the server's attestation is a withheld one (stale), never a leaf verdict.
-    for (const code of ['E_CORE_INPUT', 'E_CREDENTIAL', 'E_CORE_STORAGE']) {
-      let thrown: unknown;
-      try { ingestAccountKind({ accountKindIngest: () => { throw new CoreError(code, 'refused'); } }, id16(2), head4(3)); }
-      catch (e) { thrown = e; }
-      expect(thrown, code).toBeInstanceOf(CoreError);
-      expect((thrown as CoreError).code, code).toBe('E_DEVICE_LIST_STALE');
+    // Fix round 2: every refusal is a withheld attestation: nothing thrown, never a leaf verdict, and the caller's history
+    // ingest runs (the security finding's "no steering" holds; a key change is still recorded; removals never stall).
+    for (const code of ['E_CORE_STATE', 'E_CORE_INPUT', 'E_CREDENTIAL', 'E_CORE_STORAGE']) {
+      expect(() => ingestAccountKind({ accountKindIngest: () => { throw new CoreError(code, 'refused'); } }, id16(2), head4(3)), code)
+        .not.toThrow();
     }
-    let plain: unknown;
-    try { ingestAccountKind({ accountKindIngest: () => { throw new Error('boom'); } }, id16(2), head4(3)); } catch (e) { plain = e; }
-    expect((plain as CoreError).code).toBe('E_DEVICE_LIST_STALE');
+    expect(() => ingestAccountKind({ accountKindIngest: () => { throw new Error('boom'); } }, id16(2), head4(3))).not.toThrow();
+    const six = encode([3, new Uint8Array([3]), new Uint8Array(64), key32(3), ATTESTATION, 0]);
+    expect(() => ingestAccountKind({ accountKindIngest: () => { throw new Error('not called'); } }, id16(2), six)).not.toThrow();
   });
 });

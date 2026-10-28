@@ -212,23 +212,43 @@ pub(super) fn take_staged(
             |r| r.get(0),
         )
         .optional()?;
-    if raw.is_some() {
-        c.execute(
-            "DELETE FROM app_account_kind_staged WHERE user_id=?1",
-            [user.as_slice()],
-        )?;
-    }
-    Ok(raw.and_then(|b| AccountKindAttestation::decode(&b).ok()))
+    let Some(raw) = raw else { return Ok(None) };
+    c.execute(
+        "DELETE FROM app_account_kind_staged WHERE user_id=?1",
+        [user.as_slice()],
+    )?;
+    // Every staged blob was decoded before it was staged, so one that does not decode now is a
+    // corrupt store, not server input: an explicit storage error, never a silent drop.
+    AccountKindAttestation::decode(&raw)
+        .map(Some)
+        .map_err(|_| StorageError::Codec("staged account-kind attestation is malformed".into()))
+}
+
+/// Stage `attestation` for `user`: the next step that validates the user's history and pins a UMK
+/// (`ingest_leaf`), or the approval of a changed UMK (`trust_verify`), verifies it over that UMK.
+fn stage(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+    attestation: &[u8],
+) -> Result<(), StorageError> {
+    c.execute(
+        "INSERT INTO app_account_kind_staged(user_id,attestation) VALUES(?1,?2) \
+         ON CONFLICT(user_id) DO UPDATE SET attestation=excluded.attestation",
+        params![user.as_slice(), attestation],
+    )?;
+    Ok(())
 }
 
 impl ClientCore {
     /// Offer the instance's account-kind attestation for `user_id` (the fifth element of a wire-4
     /// device-list head) before that user's signed history is ingested. It is verified before it is
     /// stored (fix round 1, M1): against the pinned instance key and the user's pinned UMK (or a
-    /// pending changed one) when this client holds a pin; for a user it has no pin for yet, it is
-    /// staged and `ingest_leaf` verifies it against the UMK the validated history establishes. A
-    /// verified one sets the "attestation seen" flag; one that does not verify is refused
-    /// (`E_CORE_INPUT`) and never replaces a verifying one.
+    /// pending changed one) when this client holds a pin. Otherwise (no pin yet, or a UMK the
+    /// client has not recorded: a key change) it is staged, and the step that validates the user's
+    /// history and pins a UMK (`ingest_leaf`), or the approval of a changed UMK (`trust_verify`),
+    /// verifies it over that UMK. A verified one sets the "attestation seen" flag; one that does not
+    /// verify is never stored and never replaces one verified over the same UMK. Only a malformed
+    /// attestation is refused (`E_CORE_INPUT`).
     pub fn account_kind_ingest(
         &mut self,
         user_id: &[u8; 16],
@@ -259,26 +279,25 @@ impl ClientCore {
                 .map_err(Into::into)
             })?;
             let Some((umk, changed)) = pin else {
-                u.with_conn(|c| {
-                    c.execute(
-                        "INSERT INTO app_account_kind_staged(user_id,attestation) VALUES(?1,?2) \
-                         ON CONFLICT(user_id) DO UPDATE SET attestation=excluded.attestation",
-                        params![user_id.as_slice(), attestation],
-                    )?;
-                    Ok(())
-                })?;
+                u.with_conn(|c| stage(c, user_id, attestation))?;
                 return Ok(());
             };
-            let umks: Vec<[u8; 32]> = [Some(umk), changed]
-                .into_iter()
-                .flatten()
-                .filter_map(|k| <[u8; 32]>::try_from(k.as_slice()).ok())
-                .collect();
+            // A pin's UMKs are 32 bytes (the table's CHECK); anything else is a corrupt store.
+            let mut umks = Vec::with_capacity(2);
+            for key in [Some(umk), changed].into_iter().flatten() {
+                umks.push(<[u8; 32]>::try_from(key.as_slice()).map_err(|_| {
+                    ClientError::new(super::error::E_CORE_STORAGE, "a pinned UMK is not 32 bytes")
+                })?);
+            }
             match u.with_conn(|c| promote(c, user_id, &decoded, &umks))? {
-                Promotion::Refused => Err(ClientError::new(
-                    E_CORE_INPUT,
-                    "account-kind attestation does not verify",
-                )),
+                // Fix round 2: not over the pinned UMK or the pending change. The served list may be
+                // under a new UMK this client has not recorded yet, so the attestation is staged, never
+                // refused: the history ingest still runs, records the change (E_UMK_CHANGED) and
+                // verifies the staged attestation over the UMK that history establishes.
+                Promotion::Refused => {
+                    u.with_conn(|c| stage(c, user_id, attestation))?;
+                    Ok(())
+                }
                 Promotion::Stored { changed } => {
                     if changed {
                         u.with_conn(super::trust::bump_generation)?;

@@ -2691,3 +2691,104 @@ fn a_human_leaf_attested_as_a_bot_is_refused_at_ingest() {
     );
     assert_eq!(account_kinds(&alice, &bob.user), Some(1));
 }
+
+// ---- Task S1 fix round 2: an attestation over a UMK change is staged, never refused ----
+
+fn attestation_over(user: &[u8; 16], umk: &[u8; 32], kind: u8) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
+    let message = dilla_core::identity::account_kind_message(&INSTANCE, user, umk, kind);
+    dilla_core::identity::AccountKindAttestation {
+        key_id: [0x53; 16],
+        kind,
+        signature: key.sign(&message).to_bytes(),
+    }
+    .encode()
+}
+
+fn stored_kind_verifies_over(core: &Core, user: &[u8; 16], umk: &[u8; 32]) -> bool {
+    let row: Option<(i64, Vec<u8>)> = core
+        .probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT kind,signature FROM app_account_kinds WHERE user_id=?1",
+            [user.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((kind, sig)) = row else { return false };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]).verifying_key();
+    let message = dilla_core::identity::account_kind_message(&INSTANCE, user, umk, kind as u8);
+    let sig: [u8; 64] = sig.try_into().expect("64 bytes");
+    key.verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
+        .is_ok()
+}
+
+#[test]
+fn a_umk_change_on_wire_4_is_recorded_and_its_attestation_verified_over_the_new_key() {
+    let (_, mut relay, mut alice, bob) = alice_and_bob();
+    let v1 = sec_bob_v1(&mut alice, &relay, &bob);
+    let original = sec_cached_umk(&alice, &bob.user);
+    // Wire 4 before the change: Bob's attestation over A verifies against the pin and is stored.
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &attestation_over(&bob.user, &original, 0))
+        .expect("attestation over A");
+    assert!(alice.core.account_kind_seen().expect("seen"));
+    assert!(stored_kind_verifies_over(&alice, &bob.user, &original));
+
+    // Bob's account moves to UMK B. The served head's attestation is over B: it verifies over
+    // neither the pin (A) nor a recorded change, so it is staged, not refused.
+    let rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    let changed_umk = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    let mut rotated = rotated;
+    rotated.join_external(&mut relay);
+    alice.sync(&relay);
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &attestation_over(&bob.user, &changed_umk, 0))
+        .expect("an attestation over a not-yet-recorded UMK is staged, never refused");
+    assert!(
+        stored_kind_verifies_over(&alice, &bob.user, &original),
+        "A's row is kept until B is the change"
+    );
+
+    // The history ingest runs: the change is recorded (E_UMK_CHANGED), and the staged attestation
+    // is verified over B, the UMK that history establishes.
+    let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    assert_eq!(changed, 1, "the key change is recorded");
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+    let (pinned, verified, pending) = sec_state_of(&alice, &bob.user).expect("bob state");
+    assert_eq!(
+        (pinned, verified, pending),
+        (original, 0, Some(changed_umk))
+    );
+    assert!(
+        stored_kind_verifies_over(&alice, &bob.user, &changed_umk),
+        "B's attestation replaced A's"
+    );
+
+    // A leaf of the unapproved B is not shown while the change is pending.
+    let seq = rotated.send(&mut relay, "comet under B before approval");
+    alice.sync(&relay);
+    assert_eq!(
+        alice.row_at(&GROUP, seq).status,
+        1,
+        "pending while B is unapproved"
+    );
+
+    // Approving B: B's leaves pass, with B's verified attestation.
+    alice
+        .core
+        .trust_verify(&bob.user, &changed_umk)
+        .expect("approve B");
+    let seq = rotated.send(&mut relay, "comet under B after approval");
+    alice.sync(&relay);
+    let row = alice.row_at(&GROUP, seq);
+    assert_eq!(
+        (row.status, row.body.as_str()),
+        (0, "comet under B after approval")
+    );
+}

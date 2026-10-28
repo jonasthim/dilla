@@ -149,6 +149,22 @@ it('calls a contact unlisted while a leaf of theirs is refused as revoked', asyn
 // unchanged attestation leaves the core's trust generation alone (the core's test
 // account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then pins that), so a reconnect pass
 // with nothing new refreshes no timeline.
+it('runs the history ingest after an attestation the core refuses (fix round 2: a refusal is a withheld attestation)', async () => {
+  const w = world();
+  await toReady(w);
+  const attestation = encode([1, new Uint8Array(16).fill(3), 0, new Uint8Array(64).fill(4)]);
+  w.routes.getDeviceList.mockImplementation(() => Promise.resolve({ version: 2n, blob: new Uint8Array([2]),
+    raw: encode([...row(2), attestation]) }));
+  w.routes.getDeviceListHistory.mockImplementation(() => Promise.resolve({ raw: encode([row(1), row(2)]), count: 2, lastVersion: 2n }));
+  core(w);
+  w.core.accountKindIngest.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'malformed'); });
+  pending(w, [0]);
+  await pass(w, 1311);
+  expect(w.core.accountKindIngest).toHaveBeenCalledTimes(1);
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  expect(released(w)).toEqual([0]);
+});
+
 it('hands the attestation to the core before the history ingest', async () => {
   const w = world();
   await toReady(w);

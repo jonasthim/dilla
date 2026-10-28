@@ -4383,6 +4383,17 @@ fn pinned_umk(c: &ConnHandle, user: &[u8; 16]) -> [u8; 32] {
     raw.try_into().expect("32 bytes")
 }
 
+fn staged_count(c: &ConnHandle, user: &[u8; 16]) -> i64 {
+    c.lock()
+        .expect("lock")
+        .query_row(
+            "SELECT count(*) FROM app_account_kind_staged WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("staged count")
+}
+
 fn stored_signature(c: &ConnHandle, user: &[u8; 16]) -> Option<Vec<u8>> {
     c.lock()
         .expect("lock")
@@ -4408,7 +4419,8 @@ fn account_kind_ingest_needs_the_pinned_instance_key() {
 fn account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then() {
     let (mut core, c, _, _, _) = signed_up();
     let umk = pinned_umk(&c, &USER);
-    // Malformed, or well formed but not the instance's statement: refused, nothing stored, no flag.
+    // Malformed: refused. Well formed but not over the pinned UMK: staged (fix round 2: it may be
+    // a key change's), never stored as verified. Neither sets the flag.
     assert_eq!(
         err(core.account_kind_ingest(&[0; 16], &raw_attestation(1, 0))).code,
         "E_CORE_INPUT"
@@ -4421,13 +4433,12 @@ fn account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then() {
         err(core.account_kind_ingest(&USER, &raw_attestation(1, 2))).code,
         "E_CORE_INPUT"
     );
-    assert_eq!(
-        err(core.account_kind_ingest(&USER, &raw_attestation(1, 0))).code,
-        "E_CORE_INPUT"
-    );
+    core.account_kind_ingest(&USER, &raw_attestation(1, 0))
+        .expect("staged");
+    assert_eq!(staged_count(&c, &USER), 1);
     assert!(
         !core.account_kind_seen().expect("seen"),
-        "a refused attestation sets nothing"
+        "a refused or staged attestation sets nothing"
     );
     assert_eq!(stored_signature(&c, &USER), None);
 
@@ -4445,12 +4456,10 @@ fn account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then() {
         .expect("ingest again");
     assert_eq!(core.trust_generation().expect("generation"), after);
 
-    // M1: never replaced by one that does not verify — a tombstone's zero UMK, or malformed bytes.
+    // M1: never replaced by one that does not verify over the pinned UMK (a tombstone's zero UMK
+    // is staged, not stored), and malformed bytes are refused.
     let tombstone = signed_attestation(&USER, &[0; 32], 0);
-    assert_eq!(
-        err(core.account_kind_ingest(&USER, &tombstone)).code,
-        "E_CORE_INPUT"
-    );
+    core.account_kind_ingest(&USER, &tombstone).expect("staged");
     assert_eq!(
         err(core.account_kind_ingest(&USER, &[0x80])).code,
         "E_CORE_INPUT"
