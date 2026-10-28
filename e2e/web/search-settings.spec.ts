@@ -245,7 +245,7 @@ test('settings rows align their controls, and the sign-out button holds its text
   await page.setViewportSize({ width: 1440, height: 900 });
   const columns = async (dialog: Locator) => dialog.locator('.d-settings-row__control').evaluateAll(els => els.map(el => {
     const box = el.getBoundingClientRect();
-    return { x: Math.round(box.x), width: Math.round(box.width) };
+    return { x: Math.round(box.x), width: Math.round(box.width), right: Math.round(box.right) };
   }));
   let dialog = await openSettings(page, 'devices');
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('factorSettings.nav'), exact: true }).click();
@@ -253,7 +253,7 @@ test('settings rows align their controls, and the sign-out button holds its text
   const signin = await columns(dialog);
   expect(signin.length).toBeGreaterThanOrEqual(4);
   // Task 10 (README §5.9): each row's control sits at the row's right edge, so the controls share one right x.
-  expect(new Set(signin.map(c => c.x + c.width)).size, 'one control right edge in Sign-in').toBe(1);
+  expect(new Set(signin.map(c => c.right)).size, `one control right edge in Sign-in: ${JSON.stringify(signin)}`).toBe(1);
   await closeSettings(page);
   dialog = await openSettings(page, 'devices');
   // Signal task 10 fix round 1: Sign out is on this browser's own device row (README §5.9).

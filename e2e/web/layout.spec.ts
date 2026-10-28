@@ -848,9 +848,11 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await completeSignUp(page, account, instance);
 
-  for (const section of ['voice', 'devices', 'notifications'] as const) {
+  // Task 10 fix round 1: Notifications is four switch and segmented rows with no button, so voice and devices carry the sizes.
+  for (const section of ['voice', 'devices'] as const) {
     await page.goto(`/settings/${section}`);
-    await expect(page.locator('.d-settings-row, .d-voice-settings').first()).toBeVisible({ timeout: WAIT });
+    // Task 10 fix round 1: Devices draws only device rows (no settings rows), so a device row also says the section is in.
+    await expect(page.locator('.d-settings-row, .d-voice-settings, .d-device-row').first()).toBeVisible({ timeout: WAIT });
     await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? SETTINGS_SIZES : SETTINGS_SIZES.slice(0, 1));
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
@@ -1112,9 +1114,12 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
         expect.soft(glyphs, `I6 every move ${kind} is an icon`).toBe(all.length);
       }
       expect.soft(await admin.locator('[data-move]').evaluateAll(els => els.map(e => (e.textContent ?? '').trim()).filter(Boolean)), 'I6 the moves carry no visible text').toEqual([]);
+      // Task 10 (README §5.9): ManageList rows are the prototype's 48 (8px 16px around the 32px slots) in one hairline group; a row
+      // under another carries the 1px hairline, so heights are 48 or 49 and the row pitch is one value.
       const rows = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
-      expectOne('I6 every channel row is as high as the others', rows.map(b => b.h), rows.map(b => b.t));
-      expect.soft(rows[0]?.h ?? 99, 'I6 the long-named row is 44 high, not wrapped').toBeLessThanOrEqual(44.5);
+      const ownH = (bs: readonly { h: number }[]) => bs.map(b => Math.floor(b.h));
+      expect.soft(Math.max(...ownH(rows)) - Math.min(...ownH(rows)), 'I6 every channel row is as high as the others (hairline aside): ' + rows.map(b => b.t + '=' + b.h.toFixed(1)).join(' | ')).toBeLessThanOrEqual(1);
+      expect.soft(rows[0]?.h ?? 99, 'I6 the long-named row is 48 high (+1 hairline), not wrapped').toBeLessThanOrEqual(49.5);
       const trail = await boxes(page, '.dw-admin-row .d-manage-list__trail', '.d-settings-frame__body');
       expectOne('I6 the trailing icons share one right edge', trail.map(b => b.r), trail.map(b => b.t));
       // The longest name fits a wide dialog; at a phone's width it must be cut to one line, with the row still 44 high.
@@ -1128,8 +1133,8 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
       const cut = await name.evaluate(e => ({ h: e.getBoundingClientRect().height, ellipsis: getComputedStyle(e).textOverflow, ws: getComputedStyle(e).whiteSpace, row: e.closest('.dw-admin-row')?.getBoundingClientRect().height ?? 0 }));
       expect.soft(cut.h, 'I6 the long name is one line high at 390').toBeLessThan(26);
       const rowsPhone = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
-      expectOne('I6 every channel row is as high as the others at 390 (one line each)', rowsPhone.map(b => b.h), rowsPhone.map(b => b.t));
-      expect.soft(cut.row, 'I6 the long-named row is one line plus the 44 slots (<= 54) at 390').toBeLessThanOrEqual(54);
+      expect.soft(Math.max(...ownH(rowsPhone)) - Math.min(...ownH(rowsPhone)), 'I6 every channel row is as high as the others at 390 (one line each): ' + rowsPhone.map(b => b.t + '=' + b.h.toFixed(1)).join(' | ')).toBeLessThanOrEqual(1);
+      expect.soft(cut.row, 'I6 the long-named row is the 44 slots plus the 8px paddings and a hairline (<= 61) at 390').toBeLessThanOrEqual(61);
       expect.soft(cut.ellipsis === 'ellipsis' && cut.ws === 'nowrap', `I6 the long name is cut with an ellipsis (${JSON.stringify(cut)})`).toBe(true);
       const trailPhone = await boxes(page, '.dw-admin-row .d-manage-list__trail', '.d-settings-frame__body');
       expectOne('I6 the trailing icons share one right edge at 390', trailPhone.map(b => b.r), trailPhone.map(b => b.t));

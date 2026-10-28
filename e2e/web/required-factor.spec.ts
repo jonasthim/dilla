@@ -186,7 +186,9 @@ test('the forced screen\u2019s Forget this browser clears this browser and leave
   await resetFactors(h.control, ada.username);
   await expectForced(page);
   const removals: string[] = [];
-  page.on('request', request => { if (request.method() === 'DELETE' && /\/devices?\//.test(request.url())) removals.push(request.url()); });
+  // A device's removal is DELETE /v1/devices/{id}; forget ends this browser's own sessions (DELETE …/{id}/sessions), which
+  // signs it out and leaves the device listed (internal/api/api.go), so only the bare device path counts.
+  page.on('request', request => { if (request.method() === 'DELETE' && /\/v1\/devices\/[^/?]+$/.test(new URL(request.url()).pathname)) removals.push(request.url()); });
   await page.getByRole('button', { name: copy('devices.forget'), exact: true }).click();
   const confirm = page.getByRole('dialog', { name: copy('devices.forgetTitle'), exact: true });
   await expect(confirm).toContainText(copy('devices.forgetBody'));

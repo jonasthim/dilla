@@ -173,7 +173,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
       await expect(region).toBeVisible({ timeout: WAIT });
       const bar = region.getByRole('heading', { level: 2, name: copy('members.toggle'), exact: true });
       await expect(bar).toBeVisible();
-      const barBox = await bar.boundingBox();
+      // Task 9: the heading sits in the list's own 44px head (.d-member-list__bar) beside its close ×; the head is measured.
+      const barBox = await bar.locator('xpath=..').boundingBox();
       const headerBox = await page.locator('.d-channel-header').boundingBox();
       if (barBox === null || headerBox === null) throw new Error(`no members bar or channel header at ${String(width)}`);
       // Signal §5.1: every pane's top bar is --bar-h, 44 (the prototype's members head and channel header).

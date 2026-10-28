@@ -9,7 +9,10 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const FORBIDDEN_IN_ENTRY = ['livekit', 'rnnoise'];
+// livekit in any case (a class such as LiveKitRoom). rnnoise only in lower case: its code, worklet, processor and asset names
+// are all lower case, while the voice settings' copy names the product "RNNoise" (the Signal prototype's noise hint), which
+// is text in the entry's strings, not the module.
+const FORBIDDEN_IN_ENTRY = [{ word: 'livekit', anyCase: true }, { word: 'rnnoise', anyCase: false }];
 const CORE_WASM = /^dilla_core_wasm_bg-[\w-]+\.wasm$/;
 const RNNOISE_WASM = /^rnnoise-[\w-]+\.wasm$/;
 const CORE_WASM_REF = /dilla_core_wasm_bg[\w.-]*?\.wasm/g;
@@ -50,8 +53,11 @@ export function checkEntryChunk(dir) {
       problems.push(`index.html: entry ${path} is not in dist`);
       continue;
     }
-    const body = readFileSync(join(dir, path), 'utf8').toLowerCase();
-    for (const word of FORBIDDEN_IN_ENTRY) if (body.includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
+    const body = readFileSync(join(dir, path), 'utf8');
+    const lower = body.toLowerCase();
+    for (const { word, anyCase } of FORBIDDEN_IN_ENTRY) {
+      if ((anyCase ? lower : body).includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
+    }
   }
 
   const assets = existsSync(join(dir, 'assets')) ? readdirSync(join(dir, 'assets')) : [];

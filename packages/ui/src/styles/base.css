@@ -94,8 +94,9 @@
 .d-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); color: var(--fg); }
 /* A ring above the pane's header already cleared the notch (it pads by the safe area and the grid moves down by it). */
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__main .d-phone-header { padding-top: 0; }
-/* The server menu and its items: 44px on a phone. */
-.d-app-shell[data-layout="phone"] .d-action-menu__trigger:not(.d-user-panel *) { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
+/* The server menu and its items: 44px on a phone. The channel list head's ⌄ (an ActionMenu trigger since task 10) keeps the
+   prototype's 26px square there, as the .d-btn rule above already exempts it. */
+.d-app-shell[data-layout="phone"] .d-action-menu__trigger:not(.d-user-panel *, .d-channel-list__head-btn) { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
 /* Ruling AE: the phone's user panel is the prototype's, at its desktop sizes (30px avatar, 30px mute and deafen, 64 high). */
 /* Task 9 fix round 2: a menu item keeps the prototype's 32px on a phone too (rule 0: phone sizes follow the prototype). */
 .d-app-shell[data-layout="phone"] .d-composer { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }

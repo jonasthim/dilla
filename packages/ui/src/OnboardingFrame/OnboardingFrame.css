@@ -28,5 +28,6 @@
 .d-onboarding-frame__footer > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
 .d-onboarding-frame .d-text-field__input { height: 2.5rem; }
 .d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }
-.d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }
+/* min-height: the prototype's 40px on a phone too (rule 0), over Button.css's 44px phone tier. */
+.d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; min-height: 2.5rem; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }
 @media print { .d-onboarding-frame__bar, .d-onboarding-frame__head, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } }

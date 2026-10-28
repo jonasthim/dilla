@@ -51,6 +51,13 @@ describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
     put('assets/index-AbC123.js', 'const u="/assets/rnnoise-Qrs678.wasm";\n');
     expect(checkEntryChunk(dir)).toEqual(['assets/index-AbC123.js: the entry chunk contains rnnoise']);
   });
+  it('passes an entry whose copy names the product RNNoise (the voice settings hint), but not its lower-case code', () => {
+    cleanDist();
+    put('assets/index-AbC123.js', 'const s={"hint":"Picks the best processor this device can run. Falls back to RNNoise."};\n');
+    expect(checkEntryChunk(dir)).toEqual([]);
+    put('assets/index-AbC123.js', 'const s={"hint":"Falls back to RNNoise."};m._rnnoise_create(0);\n');
+    expect(checkEntryChunk(dir)).toEqual(['assets/index-AbC123.js: the entry chunk contains rnnoise']);
+  });
   it('fails a chunk the entry preloads that contains livekit, matching any case', () => {
     cleanDist();
     put('assets/vendor-Pre111.js', 'class LiveKitRoom{}\n');
