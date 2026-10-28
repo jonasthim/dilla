@@ -98,8 +98,13 @@ exception: `nonce` comes from `POST /v1/devices/{device_id}/sessions/challenge` 
 `device_id`, and `sig` is the establish signature over it (`02` § Device sessions item 2's
 preimage, purpose `0`) by the private half of the `dsk_pub` being registered.
 
-The `credential` of the `device` sub-array is opaque to the instance: it is stored as sent (1 to
-8192 bytes) and never parsed or read back. Because the instance mints `user_id` in this response,
+The `credential` of the `device` sub-array is stored as sent (1 to 8192 bytes) after the instance
+has verified it (both signatures over this `dsk_pub`, canonical CBOR) and bound it to the request:
+it names this `device_id`, `tier` and `signer_tier`, the human kind, and the request's `umk_pub`,
+`ssk_pub` and `sig_umk_ssk`; anything else is `400 E_INVALID_REQUEST`. `POST /v1/devices` binds its
+credential the same way to the session's account: the account's own kind (`users.kind`), its
+`umk_pub`, `ssk_pub` and `sig_umk_ssk`, this device, and a `user_id` that is the session's or the
+zero placeholder (`02` § Roles, credential-kind rule). Because the instance mints `user_id` in this response,
 a registering client cannot know it when it builds the credential: it sends the credential with
 16 zero bytes as `user_id`, and after the response rebuilds its MLS credential with the minted
 `user_id` without signing anything again (`sig_ssk_dev` does not cover `user_id` and

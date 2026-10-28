@@ -89,9 +89,14 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, accountErr))
 		return
 	}
+	// Task S1: the credential is also bound to the account's own identity keys, as signup binds the
+	// first device's (accounts.go): its UMK, its SSK and the UMK's signature over that SSK are the
+	// ones users holds. A credential under any other UMK/SSK pair is a device of another identity.
 	if uint64(credential.Kind) != uint64(account.Kind) || credential.DeviceID != req.DeviceID ||
 		(credential.UserID != (id.ID{}) && credential.UserID != sess.UserID) ||
-		credential.Tier != req.Tier || credential.SignerTier != req.SignerTier {
+		credential.Tier != req.Tier || credential.SignerTier != req.SignerTier ||
+		!bytes.Equal(credential.UMKPub[:], account.UMKPub) || !bytes.Equal(credential.SSKPub[:], account.SSKPub) ||
+		!bytes.Equal(credential.SigUMKSSK[:], account.SigUMKSSK) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential does not match the account or device"))
 		return
 	}

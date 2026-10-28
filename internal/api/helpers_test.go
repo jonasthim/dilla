@@ -286,9 +286,10 @@ func seedAPIDevice(t *testing.T, d api.Deps) (store.UserRow, store.DeviceRow, ed
 	t.Helper()
 	ctx := context.Background()
 	now := d.Clock.Now().Unix()
+	umkPub, sskPub, sigUMKSSK := testAccountKeys()
 	u := store.UserRow{
 		ID: id.New(), Username: "user" + id.New().String()[:8], Display: "User",
-		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
+		UMKPub: umkPub, SSKPub: sskPub, SigUMKSSK: sigUMKSSK,
 		Created: now,
 	}
 	if err := d.Repo.CreateUser(ctx, u); err != nil {
