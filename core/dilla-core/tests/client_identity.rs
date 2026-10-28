@@ -4368,11 +4368,11 @@ fn account_kind_ingest_needs_the_pinned_instance_key_and_records_the_seen_flag()
     );
     assert_eq!(
         err(core.account_kind_ingest(&USER, &attestation_bytes(2, 0))).code,
-        "E_CREDENTIAL"
+        "E_CORE_INPUT"
     );
     assert_eq!(
         err(core.account_kind_ingest(&USER, &attestation_bytes(1, 2))).code,
-        "E_CREDENTIAL"
+        "E_CORE_INPUT"
     );
     assert!(
         !core.account_kind_seen().expect("seen"),
@@ -4384,4 +4384,11 @@ fn account_kind_ingest_needs_the_pinned_instance_key_and_records_the_seen_flag()
     // Idempotent: the same attestation again is no error.
     core.account_kind_ingest(&USER, &attestation_bytes(1, 0))
         .expect("ingest again");
+    // Once seen, a malformed attestation is an input error that stores nothing and leaves the flag:
+    // the user is judged as having none (pending), never as a kind mismatch.
+    assert_eq!(
+        err(core.account_kind_ingest(&USER, &[0x80])).code,
+        "E_CORE_INPUT"
+    );
+    assert!(core.account_kind_seen().expect("seen"));
 }

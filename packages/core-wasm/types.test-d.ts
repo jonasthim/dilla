@@ -93,6 +93,7 @@ interface ExpectedCoreHandle {
   proposed_adds(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
   device_list_ingest_add(group_id: Uint8Array, proposals_body: Uint8Array, index: bigint, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
   device_list_ingest(group_id: Uint8Array, leaf_index: number, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+  account_kind_ingest(user_id: Uint8Array, attestation: Uint8Array): void;
   revalidate_pending(group_id: Uint8Array, leaf_index: number, limit: number): number;
   trust_state(): Uint8Array;
   trust_generation(): bigint;

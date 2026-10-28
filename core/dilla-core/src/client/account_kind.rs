@@ -129,8 +129,11 @@ impl ClientCore {
         if *user_id == [0; 16] {
             return Err(ClientError::new(E_CORE_INPUT, "user_id is all zero"));
         }
+        // A malformed attestation is the server's input error (E_CORE_INPUT), never E_CREDENTIAL:
+        // that code is the leaf verdict of a verified attestation of another kind, and a server must
+        // not be able to steer a client into showing it.
         let attestation = AccountKindAttestation::decode(attestation)
-            .map_err(|_| ClientError::new(E_CREDENTIAL, "malformed account-kind attestation"))?;
+            .map_err(|_| ClientError::new(E_CORE_INPUT, "malformed account-kind attestation"))?;
         self.write(|_, u| {
             let (key, instance) = u.with_conn(pinned_instance)?.ok_or_else(|| {
                 ClientError::new(E_CORE_STATE, "instance signing key is not pinned")

@@ -70,11 +70,13 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // web-3.1 adds the community_changed (op 54) frame case: frames 30 -> 31, total 349 -> 350.
 // web3.7 RB1 adds the message.ct with a null class frame case: frames 31 -> 32, total 350 -> 351.
 // AW3 adds the two afk_away (op 55) frame cases: frames 32 -> 34, total 351 -> 353.
+// Task S1 part 2 adds the account-kind attestation (a human and a Bot, message and signature
+// each): identity 8 -> 12, total 353 -> 357.
 var wantSuiteCases = map[string]int{
 	"envelope":   15,
 	"franking":   4,
 	"sframe":     176,
-	"identity":   8,
+	"identity":   12,
 	"frames":     34,
 	"attachment": 14,
 	"rejects":    102,
@@ -82,10 +84,10 @@ var wantSuiteCases = map[string]int{
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 353
+const wantTotalCases = 357
 
 // The four case names run_identity emits, one per sub-object of identity.json.
-var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}
+var wantIdentityCases = []string{"account_kind", "credential_identity", "recovery_key", "safety_number", "sas"}
 
 func runVectors(t *testing.T) VectorReport {
 	t.Helper()

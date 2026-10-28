@@ -63,13 +63,19 @@ export function headAttestation(head: Uint8Array): Uint8Array | null {
 /**
  * Task S1 part 2: hand the head's account-kind attestation to the core before the user's history is ingested, so the
  * ingest's leaf verdicts judge the credential's kind against it. A core with no pinned instance key (E_CORE_STATE) cannot
- * judge one and keeps the earlier rule; any other refusal (a malformed attestation) is the ingest's failure.
+ * judge one and keeps the earlier rule. Every other refusal of a server-supplied attestation (malformed, or anything the
+ * core answers) is a withheld attestation: E_DEVICE_LIST_STALE, the same as a stale read, so the ingest does not run and
+ * the user's leaves stay pending once an attestation was seen. It is never surfaced as a leaf verdict (E_CREDENTIAL is the
+ * core's verdict on a verified attestation of another kind), so a server cannot steer which verdict the client shows.
  */
 export function ingestAccountKind(core: { accountKindIngest(userId: Id, attestation: Uint8Array): void }, userId: Id, head: Uint8Array): void {
   const attestation = headAttestation(head);
   if (attestation === null) return;
   try { core.accountKindIngest(userId, attestation); }
-  catch (e) { if (!(e instanceof CoreError) || e.code !== 'E_CORE_STATE') throw e; }
+  catch (e) {
+    if (e instanceof CoreError && e.code === 'E_CORE_STATE') return;
+    throw new CoreError('E_DEVICE_LIST_STALE', 'account-kind attestation refused');
+  }
 }
 
 /**

@@ -198,7 +198,16 @@ describe('the account-kind attestation on a wire-4 head', () => {
     expect(seen).toEqual([ATTESTATION]);
     ingestAccountKind({ accountKindIngest: () => { throw new Error('not called'); } }, id16(2), list(3));
     expect(() => ingestAccountKind({ accountKindIngest: () => { throw new CoreError('E_CORE_STATE', 'no pin'); } }, id16(2), head4(3))).not.toThrow();
-    expect(() => ingestAccountKind({ accountKindIngest: () => { throw new CoreError('E_CREDENTIAL', 'malformed'); } }, id16(2), head4(3)))
-      .toThrow(CoreError);
+    // Security fix: any other refusal of the server's attestation is a withheld one (stale), never a leaf verdict.
+    for (const code of ['E_CORE_INPUT', 'E_CREDENTIAL', 'E_CORE_STORAGE']) {
+      let thrown: unknown;
+      try { ingestAccountKind({ accountKindIngest: () => { throw new CoreError(code, 'refused'); } }, id16(2), head4(3)); }
+      catch (e) { thrown = e; }
+      expect(thrown, code).toBeInstanceOf(CoreError);
+      expect((thrown as CoreError).code, code).toBe('E_DEVICE_LIST_STALE');
+    }
+    let plain: unknown;
+    try { ingestAccountKind({ accountKindIngest: () => { throw new Error('boom'); } }, id16(2), head4(3)); } catch (e) { plain = e; }
+    expect((plain as CoreError).code).toBe('E_DEVICE_LIST_STALE');
   });
 });
