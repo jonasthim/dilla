@@ -5,7 +5,15 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/permbits"
 )
+
+// The Bot decodes authority with permbits.All; it must be exactly PermAll (fix round 1, S-H).
+func TestPermAllIsTheSharedBotMask(t *testing.T) {
+	if uint64(api.PermAll) != permbits.All || uint64(api.PermControlMusic) != permbits.ControlMusic || uint64(api.PermViewChannel) != permbits.ViewChannel {
+		t.Fatalf("api.PermAll = %#x, permbits.All = %#x", uint64(api.PermAll), permbits.All)
+	}
+}
 
 // control_music (bit 25, Task 10c) is a channel-scoped bit: a role grants it community-wide, a
 // channel overwrite can deny or grant it in one voice channel, owners and administrators always

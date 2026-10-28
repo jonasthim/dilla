@@ -6,6 +6,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/permbits"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -23,10 +24,10 @@ type musicAuthoritySession interface {
 }
 
 // musicPermissionView is api.PermViewChannel: who may read a voice channel's player (security review M2).
-const musicPermissionView uint64 = 1 << 0
+const musicPermissionView = permbits.ViewChannel
 
 // musicPermissionControl is api.PermControlMusic: who may change playback in a voice channel.
-const musicPermissionControl uint64 = 1 << 25
+const musicPermissionControl = permbits.ControlMusic
 
 type musicAuthorityStore interface {
 	GetActiveBotInstallationByCommunity(context.Context, id.ID) (store.BotInstallationRow, error)
