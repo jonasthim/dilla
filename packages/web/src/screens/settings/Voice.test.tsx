@@ -148,13 +148,13 @@ it('keeps legacy On on Lightweight and offers Automatic explicitly', async () =>
   expect(settingCalls(fake).at(-1)).toEqual(['voice.noise','automatic']);
 });
 
-// I1, I2: the microphone test is a settings row beside the device rows VoiceSettings draws.
+// Task 10 (README §5.9): the microphone test sits in the Voice page's Mic test group with the input level, under its heading.
 describe('Settings → Voice grammar', () => {
-  it('puts the microphone test in a settings row', () => {
+  it('puts the microphone test in the Mic test group', () => {
     const { view } = setup();
-    const row = Array.from(view.container.querySelectorAll('.d-settings-row')).find(r => r.querySelector('.d-settings-row__label')?.textContent === 'test microphone');
-    expect(row).toBeDefined();
-    expect(row?.querySelector('.d-settings-row__control')).toContainElement(screen.getByRole('button', { name: 'test microphone' }));
-    expect(view.container.querySelectorAll('.d-settings-row').length).toBeGreaterThanOrEqual(5);
+    const group = screen.getByRole('region', { name: 'Mic test' });
+    expect(group).toContainElement(screen.getByRole('button', { name: 'test microphone' }));
+    expect(group.querySelector('[data-setting="voice-test"]')).not.toBeNull();
+    expect(view.container.querySelectorAll('.d-voice-settings__group')).toHaveLength(4);
   });
 });

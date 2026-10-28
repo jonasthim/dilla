@@ -103,14 +103,14 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
 
   return <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
     <h2 id={`${base}-title`} tabIndex={-1}>{t('admin.overview.title')}</h2>
-    <SettingsRow id={`${base}-name-row`} label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
+    <SettingsRow id={`${base}-name-row`} icon="server" label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
       <div className="dw-overview-field">
         <TextField id={fieldId} label={t('admin.overview.name')} value={name}
           onChange={value => { setName(value); setLocalError(null); setAfkFailure(false); resetAction(); }}
           error={afkFailure ? undefined : error ?? undefined} required autoComplete="off" spellCheck={false} disabled={busy} />
       </div>
     </SettingsRow>
-    <SettingsRow id={`${base}-afk-row`} label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: afkName })}>
+    <SettingsRow id={`${base}-afk-row`} icon="moon" label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: afkName })}>
       <Select label={t('afk.timeout.label')} value={String(afkTimeout)} disabled={afkBase === null || busy}
         options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t(`afk.timeout.${n * 60}` as StringKey) }))}
         onChange={value => { afkEdited.current = true; setAFKTimeout(Number(value)); setAfkFailure(false); resetAction(); }} />

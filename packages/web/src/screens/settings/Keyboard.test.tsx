@@ -2,12 +2,19 @@ import { render, screen, within } from '@testing-library/react';
 import { it, expect } from 'vitest';
 import { Keyboard } from './Keyboard.tsx';
 
-const rowOf = (chord: string) => screen.getByText(chord).closest('tr') as HTMLElement;
+// Task 10 (README §5.9): a chord is drawn one keycap per key, so a row is found by its keycaps joined with '+'.
+const chordOf = (row: Element) => Array.from(row.querySelectorAll('kbd')).map(k => k.textContent).join('+');
+const rowOf = (chord: string) => {
+  const row = Array.from(document.querySelectorAll('tr')).find(r => chordOf(r) === chord);
+  if (row === undefined) throw new Error(`no row with ${chord}`);
+  return row as HTMLElement;
+};
 
 it('lists only bound modifier shortcuts', () => {
   render(<Keyboard />);
   expect(rowOf('Control/⌘+K')).toHaveTextContent('search');
-  expect(screen.queryByText(/^[A-Z]$/)).toBeNull();
+  // No unmodified shortcut: every chord has a modifier key before its key.
+  for (const row of Array.from(document.querySelectorAll('tbody tr'))) expect(row.querySelectorAll('kbd').length).toBeGreaterThan(1);
 });
 
 // Flow 06 § Keyboard map: mute and deafen need Control/⌘ and Shift, each followed by its action (decision 1).
@@ -21,8 +28,9 @@ it('lists the two voice shortcuts with their actions', () => {
 it('names the modifier one way, under a sentence-case heading', () => {
   render(<Keyboard />);
   expect(screen.getByRole('heading', { name: 'Keyboard', level: 2 })).toBeInTheDocument();
-  expect(screen.getByText('Control/⌘+K')).toBeInTheDocument();
-  expect(screen.getByText('Control+/')).toBeInTheDocument();
+  expect(rowOf('Control/⌘+K')).toBeInTheDocument();
+  expect(rowOf('Control+/')).toBeInTheDocument();
+  expect(Array.from(rowOf('Control/⌘+Shift+M').querySelectorAll('kbd')).map(k => k.textContent)).toEqual(['Control/⌘', 'Shift', 'M']);
   expect(document.body).not.toHaveTextContent('Ctrl');
 });
 

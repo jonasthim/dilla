@@ -1051,7 +1051,8 @@ async function main(argv) {
           .getByRole('button', { name: t(WORKSPACE_SETTINGS.privacy), exact: true }).click();
         await mira.waitForURL(/\/settings\/privacy$/);
         await ui('phone-settings-privacy', theme);
-        await settings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+        // Task 10: a phone section has no Back (README §5.10); the browser's back returns to the index.
+        await mira.goBack();
         await mira.waitForURL(/\/settings$/);
         await settings.getByRole('button', { name: t('settings.close'), exact: true }).click();
         await settings.waitFor({ state: 'hidden', timeout: WAIT });
@@ -1180,7 +1181,9 @@ async function main(argv) {
       await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await mira.setViewportSize(PHONE_APP);
       await mira.waitForTimeout(250);
-      await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+      // Task 10: no Back on a phone section (README §5.10); the browser's back reaches the index when the section was
+      // pushed over it. FIXME(task 11): if this capture opened the section with a replace, open the index from the You tab.
+      await mira.goBack();
       await mira.waitForURL(/\/settings$/);
       await capture(mira, 'phone-index');
       for (const section of ['privacy', 'diagnostics']) {
@@ -1188,7 +1191,7 @@ async function main(argv) {
           .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
         await mira.waitForURL(new RegExp(`/settings/${section}$`));
         await capture(mira, `${section}-phone`);
-        await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+        await mira.goBack();
         await mira.waitForURL(/\/settings$/);
       }
       await userSettings.getByRole('button', { name: t('settings.close'), exact: true }).click();
@@ -1209,13 +1212,14 @@ async function main(argv) {
         await adaPage.waitForURL(new RegExp(`/c/[0-9a-f]{32}/settings/${section}$`));
         await serverSettings.locator('.d-settings-frame__body > section').waitFor({ state: 'visible', timeout: WAIT });
         if (name === 'music') {
-          const closeButton = serverSettings.locator('.d-settings-frame__bar').getByRole('button');
+          const closeButton = serverSettings.getByRole('button', { name: t('settings.close'), exact: true });
           await closeButton.waitFor({ state: 'visible', timeout: WAIT });
           const geometry = await serverSettings.evaluate(dialog => {
             const panel = dialog.querySelector('.d-settings-frame__panel');
             const body = dialog.querySelector('.d-settings-frame__body');
-            const bar = dialog.querySelector('.d-settings-frame__bar');
-            const button = bar?.querySelector('button');
+            // Task 10: the close button is the viewport's (README §5.9), not the bar's.
+            const button = dialog.querySelector('.d-settings-frame__close');
+            const bar = button;
             const rect = (element) => {
               if (!(element instanceof HTMLElement)) return null;
               const box = element.getBoundingClientRect();
@@ -1233,7 +1237,7 @@ async function main(argv) {
         }
         await capture(adaPage, `${name}-desktop`);
       }
-      await serverSettings.locator('.d-settings-frame__bar').getByRole('button').click();
+      await serverSettings.getByRole('button', { name: t('settings.close'), exact: true }).click();
       await serverSettings.waitFor({ state: 'hidden', timeout: WAIT });
       await mira.setViewportSize(DESKTOP);
       await mira.emulateMedia({ reducedMotion: 'reduce' });

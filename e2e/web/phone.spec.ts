@@ -476,9 +476,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(privacy).toBeVisible({ timeout: WAIT });
       await privacy.tap();
       await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
-      await expect(settings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+      // Task 10 (README §5.10): a phone section keeps the nav as chips above it and has no Back; the browser's back returns.
+      await expect(settings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+      await expect(settings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
       await expect(tabBar(page)).toHaveCount(0);
-      await settings.getByRole('button', { name: copy('workspace.back'), exact: true }).tap();
+      await page.goBack();
       await expect(page).toHaveURL('/settings', { timeout: WAIT });
       await expect(settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
       await page.keyboard.press('Escape');
@@ -496,8 +498,8 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toHaveCount(0);
       await dialog.getByRole('button', { name: copy('workspace.overview'), exact: true }).tap();
       await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings\/overview$/, { timeout: WAIT });
-      await expect(dialog.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-      await dialog.getByRole('button', { name: copy('workspace.back'), exact: true }).tap();
+      await expect(dialog.getByRole('button', { name: copy('workspace.overview'), exact: true })).toHaveAttribute('aria-current', 'page');
+      await page.goBack();
       await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden({ timeout: WAIT });
@@ -539,7 +541,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       const text = settings.getByRole('status').filter({ hasText: copy('nav.link.offline') });
       await expect(text).toBeVisible({ timeout: WAIT });
       await expect(settings).toHaveAttribute('aria-modal', 'true');
-      await expect(settings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
+      await expect(settings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
       await expect(tabBar(page)).toHaveCount(0);
       await context.setOffline(false);
       await expect(text).toBeHidden({ timeout: WAIT });

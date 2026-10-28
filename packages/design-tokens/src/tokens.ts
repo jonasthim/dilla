@@ -35,6 +35,13 @@ export type ColorTokens = {
    * tint, the hairline over the dock's player row (0.15 --live) and a toast's fill (#141820).
    */
   cardEdge: string; accentOpen: string; okDivider: string; toast: string;
+  // Task 10
+  /**
+   * Settings and onboarding (task 10), each the prototype's literal: a setting row's tag (BETA, THIS BROWSER), a destructive
+   * settings button's 0.4 edge and its 0.08 hover, the listening keycap's 0.15 ring, the sign-in backdrop's brand glow and a
+   * picked choice card's 0.06 tint.
+   */
+  accentTag: string; dangerEdge: string; dangerFaint: string; accentRing: string; brandGlow: string; accentPick: string;
   linkUnderline: 0 | 1;
 };
 
@@ -54,6 +61,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E', patternStripe: 'rgba(255,255,255,0.04)',
     stageTile: '#0E1116', stageStripe: 'rgba(255,255,255,0.03)', scrimTile: 'rgba(8,9,11,0.82)', scrimCaption: 'rgba(8,9,11,0.8)', okEdge: 'rgba(124,255,142,0.7)', okEdgeShare: 'rgba(124,255,142,0.55)', accentHalo: 'rgba(90,168,230,0.35)', dangerHover: '#FF8585', okInk: '#06150A',
     cardEdge: '#252A33', accentOpen: 'rgba(90,168,230,0.1)', okDivider: 'rgba(124,255,142,0.15)', toast: '#141820',
+    // Task 10
+    accentTag: 'rgba(90,168,230,0.14)', dangerEdge: 'rgba(255,110,110,0.4)', dangerFaint: 'rgba(255,110,110,0.08)', accentRing: 'rgba(90,168,230,0.15)', brandGlow: 'rgba(0,87,153,0.28)', accentPick: 'rgba(90,168,230,0.06)',
     linkUnderline: 0,
   },
   light: {
@@ -71,6 +80,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F', patternStripe: 'rgba(0,0,0,0.04)',
     stageTile: '#FFFFFF', stageStripe: 'rgba(0,0,0,0.03)', scrimTile: 'rgba(255,255,255,0.88)', scrimCaption: 'rgba(255,255,255,0.88)', okEdge: 'rgba(27,115,52,0.7)', okEdgeShare: 'rgba(27,115,52,0.55)', accentHalo: 'rgba(0,87,153,0.35)', dangerHover: '#8F1E18', okInk: '#FFFFFF',
     cardEdge: '#B4BBB4', accentOpen: 'rgba(0,87,153,0.1)', okDivider: 'rgba(27,115,52,0.15)', toast: '#FFFFFF',
+    // Task 10
+    accentTag: 'rgba(0,87,153,0.12)', dangerEdge: 'rgba(179,38,30,0.45)', dangerFaint: 'rgba(179,38,30,0.08)', accentRing: 'rgba(0,87,153,0.2)', brandGlow: 'rgba(0,87,153,0.12)', accentPick: 'rgba(0,87,153,0.06)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -88,6 +99,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8', patternStripe: 'rgba(255,255,255,0.08)',
     stageTile: '#000000', stageStripe: 'rgba(255,255,255,0.06)', scrimTile: 'rgba(0,0,0,0.85)', scrimCaption: 'rgba(0,0,0,0.85)', okEdge: '#9BFFA8', okEdgeShare: '#9BFFA8', accentHalo: 'rgba(156,203,255,0.5)', dangerHover: '#FFB8B8', okInk: '#000000',
     cardEdge: '#FFFFFF', accentOpen: 'rgba(156,203,255,0.2)', okDivider: 'rgba(155,255,168,0.3)', toast: '#000000',
+    // Task 10
+    accentTag: 'rgba(156,203,255,0.2)', dangerEdge: '#FF9A9A', dangerFaint: 'rgba(255,154,154,0.12)', accentRing: 'rgba(156,203,255,0.35)', brandGlow: 'rgba(0,0,0,0)', accentPick: 'rgba(156,203,255,0.1)',
     linkUnderline: 1,
   },
 };
@@ -161,6 +174,8 @@ export const structural = {
     face: '2.125rem',     // 34px (a focused voice tile's 120px avatar initials; task 8)
     // Task 9
     card: '0.9375rem',    // 15px (the profile card's name and a confirmation's title)
+    // Task 10
+    heading: '1.25rem',   // 20px (a settings section's and a sign-in step's title)
   },
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
@@ -173,7 +188,9 @@ export const structural = {
   opacity: { muted: '0.8' },
   shadow: { s1: '0 8px 20px rgba(0,0,0,0.4)', s2: '0 20px 50px rgba(0,0,0,0.55)', s3: '0 30px 80px rgba(0,0,0,0.65)', knob: '0 1px 3px rgba(0,0,0,0.4)', popover: '0 20px 50px rgba(0,0,0,0.6)', menu: '0 18px 48px rgba(0,0,0,0.6)', toast: '0 12px 30px rgba(0,0,0,0.5)',
     // Task 9: the profile card (the prototype's 0 24px 60px .6) and the user panel's status menu (0 16px 40px .55).
-    profile: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)' },
+    profile: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)',
+    // Task 10: the sign-in card.
+    card: '0 30px 80px rgba(0,0,0,0.55)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -209,7 +226,9 @@ export const structural = {
     /** Task 8b (the prototype's music player): the card's rise, the dock row's, the stage bar's, the queue's, and the progress fill's 1s linear step. */
     player: '360ms', playerRow: '260ms', playerBar: '300ms', queue: '200ms', progress: '1s',
     // Task 9 (the prototype's overlays): a scrim's fade, a form dialog's entrance and the profile card's entrance.
-    scrim: '160ms', dialog: '240ms', profile: '260ms' },
+    scrim: '160ms', dialog: '240ms', profile: '260ms',
+    // Task 10: Settings entering (sModal), the sign-in card entering, and a sign-in step's rise.
+    modal: '260ms', card: '420ms', step: '360ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

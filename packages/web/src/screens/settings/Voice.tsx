@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { SETTINGS } from '@dilla/client-core';
-import { Banner, isPushToTalkKey, SettingsRow, VoiceSettings, type CaptureKeyAction } from '@dilla/ui';
+import { Banner, isPushToTalkKey, VoiceSettings, type CaptureKeyAction } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -130,6 +130,7 @@ export function Voice(): React.JSX.Element {
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID} data-doc-state="voice-settings">
       <h2 id={TITLE_ID} tabIndex={-1}>{t('settings.voice.section')}</h2>
+      <p>{t('signalSettings.voice.body')}</p>
       {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
       <VoiceSettings inputs={inputs} outputs={outputs} input={settings[SETTINGS.voiceInput] ?? ''} output={settings[SETTINGS.voiceOutput] ?? ''}
         canSelectOutput={canSelectOutput} mode={settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad'} pttKey={pttKey}
@@ -139,7 +140,12 @@ export function Voice(): React.JSX.Element {
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
           pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t(noiseBuildMode === 'beta' ? 'settings.voice.automaticBeta' : 'settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
-          level: t('settings.voice.level') }}
+          level: t('settings.voice.level'), devices: t('signalSettings.voice.devices'), test: t('signalSettings.voice.test'), inputMode: t('signalSettings.voice.inputMode'),
+          processing: t('signalSettings.voice.processing'), pttHint: t('signalSettings.voice.pttHint'),
+          noiseHints: { automatic: t('signalSettings.voice.noiseHint.automatic'), lightweight: t('signalSettings.voice.noiseHint.lightweight'), off: t('signalSettings.voice.noiseHint.off') },
+          // The prototype's BETA tag on the row waits for Jonas (task 10 report, NEEDS_CONTEXT): the option keeps saying "(beta)".
+        }}
+        test={<div data-setting="voice-test"><MicrophoneTest input={settings[SETTINGS.voiceInput] ?? ''} noise={noise} disabled={inCall} onOpen={setTestOpen} /></div>}
         onInput={id => write(SETTINGS.voiceInput, id === '' ? null : id)}
         onOutput={id => write(SETTINGS.voiceOutput, id === '' ? null : id)}
         onMode={mode => write(SETTINGS.voiceMode, mode)}
@@ -152,9 +158,6 @@ export function Voice(): React.JSX.Element {
         {status.reason === null ? null : t(`settings.voice.fallback.${status.reason}`)}{' '}
         {status.browserNoise === 'unknown' ? t('settings.voice.browserUnknown') : noise === 'off' && status.browserNoise === 'on' ? t('settings.voice.browserStillOn') : null}
       </p>}
-      <SettingsRow id="voice-test" label={t('settings.voice.test')}>
-        <MicrophoneTest input={settings[SETTINGS.voiceInput] ?? ''} noise={noise} disabled={inCall} onOpen={setTestOpen} />
-      </SettingsRow>
     </section>
   );
 }

@@ -215,10 +215,8 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
   .dw-factor-key__field > .d-btn { margin-left: 0; margin-top: var(--row-gap); border-radius: var(--r-md); }
 }
 .dw-factor-exit { display: flex; justify-content: center; padding: var(--row-gap); }
-/* Flow 10 at 1280: the backup codes in two columns (walk M2). Two whole codes side by side need about 42rem; the onboarding
-   column is 37rem, so on a window with room the box of codes leaves it by 3rem each side (its label and buttons stay in
-   the column), and a dialog that shows codes is wider. */
-@media (min-width: 52rem) { .d-onboarding-frame .dw-factor-codes .d-code-list__grid { margin-inline: -3rem; } }
+/* Task 10: the onboarding card is the prototype's 400px, so its backup codes stand in one column; a dialog that shows codes
+   is wider and keeps two (walk M2). Task 9: the dialog is a fixed width, so the wider one sets width, not max-width. */
 .d-dialog:has(.d-code-list) { width: min(46rem, calc(100vw - 24px)); }
 /* Settings → Sign-in, flow 10 state 19 (walk I3): the passkeys as one group, its heading as a row title, its rows set in
    under it and its add button after them. */

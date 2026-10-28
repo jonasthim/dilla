@@ -45,7 +45,7 @@ function rules(css: string): Array<{ selector: string; body: string }> {
 describe('R9: the phone media query', () => {
   it('every @media rule with 47.99rem in packages/ui reads the full phone query', () => {
     const found = files.flatMap(f => preludes(f.css, 'media').map(p => ({ file: f.file, prelude: p })));
-    expect(found.length).toBe(10); // SettingsFrame, and since Signal task 8 CallStage, CallTile and RingBanner, get phone geometry from the shell's data-layout.
+    expect(found.length).toBe(8); // Task 10: SettingsRow and VoiceSettings left the tier (prototype sizes on a phone). SettingsFrame, and since Signal task 8 CallStage, CallTile and RingBanner, get phone geometry from the shell's data-layout.
     for (const { file, prelude } of found) expect(`${file}: ${prelude}`).toBe(`${file}: ${PHONE_MEDIA}`);
   });
 

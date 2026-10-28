@@ -159,13 +159,13 @@ export function Devices(): React.JSX.Element {
             } : undefined} />
         ))}
       </ul>
-      <SettingsRow id="devices-count" label={count}>
+      <SettingsRow id="devices-count" icon="monitor-smartphone" label={count}>
         <Button size="sm" onClick={refresh}>{t('devices.refresh')}</Button>
       </SettingsRow>
-      <SettingsRow id="devices-signout" label={t('devices.signOutTitle')}>
+      <SettingsRow id="devices-signout" icon="log-out" label={t('devices.signOutTitle')}>
         <SignOutAction />
       </SettingsRow>
-      <SettingsRow id="devices-forget" label={t('devices.forgetTitle')}>
+      <SettingsRow id="devices-forget" icon="trash-2" label={t('devices.forgetTitle')}>
         <Button onClick={requestForget}>{t('devices.forget')}</Button>
       </SettingsRow>
 

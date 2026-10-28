@@ -1,0 +1,14 @@
+// Signal task 10 (README §5.9), the prototype's copy and case: the Voice page's group headings, its sub-line, the
+// push-to-talk note and the noise suppression descriptions, and the Keyboard page's sub-line.
+export const signalSettings = {
+  'signalSettings.voice.body': 'Input, output and processing.',
+  'signalSettings.voice.devices': 'Devices',
+  'signalSettings.voice.test': 'Mic test',
+  'signalSettings.voice.inputMode': 'Input mode',
+  'signalSettings.voice.processing': 'Processing',
+  'signalSettings.voice.pttHint': 'Works only while the dilla tab is active. F13–F24, Pause, Scroll Lock or Insert.',
+  'signalSettings.voice.noiseHint.automatic': 'Picks the best processor this device can run. Falls back to RNNoise.',
+  'signalSettings.voice.noiseHint.lightweight': 'Lower CPU, removes less',
+  'signalSettings.voice.noiseHint.off': 'Raw microphone, nothing removed',
+  'signalSettings.keyboard.body': 'Shortcuts work while the dilla tab is active.',
+} as const;

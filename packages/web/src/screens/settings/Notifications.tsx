@@ -63,8 +63,8 @@ export function Notifications(): React.JSX.Element {
   const rows = [
     ...communities.flatMap((community, i) => orderChannels(lists[i] ?? [])
       .filter(c => c.kind === 0 && c.mode === 0)
-      .map(c => ({ hex: c.id, label: t('notify.title.channel', { channel: c.name, server: community.name }) }))),
-    ...dms.map(dm => ({ hex: dm.id, label: t('notify.title.dm', { sender: dm.name }) })),
+      .map(c => ({ hex: c.id, dm: false, label: t('notify.title.channel', { channel: c.name, server: community.name }) }))),
+    ...dms.map(dm => ({ hex: dm.id, dm: true, label: t('notify.title.dm', { sender: dm.name }) })),
   ];
 
   return (
@@ -72,12 +72,12 @@ export function Notifications(): React.JSX.Element {
       <h2 id={TITLE_ID} tabIndex={-1}>{t('notify.title')}</h2>
       {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
       <p>{t('notify.body')}</p>
-      <SettingsRow id="notify-permission" label={t('notify.permission.label')}>
+      <SettingsRow id="notify-permission" icon="monitor-smartphone" label={t('notify.permission.label')}>
         {permission === 'default'
           ? <Button size="sm" onClick={ask}>{t('notify.permission.ask')}</Button>
           : <p ref={answerRef} tabIndex={-1} className="dw-settings-answer">{t(PERMISSION_TEXT[permission])}</p>}
       </SettingsRow>
-      <SettingsRow id="notify-default-row" label={t('notify.default.label')}>
+      <SettingsRow id="notify-default-row" icon="bell" label={t('notify.default.label')}>
         <Segmented id="notify-default" label={t('notify.default.label')}
           options={DEFAULTS.map(o => ({ value: o.value, label: t(o.key) }))}
           value={settings[SETTINGS.notifyDefault] ?? 'dms-mentions'}
@@ -85,11 +85,11 @@ export function Notifications(): React.JSX.Element {
       </SettingsRow>
       {/* Flow 06 § Sounds (R4): both on by default; each is an on/off switch. */}
       <h3>{t('settings.notify.sounds')}</h3>
-      <SettingsRow id="sound-voice-row" label={t('settings.sound.voice')}>
+      <SettingsRow id="sound-voice-row" icon="volume-2" label={t('settings.sound.voice')}>
         <Toggle id="sound-voice" label={t('settings.sound.voice')} checked={settings[SETTINGS.soundVoice] !== 'off'}
           onChange={on => write(SETTINGS.soundVoice, on ? 'on' : 'off')} />
       </SettingsRow>
-      <SettingsRow id="sound-ring-row" label={t('settings.sound.ring')}>
+      <SettingsRow id="sound-ring-row" icon="volume-2" label={t('settings.sound.ring')}>
         <Toggle id="sound-ring" label={t('settings.sound.ring')} checked={settings[SETTINGS.soundRing] !== 'off'}
           onChange={on => write(SETTINGS.soundRing, on ? 'on' : 'off')} />
       </SettingsRow>
@@ -98,7 +98,7 @@ export function Notifications(): React.JSX.Element {
       <ul className="dw-notify-list">
         {communities.map(community => (
           <li key={community.id}>
-            <SettingsRow id={`notify-server-${community.id}`} label={community.name}>
+            <SettingsRow id={`notify-server-${community.id}`} icon="bell" label={community.name}>
               <div className="dw-notify-controls">
                 <Segmented id={`notify-server-mode-${community.id}`} label={community.name}
                   options={SERVER_MODES.map(o => ({ value: o.value, label: t(o.key) }))}
@@ -120,7 +120,7 @@ export function Notifications(): React.JSX.Element {
       <ul className="dw-notify-list">
         {rows.map(row => (
           <li key={row.hex}>
-            <SettingsRow id={`notify-row-${row.hex}`} label={row.label}>
+            <SettingsRow id={`notify-row-${row.hex}`} icon={row.dm ? 'at-sign' : 'hash'} label={row.label}>
               <div className="dw-notify-controls">
                 <Segmented id={`notify-mode-${row.hex}`} label={row.label}
                   options={MODES.map(o => ({ value: o.value, label: t(o.key) }))}

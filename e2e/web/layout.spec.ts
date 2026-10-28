@@ -533,7 +533,9 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     expect(settingsGeometry.frame.width).toBe(settingsGeometry.viewport.width);
     expect(settingsGeometry.frame.height).toBeLessThanOrEqual(settingsGeometry.viewport.height + 1);
     expect(settingsGeometry.side.width).toBe(settingsGeometry.viewport.width);
-    await expect(settings.locator('.d-settings-frame__bar')).toContainText(copy('workspace.back'));
+    // Task 10 (README §5.10): the phone section shows the nav as chips above the content, the close button at the top right.
+    await expect(settings.locator('.d-settings-nav__item[aria-current="page"]')).toHaveText(copy('workspace.profile'));
+    await expect(settings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
   }
   await page.keyboard.press('Escape');
@@ -736,8 +738,9 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true }).click();
   await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
   await expectTargets(page, tag, 'a user settings section');
-  await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-  await page.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+  await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+  await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.goBack();
   await expect(page).toHaveURL('/settings', { timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(userSettings).toBeHidden({ timeout: WAIT });
@@ -752,7 +755,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectTargets(page, tag, 'the server settings index');
   const side = (await boxes(page, '.d-settings-frame__side'))[0];
   expect.soft(side !== undefined, `the server settings index has its grouped navigation at ${tag}`).toBe(true);
-  const close = admin.locator('.d-settings-frame__bar').getByRole('button', { name: copy('settings.close'), exact: true });
+  const close = admin.getByRole('button', { name: copy('settings.close'), exact: true });
   await expect(close).toBeVisible({ timeout: WAIT });
   const closeBox = await close.boundingBox();
   const viewport = page.viewportSize();
@@ -764,8 +767,8 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await overview.click();
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings\/overview$/, { timeout: WAIT });
   await expectTargets(page, tag, 'a server settings section');
-  await expect(admin.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-  await admin.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+  await expect(admin.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+  await page.goBack();
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
   await close.click();
   await expect(admin).toBeHidden({ timeout: WAIT });
@@ -1160,15 +1163,16 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     const phoneSettings = settingsDialog(page);
     await expect(phoneSettings).toBeVisible({ timeout: WAIT });
     await expect(page).toHaveURL('/settings', { timeout: WAIT });
-    await expect(phoneSettings.locator('.d-settings-frame__bar').getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
+    await expect(phoneSettings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toBeVisible();
     await phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).click();
     await expect(page).toHaveURL('/settings/privacy', { timeout: WAIT });
-    await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-    await expect(phoneSettings.locator('.d-settings-frame__nav')).toBeHidden();
+    // Task 10 (README §5.10): chips above the section, no Back.
+    await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+    await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
     await expectAccessibleInThemes(page, 'a phone settings section');
-    await phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+    await page.goBack();
     await expect(page).toHaveURL('/settings', { timeout: WAIT });
     await expectAccessibleInThemes(page, 'the phone settings index');
     await page.keyboard.press('Escape');

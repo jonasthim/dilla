@@ -137,7 +137,6 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   const contentRef = useSettingsFocus(active, anchor);
   const entry = allowed.find(item => item.id === active);
   const footer = workspace?.footer ?? null;
-  const sectionTitle = entry ? t(entry.labelKey) : undefined;
   const common = { communityId, serverName: shown?.name ?? '', announce: announceInWorkspace };
   const content = useMemo(() => {
     if (!access?.loaded || active === null || shown === undefined) return null;
@@ -168,8 +167,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
       identity={shown ? <span>{shown.name}</span> : undefined}
       nav={phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p>
         : <SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
-      footer={footer} phonePage={phoneIndex ? 'index' : 'section'} sectionTitle={sectionTitle}
-      backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide}
+      footer={footer} phonePage={phoneIndex ? 'index' : 'section'} contentRef={contentRef} wide={entry?.wide}
       overlays={<>{workspace?.confirmation}{phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}</>} activity={activity} activityVisible={activityVisible}>
       {!phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {!phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}

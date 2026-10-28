@@ -506,26 +506,40 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     }
     // A11Y-DESIGN-01: desktop settings keep the sidebar and body as independent scroll regions. At 200% zoom,
     // the effective 640 × 400 CSS viewport enters the existing phone breakpoint: the section frame stays fullscreen,
-    // with its title/actions and footer outside the scrolling body.
+    // with the nav's chips and the footer outside the scrolling body.
+    // Task 10 (README §5.9): the 240px nav, the content column at most 720px, rows at least 56px, and the 34px close
+    // circle 22px from the top and 16px from the right.
     if (context.id === 'settings-settingsframe--zoomed-in') {
       const desktop = await page.evaluate(() => {
         const frame = document.querySelector('.d-settings-frame');
         const panel = document.querySelector('.d-settings-frame__panel');
         const body = document.querySelector('.d-settings-frame__body');
         const side = document.querySelector('.d-settings-frame__side');
-        if (!frame || !panel || !body || !side) return null;
+        const section = document.querySelector('.d-settings-frame__body > section');
+        const ring = document.querySelector('.d-settings-frame__close-ring');
+        const key = document.querySelector('.d-settings-frame__close-key');
+        const item = document.querySelector('.d-settings-nav__item');
+        if (!frame || !panel || !body || !side || !section || !ring || !key || !item) return null;
         const rect = frame.getBoundingClientRect();
         const styles = getComputedStyle(panel);
+        const close = ring.getBoundingClientRect();
+        const rows = Array.from(document.querySelectorAll('.d-settings-frame__body :is(.d-settings-row, .d-device-row)')).map(r => Math.round(r.getBoundingClientRect().height));
         return {
           width: Math.round(rect.width), height: Math.round(rect.height), x: Math.round(rect.x), y: Math.round(rect.y),
           columns: styles.gridTemplateColumns.trim().split(/\s+/).length,
+          sideWidth: Math.round(side.getBoundingClientRect().width), sectionWidth: Math.round(section.getBoundingClientRect().width),
+          itemHeight: Math.round(item.getBoundingClientRect().height),
+          close: { w: Math.round(close.width), h: Math.round(close.height), top: Math.round(close.top), right: Math.round(rect.right - close.right) },
+          escShown: getComputedStyle(key).display !== 'none', minRow: rows.length === 0 ? 0 : Math.min(...rows),
           sideOverflow: getComputedStyle(side).overflowY, bodyOverflow: getComputedStyle(body).overflowY,
           horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
             || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
         };
       });
       if (!desktop || desktop.width !== 1280 || desktop.height !== 800 || desktop.x !== 0 || desktop.y !== 0
-        || desktop.columns < 2 || desktop.sideOverflow !== 'auto' || desktop.bodyOverflow !== 'auto' || desktop.horizontalOverflow) {
+        || desktop.columns < 2 || desktop.sideWidth !== 240 || desktop.sectionWidth > 720 || desktop.itemHeight !== 34
+        || desktop.close.w !== 34 || desktop.close.h !== 34 || desktop.close.top !== 22 || desktop.close.right !== 16 || !desktop.escShown
+        || desktop.minRow < 56 || desktop.sideOverflow !== 'auto' || desktop.bodyOverflow !== 'auto' || desktop.horizontalOverflow) {
         throw new Error(`${context.title} / ${context.name}: desktop settings geometry or independent scrolling is incorrect (${JSON.stringify(desktop)})`);
       }
 
@@ -540,30 +554,32 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const frame = document.querySelector('.d-settings-frame');
         const panel = document.querySelector('.d-settings-frame__panel');
         const body = document.querySelector('.d-settings-frame__body');
-        const nav = document.querySelector('.d-settings-frame__nav');
-        const bar = document.querySelector('.d-settings-frame__bar');
+        const side = document.querySelector('.d-settings-frame__side');
         const footer = document.querySelector('.d-settings-frame__footer');
-        const back = document.querySelector('[data-settings-back]');
-        const sectionTitle = document.querySelector('.d-settings-frame__section-title');
+        const ring = document.querySelector('.d-settings-frame__close-ring');
+        const key = document.querySelector('.d-settings-frame__close-key');
+        const items = Array.from(document.querySelectorAll('.d-settings-nav__item'));
+        const heading = document.querySelector('.d-settings-nav__group');
         const last = Array.from(document.querySelectorAll('.d-settings-frame__body button')).at(-1);
-        if (!frame || !panel || !body || !nav || !bar || !footer || !back || !sectionTitle || !last) return null;
+        if (!frame || !panel || !body || !side || !footer || !ring || !key || items.length < 2 || !last) return null;
         const size = frame.getBoundingClientRect();
         body.scrollTop = body.scrollHeight;
         const bodyRect = body.getBoundingClientRect();
-        const headerRect = bar.getBoundingClientRect();
+        const sideRect = side.getBoundingClientRect();
         const footerRect = footer.getBoundingClientRect();
         const lastRect = last.getBoundingClientRect();
+        const close = ring.getBoundingClientRect();
+        const first = items[0].getBoundingClientRect();
         return {
           width: Math.round(size.width), height: Math.round(size.height), x: Math.round(size.x), y: Math.round(size.y),
           isPhoneSection: frame.getAttribute('data-layout') === 'phone' && frame.getAttribute('data-phone-page') === 'section',
           panelColumns: getComputedStyle(panel).gridTemplateColumns.trim().split(/\s+/).length,
           bodyScrolls: body.scrollHeight > body.clientHeight + 1, bodyOverflow: getComputedStyle(body).overflowY,
-          navigationHidden: nav.hasAttribute('hidden'), hasClose: Array.from(frame.querySelectorAll('.d-settings-frame__bar button'))
-            .some(button => button.textContent?.includes('Close settings') ?? false),
-          sectionTitle: sectionTitle.textContent?.trim(),
-          headerInPlace: Math.abs(headerRect.top - size.top) <= 1 && headerRect.bottom <= bodyRect.top + 1,
+          chipsInARow: items.every(i => Math.abs(i.getBoundingClientRect().top - first.top) < 1),
+          headingsHidden: heading === null || getComputedStyle(heading).display === 'none' || heading.getBoundingClientRect().height === 0,
+          chipsAboveBody: first.bottom <= bodyRect.top + 1 && sideRect.top >= size.top - 1,
+          closeTop: Math.round(close.top - size.top), closeClear: close.bottom <= first.top + 1, escHidden: getComputedStyle(key).display === 'none',
           footerInPlace: Math.abs(footerRect.bottom - size.bottom) <= 1 && footerRect.top >= bodyRect.bottom - 1,
-          backVisible: back.getBoundingClientRect().width > 0 && back.getBoundingClientRect().height > 0,
           lastInView: lastRect.top >= bodyRect.top - 1 && lastRect.bottom <= bodyRect.bottom + 1,
           horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
             || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,
@@ -571,22 +587,20 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       });
       if (!zoomed || zoomed.width !== 640 || zoomed.height !== 400 || zoomed.x !== 0 || zoomed.y !== 0
         || !zoomed.isPhoneSection || zoomed.panelColumns !== 1 || !zoomed.bodyScrolls || zoomed.bodyOverflow !== 'auto'
-        || !zoomed.navigationHidden || zoomed.hasClose || !zoomed.headerInPlace || !zoomed.footerInPlace
-        || !zoomed.backVisible || zoomed.sectionTitle !== 'Devices' || !zoomed.lastInView || zoomed.horizontalOverflow) {
-        throw new Error(`${context.title} / ${context.name}: phone section frame breaks its fullscreen scroll regions at 200% zoom (${JSON.stringify(zoomed)})`);
+        || !zoomed.chipsInARow || !zoomed.headingsHidden || !zoomed.chipsAboveBody || zoomed.closeTop !== 12 || !zoomed.closeClear
+        || !zoomed.escHidden || !zoomed.footerInPlace || !zoomed.lastInView || zoomed.horizontalOverflow) {
+        throw new Error(`${context.title} / ${context.name}: phone section frame breaks its chips or fullscreen scroll regions at 200% zoom (${JSON.stringify(zoomed)})`);
       }
     }
     if (context.id === 'settings-settingsframe--phone-index') {
       const index = await page.evaluate(() => {
         const frame = document.querySelector('.d-settings-frame');
         const panel = document.querySelector('.d-settings-frame__panel');
-        const side = document.querySelector('.d-settings-frame__side');
         const nav = document.querySelector('.d-settings-frame__nav');
-        const close = frame?.querySelector('.d-settings-frame__bar button');
-        if (!frame || !panel || !side || !nav || !close) return null;
+        const close = frame?.querySelector('.d-settings-frame__close');
+        if (!frame || !panel || !nav || !close) return null;
         const size = frame.getBoundingClientRect();
         const navRect = nav.getBoundingClientRect();
-        close.scrollIntoView({ block: 'nearest' });
         const closeBefore = close.getBoundingClientRect();
         nav.scrollTop = nav.scrollHeight;
         const last = Array.from(nav.querySelectorAll('.d-settings-nav__item')).at(-1);
@@ -598,7 +612,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
           isPhoneIndex: frame.getAttribute('data-layout') === 'phone' && frame.getAttribute('data-phone-page') === 'index',
           navOverflow: getComputedStyle(nav).overflowY, navScrolls: nav.scrollHeight > nav.clientHeight + 1,
           lastInView: lastRect.top >= navRect.top - 1 && lastRect.bottom <= navRect.bottom + 1,
-          closeInView: closeAfter.top >= size.top && closeAfter.bottom <= size.bottom && closeAfter.top >= navRect.bottom - 1,
+          closeInView: closeAfter.top >= size.top && closeAfter.bottom <= size.bottom && closeAfter.bottom <= navRect.top + 1,
           closeDoesNotMove: Math.abs(closeBefore.top - closeAfter.top) < 1,
           horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
             || document.body.scrollWidth > innerWidth + 1 || panel.scrollWidth > panel.clientWidth + 1,

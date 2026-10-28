@@ -5,7 +5,7 @@ import './SettingsNav.css';
 
 export interface SettingsNavProps {
   label: string;
-  /** `icon` draws a 16px glyph; `group` adds a heading before its group. */
+  /** `icon` draws a 15px glyph; `group` adds a heading before its group. */
   items: readonly { id: string; label: string; icon?: IconName; group?: string }[];
   activeId: string;
   onSelect(id: string): void;
@@ -33,7 +33,7 @@ export function SettingsNav({ label, items, activeId, onSelect }: SettingsNavPro
             showGroup ? <li key={`heading-${item.id}`} className="d-settings-nav__group-entry"><h2 className="d-settings-nav__group">{item.group}</h2></li> : null,
             <li key={item.id} className="d-settings-nav__entry">
               <button type="button" className="d-settings-nav__item" aria-current={item.id === activeId ? 'page' : undefined} onClick={() => onSelect(item.id)}>
-                {glyphs ? <span className="d-settings-nav__glyph">{item.icon ? <Icon name={item.icon} size={16} /> : null}</span> : null}
+                {glyphs ? <span className="d-settings-nav__glyph">{item.icon ? <Icon name={item.icon} size={15} /> : null}</span> : null}
                 {item.label}
               </button>
             </li>,

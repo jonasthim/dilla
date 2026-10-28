@@ -76,6 +76,15 @@ describe('renderCss', () => {
     expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-pop: 0ms;[\s\S]*--duration-turn: 0ms;/);
     expect(css).toMatch(/\[data-motion="reduced"\]\s*{[^}]*--duration-pop: 0ms;[^}]*--duration-turn: 0ms;/);
   });
+  // Task 10
+  it('emits the settings and sign-in values (task 10, the prototype literals)', () => {
+    const root = css.slice(0, css.indexOf('}'));
+    for (const decl of ['--accent-tag: rgba(90,168,230,0.14);', '--danger-edge: rgba(255,110,110,0.4);', '--danger-faint: rgba(255,110,110,0.08);',
+      '--accent-ring: rgba(90,168,230,0.15);', '--brand-glow: rgba(0,87,153,0.28);', '--accent-pick: rgba(90,168,230,0.06);',
+      '--text-heading: 1.25rem;', '--shadow-card: 0 30px 80px rgba(0,0,0,0.55);', '--duration-modal: 260ms;', '--duration-card: 420ms;', '--duration-step: 360ms;']) {
+      expect(root).toContain(decl);
+    }
+  });
   it('zeroes --duration-toggle under reduced motion', () => {
     expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-toggle: 0ms;/);
   });

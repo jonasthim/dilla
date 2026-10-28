@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { SettingsNav } from '@dilla/ui';
 import { t } from '../strings/index.ts';
-import { availableSettings, searchSettings, type SettingsAccess, type SettingsEntry, type SettingsScope } from './registry.ts';
+import { availableSettings, searchSettings, SETTINGS_ICONS, type SettingsAccess, type SettingsEntry, type SettingsScope } from './registry.ts';
 import './workspace.css';
 
 export interface SettingsNavigationProps {
@@ -48,7 +48,7 @@ export function SettingsNavigation({ scope, access, activeId, onSelect }: Settin
             </button>
           </li>)}</ul>}
     </div> : <SettingsNav label={t(scope === 'user' ? 'settings.nav.label' : 'admin.nav')}
-      items={sections.map(entry => ({ id: entry.id, label: t(entry.labelKey), group: t(entry.group) }))}
+      items={sections.map(entry => ({ id: entry.id, label: t(entry.labelKey), group: t(entry.group), icon: SETTINGS_ICONS[entry.id] }))}
       activeId={activeId} onSelect={id => activate(id as SettingsEntry['id'])} />}
   </>;
 }

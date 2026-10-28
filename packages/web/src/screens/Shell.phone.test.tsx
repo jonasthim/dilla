@@ -545,23 +545,26 @@ describe('the phone shell: settings', () => {
     expect(here()).toBe('/settings/devices');
     expect(history.length).toBe(before + 1);
     expect(history.state).toMatchObject({ settingsFrom: '/you' });
-    await user.click(within(dialog).getByRole('button', { name: t('workspace.back') }));
+    // Task 10 (README §5.10): no Back button on a phone section; the browser's back returns to the index.
+    expect(within(dialog).queryByRole('button', { name: t('workspace.back') })).toBeNull();
+    history.back();
     await waitFor(() => expect(here()).toBe('/settings'));
     const settingsDialog = screen.getByRole('dialog', { name: t('settings.title') });
     await within(settingsDialog).findByRole('button', { name: t('settings.close') });
     await user.click(within(settingsDialog).getByRole('button', { name: t('settings.close') }));
     await waitFor(() => expect(here()).toBe('/you'));
   });
-  it('direct section links return to the settings index', async () => {
+  // Task 10 (README §5.10): a direct section link shows the nav as chips above the section; Close leaves settings.
+  it('direct section links show the nav as chips, and Close leaves', async () => {
     const { user } = phone({ path: '/settings/devices', withSettings: true });
     await screen.findByRole('dialog', { name: t('settings.title') });
     const dialog = screen.getByRole('dialog', { name: t('settings.title') });
-    await user.click(within(dialog).getByRole('button', { name: t('workspace.back') }));
-    await waitFor(() => expect(here()).toBe('/settings'));
-    const indexDialog = screen.getByRole('dialog', { name: t('settings.title') });
-    await within(indexDialog).findByRole('navigation', { name: t('settings.nav.label') });
-    expect(within(indexDialog).getByRole('navigation', { name: t('settings.nav.label') })).toBeVisible();
+    expect(dialog).toHaveAttribute('data-phone-page', 'section');
+    expect(within(dialog).getByRole('navigation', { name: t('settings.nav.label') })).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: 'Devices' })).toHaveAttribute('aria-current', 'page');
     expect(tabs()).toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: t('settings.close') }));
+    await waitFor(() => expect(here()).not.toMatch(/^\/settings/));
   });
   it('keeps the voice session running when settings opens and returns to the call', async () => {
     const app = phone({ path: `/c/${A}/${GENV}` });

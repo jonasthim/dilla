@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 import './DeviceRow.css';
 
 export interface DeviceRowProps {
@@ -31,6 +32,7 @@ export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state,
   const describedBy = idHint ? `${nameId} ${idId}` : nameId;
   return (
     <li className="d-device-row" data-tier={tier} data-own={own ? 'true' : undefined}>
+      <span className="d-device-row__icon" aria-hidden="true"><Icon name="monitor-smartphone" size={15} /></span>
       <div className="d-device-row__main">
         <div className="d-device-row__head">
           {/* A label is free text: <bdi> keeps its direction from reordering the id and tags around it. */}

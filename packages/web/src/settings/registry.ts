@@ -1,3 +1,4 @@
+import type { IconName } from '@dilla/ui';
 import { t, type StringKey } from '../strings/index.ts';
 
 export type SettingsSection = 'profile' | 'signin' | 'devices' | 'appearance' | 'notifications' | 'voice' | 'keyboard' | 'privacy' | 'diagnostics';
@@ -73,8 +74,8 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
   server('channels', 'workspace.group.server', can('manageChannels'), ['category', 'text', 'voice', 'order', 'permissions'], [], true),
   server('gifs', 'workspace.group.server', can('manageCommunity'), ['giphy', 'provider', 'key', 'rating']),
   server('members', 'workspace.group.people', member, ['people', 'role', 'kick', 'ban', 'timeout', 'warn'], [], true),
-  server('roles', 'workspace.group.people', can('manageRoles'), ['create', 'edit', 'order', 'permissions'], [], true),
-  server('invites', 'workspace.group.people', can('createInvite'), ['invitation', 'join', 'link'], [], true),
+  server('roles', 'workspace.group.people', can('manageRoles'), ['create', 'edit', 'order', 'permissions']),
+  server('invites', 'workspace.group.people', can('createInvite'), ['invitation', 'join', 'link']),
   server('selfRoles', 'workspace.group.people', member, ['self service', 'personal roles', 'role panel', 'publish']),
   server('bot', 'workspace.group.automation', can('manageCommunity'), ['installation', 'enable', 'disable', 'display name', 'capabilities']),
   server('welcome', 'workspace.group.automation', can('manageCommunity'), ['greeting', 'destination', 'preview', 'join message']),
@@ -87,6 +88,20 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
   server('bans', 'workspace.group.moderation', can('banMembers'), ['unban', 'banned'], [], true),
   server('danger', 'workspace.group.actions', member, ['ownership', 'transfer', 'delete', 'leave']),
 ];
+
+/**
+ * Each section's 15px nav glyph (README §5.9; task 10). The prototype's own: Profile user, Sign-in lock, Devices
+ * monitor-smartphone, Notifications bell, Voice mic, Keyboard keyboard, Overview server, Roles shield, Invites link,
+ * Music music. The others are the closest glyph the vendored Lucide set holds. Bot has none yet: Lucide's `bot` is not
+ * vendored (task 10 report, NEEDS_CONTEXT), so its row keeps an empty glyph column.
+ */
+export const SETTINGS_ICONS: Readonly<Partial<Record<SettingsEntry['id'], IconName>>> = {
+  profile: 'user', signin: 'lock', devices: 'monitor-smartphone', appearance: 'eye', notifications: 'bell', voice: 'mic',
+  keyboard: 'keyboard', privacy: 'fingerprint', diagnostics: 'activity',
+  overview: 'server', channels: 'hash', gifs: 'smile', members: 'users', roles: 'shield', invites: 'link', selfRoles: 'user',
+  welcome: 'megaphone', joinRoles: 'arrow-right', music: 'music', automoderation: 'shield', moderationLog: 'inbox', bans: 'x',
+  danger: 'triangle-alert',
+};
 
 export function availableSettings(scope: SettingsScope, access?: SettingsAccess): readonly SettingsEntry[] {
   return SETTINGS_REGISTRY.filter(entry => entry.scope === scope && entry.visible(access));

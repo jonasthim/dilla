@@ -84,6 +84,7 @@ describe('structural tokens', () => {
       md: '0.875rem', lg: '1.0625rem', welcome: '1.125rem', title: '1.1875rem', xl: '1.375rem', preview: '1rem', face: '2.125rem',
       // Task 9
       card: '0.9375rem',
+      heading: '1.25rem',
     });
     for (const [step, size] of Object.entries(structural.text)) {
       expect(size, `--text-${step} must be rem so browser text size and 200 % zoom scale it`).toMatch(/rem$/);

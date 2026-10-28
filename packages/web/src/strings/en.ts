@@ -25,6 +25,7 @@ import { reload } from './reload.ts';
 import { pane } from './pane.ts';
 import { panel } from './panel.ts';
 import { stage } from './stage.ts';
+import { signalSettings } from './signalSettings.ts';
 import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
@@ -65,6 +66,7 @@ export const en = {
   ...pane,
   ...panel,
   ...stage,
+  ...signalSettings,
   ...afk,
   ...layout,
   ...home,

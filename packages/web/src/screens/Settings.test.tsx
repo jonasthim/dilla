@@ -92,7 +92,8 @@ describe('Settings', () => {
       expect(screen.getByRole('heading', { name: heading, level: 2 })).toHaveFocus();
     }
   });
-  it('opens the phone settings index first and returns to it from a section', async () => {
+  // Task 10 (README §5.10): a phone section shows the nav as chips above it and has no Back; the chips switch sections.
+  it('opens the phone settings index first, and a section keeps the nav as chips', async () => {
     window.matchMedia = ((query: string) => ({ matches: query === PHONE_QUERY, media: query,
       addEventListener: () => undefined, removeEventListener: () => undefined })) as unknown as typeof window.matchMedia;
     try {
@@ -103,13 +104,12 @@ describe('Settings', () => {
       await user.click(within(dialog).getByRole('button', { name: 'Devices' }));
       expect(dialog).toHaveAttribute('data-phone-page', 'section');
       expect(window.location.pathname).toBe('/settings/devices');
-      const sectionEntryIndex = (window.history.state as Record<string, unknown>).dillaHistoryIndex as number;
-      await user.click(within(dialog).getByRole('button', { name: 'Back to settings' }));
-      expect(window.location.pathname).toBe('/settings');
-      expect(dialog).toHaveAttribute('data-phone-page', 'index');
-      const backEntryIndex = (window.history.state as Record<string, unknown>).dillaHistoryIndex;
-      expect(typeof backEntryIndex !== 'number' || backEntryIndex < sectionEntryIndex).toBe(true);
-      expect(within(dialog).queryByRole('heading', { level: 2, name: 'Profile' })).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Back to settings' })).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Devices' })).toHaveAttribute('aria-current', 'page');
+      await user.click(within(dialog).getByRole('button', { name: 'Notifications' }));
+      expect(window.location.pathname).toBe('/settings/notifications');
+      expect(dialog).toHaveAttribute('data-phone-page', 'section');
+      expect(within(dialog).getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
     } finally { Reflect.deleteProperty(window, 'matchMedia'); }
   });
   it('does not focus a matching heading outside the settings content after a privacy comparison', async () => {

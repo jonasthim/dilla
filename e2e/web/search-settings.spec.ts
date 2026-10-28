@@ -53,15 +53,13 @@ test('Privacy, Keyboard and Diagnostics use the phone settings index and return 
     const dialog = await openSettings(page, section);
     await expect(dialog).toBeVisible({ timeout: WAIT });
     await expect(page).toHaveURL(new RegExp(`/settings/${section}$`), { timeout: WAIT });
-    await expect(dialog.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-    await expect(dialog.locator('.d-settings-frame__nav')).toBeHidden();
+    // Task 10 (README §5.10): a phone section shows the nav as a row of chips above it, and no Back button.
+    await expect(dialog.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
+    await expect(dialog.locator(`.d-settings-nav__item[aria-current="page"]`)).toBeInViewport();
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
     await expectAccessible(page, `${section} at 360px`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-    await dialog.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
-    await expect(dialog).toBeVisible({ timeout: WAIT });
-    await expect(page).toHaveURL('/settings', { timeout: WAIT });
-    await expect(dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden({ timeout: WAIT });
     expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
@@ -105,11 +103,9 @@ test('Appearance controls fit desktop rows and the phone section header keeps it
     const overflow = await settings.locator('.d-settings-frame__body').evaluate(el => el.scrollWidth > el.clientWidth);
     expect(overflow, `settings overflow at ${width}px`).toBe(false);
     if (width < 768) {
-      const back = settings.getByRole('button', { name: copy('workspace.back'), exact: true });
-      await expect(back).toHaveText(copy('workspace.backShort'));
-      const title = settings.locator('.d-settings-frame__section-title');
-      await expect(title).toHaveText(copy('workspace.appearance'));
-      expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      // Task 10 (README §5.10): the nav's chips name the section; the section's own title is in the content.
+      await expect(settings.locator('.d-settings-nav__item[aria-current="page"]')).toHaveText(copy('workspace.appearance'));
+      await expect(settings.getByRole('heading', { level: 2, name: copy('appearance.title'), exact: true })).toBeVisible();
       await expect(settings.locator('.d-settings-frame__activity')).toHaveAttribute('data-visible', 'false');
       expect((await settings.locator('.d-settings-frame__bar').boundingBox())!.height,
         'idle phone headers do not reserve a second activity row').toBeLessThanOrEqual(72);
@@ -255,8 +251,8 @@ test('settings rows align their controls, and the sign-out button holds its text
   await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
   const signin = await columns(dialog);
   expect(signin.length).toBeGreaterThanOrEqual(4);
-  expect(new Set(signin.map(c => c.x)).size, 'one control x in Sign-in').toBe(1);
-  expect(new Set(signin.map(c => c.width)).size, 'one control width in Sign-in').toBe(1);
+  // Task 10 (README §5.9): each row's control sits at the row's right edge, so the controls share one right x.
+  expect(new Set(signin.map(c => c.x + c.width)).size, 'one control right edge in Sign-in').toBe(1);
   await closeSettings(page);
   dialog = await openSettings(page, 'devices');
   const out = dialog.locator('.d-settings-row__control').getByRole('button', { name: copy('devices.signOut'), exact: true }).first();

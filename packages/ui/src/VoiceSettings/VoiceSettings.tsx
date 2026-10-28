@@ -1,5 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
-import { SettingsRow } from '../SettingsRow/SettingsRow.tsx';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Segmented } from '../Segmented/Segmented.tsx';
 import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import '../Button/Button.css';
@@ -59,7 +58,16 @@ export interface VoiceSettingsProps {
     input: string; output: string; systemDefault: string; outputUnsupported: string;
     mode: string; vad: string; ptt: string; pttKey: string; pttNone: string; pttSet: string; pttPrompt: string; pttRefused: string;
     noise: string; automatic: string; lightweight: string; off: string; level: string;
+    /** The prototype's section headings (README §5.9): Devices, Mic test, Input mode, Processing. */
+    devices?: string; test?: string; inputMode?: string; processing?: string;
+    /** Under the push-to-talk key: where it works and which keys it takes. */
+    pttHint?: string;
+    /** The noise suppression row's description for each choice, and its tag (BETA) while Automatic is a beta. */
+    noiseHints?: { automatic: string; lightweight: string; off: string };
+    noiseTag?: string;
   };
+  /** The microphone test (the app's own), drawn in the Mic test section with the level meter. */
+  test?: ReactNode;
   onInput(id: string): void;
   onOutput(id: string): void;
   onMode(mode: 'vad' | 'ptt'): void;
@@ -91,7 +99,7 @@ function DeviceSelect({ id, value, devices, systemDefault, label, onChange }: {
  * a key that types text or operates the page is refused with a reason; Tab still leaves, which cancels; Escape cancels.
  */
 export function VoiceSettings({
-  inputs, outputs, input, output, canSelectOutput, mode, pttKey, capturing, noise, level, levelUnavailable, labels,
+  inputs, outputs, input, output, canSelectOutput, mode, pttKey, capturing, noise, level, levelUnavailable, labels, test,
   onInput, onOutput, onMode, onCaptureKey, onNoise,
 }: VoiceSettingsProps) {
   const id = useId();
@@ -122,40 +130,70 @@ export function VoiceSettings({
     onCaptureKey({ code: e.code !== '' ? e.code : e.key, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, shift: e.shiftKey });
   };
 
+  const heading = (text: string | undefined, hid: string) => text ? <h3 id={hid} className="d-voice-settings__heading">{text}</h3> : null;
+  const noiseHint = labels.noiseHints?.[noise];
+  // README §5.9: four bordered groups (radius 10, 16px padding, 14px apart), each under a micro heading.
   return (
     <div className="d-voice-settings">
-      <SettingsRow id={`${id}-input`} label={labels.input}>
-        <DeviceSelect id={`${id}-input-select`} value={input} devices={inputs} systemDefault={labels.systemDefault} label={labels.input} onChange={onInput} />
-      </SettingsRow>
-      <SettingsRow id={`${id}-output`} label={labels.output} hint={canSelectOutput ? undefined : labels.outputUnsupported}>
-        {canSelectOutput ? (
-          <DeviceSelect id={`${id}-output-select`} value={output} devices={outputs} systemDefault={labels.systemDefault} label={labels.output} onChange={onOutput} />
+      <section className="d-voice-settings__group" aria-labelledby={labels.devices ? `${id}-devices` : undefined}>
+        {heading(labels.devices, `${id}-devices`)}
+        <div className="d-voice-settings__grid">
+          <div className="d-voice-settings__field">
+            <label className="d-voice-settings__label" htmlFor={`${id}-input-select`}>{labels.input}</label>
+            <DeviceSelect id={`${id}-input-select`} value={input} devices={inputs} systemDefault={labels.systemDefault} label={labels.input} onChange={onInput} />
+          </div>
+          <div className="d-voice-settings__field">
+            {canSelectOutput ? <label className="d-voice-settings__label" htmlFor={`${id}-output-select`}>{labels.output}</label>
+              : <span className="d-voice-settings__label">{labels.output}</span>}
+            {canSelectOutput ? (
+              <DeviceSelect id={`${id}-output-select`} value={output} devices={outputs} systemDefault={labels.systemDefault} label={labels.output} onChange={onOutput} />
+            ) : <p className="d-voice-settings__note">{labels.outputUnsupported}</p>}
+          </div>
+        </div>
+      </section>
+      <section className="d-voice-settings__group" aria-labelledby={labels.test ? `${id}-test` : undefined}>
+        {heading(labels.test, `${id}-test`)}
+        {test}
+        <div className="d-voice-settings__level">
+          <span className="d-voice-settings__label">{labels.level}</span>
+          {levelUnavailable === undefined ? <AudioMeter level={level} label={labels.level} /> : <span className="d-voice-settings__note">{levelUnavailable}</span>}
+        </div>
+      </section>
+      <section className="d-voice-settings__group" aria-labelledby={labels.inputMode ? `${id}-mode-heading` : undefined}>
+        {heading(labels.inputMode, `${id}-mode-heading`)}
+        <div className="d-voice-settings__mode">
+          <Segmented id={`${id}-mode-group`} label={labels.mode} value={mode}
+            options={[{ value: 'vad', label: labels.vad }, { value: 'ptt', label: labels.ptt }]}
+            onChange={v => onMode(v === 'ptt' ? 'ptt' : 'vad')} />
+        </div>
+        {mode === 'ptt' ? (
+          <div className="d-voice-settings__grid d-voice-settings__ptt">
+            <div className="d-voice-settings__field">
+              <span className="d-voice-settings__label" id={`${id}-ptt-label`}>{labels.pttKey}</span>
+              <span className="d-voice-settings__key" role="group" aria-labelledby={`${id}-ptt-label`}>
+                <kbd className="d-voice-settings__kbd" data-empty={pttKey === null ? 'true' : undefined} data-listening={capturing ? 'true' : undefined}>{pttKey ?? labels.pttNone}</kbd>
+                <button ref={captureRef} type="button" className="d-btn d-voice-settings__capture" data-variant="default" data-size="md"
+                  aria-describedby={`${id}-prompt`} onKeyDown={onCaptureKeyDown} onBlur={() => { if (capturing) onCaptureKey('cancel'); }}
+                  onClick={() => { if (!capturing) onCaptureKey('start'); }}>{labels.pttSet}</button>
+              </span>
+              {labels.pttHint ? <span className="d-voice-settings__note">{labels.pttHint}</span> : null}
+            </div>
+          </div>
         ) : null}
-      </SettingsRow>
-      <SettingsRow id={`${id}-mode`} label={labels.mode}>
-        <Segmented id={`${id}-mode-group`} label={labels.mode} value={mode}
-          options={[{ value: 'vad', label: labels.vad }, { value: 'ptt', label: labels.ptt }]}
-          onChange={v => onMode(v === 'ptt' ? 'ptt' : 'vad')} />
-      </SettingsRow>
-      {mode === 'ptt' ? (
-        <SettingsRow id={`${id}-ptt`} label={labels.pttKey}>
-          <span className="d-voice-settings__key">
-            <kbd className="d-voice-settings__kbd" data-empty={pttKey === null ? 'true' : undefined} data-listening={capturing ? 'true' : undefined}>{pttKey ?? labels.pttNone}</kbd>
-            <button ref={captureRef} type="button" className="d-btn d-voice-settings__capture" data-variant={capturing ? 'accent' : 'default'} data-size="md"
-              aria-describedby={`${id}-prompt`} onKeyDown={onCaptureKeyDown} onBlur={() => { if (capturing) onCaptureKey('cancel'); }}
-              onClick={() => { if (!capturing) onCaptureKey('start'); }}>{labels.pttSet}</button>
+        <p id={`${id}-prompt`} className="d-voice-settings__prompt" role="status">{capturing && !blank ? (refused ? labels.pttRefused : labels.pttPrompt) : null}</p>
+      </section>
+      <section className="d-voice-settings__group" aria-labelledby={labels.processing ? `${id}-processing` : undefined}>
+        {heading(labels.processing, `${id}-processing`)}
+        <div className="d-voice-settings__row" role="group" aria-labelledby={`${id}-noise-label`} aria-describedby={noiseHint ? `${id}-noise-hint` : undefined}>
+          <span className="d-voice-settings__text">
+            <span id={`${id}-noise-label`} className="d-voice-settings__row-label">{labels.noise}{labels.noiseTag ? <span className="d-voice-settings__tag">{labels.noiseTag}</span> : null}</span>
+            {noiseHint ? <span id={`${id}-noise-hint`} className="d-voice-settings__row-hint">{noiseHint}</span> : null}
           </span>
-        </SettingsRow>
-      ) : null}
-      <p id={`${id}-prompt`} className="d-voice-settings__prompt" role="status">{capturing && !blank ? (refused ? labels.pttRefused : labels.pttPrompt) : null}</p>
-      <SettingsRow id={`${id}-noise`} label={labels.noise}>
-        <Segmented id={`${id}-noise-group`} label={labels.noise} value={noise}
-          options={[{value:'automatic',label:labels.automatic},{value:'lightweight',label:labels.lightweight},{value:'off',label:labels.off}]}
-          onChange={v => onNoise(v === 'automatic' ? 'automatic' : v === 'off' ? 'off' : 'lightweight')} />
-      </SettingsRow>
-      <SettingsRow id={`${id}-level`} label={labels.level}>
-        {levelUnavailable === undefined ? <AudioMeter level={level} label={labels.level} /> : <span>{levelUnavailable}</span>}
-      </SettingsRow>
+          <Segmented id={`${id}-noise-group`} label={labels.noise} value={noise}
+            options={[{ value: 'automatic', label: labels.automatic }, { value: 'lightweight', label: labels.lightweight }, { value: 'off', label: labels.off }]}
+            onChange={v => onNoise(v === 'automatic' ? 'automatic' : v === 'off' ? 'off' : 'lightweight')} />
+        </div>
+      </section>
     </div>
   );
 }

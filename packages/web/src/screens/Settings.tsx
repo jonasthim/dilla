@@ -1,5 +1,5 @@
 import { SettingsFrame, PhoneLayoutProvider } from '@dilla/ui';
-import { goBack, routeOf, useRoute, type SettingsSection } from '../router.ts';
+import { routeOf, useRoute, type SettingsSection } from '../router.ts';
 import { phoneNow, usePhoneLayout } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
@@ -115,10 +115,6 @@ function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): 
     setComparison(null);
     void navigate(from === null ? { name: 'root' } : routeOf(from), true);
   };
-  const back = () => {
-    const index = { name: 'settings', section: null, from } as const;
-    goBack(index, navigate, index);
-  };
   const identity = account?.user ? <div className="dw-settings-identity">
     <strong>{account.user.display || account.user.username}</strong>
     <span>{t('workspace.username', { username: account.user.username })}</span>
@@ -137,9 +133,8 @@ function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): 
                     instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />;
 
   return <PhoneLayoutProvider value={phone}><SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
-    nav={signOut} identity={identity} search={nav} phonePage={phoneIndex ? 'index' : 'section'}
-    sectionTitle={t(`workspace.${activeSection}`)} backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={back}
-    contentRef={contentRef} wide={activeSection === 'devices' || activeSection === 'privacy' || activeSection === 'diagnostics'}
+    nav={<>{nav}{signOut}</>} identity={identity} phonePage={phoneIndex ? 'index' : 'section'}
+    contentRef={contentRef} wide={activeSection === 'privacy' || activeSection === 'diagnostics'}
     overlays={workspace?.confirmation} activity={activity} activityVisible={activityVisible} footer={workspace?.footer}>
     {sectionContent}
 

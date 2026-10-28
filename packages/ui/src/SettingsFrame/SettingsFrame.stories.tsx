@@ -17,7 +17,7 @@ const meta: Meta = { title: 'Settings/SettingsFrame', parameters: { layout: 'ful
 export default meta;
 type Story = StoryObj;
 const noop = () => {};
-const ITEMS = [{ id: 'devices', label: 'devices', group: 'Account' }, { id: 'notifications', label: 'notifications', group: 'Preferences' }, { id: 'appearance', label: 'appearance', group: 'Preferences' }];
+const ITEMS = [{ id: 'devices', label: 'Devices', group: 'Account', icon: 'monitor-smartphone' as const }, { id: 'notifications', label: 'Notifications', group: 'Preferences', icon: 'bell' as const }, { id: 'appearance', label: 'Appearance', group: 'Preferences', icon: 'eye' as const }];
 const PHONE_INDEX_ITEMS = [
   { id: 'profile', label: 'profile', group: 'Account' },
   { id: 'sign-in', label: 'sign-in', group: 'Account' },
