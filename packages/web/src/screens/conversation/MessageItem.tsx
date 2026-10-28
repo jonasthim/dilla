@@ -93,6 +93,10 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const emit = (event: RowEvent) => p.onEvent(item, event);
   const ownAuthor = item.senderUser !== null && item.senderUser === p.book.self?.id;
   const author = authorName(item, p.book.members, p.book.self);
+  // Task S1: a sender is a Bot only when the server's member row says so (account kind 1). The
+  // credential's kind (item.bot) is signed by the sender's own SSK, so on its own it is a claim any
+  // modified client can make; it is required too, never trusted alone.
+  const bot = item.bot && isCommunityBot(p.book.members, item.senderUser);
   const label = STATE_LABEL[item.state];
   const cannotReadDetail = item.state !== 'cannot-read' ? undefined
     : item.reason === 'E_UMK_CHANGED' ? t('privacy.changed')
@@ -141,10 +145,10 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   };
   // In the gutter the time stands alone: the day divider above the run names the day.
   const time = messageTime(item.ts, p.now);
-  const marker = item.bot ? finalPollMarker(item.body) : null;
+  const marker = bot ? finalPollMarker(item.body) : null;
   // Fix round 1 (Jonas 2026-10-28): Glenn's "started music" message: the prototype's line and the live player card.
   // Security review M1: only an unedited message from this community's managed Bot account.
-  const music = item.bot && marker === null && !item.edited && isCommunityBot(p.book.members, item.senderUser) ? musicMarker(item.body) : null;
+  const music = bot && marker === null && !item.edited ? musicMarker(item.body) : null;
   const musicRoom = music === null || p.client === undefined ? '' : musicRoomName(p.client, p.communityId ?? null, music.voiceChannelId);
   const displayBody = !shown ? '' : music !== null
     ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
@@ -152,7 +156,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const card = music !== null && p.client !== undefined && shown
     ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
     : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
-    body={item.body} authorId={item.senderUser} bot={item.bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
+    body={item.body} authorId={item.senderUser} bot={bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
     onOpenThread={p.onOpenThread} /> : undefined;
   const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
@@ -161,8 +165,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
       openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={displayBody} card={card}
     grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal} replying={p.replying === true}
-    nameColor={item.bot ? 0 : nameColorOf(item.senderUser, p.book)} codeLabels={codeLabels()}
-    own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
+    nameColor={bot ? 0 : nameColorOf(item.senderUser, p.book)} codeLabels={codeLabels()}
+    own={item.own} tag={bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [
       { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); emit({ kind: 'retry', msgId: item.msgId! }); } },

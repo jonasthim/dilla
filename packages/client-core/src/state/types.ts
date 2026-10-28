@@ -73,7 +73,12 @@ export interface TimelineItem {
   state: TimelineItemState;
   reason: string;                               // the raw code for 'cannot-read' and 'failed', else ''
   senderUser: string | null; senderDevice: string | null;
-  own: boolean; web: boolean; bot: boolean;
+  own: boolean; web: boolean;
+  /**
+   * The sender credential's kind is Bot. The credential is signed by the sender's own SSK, so this is the sender's claim:
+   * the web shows a sender as a Bot only when the server's member row is of account kind 1 as well (Task S1).
+   */
+  bot: boolean;
   ts: number;                                   // unix seconds
   body: string;
   msgId: string | null;

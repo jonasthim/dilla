@@ -7,7 +7,7 @@ import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import {
-  A, GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
+  A, GEN, MEMBERS, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
 } from '../../test/conversation.tsx';
 import { INITIAL_UI, conversationReducer } from './Conversation.tsx';
 import { queryToolbarButton, toolbarButton, toolbarLabels } from '../../test/toolbar.ts';
@@ -530,7 +530,12 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     expect(log.scrollTop).toBe(1500);
   });
   it('tags a web client and a bot always', () => {
-    renderConversation({ items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, ts: NOON + 3600 })] });
+    const glenn = '9f'.repeat(16);
+    renderConversation({
+      items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, senderUser: glenn, ts: NOON + 3600 })],
+      // Task S1: the BOT tag needs the server's member row of account kind 1, not only the credential's kind.
+      before: fake => fake.set(`members:${A}`, [...MEMBERS, { userId: glenn, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]),
+    });
     expect(rowOf(O1).querySelector('[data-reveal]')).toBeNull();
     expect(rowOf(O1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'web');
     expect(rowOf(P1).querySelector('[data-reveal]')).toBeNull();
