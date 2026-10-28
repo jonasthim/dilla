@@ -66,6 +66,19 @@ export function dskMessage(deviceId: Uint8Array, dskPub: Uint8Array, kind: numbe
  * is nothing to parse and nothing to confuse; `purpose` is 0 session, 1 renew, 2 provisional, and
  * binding it into the signature is what stops a renew signature being replayed as an establish.
  */
+/**
+ * The instance-signed account-kind attestation (03-identity.md § Account kind attestation, wire 4):
+ * `"dilla account kind v1" || CBOR([1, instance_id, user_id, umk_pub, kind])`.
+ */
+export function accountKindMessage(instanceId: Uint8Array, userId: Uint8Array, umkPub: Uint8Array, kind: 0 | 1): Uint8Array {
+  return concat(utf8('dilla account kind v1'), encode([1, instanceId, userId, umkPub, kind]));
+}
+
+/** The attestation's wire form: `[1, key_id(16), kind, sig(64)]`. */
+export function accountKindAttestation(keyId: Uint8Array, kind: 0 | 1, signature: Uint8Array): Uint8Array {
+  return encode([1, keyId, kind, signature]);
+}
+
 export function sessionPreimage(instanceId: Uint8Array, deviceId: Uint8Array, nonce: Uint8Array, purpose: 0 | 1 | 2): Uint8Array {
   if (instanceId.length !== 16) throw new Error('instance_id must be 16 bytes');
   if (deviceId.length !== 16) throw new Error('device_id must be 16 bytes');

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, and the 81-byte device-session signature preimage (03-identity.md, 02-delivery-service.md)",
+  "description": "safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, the 81-byte device-session signature preimage, and the instance-signed account-kind attestation (03-identity.md, 02-delivery-service.md)",
   "safety_number": {
     "umk_a": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
     "umk_b": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
@@ -40,5 +40,27 @@
     "nonce": "abababababababababababababababababababababababababababababababab",
     "purpose": 0,
     "preimage": "64696c6c612073657373696f6e20763100112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10abababababababababababababababababababababababababababababababab00"
+  },
+  "account_kind": {
+    "instance_priv": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "instance_pub": "0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0",
+    "key_id": "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b",
+    "instance_id": "00112233445566778899aabbccddeeff",
+    "user_id": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "umk_pub": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+    "cases": [
+      {
+        "kind": 0,
+        "message": "64696c6c61206163636f756e74206b696e6420763185015000112233445566778899aabbccddeeff50d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d45820db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d00",
+        "signature": "d0d7984c43ff18856c6cc88019db53bc3213f9a11567ce1c56826ff78ebd01bdb1067497291c899de96be2efc1e07205683900a2af839c18bc52085f0384590f",
+        "attestation": "8401505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b005840d0d7984c43ff18856c6cc88019db53bc3213f9a11567ce1c56826ff78ebd01bdb1067497291c899de96be2efc1e07205683900a2af839c18bc52085f0384590f"
+      },
+      {
+        "kind": 1,
+        "message": "64696c6c61206163636f756e74206b696e6420763185015000112233445566778899aabbccddeeff50d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d45820db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d01",
+        "signature": "dc6e38789c6e7e5eb58896effb10a7eefb0874bff37405f5617c38f8b33070152a79ff420698f41625e7edb94486cb0b692a92c13f1f3804dc90015fe9657c03",
+        "attestation": "8401505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b015840dc6e38789c6e7e5eb58896effb10a7eefb0874bff37405f5617c38f8b33070152a79ff420698f41625e7edb94486cb0b692a92c13f1f3804dc90015fe9657c03"
+      }
+    ]
   }
 }

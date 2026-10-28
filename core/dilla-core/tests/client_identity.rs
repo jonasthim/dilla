@@ -714,17 +714,18 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v12 (per-device Bot interaction groups) and ClientCore::open
+// app schema v13 (v12's per-device Bot interaction groups; v13's account-kind attestations) and
+// ClientCore::open
 // (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v12_and_reopens_idempotently() {
+fn open_creates_app_schema_v13_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        12
+        13
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -740,6 +741,7 @@ fn open_creates_app_schema_v12_and_reopens_idempotently() {
     assert_eq!(
         names,
         [
+            "app_account_kinds",
             "app_authority",
             "app_authority_known",
             "app_authority_mentionable",
@@ -808,7 +810,7 @@ fn open_creates_app_schema_v12_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x0c]);
+    assert_eq!(schema, [0x0d]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -933,7 +935,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'0d');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'0e');",
         )
         .expect("seed");
     let e = match ClientCore::open(Arc::clone(&c)) {
@@ -945,7 +947,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         e,
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 13, supported 12".into()
+            detail: "found 14, supported 13".into()
         }
     );
     let app_tables: i64 = c
@@ -4334,4 +4336,52 @@ fn revoke_refuses_a_served_list_older_than_the_stored_newest() {
         }
     );
     assert_eq!(snapshot(&ac), before);
+}
+
+// ---- Task S1 part 2: account_kind_ingest ----
+
+fn attestation_bytes(v: u64, kind: u64) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(4)
+        .uint(v)
+        .bytes(&[0x53; 16])
+        .uint(kind)
+        .bytes(&[0x54; 64]);
+    e.into_vec()
+}
+
+#[test]
+fn account_kind_ingest_needs_the_pinned_instance_key_and_records_the_seen_flag() {
+    // A core with no identity (no pinned instance key) cannot store one: it could not judge it.
+    let (mut fresh, _) = core();
+    assert_eq!(
+        err(fresh.account_kind_ingest(&USER, &attestation_bytes(1, 0))).code,
+        "E_CORE_STATE"
+    );
+    assert!(!fresh.account_kind_seen().expect("seen"));
+
+    let (mut core, _, _, _, _) = signed_up();
+    assert!(!core.account_kind_seen().expect("seen"));
+    assert_eq!(
+        err(core.account_kind_ingest(&[0; 16], &attestation_bytes(1, 0))).code,
+        "E_CORE_INPUT"
+    );
+    assert_eq!(
+        err(core.account_kind_ingest(&USER, &attestation_bytes(2, 0))).code,
+        "E_CREDENTIAL"
+    );
+    assert_eq!(
+        err(core.account_kind_ingest(&USER, &attestation_bytes(1, 2))).code,
+        "E_CREDENTIAL"
+    );
+    assert!(
+        !core.account_kind_seen().expect("seen"),
+        "a refused attestation sets nothing"
+    );
+    core.account_kind_ingest(&USER, &attestation_bytes(1, 0))
+        .expect("ingest");
+    assert!(core.account_kind_seen().expect("seen"));
+    // Idempotent: the same attestation again is no error.
+    core.account_kind_ingest(&USER, &attestation_bytes(1, 0))
+        .expect("ingest again");
 }
