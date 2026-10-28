@@ -151,7 +151,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		if err != nil {
 			return InteractionResult{}, err
 		}
-		data, err := encodeMusicSnapshot(snapshot.State, canControl)
+		data, err := encodeMusicSnapshot(snapshot.State, canControl, h.clock().UnixMilli())
 		if err != nil {
 			return InteractionResult{}, err
 		}
@@ -230,6 +230,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if op == protocol.OpMusicShuffle {
 		opValue.Enabled = !snapshot.State.Shuffle
 	}
+	opValue.NowMS = h.clock().UnixMilli()
 	next, err := music.Apply(snapshot.State, snapshot.Revision, opValue)
 	if errors.Is(err, music.ErrRevisionConflict) {
 		return InteractionResult{Status: interactionStatusConflict}, nil
@@ -302,6 +303,13 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 }
 
+func (h MusicInteractions) clock() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
+}
+
 // isSpotifyCatalogInput keeps Spotify catalog links on their authenticated
 // resolver path. The catalog itself performs strict URI and URL validation;
 // this dispatch only prevents malformed Spotify links reaching YouTube.
@@ -327,7 +335,7 @@ func (h MusicInteractions) pauseUnstartedPlayback(ctx context.Context, channel i
 	if current.Revision != committedRevision {
 		return current.Revision
 	}
-	next, err := music.Apply(current.State, current.Revision, music.Operation{Kind: music.OpPause})
+	next, err := music.Apply(current.State, current.Revision, music.Operation{Kind: music.OpPause, NowMS: h.clock().UnixMilli()})
 	if err != nil {
 		return current.Revision
 	}
@@ -418,8 +426,10 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 	return operation, true
 }
 
-func encodeMusicSnapshot(state music.State, canControl bool) ([]byte, error) {
-	if state.PositionMS < 0 {
+// encodeMusicSnapshot writes snapshot v1. Slots 10 and 11 (Ruling AI) are the Bot's Unix ms at which slot 4's position
+// was the playhead (0: unknown) and the Bot's Unix ms now, so a client can run the playhead on without trusting its clock.
+func encodeMusicSnapshot(state music.State, canControl bool, nowMS int64) ([]byte, error) {
+	if state.PositionMS < 0 || state.PositionAtMS < 0 || nowMS < 0 {
 		return nil, music.ErrInvalidOperation
 	}
 	queue := make([]any, 0, len(state.Queue))
@@ -437,7 +447,8 @@ func encodeMusicSnapshot(state music.State, canControl bool) ([]byte, error) {
 	}
 	// The final slot is the current actor's DJ/call-membership affordance. Every
 	// mutation still rechecks authority at its own write boundary.
-	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), boolUint(canControl)})
+	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), boolUint(canControl),
+		uint64(state.PositionAtMS), uint64(nowMS)})
 }
 
 func encodeMusicTrack(t *music.Track) (any, error) {

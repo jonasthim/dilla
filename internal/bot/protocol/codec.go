@@ -35,24 +35,27 @@ var (
 type Operation uint64
 
 const (
-	OpOverviewGet            Operation = 0
-	OpSettingsGet            Operation = 1
-	OpSettingsPut            Operation = 2
-	OpMusicState             Operation = 10
-	OpMusicSearch            Operation = 11
-	OpMusicEnqueue           Operation = 12
-	OpMusicPause             Operation = 13
-	OpMusicResume            Operation = 14
-	OpMusicSkip              Operation = 15
-	OpMusicStop              Operation = 16
-	OpMusicSeek              Operation = 17
-	OpMusicVolume            Operation = 18
-	OpMusicShuffle           Operation = 19
-	OpMusicRepeat            Operation = 20
-	OpMusicRemove            Operation = 21
-	OpMusicMove              Operation = 22
-	OpMusicClear             Operation = 23
-	OpMusicProvidersStatus   Operation = 24
+	OpOverviewGet          Operation = 0
+	OpSettingsGet          Operation = 1
+	OpSettingsPut          Operation = 2
+	OpMusicState           Operation = 10
+	OpMusicSearch          Operation = 11
+	OpMusicEnqueue         Operation = 12
+	OpMusicPause           Operation = 13
+	OpMusicResume          Operation = 14
+	OpMusicSkip            Operation = 15
+	OpMusicStop            Operation = 16
+	OpMusicSeek            Operation = 17
+	OpMusicVolume          Operation = 18
+	OpMusicShuffle         Operation = 19
+	OpMusicRepeat          Operation = 20
+	OpMusicRemove          Operation = 21
+	OpMusicMove            Operation = 22
+	OpMusicClear           Operation = 23
+	OpMusicProvidersStatus Operation = 24
+	// OpMusicAnnounce posts "<requester> started music in <voice channel>" with the player marker in the text channel
+	// the requester names (args[0]); the request's channel is the voice channel. Revision must be 0.
+	OpMusicAnnounce          Operation = 25
 	OpWelcomePreview         Operation = 30
 	OpRolePanelPublish       Operation = 31
 	OpRolesList              Operation = 40
@@ -226,7 +229,7 @@ func validateRequest(r Request) error {
 	if !mut && (r.Revision != nil || r.Expires != nil) {
 		return invalid()
 	}
-	if (r.Operation == OpRolePanelPublish || r.Operation == OpPollCreate || r.Operation == OpReminderCreate) && *r.Revision != 0 {
+	if (r.Operation == OpRolePanelPublish || r.Operation == OpPollCreate || r.Operation == OpReminderCreate || r.Operation == OpMusicAnnounce) && *r.Revision != 0 {
 		return invalid()
 	}
 	if err := validateArgs(r.Operation, r.Args); err != nil {
@@ -254,7 +257,7 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return true, true, 1
 	case OpMusicSeek, OpMusicVolume, OpMusicRepeat:
 		return true, true, 1
-	case OpMusicRemove:
+	case OpMusicRemove, OpMusicAnnounce:
 		return true, true, 1
 	case OpAnnouncementsDelete:
 		return true, false, 2
@@ -335,7 +338,7 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(u(0, 100))
 	case OpMusicRepeat:
 		return boolErr(u(0, 2))
-	case OpMusicRemove:
+	case OpMusicRemove, OpMusicAnnounce:
 		return boolErr(idarg(0))
 	case OpAnnouncementsDelete:
 		if len(a) != 2 {
@@ -436,7 +439,7 @@ func isNullableIDNode(n node) bool   { return n.null || (n.major == 2 && len(n.b
 func isNullableUintNode(n node) bool { return n.null || n.major == 0 }
 func requestIDs(op Operation, a []any) {
 	switch op {
-	case OpMusicRemove, OpAnnouncementsDelete:
+	case OpMusicRemove, OpAnnouncementsDelete, OpMusicAnnounce:
 		initIDs(a, 0)
 	case OpMusicMove:
 		initIDs(a, 0, 1)

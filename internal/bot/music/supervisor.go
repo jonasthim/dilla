@@ -105,6 +105,9 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 	if expected != s.state.Revision {
 		return cloneState(s.state), ErrRevisionConflict
 	}
+	if op.NowMS == 0 {
+		op.NowMS = time.Now().UnixMilli()
+	}
 	next, err := Apply(s.state, expected, op)
 	if err != nil {
 		return cloneState(s.state), err
@@ -203,6 +206,9 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
 		return errors.New("music track starter returned invalid playback")
 	}
 	s.playback = p
+	// Ruling AI: the audio starts now, so the stored position is the playhead from this moment (a slow provider start
+	// would otherwise run the client's playhead ahead of the audio). Same revision: the next commit persists it.
+	s.state.PositionAtMS = time.Now().UnixMilli()
 	go s.monitor(p)
 	return nil
 }
@@ -221,7 +227,7 @@ func (s *Supervisor) monitor(p Playback) {
 		s.signalLocked()
 		return
 	}
-	next, applyErr := Apply(s.state, s.state.Revision, Operation{Kind: OpComplete})
+	next, applyErr := Apply(s.state, s.state.Revision, Operation{Kind: OpComplete, NowMS: time.Now().UnixMilli()})
 	if applyErr != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
@@ -243,7 +249,7 @@ func (s *Supervisor) monitor(p Playback) {
 }
 
 func (s *Supervisor) pauseLocked(ctx context.Context) error {
-	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause})
+	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause, NowMS: time.Now().UnixMilli()})
 	if err != nil {
 		s.state.Paused = true
 		return err
@@ -270,7 +276,7 @@ func (s *Supervisor) EmptyRoom(ctx context.Context) error {
 	if s.closed {
 		return ErrSupervisorClosed
 	}
-	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause})
+	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause, NowMS: time.Now().UnixMilli()})
 	if err != nil {
 		return err
 	}

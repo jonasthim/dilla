@@ -99,7 +99,7 @@ func commandOperationAllowed(operation protocol.Operation, capabilities uint8, a
 	case protocol.OpMusicState, protocol.OpMusicSearch, protocol.OpMusicEnqueue,
 		protocol.OpMusicPause, protocol.OpMusicResume, protocol.OpMusicSkip, protocol.OpMusicStop,
 		protocol.OpMusicSeek, protocol.OpMusicVolume, protocol.OpMusicShuffle, protocol.OpMusicRepeat,
-		protocol.OpMusicRemove, protocol.OpMusicMove, protocol.OpMusicClear:
+		protocol.OpMusicRemove, protocol.OpMusicMove, protocol.OpMusicClear, protocol.OpMusicAnnounce:
 		return capabilities&commandCapMusic != 0
 	case protocol.OpMusicProvidersStatus:
 		return capabilities&commandCapMusic != 0 && (actor.Owner || actor.Administrator || actor.EffectiveBits&manager != 0)

@@ -56,3 +56,11 @@ func runtimeRolePanelHandlers(capabilities uint64, handler service.RolePanelInte
 	}
 	return handler.Handlers()
 }
+
+// runtimeMusicAnnounceHandlers registers the public "started music" message only with the music interactions it reads.
+func runtimeMusicAnnounceHandlers(music *service.MusicInteractions, handler service.MusicAnnouncements) map[protocol.Operation]service.InteractionHandlerSpec {
+	if music == nil || music.Store == nil || music.Authority == nil {
+		return nil
+	}
+	return handler.Handlers()
+}

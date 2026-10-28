@@ -239,3 +239,44 @@ func TestRevisionedMutationsIncrementOnce(t *testing.T) {
 		t.Fatalf("shuffle mutation revision = %d, want 2", state.Revision)
 	}
 }
+
+// Ruling AI: the playhead is stamped with the Bot's time so a client can run it on.
+func TestApplyStampsAndSettlesThePlayhead(t *testing.T) {
+	track := Track{ID: "a", Provider: ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member", DurationMS: 10_000}
+	state, err := Apply(InitialState(), 0, Operation{Kind: OpEnqueue, Tracks: []Track{track}, NowMS: 1_000})
+	if err != nil || state.PositionAtMS != 1_000 {
+		t.Fatalf("enqueue state=%+v err=%v", state, err)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 2_000})
+	if err != nil || state.Paused || state.PositionMS != 0 || state.PositionAtMS != 2_000 {
+		t.Fatalf("resume state=%+v err=%v", state, err)
+	}
+	if got := PlayheadMS(state, 5_500); got != 3_500 {
+		t.Fatalf("playhead at 5.5s = %d, want 3500", got)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpPause, NowMS: 6_000})
+	if err != nil || state.PositionMS != 4_000 || state.PositionAtMS != 6_000 {
+		t.Fatalf("pause must settle the reached playhead: %+v err=%v", state, err)
+	}
+	if got := PlayheadMS(state, 60_000); got != 4_000 {
+		t.Fatalf("a paused playhead stays: %d", got)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 7_000})
+	if err != nil || state.PositionMS != 4_000 || state.PositionAtMS != 7_000 {
+		t.Fatalf("resume keeps the position and restamps: %+v err=%v", state, err)
+	}
+	if got := PlayheadMS(state, 100_000); got != 10_000 {
+		t.Fatalf("the playhead clamps to the duration: %d", got)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpSeek, PositionMS: 1_234, NowMS: 8_000})
+	if err != nil || state.PositionMS != 1_234 || state.PositionAtMS != 8_000 {
+		t.Fatalf("seek: %+v err=%v", state, err)
+	}
+	unstamped, err := Apply(state, state.Revision, Operation{Kind: OpSetVolume, Volume: 50})
+	if err != nil || unstamped.PositionMS != 1_234 || unstamped.PositionAtMS != 8_000 {
+		t.Fatalf("an operation without NowMS leaves the playhead fields: %+v err=%v", unstamped, err)
+	}
+	if _, err := Apply(state, state.Revision, Operation{Kind: OpSetVolume, Volume: 50, NowMS: -1}); err == nil {
+		t.Fatal("a negative NowMS is invalid")
+	}
+}

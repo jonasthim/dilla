@@ -607,8 +607,14 @@ func TestMusicStateReportsCurrentDJControlGrant(t *testing.T) {
 			if err := cborx.Unmarshal(result.Data, &snapshot); err != nil {
 				t.Fatalf("decode music snapshot: %v", err)
 			}
-			if len(snapshot) != 10 {
-				t.Fatalf("snapshot fields=%d, want 10", len(snapshot))
+			if len(snapshot) != 12 {
+				t.Fatalf("snapshot fields=%d, want 12 (Ruling AI: position stamp and Bot time)", len(snapshot))
+			}
+			if at, ok := snapshot[10].(uint64); !ok || at != 0 {
+				t.Fatalf("an unstamped state's position time=%#v, want 0", snapshot[10])
+			}
+			if now, ok := snapshot[11].(uint64); !ok || now == 0 {
+				t.Fatalf("the Bot's time=%#v, want its Unix ms", snapshot[11])
 			}
 			got, ok := snapshot[9].(uint64)
 			if !ok || got != test.want || authority.roleChecks != 1 {

@@ -483,7 +483,7 @@ func TestSupervisorFailedStartLeavesStatePausedWhenPauseSaveFails(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected provider start failure")
 	}
-	if !state.Paused || state.Current == nil || state.Current.ID != track.ID || state.PositionMS != 1234 || wrapped.saves != wrapped.failOnSave {
+	if !state.Paused || state.Current == nil || state.Current.ID != track.ID || !nearPlayhead(state.PositionMS, 1234) || wrapped.saves != wrapped.failOnSave {
 		t.Fatalf("failed start left unsafe state: %+v", state)
 	}
 }
@@ -523,7 +523,7 @@ func TestSupervisorPauseAndEmptyRoomClosePlayback(t *testing.T) {
 	if err := s.EmptyRoom(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if p.closed != 1 || s.State().Current == nil || s.State().Current.ID != "a" || !s.State().Paused || s.State().PositionMS != 1234 || len(s.State().Queue) != 1 || s.State().Queue[0].ID != "b" {
+	if p.closed != 1 || s.State().Current == nil || s.State().Current.ID != "a" || !s.State().Paused || !nearPlayhead(s.State().PositionMS, 1234) || len(s.State().Queue) != 1 || s.State().Queue[0].ID != "b" {
 		t.Fatal("empty room did not pause while preserving current track and queue")
 	}
 	if left || scheduled == nil {
@@ -649,3 +649,7 @@ func TestSupervisorResumeWhilePlayingKeepsCurrentPublication(t *testing.T) {
 		t.Fatalf("repeated Resume replaced a live track: starts=%d state=%+v", len(starter.starts), s.State())
 	}
 }
+
+// nearPlayhead allows the few milliseconds a playing track advances between a test's resume and its pause (Ruling AI:
+// a pause settles the playhead the track reached).
+func nearPlayhead(got, want int64) bool { return got >= want && got < want+1000 }
