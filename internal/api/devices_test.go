@@ -87,7 +87,29 @@ func devicePostBody(t *testing.T, d api.Deps, device id.ID, pub []byte, signer e
 		t.Fatalf("Challenge: %v", err)
 	}
 	sig := ed25519.Sign(signer, auth.SessionPreimage(d.Sessions.InstanceID(), device, nonce, auth.PurposeSession))
-	return []any{device, pub, uint64(1), uint64(1), []byte{1}, nonce, sig}
+	return []any{device, pub, uint64(1), uint64(1), testDeviceCredential(t, id.ID{}, device, pub, 0), nonce, sig}
+}
+
+// testDeviceCredential is a CredentialIdentity the WASI verifier accepts for a browser device (tier 1, signer tier 1):
+// fresh UMK and SSK, the SSK signed by the UMK, the device's dsk_pub signed by the SSK. Task 8b security review M1.
+func testDeviceCredential(t *testing.T, user, device id.ID, dskPub []byte, kind byte) []byte {
+	t.Helper()
+	_, umk, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sskPub, ssk, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	umkPub := umk.Public().(ed25519.PublicKey)
+	sigUMKSSK := ed25519.Sign(umk, append([]byte("dilla ssk v1"), sskPub...))
+	message := append(append(append([]byte("dilla dsk v1"), device[:]...), dskPub...), kind, 1, 1)
+	blob, err := cborx.Marshal([]any{uint64(1), []byte(umkPub), user[:], device[:], uint64(kind), uint64(1), uint64(1), []byte(sskPub), sigUMKSSK, ed25519.Sign(ssk, message)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blob
 }
 
 // postFreshDevice registers a fresh browser device under a fresh key through POST /v1/devices.
@@ -998,5 +1020,47 @@ func TestKeylessDeleteRefusesAListedDevice(t *testing.T) {
 	}
 	if got := doAuth(h, http.MethodGet, "/v1/accounts/me", stranger.Tokens[0]).Code; got != http.StatusOK {
 		t.Fatalf("another user's session after a cross-user DELETE answered %d, want 200", got)
+	}
+}
+
+// Task 8b security review M1 (fail closed): POST /v1/devices verifies the credential with the WASI core and binds it to
+// the account's kind, the session's user (or the unbound zero id) and this device. Anything else is refused.
+func TestPostDevicesBindsTheCredentialToTheAccountAndDevice(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, _, token := seedAPISession(t, deps)
+	post := func(credential func(device id.ID, pub []byte) []byte) int {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		device := id.New()
+		body := devicePostBody(t, deps, device, pub, priv)
+		body[4] = credential(device, pub)
+		return cborCall(t, h, http.MethodPost, "/v1/devices", token, body).Code
+	}
+	cases := []struct {
+		name       string
+		credential func(device id.ID, pub []byte) []byte
+		want       int
+	}{
+		{"malformed", func(id.ID, []byte) []byte { return []byte{1} }, http.StatusBadRequest},
+		{"ten fields but not a credential", func(device id.ID, _ []byte) []byte {
+			blob, _ := cborx.Marshal([]any{uint64(1), make([]byte, 32), user.ID[:], device[:], uint64(0), uint64(1), uint64(1), make([]byte, 32), make([]byte, 64), make([]byte, 64)})
+			return blob
+		}, http.StatusBadRequest},
+		{"bot kind on a human account", func(device id.ID, pub []byte) []byte { return testDeviceCredential(t, user.ID, device, pub, 1) }, http.StatusBadRequest},
+		{"another user", func(device id.ID, pub []byte) []byte { return testDeviceCredential(t, id.New(), device, pub, 0) }, http.StatusBadRequest},
+		{"another device", func(_ id.ID, pub []byte) []byte { return testDeviceCredential(t, user.ID, id.New(), pub, 0) }, http.StatusBadRequest},
+		{"another dsk", func(device id.ID, _ []byte) []byte {
+			other, _, _ := ed25519.GenerateKey(rand.Reader)
+			return testDeviceCredential(t, user.ID, device, other, 0)
+		}, http.StatusBadRequest},
+		{"valid human, this user", func(device id.ID, pub []byte) []byte { return testDeviceCredential(t, user.ID, device, pub, 0) }, http.StatusOK},
+		{"valid human, unbound user id", func(device id.ID, pub []byte) []byte { return testDeviceCredential(t, id.ID{}, device, pub, 0) }, http.StatusOK},
+	}
+	for _, tc := range cases {
+		if got := post(tc.credential); got != tc.want {
+			t.Fatalf("%s: status %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	botaccess "github.com/jonasthim/dilla/internal/bot/access"
+	"github.com/jonasthim/dilla/internal/bot/identity"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -63,6 +64,35 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := d.Sessions.ProveDeviceKey(req.DeviceID, req.DSKPub, body.Nonce, body.Sig); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// Task 8b security review M1 (fail closed): the credential is decoded and verified by the same WASI core every other
+	// credential boundary uses (canonical CBOR, the UMK→SSK and SSK→device signatures over this dsk_pub). It must name
+	// this device, its tiers, and the account's own kind — a member cannot register a bot-kind credential and speak as
+	// a Bot to clients that trust a bot-kind sender. Its user id is the session's, or zero (the unbound human form
+	// signup issues and the core uses until the server assigns the id). Anything that does not verify is refused.
+	if d.BotIdentity == nil {
+		server.WriteError(w, server.Errorf(server.CodeInternal, "credential verifier is not wired"))
+		return
+	}
+	credential, verifyErr := d.BotIdentity.Verify(r.Context(), req.Credential, req.DSKPub)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, identity.ErrUnavailable) {
+			server.WriteError(w, server.Errorf(server.CodeInternal, "credential verifier unavailable"))
+		} else {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential is invalid"))
+		}
+		return
+	}
+	account, accountErr := d.Repo.GetUser(r.Context(), sess.UserID)
+	if accountErr != nil {
+		server.WriteError(w, d.storeError(r, accountErr))
+		return
+	}
+	if uint64(credential.Kind) != uint64(account.Kind) || credential.DeviceID != req.DeviceID ||
+		(credential.UserID != (id.ID{}) && credential.UserID != sess.UserID) ||
+		credential.Tier != req.Tier || credential.SignerTier != req.SignerTier {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential does not match the account or device"))
 		return
 	}
 	now := d.Clock.Now().Unix()
