@@ -877,17 +877,25 @@ func TestLandingOpenGraph(t *testing.T) {
 	}
 }
 
-// The template's literal colours are the Mesh tokens, dark and light.
-func TestLandingTokensMatchMesh(t *testing.T) {
+// The template's literal colours are the Signal tokens, dark (the signal theme)
+// and light (the light theme the system preference selects), read from the
+// generated tokens.css so a token change fails here until the page follows.
+func TestLandingTokensMatchSignal(t *testing.T) {
 	raw, err := os.ReadFile("../../packages/design-tokens/dist/tokens.css")
 	if err != nil {
 		t.Fatalf("read tokens.css: %v", err)
 	}
 	css := string(raw)
-	dark := css[strings.Index(css, `[data-theme="mesh"] {`):]
-	dark = dark[:strings.Index(dark, "}")]
-	light := css[strings.Index(css, "@media (prefers-color-scheme: light)"):]
-	light = light[:strings.Index(light, "}")]
+	block := func(head string) string {
+		at := strings.Index(css, head)
+		if at < 0 {
+			t.Fatalf("tokens.css has no %s block", head)
+		}
+		b := css[at:]
+		return b[:strings.Index(b, "}")]
+	}
+	dark := block(`[data-theme="signal"] {`)
+	light := block("@media (prefers-color-scheme: light)")
 
 	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
 	_, page := landingBody(t, e, code)
