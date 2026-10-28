@@ -20,8 +20,9 @@ test('on a phone the call bar opens the stage, which holds the one mute button, 
 
     const bar = page.locator('.d-call-bar');
     const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
-    // Signal §5.6: the stage's mute is named by its word (Mute), the call bar's by voice.mute; one of them is in the DOM.
-    const mute = page.getByRole('button', { name: new RegExp(`^(${copy('voice.mute')}|${copy('callStage.bar.mute')})$`) });
+    // The call's own mute: the stage's (Signal §5.6, named by its word) or the call bar's; one of them is in the DOM. The phone
+    // home's user panel (Ruling AE) has a mute of its own, which is not the call's.
+    const mute = page.locator('.dw-voice-stage [data-control="mute"], .d-call-bar__mute');
     const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
     const title = page.locator('.d-app-shell__main .d-phone-header__title');
 

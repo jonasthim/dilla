@@ -27,9 +27,9 @@ export type ColorTokens = {
   patternStripe: string;
   /**
    * The voice stage (task 8), each the prototype's literal: a tile's fill, its 0.03 stripe, the 0.82 scrim under a focused
-   * tile's caption and buttons, a speaking focused tile's edge, Leave's hover, and Join voice's ink on --ok.
+   * tile's caption and buttons (scrimCaption: a grid tile's caption at 0.8; light themes draw both light, under dark text), a speaking focused tile's edge, Leave's hover, and Join voice's ink on --ok.
    */
-  stageTile: string; stageStripe: string; scrimTile: string; okEdge: string; dangerHover: string; okInk: string;
+  stageTile: string; stageStripe: string; scrimTile: string; scrimCaption: string; okEdge: string; dangerHover: string; okInk: string;
   linkUnderline: 0 | 1;
 };
 
@@ -47,7 +47,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentFaint: 'rgba(90,168,230,0.07)', accentFlash: 'rgba(90,168,230,0.18)', accentHover: 'rgba(90,168,230,0.08)', fgFaint: '#636A75', scrimTag: 'rgba(8,9,11,0.8)',
     codeLineNo: '#4A5059', codeComment: '#6C737E', codeBool: '#E9B6EC', codeKeyword: '#C4A7FF', codeRowHover: 'rgba(255,255,255,0.02)',
     dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E', patternStripe: 'rgba(255,255,255,0.04)',
-    stageTile: '#0E1116', stageStripe: 'rgba(255,255,255,0.03)', scrimTile: 'rgba(8,9,11,0.82)', okEdge: 'rgba(124,255,142,0.7)', dangerHover: '#FF8585', okInk: '#06150A',
+    stageTile: '#0E1116', stageStripe: 'rgba(255,255,255,0.03)', scrimTile: 'rgba(8,9,11,0.82)', scrimCaption: 'rgba(8,9,11,0.8)', okEdge: 'rgba(124,255,142,0.7)', dangerHover: '#FF8585', okInk: '#06150A',
     linkUnderline: 0,
   },
   light: {
@@ -63,7 +63,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentFaint: 'rgba(0,87,153,0.07)', accentFlash: 'rgba(0,87,153,0.18)', accentHover: 'rgba(0,87,153,0.08)', fgFaint: '#5C635C', scrimTag: 'rgba(20,23,26,0.8)',
     codeLineNo: '#5C635C', codeComment: '#5C635C', codeBool: '#8A2E8F', codeKeyword: '#5B3BA8', codeRowHover: 'rgba(0,0,0,0.03)',
     dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F', patternStripe: 'rgba(0,0,0,0.04)',
-    stageTile: '#FFFFFF', stageStripe: 'rgba(0,0,0,0.03)', scrimTile: 'rgba(20,23,26,0.82)', okEdge: 'rgba(27,115,52,0.7)', dangerHover: '#8F1E18', okInk: '#FFFFFF',
+    stageTile: '#FFFFFF', stageStripe: 'rgba(0,0,0,0.03)', scrimTile: 'rgba(255,255,255,0.88)', scrimCaption: 'rgba(255,255,255,0.88)', okEdge: 'rgba(27,115,52,0.7)', dangerHover: '#8F1E18', okInk: '#FFFFFF',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -79,7 +79,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentFaint: 'rgba(156,203,255,0.12)', accentFlash: 'rgba(156,203,255,0.3)', accentHover: 'rgba(156,203,255,0.16)', fgFaint: '#C8C8C8', scrimTag: 'rgba(0,0,0,0.85)',
     codeLineNo: '#C8C8C8', codeComment: '#C8C8C8', codeBool: '#F5C2F7', codeKeyword: '#D9C8FF', codeRowHover: 'rgba(255,255,255,0.08)',
     dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8', patternStripe: 'rgba(255,255,255,0.08)',
-    stageTile: '#000000', stageStripe: 'rgba(255,255,255,0.06)', scrimTile: 'rgba(0,0,0,0.85)', okEdge: '#9BFFA8', dangerHover: '#FFB8B8', okInk: '#000000',
+    stageTile: '#000000', stageStripe: 'rgba(255,255,255,0.06)', scrimTile: 'rgba(0,0,0,0.85)', scrimCaption: 'rgba(0,0,0,0.85)', okEdge: '#9BFFA8', dangerHover: '#FFB8B8', okInk: '#000000',
     linkUnderline: 1,
   },
 };

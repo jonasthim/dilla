@@ -155,7 +155,7 @@ describe('CallTile', () => {
   });
 
   it('Signal §5.6: the caption is a 22px chip over the bottom left, 8px in, on the 0.8 scrim', () => {
-    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__caption \{[^}]*position: absolute; left: 0\.5rem; bottom: 0\.5rem;[^}]*height: 1\.375rem;[^}]*background: var\(--scrim-tag\)/);
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__caption \{[^}]*position: absolute; left: 0\.5rem; bottom: 0\.5rem;[^}]*height: 1\.375rem;[^}]*background: var\(--scrim-caption\)/);
   });
 
   it('#37 T5: the mute is the prototype\'s 28px tile tool, shown while pressed (CSS pins)', () => {

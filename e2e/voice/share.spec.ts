@@ -183,14 +183,16 @@ test('a screen share and a camera reach the other browser verified, and stop', a
     await expect(seen).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     await heard(bob.page, a.device);
     const controls = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
-    const word = (key: string) => seen.locator(`.d-call-tile__state[data-state="${key}"]`);
+    // Signal §5.6: the stage's tile is the camera or the screen itself (no glyph for them on the tile, as the prototype); the
+    // sidebar's voice row still says it (camera, LIVE), so that is where bob reads alice's camera and share.
+    const word = (key: string) => rowState(bob.page, 'alice', key);
     const video = seen.locator('video.d-call-tile__video');
 
     await test.step('share the screen after a click, then stop', async () => {
       const share = controls.locator('[data-control="share"]');
       await share.click();
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
-      // web3.8: the screen is a tile of its own; alice's person tile (an avatar, she shares no camera) keeps the glyph.
+      // web3.8: the screen is a tile of its own; alice's person tile stays an avatar (she shares no camera).
       const shared = screenTile(bob.page, 'alice');
       await expect(word('screen')).toBeVisible({ timeout: WAIT });
       await expect(seen).toHaveAttribute('data-source', 'avatar');
@@ -351,6 +353,10 @@ test('a share without sound takes its sound from a picked audio input', async ({
 const TONE_TITLE = 'dilla-share-tone';
 const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));
 const stateWord = (seen: Locator, key: string): Locator => seen.locator(`.d-call-tile__state[data-state="${key}"]`);
+/** A person's state on the sidebar's voice row (camera, LIVE): the stage's tiles show the camera and the screen themselves. */
+const rowState = (page: Page, name: string, key: string): Locator => page.locator('.d-voice-row__person')
+  .filter({ has: page.locator('.d-voice-row__person-name', { hasText: new RegExp(`^${name}$`) }) })
+  .locator(`.d-voice-row__state[data-state="${key}"]`);
 
 test('a shared tab’s sound is heard by the other browser', async ({ peerBrowser, browserName, playwright, channel, headless }) => {
   test.skip(browserName !== 'chromium', 'DEV-63 / NV-10: screen capture, and a tab picked by its title, are Chromium only');
@@ -406,7 +412,7 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
         .locator('[data-control="share"]');
       await share.click();
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
-      await expect(stateWord(seen, 'screen')).toBeVisible({ timeout: WAIT });
+      await expect(rowState(bob.page, 'alice', 'screen')).toBeVisible({ timeout: WAIT });
       await expect(screenTile(bob.page, 'alice')).toHaveAttribute('data-media', 'true', { timeout: WAIT });
       await audible(bob.page);
       // #37 (T4): a share with sound carries no mark for the viewer and no notice for the sharer.
@@ -460,7 +466,7 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
       });
 
       await share.click();
-      await expect(stateWord(seen, 'screen')).toHaveCount(0, { timeout: WAIT });
+      await expect(rowState(bob.page, 'alice', 'screen')).toHaveCount(0, { timeout: WAIT });
     } finally {
       await peerBrowser.close(bob);
       await peerBrowser.close(alice);

@@ -66,6 +66,7 @@
   --stage-tile: #0E1116;
   --stage-stripe: rgba(255,255,255,0.03);
   --scrim-tile: rgba(8,9,11,0.82);
+  --scrim-caption: rgba(8,9,11,0.8);
   --ok-edge: rgba(124,255,142,0.7);
   --danger-hover: #FF8585;
   --ok-ink: #06150A;
@@ -239,6 +240,7 @@
   --stage-tile: #0E1116;
   --stage-stripe: rgba(255,255,255,0.03);
   --scrim-tile: rgba(8,9,11,0.82);
+  --scrim-caption: rgba(8,9,11,0.8);
   --ok-edge: rgba(124,255,142,0.7);
   --danger-hover: #FF8585;
   --ok-ink: #06150A;
@@ -311,7 +313,8 @@
   --pattern-stripe: rgba(0,0,0,0.04);
   --stage-tile: #FFFFFF;
   --stage-stripe: rgba(0,0,0,0.03);
-  --scrim-tile: rgba(20,23,26,0.82);
+  --scrim-tile: rgba(255,255,255,0.88);
+  --scrim-caption: rgba(255,255,255,0.88);
   --ok-edge: rgba(27,115,52,0.7);
   --danger-hover: #8F1E18;
   --ok-ink: #FFFFFF;
@@ -385,6 +388,7 @@
   --stage-tile: #000000;
   --stage-stripe: rgba(255,255,255,0.06);
   --scrim-tile: rgba(0,0,0,0.85);
+  --scrim-caption: rgba(0,0,0,0.85);
   --ok-edge: #9BFFA8;
   --danger-hover: #FFB8B8;
   --ok-ink: #000000;
@@ -458,7 +462,8 @@
     --pattern-stripe: rgba(0,0,0,0.04);
     --stage-tile: #FFFFFF;
     --stage-stripe: rgba(0,0,0,0.03);
-    --scrim-tile: rgba(20,23,26,0.82);
+    --scrim-tile: rgba(255,255,255,0.88);
+    --scrim-caption: rgba(255,255,255,0.88);
     --ok-edge: rgba(27,115,52,0.7);
     --danger-hover: #8F1E18;
     --ok-ink: #FFFFFF;
@@ -534,6 +539,7 @@
     --stage-tile: #000000;
     --stage-stripe: rgba(255,255,255,0.06);
     --scrim-tile: rgba(0,0,0,0.85);
+    --scrim-caption: rgba(0,0,0,0.85);
     --ok-edge: #9BFFA8;
     --danger-hover: #FFB8B8;
     --ok-ink: #000000;

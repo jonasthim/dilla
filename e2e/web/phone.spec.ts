@@ -295,17 +295,20 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
         const host = document.querySelector('.d-app-shell')!;
         const bar = document.createElement('div');
         bar.className = 'd-call-bar';
-        bar.innerHTML = '<button type="button" class="d-btn d-call-bar__mute" aria-pressed="true" data-size="md"></button><i></i>';
+        bar.innerHTML = '<button type="button" class="d-btn d-call-bar__mute" aria-pressed="true" data-size="md"></button><i></i><b></b>';
         host.append(bar);
-        bar.querySelector('i')!.style.setProperty('background', 'var(--surface-2)');
+        // Signal (task 8): the toggled-on danger tint, the --danger-soft fill and the --danger-border edge.
+        bar.querySelector('i')!.style.setProperty('background', 'var(--danger-soft)');
         bar.querySelector('i')!.style.setProperty('color', 'var(--danger)');
+        bar.querySelector('b')!.style.setProperty('color', 'var(--danger-border)');
         const button = getComputedStyle(bar.querySelector('button')!);
         const probe = getComputedStyle(bar.querySelector('i')!);
-        const out = { bg: button.backgroundColor, color: button.color, edge: button.borderTopColor, surface: probe.backgroundColor, danger: probe.color };
+        const edge = getComputedStyle(bar.querySelector('b')!);
+        const out = { bg: button.backgroundColor, color: button.color, edge: button.borderTopColor, surface: probe.backgroundColor, danger: probe.color, border: edge.color };
         bar.remove();
         return out;
       });
-      expect(muted, 'a muted mic: the danger glyph and edge on surface-2').toEqual({ bg: muted.surface, color: muted.danger, edge: muted.danger, surface: muted.surface, danger: muted.danger });
+      expect(muted, 'a muted mic: the danger glyph on the danger tint, never the accent fill').toEqual({ bg: muted.surface, color: muted.danger, edge: muted.border, surface: muted.surface, danger: muted.danger, border: muted.border });
     });
 
     // 3b. A thread is a sheet: opened from the toolbar, closed by the system back, then reopened by a real click on the chip.
