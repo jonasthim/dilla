@@ -577,7 +577,7 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
   const reason = document.querySelector('.d-composer__reason');
   expect(reason).toHaveTextContent(changed);
   expect(composer('general').getAttribute('aria-describedby')?.split(' ')).toContain(reason?.id);
-  expect(screen.getByRole('button', { name: 'attach files' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: en['shell.composer.attach'] })).toBeDisabled();
   await user.type(composer('general'), 'held back{Enter}');
   expect(fake.callsOf('send')).toEqual([]);
   for (const code of ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_CREDENTIAL'] as const) {
@@ -589,7 +589,7 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
   // The core lifted the block (verified, or a validated Remove here): sending resumes.
   act(() => fake.set('sendBlocks', {}));
   expect(composer('general')).not.toHaveAttribute('aria-disabled');
-  expect(screen.getByRole('button', { name: 'attach files' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: en['shell.composer.attach'] })).toBeEnabled();
 });
 
 it('blocks only the conversation the core names', () => {
@@ -1497,7 +1497,7 @@ describe('keyboard', () => {
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: en['shell.composer.send'] }));
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: en['shell.composer.attach'] }));
   });
   // Requirement 11: closing the join dialog puts focus in the composer.
   it('moves focus to the composer when the join dialog closes', async () => {

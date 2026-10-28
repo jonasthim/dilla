@@ -31,7 +31,9 @@ export async function runAxe(page: Page): Promise<AxeFinding[]> {
       resultTypes: ['violations'],
       rules: { 'target-size': { enabled: true } },
     });
-    const theme = document.documentElement.dataset.theme ?? 'signal';
+    // The theme actually drawn: the attribute when set; without it (the system choice) the resolved --bg says whether it is signal's.
+    const set = document.documentElement.dataset.theme;
+    const theme = set ?? (getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().toUpperCase() === '#08090B' ? 'signal' : 'other');
     const excepted = (v: { id: string }, n: { target: string[] }) => {
       if (v.id !== 'color-contrast' || theme !== 'signal' || n.target.length !== 1) return false;
       const el = document.querySelector(n.target[0]!);

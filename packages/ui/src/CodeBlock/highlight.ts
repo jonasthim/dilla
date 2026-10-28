@@ -46,6 +46,8 @@ export function highlightLine(line: string, rules: readonly Rule[]): Token[] {
     out.push({ kind: best.kind, text: best.text });
     rest = rest.slice(best.i + best.text.length);
   }
+  // The guard stops a pathological line (a minified file); what is left is shown as plain text, never dropped.
+  if (rest.length > 0 && guard > 400) out.push({ kind: 'text', text: rest });
   if (out.length === 0) out.push({ kind: 'text', text: ' ' });
   return out;
 }

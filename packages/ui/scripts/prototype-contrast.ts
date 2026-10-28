@@ -11,6 +11,8 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   { selector: '.d-mention-list [aria-selected="true"] .d-mention-list__secondary', simple: '.d-mention-list__secondary', why: 'the picked suggestion\'s handle in #767D89 on #171B22 (4.16:1)' },
   { selector: '.d-code-block__count', simple: '.d-code-block__count', why: 'a code block\'s line count in #636A75 on bg-3 (3.4:1)' },
   { selector: '.d-code-block [data-tok="com"]', simple: '[data-tok="com"]', why: 'a code comment in #6C737E on bg-2 (4.06:1)' },
+  // Not listed because axe cannot see it: a code block's line numbers, the prototype's #4A5059 on bg-2 (2.4:1), are CSS-generated
+  // (`::before` counters) and decorative (never part of the code's text). Light and high-contrast draw them in fg-3 / #C8C8C8.
 ];
 
 /** The `:not()` chain Storybook's a11y config appends to its color-contrast selector. */

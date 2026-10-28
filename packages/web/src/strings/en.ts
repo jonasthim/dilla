@@ -465,7 +465,7 @@ export const en = {
   'shell.edit.cancel': 'cancel',
   'shell.composer.replying': 'Replying to {name}',
   'shell.composer.replyCancel': 'cancel reply',
-  'shell.composer.attach': 'attach files',
+  'shell.composer.attach': 'Attach files (25 MB each)',
   'shell.composer.mentions': 'people to mention',
   'shell.composer.mentionEveryone': 'everyone in this channel',
   // Task 7 (README §5.5): the footer's emoji and </> buttons, the emoji picker, the newline hint and the mention popover's title.
@@ -491,6 +491,8 @@ export const en = {
   'shell.tray.failed': 'failed ({code})',
   'shell.tray.failedHint': 'Remove it and attach it again.',
   'shell.tray.remove': 'remove {name}',
+  // Task 7 (Signal §6.8): the remove button's tooltip, the prototype's word.
+  'shell.tray.removeTip': 'Remove',
   'shell.tray.tooLarge': '{name} is over 25 MB and cannot be sent from a browser.',
   'shell.tray.tooMany': 'A message carries at most 4 files.',
   'shell.tray.notReady': 'Wait until every file is ready, or remove it.',

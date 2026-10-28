@@ -55,10 +55,18 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   /** The message the composer is replying to: tinted with the accent bar (README §5.5). */
   replying?: boolean }
 
+/** The members by user id, built once per members list (every row of a log shares it). */
+const memberMaps = new WeakMap<NameBook['members'], ReadonlyMap<string, NameBook['members'][number]>>();
+function memberMap(members: NameBook['members']): ReadonlyMap<string, NameBook['members'][number]> {
+  let map = memberMaps.get(members);
+  if (map === undefined) { map = new Map(members.map(m => [m.userId, m])); memberMaps.set(members, map); }
+  return map;
+}
+
 /** The author's name colour (README §5.5): the first of their roles that has a colour, 0 for none. */
 export function nameColorOf(userId: string | null, book: NameBook): number {
   if (userId === null || book.roleInfo === undefined) return 0;
-  const member = book.members.find(m => m.userId === userId);
+  const member = memberMap(book.members).get(userId);
   for (const id of member?.roleIds ?? []) {
     const color = book.roleInfo.get(id)?.color ?? 0;
     if (color !== 0) return color;

@@ -23,6 +23,8 @@ export type ColorTokens = {
   dangerLine: string; surfaceTile: string;
   /** Quiet meta in the feed and composer (the gutter time, an empty composer's send): signal is the prototype's #5C636E; light and high-contrast keep 4.5:1. */
   fgQuiet: string;
+  /** The prototype's striped tile (a GIF in the tray, the art placeholder): rgba(255,255,255,.04) in signal. */
+  patternStripe: string;
   linkUnderline: 0 | 1;
 };
 
@@ -39,7 +41,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     warnTint: 'rgba(255,209,106,0.14)', fgChip: '#C9CED6',
     accentFaint: 'rgba(90,168,230,0.07)', accentFlash: 'rgba(90,168,230,0.18)', accentHover: 'rgba(90,168,230,0.08)', fgFaint: '#636A75', scrimTag: 'rgba(8,9,11,0.8)',
     codeLineNo: '#4A5059', codeComment: '#6C737E', codeBool: '#E9B6EC', codeKeyword: '#C4A7FF', codeRowHover: 'rgba(255,255,255,0.02)',
-    dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E',
+    dangerLine: 'rgba(255,110,110,0.5)', surfaceTile: '#11151A', fgQuiet: '#5C636E', patternStripe: 'rgba(255,255,255,0.04)',
     linkUnderline: 0,
   },
   light: {
@@ -54,7 +56,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     warnTint: 'rgba(138,90,0,0.14)', fgChip: '#3F453F',
     accentFaint: 'rgba(0,87,153,0.07)', accentFlash: 'rgba(0,87,153,0.18)', accentHover: 'rgba(0,87,153,0.08)', fgFaint: '#5C635C', scrimTag: 'rgba(20,23,26,0.8)',
     codeLineNo: '#5C635C', codeComment: '#5C635C', codeBool: '#8A2E8F', codeKeyword: '#5B3BA8', codeRowHover: 'rgba(0,0,0,0.03)',
-    dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F',
+    dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F', patternStripe: 'rgba(0,0,0,0.04)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -69,7 +71,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     warnTint: 'rgba(255,224,138,0.2)', fgChip: '#E6E6E6',
     accentFaint: 'rgba(156,203,255,0.12)', accentFlash: 'rgba(156,203,255,0.3)', accentHover: 'rgba(156,203,255,0.16)', fgFaint: '#C8C8C8', scrimTag: 'rgba(0,0,0,0.85)',
     codeLineNo: '#C8C8C8', codeComment: '#C8C8C8', codeBool: '#F5C2F7', codeKeyword: '#D9C8FF', codeRowHover: 'rgba(255,255,255,0.08)',
-    dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8',
+    dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8', patternStripe: 'rgba(255,255,255,0.08)',
     linkUnderline: 1,
   },
 };
@@ -86,6 +88,13 @@ export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'], ['brandInk', 'brand'],
 ];
 /** UI component and large-text pairs (≥ 3:1). */
+/**
+ * Task 7 fix round 1: the conversation's quiet text. Signal draws it in the prototype's exact colours below 4.5:1 (Ruling Y,
+ * listed in packages/ui/scripts/prototype-contrast.ts); light and high-contrast must still pass 4.5:1.
+ */
+export const ACCESSIBLE_THEMES_TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
+  ['fgQuiet', 'bg'], ['fgQuiet', 'surfaceHi'], ['fgFaint', 'bg'], ['fgFaint', 'bg3'], ['codeComment', 'bg2'],
+];
 export const UI_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['accent', 'bg'], ['accent', 'bg2'], ['edge', 'bg'], ['edge', 'surface2'], ['danger', 'surface2'], ['warn', 'surface2'], ['fg2', 'surfaceHi'],
   ['ok', 'bg2'], ['edge', 'surface'],

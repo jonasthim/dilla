@@ -247,7 +247,6 @@ async function checkSignalGeometry(page: Page, context: StoryContext, wants: Wan
   if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: ${bad.join('; ')}`);
 }
 
-
 /**
  * Ruling Y (prototype parity, Jonas 2026-10-27): elements whose colours are exactly the prototype's and fall below 4.5:1 in the
  * signal theme. Only axe's color-contrast rule is off for them, only in signal; every other rule still runs on them, and the

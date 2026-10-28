@@ -5,6 +5,9 @@
 .d-attachment-tray__item:is([data-kind="image"], [data-kind="gif"]) { width: 7rem /* 112px */; }
 .d-attachment-tray__item[data-failed="true"] { border-color: var(--danger-line); }
 .d-attachment-tray__preview { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background-size: cover; background-position: center; }
+.d-attachment-tray__item[data-kind="gif"] .d-attachment-tray__preview { background: repeating-linear-gradient(135deg, var(--pattern-stripe) 0 6px, transparent 6px 12px), var(--hover); }
+/* The prototype's GIF tray card: its name centred, 9px uppercase, over the striped tile, the GIF mark at the top left. */
+.d-attachment-tray__gif-name { padding: 0 6px; font-size: var(--text-badge); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-chip); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .d-attachment-tray__gif { position: absolute; left: 4px; top: 4px; padding: 0 4px; border-radius: var(--r-tag); background: var(--scrim-tag); font-size: var(--text-tag); font-weight: var(--weight-display); letter-spacing: var(--label-tracking); line-height: 0.875rem; color: var(--fg); }
 .d-attachment-tray__file { flex: 1; min-height: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0 0.625rem; min-width: 0; }
 /* A preview card shows the picture only; its name and phase stay for a screen reader. */
@@ -14,15 +17,14 @@
 .d-attachment-tray__name { font-size: var(--text-btn); color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-attachment-tray__meta { font-size: var(--text-micro); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-attachment-tray__item[data-failed="true"] .d-attachment-tray__meta { color: var(--danger); }
-/* The 3px progress line: the accent sweeps while the file is read, prepared or sent; ok when ready; danger when it failed. */
-.d-attachment-tray__bar { position: relative; flex: none; height: 3px; overflow: hidden; background: var(--hover-hi); }
-.d-attachment-tray__bar > span { position: absolute; inset: 0; background: var(--accent); }
-.d-attachment-tray__item:is([data-phase="reading"], [data-phase="preparing"], [data-phase="uploading"]) .d-attachment-tray__bar > span { right: 50%; animation: d-tray-work var(--duration-flash) linear infinite; }
+/* The prototype's 3px progress line (Jonas, fix round 1): the accent fills in steps by phase (reading 25 %, preparing 50 %,
+   uploading 75 %), the whole line in ok once ready, in danger when it failed; each step eases over the prototype's 200ms. */
+.d-attachment-tray__bar { flex: none; height: 3px; background: var(--hover-hi); }
+.d-attachment-tray__bar > span { display: block; height: 100%; background: var(--accent); transition: width var(--duration-turn) linear; }
 .d-attachment-tray__item[data-phase="ready"] .d-attachment-tray__bar > span { background: var(--ok); }
 .d-attachment-tray__item[data-failed="true"] .d-attachment-tray__bar > span { background: var(--danger); }
-@keyframes d-tray-work { from { transform: translateX(-100%); } to { transform: translateX(200%); } }
 .d-attachment-tray__remove { position: absolute; top: 4px; right: 4px; width: 1.25rem; height: 1.25rem; padding: 0; display: flex; align-items: center; justify-content: center; font: inherit; color: var(--fg-chip); background: var(--scrim-tag); border: 0; border-radius: var(--r-pill); cursor: pointer; }
 .d-attachment-tray__remove:hover { background: var(--danger); color: var(--danger-ink); }
 /* A 24px hit area around the 20px button. */
 .d-attachment-tray__remove::before { content: ""; position: absolute; inset: -2px; }
-@media (prefers-reduced-motion: reduce) { .d-attachment-tray__item { animation: none; } .d-attachment-tray__item .d-attachment-tray__bar > span { animation: none; right: 0; } }
+@media (prefers-reduced-motion: reduce) { .d-attachment-tray__item { animation: none; } .d-attachment-tray__bar > span { transition: none; } }

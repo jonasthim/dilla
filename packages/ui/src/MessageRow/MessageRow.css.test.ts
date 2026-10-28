@@ -22,8 +22,8 @@ describe('the Signal message row', () => {
     expect(row).toContain('padding: 0.4375rem 1rem 0.1875rem 0');
     expect(rule('.d-message-row[data-grouped="true"]')).toContain('padding: 0.0625rem 1rem 0.0625rem 0');
   });
-  it('enters with d-up over 380ms, staggered 40ms per first-paint row', () => {
-    expect(rule('.d-message-row')).toMatch(/animation: d-up var\(--duration-enter\) var\(--ease-out\) both;\s*animation-delay: calc\(var\(--d-enter-i, 0\) \* var\(--duration-stagger\)\)/);
+  it('enters with d-up over 380ms, staggered 40ms per first-paint row, filled backwards only (no lasting stacking context)', () => {
+    expect(rule('.d-message-row')).toMatch(/animation: d-up var\(--duration-enter\) var\(--ease-out\) backwards;\s*animation-delay: calc\(var\(--d-enter-i, 0\) \* var\(--duration-stagger\)\)/);
   });
   it('hovers with bg-3 and a 2px accent bar; a mention of me is warn-soft with the mention bar', () => {
     expect(css).toMatch(/\.d-message-row:hover, \.d-message-row\[data-hover="true"\] \{ background: var\(--bg-3\); box-shadow: inset 2px 0 0 var\(--accent\); \}/);

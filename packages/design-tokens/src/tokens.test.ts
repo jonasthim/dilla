@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { themes, TEXT_PAIRS, UI_PAIRS, CONTROL_EDGE_KEYS, CONTROL_EDGE_EXEMPT, structural, densities, type ThemeName } from './tokens.ts';
+import { themes, TEXT_PAIRS, UI_PAIRS, ACCESSIBLE_THEMES_TEXT_PAIRS, CONTROL_EDGE_KEYS, CONTROL_EDGE_EXEMPT, structural, densities, type ThemeName } from './tokens.ts';
 import { contrastRatio } from './contrast.ts';
 
 const names = Object.keys(themes) as ThemeName[];
@@ -32,6 +32,14 @@ describe('WCAG AA guard', () => {
     for (const [fg, bg] of UI_PAIRS) {
       it(`${n}: ui ${fg} on ${bg} is at least 3:1`, () => {
         expect(contrastRatio(themes[n][fg], themes[n][bg])).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+  // Task 7 fix round 1: the conversation's quiet text is the prototype's in signal (Ruling Y); light and high-contrast pass.
+  for (const n of ['light', 'high-contrast'] as const) {
+    for (const [fg, bg] of ACCESSIBLE_THEMES_TEXT_PAIRS) {
+      it(`${n}: text ${fg} on ${bg} is at least 4.5:1`, () => {
+        expect(contrastRatio(themes[n][fg], themes[n][bg])).toBeGreaterThanOrEqual(4.5);
       });
     }
   }

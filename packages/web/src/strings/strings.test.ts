@@ -82,13 +82,14 @@ describe('the copy rules', () => {
     // Flow 07 and 04 add the start-server, empty-DM, empty-log and GIF copy; Bot moderation adds recovery copy.
     // The later GIF attachment label adds one more shell key.
     // Task 6b fix round 1 (Ruling Z): the DM header topic adds shell.dm.topic, topicHandle, topicGroup and you.
-    // Task 7 (Signal §5.5, §6.4): the toolbar's "more", the code block's four, the composer's five and the welcome's three.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(212);
+    // Task 7 (Signal §5.5, §6.4, §6.8): the toolbar's "more", the code block's four, the composer's five, the welcome's three
+    // and the tray's remove tooltip. shell.composer.attach is the prototype's sentence-case tooltip (fix round 1).
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(213);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
     for (const k of ['shell.message.toolbar', 'shell.message.react', 'shell.message.edited', 'shell.message.replyJump', 'shell.message.saving',
-      'shell.emoji.label', 'shell.edit.label', 'shell.edit.hint', 'shell.composer.attach', 'shell.composer.mentions', 'shell.pins.open',
+      'shell.emoji.label', 'shell.edit.label', 'shell.edit.hint', 'shell.composer.mentions', 'shell.pins.open',
       'shell.pins.by', 'shell.tray.label', 'shell.tray.ready', 'shell.attachment.open', 'shell.attachment.unnamed'] as const) {
       expect(en[k], k).toMatch(/^[a-z]/);
     }

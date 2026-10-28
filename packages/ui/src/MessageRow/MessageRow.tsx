@@ -265,7 +265,7 @@ export function MessageRow({
           <button type="button" className="d-message-row__thread" tabIndex={tabIndex}
             onPointerDown={e => e.preventDefault()} onClick={() => thread.onOpen()}>
             <Icon name="messages-square" size={12} />{thread.label}
-            {thread.last !== undefined ? <span className="d-message-row__thread-last" aria-hidden="true"> · {thread.last}</span> : null}
+            {thread.last !== undefined ? <span className="d-message-row__thread-last" aria-hidden="true">· {thread.last}</span> : null}
           </button>
         ) : null}
         {pendingAction !== undefined ? (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../Icon/Icon.tsx';
 import { highlight } from './highlight.ts';
 import './CodeBlock.css';
@@ -32,7 +32,7 @@ export function CodeBlock({ lang, code, labels, tabIndex }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
   useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
-  const rows = highlight(lang, code);
+  const rows = useMemo(() => highlight(lang, code), [lang, code]);
   const copy = () => {
     void navigator.clipboard?.writeText(code).catch(() => undefined);
     setCopied(true);

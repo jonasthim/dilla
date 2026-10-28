@@ -2,8 +2,11 @@ import type { Preview } from '@storybook/react-vite';
 import '../src/styles/base.css';
 import { CONVERSATION_CONTRAST_NOT } from '../scripts/prototype-contrast.ts';
 
-// Ruling Y (task 7): colour-contrast skips the conversation's prototype-exact colours here; scripts/story-a11y.ts checks every
-// other rule on them and keeps light and high-contrast strict.
+// Ruling Y (task 7): Storybook's own a11y pass (the addon, `test: 'error'`) cannot tell themes apart, so here colour-contrast
+// skips the conversation's prototype-exact elements by one class each (`simple` in scripts/prototype-contrast.ts) in EVERY
+// theme and story, broader than the exception itself. The CI gate is scripts/story-a11y.ts: it runs axe again on every story,
+// lifts colour-contrast only for the exact selectors and only in signal, checks every other rule on them, and keeps light and
+// high-contrast strict. Never add an element here without its entry there.
 const contrastSelector = `*${CONVERSATION_CONTRAST_NOT}`;
 
 const preview: Preview = {
