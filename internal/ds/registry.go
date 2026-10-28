@@ -830,6 +830,10 @@ func (d *DS) checkRegisteredLeaf(ctx context.Context, v DeviceListVerifier, s Se
 	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
 		return errInvalid("the registered leaf's key is not the device's registered key")
 	}
+	if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, userID, leaf.CredentialIdentity),
+		func(detail string) error { return errInvalid("the registered leaf: " + detail) }); err != nil {
+		return err
+	}
 	if _, err := checkManagedBotCredential(ctx, d.opts.Store, userID, device, leaf.CredentialIdentity, true); err != nil {
 		return errInvalid("the registered leaf does not carry the current verified Bot credential")
 	}

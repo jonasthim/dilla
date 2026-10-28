@@ -800,6 +800,10 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		if !leafKeyIsRegistered(device, keys[joiner]) {
 			return id.ID{}, errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
 		}
+		if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, device.UserID, now[joiner]),
+			func(detail string) error { return errCommitInvalid("external_joiner", detail) }); err != nil {
+			return id.ID{}, err
+		}
 		return joiner, nil
 	}
 
@@ -870,6 +874,10 @@ func (d *DS) checkReseededLeaves(ctx context.Context, v DeviceListVerifier, grou
 		if !leafKeyIsRegistered(device, m.SignatureKey) {
 			return errCommitInvalid("add_key_package",
 				"a reseeded leaf's signature key is not the device's registered key")
+		}
+		if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, userID, m.CredentialIdentity),
+			func(detail string) error { return errCommitInvalid("add_key_package", "a reseeded leaf: "+detail) }); err != nil {
+			return err
 		}
 		if _, seen := byUser[userID]; !seen {
 			users = append(users, userID)
