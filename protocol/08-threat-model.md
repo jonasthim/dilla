@@ -142,6 +142,11 @@ Stated plainly in the product's documentation and onboarding:
 - History before a member joined is not shared with them at this version.
 - A user who loses every device and the recovery key loses their history.
 - A `browser`-tier session trusts the code the instance serves.
+- Whether an account is a Bot is the instance's statement. From wire 4 clients judge every leaf's
+  credential kind against the instance-signed account-kind attestation (`03` § Account kind
+  attestation), so a member cannot make its messages appear as a Bot's; the instance, which holds
+  the signing key and defines account kinds, can still attest any kind, and before a client first
+  stores an attestation from its instance (only ever wire 2 or 3) its core does not check kind.
 
 ## Out of scope
 

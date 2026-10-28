@@ -77,11 +77,13 @@ before it ("every route below is `E`").
 | `PATCH /v1/devices/{device_id}` | E | `[label\|null]` | `204` names the device (null clears the name); the label is under the shared text rule below (NFC, trimmed, 1 to 64 characters, one line, no control, bidirectional or other invisible character), and the label is not part of the signed device list, so the server can see and change it; else `400 E_INVALID_REQUEST`; the device may be the caller's own or another live device of the same user; `404 E_NOT_FOUND` for another user's, an unknown or a removed (revoked) device; `403 E_FACTOR_REQUIRED` while the session owes a second factor; spends the device session's write bucket |
 | `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
-| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
+| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]`; on a wire-4 session `[version, blob, ssk_signature, prev_hash, attestation]`, the account-kind attestation of `03` § Account kind attestation (a `500 E_INTERNAL` when the instance cannot sign it, never a head without it) |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
 For trust validation, the unpaged `GET /v1/users/{user_id}/device-list` supplies a signed
-candidate head. History pages after `N` contain at most 64 ascending versions; a page has no
+candidate head. Its first four elements are the history row the pages carry (the chain compares
+those); a wire-4 head's fifth element, the account-kind attestation, is no part of the chain and is
+handed to the core before the user's history is ingested. History pages after `N` contain at most 64 ascending versions; a page has no
 authoritative head or `lastVersion`. If the candidate is the exact cached signed head, compare
 its bytes and hash and skip paging; a lower version is rollback. Otherwise fetch from version 1
 on first sight, or after the cached signed version, checking every signature, user, consecutive

@@ -26,7 +26,8 @@ The instance acts as the MLS Delivery Service (RFC 9750 §5) for every group it 
    entry point's own (`422 E_COMMIT_INVALID` with its rule: `key_package`, `add_key_package`,
    `external_joiner`; `400 E_INVALID_REQUEST` at registration). Clients still never trust a
    sender's credential `kind` alone: a sender is shown as a Bot only when the server's member row
-   is of account kind 1 as well.
+   is of account kind 1 as well, and from wire 4 a client's core also judges every leaf's kind
+   against the instance-signed account-kind attestation (`03` § Account kind attestation).
 2. **Sequencer**: accepts exactly one Commit per epoch per group and totally orders handshake and
    application messages per group (`seq`, a per-group unsigned counter starting at 1).
 3. **GroupInfo and tree store**: keeps the latest committer-signed GroupInfo (without the ratchet
