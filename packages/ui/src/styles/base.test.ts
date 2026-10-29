@@ -7,11 +7,11 @@ const css = readFileSync(fileURLToPath(new URL('./base.css', import.meta.url)), 
 
 // The no-zoom rules (Jonas, 2026-10-16; R10, R11): a field below 16px makes iOS zoom the page on focus.
 const NO_ZOOM = `@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, select, [contenteditable="true"]) { font-size: 1rem; }
+  .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, [contenteditable="true"]) { font-size: 1rem; }
 }`;
 
 describe('base.css phone rules', () => {
-  it('holds the 16px field rule under the phone breakpoint, byte for byte', () => {
+  it('holds the 16px text-field rule under the phone breakpoint, byte for byte (Task 11: selects keep the prototype size)', () => {
     expect(css).toContain(NO_ZOOM);
   });
   it('sets touch-action: manipulation on .d-root', () => {

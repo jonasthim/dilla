@@ -62,11 +62,12 @@ async function phoneContext(f: PhoneFixtures, dir: string, device: typeof PHONE 
 }
 const phoneDir = (project: string, workerIndex: number, n: number) => `${PROFILE_ROOT}/${project}-${workerIndex}-phone${String(n)}`;
 
-/** Every visible input, textarea and select is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
- *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. */
+/** Every visible text input and textarea is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
+ *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. Task 11 (Jonas, Q6): a select
+ *  keeps the prototype's size (iOS may zoom when it opens). */
 async function expectFieldSizes(page: Page, state: string, expected = 1): Promise<number> {
   const { checked, small } = await page.evaluate(() => {
-    const fields = [...document.querySelectorAll<HTMLElement>('input, textarea, select')]
+    const fields = [...document.querySelectorAll<HTMLElement>('input, textarea')]
     .filter((el) => !(el instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'submit', 'reset', 'hidden', 'file', 'range', 'color'].includes(el.type)))
     .filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden')
     .map((el) => ({ what: `${el.tagName.toLowerCase()}${el instanceof HTMLInputElement ? `[${el.type}]` : ''} ${el.id}`, px: parseFloat(getComputedStyle(el).fontSize) }));
