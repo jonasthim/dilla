@@ -106,7 +106,7 @@ camera and screen share, push to talk, the call code, AFK channels, sounds, and 
 | `packages/protocol-vectors` | TypeScript reference implementation that generates the vectors (Apache-2.0) |
 | `docs/superpowers/specs` | Product and system design specifications |
 | `docs/superpowers/plans` | Implementation plans |
-| `docs/design` | Design brief and the Mesh design reference |
+| `docs/design` | Design brief, and the Signal design reference in `docs/design/signal` (the current design; Mesh is history) |
 | `docs/deploy` | The operator guide |
 | `docs/user` | The user guide and its screenshots |
 

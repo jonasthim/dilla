@@ -62,16 +62,14 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 ### The call panel
 
 At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
-in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel are three icon buttons, in this order: **camera**,
-**share screen** and **leave**. Press the channel name to open Settings → Diagnostics, which shows the connection. The
+in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel is one icon button, **leave**. Camera and share screen are on the stage's toolbar. Press the channel name to open Settings → Diagnostics, which shows the connection. The
 panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
 those are in the user panel under it, which is always there ([the user panel](getting-started.md#the-user-panel)). It
-stays on screen while you read other channels, so you can turn your camera or a share on and off, or leave, from
-anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
+stays on screen while you read other channels, so you can leave from anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
 again.
 
-![The call panel and the user panel up close: the channel, its ping and rates, then camera, share screen and
-leave, and under it Mira's name with mute, deafen and the gear](screenshots/dock-desktop.png)
+![The call panel and the user panel up close: the channel, its ping and rates and leave, and under it Mira's
+name with her status ("in harbour") and mute and deafen](screenshots/dock-desktop.png)
 
 ![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call
 panel above her user panel](screenshots/voice-dock-desktop.png)

@@ -20,6 +20,7 @@ Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload 
   the tab.
 - A tab opened before the upgrade can still save the Bot's capabilities. Its request does not mention Polls and
   Reminders, so the server keeps them as they are.
+- A tab opened before the upgrade drops **Control music** (bit 25) from any role or channel permissions it saves, because its permission mask is the old one. Reload before editing roles or channel permissions.
 - An older `dillabot` reports no version, so Glenn's card shows none. A Restart stays "not picked up yet" until the newer
   `dillabot` runs. The Music page's default volume and idle-leave time take effect only with the newer `dillabot`, and
   the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.

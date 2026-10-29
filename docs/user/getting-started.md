@@ -47,17 +47,17 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
 
 The server rail is now: the **@** tile for your direct messages at the top, a line, your servers, and one dashed **+**
 tile ("add a server") under them. The **+** opens one window, "add a server", with two choices: **join a server**, for an
-invite someone sent you, and **new server**. Beside the server's name sits a gear, **server settings**, and the owner has a
+invite someone sent you, and **new server**. Beside the server's name sits the **⌄** server menu (settings, mute, notifications), and the owner has a
 **+** ("new channel") at the top of the channel list. Invite links are made in server settings, under **invites**
 ([Invite people](#invite-people)).
 
 ![The rail and the top of the sidebar: the @ tile, the tile MC for Midgard Crew and the dashed + tile, and beside them
-Midgard Crew with the + for a new channel and the gear for server settings](screenshots/create-rail.png)
+Midgard Crew with the + for a new channel and the ⌄ server menu](screenshots/create-rail.png)
 
 On a phone the same top of the list is on the **home** tab:
 
 ![The top of the home tab at 360 pixels wide: the @ tile, the server tile and the + tile, and Midgard Crew with the + for a
-new channel, the magnifier and the gear](screenshots/create-rail-phone.png)
+new channel and the ⌄ server menu](screenshots/create-rail-phone.png)
 
 At phone width the empty app and the dialog look like this:
 
@@ -79,15 +79,15 @@ If the server is not created, the name field says why:
 
 ## Invite people
 
-Anyone whose roles allow it can make an invite link to a server; by default that is every member. Press **server
-settings** under the server's name. It opens on the first section you may use, so a member who may only invite lands
+Anyone whose roles allow it can make an invite link to a server; by default that is every member. Open the **⌄** server menu beside the server's name and choose **Server settings**
+(or press the settings button in the top bar). It opens on the first section you may use, so a member who may only invite lands
 on **invites** ("Anyone with a link can join {server}."). Choose "Expires after" (1 hour, 1 day, 7 days or never) and
 "Uses" (1, 10 or ∞; 7 days and 10 to start with) and press **Make invite link**. **never** and **∞** are offered only
 to people who may manage the server: a link that never runs out is a standing way in. The link shows once, with
 **Copy** and "It can be used 10 times and expires in 7 days. The link is shown only once."; **Copy** puts it on your
 clipboard and files it under "Active links", where each link shows its uses and expiry and has **Revoke**.
 
-The **invite people** item in the server's menu still makes a quick link (7 days, 10 uses) in a dialog:
+The **/invite** command, typed in the message field, makes a quick link (7 days, 10 uses) in a dialog:
 
 ![The dialog "Invite people to Midgard Crew" over server settings, under invites: the invite link in a field, the
 button copy link, "Expires after: 7 days. Max uses: 10 uses." and "Invite link copied."](screenshots/create-invite-desktop.png)
@@ -152,13 +152,12 @@ whose roles allow it; the owner can do everything here.
 
 ### Server settings
 
-Press the gear (**server settings**) beside the server's name. The dialog "Server settings" has a list of sections
-("server settings sections"). A section shows only to someone whose roles allow it: **overview** (manage the server),
-**channels** (manage channels), **invites** (create invites) and **bans** (ban members). The dialog opens on the
-first section you may see. The last section differs: a
-non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Leaving a server
-lives here, not in the sidebar. Tab stops once on the list and once on the section; Escape closes the dialog and focus
-goes back to the gear.
+Open the **⌄** server menu beside the server's name and choose **Server settings**, or press the settings button
+in the top bar. Server settings is the full-screen settings workspace, the same one as your own settings, with the
+server's sections in its list. A section shows only to someone whose roles allow it: **overview** (manage the server),
+**channels** (manage channels), **invites** (create invites) and **bans** (ban members). It opens on the
+first section you may see. **Leave server** is in **Overview**, and the owner sees **delete server** and **hand over server**
+too. Leaving a server lives here, not in the sidebar. Escape closes the workspace and focus goes back to where you came from.
 
 **Overview** renames the server. Type under "Server name" ("Up to 255 characters (fewer for some letters). Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
@@ -186,8 +185,8 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   messages.") and **Create**.
 - **edit** opens "Edit #{name}" (or "Edit {name}" for a voice channel, "Edit category {name}" for a category). You
   can change the "Channel name" ("Up to 100 characters (fewer for some letters)."), the "Topic" of a text channel ("Shown under the channel name.
-  Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
-  text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
+  Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The channel's row menu in the channel list has the same
+  **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - The **AFK** channel is in the list too. It has **edit** (its name and category only, with "This is the server’s AFK
   channel. Nobody is connected here; people who are away are listed."), and no **delete** and no move up or down: it can be renamed and moved to another
   category, but it always stays last in its list.
@@ -258,7 +257,7 @@ kicking." (and the same for banning), or "{name} is no longer in {server}."
 
 ### Leave, hand over and delete
 
-Anyone but the owner can leave: open the gear beside the server's name, then **leave server** in the list of sections. It asks "Leave {server}?", "You leave every channel and call of
+Anyone but the owner can leave: open **Server settings** (from the **⌄** menu beside the server's name), then **Leave server** in **Overview**. It asks "Leave {server}?", "You leave every channel and call of
 {server}. To come back you need an invite." and says "You left {server}." The owner sees "You own {server}, so you
 cannot leave it. Hand it to another member or delete it."
 
@@ -357,7 +356,7 @@ knows who is in it.
   permissions." A private channel can be opened to at most 98 roles at creation: "A private channel can be opened to
   at most 98 roles. Untick some and try again." You keep seeing a private channel you made until someone removes
   your entry, or you leave or are removed.
-- **Later.** In the channel's settings (**edit channel**), "Permissions" has the **private channel** toggle. Turning
+- **Later.** In the channel's settings (**edit channel** in its row menu), "Permissions" has the **private channel** toggle. Turning
   it on asks "Make #{name} private?": "People who are not given access leave the channel now. They keep the messages
   they already have." Turning it off asks "Open #{name} to everyone?": "Everyone in {server} joins the channel. They
   see only messages sent after they join." Both confirms start on **Cancel**. In server settings, under **channels**, a
@@ -447,7 +446,7 @@ Slow mode makes each person wait between their messages in one text channel. It 
 not slow reactions, edits or deletes.
 
 To set it, open **server settings** → **channels** → **edit** on a text channel (or **edit channel** in the channel's
-header). Under the topic, **Slow mode** ("How long each person waits between messages. People who may bypass slow
+row menu). Under the topic, **Slow mode** ("How long each person waits between messages. People who may bypass slow
 mode do not wait.") offers off, 5 seconds, 10 seconds, 30 seconds, 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours.
 It is off to begin with. You need the right to manage channels. A channel with slow mode shows the badge "slow mode" in
 the channel list.
@@ -486,7 +485,7 @@ A thread keeps the replies to one message together, out of the channel's main co
 - In a thread you can react to a message, and edit or delete your own. Pin and reply stay in the channel.
 - **close thread** (the ×), the phone's own back or Escape closes it, and the cursor returns to the message or chip you
   opened it from.
-- **threads** in the channel header (on a phone: in the **channel menu**) lists every thread in the channel. A channel
+- **threads** in the channel header (an icon alone on a phone) lists every thread in the channel. A channel
   with none says "No threads in #{name} yet." If the list cannot be read it says "Threads could not be loaded." A
   thread whose first message is not available to you says "The message that started this thread cannot be shown here."
 - Replies in a thread do not appear in the channel, but they still count as unread and as mentions. Opening the channel
@@ -551,7 +550,7 @@ The factor guards signing in on a **new** browser, not message content.
 
 ![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-signal.png)
 
-Open **Settings** (the gear in the top bar, or **You → Settings** on a phone), then **Sign-in**: "Password and second
+Open **Settings** (the settings button in the top bar, or **You → Settings** on a phone), then **Sign-in**: "Password and second
 factors for new browsers." The rows are:
 
 - **Password**: "Changed 3 weeks ago" (from the first change after this release; a password set earlier shows no date),
@@ -728,21 +727,19 @@ in #general and the message field](screenshots/shell-conversation.png)
 
 From left to right:
 
-- **The server rail.** It is 72 pixels wide. At the top is the **@** tile, "direct messages" ([Home and direct
+- **The server rail.** It is 56 pixels wide. At the top is the **@** tile, "direct messages" ([Home and direct
   messages](#home-and-direct-messages)); under a line come your servers, one tile each with its initials, and under
   them one dashed **+** tile, "add a server". The **+** opens "add a server" with two choices: **join a server**, where
   you paste a server invite ("A server invite, as a code or a link.") and press **Join**, and **new server**
   ([Start a server](#start-a-server)). A number on a server tile counts its unread channels, and on the **@** tile your
-  unread direct messages. The rail has no settings button: settings are behind the gear in [the user
-  panel](#the-user-panel).
-- **The channel list.** The server's name with a gear beside it, **server settings** (leave server is a section in
-  there; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
+  unread direct messages. The rail has no settings button: settings are the button in the top bar, and **You → Settings** on a phone.
+- **The channel list.** The server's name with the **⌄** server menu beside it (**Server settings**, **Mute server** and the notification choices; leave server is in Settings → Overview; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
   [categories](#servers-and-categories), with a **+** at the top for people who may manage channels ([Add a
   channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
   list](#one-channel-list)), and one click joins one ([Voice, calls and media files](voice.md)). Channels the
   server can read ("Readable by this server") are listed, and selecting one shows "This channel does not open here
   yet". An unread channel has a badge, and mentions have their own count. Opening a channel marks it read.
-- **The conversation.** The channel's name at the top, with a row of icons at the right ([The header](#the-header)), the messages, and the message field
+- **The conversation.** The channel's name at the top, with **Threads** and **Members** buttons at the right ([The header](#the-header)), the messages, and the message field
   ("message #general") with **send**. Each message shows the author's display name, a small `web` tag whenever it
   was sent from a browser (always shown, so pointing at a message never moves it), and the time. Click the author's name or
   avatar to open their profile card ([Members](#members)). A message is at most 4000 bytes; in the last 400 the field shows
@@ -782,9 +779,10 @@ channel to a category with the **+** at its right ("new channel in {name}"); mak
 
 ### The header
 
-The top of a conversation has icons for **pins**, **threads**, **search**, **edit channel** (for people who manage
-channels) and **members**. Point at an icon, or Tab to it, to see its name and its shortcut. In a narrow window some of
-them fold into **more**.
+The top of a conversation has two buttons: **Threads** and **Members** with the number of members (named "Members, {n}").
+Point at one, or Tab to it, to see its name and its shortcut. There is no row of icons and no **more** menu: pins and
+**edit channel** are in the channel's row menu in the channel list, and search is the field in the top bar (Control+K).
+On a phone the header also has a search button.
 
 ![The members icon in the channel header with its name shown below it](screenshots/header-tooltip-desktop.png)
 
@@ -821,12 +819,12 @@ files](voice.md)). The server's "AFK" channel is in the list too, always the ver
 
 The bottom left of the app is yours, across the rail and the channel list:
 
-- your name and username;
+- your name and, under it, your status or custom status; while you are in a call it says where, for example "in harbour";
 - **mute** and **deafen**. Outside a call they decide how your next call starts: press **mute** and you join muted,
   press **deafen** and you join deafened. In a call they act on the live microphone and on what you hear
   ([Mute, deafen and push to talk](voice.md#mute-deafen-and-push-to-talk)). Control/⌘+Shift+M and Control/⌘+Shift+D
   press them, in a call or out of one;
-- **user settings**, behind the gear: Settings opens there, and closing it returns focus to the gear;
+- there is no settings button here: settings is the button in the top bar;
 - **your status**: a small dot on your avatar shows it. Click your name (or Tab to it and press Enter) to open the status menu and choose online, idle, do not disturb or invisible; there is no status select in the sidebar. It follows your account to your other devices. online
   becomes idle after ten minutes without activity on any of your connected devices (a status you chose yourself
   stays). do not disturb stops desktop notifications and the ring sound on every device; messages, badges and the
@@ -875,12 +873,12 @@ at a time, with three tabs at the bottom. It works in the phone's browser; there
 
 ### The three tabs
 
-The tab bar ("sections") has **home**, **activity** and **you**. A number on a tab counts what is new there ("{name}, {count} new"
+The tab bar ("sections") has **Home**, **Activity** and **You**. A number on a tab counts what is new there ("{name}, {count} new"
 for a screen reader).
 
 - **home** holds the **@** tile and your servers in a column at the left, and beside it the channels of the one you
-  chose. The **search** (a magnifier) and the gear for **server settings** sit beside the server's name; there is no
-  menu. A member leaves a server from the gear, under **leave server**. The **+** for a new channel is at the top of the
+  chose. The **⌄** server menu beside the server's name has **Server settings**, **Mute server** and the notification choices, and
+  the line under the name shows how many are online and in voice. A member leaves a server in Settings → Overview, under **Leave server**; your own settings are under **You**. The **+** for a new channel is at the top of the
   channel list for people who may manage channels, and invite links are made in server settings, under invites. Tap a
   voice channel to see who is in it, then join.
 - The **@** tile on **home** shows your direct messages beside the rail. They are not a tab of their own.
@@ -903,10 +901,10 @@ Choosing a channel or a direct message opens it over the whole screen, with the 
 you tap the message box (or any other field), the tabs step aside so that the message box sits right above the keyboard,
 and they come back when you leave the field. Tapping the tab you are already in takes you to that tab's list, and tapping
 another tab takes you to where you were in it. At the top, **back** (the arrow at the left) returns to the list you came from, and the phone's own back
-button or swipe does the same. The **channel menu** at the right holds the channel's other actions, such as pins and
-**threads**. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
+button or swipe does the same. At the right are **Threads**, **Members** and search; the channel's other actions, such as pins, are in
+its row menu in the channel list. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
 
-![A channel: back at the top left, the channel name, the channel menu, the messages and the message box](screenshots/phone-channel.png)
+![A channel: back at the top left, the channel name, Threads, Members and search, the messages and the message box](screenshots/phone-channel.png)
 
 On a phone, tap a message to show what you can do with it (**react**, **reply** and **reply in thread**); tap it again, or scroll, to hide them.
 
@@ -1215,7 +1213,7 @@ their browsers they use.
 ![The dialog "Pinned in #general" with Mira's packing list, "pinned by Ada", and the buttons go to message and
 unpin](screenshots/conversation-pins.png)
 
-**pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel header
+**pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel's row menu in the channel list
 opens "Pinned in #{channel}" ("Pinned with {name}" in a direct message): each pinned message with its author, its
 time, its first words and "pinned by {name}", with **go to message** and **unpin**. With nothing pinned it says
 "Nothing is pinned here yet." In a channel, who may pin follows the pinner's current right ([Pins, @everyone and @here](#pins-everyone-and-here)); the
@@ -1407,7 +1405,7 @@ message result shows the #channel (or the person, in a direct message), the auth
 
 "Searching your messages" shows while it searches, "Nothing in this browser matches …" when nothing matched, and "That
 message is no longer available" when the message was deleted or its conversation is gone. On a computer the "Search or jump
-to…" field in the top bar opens it too, and on a phone the magnifier in a channel's header does.
+to…" field in the top bar opens it too, and on a phone the search button in a channel's header does.
 
 ![Search at 360 pixels wide](screenshots/search-results-phone.png)
 
@@ -1553,7 +1551,7 @@ Chromium keeps sockets in its profile directories, so the script needs a short t
 
 ## Fullscreen settings and drafts
 
-Open the gear beside your account on desktop, or **You → Open settings** on a phone.
+Open the settings button in the top bar on desktop, or **You → Open settings** on a phone.
 Search within settings by setting name or a related word such as microphone, password
 or Spotify. Search only lists sections you are allowed to use; it does not search
 member names, account data or configuration values.

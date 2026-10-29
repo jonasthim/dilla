@@ -145,17 +145,11 @@ runtime protocol tests establish status semantics separately from these UI captu
 
 ### Form layout follow-up
 
-These refreshed Appearance, GIFs and Bot captures render the shipped React
-components with seeded account, provider and installation data. They demonstrate
+The Mesh-era Appearance, GIFs and Bot captures of this follow-up were removed with the Signal redesign; the Signal
+screens are in the captures above. The follow-up's checks stand: they demonstrate
 form layout, rather than provider connectivity. Responsive layout checks cover
 1440, 1024, 390 and 320px widths in Chromium, Firefox and WebKit; real testhost
 checks cover Appearance resizing, phone navigation, search and dirty drafts in
 all three engines. Separate phone landscape checks keep the call controls and
 dirty footer reachable.
 
-![Appearance with balanced control columns](../../user/screenshots/settings-layout-appearance-desktop.png)
-![GIF configuration below its introduction](../../user/screenshots/settings-layout-gifs-desktop.png)
-![Bot identity, name and actions](../../user/screenshots/settings-layout-bot-desktop.png)
-![Phone Appearance with a readable header](../../user/screenshots/settings-layout-appearance-phone.png)
-![Phone GIF configuration](../../user/screenshots/settings-layout-gifs-phone.png)
-![Phone Bot identity and actions](../../user/screenshots/settings-layout-bot-phone.png)

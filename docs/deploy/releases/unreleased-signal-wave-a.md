@@ -57,7 +57,7 @@ the web client), `dillabot`, their matching core modules, installers and checksu
    shows 52, the service is healthy, and a browser signs in.
 3. **Ask everyone to reload their open tabs.** The server still accepts wire 3 and 2 (the managed Bot speaks wire 3), so
    a tab from before the upgrade keeps connecting, but it runs the old client: without the new screens and without the
-   account-kind check. Open tabs also find the new build by themselves and reload it.
+   account-kind check. Open tabs also find the new build by themselves and reload it. Reload before editing roles or channel permissions: an old tab's PERM_ALL mask would drop the Control music permission (bit 25).
 4. **Then upgrade `dillabot`** with `install-bot.sh --upgrade`. The Bot and the server ship together: the new Bot needs the
    server's new routes (the music announcement, the restart request, its ping), and an old Bot on the new server fails the
    **Control music** check for every DJ. Do not leave either one on the previous release.
