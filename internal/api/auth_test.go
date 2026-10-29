@@ -417,7 +417,7 @@ func TestFactorsSayWhenThePasswordWasChanged(t *testing.T) {
 	if res := postCBORAuth(h, "/v1/auth/password", body, token); res.Code != http.StatusNoContent {
 		t.Fatalf("password change status = %d, want 204", res.Code)
 	}
-	want := uint64(deps.Clock.Now().Unix()) //nolint:gosec // G115: a unix time after 1970
+	want := uint64(deps.Clock.Now().Unix())
 	if got, ok := getFactors(t, h, token)[5].(uint64); !ok || got != want {
 		t.Fatalf("password_changed = %#v after the change, want %d", getFactors(t, h, token)[5], want)
 	}
