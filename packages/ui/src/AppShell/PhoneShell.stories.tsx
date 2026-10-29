@@ -27,6 +27,9 @@ import { HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
 import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 import { harbourPeople } from './AppShell.fixture.tsx';
 import { YOU } from '../internal/sample/midgard.ts';
+import { SampleCore, SAMPLE_DUE } from './sampleCore.fixture.tsx';
+import { Activity as WebActivity } from '../../../web/src/screens/Activity.tsx';
+import { You as WebYou } from '../../../web/src/screens/You.tsx';
 import '../../../web/src/app.css';
 
 /**
@@ -105,93 +108,6 @@ const dmChannels = (
     ]} />
 );
 
-// Static rows for the Activity and You tabs: the same row grammar as the channel list, at the phone's 44px target.
-const pane: CSSProperties = { height: '100%', overflowY: 'auto', background: 'var(--bg)' };
-const heading: CSSProperties = { margin: 0, padding: '0.75rem var(--row-pad-x) 0.5rem', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 'var(--text-md)', letterSpacing: 'var(--label-tracking)', color: 'var(--fg)' };
-const list: CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
-const row: CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', minHeight: '2.75rem', padding: '0.5rem var(--row-pad-x)', font: 'inherit',
-  fontSize: 'var(--text-sm)', color: 'var(--fg)', textAlign: 'left', background: 'transparent', border: 0, borderBottom: '1px solid var(--hairline)', cursor: 'pointer',
-};
-const rowText: CSSProperties = { flex: 1, minWidth: 0, display: 'grid', gap: '0.125rem' };
-const rowMeta: CSSProperties = { fontSize: 'var(--text-xs)', color: 'var(--fg-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-
-const activity = (
-  <section style={pane} aria-label="activity">
-    <h1 style={heading}>activity</h1>
-    <ul style={list}>
-      {[
-        { id: 'a', who: 'ada', where: '#loot · Midgard Crew', text: 'can you bring the tank gear tonight?', when: '21:02', mention: true },
-        { id: 'b', who: 'björn', where: '#general · Midgard Crew', text: 'after nine, still on the boat', when: '20:48', mention: true },
-        { id: 'c', who: 'mira', where: 'reply in #lfg · Midgard Crew', text: 'count me in for the raid', when: '19:30', mention: false },
-        { id: 'd', who: 'loot-bot', where: '#random · Night Owls', text: 'weekly reset in 2 h', when: '18:05', mention: false },
-      ].map(r => (
-        <li key={r.id}>
-          <button type="button" style={row}>
-            <span style={rowText}>
-              <span style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline' }}><strong style={{ fontWeight: 'var(--weight-display)' }}>{r.who}</strong><span style={rowMeta}>{r.when}</span></span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.text}</span>
-              <span style={rowMeta}>{r.where}</span>
-            </span>
-            {r.mention ? <Pill kind="mention" count={1} /> : null}
-            <Icon name="chevron-right" size={18} />
-          </button>
-        </li>
-      ))}
-    </ul>
-  </section>
-);
-
-const card: CSSProperties = { margin: '0 var(--row-pad-x) 1rem', background: 'var(--surface-2)', border: '1px solid var(--hairline-2)', borderRadius: 'var(--r-md)' };
-const cardHead: CSSProperties = { margin: 0, padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--hairline-2)' };
-const status = (k: string, v: ReactNode) => (
-  <li key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', minHeight: '2.25rem', padding: '0 0.75rem', fontSize: 'var(--text-sm)' }}>
-    <span className="d-label">{k}</span><span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>{v}</span>
-  </li>
-);
-const you = (
-  <section style={pane} aria-label="you">
-    <h1 style={heading}>you</h1>
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem var(--row-pad-x) 1rem' }}>
-      <Avatar name="mira" size="md" />
-      <div style={{ display: 'grid', gap: '0.125rem', minWidth: 0 }}>
-        <strong style={{ fontWeight: 'var(--weight-display)', fontSize: 'var(--text-md)' }}>mira</strong>
-        <span style={rowMeta}>dilla.thim.dev</span>
-      </div>
-    </div>
-    <section style={card} aria-labelledby="you-status">
-      <h2 id="you-status" className="d-label" style={cardHead}>this device</h2>
-      <ul style={list}>
-        {status('node', 'dilla.thim.dev')}
-        {status('link', <><StateDot tone="ok" /><span>online</span></>)}
-        {status('gen', '3')}
-        {status('devices', '3')}
-      </ul>
-    </section>
-    <h2 className="d-label" style={{ margin: 0, padding: '0.25rem var(--row-pad-x) 0.5rem' }}>settings</h2>
-    <ul style={{ ...list, borderTop: '1px solid var(--hairline)' }}>
-      {[
-        { id: 'd', icon: 'server', label: 'devices' },
-        { id: 's', icon: 'user', label: 'sign-in' },
-        { id: 'n', icon: 'megaphone', label: 'notifications' },
-        { id: 'a', icon: 'eye', label: 'appearance' },
-        { id: 'v', icon: 'volume-2', label: 'voice' },
-        { id: 'p', icon: 'check', label: 'privacy' },
-        { id: 'k', icon: 'hash', label: 'keyboard' },
-        { id: 'g', icon: 'activity', label: 'diagnostics' },
-      ].map(r => (
-        <li key={r.id}>
-          <button type="button" style={row}>
-            <Icon name={r.icon as 'user'} size={20} />
-            <span style={rowText}><span>{r.label}</span></span>
-            <Icon name="chevron-right" size={18} />
-          </button>
-        </li>
-      ))}
-      <li><button type="button" style={{ ...row, color: 'var(--danger)' }}><span style={rowText}><span>sign out</span></span></button></li>
-    </ul>
-  </section>
-);
 
 const log = (
   <MessageLog label="messages in #general" emptyLabel="No messages yet.">
@@ -274,11 +190,17 @@ export const ChannelViewTyping: Story = {
 export const DmsList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={null} sidebar={dmChannels} tabBar={tabBar('dms')}>{null}</AppShell></Phone>,
 };
+// Task 11 (Jonas, Q3; rule 3d): the web's own Activity and You (screens/Activity.tsx, screens/You.tsx) over the Midgard sample,
+// in the list pane with no rail, as Shell.tsx mounts them for the Activity and You tabs.
 export const Activity: Story = {
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={null} sidebar={activity} tabBar={tabBar('activity')}>{null}</AppShell></Phone>,
+  globals: { theme: 'signal' },
+  render: () => <Phone><SampleCore><AppShell {...common} layout="phone" phonePane="list" rail={null}
+    sidebar={<WebActivity onOpen={noop} reminders={{ due: [...SAMPLE_DUE], onOpen: noop }} />} tabBar={signalTabBar('activity')}>{null}</AppShell></SampleCore></Phone>,
 };
 export const You: Story = {
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={null} sidebar={you} tabBar={tabBar('you')}>{null}</AppShell></Phone>,
+  globals: { theme: 'signal' },
+  render: () => <Phone><SampleCore><AppShell {...common} layout="phone" phonePane="list" rail={null}
+    sidebar={<WebYou onOpenSettings={noop} />} tabBar={signalTabBar('you')}>{null}</AppShell></SampleCore></Phone>,
 };
 export const Offline: Story = {
   render: () => (
@@ -312,11 +234,14 @@ const ring = (
 export const RingOnList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')} ring={ring}>{null}</AppShell></Phone>,
 };
+// Task 11 (Jonas, Q4): the members sheet covers the screen with the list's own head (Members ×), as on a desktop.
 export const MembersSheet: Story = {
   render: () => (
     <Phone>
       <AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer}
-        aside={members} asideLabel="members" asideOpen onAsideClose={noop} asideCloseLabel="back">{log}</AppShell>
+        aside={<MemberList label="Members" closeLabel="close members" onClose={noop} loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
+          groups={[{ id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Björn', presence: 'online', status: 'bridge troll survivor' }] }]} />}
+        asideLabel="members" asideOpen onAsideClose={noop}>{log}</AppShell>
     </Phone>
   ),
 };

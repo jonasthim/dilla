@@ -2531,6 +2531,12 @@ export class Controller {
         this.clearAFK(community.id);
       }
       this.stopTypingIfUnviewable();
+    } else if (e.type === 'rtt') {
+      // Task 11 (Jonas, Q3): the You tab's "Connected to {host} · {ping}"; published only while online and on a change.
+      if (this.connectionState.status === 'online' && this.connectionState.pingMs !== e.ms) {
+        this.connectionState = { ...this.connectionState, pingMs: e.ms };
+        this.slices.set('connection', this.connectionState);
+      }
     } else if (e.type === 'ready') {
       this.onReady(e.info);
     } else if (e.type === 'frame' && e.frame.op === Op.presence) {

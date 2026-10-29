@@ -239,24 +239,44 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-phone-row__line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dw-phone-row__who { font-weight: var(--weight-display); }
 .dw-phone-row__meta { font-size: var(--text-xs); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-phone-note { margin: 0; padding: 0.75rem var(--row-pad-x); font-size: var(--text-xs); color: var(--fg-3); }
-.dw-you__account { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem var(--row-pad-x) 1rem; }
-.dw-you__presence { margin-bottom: 1rem; border-top: 1px solid var(--hairline); }
-.dw-presence-picker__choices { background: var(--surface-2); }
-.dw-presence-picker__choices .dw-phone-row { padding-left: calc(var(--row-pad-x) + 1rem); }
 .dw-panel-error { margin: 0; padding: 0.25rem 0.5rem; font-size: var(--text-xs); color: var(--danger); background: var(--bg-2); }
-.dw-you__who { display: grid; gap: 0.125rem; min-width: 0; }
-.dw-you__name { font-weight: var(--weight-display); font-size: var(--text-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-you__card { margin: 0 var(--row-pad-x) 1rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
-.dw-you__cardhead { margin: 0; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--hairline-2); }
-.dw-you__facts { margin: 0; padding: 0; }
-.dw-you__fact { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 2.25rem; padding: 0 0.75rem; font-size: var(--text-sm); }
-.dw-you__fact dt, .dw-you__fact dd { margin: 0; }
-.dw-you__fact dd { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; text-align: right; }
-.dw-you__listhead { margin: 0; padding: 0.25rem var(--row-pad-x) 0.5rem; }
-.dw-you__signout { border-bottom: 1px solid var(--hairline); }
-.dw-you__signout .d-btn { width: 100%; min-height: 2.75rem; justify-content: flex-start; padding: 0.5rem var(--row-pad-x); background: transparent; border: 0; border-radius: 0; box-shadow: none; font-size: var(--text-sm); color: var(--danger); }
-.dw-you__signout .d-btn:hover { background: var(--surface-2); }
+/* Task 11 (Jonas, Q3): the prototype's Activity: the heading 14px/700 (.08em) at 18px 18px 10px, then one list of rows, 8px in:
+   12px 10px, radius 8px, gap 12px, the 32px avatar (a circle, the Bot's too; a channel's # glyph), "where" 10.5px --fg-3 over
+   "who text" 12.5px. */
+.dw-activity .d-phone-header { min-height: 0; height: auto; padding: 18px 18px 10px; border-bottom: 0; background: transparent; }
+.dw-activity .d-phone-header__title { font-size: var(--text-md); font-weight: var(--weight-display); letter-spacing: 0.08em; }
+.dw-activity__list { list-style: none; margin: 0; padding: 0 8px; }
+.dw-activity__row { display: flex; gap: 12px; width: 100%; padding: 12px 10px; font: inherit; color: var(--fg); text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; transition: background var(--duration-hover); }
+.dw-activity__row:hover { background: var(--hover); }
+.dw-activity__row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.dw-activity__avatar { display: inline-flex; flex: none; }
+.dw-activity__avatar .d-avatar { border-radius: var(--r-pill); font-size: var(--text-meta); }
+.dw-activity__glyph { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: var(--r-pill); background: var(--surface-2); color: var(--fg-3); }
+.dw-activity__text { display: grid; gap: 2px; min-width: 0; }
+.dw-activity__where { font-size: var(--text-meta); color: var(--fg-3); }
+.dw-activity__line { font-size: var(--text-sm); overflow-wrap: anywhere; }
+.dw-activity__line strong { font-weight: var(--weight-display); }
+/* Task 11 (Jonas, Q3): the prototype's You: 24px 18px, 18px apart; the 56px avatar, the name 16px/700 over "@handle · status"
+   11.5px --fg-2; one box (12px, radius 8px, the hairline) with the connection and this device, 11px --fg-3, 4px apart; one box
+   of 48px rows (0 14px, gap 12px, the hairline between), Sign out in --danger. */
+.dw-you { padding: 24px 18px; display: grid; align-content: start; gap: 18px; overflow-y: auto; }
+.dw-you__account { display: flex; align-items: center; gap: 14px; }
+.dw-you__who { display: grid; min-width: 0; line-height: 1.35; }
+.dw-you__name { font-weight: var(--weight-display); font-size: var(--text-preview); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__line { font-size: var(--text-btn); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__facts { display: grid; gap: 4px; padding: 12px; font-size: var(--text-xs); color: var(--fg-3); border: 1px solid var(--hairline); border-radius: 8px; overflow-wrap: anywhere; }
+.dw-you__rows { display: grid; border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; }
+.dw-you__row { display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 14px; font: inherit; color: var(--fg); text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--hairline); cursor: pointer; transition: background var(--duration-hover); }
+.dw-you__row:last-child { border-bottom: 0; }
+.dw-you__row:hover { background: var(--hover); }
+.dw-you__row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.dw-you__row[data-danger="true"] { color: var(--danger); }
+.dw-you__row[data-danger="true"]:hover { background: var(--danger-faint); }
+.dw-you__choice { padding-left: 30px; background: var(--surface-2); }
+.dw-you__label { flex: 1; min-width: 0; }
+.dw-you__value { font-size: var(--text-btn); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__dot { display: inline-flex; margin: 0 4px; }
+.dw-you__error { margin: 0; font-size: var(--text-xs); color: var(--danger); }
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {

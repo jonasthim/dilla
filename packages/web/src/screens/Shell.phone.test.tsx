@@ -542,7 +542,7 @@ describe('the phone shell: the call bar', () => {
 describe('the phone shell: settings', () => {
   it('opens a modal index from You, hides tabs, and pushes individual sections', async () => {
     const { user } = phone({ path: '/you', withSettings: true });
-    await user.click(await screen.findByRole('button', { name: t('workspace.open') }));
+    await user.click(await screen.findByRole('button', { name: t('you.settings') }));
     expect(here()).toBe('/settings');
     const dialog = screen.getByRole('dialog', { name: t('settings.title') });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -617,13 +617,15 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
     expect(within(head).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('shell.dms.new'), t('signalSettings.menu.dms')]);
   });
 
-  it('Activity and You each open with a phone header holding their title', async () => {
+  // Task 11 (Jonas, Q3): Activity keeps its titled head (the prototype's "Activity"); You has no title bar, only a heading for
+  // the tab root (screen readers and the tab's focus).
+  it('Activity opens with a phone header holding its title; You with a hidden heading', async () => {
     const { user } = phone({ path: '/activity' });
-    for (const title of [t('activity.title'), t('you.title')]) {
-      const heading = await screen.findByRole('heading', { level: 2, name: title });
-      expect(heading.closest('header')).toHaveClass('d-phone-header');
-      if (title === t('activity.title')) await user.click(tab('You'));
-    }
+    const activity = await screen.findByRole('heading', { level: 2, name: t('activity.title') });
+    expect(activity.closest('header')).toHaveClass('d-phone-header');
+    await user.click(tab('You'));
+    const you = await screen.findByRole('heading', { level: 2, name: t('you.title') });
+    expect(you).toHaveClass('d-sr-only');
   });
 
   // Ruling Z: the call is the DM row's menu item and Control/⌘+Shift+Enter; the header and the strip have no call button.
