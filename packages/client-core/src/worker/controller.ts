@@ -2442,6 +2442,7 @@ export class Controller {
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
       onTrustChanged: () => { this.safely(() => this.refreshTrustGeneration()); },
+      onError: (code) => { this.recordError(code); },
       trackJob: (job) => { void this.barrier.track(job).catch(() => undefined); },
       // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
       onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
@@ -5465,7 +5466,7 @@ export class Controller {
     let row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
     if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
     if (row.state === 1) {
-      try { await recoverModerationRemovals(core, this.routes, row.groupId); } catch { /* absence or outage is not proof of rejection */ }
+      try { await recoverModerationRemovals(core, this.routes, row.groupId, code => this.recordError(code)); } catch { /* absence or outage is not proof of rejection */ }
       row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
       if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
     }
@@ -5516,7 +5517,7 @@ export class Controller {
       if (saved.state === 1) {
         // Feed ingestion promotes only an authenticated proof matching this exact actor, device,
         // group, community and sequence. A failed lookup leaves the outcome unknown.
-        try { await recoverModerationRemovals(core, this.routes, saved.groupId); } catch { /* retry next ready */ }
+        try { await recoverModerationRemovals(core, this.routes, saved.groupId, code => this.recordError(code)); } catch { /* retry next ready */ }
       }
       let current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
       if (current === undefined) continue;

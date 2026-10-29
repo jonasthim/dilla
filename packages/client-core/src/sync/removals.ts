@@ -8,7 +8,8 @@ const PAGE_BUDGET = 8;
 
 /** Reconcile the authenticated server feed before a caller publishes a newly applied timeline. */
 export async function recoverModerationRemovals(core: CorePort, routes: Pick<Routes,
-  'getModerationRemovals' | 'getDeviceList' | 'getDeviceListHistory'>, groupId: Id): Promise<void> {
+  'getModerationRemovals' | 'getDeviceList' | 'getDeviceListHistory'>, groupId: Id,
+  onError?: (code: string) => void): Promise<void> {
   let cursor = core.removalCursor(groupId);
   for (let pageNo = 0; pageNo < PAGE_BUDGET; pageNo++) {
     const page = await routes.getModerationRemovals(groupId, cursor, PAGE_LIMIT);
@@ -34,7 +35,7 @@ export async function recoverModerationRemovals(core: CorePort, routes: Pick<Rou
       const cachedVersion = core.removalActorHistoryVersion(groupId, entry);
       const actor = decodeRemovalProof(entry.proof).actorUser;
       const { history, head } = await readDeviceListHistory(routes, actor, cachedVersion);
-      ingestAccountKind(core, actor, head);
+      ingestAccountKind(core, actor, head, onError);
       core.refreshRemovalActorHistory(groupId, entry, history, signedHeadList(head));
     }
     for (const row of page.rows) {
