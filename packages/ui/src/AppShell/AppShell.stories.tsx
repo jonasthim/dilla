@@ -3,6 +3,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ComposedShell, fixtureTopBar, SignalShell } from './AppShell.fixture.tsx';
 import { HarbourPreview, HarbourStage, harbourTiles, PICKER_DEFAULT, pickerProps, stageControls } from '../CallStage/stage.fixture.tsx';
 import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
+import { GeneralThread } from '../MessageRow/conversation.fixture.tsx';
+import { REMINDERS_DUE } from '../internal/sample/midgard.ts';
 // The web's voice pane classes (dw-voice-channel, dw-voice-stage): app.css lays the stage out in the main pane.
 import '../../../web/src/app.css';
 import { TopBar } from '../TopBar/TopBar.tsx';
@@ -196,18 +198,31 @@ const topBar = (p: { voice?: boolean; due?: number }) => (
     voice={p.voice === true ? { room: 'harbour', pingMs: 24, onOpen: () => {} } : undefined}
     labels={{ reminders: 'Reminders', settings: 'Open settings', voice: 'open the call in harbour', remindersDue: n => `${String(n)} due` }} />
 );
+// Task 11: the prototype's sample has one reminder due ("bring two ropes"), so the bell carries 1 on every whole screen.
+const due = REMINDERS_DUE;
 export const Frame: Story = {
   parameters: { layout: 'fullscreen' },
   // Task 6b fix round 2 (rule 3d): the frame as packages/web composes it in Signal (SignalShell), not the older composition.
-  render: () => <div style={frame}><SignalShell shell={{ topBar: topBar({}) }} /></div>,
+  render: () => <div style={frame}><SignalShell shell={{ topBar: topBar({ due }) }} /></div>,
 };
 export const FrameMembers: Story = {
   parameters: { layout: 'fullscreen' },
-  render: () => <div style={frame}><SignalShell shell={{ ...withAside, topBar: topBar({}) }} /></div>,
+  render: () => <div style={frame}><SignalShell shell={{ ...withAside, topBar: topBar({ due }) }} /></div>,
 };
 export const FrameMembersClosed: Story = {
   parameters: { layout: 'fullscreen' },
-  render: () => <div style={frame}><SignalShell shell={{ ...withAside, asideOpen: false, topBar: topBar({}) }} /></div>,
+  render: () => <div style={frame}><SignalShell shell={{ ...withAside, asideOpen: false, topBar: topBar({ due }) }} /></div>,
+};
+/** Task 11: the @ home with Ada's DM open (Shell.tsx's DM list and DM conversation). */
+export const FrameDm: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell dm shell={{ topBar: topBar({ due }) }} /></div>,
+};
+/** Task 11: #general with Björn's thread open in the 340px aside (Shell.tsx's side panel with ThreadView), Threads pressed. */
+export const FrameThread: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell shell={{ aside: <GeneralThread />, asideLabel: 'Thread', asideOpen: true, asideKind: 'thread',
+    onAsideClose: () => {}, topBar: topBar({ due }) }} /></div>,
 };
 export const FrameInVoice: Story = {
   parameters: { layout: 'fullscreen' },

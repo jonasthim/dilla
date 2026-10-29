@@ -8,6 +8,9 @@ import { Toggle } from '../Toggle/Toggle.tsx';
 import { KeyboardTable } from '../KeyboardTable/KeyboardTable.tsx';
 import { VoiceSettings } from '../VoiceSettings/VoiceSettings.tsx';
 import { DeviceRow } from '../DeviceRow/DeviceRow.tsx';
+import { TextField } from '../TextField/TextField.tsx';
+import { Select } from '../Select/Select.tsx';
+import { YOU } from '../internal/sample/midgard.ts';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { LiveRoleEditor } from '../RoleEditor/RoleEditor.fixture.tsx';
@@ -147,6 +150,63 @@ function Devices() {
     </section>
   );
 }
+
+// Task 11: screens/settings/Profile.tsx with the prototype's sample (Mira, "packing rope", her bio): the three fields with their
+// hints and notes and the Save button.
+function Profile() {
+  return (
+    <section className="dw-settings-section" aria-labelledby="profile-title">
+      <h2 id="profile-title" tabIndex={-1}>{t('profile.title')}</h2>
+      <p>{t('profile.body')}</p>
+      <form className="dw-profile-form" noValidate onSubmit={e => e.preventDefault()}>
+        <TextField id="profile-display" label={t('profile.display.label')} value={YOU.name} onChange={noop} required autoComplete="nickname" />
+        <TextField id="profile-status" label={t('profile.status.label')} value={YOU.status} onChange={noop} hint={t('profile.status.hint')} note={t('profile.serverReads')} />
+        <TextField id="profile-bio" label={t('profile.bio.label')} value={YOU.bio} onChange={noop} multiline rows={5} hint={t('profile.bio.hint')} note={t('profile.serverReads')} />
+        <div className="dw-profile-form__actions"><Button type="submit" disabled>{t('profile.save')}</Button><p role="status" className="dw-profile-form__saved" /></div>
+      </form>
+    </section>
+  );
+}
+// Task 11: screens/settings/SignInFactors.tsx with a password, an authenticator app, one passkey and eight backup codes (the
+// prototype's four factors): FactorLine rows, the passkeys' add row and the "lost" note.
+function SignIn() {
+  const instance = 'midgard.gg';
+  const row = (id: string, icon: IconName, title: string, detail: string | undefined, action: string, danger = false, heading = true) => (
+    <SettingsRow id={id} icon={icon} label={title} hint={detail} headingLevel={heading ? 3 : undefined}>
+      <Button variant={danger ? 'danger' : 'default'} onClick={noop}>{action}</Button>
+    </SettingsRow>
+  );
+  return (
+    <section className="dw-settings-section" aria-labelledby="signin-title">
+      <h2 id="signin-title" tabIndex={-1} className="dw-settings-heading">{t('factorSettings.title')}</h2>
+      <p>{t('factorSettings.body', { instance })}</p>
+      {row('signin-password', 'lock', t('factorSettings.password'), t('factorSettings.password.set'), t('settings.password.change'))}
+      {row('signin-totp', 'smartphone', t('factorSettings.totp'), t('factorSettings.totp.on', { date: '12 October' }), t('factorSettings.totp.remove'), true)}
+      {row('signin-passkey-1', 'fingerprint', 'MacBook Touch ID', t('factorSettings.passkeys.unused', { created: '12 October' }), t('factorSettings.passkeys.remove'), true, false)}
+      {row('signin-passkeys', 'fingerprint', t('factorSettings.passkeys'), undefined, t('factorSettings.passkeys.add'))}
+      {row('signin-codes', 'key', t('factorSettings.codes'), t('factorSettings.codes.other', { count: 8 }), t('factorSettings.codes.make'))}
+      <p>{t('factorSettings.lost', { instance })}</p>
+    </section>
+  );
+}
+// Task 11: admin/OverviewSection.tsx for Midgard Crew: the server name row and the inactive timeout (15 minutes).
+function Overview() {
+  return (
+    <section className="dw-settings-section" aria-labelledby="overview-title">
+      <h2 id="overview-title" tabIndex={-1}>{t('admin.overview.title')}</h2>
+      <SettingsRow id="overview-name-row" icon="server" label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
+        <div className="dw-overview-field"><TextField id="overview-name" label={t('admin.overview.name')} value={SERVER} onChange={noop} required autoComplete="off" /></div>
+      </SettingsRow>
+      <SettingsRow id="overview-afk-row" icon="moon" label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: 'AFK' })}>
+        <Select label={t('afk.timeout.label')} value="900" onChange={noop}
+          options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t(`afk.timeout.${String(n * 60)}` as Parameters<typeof t>[0]) }))} />
+      </SettingsRow>
+    </section>
+  );
+}
+export const ProfileDesktop: Story = { render: () => <Workspace active="profile"><Profile /></Workspace> };
+export const SignInDesktop: Story = { render: () => <Workspace active="signin"><SignIn /></Workspace> };
+export const OverviewDesktop: Story = { render: () => <Workspace active="server:overview"><Overview /></Workspace> };
 
 export const NotificationsDesktop: Story = { render: () => <Workspace active="notifications"><Notifications /></Workspace> };
 export const ProfilePhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="profile"><section className="dw-settings-section" aria-labelledby="p-title"><h2 id="p-title">{t('workspace.profile')}</h2></section></Workspace> };

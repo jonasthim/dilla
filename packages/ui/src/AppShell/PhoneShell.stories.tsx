@@ -20,11 +20,13 @@ import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { RingBanner } from '../RingBanner/RingBanner.tsx';
 import { ThreadPane } from '../ThreadPane/ThreadPane.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
-import { GeneralLog, SignalComposer } from '../MessageRow/conversation.fixture.tsx';
+import { GeneralLog, GeneralThread, SignalComposer } from '../MessageRow/conversation.fixture.tsx';
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { HarbourStage, harbourTiles } from '../CallStage/stage.fixture.tsx';
 import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
+import { harbourPeople } from './AppShell.fixture.tsx';
+import { YOU } from '../internal/sample/midgard.ts';
 import '../../../web/src/app.css';
 
 /**
@@ -59,6 +61,13 @@ const tabs = (current: TabId): TabBarItem[] => [
   { id: 'you', label: 'You', href: '#you', icon: 'user', current: current === 'you' },
 ];
 const tabBar = (current: TabId) => <TabBar label="main" items={tabs(current)} onSelect={noop} />;
+// Task 11 (Shell.tsx's homeCount / activityCount with the prototype's sample): no unread DM, so Home has no dot; Valhalla Kitchen's
+// two mentions put the dot on Activity.
+const signalTabBar = (current: TabId) => <TabBar label="main" onSelect={noop} items={[
+  { id: 'home', label: 'Home', href: '#home', icon: 'house', current: current === 'servers' || current === 'dms' },
+  { id: 'activity', label: 'Activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 2, countLabel: 'Activity, 2 new' },
+  { id: 'you', label: 'You', href: '#you', icon: 'user', current: current === 'you' },
+]} />;
 
 const rowLabel = (c: { name: string; unread: number; mentions: number; muted: boolean }) =>
   c.muted ? `${c.name}, muted, mentions ${c.mentions}` : `${c.name}, unread ${c.unread}, mentions ${c.mentions}`;
@@ -218,7 +227,7 @@ export const ServersList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')}>{null}</AppShell></Phone>,
 };
 // Task 6b fix round 1: the servers list as the web composes it in Signal (Shell.tsx): the head is the name and the 26px ⌄ (Ruling AB),
-// the stat line, the categories and rows; no search, no reminders. The voice rooms' people are sample-free here (empty rooms).
+// the stat line, the categories and rows; no search, no reminders. Task 11: harbour's people as the prototype's sample lists them.
 const signalChannels = (
   <ChannelList label="channels" title="Midgard Crew" activeId="general" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
     headerAction={<ServerHeadMenu />}
@@ -226,7 +235,7 @@ const signalChannels = (
     categories={[{ id: 'raids', name: 'raids', collapsed: false }, { id: 'boats', name: 'boats', collapsed: false }]} onToggleCategory={noop}
     voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
       state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting',
-        video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } }, rooms: { hv: { joined: false, participants: [] }, harbour: { joined: false, participants: [] }, afk: { joined: false, participants: [] } } }}
+        video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } }, rooms: { hv: { joined: false, participants: [] }, harbour: { joined: false, participants: harbourPeople(false) }, afk: { joined: false, participants: [] } } }}
     channels={[
       { id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'hv', name: 'general', kind: 'voice', readable: false },
       { id: 'loot', name: 'loot', kind: 'text', readable: false, parentId: 'raids', unread: 1 },
@@ -242,9 +251,9 @@ const signalRail = (
 export const SignalServersList: Story = {
   globals: { theme: 'signal' },
   // Ruling AE: the list ends in the user panel above the tab bar, as the web's phone sidebar does (packages/web/src/screens/Shell.tsx).
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={signalRail} tabBar={tabBar('servers')}
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={signalRail} tabBar={signalTabBar('servers')}
     sidebar={<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}><div style={{ flex: '1 1 auto', minHeight: 0 }}>{signalChannels}</div>
-      <UserPanel name="Mira" username="mira" line="online" muted={false} deafened={false} onMute={noop} onDeafen={noop}
+      <UserPanel name={YOU.name} username={YOU.handle} line={YOU.status} muted={false} deafened={false} onMute={noop} onDeafen={noop}
         labels={{ region: 'your account', mute: 'mute', deafen: 'deafen' }} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
         status={{ current: 'online', label: 'your status: online', onChoose: noop,
           items: [{ id: 'online', label: 'online' }, { id: 'idle', label: 'idle' }, { id: 'dnd', label: 'do not disturb' }, { id: 'invisible', label: 'invisible' }] }} />
@@ -355,8 +364,16 @@ const signalPhoneHeader = <ChannelHeader name="general" topic="raids, plans and 
 </> }} />;
 export const SignalConversation: Story = {
   globals: { theme: 'signal' },
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={signalTabBar('servers')} rail={signalRail} sidebar={signalChannels}
     header={signalPhoneHeader} composer={<SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}><GeneralLog /></AppShell></Phone>,
+};
+
+// Task 11: Björn's thread on a phone, as Shell.tsx mounts ThreadView in the aside (the full-screen sheet) over #general.
+export const SignalThread: Story = {
+  globals: { theme: 'signal' },
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={signalTabBar('servers')} rail={signalRail} sidebar={signalChannels}
+    header={signalPhoneHeader} composer={<SignalComposer gif={{ label: 'add a gif', open: false, onToggle: noop }} />}
+    aside={<GeneralThread phone />} asideLabel="Thread" asideOpen onAsideClose={noop}><GeneralLog /></AppShell></Phone>,
 };
 
 // Task 8 (rule 3e): the phone on the joined voice channel harbour as Shell.tsx composes it: the phone voice header (back, the
@@ -365,13 +382,13 @@ export const SignalConversation: Story = {
 const voiceHeader = <ChannelHeader kind="voice" name="harbour" topic="6 in voice" phone={{ backLabel: 'back to channels', onBack: noop }} />;
 export const SignalVoice: Story = {
   globals: { theme: 'signal' },
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={signalTabBar('servers')} rail={signalRail} sidebar={signalChannels}
     header={voiceHeader}><div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">
       <HarbourStage header={false} tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} /></div></div></AppShell></Phone>,
 };
 export const SignalVoiceGrid: Story = {
   globals: { theme: 'signal' },
-  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={signalRail} sidebar={signalChannels}
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={signalTabBar('servers')} rail={signalRail} sidebar={signalChannels}
     header={voiceHeader}><div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">
       <HarbourStage header={false} tiles={harbourTiles()} focus={null} nowPlaying={harbourStageBar} /></div></div></AppShell></Phone>,
 };
