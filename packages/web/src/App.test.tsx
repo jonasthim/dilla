@@ -527,7 +527,7 @@ describe('App sign-in', () => {
     const fake = new FakeClient();
     startAt(fake);
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
-    await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
+    await user.click(screen.getByRole('button', { name: 'Have an invite? Create an account' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
     expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();

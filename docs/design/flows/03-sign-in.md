@@ -64,7 +64,7 @@ forward button `Add this browser` sends `signInKey` with the key and runs the fe
 `PUT` without registering again. An account that owes a factor and sets one up after the enrolment meets
 the set-up as step 3 (flow 10). The assertion lives five minutes: reading the key off paper for longer
 than that after the factor costs a new login, and the page shows `enrol.expired` (a 401 from `register`,
-or from `enrol.backupCode` on the backup-code path) and returns to step 1. `Create a new account instead`
+or from `enrol.backupCode` on the backup-code path) and returns to step 1. `Have an invite? Create an account`
 on step 1, and `Cancel` on steps 2 and 3, send `signInCancel` and the page shows onboarding step 1. The
 step shown follows `account.phase` and the key the page holds, never the command the page sent: a refusal
 of the login, of the second factor or of the registration leaves the phase at `signin-login` or returns it
@@ -103,7 +103,7 @@ the passkey screen: step 2 opens as the backup-code form, with `Cancel` in place
 `factorSignin.passkey.unusable` above the body.
 Each of the first three is one `<form noValidate>`: `Enter` in a field submits the step, as does its
 forward button (`type="submit"`). The back button comes first in the footer, is `type="button"` and never
-submits: `Create a new account instead` (a ghost button) on step 1 before the login, which has no `Cancel`,
+submits: `Have an invite? Create an account` (a ghost button) on step 1 before the login, which has no `Cancel`,
 and `Cancel` on steps 2 and 3 and on step 1 of a registered enrolment. A submit with an empty `Username`,
 `Password` or `Code` sends nothing (see "Empty fields" under "States"). Step 4's only button is `Open dilla`,
 which navigates to `/`, replacing the history entry. The working status line `signin.key.working`
@@ -163,7 +163,7 @@ Step 1, login:
 |                      | ••••••••••                                       |                    |
 |                      +--------------------------------------------------+                    |
 |                      --------------------------------------------------                      |
-|                           [ Create a new account instead ]  [ Continue ]                     |
+|                           [ Have an invite? Create an account ]  [ Continue ]                     |
 +----------------------------------------------------------------------------------------------+
 ```
 
@@ -200,7 +200,7 @@ Step 1 where the instance offers passkeys and the browser can use them (the ghos
 |                      +--------------------------------------------------+                    |
 |                      [ Sign in with a passkey ]                           (ghost button)     |
 |                      --------------------------------------------------                      |
-|                           [ Create a new account instead ]  [ Continue ]                     |
+|                           [ Have an invite? Create an account ]  [ Continue ]                     |
 ```
 
 Step 2, code form after a passkey that did not check the person (the note sits above the code field):
@@ -331,7 +331,7 @@ field keeps one line and scrolls inside itself.
 |  | ••••••••••                     |  |   +--------------------------------------+
 |  +--------------------------------+  |
 |  ------------------------------      |
-|  [ Create a new account instead ]    |
+|  [ Have an invite? Create an account ]    |
 |                     [ Continue ]     |
 +--------------------------------------+
 
@@ -628,7 +628,7 @@ phase to `signin-login`, and the person signs in again.
 | the count reaches 52 | unchanged | `Add this browser` loses the description `signin.error.keyLength` |
 
 Tab order inside each step: the fields in visual order, then the footer: on step 1 (the login)
-`Create a new account instead`, then `Continue`; on the second factor and on the key step,
+`Have an invite? Create an account`, then `Continue`; on the second factor and on the key step,
 `Cancel`, then the forward button. On onboarding step 1: the
 invite field, `Use an existing account`, `Continue`. On the closed frame: `Use an existing account`.
 There are no single-key shortcuts.
@@ -873,12 +873,12 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
 | `signin.step` | `Sign in · step {n} of {total}` | step line, steps 1–4 (Signal task 10: {total} is 4, or 3 with no factor step shown; the dots follow it) |
 | `signin.login.title` | `Sign in to {instance}` | step heading, step 1 |
-| `signin.login.body` | `Use the username and password of your account on {instance}.` | paragraph, step 1 |
+| `signin.login.body` | `Use your dilla username and password.` | paragraph, step 1 |
 | `signin.login.username` | `Username` | field label, step 1 |
 | `signin.login.password` | `Password` | field label, step 1 |
 | `signin.login.submit` | `Continue` | button, forward on steps 1 (login) and 2 (second factor) |
 | `signin.login.working` | `Checking…` | the forward button of steps 1 and 2 while their command runs |
-| `signin.login.createInstead` | `Create a new account instead` | ghost button, first in the footer of step 1; sends `signInCancel` |
+| `signin.login.createInstead` | `Have an invite? Create an account` | ghost button, first in the footer of step 1; sends `signInCancel` |
 | `signin.totp.title` | `Your second factor` | step heading, step 2 |
 | `signin.totp.body` | `Enter the six-digit code from your authenticator app.` | paragraph, step 2 |
 | `signin.totp.code` | `Code` | field label, step 2 |

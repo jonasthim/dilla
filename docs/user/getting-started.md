@@ -981,7 +981,7 @@ still shows the button.
 
 ![Step 1: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-1-login.png)
 
-"Use the username and password of your account on {instance}." **Continue** checks them ("Checking…"). A
+"Use your dilla username and password." **Continue** checks them ("Checking…"). A
 wrong pair says "That username and password did not work." and empties the password field. **Create a new account
 instead** goes back to the sign-up.
 

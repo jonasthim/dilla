@@ -12,7 +12,8 @@ const meta = { title: 'Screens/SignIn', parameters: { layout: 'fullscreen' } } s
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-const instance = 'dilla.test';
+// Task 11: the prototype's sample instance and the sign-in it starts with (fUser mira, a typed password).
+const instance = 'midgard.gg';
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
 const noop = () => {};
 const blocked = { 'aria-disabled': true } as const;
@@ -25,8 +26,8 @@ function Step({ n, title, footer, children }: { n: number; title: string; footer
   );
 }
 function Login({ refused }: { refused?: boolean }) {
-  const [username, setUsername] = useState(refused ? 'ada' : '');
-  const [password, setPassword] = useState(refused ? 'hunter22' : '');
+  const [username, setUsername] = useState(refused ? 'ada' : 'mira');
+  const [password, setPassword] = useState(refused ? 'hunter22' : 'two-ropes');
   return (
     <Step n={1} title={t('signin.login.title', { instance })}
       footer={<><Button variant="ghost" type="button">{t('signin.login.createInstead')}</Button><Button variant="accent" type="submit">{t('signin.login.submit')}</Button></>}>

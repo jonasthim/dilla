@@ -85,10 +85,10 @@ describe('the ceremony', () => {
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
-    expect(screen.getByText('Use the username and password of your account on dilla.test.')).toBeInTheDocument();
+    expect(screen.getByText('Use your dilla username and password.')).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Recovery key' })).toBeNull();
     expect(button('Continue')).toHaveAttribute('type', 'submit');
-    expect(button('Create a new account instead')).toHaveAttribute('type', 'button');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
     await expectNoAxeViolations(view.container);
     await login(user);
@@ -227,9 +227,9 @@ describe('the ceremony', () => {
     await login(user);
     expect(button('Checking…')).toHaveAttribute('aria-disabled', 'true');
     expect(document.activeElement).toBe(button('Checking…'));
-    expect(button('Create a new account instead')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('aria-disabled', 'true');
     await user.click(button('Checking…'));
-    await user.click(button('Create a new account instead'));
+    await user.click(button('Have an invite? Create an account'));
     expect(calls).toBe(1);
   });
 
@@ -297,7 +297,7 @@ describe('the ceremony', () => {
 
   it('cancels from every step', async () => {
     const first = setup('signin-login', worker());
-    await first.user.click(button('Create a new account instead'));
+    await first.user.click(button('Have an invite? Create an account'));
     expect(first.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     first.view.unmount();
     const second = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
