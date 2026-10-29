@@ -84,6 +84,12 @@ describe('VoiceSettings', () => {
     onCaptureKey.mockClear();
     fireEvent.click(capture);
     expect(onCaptureKey).toHaveBeenLastCalledWith('cancel');
+    // Fix round 2: Enter and Space press Cancel while it listens.
+    for (const key of ['Enter', ' ']) {
+      onCaptureKey.mockClear();
+      fireEvent.keyDown(capture, { key, code: key === ' ' ? 'Space' : 'Enter' });
+      expect(onCaptureKey).toHaveBeenLastCalledWith('cancel');
+    }
   });
 
   it('accepts only a non-text key on its own: F13 to F24, Pause, ScrollLock, Insert (task-8b review I2, supersedes M9)', async () => {
@@ -91,8 +97,9 @@ describe('VoiceSettings', () => {
     render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
     const capture = screen.getByRole('button', { name: 'cancel' });
     const refused: Array<[string, string, Record<string, boolean>]> = [
-      ['a', 'KeyA', {}], ['A', 'KeyA', { shiftKey: true }], [' ', 'Space', {}], ['7', 'Digit7', {}], [',', 'Comma', {}],
-      ['Enter', 'Enter', {}], ['ArrowDown', 'ArrowDown', {}], ['Dead', 'Quote', {}],
+      // Enter and Space press Cancel while it listens (fix round 2), so they are not in this list.
+      ['a', 'KeyA', {}], ['A', 'KeyA', { shiftKey: true }], ['7', 'Digit7', {}], [',', 'Comma', {}],
+      ['ArrowDown', 'ArrowDown', {}], ['Dead', 'Quote', {}],
       // A text or operating key stays refused with Control, Alt or Meta held (the setting stores the code alone).
       ['m', 'KeyM', { ctrlKey: true, shiftKey: true }], ['v', 'KeyV', { metaKey: true }], ['x', 'KeyX', { altKey: true }],
       // Function keys the browser uses (help, find, reload, caret browsing, fullscreen, devtools) are refused.
@@ -149,14 +156,19 @@ describe('VoiceSettings', () => {
     expect(input).toHaveAttribute('max', '200');
     expect(input).toHaveAttribute('aria-valuetext', '57%');
     expect(input.style.getPropertyValue('--d-fill')).toBe('28.5%');
-    fireEvent.change(input, { target: { value: '140' } });
+    fireEvent.input(input, { target: { value: '140' } });
     expect(onInputVolume).toHaveBeenLastCalledWith(140, false);
-    fireEvent.pointerUp(input);
+    fireEvent.change(input);
     expect(onInputVolume).toHaveBeenLastCalledWith(140, true);
+    // An assistive technology sets the value with input + change only (no key or pointer events): it is committed.
     const output = screen.getByRole('slider', { name: 'output volume' });
-    fireEvent.change(output, { target: { value: '0' } });
-    fireEvent.keyUp(output, { key: 'ArrowLeft' });
+    fireEvent.input(output, { target: { value: '0' } });
+    fireEvent.change(output);
     expect(onOutputVolume).toHaveBeenLastCalledWith(0, true);
+    // A drag cancelled by the browser still commits where it was.
+    fireEvent.input(output, { target: { value: '30' } });
+    fireEvent.pointerCancel(output);
+    expect(onOutputVolume).toHaveBeenLastCalledWith(30, true);
   });
 
   it('the output volume stays where the browser cannot choose the output device', () => {
@@ -188,9 +200,9 @@ describe('VoiceSettings', () => {
     rerender(<VoiceSettings {...base} micTest={{ testing: false, available: true, levelDb: -100, thresholdDb: -35, auto: false, open: false }} onThreshold={onThreshold} />);
     expect(screen.getByText('drag the line')).toBeInTheDocument();
     const line = screen.getByRole('slider', { name: 'sensitivity threshold' });
-    fireEvent.change(line, { target: { value: '-20' } });
+    fireEvent.input(line, { target: { value: '-20' } });
     expect(onThreshold).toHaveBeenLastCalledWith(-20, false);
-    fireEvent.pointerUp(line);
+    fireEvent.change(line);
     expect(onThreshold).toHaveBeenLastCalledWith(-20, true);
   });
 
@@ -216,6 +228,10 @@ describe('VoiceSettings', () => {
       rerender(<VoiceSettings {...base} micTest={testing(false, -70)} />);
       act(() => { vi.advanceTimersByTime(1000); });
       expect(live).toHaveTextContent('Too quiet to send');
+      // Fix round 2: a new Let's check starts with an empty live region.
+      rerender(<VoiceSettings {...base} />);
+      rerender(<VoiceSettings {...base} micTest={testing(true, -20)} />);
+      expect(live).toHaveTextContent('');
     } finally { vi.useRealTimers(); }
   });
 
@@ -234,15 +250,17 @@ describe('VoiceSettings', () => {
 
   it('push to talk shows the release delay: 0–1000 ms in steps of 20', () => {
     const onPttRelease = vi.fn();
-    render(<VoiceSettings {...base} mode="ptt" pttReleaseMs={200} onPttRelease={onPttRelease} />);
+    // The row mounts when push to talk is picked, after the component (fix round 2: its listeners follow it).
+    const { rerender } = render(<VoiceSettings {...base} pttReleaseMs={200} onPttRelease={onPttRelease} />);
+    rerender(<VoiceSettings {...base} mode="ptt" pttReleaseMs={200} onPttRelease={onPttRelease} />);
     const range = screen.getByRole('slider', { name: 'release delay' });
     expect(range).toHaveAttribute('step', '20');
     expect(range).toHaveAttribute('max', '1000');
     expect(range).toHaveAttribute('aria-valuetext', '200 ms');
     expect(range).toHaveAccessibleDescription('keeps sending');
-    fireEvent.change(range, { target: { value: '340' } });
+    fireEvent.input(range, { target: { value: '340' } });
     expect(onPttRelease).toHaveBeenLastCalledWith(340, false);
-    fireEvent.pointerUp(range);
+    fireEvent.change(range);
     expect(onPttRelease).toHaveBeenLastCalledWith(340, true);
   });
 

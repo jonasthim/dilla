@@ -37,10 +37,15 @@ describe('SensitivityMeter', () => {
     const onThresholdChange = vi.fn();
     render(<SensitivityMeter {...base} auto={false} thresholdDb={-5} onThresholdChange={onThresholdChange} />);
     const slider = screen.getByRole('slider');
-    fireEvent.change(slider, { target: { value: '-30' } });
+    fireEvent.input(slider, { target: { value: '-30' } });
     expect(onThresholdChange).toHaveBeenLastCalledWith(-30, false);
-    fireEvent.pointerUp(slider);
+    // Fix round 2: the native change commits (a pointer let go, a key step, or VoiceOver / TalkBack setting the value).
+    fireEvent.change(slider);
     expect(onThresholdChange).toHaveBeenLastCalledWith(-30, true);
+    // A move then a blur (or pointercancel) commits too.
+    fireEvent.input(slider, { target: { value: '-25' } });
+    fireEvent.blur(slider);
+    expect(onThresholdChange).toHaveBeenLastCalledWith(-25, true);
     fireEvent.keyDown(slider, { key: 'PageUp' });
     expect(onThresholdChange).toHaveBeenLastCalledWith(0, true);
     fireEvent.keyDown(slider, { key: 'PageDown' });

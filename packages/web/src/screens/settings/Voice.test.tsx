@@ -114,12 +114,13 @@ describe('Settings → Voice', () => {
 describe('Settings → Voice: task 10b levels and switches', () => {
   it('writes the volumes, the sensitivity, the release delay and the processing switches, each validated by client-core', async () => {
     const { fake, user } = setup({ 'voice.mode': 'ptt' });
-    // Fix round 1: a slider writes when it is let go (pointer up or key up), not on every move.
+    // Fix round 2: a slider writes on the native change (a pointer let go, a key step, or an assistive technology setting the
+    // value with only input + change), not on every move.
     const slide = (name: string, value: string) => {
       const range = screen.getByRole('slider', { name });
-      fireEvent.change(range, { target: { value } });
+      fireEvent.input(range, { target: { value } });
       expect(settingCalls(fake).some(([k, v]) => v === value && k !== 'voice.mode')).toBe(false);
-      fireEvent.pointerUp(range);
+      fireEvent.change(range);
     };
     slide('Input volume', '150');
     slide('Output volume', '40');

@@ -3,6 +3,7 @@ import { Segmented } from '../Segmented/Segmented.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { Toggle } from '../Toggle/Toggle.tsx';
 import { SensitivityMeter, formatDb } from '../SensitivityMeter/SensitivityMeter.tsx';
+import { useRangeCommit } from '../internal/rangeCommit.ts';
 import '../Button/Button.css';
 import './VoiceSettings.css';
 
@@ -145,20 +146,9 @@ function DeviceSelect({ id, value, devices, systemDefault, label, onChange }: {
 }
 
 /** The prototype's volume row under a device: "Volume", the 0–200 % range with its accent fill, the value. */
-/** A range's handlers: each move previews, letting go (pointer or key) commits the last value it moved to. */
-export function useSliding(onChange: SliderChange) {
-  const last = useRef<number | null>(null);
-  const commit = (e: { currentTarget: HTMLInputElement }) => {
-    const v = last.current ?? Number(e.currentTarget.value);
-    last.current = null;
-    onChange(v, true);
-  };
-  return {
-    onChange: (e: { target: HTMLInputElement }) => { last.current = Number(e.target.value); onChange(last.current, false); },
-    onPointerUp: commit,
-    onKeyUp: commit,
-  };
-}
+/** A range's handlers: each move previews; the native change (let go, a key step, an assistive set), blur or
+ *  pointercancel commits (fix round 2). */
+export const useSliding = (onChange: SliderChange) => useRangeCommit(onChange);
 
 function VolumeRow({ label, name, value, onChange }: { label: string; name: string; value: number; onChange: SliderChange }) {
   const sliding = useSliding(onChange);
@@ -217,7 +207,8 @@ export function VoiceSettings({
     if (!capturing || e.key === 'Tab') return;
     e.preventDefault();
     e.stopPropagation();
-    if (e.key === 'Escape') { onCaptureKey('cancel'); return; }
+    // Fix round 2: the button reads Cancel while it listens, so Enter and Space press it.
+    if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') { onCaptureKey('cancel'); return; }
     if (MODIFIERS.has(e.key)) return;
     if (typesOrOperates(e)) {
       if (refused) setBlank(true);
@@ -233,6 +224,8 @@ export function VoiceSettings({
   // it held for a second.
   const heard = micTest.testing ? (micTest.open ? 'heard' : 'quiet') : 'idle';
   const [announced, setAnnounced] = useState<'heard' | 'quiet' | 'idle'>('idle');
+  // Fix round 2: a new Let's check starts with an empty live region.
+  useEffect(() => { if (!micTest.testing) setAnnounced('idle'); }, [micTest.testing]);
   useEffect(() => {
     if (heard === announced) return;
     const timer = setTimeout(() => setAnnounced(heard), PILL_ANNOUNCE_MS);

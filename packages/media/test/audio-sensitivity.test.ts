@@ -233,6 +233,21 @@ describe('DillaInputStage', () => {
     expect(clone.enabled).toBe(false);
   });
 
+  it('fix round 2: a failed stage under a manual threshold stays closed after restart (a device switch)', async () => {
+    const first = cloneable();
+    const stage = new DillaInputStage(null, { gate: { enabled: true, auto: false, thresholdDb: -40 }, createContext: failing, workletUrl: 'x' });
+    await stage.init({ track: first.track, kind: 'audio' } as never);
+    stage.setCaptureAllowed(true);
+    const next = cloneable();
+    await stage.restart({ track: next.track, kind: 'audio' } as never);
+    expect(stage.state).toBe('failed');
+    expect(stage.processedTrack).toBe(next.clone);
+    expect(next.clone.enabled).toBe(false);
+    expect(first.clone.stop).toHaveBeenCalled();
+    stage.setCaptureAllowed(true);
+    expect(next.clone.enabled).toBe(false);
+  });
+
   it('clamps a gain that is not a number to 1 and a stage starts closed', () => {
     const stage = new DillaInputStage(null, { gain: Number.NaN });
     expect((stage as unknown as { gain: number }).gain).toBe(1);

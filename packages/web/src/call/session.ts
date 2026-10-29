@@ -885,6 +885,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (wrap?.destroy !== undefined) await wrap.destroy().catch(() => undefined);
       else await made?.destroy?.().catch(() => undefined);
     };
+    /** Fix round 2: while noise suppression is switched under voice activity with a stage maker, the capture stays closed
+     *  until the new stage holds it, so no ungated microphone goes out mid-switch (and a failed stage's fail-closed holds). */
+    let holding = false;
     /** Echo cancellation and automatic gain changed while the microphone could not send and no stage holds it closed:
      *  the new capture waits for the next open (as R2's restart). */
     let processingWaiting = false;
@@ -1067,7 +1070,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           configurable: true,
           get: () => (read !== undefined ? Boolean(Reflect.apply(read, t, [])) : plain),
           set: (v: boolean) => {
-            const on = Boolean(v) && sendNow();
+            const on = Boolean(v) && sendNow() && !holding;
             if (write !== undefined) Reflect.apply(write, t, [on]); else plain = on;
           },
         });
@@ -1079,10 +1082,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       // Close the track and processor together, including fallback and initialization transitions. The capture track is
       // written even before the publish returned (web3.8 MUTE: a press during the publish closes it at once).
       const send = sendNow();
-      if (micTrack) micTrack.enabled = send;
+      const open = send && !holding;
+      if (micTrack) micTrack.enabled = open;
       if (!track) return;
-      processor?.setCaptureAllowed?.(send);
-      stage?.setCaptureAllowed(send);
+      processor?.setCaptureAllowed?.(open);
+      stage?.setCaptureAllowed(open);
       if (send && processingWaiting) { processingWaiting = false; void reacquire().catch(() => undefined); }
       // R2: a capture restart that waited while the microphone could not send runs now that it can.
       if (send && restartWaiting !== null && processor === null) {
@@ -1869,14 +1873,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         processor?.setCaptureAllowed?.(false);
         processor?.flush?.();
         stage?.setCaptureAllowed(false);
-        if (processor !== null || stage !== null) {
-          processor = null;
-          stage = null;
-          applyMic();
-          await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
-        }
-        if (next !== 'off') await startNoise();
-        else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); await startStage(); }
+        holding = deps.createInputStage !== undefined && mode !== 'ptt';
+        try {
+          if (processor !== null || stage !== null) {
+            processor = null;
+            stage = null;
+            reportStage();
+            applyMic();
+            await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
+          }
+          if (next !== 'off') await startNoise();
+          else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); await startStage(); }
+        } finally { holding = false; }
         restartOwnMeter(); // the processor or a restarted capture swaps the published track
         applyMic();
       }),

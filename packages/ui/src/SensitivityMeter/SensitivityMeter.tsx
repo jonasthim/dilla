@@ -1,4 +1,5 @@
-import { useRef, type KeyboardEvent } from 'react';
+import type { KeyboardEvent } from 'react';
+import { useRangeCommit } from '../internal/rangeCommit.ts';
 import './SensitivityMeter.css';
 
 export interface SensitivityMeterProps {
@@ -43,13 +44,8 @@ export function segmentStates(levelDb: number, thresholdDb: number, testing: boo
  */
 export function SensitivityMeter({ levelDb, thresholdDb, auto, testing, onThresholdChange, label }: SensitivityMeterProps) {
   const thr = clamp(thresholdDb);
-  // The last value the slider moved to: letting go commits it (a controlled range may already show the old prop again).
-  const last = useRef<number | null>(null);
-  const commit = (e: { currentTarget: HTMLInputElement }) => {
-    const v = last.current ?? clamp(Number(e.currentTarget.value));
-    last.current = null;
-    onThresholdChange(v, true);
-  };
+  // Fix round 2: moves preview; the native change (let go, a key step, an assistive set), blur or pointercancel commits.
+  const range = useRangeCommit((db, commit) => onThresholdChange(db, commit), clamp);
   const left = `${thr - MIN}%`;
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (auto || (e.key !== 'PageUp' && e.key !== 'PageDown')) return;
@@ -66,9 +62,7 @@ export function SensitivityMeter({ levelDb, thresholdDb, auto, testing, onThresh
         <span className="d-sens__value" aria-hidden="true" style={{ left }}>{formatDb(thr)}</span>
         <input type="range" className="d-sens__input" min={MIN} max={MAX} step={1} value={thr} disabled={auto}
           aria-label={label} aria-valuetext={formatDb(thr)} onKeyDown={onKeyDown}
-          onChange={e => { last.current = clamp(Number(e.target.value)); onThresholdChange(last.current, false); }}
-          onPointerUp={commit}
-          onKeyUp={e => { if (e.key !== 'PageUp' && e.key !== 'PageDown') commit(e); }} />
+          {...range} />
       </div>
       <div className="d-sens__scale" aria-hidden="true"><span className="d-sens__tick">-100 dB</span><span className="d-sens__tick">-50</span><span className="d-sens__tick">0 dB</span></div>
     </div>

@@ -4166,3 +4166,36 @@ describe('task 10b fix round 1: the stage starts closed, bad levels never reach 
     expect(getStageStatus()).toBeNull();
   });
 });
+
+describe('task 10b fix round 2: a noise switch never sends the ungated microphone', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+
+  it('keeps the capture closed while the new stage is set, and reports no stale stage state', async () => {
+    const { getStageStatus } = await import('./processor-status.ts');
+    const f = fakes();
+    const states: Array<string | null> = [];
+    f.deps.createInputStage = () => ({ state: 'active', setGain() {}, setGate() {}, setCaptureAllowed() {}, destroy: () => Promise.resolve() });
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on' });
+    open.push(call);
+    const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
+    mic.stopProcessor = vi.fn(async () => { states.push(getStageStatus()); });
+    const raw = f.room.localParticipant.publishTrack.mock.calls[0][0] as { enabled: boolean };
+    (mic as unknown as { mediaStreamTrack: unknown }).mediaStreamTrack = raw;
+    expect(raw.enabled).toBe(true);
+    let finish!: () => void;
+    let during: boolean | null = null;
+    mic.setProcessor = vi.fn(() => new Promise<void>((resolve) => { during = raw.enabled; finish = resolve; }));
+    const switching = call.setNoise('off');
+    await flush();
+    expect(during).toBe(false);
+    raw.enabled = true; // LiveKit enabling the track meanwhile is refused while the switch holds it
+    expect(raw.enabled).toBe(false);
+    finish();
+    await switching;
+    expect(states).toEqual([null]);
+    expect(raw.enabled).toBe(true);
+    expect(getStageStatus()).toBe('active');
+  });
+});
