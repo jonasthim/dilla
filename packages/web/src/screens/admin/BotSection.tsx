@@ -601,7 +601,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
             options={BOT_MUSIC_VOLUMES.map(v => ({ value: String(v), label: String(v) }))} onChange={v => saveMusic(Number(v), musicIdle)} />
         </SettingsRow>
         <SettingsRow id={`${base}-idle`} icon="timer" label={t('serverSettings.music.idle')}
-          hint={t('serverSettings.music.idleHint', { bot: botName, minutes: musicIdle })}>
+          hint={t('serverSettings.music.idleHint', { bot: botName })}>
           <Segmented id={`${base}-idle-choice`} label={t('serverSettings.music.idle')} value={String(musicIdle)}
             disabled={!manager || currentInstallation === null}
             options={BOT_MUSIC_IDLE_MINUTES.map(v => ({ value: String(v), label: t('serverSettings.music.idle.option', { minutes: v }) }))}

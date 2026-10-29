@@ -254,7 +254,7 @@ function Music() {
         <Segmented id="music-volume-choice" label={t('serverSettings.music.volume')} value="50" onChange={noop}
           options={[25, 50, 75, 100].map(v => ({ value: String(v), label: String(v) }))} />
       </SettingsRow>
-      <SettingsRow id="music-idle" icon="timer" label={t('serverSettings.music.idle')} hint={t('serverSettings.music.idleHint', { bot: GLENN, minutes: 15 })}>
+      <SettingsRow id="music-idle" icon="timer" label={t('serverSettings.music.idle')} hint={t('serverSettings.music.idleHint', { bot: GLENN })}>
         <Segmented id="music-idle-choice" label={t('serverSettings.music.idle')} value="15" onChange={noop}
           options={[5, 15, 30].map(v => ({ value: String(v), label: t('serverSettings.music.idle.option', { minutes: v }) }))} />
       </SettingsRow>

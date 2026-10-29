@@ -1054,7 +1054,7 @@ describe('the server bot settings', () => {
       await user.click(within(screen.getByRole('radiogroup', { name: en['serverSettings.music.idle'] })).getByRole('radio', { name: '15m' }));
       await waitFor(() => expect(fake.callsOf('setBotMusicSettings').at(-1)).toMatchObject({ volume: 50, idleMinutes: 15 }));
       expect(announce).toHaveBeenCalledWith(en['serverSettings.music.saved']);
-      expect(screen.getByText(en['serverSettings.music.idleHint'].replace('{bot}', 'Glenn').replace('{minutes}', '15'))).toBeInTheDocument();
+      expect(screen.getByText(en['serverSettings.music.idleHint'].replace('{bot}', 'Glenn'))).toBeInTheDocument();
     });
     it('the Music page says no role has Control music yet, and a member without Manage server cannot change the defaults', async () => {
       const { fake, user } = setupPage('music', ready);

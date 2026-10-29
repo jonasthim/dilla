@@ -108,7 +108,8 @@ export const serverSettings = {
   'serverSettings.music.volume': 'Default volume',
   'serverSettings.music.volumeHint': 'For new sessions',
   'serverSettings.music.idle': 'Leave voice when idle',
-  'serverSettings.music.idleHint': 'After Stop, {bot} stays silent at most {minutes} minutes',
+  // Task 11 (Q7): the prototype's hint names the longest choice, whichever is picked.
+  'serverSettings.music.idleHint': 'After Stop, {bot} stays silent at most 30 minutes',
   'serverSettings.music.idle.option': '{minutes}m',
   'serverSettings.music.saved': 'Music settings saved.',
   'serverSettings.music.spotify': 'Spotify',

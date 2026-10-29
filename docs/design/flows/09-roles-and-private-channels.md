@@ -162,13 +162,13 @@ All are polite, through the announcer inside settings while the workspace is ope
 - `perm.inherit='Default'`
 - `perm.deny='Deny'`
 - `perm.view='View channels'`
-- `perm.view.hint='See the channel and take part in it. Without it a person is not in the channel at all.'`
+- `perm.view.hint='See text and voice channels'`
 - `perm.send='Send messages'`
-- `perm.send.hint='Post in text channels. The host refuses posts from people without it.'`
+- `perm.send.hint='Post in text channels'`
 - `perm.manageMessages='Manage messages'`
 - `perm.manageMessages.hint='Has no effect in this version.'`
 - `perm.pin='Pin messages'`
-- `perm.pin.hint='Pin and unpin messages. Members’ apps show a pin only while the person who pinned it may pin in that channel.'`
+- `perm.pin.hint='Pin for everyone in a conversation'`
 - `perm.attach='Attach files'`
 - `perm.attach.hint='Send images and files.'`
 - `perm.react='Add reactions'`
@@ -176,9 +176,9 @@ All are polite, through the announcer inside settings while the workspace is ope
 - `perm.history='Read message history'`
 - `perm.history.hint='Open the files sent in a channel. Messages sent before someone joins a channel are never shown to them, whatever their roles.'`
 - `perm.connect='Connect'`
-- `perm.connect.hint='Join calls in voice channels.'`
+- `perm.connect.hint='Join voice channels'`
 - `perm.speak='Speak'`
-- `perm.speak.hint='Be heard in calls.'`
+- `perm.speak.hint='Be heard in voice'`
 - `perm.video='Video'`
 - `perm.video.hint='Turn on a camera in calls.'`
 - `perm.screen='Share screen'`
@@ -190,7 +190,7 @@ All are polite, through the announcer inside settings while the workspace is ope
 - `perm.ban='Ban members'`
 - `perm.ban.hint='Remove members whose highest role is below theirs, and keep them out.'`
 - `perm.manageChannels='Manage channels'`
-- `perm.manageChannels.hint='Add, edit, move and delete channels and categories.'`
+- `perm.manageChannels.hint='Create, edit and move channels'`
 - `perm.manageRoles='Manage roles'`
 - `perm.manageRoles.hint='Make, edit and give out roles below their own highest role, and set channel permissions.'`
 - `perm.manageServer='Manage server'`
@@ -198,7 +198,7 @@ All are polite, through the announcer inside settings while the workspace is ope
 - `perm.auditLog='View audit log'`
 - `perm.auditLog.hint='Has no effect in this version.'`
 - `perm.everyone='Mention @everyone and @here'`
-- `perm.everyone.hint='Notify everyone in a channel. Members’ apps ignore @everyone and @here from people without it.'`
+- `perm.everyone.hint='Notifies the whole server'`
 - `perm.slowmode='Bypass slow mode'`
 - `perm.slowmode.hint='Send without waiting in channels with slow mode.'`
 - `perm.admin='Administrator'`
