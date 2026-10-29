@@ -47,11 +47,14 @@
 .d-channel-list__cat:hover .d-channel-list__cat-add, .d-channel-list__cat:focus-within .d-channel-list__cat-add { opacity: 1; }
 @media (hover: none) { .d-channel-list__cat-add { opacity: 1; } }
 [data-layout="phone"] .d-channel-list__cat-add { opacity: 1; }
-/* A phone target is at least 44px (README §5.10). */
-[data-layout="phone"] .d-channel-list__cat-head { height: 2.75rem; }
-[data-layout="phone"] .d-channel-list__cat-add { height: 2.75rem; }
+/* Fix round 2 (rule 0): a phone keeps the prototype's 26px category head, 10px below the row before it (the phone's
+   --row-h-sub is 36 for the voice people). */
+[data-layout="phone"] .d-channel-list__cat-head, [data-layout="phone"] .d-channel-list__cat-add { height: 1.625rem; }
 
 
 /* Task 11 (Jonas, Q2): the DM list's section label, the prototype's "DIRECT MESSAGES": 26px, 10px into the list, 10px/600
-   uppercase --fg-3 with the category rule; not a control. */
-.d-channel-list__section { display: flex; align-items: center; gap: 6px; height: 1.625rem; margin: 10px 0 0; padding: 0 0.5rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+   uppercase --fg-3 with the category rule; not a control. Fix round 2: it sits inside the list's inset (the rows' 8px + 8px),
+   under the hairline that closes the stats line, so the list below it draws no second hairline. */
+.d-channel-list__section { display: flex; align-items: center; gap: 6px; box-sizing: content-box; height: 1.625rem; margin: 0; padding: 14px 1rem 0; border-top: 1px solid var(--hairline); font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-channel-list__section + .d-channel-list__list { border-top: 0; padding-top: 0; } /* the list's own 4px is above the label */
+.d-channel-list__list > li:has(> .d-chrow[data-person="true"]) { display: flow-root; } /* fix round 2: the rows 1px apart do not collapse (the prototype's flex column steps 44, 54 on a phone) */

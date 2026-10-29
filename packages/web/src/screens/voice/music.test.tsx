@@ -150,7 +150,7 @@ describe('useMusicPlayer', () => {
     expect(screen.getByText(t('members.playingIn', { room: 'harbour' }))).toBeInTheDocument();
     expect(heldMusicRefreshers()).toBe(0);
     expect(adapter.refresh).not.toHaveBeenCalled();
-    act(() => { adapter.set({ ...playing(), track: null }); });
+    act(() => { adapter.set({ ...(playing() as Extract<VoiceMusicState, { status: 'available' }>), track: null }); });
     expect(screen.getByText(t('members.idleIn', { room: 'harbour' }))).toBeInTheDocument();
   });
 

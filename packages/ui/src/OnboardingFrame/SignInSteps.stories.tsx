@@ -8,7 +8,7 @@ import { Button } from '../Button/Button.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t } from '../../../web/src/strings/index.ts';
 
-const meta = { title: 'Screens/SignIn', parameters: { layout: 'fullscreen' } } satisfies Meta;
+const meta = { title: 'Screens/SignIn', parameters: { layout: 'fullscreen', edgeToEdge: true } } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 

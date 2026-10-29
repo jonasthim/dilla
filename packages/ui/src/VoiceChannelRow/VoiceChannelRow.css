@@ -45,6 +45,8 @@
 .d-voice-row__states { display: flex; flex: 1; align-items: center; flex-wrap: nowrap; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
 .d-voice-row__fill { flex: 1; }
 .d-voice-row__person > .d-slot { width: auto; min-width: 0; gap: 8px; justify-content: flex-end; }
+/* Fix round 2: an empty trailing slot takes no gap, so LIVE and the camera end at the row's padding edge, under the count. */
+.d-voice-row__person > .d-slot:empty { margin-left: -8px; /* cancels the row gap: the empty slot still marks the row's end */ }
 .d-voice-row__states > .d-tag { flex: none; }
 .d-voice-row__state { flex: none; display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; color: var(--fg-2); }
 .d-voice-row__state:is([data-state="muted"], [data-state="deafened"]) { color: var(--danger); }

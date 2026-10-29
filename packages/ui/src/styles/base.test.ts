@@ -53,7 +53,7 @@ describe('base.css phone rules', () => {
 
 describe('web3.9 base.css rules (UI-1)', () => {
   it('sets the phone row tokens on the phone shell and on [data-phone]', () => {
-    expect(css).toContain('.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }');
+    expect(css).toContain('.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0.0625rem; }');
   });
   it('keeps the prototype\'s 38px rail tiles on a phone (Jonas 2026-10-27, supersedes Ruling N)', () => {
     expect(css).not.toContain('--rail-tile: 44px');

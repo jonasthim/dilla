@@ -165,9 +165,13 @@ const tall = (width: number, phone = false) => (Story: () => React.JSX.Element) 
 ) : <div style={{ width, height: 640 }}><Story /></div>;
 /** On a phone every channel row is at least 44px tall. */
 const phonePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLElement }) => {
-  const rows = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-chrow, .d-voice-row, .d-channel-list__cat-head'));
+  const rows = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-chrow, .d-voice-row'));
   if (rows.length === 0) throw new Error(`${story}: no rows`);
   for (const r of rows) if (r.getBoundingClientRect().height < 44) throw new Error(`${story}: a row is ${String(r.getBoundingClientRect().height)} tall`);
+  // Fix round 2 (rule 0): a category head keeps the prototype's 26px on a phone.
+  for (const h of canvasElement.querySelectorAll<HTMLElement>('.d-channel-list__cat-head')) {
+    if (Math.abs(h.getBoundingClientRect().height - 26) > 0.5) throw new Error(`${story}: a category head is ${String(h.getBoundingClientRect().height)} tall`);
+  }
 };
 
 export const Mixed: Story = { args: MIXED_ARGS, globals: { theme: 'signal' }, decorators: [tall(240)], play: mixedPlay };

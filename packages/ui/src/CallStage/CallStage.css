@@ -108,8 +108,12 @@
    who is there 12px --fg-2, and the green Join voice (40px, 12.5px 700 on --ok). */
 .d-call-stage__preview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 0.625rem; text-align: center; animation: d-up var(--duration-focus-in) both; }
 .d-call-stage__faces { display: flex; }
-.d-call-stage__face { display: inline-flex; margin-left: -10px; border-radius: var(--r-avatar); box-shadow: 0 0 0 3px var(--bg), 0 0 0 0 transparent; transition: box-shadow var(--duration-focus); }
+/* Fix round 2: each face is positioned, so its 3px --bg ring paints over the face before it (the avatar is positioned too and
+   would otherwise paint over every ring). */
+.d-call-stage__face { position: relative; z-index: 0; display: inline-flex; margin-left: -10px; border-radius: var(--r-avatar); box-shadow: 0 0 0 3px var(--bg), 0 0 0 0 transparent; transition: box-shadow var(--duration-focus); }
 .d-call-stage__face[data-speaking="true"] { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--ok); }
+/* The prototype's preview draws the Bot round like everyone, in the brand colour (its square is the sidebar's and the tiles'). */
+.d-call-stage__face .d-avatar[data-shape="bot"] { border-radius: var(--r-avatar); }
 .d-call-stage__face .d-avatar { width: 3rem; height: 3rem; font-size: var(--text-md); }
 .d-call-stage__preview-text { display: grid; gap: 0.25rem; }
 .d-call-stage__preview-name { font-size: var(--text-preview); font-weight: var(--weight-display); color: var(--fg); }

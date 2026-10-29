@@ -154,7 +154,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
           <span className="d-call-stage__faces" aria-hidden="true">
             {preview.people.map(p => (
               <span key={p.id} className="d-call-stage__face" data-speaking={p.speaking ? 'true' : 'false'}>
-                <Avatar name={p.name} size="lg" />
+                <Avatar name={p.name} size="lg" {...(p.bot === true ? { shape: 'bot' as const } : {})} />
               </span>
             ))}
           </span>

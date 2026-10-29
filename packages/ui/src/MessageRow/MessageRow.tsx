@@ -222,7 +222,8 @@ export function MessageRow({
   };
   const showToolbar = toolbar !== undefined && (!reveals || revealed === true);
 
-  const nameStyle = nameColor ? { color: '#' + nameColor.toString(16).padStart(6, '0') } : undefined;
+  // The colour rides on a custom property set on the head, so a context that draws names in --fg (the thread, as the prototype's) can drop it.
+  const nameStyle = nameColor ? { '--d-name-colour': '#' + nameColor.toString(16).padStart(6, '0') } as React.CSSProperties : undefined;
   const gutter = gutterTime ?? time;
 
   return (
@@ -240,8 +241,8 @@ export function MessageRow({
         : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
           onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} size="msg" shape={tag === 'bot' ? 'bot' : 'circle'} /></span>}
       <div className="d-message-row__main">
-        <p className="d-message-row__head" id={headId}>
-          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'} data-bot={flag(tag === 'bot')} style={nameStyle}>
+        <p className="d-message-row__head" id={headId} style={nameStyle}>
+          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'} data-bot={flag(tag === 'bot')}>
             {opens && grouped !== true
               ? <button ref={authorEl} type="button" className="d-message-row__author-open" tabIndex={profileTab} onClick={e => onOpenProfile(authorId, e.currentTarget, 'author')}>{author}</button>
               : author}

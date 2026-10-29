@@ -75,7 +75,10 @@ describe('SettingsRow grammar (R17)', () => {
     expect(rule).toMatch(/min-height: 3\.5rem/);
     expect(rule).toMatch(/padding: 10px 16px;/);
     expect(rule).toMatch(/border: 1px solid var\(--hairline\); border-radius: var\(--r-xl\);/);
-    expect(row).toMatch(/\.d-settings-row \+ \.d-settings-row, li \+ li > \.d-settings-row \{ margin-top: -1px; border-top-left-radius: 0; border-top-right-radius: 0; \}/);
+    // Fix round 2: no overlap; a group of n rows is 56n + 2 (the prototype's 56px rows in a 1px-edged box).
+    expect(row).not.toMatch(/margin-top: -1px/);
+    expect(row).toMatch(/\.d-settings-row:has\(\+ \.d-settings-row\), li:has\(\+ li\) > \.d-settings-row \{ min-height: calc\(3\.5rem \+ 1px\); border-bottom: 0;/);
+    expect(row).toMatch(/\.d-settings-row \+ \.d-settings-row:has\(\+ \.d-settings-row\), li \+ li:has\(\+ li\) > \.d-settings-row \{ min-height: 3\.5rem; \}/);
   });
 
   it('draws the 32px icon tile and the tag when given', () => {

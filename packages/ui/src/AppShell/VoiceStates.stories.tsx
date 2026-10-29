@@ -20,9 +20,8 @@ import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 // The shipped copy and the shell's own layout of @dilla/web, so the screenshots show what the app says and draws
 // (web-3 task 9: the voice view, the dock, the sidebar's voice sections, the DM call strip, the ring and the players).
 import { en, formatTime, t } from '../../../web/src/strings/index.ts';
-import '../../../web/src/app.css';
 
-const meta = { title: 'Screens/Voice', parameters: { layout: 'fullscreen', ...DOCK_STATS_CONTRAST } } satisfies Meta;
+const meta = { title: 'Screens/Voice', parameters: { layout: 'fullscreen', webStyles: true, ...DOCK_STATS_CONTRAST } } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 

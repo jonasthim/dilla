@@ -6,14 +6,13 @@ import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 import { GeneralThread } from '../MessageRow/conversation.fixture.tsx';
 import { REMINDERS_DUE } from '../internal/sample/midgard.ts';
 // The web's voice pane classes (dw-voice-channel, dw-voice-stage): app.css lays the stage out in the main pane.
-import '../../../web/src/app.css';
 import { TopBar } from '../TopBar/TopBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 
-const meta: Meta = { title: 'Shell/AppShell' };
+const meta: Meta = { title: 'Shell/AppShell', parameters: { webStyles: true } };
 export default meta;
 type Story = StoryObj;
 // 1280×800 less the preview decorator's 16px padding on each side.

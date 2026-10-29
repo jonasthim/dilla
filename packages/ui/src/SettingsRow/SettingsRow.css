@@ -4,8 +4,13 @@
    its own full hairline box and overlaps the one above by 1px, so a row is never without its line (also a row that is
    the only child of a list item: the items of one list form the group). */
 .d-settings-row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; min-height: 3.5rem /* 56px */; min-width: 0; padding: 10px 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
-.d-settings-row + .d-settings-row, li + li > .d-settings-row { margin-top: -1px; border-top-left-radius: 0; border-top-right-radius: 0; }
-.d-settings-row:has(+ .d-settings-row), li:has(+ li) > .d-settings-row { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* Fix round 2: a group steps as the prototype's (a 1px-edged box of 56px rows, each after the first drawing its hairline inside
+   its 56): the edges are the rows' own, so the first row adds the top edge, the last the bottom edge, and no row overlaps
+   another (a group of n is 56n + 2). */
+.d-settings-row { min-height: calc(3.5rem + 2px); }
+.d-settings-row:has(+ .d-settings-row), li:has(+ li) > .d-settings-row { min-height: calc(3.5rem + 1px); border-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.d-settings-row + .d-settings-row, li + li > .d-settings-row { min-height: calc(3.5rem + 1px); border-top-left-radius: 0; border-top-right-radius: 0; }
+.d-settings-row + .d-settings-row:has(+ .d-settings-row), li + li:has(+ li) > .d-settings-row { min-height: 3.5rem; }
 .d-settings-row__icon { display: flex; align-items: center; justify-content: center; flex: none; width: 2rem; height: 2rem; color: var(--accent); background: var(--surface-tile); border-radius: var(--r-lg); }
 .d-settings-row__text { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }
 .d-settings-row__label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-sm); font-weight: var(--weight-label); line-height: 1.4; color: var(--fg); }

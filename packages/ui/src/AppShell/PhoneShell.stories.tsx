@@ -30,7 +30,6 @@ import { YOU } from '../internal/sample/midgard.ts';
 import { SampleCore, SAMPLE_DUE } from './sampleCore.fixture.tsx';
 import { Activity as WebActivity } from '../../../web/src/screens/Activity.tsx';
 import { You as WebYou } from '../../../web/src/screens/You.tsx';
-import '../../../web/src/app.css';
 
 /**
  * Signal task 10 fix round 2–3 (rule 3d): the server head's ⌄ as packages/web/src/screens/Shell.tsx composes it, a menu named
@@ -47,7 +46,7 @@ function ServerHeadMenu() {
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
-const meta = { title: 'Shell/Phone', parameters: { layout: 'fullscreen' } } satisfies Meta;
+const meta = { title: 'Shell/Phone', parameters: { layout: 'fullscreen', webStyles: true } } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 

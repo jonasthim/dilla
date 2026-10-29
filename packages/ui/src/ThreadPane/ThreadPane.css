@@ -29,7 +29,8 @@
 .d-thread-pane .d-message-row__gutter { display: none; }
 .d-thread-pane .d-message-row__avatar, .d-thread-pane .d-message-row__avatar .d-avatar { width: 1.625rem; height: 1.625rem; font-size: var(--text-chip); }
 .d-thread-pane .d-message-row[data-grouped="true"] .d-message-row__avatar { height: auto; }
-.d-thread-pane .d-message-row__author { font-size: var(--text-ui); }
+/* Fix round 2: the prototype's thread draws every author in --fg, without the role colour (a bot keeps its tone). */
+.d-thread-pane .d-message-row__author { font-size: var(--text-ui); --d-name-colour: var(--fg); }
 .d-thread-pane .d-message-row:not([data-grouped="true"]) .d-message-row__time.d-sr-only { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
 .d-thread-pane .d-message-row__time { font-size: var(--text-micro); color: var(--fg-faint); }
 .d-thread-pane .d-message-row__body { font-size: var(--text-sm); line-height: 1.5; }

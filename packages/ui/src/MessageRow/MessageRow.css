@@ -32,7 +32,7 @@
 
 .d-message-row__main { min-width: 0; display: grid; gap: 0.0625rem /* 1px */; }
 .d-message-row__head { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
-.d-message-row__author { font-weight: var(--weight-display); font-size: var(--text-sm); color: var(--fg); }
+.d-message-row__author { font-weight: var(--weight-display); font-size: var(--text-sm); color: var(--d-name-colour, var(--fg)); }
 .d-message-row__author[data-bot="true"] { color: var(--accent-2); }
 .d-message-row__time { font-size: var(--text-meta); color: var(--fg-faint); }
 .d-message-row__state { font-size: var(--text-meta); color: var(--fg-3); }

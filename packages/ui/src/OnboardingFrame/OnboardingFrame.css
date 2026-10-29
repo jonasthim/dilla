@@ -20,11 +20,16 @@
 .d-onboarding-frame__step { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-onboarding-frame__body { display: grid; gap: 14px; margin-top: -14px; font-size: var(--text-sm); color: var(--fg-2); min-width: 0; animation: d-up var(--duration-step) var(--ease-out) both; }
 .d-onboarding-frame__body p { margin: 0; }
+/* Fix round 2 (the prototype's auth card): 20px under the subtitle (the grid's 14 + 6), 14px from the last field to the
+   button (the card's 20 - 6), and the links 16px under the button (8 + 8, the link's 24px target reaching 3.5px into the
+   padding so the card keeps the prototype's height). */
+.d-onboarding-frame__body > p:first-child { margin-bottom: 6px; }
+.d-onboarding-frame__footer { margin-top: -6px; }
 /* The primary action spans the card; the others are the prototype's links under it, at the right. */
-.d-onboarding-frame__footer { display: flex; flex-direction: column-reverse; align-items: stretch; gap: 8px; }
+.d-onboarding-frame__footer { display: flex; flex-direction: column-reverse; align-items: stretch; gap: 12px; }
 .d-onboarding-frame__footer > .d-btn:not([data-variant="accent"]) { align-self: flex-end; }
 /* The prototype's auth links are --fg-link text (11.5px); its fields are 38px of content in a 1px border. */
-.d-onboarding-frame__footer > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; padding: 0; font-size: var(--text-btn); color: var(--fg-link); }
+.d-onboarding-frame__footer > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; margin-bottom: -3.5px; padding: 0; font-size: var(--text-btn); color: var(--fg-link); }
 .d-onboarding-frame__footer > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
 .d-onboarding-frame .d-text-field__input { height: 2.5rem; }
 .d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }

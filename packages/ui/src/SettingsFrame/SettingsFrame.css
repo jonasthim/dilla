@@ -44,7 +44,6 @@
 /* The Signal server pages (Roles, Invites, Bot, Music; Task 10c) set their intro and row hints at the full width, as the
    prototype does; the other sections keep the 60ch measure (fix round 1, M5). */
 .d-settings-frame__body > section[data-measure="full"] > p, section[data-measure="full"] .d-settings-row__hint { max-width: none; }
-.d-settings-frame__body > section > .d-settings-row + .d-settings-row { margin-top: -1px; }
 .d-settings-frame__footer { position: sticky; bottom: 0; flex: none; z-index: 1; padding: 10px 40px max(10px, env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--hairline); }
 
 /* README §5.10: on a phone the nav is a row of chips above the content and its group headings are hidden; the close

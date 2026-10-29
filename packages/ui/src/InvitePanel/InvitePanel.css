@@ -21,7 +21,8 @@
 
 /* "Active links — n": the uppercase micro label (22px above, 8px below), then a 10px-radius group of 48px rows with
    hairlines between: the masked code 12px (flex 1 1 200px), uses and expiry 11px --fg-2 at 110px each, and Revoke. */
-.d-invite-panel__title { margin: 22px 0 8px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+/* Fix round 2: scoped under the panel so a settings section's h3 reset (0 margins) cannot drop the prototype's 22px. */
+.d-invite-panel .d-invite-panel__title { margin: 22px 0 8px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-invite-panel__list { display: grid; margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
 .d-invite-panel__row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 3rem; padding: 8px 16px; animation: d-invite-up var(--duration-slow) var(--ease-out) both; }
 .d-invite-panel__row + .d-invite-panel__row { border-top: 1px solid var(--hairline); }
