@@ -383,14 +383,14 @@ export async function identityVectors() {
   const sessionNonce = fill(32, 0xab);
 
   // The instance-signed account-kind attestation (wire 4): the instance's external-sender key signs the account's kind
-  // over the instance id, the user id and the user's UMK. A human and a Bot account of the credential above.
+  // over the instance id and the user id (Ruling AW: no key). A human and a Bot account of the credential above.
   const instanceSeed = fill(32, 0x5a);
   const instance = await keyFromSeed(instanceSeed);
   const kindKeyId = fill(16, 0x5b);
   const kindInstanceId = sessionInstanceId;
   const attestations = [];
   for (const k of [0, 1] as const) {
-    const message = accountKindMessage(kindInstanceId, userId, umk.publicKey, k);
+    const message = accountKindMessage(kindInstanceId, userId, k);
     const sig = await sign(instance.privateKey, message);
     attestations.push({ kind: k, message: hex(message), signature: hex(sig), attestation: hex(accountKindAttestation(kindKeyId, k, sig)) });
   }
@@ -429,7 +429,6 @@ export async function identityVectors() {
       key_id: hex(kindKeyId),
       instance_id: hex(kindInstanceId),
       user_id: hex(userId),
-      umk_pub: hex(umk.publicKey),
       cases: attestations,
       // Wire forms a decoder must refuse: version 2, kind 2, and a well-formed attestation with a trailing byte.
       rejects: [

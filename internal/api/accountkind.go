@@ -6,7 +6,7 @@ package api
 // with the instance's current external-sender key, which a client pins (protocol/03 § Instance
 // keys) and checks every leaf's credential kind against.
 //
-//	message     = "dilla account kind v1" || CBOR([1, instance_id(16), user_id(16), umk_pub(32), kind])
+//	message     = "dilla account kind v1" || CBOR([1, instance_id(16), user_id(16), kind])
 //	attestation = CBOR([1, key_id(16), kind, sig(64)])
 //
 // Ed25519 signatures are deterministic, so the attestation of an account is the same bytes on
@@ -29,12 +29,14 @@ const AccountKindDomain = "dilla account kind v1"
 // attestation as its fifth element (protocol/07, wire 4).
 const accountKindWire = 4
 
-// AccountKindMessage is the signed message of an account-kind attestation.
-func AccountKindMessage(instanceID, userID id.ID, umkPub []byte, kind uint8) ([]byte, error) {
-	if len(umkPub) != ed25519.PublicKeySize || kind > 1 {
+// AccountKindMessage is the signed message of an account-kind attestation. It binds the instance,
+// the account and its kind, not a key: an account's kind never changes, so the statement holds for
+// every key the account ever presents (Ruling AW).
+func AccountKindMessage(instanceID, userID id.ID, kind uint8) ([]byte, error) {
+	if kind > 1 {
 		return nil, errors.New("api: account-kind attestation fields out of range")
 	}
-	body, err := cborx.Marshal([]any{uint64(1), instanceID[:], userID[:], umkPub, uint64(kind)})
+	body, err := cborx.Marshal([]any{uint64(1), instanceID[:], userID[:], uint64(kind)})
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +49,7 @@ func AccountKindAttestation(sign func([]byte) ([]byte, error), instanceID, keyID
 	if sign == nil {
 		return nil, errors.New("api: account-kind signer is not wired")
 	}
-	message, err := AccountKindMessage(instanceID, user.ID, user.UMKPub, user.Kind)
+	message, err := AccountKindMessage(instanceID, user.ID, user.Kind)
 	if err != nil {
 		return nil, err
 	}

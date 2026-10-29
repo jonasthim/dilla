@@ -1796,15 +1796,6 @@ impl ClientCore {
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub,credential=excluded.credential",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice(),validated.credential])?;
                 // First sight pins without changing anything displayed; a key change or its end does.
                 let mut touched = prior.is_some() && prior != Some(pin);
-                // Task S1 fix round 1 (M1): an account-kind attestation offered before this client had
-                // a pin for the user is verified now, against the UMK this history establishes, before
-                // the user's leaves are judged below; one that does not verify is dropped.
-                if let Some(staged) = super::account_kind::take_staged(c, requested_user)?
-                    && let super::account_kind::Promotion::Stored { changed: true } =
-                        super::account_kind::promote(c, requested_user, &staged, &[validated.umk_pub])?
-                {
-                    touched = true;
-                }
                 let mut quarantined = 0u64;
                 for leaf in user_leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
@@ -1962,12 +1953,6 @@ impl ClientCore {
                 )?;
                 for key in &released {
                     c.execute("DELETE FROM app_quarantine WHERE user_id=?1 AND signature_key=?2 AND code='E_UMK_CHANGED'",params![user_id.as_slice(),key.as_slice()])?;
-                }
-                // Fix round 2: an attestation staged during the change is verified over the
-                // approved UMK now, before the user's leaves are judged; one that does not verify
-                // is dropped (the next device-list read brings it again).
-                if let Some(staged) = super::account_kind::take_staged(c, user_id)? {
-                    super::account_kind::promote(c, user_id, &staged, &[*expected_umk])?;
                 }
                 for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
@@ -3169,7 +3154,7 @@ mod tests {
         }
     }
 
-    // ---- Task S1 part 2: the instance-signed account kind (account_kind.rs) ----
+    // ---- Task S1: the instance-signed account kind (account_kind.rs; Ruling AW: no key) ----
 
     const INSTANCE: [u8; 16] = [0x51; 16];
 
@@ -3177,18 +3162,18 @@ mod tests {
         ed25519_dalek::SigningKey::from_bytes(&[0x52; 32])
     }
 
-    /// Store an attestation row as `account_kind_ingest` does, signed over `signed_*` fields.
+    /// Store an attestation row as `account_kind_ingest` does: `stored_kind` in the row, the
+    /// signature over `signed` = (instance, user, kind) under `key`; the seen flag set.
     fn attest(
         db: &rusqlite::Connection,
         user: &[u8; 16],
         stored_kind: u8,
-        signed: (&[u8; 16], &[u8; 16], &[u8; 32], u8),
+        signed: (&[u8; 16], &[u8; 16], u8),
         key: &ed25519_dalek::SigningKey,
     ) {
         use ed25519_dalek::Signer;
-        let message = super::super::account_kind::account_kind_message(
-            signed.0, signed.1, signed.2, signed.3,
-        );
+        let message =
+            super::super::account_kind::account_kind_message(signed.0, signed.1, signed.2);
         let sig = key.sign(&message).to_bytes();
         db.execute(
             "INSERT OR REPLACE INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -3229,25 +3214,13 @@ mod tests {
         let (leaf, list) = fixture();
         let db = interaction_trust_db(&leaf, &list, true);
         let user = *leaf.credential.user_id.as_bytes();
-        attest(
-            &db,
-            &user,
-            0,
-            (&INSTANCE, &user, &leaf.credential.umk_pub, 0),
-            &instance_key(),
-        );
+        attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
         // An existing Bot account keeps working: a Bot-kind leaf attested as a Bot passes.
         let (mut bot, bot_list) = fixture();
         bot_leaf(&mut bot);
         let db = interaction_trust_db(&bot, &bot_list, true);
-        attest(
-            &db,
-            &user,
-            1,
-            (&INSTANCE, &user, &bot.credential.umk_pub, 1),
-            &instance_key(),
-        );
+        attest(&db, &user, 1, (&INSTANCE, &user, 1), &instance_key());
         assert_eq!(leaf_verdict(&db, &bot).expect("verdict"), Ok(()));
     }
 
@@ -3257,13 +3230,7 @@ mod tests {
         bot_leaf(&mut leaf);
         let db = interaction_trust_db(&leaf, &list, true);
         let user = *leaf.credential.user_id.as_bytes();
-        attest(
-            &db,
-            &user,
-            0,
-            (&INSTANCE, &user, &leaf.credential.umk_pub, 0),
-            &instance_key(),
-        );
+        attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(
             leaf_verdict(&db, &leaf).expect("verdict"),
             Err(E_CREDENTIAL)
@@ -3271,48 +3238,28 @@ mod tests {
     }
 
     #[test]
-    fn an_attestation_for_another_user_instance_key_or_umk_leaves_the_leaf_untrusted() {
+    fn an_attestation_that_is_not_the_instances_statement_leaves_the_leaf_pending() {
         let (leaf, list) = fixture();
         let user = *leaf.credential.user_id.as_bytes();
-        let umk = leaf.credential.umk_pub;
         let other_key = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
-        type Signed = ([u8; 16], [u8; 16], [u8; 32], u8);
-        let cases: [(&str, Signed, &ed25519_dalek::SigningKey); 5] = [
-            (
-                "another user",
-                (INSTANCE, [0x99; 16], umk, 0),
-                &instance_key(),
-            ),
-            (
-                "another instance",
-                ([0x98; 16], user, umk, 0),
-                &instance_key(),
-            ),
-            (
-                "another UMK",
-                (INSTANCE, user, [0x97; 32], 0),
-                &instance_key(),
-            ),
+        type Signed = ([u8; 16], [u8; 16], u8);
+        let cases: [(&str, Signed, &ed25519_dalek::SigningKey); 4] = [
+            ("another user", (INSTANCE, [0x99; 16], 0), &instance_key()),
+            ("another instance", ([0x98; 16], user, 0), &instance_key()),
             (
                 "another key (bad signature)",
-                (INSTANCE, user, umk, 0),
+                (INSTANCE, user, 0),
                 &other_key,
             ),
             (
                 "a signed kind that is not the stored kind",
-                (INSTANCE, user, umk, 1),
+                (INSTANCE, user, 1),
                 &instance_key(),
             ),
         ];
         for (name, signed, key) in cases {
-            let db = unverified_db(&leaf, &list);
-            attest(
-                &db,
-                &user,
-                0,
-                (&signed.0, &signed.1, &signed.2, signed.3),
-                key,
-            );
+            let db = interaction_trust_db(&leaf, &list, true);
+            attest(&db, &user, 0, (&signed.0, &signed.1, signed.2), key);
             assert_eq!(
                 leaf_verdict(&db, &leaf).expect("verdict"),
                 Err(E_DEVICE_LIST_STALE),
@@ -3321,14 +3268,40 @@ mod tests {
         }
     }
 
+    /// Ruling AW: once seen, a user with no verifying attestation stays pending, whether or not
+    /// the person verified the key (the round-3 fallback is gone).
     #[test]
-    fn once_an_attestation_was_seen_a_missing_one_is_refused() {
+    fn once_an_attestation_was_seen_a_missing_one_is_refused_even_under_a_verified_key() {
         let (leaf, list) = fixture();
-        let db = unverified_db(&leaf, &list);
+        let db = interaction_trust_db(&leaf, &list, true); // the fixture's pin is person-verified
         schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
         assert_eq!(
             leaf_verdict(&db, &leaf).expect("verdict"),
             Err(E_DEVICE_LIST_STALE)
+        );
+    }
+
+    /// The attestation states the account's kind, not a key's: after the user moves to another UMK,
+    /// the same attestation still decides for the new key's leaves.
+    #[test]
+    fn the_attestation_applies_to_every_key_of_the_user() {
+        let (mut leaf, _) = fixture();
+        let user = *leaf.credential.user_id.as_bytes();
+        let list = substitute_leaf_keys(&mut leaf, 0x91);
+        let db = interaction_trust_db(&leaf, &list, true);
+        attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+        leaf.credential.kind = Kind::Bot;
+        leaf.credential.sig_ssk_dev = SskSigner::from_bytes(&[0x92; 32]).sign_device(
+            &leaf.credential.device_id,
+            &leaf.dsk_pub,
+            Kind::Bot,
+            leaf.credential.tier,
+            leaf.credential.signer_tier,
+        );
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_CREDENTIAL)
         );
     }
 
@@ -3365,231 +3338,6 @@ mod tests {
         assert!(
             AccountKindAttestation::decode(&[0x80]).is_err(),
             "empty array"
-        );
-    }
-
-    /// The pinned instance and an identity record, as `promote` reads them.
-    fn pin_instance(db: &rusqlite::Connection) {
-        schema::meta_put(
-            db,
-            schema::INSTANCE_SIGNER_KEY,
-            &instance_key().verifying_key().to_bytes(),
-        )
-        .expect("instance key");
-        let record = super::super::identity::IdentityRecord {
-            instance_id: INSTANCE,
-            user_id: [0x61; 16],
-            device_id: [0x62; 16],
-            dsk_pub: [0x63; 32],
-            umk_pub: [0x64; 32],
-            ssk_pub: [0x65; 32],
-            username: "own".into(),
-            credential: vec![1],
-            device_list_body: vec![1],
-            list_published: true,
-            device_list: vec![1],
-            state_uploaded: true,
-        };
-        schema::meta_put(db, schema::IDENTITY, &record.encode()).expect("identity");
-    }
-
-    fn signed(
-        user: &[u8; 16],
-        umk: &[u8; 32],
-        kind: u8,
-    ) -> super::super::account_kind::AccountKindAttestation {
-        use ed25519_dalek::Signer;
-        let message = super::super::account_kind::account_kind_message(&INSTANCE, user, umk, kind);
-        super::super::account_kind::AccountKindAttestation {
-            key_id: [0x53; 16],
-            kind,
-            signature: instance_key().sign(&message).to_bytes(),
-        }
-    }
-
-    #[test]
-    fn a_staged_attestation_is_promoted_only_over_the_validated_umk() {
-        use super::super::account_kind::{Promotion, promote, take_staged};
-        let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true);
-        pin_instance(&db);
-        let user = *leaf.credential.user_id.as_bytes();
-        let umk = leaf.credential.umk_pub;
-        let stage = |a: &super::super::account_kind::AccountKindAttestation| {
-            db.execute(
-                "INSERT OR REPLACE INTO app_account_kind_staged(user_id,attestation) VALUES(?1,?2)",
-                params![user.as_slice(), a.encode()],
-            )
-            .expect("stage");
-        };
-        // Signed over another UMK (a tombstone's zero key): dropped, nothing stored, no flag.
-        stage(&signed(&user, &[0; 32], 0));
-        let staged = take_staged(&db, &user).expect("take").expect("staged");
-        assert_eq!(
-            promote(&db, &user, &staged, &[umk]).expect("promote"),
-            Promotion::Refused
-        );
-        assert!(
-            take_staged(&db, &user).expect("take").is_none(),
-            "taking removes it"
-        );
-        assert!(
-            schema::meta_get(&db, super::super::account_kind::ACCOUNT_KIND_SEEN)
-                .expect("meta")
-                .is_none()
-        );
-        assert_eq!(
-            leaf_verdict(&db, &leaf).expect("verdict"),
-            Ok(()),
-            "earlier rule: nothing seen"
-        );
-        // Over the validated UMK: stored, seen, and the leaf judged against it.
-        stage(&signed(&user, &umk, 0));
-        let staged = take_staged(&db, &user).expect("take").expect("staged");
-        assert_eq!(
-            promote(&db, &user, &staged, &[umk]).expect("promote"),
-            Promotion::Stored { changed: true }
-        );
-        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
-        // The same again changes nothing (no generation bump at the caller).
-        assert_eq!(
-            promote(&db, &user, &staged, &[umk]).expect("promote"),
-            Promotion::Stored { changed: false }
-        );
-        // A non-verifying one never replaces it.
-        assert_eq!(
-            promote(&db, &user, &signed(&user, &[0; 32], 1), &[umk]).expect("promote"),
-            Promotion::Refused
-        );
-        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
-        // A verified attestation of the other kind refuses the human's Bot-kind leaf.
-        let (mut bot, _) = fixture();
-        bot_leaf(&mut bot);
-        assert_eq!(leaf_verdict(&db, &bot).expect("verdict"), Err(E_CREDENTIAL));
-    }
-
-    /// The trust db with the user's pin first-seen, not verified by the person (fix round 3: a
-    /// person-verified key falls back to the earlier rule, so the attestation rule is tested on
-    /// an unverified one).
-    fn unverified_db(leaf: &LeafEvidence, list: &DeviceList) -> rusqlite::Connection {
-        let db = interaction_trust_db(leaf, list, true);
-        db.execute("UPDATE app_trust_pins SET verified=0", [])
-            .expect("unverify");
-        db
-    }
-
-    /// Store an attestation row recording the UMK it verified over, as `promote` does.
-    fn attest_over(db: &rusqlite::Connection, user: &[u8; 16], umk: &[u8; 32], kind: u8) {
-        use ed25519_dalek::Signer;
-        let message = super::super::account_kind::account_kind_message(&INSTANCE, user, umk, kind);
-        let sig = instance_key().sign(&message).to_bytes();
-        db.execute(
-            "INSERT OR REPLACE INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id,umk_pub) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                user.as_slice(),
-                i64::from(kind),
-                [0x53u8; 16].as_slice(),
-                sig.as_slice(),
-                instance_key().verifying_key().to_bytes().as_slice(),
-                INSTANCE.as_slice(),
-                umk.as_slice()
-            ],
-        )
-        .expect("attestation row");
-        schema::meta_put(db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
-    }
-
-    /// Move the fixture leaf's user to a new UMK (seed 0x91), as a key change does: the leaf,
-    /// its signed list and the cached list are all under the new key.
-    fn changed_key(leaf: &mut LeafEvidence) -> DeviceList {
-        substitute_leaf_keys(leaf, 0x91)
-    }
-
-    fn pin_new_key(
-        db: &rusqlite::Connection,
-        leaf: &LeafEvidence,
-        list: &DeviceList,
-        verified: bool,
-    ) {
-        db.execute(
-            "UPDATE app_trust_pins SET umk_pub=?2,verified=?3,changed_umk=NULL WHERE user_id=?1",
-            params![
-                leaf.credential.user_id.as_bytes().as_slice(),
-                leaf.credential.umk_pub.as_slice(),
-                i64::from(verified)
-            ],
-        )
-        .expect("pin");
-        db.execute(
-            "UPDATE app_device_lists SET list=?2,umk_pub=?3,ssk_pub=?4 WHERE user_id=?1",
-            params![
-                leaf.credential.user_id.as_bytes().as_slice(),
-                list.encode(),
-                leaf.credential.umk_pub.as_slice(),
-                leaf.credential.ssk_pub.as_slice()
-            ],
-        )
-        .expect("list");
-    }
-
-    // ---- Fix round 3: "your verification wins" ----
-
-    #[test]
-    fn a_person_verified_key_needs_no_attestation_and_an_unverified_one_stays_pending() {
-        let (mut leaf, list) = fixture();
-        let user = *leaf.credential.user_id.as_bytes();
-        let db = unverified_db(&leaf, &list);
-        // Wire 4 seen, the user attested as a human over UMK A.
-        attest_over(&db, &user, &leaf.credential.umk_pub, 0);
-        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
-        // The user moves to UMK B; the server never attests B (it was registered without proof).
-        let b_list = changed_key(&mut leaf);
-        pin_new_key(&db, &leaf, &b_list, false);
-        assert_eq!(
-            leaf_verdict(&db, &leaf).expect("verdict"),
-            Err(E_DEVICE_LIST_STALE),
-            "B unverified and unattested: pending"
-        );
-        // The person verifies B: B's leaves pass, judged by the kind A's attestation states.
-        pin_new_key(&db, &leaf, &b_list, true);
-        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
-    }
-
-    #[test]
-    fn a_bot_kind_credential_under_a_person_verified_human_key_is_refused() {
-        let (mut leaf, list) = fixture();
-        let user = *leaf.credential.user_id.as_bytes();
-        let db = unverified_db(&leaf, &list);
-        attest_over(&db, &user, &leaf.credential.umk_pub, 0);
-        let b_list = changed_key(&mut leaf);
-        pin_new_key(&db, &leaf, &b_list, true);
-        // A credential under the verified B that claims Bot kind, re-signed by B's SSK (seed 0x92).
-        leaf.credential.kind = Kind::Bot;
-        leaf.credential.sig_ssk_dev = SskSigner::from_bytes(&[0x92; 32]).sign_device(
-            &leaf.credential.device_id,
-            &leaf.dsk_pub,
-            Kind::Bot,
-            leaf.credential.tier,
-            leaf.credential.signer_tier,
-        );
-        assert_eq!(
-            leaf_verdict(&db, &leaf).expect("verdict"),
-            Err(E_CREDENTIAL),
-            "an account's kind never changes: A's attestation still states it"
-        );
-    }
-
-    #[test]
-    fn a_person_verified_key_with_no_attestation_ever_keeps_the_earlier_rule() {
-        let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true); // pin verified by the person
-        schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
-        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
-        let db = unverified_db(&leaf, &list);
-        schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
-        assert_eq!(
-            leaf_verdict(&db, &leaf).expect("verdict"),
-            Err(E_DEVICE_LIST_STALE)
         );
     }
 }

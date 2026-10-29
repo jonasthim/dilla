@@ -70,7 +70,7 @@ func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 	}
 	attestation, _ := got[4].([]byte)
 	pub := accountKindTestKey.Public().(ed25519.PublicKey)
-	kind, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, human.UMKPub, attestation)
+	kind, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, attestation)
 	if err != nil || kind != 0 {
 		t.Fatalf("attested kind %d, %v; want a verifying human (0)", kind, err)
 	}
@@ -82,18 +82,15 @@ func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 	if again := head(t, h, token, human.ID); !bytes.Equal(again[4].([]byte), attestation) {
 		t.Fatal("a second read produced a different attestation")
 	}
-	// Bound to user, instance and UMK: none of them can be swapped.
-	if _, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, reader.ID, human.UMKPub, attestation); err == nil {
+	// Bound to user and instance (Ruling AW: no key): neither can be swapped.
+	if _, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, reader.ID, attestation); err == nil {
 		t.Fatal("verified for another user")
 	}
-	if _, err := verifyAccountKindAttestation(pub, id.New(), human.ID, human.UMKPub, attestation); err == nil {
+	if _, err := verifyAccountKindAttestation(pub, id.New(), human.ID, attestation); err == nil {
 		t.Fatal("verified for another instance")
 	}
-	if _, err := verifyAccountKindAttestation(pub, d.Instance.InstanceID, human.ID, bytes.Repeat([]byte{9}, 32), attestation); err == nil {
-		t.Fatal("verified for another UMK")
-	}
 	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)).Public().(ed25519.PublicKey)
-	if _, err := verifyAccountKindAttestation(other, d.Instance.InstanceID, human.ID, human.UMKPub, attestation); err == nil {
+	if _, err := verifyAccountKindAttestation(other, d.Instance.InstanceID, human.ID, attestation); err == nil {
 		t.Fatal("verified under another key")
 	}
 }
@@ -109,7 +106,7 @@ func TestABotAccountIsAttestedAsABot(t *testing.T) {
 	}
 	putList(t, d, bot.ID)
 	got := head(t, h, token, bot.ID)
-	kind, err := verifyAccountKindAttestation(accountKindTestKey.Public().(ed25519.PublicKey), d.Instance.InstanceID, bot.ID, bot.UMKPub, got[4].([]byte))
+	kind, err := verifyAccountKindAttestation(accountKindTestKey.Public().(ed25519.PublicKey), d.Instance.InstanceID, bot.ID, got[4].([]byte))
 	if err != nil || kind != 1 {
 		t.Fatalf("Bot account attested kind %d, %v; want 1", kind, err)
 	}
@@ -140,8 +137,8 @@ func TestAWire4ReadWithoutTheSignerFailsClosed(t *testing.T) {
 	}
 }
 
-// Fix round 1: a tombstoned account's UMK is purged, so no attestation is served for it (one over
-// the zeroed key could never verify); the head is the four elements.
+// A tombstoned account is served no attestation (Ruling AW keeps fix round 1's rule): the head is
+// the four elements.
 func TestATombstonedAccountHasNoAttestation(t *testing.T) {
 	h, d := accountKindAPI(t)
 	_, _, token := seedAPISession(t, d)
@@ -159,7 +156,7 @@ func TestATombstonedAccountHasNoAttestation(t *testing.T) {
 // verifyAccountKindAttestation decodes and verifies an attestation for one account against the
 // instance's external-sender public key, returning the attested kind: the check a client makes,
 // kept with the tests that pin the server's side of it.
-func verifyAccountKindAttestation(pub ed25519.PublicKey, instanceID, userID id.ID, umkPub, attestation []byte) (uint8, error) {
+func verifyAccountKindAttestation(pub ed25519.PublicKey, instanceID, userID id.ID, attestation []byte) (uint8, error) {
 	var a struct {
 		_     struct{} `cbor:",toarray"`
 		V     uint64
@@ -173,7 +170,7 @@ func verifyAccountKindAttestation(pub ed25519.PublicKey, instanceID, userID id.I
 	if a.V != 1 || len(a.KeyID) != id.Size || a.Kind > 1 || len(a.Sig) != ed25519.SignatureSize || len(pub) != ed25519.PublicKeySize {
 		return 0, errors.New("malformed account-kind attestation")
 	}
-	message, err := api.AccountKindMessage(instanceID, userID, umkPub, uint8(a.Kind))
+	message, err := api.AccountKindMessage(instanceID, userID, uint8(a.Kind))
 	if err != nil {
 		return 0, err
 	}

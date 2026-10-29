@@ -147,10 +147,9 @@ Stated plainly in the product's documentation and onboarding:
   attestation), so a member cannot make its messages appear as a Bot's; the instance, which holds
   the signing key and defines account kinds, can still attest any kind, and before a client first
   stores an attestation from its instance (only ever wire 2 or 3) its core does not check kind.
-  For a UMK the person verified themselves (`03` § Account kind attestation, "the person's
-  verification wins") the person is the authority: the instance cannot attest a key registered
-  without proof, so such a key needs no attestation; an attestation the client verified for an
-  earlier key of the same account still fixes its kind.
+  The attestation states the account's kind, not a key's (it binds the instance and the account
+  only), so it holds for every key the account presents; trust in each key stays with the pins and
+  the person's verification.
 
 ## Out of scope
 

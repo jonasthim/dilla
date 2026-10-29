@@ -721,10 +721,9 @@ pub fn run_identity() -> SuiteReport {
     let instance_pub = unhex_n::<32>(ak["instance_pub"].as_str().unwrap_or(""));
     let instance_id = unhex_n::<16>(ak["instance_id"].as_str().unwrap_or(""));
     let ak_user = unhex_n::<16>(ak["user_id"].as_str().unwrap_or(""));
-    let ak_umk = unhex_n::<32>(ak["umk_pub"].as_str().unwrap_or(""));
     for case in ak["cases"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
         let kind = u8::try_from(int(&case["kind"])).unwrap_or(u8::MAX);
-        let message = crate::identity::account_kind_message(&instance_id, &ak_user, &ak_umk, kind);
+        let message = crate::identity::account_kind_message(&instance_id, &ak_user, kind);
         cases.push(CaseReport::compare(
             "account_kind",
             "message",

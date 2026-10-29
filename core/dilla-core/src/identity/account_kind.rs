@@ -2,7 +2,7 @@
 //! attestation, wire 4):
 //!
 //! ```text
-//! message     = "dilla account kind v1" || CBOR([1, instance_id(16), user_id(16), umk_pub(32), kind])
+//! message     = "dilla account kind v1" || CBOR([1, instance_id(16), user_id(16), kind])
 //! attestation = CBOR([1, key_id(16), kind, sig(64)])
 //! ```
 //!
@@ -61,19 +61,14 @@ impl AccountKindAttestation {
     }
 }
 
-/// The signed message of an attestation.
-pub fn account_kind_message(
-    instance_id: &[u8; 16],
-    user_id: &[u8; 16],
-    umk_pub: &[u8; 32],
-    kind: u8,
-) -> Vec<u8> {
+/// The signed message of an attestation: the instance, the account and its kind. No key: an
+/// account's kind never changes, so the statement holds for every key of the account (Ruling AW).
+pub fn account_kind_message(instance_id: &[u8; 16], user_id: &[u8; 16], kind: u8) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.array(5)
+    e.array(4)
         .uint(1)
         .bytes(instance_id)
         .bytes(user_id)
-        .bytes(umk_pub)
         .uint(u64::from(kind));
     let mut m = DOMAIN_ACCOUNT_KIND.to_vec();
     m.extend_from_slice(&e.into_vec());

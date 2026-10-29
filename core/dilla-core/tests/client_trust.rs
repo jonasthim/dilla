@@ -2582,28 +2582,13 @@ fn sec_old_key_traffic_and_refresh_never_end_a_pending_change() {
     assert_eq!(sec_state_of(&alice, &bob.user), Some((new_key, 1, None)));
 }
 
-// ---- Task S1 fix round 1: a staged attestation is verified by the ingest that pins the user ----
+// ---- Task S1 (Ruling AW): the account-kind attestation is independent of the key ----
 
-fn own_umk(peer: &Core) -> [u8; 32] {
-    let raw: Vec<u8> = peer
-        .probe
-        .lock()
-        .expect("lock")
-        .query_row(
-            "SELECT umk_pub FROM app_trust_pins WHERE user_id=?1",
-            [peer.user.as_slice()],
-            |r| r.get(0),
-        )
-        .expect("own pin");
-    raw.try_into().expect("32 bytes")
-}
-
-fn attestation_for(peer: &Core, kind: u8) -> Vec<u8> {
+fn attestation_for(user: &[u8; 16], kind: u8) -> Vec<u8> {
     use ed25519_dalek::Signer;
     let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
     assert_eq!(key.verifying_key().to_bytes(), INSTANCE_SIGNER_PUB);
-    let message =
-        dilla_core::identity::account_kind_message(&INSTANCE, &peer.user, &own_umk(peer), kind);
+    let message = dilla_core::identity::account_kind_message(&INSTANCE, user, kind);
     dilla_core::identity::AccountKindAttestation {
         key_id: [0x53; 16],
         kind,
@@ -2612,31 +2597,55 @@ fn attestation_for(peer: &Core, kind: u8) -> Vec<u8> {
     .encode()
 }
 
-fn account_kinds(core: &Core, user: &[u8; 16]) -> Option<i64> {
-    core.probe
-        .lock()
-        .expect("lock")
-        .query_row(
-            "SELECT kind FROM app_account_kinds WHERE user_id=?1",
-            [user.as_slice()],
-            |r| r.get(0),
-        )
-        .ok()
+fn quarantined(answer: &[u8]) -> u64 {
+    decode_strict(answer, |d| {
+        d.array(3)?;
+        d.uint()?;
+        d.uint()?;
+        d.uint()
+    })
+    .expect("verdict")
 }
 
 #[test]
-fn a_first_sight_attestation_is_verified_by_the_ingest_that_pins_the_user() {
-    let (_, relay, mut alice, bob) = alice_and_bob();
+fn a_human_attested_as_a_human_is_trusted_and_one_attested_as_a_bot_is_refused() {
+    for (kind, want) in [(0u8, 0u64), (1, 1)] {
+        let (_, relay, mut alice, bob) = alice_and_bob();
+        alice
+            .core
+            .account_kind_ingest(&bob.user, &attestation_for(&bob.user, kind))
+            .expect("attested");
+        assert!(alice.core.account_kind_seen().expect("seen"));
+        let (history, head) = list_wire(&bob);
+        let answer = alice
+            .core
+            .device_list_ingest(
+                &GROUP,
+                relay.leaf_of(bob.device),
+                &bob.user,
+                &history,
+                &head,
+                NOW,
+            )
+            .expect("ingest");
+        assert_eq!(
+            quarantined(&answer),
+            want,
+            "kind {kind}: E_CREDENTIAL only for the wrong kind"
+        );
+    }
+}
+
+#[test]
+fn once_seen_a_user_without_an_attestation_stays_pending() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    // Seen through another account's attestation.
     alice
         .core
-        .account_kind_ingest(&bob.user, &attestation_for(&bob, 0))
-        .expect("staged");
-    assert!(
-        !alice.core.account_kind_seen().expect("seen"),
-        "staged, not yet verified"
-    );
+        .account_kind_ingest(&[0x5c; 16], &attestation_for(&[0x5c; 16], 0))
+        .expect("own attestation");
     let (history, head) = list_wire(&bob);
-    let answer = alice
+    alice
         .core
         .device_list_ingest(
             &GROUP,
@@ -2647,115 +2656,38 @@ fn a_first_sight_attestation_is_verified_by_the_ingest_that_pins_the_user() {
             NOW,
         )
         .expect("ingest");
-    let quarantined = decode_strict(&answer, |d| {
-        d.array(3)?;
-        d.uint()?;
-        d.uint()?;
-        d.uint()
-    })
-    .expect("verdict");
-    assert_eq!(quarantined, 0, "a human attested as a human");
-    assert!(alice.core.account_kind_seen().expect("seen"));
-    assert_eq!(account_kinds(&alice, &bob.user), Some(0));
-}
-
-#[test]
-fn a_human_leaf_attested_as_a_bot_is_refused_at_ingest() {
-    let (_, relay, mut alice, bob) = alice_and_bob();
-    alice
-        .core
-        .account_kind_ingest(&bob.user, &attestation_for(&bob, 1))
-        .expect("staged");
-    let (history, head) = list_wire(&bob);
-    let answer = alice
-        .core
-        .device_list_ingest(
-            &GROUP,
-            relay.leaf_of(bob.device),
-            &bob.user,
-            &history,
-            &head,
-            NOW,
-        )
-        .expect("ingest");
-    let quarantined = decode_strict(&answer, |d| {
-        d.array(3)?;
-        d.uint()?;
-        d.uint()?;
-        d.uint()
-    })
-    .expect("verdict");
+    let (_, seq) = bob.send(&mut relay, &GROUP, "no attestation for me", NOW + 1);
+    alice.sync(&relay);
     assert_eq!(
-        quarantined, 1,
-        "the credential's kind is not the attested kind: E_CREDENTIAL"
+        alice.row_at(&GROUP, seq).status,
+        1,
+        "pending: no attestation for bob"
     );
-    assert_eq!(account_kinds(&alice, &bob.user), Some(1));
 }
 
-// ---- Task S1 fix round 2: an attestation over a UMK change is staged, never refused ----
-
-fn attestation_over(user: &[u8; 16], umk: &[u8; 32], kind: u8) -> Vec<u8> {
-    use ed25519_dalek::Signer;
-    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
-    let message = dilla_core::identity::account_kind_message(&INSTANCE, user, umk, kind);
-    dilla_core::identity::AccountKindAttestation {
-        key_id: [0x53; 16],
-        kind,
-        signature: key.sign(&message).to_bytes(),
-    }
-    .encode()
-}
-
-fn stored_kind_verifies_over(core: &Core, user: &[u8; 16], umk: &[u8; 32]) -> bool {
-    let row: Option<(i64, Vec<u8>)> = core
-        .probe
-        .lock()
-        .expect("lock")
-        .query_row(
-            "SELECT kind,signature FROM app_account_kinds WHERE user_id=?1",
-            [user.as_slice()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let Some((kind, sig)) = row else { return false };
-    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]).verifying_key();
-    let message = dilla_core::identity::account_kind_message(&INSTANCE, user, umk, kind as u8);
-    let sig: [u8; 64] = sig.try_into().expect("64 bytes");
-    key.verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
-        .is_ok()
-}
-
+/// A rotated user (A -> B): a contact who pinned A still goes through the key-change flow, and the
+/// same attestation (it binds no key) holds for B's leaves once B is approved. A new contact who
+/// never saw A trusting B's leaves with the attestation is pinned by
+/// `trust::tests::the_attestation_applies_to_every_key_of_the_user` and end to end by
+/// e2e/voice/blocked.spec.ts (a).
 #[test]
-fn a_umk_change_on_wire_4_is_recorded_and_its_attestation_verified_over_the_new_key() {
+fn a_rotated_user_changes_key_for_an_old_contact_and_the_attestation_holds_for_the_new_key() {
     let (_, mut relay, mut alice, bob) = alice_and_bob();
     let v1 = sec_bob_v1(&mut alice, &relay, &bob);
     let original = sec_cached_umk(&alice, &bob.user);
-    // Wire 4 before the change: Bob's attestation over A verifies against the pin and is stored.
     alice
         .core
-        .account_kind_ingest(&bob.user, &attestation_over(&bob.user, &original, 0))
-        .expect("attestation over A");
-    assert!(alice.core.account_kind_seen().expect("seen"));
-    assert!(stored_kind_verifies_over(&alice, &bob.user, &original));
-
-    // Bob's account moves to UMK B. The served head's attestation is over B: it verifies over
-    // neither the pin (A) nor a recorded change, so it is staged, not refused.
-    let rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+        .account_kind_ingest(&bob.user, &attestation_for(&bob.user, 0))
+        .expect("attested");
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
     let changed_umk = UmkSigner::from_bytes(&[0xd5; 32]).public();
-    let mut rotated = rotated;
     rotated.join_external(&mut relay);
     alice.sync(&relay);
+    // The old contact: the same attestation; the key change is recorded and B waits for approval.
     alice
         .core
-        .account_kind_ingest(&bob.user, &attestation_over(&bob.user, &changed_umk, 0))
-        .expect("an attestation over a not-yet-recorded UMK is staged, never refused");
-    assert!(
-        stored_kind_verifies_over(&alice, &bob.user, &original),
-        "A's row is kept until B is the change"
-    );
-
-    // The history ingest runs: the change is recorded (E_UMK_CHANGED), and the staged attestation
-    // is verified over B, the UMK that history establishes.
+        .account_kind_ingest(&bob.user, &attestation_for(&bob.user, 0))
+        .expect("attested again");
     let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
     let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
     assert_eq!(changed, 1, "the key change is recorded");
@@ -2765,86 +2697,21 @@ fn a_umk_change_on_wire_4_is_recorded_and_its_attestation_verified_over_the_new_
         (pinned, verified, pending),
         (original, 0, Some(changed_umk))
     );
-    assert!(
-        stored_kind_verifies_over(&alice, &bob.user, &changed_umk),
-        "B's attestation replaced A's"
-    );
-
-    // A leaf of the unapproved B is not shown while the change is pending.
-    let seq = rotated.send(&mut relay, "comet under B before approval");
+    let seq = rotated.send(&mut relay, "under B before approval");
     alice.sync(&relay);
     assert_eq!(
         alice.row_at(&GROUP, seq).status,
         1,
         "pending while B is unapproved"
     );
-
-    // Approving B: B's leaves pass, with B's verified attestation.
     alice
         .core
         .trust_verify(&bob.user, &changed_umk)
         .expect("approve B");
-    let seq = rotated.send(&mut relay, "comet under B after approval");
-    alice.sync(&relay);
-    let row = alice.row_at(&GROUP, seq);
-    assert_eq!(
-        (row.status, row.body.as_str()),
-        (0, "comet under B after approval")
-    );
-}
-
-// ---- Task S1 fix round 3: "your verification wins" ----
-
-/// The server attests users.umk_pub, which a key registered by session assertion never changes: after
-/// Bob moves to B, every head still carries the attestation over A. B stays pending until the person
-/// verifies it, and then passes, judged by the kind A's attestation states.
-#[test]
-fn a_person_verified_changed_key_needs_no_attestation_over_it() {
-    let (_, mut relay, mut alice, bob) = alice_and_bob();
-    let v1 = sec_bob_v1(&mut alice, &relay, &bob);
-    let original = sec_cached_umk(&alice, &bob.user);
-    let over_a = attestation_over(&bob.user, &original, 0);
-    alice
-        .core
-        .account_kind_ingest(&bob.user, &over_a)
-        .expect("A attested");
-    assert!(alice.core.account_kind_seen().expect("seen"));
-
-    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
-    let changed_umk = UmkSigner::from_bytes(&[0xd5; 32]).public();
-    rotated.join_external(&mut relay);
-    alice.sync(&relay);
-    // The served head still carries the attestation over A.
-    alice
-        .core
-        .account_kind_ingest(&bob.user, &over_a)
-        .expect("A again");
-    let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
-    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
-    assert_eq!(changed, 1);
-    let seq = rotated.send(&mut relay, "under B before verification");
-    alice.sync(&relay);
-    assert_eq!(
-        alice.row_at(&GROUP, seq).status,
-        1,
-        "B pending before the person verifies it"
-    );
-
-    alice
-        .core
-        .trust_verify(&bob.user, &changed_umk)
-        .expect("the person verifies B");
     let held = alice.row_at(&GROUP, seq);
     assert_eq!(
         (held.status, held.body.as_str()),
-        (0, "under B before verification"),
-        "the text held while B was unverified is released by the verification"
-    );
-    let seq = rotated.send(&mut relay, "under B after verification");
-    alice.sync(&relay);
-    let row = alice.row_at(&GROUP, seq);
-    assert_eq!(
-        (row.status, row.body.as_str()),
-        (0, "under B after verification")
+        (0, "under B before approval"),
+        "released by the approval, the attestation holding for B"
     );
 }

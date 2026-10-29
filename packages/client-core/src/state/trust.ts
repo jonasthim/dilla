@@ -74,9 +74,8 @@ export function headAttestation(head: Uint8Array): Uint8Array | null {
 
 /**
  * Task S1 part 2: hand the head's account-kind attestation to the core before the user's history is ingested, so the
- * ingest's leaf verdicts judge the credential's kind against it. The core stores one only once it verifies; one it cannot
- * verify yet (no pin, or a UMK change not yet recorded) it stages, and the history ingest verifies it over the UMK that
- * history establishes. Fix round 2: this never throws. Any refusal (a malformed attestation, a core with no pinned
+ * ingest's leaf verdicts judge the credential's kind against it. The core stores one only once it verifies (instance key,
+ * instance id, user id; it binds no key, Ruling AW). Fix round 2: this never throws. Any refusal (a malformed attestation, a core with no pinned
  * instance key) is handled exactly like a withheld attestation: nothing is stored and the history ingest still runs, so a
  * key change is still recorded and the removal feed never stalls; a user without a verified attestation stays pending once
  * one was seen. No refusal ever surfaces as a leaf verdict (E_CREDENTIAL is the core's verdict on a verified attestation

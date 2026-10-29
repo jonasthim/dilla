@@ -663,11 +663,6 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     // refuses a schema-13 store (`refuse_newer`), so a downgrade cannot shed the "attestation seen"
     // flag and fall back to trusting a credential's self-signed kind.
     c.execute_batch(super::account_kind::ACCOUNT_KINDS_SCHEMA)?;
-    // Fix round 3: the UMK an attestation verified over (unreleased schema 13 stores lack it; a
-    // row without it never stands in for a person-verified changed key).
-    if !has_column(c, "app_account_kinds", "umk_pub")? {
-        c.execute_batch("ALTER TABLE app_account_kinds ADD COLUMN umk_pub BLOB CHECK(umk_pub IS NULL OR length(umk_pub)=32)")?;
-    }
     if found < 13 {
         meta_put(c, SCHEMA, &[13])?;
     }
@@ -1182,22 +1177,19 @@ mod newer_store_tests {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         migrate_conn(&db).expect("fresh");
         db.execute_batch(
-            "DROP TABLE app_account_kinds; DROP TABLE app_account_kind_staged; \
-             UPDATE app_meta SET v = x'0c' WHERE k = 'schema';",
+            "DROP TABLE app_account_kinds; UPDATE app_meta SET v = x'0c' WHERE k = 'schema';",
         )
         .expect("simulate a v12 store");
         assert_eq!(migrate_conn(&db).expect("migrates"), 12);
         assert_eq!(schema_of(&db), vec![0x0d]);
-        for table in ["app_account_kinds", "app_account_kind_staged"] {
-            let n: i64 = db
-                .query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    [table],
-                    |r| r.get(0),
-                )
-                .expect("sqlite_master");
-            assert_eq!(n, 1, "{table} exists");
-        }
+        let n: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_account_kinds'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("sqlite_master");
+        assert_eq!(n, 1, "app_account_kinds exists");
         assert_eq!(
             meta_get(&db, super::super::account_kind::ACCOUNT_KIND_SEEN).expect("meta"),
             None

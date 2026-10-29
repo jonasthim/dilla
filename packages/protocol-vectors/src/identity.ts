@@ -61,10 +61,10 @@ export function dskMessage(deviceId: Uint8Array, dskPub: Uint8Array, kind: numbe
 
 /**
  * The instance-signed account-kind attestation (03-identity.md § Account kind attestation, wire 4):
- * `"dilla account kind v1" || CBOR([1, instance_id, user_id, umk_pub, kind])`.
+ * `"dilla account kind v1" || CBOR([1, instance_id, user_id, kind])`. No key: an account's kind never changes.
  */
-export function accountKindMessage(instanceId: Uint8Array, userId: Uint8Array, umkPub: Uint8Array, kind: 0 | 1): Uint8Array {
-  return concat(utf8('dilla account kind v1'), encode([1, instanceId, userId, umkPub, kind]));
+export function accountKindMessage(instanceId: Uint8Array, userId: Uint8Array, kind: 0 | 1): Uint8Array {
+  return concat(utf8('dilla account kind v1'), encode([1, instanceId, userId, kind]));
 }
 
 /** The attestation's wire form: `[1, key_id(16), kind, sig(64)]`. */

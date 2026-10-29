@@ -28,7 +28,6 @@ func TestTheAccountKindAttestationMatchesTheCommittedVector(t *testing.T) {
 			KeyID        string `json:"key_id"`
 			InstanceID   string `json:"instance_id"`
 			UserID       string `json:"user_id"`
-			UMKPub       string `json:"umk_pub"`
 			Cases        []struct {
 				Kind        uint8  `json:"kind"`
 				Message     string `json:"message"`
@@ -60,8 +59,8 @@ func TestTheAccountKindAttestationMatchesTheCommittedVector(t *testing.T) {
 		t.Fatalf("%d cases, want a human and a Bot", len(ak.Cases))
 	}
 	for _, c := range ak.Cases {
-		user := store.UserRow{ID: asID(ak.UserID), Kind: c.Kind, UMKPub: unhex(ak.UMKPub)}
-		message, err := api.AccountKindMessage(asID(ak.InstanceID), user.ID, user.UMKPub, c.Kind)
+		user := store.UserRow{ID: asID(ak.UserID), Kind: c.Kind}
+		message, err := api.AccountKindMessage(asID(ak.InstanceID), user.ID, c.Kind)
 		if err != nil || hex.EncodeToString(message) != c.Message {
 			t.Fatalf("kind %d: message %x, %v; want the vector's", c.Kind, message, err)
 		}

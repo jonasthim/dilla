@@ -186,7 +186,7 @@ states the account's kind (`users.kind`: `0` user, `1` bot) in an **account-kind
 signed with its current external-sender key (§ Instance keys), the key every client pins:
 
 ```
-message     = "dilla account kind v1" || CBOR([1, instance_id(bstr16), user_id(bstr16), umk_pub(bstr32), kind(uint)])
+message     = "dilla account kind v1" || CBOR([1, instance_id(bstr16), user_id(bstr16), kind(uint)])
 attestation = [
   v,             ; uint, = 1
   key_id,        ; bstr 16: the external-sender key's key_id
@@ -195,61 +195,37 @@ attestation = [
 ]
 ```
 
-`instance_id` keeps an attestation from being replayed on another instance, `user_id` from another
-account, and `umk_pub` from another identity of the same account id. An account's kind never
-changes, so there is no expiry; Ed25519 signatures are deterministic, so an account's attestation is
-the same bytes on every read and the instance signs it when served, for every account it holds
-(those created before wire 4 included), with nothing stored. It travels as the fifth element of the
+`instance_id` keeps an attestation from being replayed on another instance and `user_id` from
+another account. The attestation binds **no key** (Ruling AW): an account's kind never changes, so
+the statement holds for every key the account ever presents, including a UMK the user moved to
+without proving it to the instance. Key trust — pins, UMK change detection, the person's
+verification (§ Credential, § Safety number) — is separate and unchanged. There is no expiry;
+Ed25519 signatures are deterministic, so an account's attestation is the same bytes on every read
+and the instance signs it when served, for every account it holds (those created before wire 4
+included), with nothing stored. It travels as the fifth element of the
 `GET /v1/users/{user_id}/device-list` head on a wire-4 session (`09` § Accounts and devices).
 
-A client verifies an attestation **before it stores it**: under its pinned instance key and its own
-`instance_id`, over the user's pinned UMK (or a pending changed one). One it cannot verify that way —
-the client holds no pin for the user yet, or the served list is under a UMK the client has not
-recorded (a key change) — it keeps aside and verifies in the step that validates the user's signed
-history and pins (or records as the pending change) the UMK that history establishes, before it
-judges that user's leaves; approving a changed UMK verifies a kept one over the approved key too. A
-kept attestation that does not verify there is dropped, and the next device-list read offers it
-again. Only a verified attestation is stored, and only it sets the "attestation seen" flag.
-Replacement is per UMK: an attestation never replaces one verified over the same UMK unless it
-verifies too, and one verified over a newly recorded changed UMK replaces the old key's. A
-malformed attestation, or one the client cannot handle at all, is treated exactly like a withheld
-one: nothing is stored and the history read still proceeds, so a key change is still recorded and
-nothing that waits on that read (the removal feed) stalls. A client then stores one attestation per
-user and, **in addition to** the rules of § Credential, judges every leaf of that user against it
-again, with the leaf's own `umk_pub`, its pinned instance key and its own `instance_id`:
+A client verifies an attestation **before it stores it**, under its pinned instance key, its own
+`instance_id` and the user id it was served for; it needs no pin for the user. One that does not
+verify, or is malformed, is stored nowhere and never replaces a stored one that verified, and it is
+treated exactly like a withheld one: the history read still proceeds, so a key change is still
+recorded and nothing that waits on that read (the removal feed) stalls. Only a verified attestation
+is stored (one per user) and only it sets the per-instance "attestation seen" flag. **In addition
+to** the rules of § Credential, the client judges every leaf of that user against it:
 
-- the signature verifies and `kind` equals the credential's `kind`: the leaf passes;
-- the signature verifies and `kind` differs: the leaf fails with `E_CREDENTIAL` (a member whose
-  credential claims to be a Bot, or the reverse);
-- the attestation does not verify (another key, instance, user or UMK): the leaf stays pending
-  (`E_DEVICE_LIST_STALE`) until a valid one arrives;
-- no attestation: once the client has stored **any** attestation from its instance (the per-instance
-  "attestation seen" flag), the leaf stays pending; before that, the earlier rule applies (the
-  credential's kind is not checked by the core).
+- the stored attestation verifies and its `kind` equals the credential's `kind`: the leaf passes
+  (whatever key the leaf is under);
+- it verifies and `kind` differs: the leaf fails with `E_CREDENTIAL` (a member whose credential
+  claims to be a Bot, or the reverse);
+- no verifying attestation for that user: once the client has stored **any** attestation from its
+  instance, the leaf stays pending (`E_DEVICE_LIST_STALE`, fail closed — whether or not the person
+  verified the key); before that, the earlier rule applies (the credential's kind is not checked by
+  the core).
 
-**The person's verification wins** (fix round 3). The instance attests the UMK it holds for the
-account, and a key the user moves to without proving it to the instance (a changed UMK registered by
-session assertion) is never attested. A UMK **this person verified** — exact-key verification, or
-approving a changed key (§ Safety number, `trust_verify`) — is the authority for that key, and it is
-trusted for the kind check without an attestation over it:
-
-- an attestation over the leaf's own UMK, if the client holds one, still decides as above;
-- otherwise, for a person-verified UMK with no change pending: an account's kind never changes, so
-  an attestation this client verified over an **earlier** UMK of the same user still states it, and
-  the credential's `kind` must equal it (`E_CREDENTIAL` otherwise — a Bot-kind credential under a
-  person-verified human key is still refused);
-- with no attestation ever verified for that user, the earlier rule applies for that key: the core
-  does not judge `kind`, and a client still shows a sender as a Bot only when the server's member row
-  is of account kind 1.
-
-Every key the person has not verified, and every other user, stays under the attestation rule above
-(fail closed).
-
-A tombstoned account (`DELETE /v1/accounts/me`) has its UMK purged, so an attestation over it
-could never verify; the instance serves none for it (its wire-4 head is the four elements). A
-client that verified the account's attestation before the deletion keeps it, so the account's
-remaining leaves keep their verdict until the deletion's `Remove`s land; a client that never did
-leaves them pending.
+A tombstoned account (`DELETE /v1/accounts/me`) is served no attestation (its wire-4 head is the
+four elements). A client that verified the account's attestation before the deletion keeps it, so
+the account's remaining leaves keep their verdict until the deletion's `Remove`s land; a client that
+never did leaves them pending.
 
 `key_id` names the external-sender key that signed, for diagnostics; nothing the signature covers
 binds it, so it must not be trusted to select or rotate keys.
@@ -417,7 +393,7 @@ left-padded to 78 digits`, displayed as 6 groups of 5.
 
 `account_kind` holds the account-kind attestation of § Account kind attestation for a user and a
 bot (`cases`): an implementation conforms when it reproduces each case's `message` from
-`instance_id`, `user_id`, `umk_pub` and `kind`, and its `attestation` bytes from `key_id` and the
+`instance_id`, `user_id` and `kind`, and its `attestation` bytes from `key_id` and the
 deterministic Ed25519 signature under `instance_priv` (an Ed25519 seed, test material), and
 verifies `signature` against `instance_pub`.
 
