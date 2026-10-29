@@ -150,6 +150,17 @@ function musicView({ state, room, bot, members, trust, inCall, now, onToggle, on
   };
 }
 
+/**
+ * Task 11 (Jonas, Q5): the Bot's member-list line while it sits in a voice channel, "playing in {room}" or "idle in {room}",
+ * from the same shared player state as the dock and the stage (one refresher per channel while something on screen reads it).
+ * Null when nothing is known yet or the player is unavailable, so the caller keeps its own line.
+ */
+export function useBotRoomLine(client: CoreClient, communityId: string | null, channelId: string | null, room: string): string | null {
+  const state = useMusicState(client, communityId, channelId);
+  if (channelId === null || state === null || state.status !== 'available') return null;
+  return t(state.track !== null && !state.paused ? 'members.playingIn' : 'members.idleIn', { room });
+}
+
 function useChannelPlayer(client: CoreClient, communityId: string | null, channelId: string | null, read: boolean) {
   const state = useMusicState(client, read ? communityId : null, read ? channelId : null);
   const adapter = adapterFor(client, communityId);

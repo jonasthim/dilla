@@ -181,7 +181,7 @@ export function SignalShell({ shell, voice, main, dm = false }: { shell?: Partia
               { id: 'u3', name: 'Kari', presence: 'online', status: 'streaming' },
               { id: 'u4', name: 'Ole', presence: 'online', status: 'afk-ish' },
             ] },
-            { id: 'bots', kind: 'bots', title: 'bots', members: [{ id: 'g1', name: 'Glenn', isBot: true, presence: 'online', status: 'in voice' }] },
+            { id: 'bots', kind: 'bots', title: 'bots', members: [{ id: 'g1', name: 'Glenn', isBot: true, presence: 'online', status: 'playing in harbour' }] },
           ]} />
       )}
     >

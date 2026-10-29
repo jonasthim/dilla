@@ -23,6 +23,9 @@ export const members = {
   'members.menu.label': 'actions for {name}',
   'members.inVoice': 'in voice',
   'members.inChannel': 'in {channel}',
+  // Task 11 (the prototype's Glenn status): the Bot's line from the player state.
+  'members.playingIn': 'playing in {room}',
+  'members.idleIn': 'idle in {room}',
   'members.menu.compare': 'compare safety numbers',
   'members.menu.kick': 'kick',
   'members.menu.ban': 'ban',

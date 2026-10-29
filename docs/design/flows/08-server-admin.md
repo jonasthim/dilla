@@ -102,6 +102,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
   `members.menu.copied='@{name} copied'`, `members.menu.roles='Edit roles'`, `members.menu.kickName='Kick {name}'`,
   `members.menu.banName='Ban {name}'`, `members.menu.label='actions for {name}'`, `members.inVoice='in voice'`,
   `members.inChannel='in {channel}'`
+- Task 11 (Q5), the Bot's line from its player: `members.playingIn='playing in {room}'`, `members.idleIn='idle in {room}'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`
 

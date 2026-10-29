@@ -5,6 +5,8 @@ import { useSlice } from '../../core/use-slice.ts';
 import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
 import { memberGroups } from './members-model.ts';
+import { useCore } from '../../core/context.tsx';
+import { useBotRoomLine } from '../voice/music.tsx';
 import { MemberCardHost, presenceLabels, type OpenCard, type OpenMenu } from './MemberCardHost.tsx';
 
 export interface MemberPaneProps {
@@ -38,6 +40,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const channels = useSlice(`channels:${communityId}`);
   const voice = useSlice('voice');
   const call = useSlice('call');
+  const client = useCore();
   // The card open from a row of this list. One card at a time across the app: a message card closes it.
   const [card, setCard] = useState<OpenCard | null>(null);
   // The person menu open on a row (task 9): one at a time with the card.
@@ -82,6 +85,14 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   for (const ch of channels ?? []) {
     for (const p of voice?.[ch.id]?.participants ?? []) inVoice.set(p.userId, ch.name);
   }
+  // Task 11 (Q5): the Bot in a voice channel of this server says what its player does there.
+  const botIds = new Set(list.filter(m => m.kind === 1).map(m => m.userId));
+  let botRoom: { userId: string; channelId: string; name: string } | null = null;
+  for (const ch of channels ?? []) {
+    const bot = voice?.[ch.id]?.participants.find(p => p.bot || botIds.has(p.userId));
+    if (bot !== undefined && botRoom === null) botRoom = { userId: bot.userId, channelId: ch.id, name: ch.name };
+  }
+  const botLine = useBotRoomLine(client, communityId, botRoom?.channelId ?? null, botRoom?.name ?? '');
   if (call?.phase === 'in' && call.channelId !== null) {
     const ch = (channels ?? []).find(c => c.id === call.channelId);
     if (ch !== undefined) inVoice.set(selfId, ch.name);
@@ -89,6 +100,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const lineOf = (userId: string): string => {
     // Task 11 (the prototype's member rows): your own row says where your call is, else your presence; your custom status is the
     // user panel's line.
+    if (botRoom !== null && botLine !== null && userId === botRoom.userId) return botLine;
     const custom = userId === selfId ? '' : statusOf.get(userId) ?? '';
     if (custom !== '') return custom;
     const room = inVoice.get(userId);
