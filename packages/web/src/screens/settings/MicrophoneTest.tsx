@@ -11,6 +11,8 @@ export interface MicTest {
   failed: boolean;
   /** The level after the input volume, −100..0 dB (−100 while not testing). */
   levelDb: number;
+  /** Fix round 1: the stage's gate is open (with its hold), which the pill shows. */
+  open: boolean;
   /** The automatic threshold the test measured last (the call computes its own the same way), or the resting −48 dB. */
   autoDb: number;
   status: ProcessorStatus | null;
@@ -30,6 +32,7 @@ export function useMicTest(settings: LoopbackSettings, disabled: boolean): MicTe
   const [testing, setTesting] = useState(false);
   const [failed, setFailed] = useState(false);
   const [levelDb, setLevelDb] = useState(SILENT_DB);
+  const [open, setOpen] = useState(false);
   const [autoDb, setAutoDb] = useState(AUTO_START_DB);
   const [status, setStatus] = useState<ProcessorStatus | null>(null);
   const latest = useRef(settings);
@@ -41,6 +44,7 @@ export function useMicTest(settings: LoopbackSettings, disabled: boolean): MicTe
     test.current = null;
     setTesting(false);
     setLevelDb(SILENT_DB);
+    setOpen(false);
     setStatus(null);
   }, []);
 
@@ -54,7 +58,8 @@ export function useMicTest(settings: LoopbackSettings, disabled: boolean): MicTe
 
   const { inputVolume, outputVolume } = settings;
   const { auto, thresholdDb } = settings.sensitivity;
-  useEffect(() => { test.current?.update({ inputVolume, outputVolume, sensitivity: { auto, thresholdDb } }); }, [inputVolume, outputVolume, auto, thresholdDb]);
+  const { mode } = settings;
+  useEffect(() => { test.current?.update({ inputVolume, outputVolume, sensitivity: { auto, thresholdDb }, mode }); }, [inputVolume, outputVolume, auto, thresholdDb, mode]);
 
   const start = async () => {
     if (disabled) return;
@@ -66,9 +71,9 @@ export function useMicTest(settings: LoopbackSettings, disabled: boolean): MicTe
       const { LocalMicrophoneTest } = await import('../../call/microphone-test.ts');
       if (!mine()) return;
       const t = test.current = new LocalMicrophoneTest({
-        level: l => { if (!mine()) return; setLevelDb(l.db); if (latest.current.sensitivity.auto) setAutoDb(l.thresholdDb); },
+        level: l => { if (!mine()) return; setLevelDb(l.db); setOpen(l.open); if (latest.current.sensitivity.auto) setAutoDb(l.thresholdDb); },
         status: s => { if (mine()) setStatus(s); },
-        ended: () => { if (mine()) { test.current = null; setTesting(false); setLevelDb(SILENT_DB); setStatus(null); } },
+        ended: () => { if (mine()) { test.current = null; setTesting(false); setLevelDb(SILENT_DB); setOpen(false); setStatus(null); } },
       });
       await t.start(latest.current);
     } catch {
@@ -76,5 +81,5 @@ export function useMicTest(settings: LoopbackSettings, disabled: boolean): MicTe
     }
   };
   const toggle = () => { if (testing) close(); else void start(); };
-  return { testing, failed, levelDb, autoDb, status, toggle };
+  return { testing, failed, levelDb, open, autoDb, status, toggle };
 }

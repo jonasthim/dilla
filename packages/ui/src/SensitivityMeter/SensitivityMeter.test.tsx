@@ -38,11 +38,13 @@ describe('SensitivityMeter', () => {
     render(<SensitivityMeter {...base} auto={false} thresholdDb={-5} onThresholdChange={onThresholdChange} />);
     const slider = screen.getByRole('slider');
     fireEvent.change(slider, { target: { value: '-30' } });
-    expect(onThresholdChange).toHaveBeenLastCalledWith(-30);
+    expect(onThresholdChange).toHaveBeenLastCalledWith(-30, false);
+    fireEvent.pointerUp(slider);
+    expect(onThresholdChange).toHaveBeenLastCalledWith(-30, true);
     fireEvent.keyDown(slider, { key: 'PageUp' });
-    expect(onThresholdChange).toHaveBeenLastCalledWith(0);
+    expect(onThresholdChange).toHaveBeenLastCalledWith(0, true);
     fireEvent.keyDown(slider, { key: 'PageDown' });
-    expect(onThresholdChange).toHaveBeenLastCalledWith(-15);
+    expect(onThresholdChange).toHaveBeenLastCalledWith(-15, true);
   });
 
   it('automatic sensitivity disables the slider', () => {

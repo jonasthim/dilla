@@ -23,9 +23,15 @@ export const SENSITIVITY = {
   /** …but never below or above these: a dead-silent input still needs a voice, a loud room never needs a shout. */
   autoMinDb: -70,
   autoMaxDb: -30,
-  /** The floor falls quickly to a quieter room and rises at most this fast, from frames below the threshold only. */
-  floorRiseDbPerS: 2,
-  floorFall: 0.1,
+  /**
+   * Fix round 1 (minimum statistics): the floor is the quietest frame of the last 1.5 s (15 blocks of 100 ms), over every
+   * frame. Speech has pauses between words and breaths, so the window minimum stays at the room's noise while someone talks;
+   * a room that is loud from the first frame, or gets louder, has no quieter frame, and the floor follows it. The floor falls
+   * to a quieter minimum at once and rises toward a louder one at most this fast.
+   */
+  floorBlockFrames: 10,
+  floorBlocks: 15,
+  floorRiseDbPerS: 6,
   /** Attack: one frame (10 ms) at or over the line opens the gate at once. Hold: it stays open this long after the
    *  last frame over the line, so pauses between words and soft word endings are not cut. */
   holdMs: 300,
@@ -45,18 +51,25 @@ export function dbOf(rms: number): number {
   return Math.max(SENSITIVITY.minDb, Math.min(SENSITIVITY.maxDb, 20 * Math.log10(rms)));
 }
 
-const clampDb = (db: number): number => Math.max(SENSITIVITY.minDb, Math.min(SENSITIVITY.maxDb, db));
+const clampDb = (db: number): number => Number.isFinite(db) ? Math.max(SENSITIVITY.minDb, Math.min(SENSITIVITY.maxDb, db)) : DEFAULT_SENSITIVITY.thresholdDb;
+/** A config with every value usable: a non-finite threshold reads as the default. */
+export function sensitivityConfig(cfg: SensitivityConfig): SensitivityConfig {
+  return { enabled: cfg.enabled === true, auto: cfg.auto === true, thresholdDb: clampDb(cfg.thresholdDb) };
+}
 
 export class SensitivityGate {
   private cfg: SensitivityConfig;
   private floor: number | null = null;
+  private readonly blocks: number[] = [];
+  private blockMin: number = SENSITIVITY.maxDb;
+  private blockFrames = 0;
   private open = false;
   private lastOverMs: number | null = null;
   private lastMs: number | null = null;
 
-  constructor(cfg: SensitivityConfig = DEFAULT_SENSITIVITY) { this.cfg = { ...cfg, thresholdDb: clampDb(cfg.thresholdDb) }; }
+  constructor(cfg: SensitivityConfig = DEFAULT_SENSITIVITY) { this.cfg = sensitivityConfig(cfg); }
 
-  configure(cfg: SensitivityConfig): void { this.cfg = { ...cfg, thresholdDb: clampDb(cfg.thresholdDb) }; }
+  configure(cfg: SensitivityConfig): void { this.cfg = sensitivityConfig(cfg); }
 
   /** The threshold in force: the manual one, or the automatic one from the measured floor. */
   threshold(): number {
@@ -65,16 +78,26 @@ export class SensitivityGate {
     return Math.round(Math.max(SENSITIVITY.autoMinDb, Math.min(SENSITIVITY.autoMaxDb, this.floor + SENSITIVITY.autoMarginDb)));
   }
 
+  /** The floor from every frame: each 100 ms block's minimum, the floor the minimum of the last 15 blocks. */
+  private learn(db: number, dt: number): void {
+    if (db < this.blockMin) this.blockMin = db;
+    if (++this.blockFrames < SENSITIVITY.floorBlockFrames) return;
+    this.blocks.push(this.blockMin);
+    if (this.blocks.length > SENSITIVITY.floorBlocks) this.blocks.shift();
+    this.blockMin = SENSITIVITY.maxDb;
+    const elapsed = this.blockFrames * dt;
+    this.blockFrames = 0;
+    const windowMin = Math.min(...this.blocks);
+    if (this.floor === null || windowMin <= this.floor) this.floor = windowMin;
+    else this.floor = Math.min(windowMin, this.floor + SENSITIVITY.floorRiseDbPerS * elapsed / 1000);
+  }
+
   /** One frame's level in dB at `nowMs`; true while the microphone may be heard. */
   update(db: number, nowMs: number): boolean {
-    const dt = this.lastMs === null ? SENSITIVITY.frameMs : Math.max(0, nowMs - this.lastMs);
+    const dt = this.lastMs === null ? SENSITIVITY.frameMs : Math.max(0, Math.min(1000, nowMs - this.lastMs));
     this.lastMs = nowMs;
+    this.learn(Number.isFinite(db) ? db : SENSITIVITY.minDb, dt);
     const thr = this.threshold();
-    // The floor learns only from frames under the line, so speech never raises it into the voice.
-    if (db < thr) {
-      if (this.floor === null || db < this.floor) this.floor = this.floor === null ? db : this.floor + (db - this.floor) * SENSITIVITY.floorFall;
-      else this.floor = Math.min(db, this.floor + SENSITIVITY.floorRiseDbPerS * dt / 1000);
-    }
     if (!this.cfg.enabled) { this.open = true; return true; }
     if (db >= thr) {
       this.open = true;
@@ -85,6 +108,9 @@ export class SensitivityGate {
     return this.open;
   }
 
-  /** A mute or a new capture: closed, the hold forgotten (the floor is kept: it is the room's). */
+  /** A mute: closed, the hold forgotten (the floor is kept: it is the room's). */
   reset(): void { this.open = false; this.lastOverMs = null; this.lastMs = null; }
+
+  /** A new capture (another device, other processing): the room is measured again from the start. */
+  resetFloor(): void { this.reset(); this.floor = null; this.blocks.length = 0; this.blockMin = SENSITIVITY.maxDb; this.blockFrames = 0; }
 }

@@ -6,6 +6,7 @@ import { callState, FakeClient } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { Voice } from './Voice.tsx';
+import { reportStageStatus } from '../../call/processor-status.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -42,13 +43,16 @@ describe('Settings → Voice', () => {
     await user.click(screen.getByRole('radio', { name: 'Push to talk' }));
     expect(settingCalls(fake)).toEqual([['voice.mode', 'ptt']]);
     // The capture prompt; F13 is the key.
-    await user.click(await screen.findByRole('button', { name: 'Set key' }));
+    await user.click(await screen.findByRole('button', { name: 'Change' }));
     expect(screen.getByText('Press the key to use. Escape cancels. It works only while dilla is the active tab.')).toBeInTheDocument();
+    // Ruling AX: while listening, the key box says "Press a key…" and the button is Cancel.
+    expect(screen.getByText('Press a key…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'F13', code: 'F13' });
     expect(settingCalls(fake)).toEqual([['voice.mode', 'ptt'], ['voice.pttKey', 'F13']]);
     expect(await screen.findByText('F13')).toBeInTheDocument();
     // Escape in the prompt stores nothing.
-    await user.click(screen.getByRole('button', { name: 'Set key' }));
+    await user.click(screen.getByRole('button', { name: 'Change' }));
     await user.keyboard('{Escape}');
     expect(settingCalls(fake)).toHaveLength(2);
     expect(screen.queryByText(/Press the key to use/)).toBeNull();
@@ -110,14 +114,21 @@ describe('Settings → Voice', () => {
 describe('Settings → Voice: task 10b levels and switches', () => {
   it('writes the volumes, the sensitivity, the release delay and the processing switches, each validated by client-core', async () => {
     const { fake, user } = setup({ 'voice.mode': 'ptt' });
-    fireEvent.change(screen.getByRole('slider', { name: 'Input volume' }), { target: { value: '150' } });
-    fireEvent.change(screen.getByRole('slider', { name: 'Output volume' }), { target: { value: '40' } });
-    fireEvent.change(screen.getByRole('slider', { name: 'Release delay' }), { target: { value: '400' } });
+    // Fix round 1: a slider writes when it is let go (pointer up or key up), not on every move.
+    const slide = (name: string, value: string) => {
+      const range = screen.getByRole('slider', { name });
+      fireEvent.change(range, { target: { value } });
+      expect(settingCalls(fake).some(([k, v]) => v === value && k !== 'voice.mode')).toBe(false);
+      fireEvent.pointerUp(range);
+    };
+    slide('Input volume', '150');
+    slide('Output volume', '40');
+    slide('Release delay', '400');
     await user.click(screen.getByRole('switch', { name: 'Set sensitivity automatically' }));
     expect(fake.get('settings')?.['voice.sensitivityAuto']).toBe('off');
     expect(screen.getByRole('slider', { name: 'Sensitivity threshold' })).not.toBeDisabled();
     expect(screen.getByText('threshold -50 dB')).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('slider', { name: 'Sensitivity threshold' }), { target: { value: '-30' } });
+    slide('Sensitivity threshold', '-30');
     await user.click(screen.getByRole('switch', { name: 'Echo cancellation' }));
     await user.click(screen.getByRole('switch', { name: 'Automatic gain control' }));
     expect(settingCalls(fake)).toEqual(expect.arrayContaining([['voice.inputVolume', '150'], ['voice.outputVolume', '40'], ['voice.pttRelease', '400'],
@@ -135,6 +146,19 @@ describe('Settings → Voice: task 10b levels and switches', () => {
     expect(screen.getByRole('slider', { name: 'Release delay' })).toHaveValue('0');
     expect(screen.getByRole('switch', { name: 'Echo cancellation' })).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByRole('switch', { name: 'Automatic gain control' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('M1: in a call whose input stage is not applied, says whether the microphone passes or is held', () => {
+    const owner = Symbol('call');
+    const { fake } = setup({ 'voice.sensitivityAuto': 'off' });
+    act(() => fake.publish('call', callState({ phase: 'in' })));
+    act(() => reportStageStatus(owner, 'failed'));
+    expect(screen.getByText(/with a manual threshold nothing is sent/)).toBeInTheDocument();
+    act(() => reportStageStatus(owner, 'unsupported'));
+    expect(screen.getByText('This browser cannot apply the input volume or sensitivity: your microphone is sent as it is.')).toBeInTheDocument();
+    act(() => reportStageStatus(owner, 'active'));
+    expect(screen.queryByText(/your microphone is sent as it is/)).toBeNull();
+    act(() => reportStageStatus(owner, null));
   });
 
   it('Ruling AR: a processing switch the browser cannot apply is not shown', () => {

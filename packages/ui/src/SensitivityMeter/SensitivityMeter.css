@@ -23,6 +23,12 @@
   -webkit-appearance: none; appearance: none; background: transparent;
 }
 .d-sens__input:disabled { cursor: not-allowed; }
+/* Fix round 1: a 2px (WebKit) / 0 (Gecko) thumb, so a press anywhere maps to the value under the pointer and the drawn line
+   sits exactly where the native value is (a wide thumb would offset the value by half its width at the ends). */
+.d-sens__input::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.d-sens__input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 2px; height: 100%; border: 0; background: transparent; }
+.d-sens__input::-moz-range-track { height: 100%; background: transparent; }
+.d-sens__input::-moz-range-thumb { width: 0; height: 100%; border: 0; background: transparent; }
 .d-sens__meter:has(.d-sens__input:focus-visible) .d-sens__line { outline: var(--focus-ring); outline-offset: 2px; }
 .d-sens__scale { display: flex; justify-content: space-between; font-size: var(--text-chip); line-height: 1.5; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 /* The line's travel is a reading aid, not decoration: it follows reduced motion like everything else; the segments do not. */

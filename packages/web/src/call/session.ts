@@ -12,7 +12,7 @@ import {
   chooseVideoCodec, decodeCaps, DillaInputStage, DillaMicrophoneProcessor, noisePreference, processingConstraints, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
   screenAudioOptions, SpeakerPolicy, VoiceGate, type CaptureProcessing, type InputStageOptions, type SensitivityConfig, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
-import { reportProcessorStatus } from './processor-status.ts';
+import { reportProcessorStatus, reportStageStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import { DEFAULT_SHARE_OPTIONS, shareEncoding, shareVideoConstraints, type ShareOptions } from './share-options.ts';
@@ -172,6 +172,9 @@ export interface InputStage {
   setCaptureAllowed(allowed: boolean): void;
   /** The raw capture the stage was last given. */
   readonly input?: MediaStreamTrack;
+  /** Fix round 1 (M1): whether gain and gate run (`active`), or why not. */
+  readonly state?: 'pending' | 'active' | 'unsupported' | 'failed';
+  destroy?(): Promise<void>;
 }
 
 export interface PageCallDeps {
@@ -276,6 +279,11 @@ export interface PageCallOptions {
   pttReleaseMs?: number;
   processing?: CaptureProcessing;
 }
+
+/** Fix round 1 (L2): a manual threshold as the gate takes it, a whole −100..0 dB (−50 when not a number). */
+const dbThreshold = (db: number | undefined): number => (typeof db === 'number' && Number.isFinite(db) ? Math.max(-100, Math.min(0, Math.round(db))) : -50);
+/** A push-to-talk release delay, 0..1000 ms (0 when not a number). */
+const releaseMs = (ms: number | undefined): number => (typeof ms === 'number' && Number.isFinite(ms) ? Math.max(0, Math.min(1000, ms)) : 0);
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
 export class PageCallError extends Error {
@@ -493,7 +501,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const startupHide = (reason: 'pagehide' | 'user' = 'pagehide'): void => {
     if (aborted) return;
     aborted = true;
-    reportProcessorStatus(statusOwner, null);
+    reportProcessorStatus(statusOwner, null); reportStageStatus(statusOwner, null);
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
@@ -518,7 +526,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const abandon = async (err: unknown, posted: boolean): Promise<PageCallError> => {
     if (aborted) return new PageCallError('E_ABORTED');
     aborted = true;
-    reportProcessorStatus(statusOwner, null);
+    reportProcessorStatus(statusOwner, null); reportStageStatus(statusOwner, null);
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
@@ -650,10 +658,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const volumes: Volumes = { ...opts.volumes };
     const streamVolumes: Volumes = { ...opts.streamVolumes };
     // Signal task 10b: Settings → Voice's levels and switches, as the call applies them now.
-    let inputVolume = opts.inputVolume ?? 100;
-    let outputVolume = opts.outputVolume ?? 100;
-    let sensitivity = opts.sensitivity ?? { auto: true, thresholdDb: -50 };
-    let pttReleaseMs = opts.pttReleaseMs ?? 0;
+    // Fix round 1 (L2): every level is checked here, so nothing non-finite or out of range reaches the stage or a timer.
+    let inputVolume = opts.inputVolume !== undefined && isPercent(opts.inputVolume) ? opts.inputVolume : 100;
+    let outputVolume = opts.outputVolume !== undefined && isPercent(opts.outputVolume) ? opts.outputVolume : 100;
+    let sensitivity = { auto: opts.sensitivity?.auto !== false, thresholdDb: dbThreshold(opts.sensitivity?.thresholdDb) };
+    let pttReleaseMs = releaseMs(opts.pttReleaseMs);
     let processing: CaptureProcessing = opts.processing ?? { echo: true, agc: true };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
@@ -867,7 +876,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const rawOf = (track: NonNullable<LocalPub['track']>): MediaStreamTrack | undefined => stage?.input ?? track.mediaStreamTrack;
     /** The gate in force: voice activity only (push to talk is governed by its key). */
     const gateConfig = (): SensitivityConfig => ({ enabled: mode !== 'ptt', auto: sensitivity.auto, thresholdDb: sensitivity.thresholdDb });
-    const stageOptions = (): InputStageOptions => ({ gain: inputVolume / 100, gate: gateConfig(), allowed: sendNow() });
+    // Fix round 1 (L1): the stage starts closed, as the noise processor does; applyMic opens it.
+    const stageOptions = (): InputStageOptions => ({ gain: inputVolume / 100, gate: gateConfig(), allowed: false });
+    const reportStage = (): void => { if (!ended && !aborted) reportStageStatus(statusOwner, stage === null || stage.state === undefined || stage.state === 'pending' ? null : stage.state); };
+    const dropStage = async (wrap: InputStage | null, made: NoiseProcessor | null): Promise<void> => {
+      wrap?.setCaptureAllowed(false);
+      made?.setCaptureAllowed?.(false);
+      if (wrap?.destroy !== undefined) await wrap.destroy().catch(() => undefined);
+      else await made?.destroy?.().catch(() => undefined);
+    };
     /** Echo cancellation and automatic gain changed while the microphone could not send and no stage holds it closed:
      *  the new capture waits for the next open (as R2's restart). */
     let processingWaiting = false;
@@ -959,23 +976,24 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const wrap = deps.createInputStage?.(made, stageOptions()) ?? null;
       try {
         await track.setProcessor(wrap ?? made);
-        if (ended) { made.setCaptureAllowed?.(false); wrap?.setCaptureAllowed(false); await made.destroy?.(); return; }
+        if (ended) { await dropStage(wrap, made); return; }
         processor = made;
         stage = wrap;
+        reportStage();
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
           await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,...processingConstraints(processing),channelCount:1,sampleRate:48000});
           // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
           const raw = rawOf(track);
           if (raw) micTrack = raw;
-          if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+          if (ended) { await dropStage(stage, made); return; }
           applyMic();
         }
         // Settings and held keys may change while LiveKit initializes the processor.
         if (made.setMode) { made.setMode(mode); processorMode = mode; }
         if (processorMode === 'ptt') made.setPttActive(mode !== 'ptt' || gate.update(0, deps.now()));
       } catch {
-        await made.destroy?.().catch(() => undefined);
+        await dropStage(wrap, made);
         processor = null;
         stage = null;
         await browserStatus('initialization-failed');
@@ -990,10 +1008,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const wrap = deps.createInputStage(null, stageOptions());
       try {
         await track.setProcessor(wrap);
-        if (ended) { wrap.setCaptureAllowed(false); return; }
+        if (ended) { await dropStage(wrap, null); return; }
         stage = wrap;
+        reportStage();
         applyMic();
-      } catch { stage = null; }
+      } catch { stage = null; await dropStage(wrap, null); }
     };
     /**
      * Signal task 10b: the microphone captured again with the echo cancellation and automatic gain in force, through LiveKit's
@@ -1635,7 +1654,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       processor?.setCaptureAllowed?.(false);
       processor?.flush?.();
       void processor?.destroy?.().catch(() => undefined);
-      reportProcessorStatus(statusOwner, null);
+      reportProcessorStatus(statusOwner, null); reportStageStatus(statusOwner, null);
       relay.close();
       unsubscribe();
       for (const h of [...timers]) cancel(h);
@@ -1873,11 +1892,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       setSensitivity(next) {
         if (ended) return;
-        sensitivity = { auto: next.auto, thresholdDb: Math.max(-100, Math.min(0, Math.round(next.thresholdDb))) };
+        sensitivity = { auto: next.auto, thresholdDb: dbThreshold(next.thresholdDb) };
         stage?.setGate(gateConfig());
       },
       setPttRelease(ms) {
-        if (Number.isFinite(ms)) pttReleaseMs = Math.max(0, Math.min(1000, ms));
+        pttReleaseMs = releaseMs(ms);
       },
       setProcessing: (next) => inLane(async () => {
         if (ended || (next.echo === processing.echo && next.agc === processing.agc)) return;

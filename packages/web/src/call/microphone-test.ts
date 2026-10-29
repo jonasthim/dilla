@@ -12,6 +12,8 @@ export interface LoopbackSettings {
   inputVolume: number;
   outputVolume: number;
   sensitivity: { auto: boolean; thresholdDb: number };
+  /** Fix round 1: the call's input mode; under push to talk the gate is off, as in the call. */
+  mode: 'vad' | 'ptt';
 }
 
 export interface LoopbackEvents {
@@ -23,7 +25,9 @@ export interface LoopbackEvents {
 
 export const LOOPBACK_MS = 10_000;
 const SETUP_TIMEOUT_MS = 15_000;
-const gateOf = (s: LoopbackSettings['sensitivity']): SensitivityConfig => ({ enabled: true, auto: s.auto, thresholdDb: s.thresholdDb });
+const gateOf = (s: Pick<LoopbackSettings, 'sensitivity' | 'mode'>): SensitivityConfig => ({ enabled: s.mode !== 'ptt', auto: s.sensitivity.auto, thresholdDb: s.sensitivity.thresholdDb });
+/** Fix round 1 (L3): the loopback never plays louder than 100 %, whatever the output volume (feedback through speakers). */
+export const loopbackGain = (outputVolume: number): number => (Number.isFinite(outputVolume) ? Math.max(0, Math.min(100, outputVolume)) : 100) / 100;
 
 /**
  * Let's check: ten seconds in which you hear yourself as the others would, through the same chain the call sends (the
@@ -64,7 +68,7 @@ export class LocalMicrophoneTest {
       const track = stream.getAudioTracks()[0];
       track.addEventListener?.('ended', () => { void this.finish(); });
       const processor = this.processor = new DillaMicrophoneProcessor({ preference: s.noise, mode: 'open', allowed: true, onStatus: status => this.events.status(status), processing: s.processing });
-      const stage = this.stage = new DillaInputStage(processor, { gain: s.inputVolume / 100, gate: gateOf(s.sensitivity), allowed: true,
+      const stage = this.stage = new DillaInputStage(processor, { gain: s.inputVolume / 100, gate: gateOf(s), allowed: true,
         onLevel: l => { if (!this.closed) this.events.level(l); }, createContext: () => ctx });
       await stage.init({ track, kind: Track.Kind.Audio, audioContext: ctx });
       if (this.closed) { await this.release(); return; }
@@ -74,7 +78,7 @@ export class LocalMicrophoneTest {
       if (s.output !== '' && typeof sink.setSinkId === 'function') await sink.setSinkId(s.output).catch(() => undefined);
       if (this.closed) { await this.release(); return; }
       const out = this.out = ctx.createGain();
-      out.gain.value = s.outputVolume / 100;
+      out.gain.value = loopbackGain(s.outputVolume);
       stage.output.connect(out);
       out.connect(ctx.destination);
       this.deadline = setTimeout(() => { void this.finish(); }, LOOPBACK_MS);
@@ -85,8 +89,8 @@ export class LocalMicrophoneTest {
   update(s: Partial<LoopbackSettings>): void {
     if (this.closed) return;
     if (s.inputVolume !== undefined) this.stage?.setGain(s.inputVolume / 100);
-    if (s.sensitivity !== undefined) this.stage?.setGate(gateOf(s.sensitivity));
-    if (s.outputVolume !== undefined && this.out !== undefined && this.ctx !== undefined) this.out.gain.setTargetAtTime(s.outputVolume / 100, this.ctx.currentTime, 0.01);
+    if (s.sensitivity !== undefined && s.mode !== undefined) this.stage?.setGate(gateOf({ sensitivity: s.sensitivity, mode: s.mode }));
+    if (s.outputVolume !== undefined && this.out !== undefined && this.ctx !== undefined) this.out.gain.setTargetAtTime(loopbackGain(s.outputVolume), this.ctx.currentTime, 0.01);
   }
 
   private async finish(): Promise<void> {

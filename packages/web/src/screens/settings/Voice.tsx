@@ -4,7 +4,7 @@ import { Banner, isPushToTalkKey, VoiceSettings, type CaptureKeyAction } from '@
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
-import { getProcessorStatus, subscribeProcessorStatus } from '../../call/processor-status.ts';
+import { getProcessorStatus, getStageStatus, subscribeProcessorStatus, subscribeStageStatus } from '../../call/processor-status.ts';
 import { processingSupport, voicePrefs } from '../../call/voice-prefs.ts';
 import { noiseBuildMode, noisePreference } from '../../../../media/src/audio/noise-preference';
 import { useMicTest } from './MicrophoneTest.tsx';
@@ -51,13 +51,13 @@ function useDevices(): { inputs: Device[]; outputs: Device[]; granted: boolean }
 }
 
 /**
- * A slider's value while it is dragged: shown at once, written as it moves, and handed back to the stored value once the
- * worker republished it (or the write failed).
+ * A slider's value while it is dragged: shown at once (and in Let's check), written only when it is let go (pointer up or
+ * key up; fix round 1), and handed back to the stored value once the worker republished it.
  */
-function useDraft(stored: number, write: (v: number) => void): [number, (v: number) => void] {
+function useDraft(stored: number, write: (v: number) => void): [number, (v: number, commit: boolean) => void] {
   const [draft, setDraft] = useState<number | null>(null);
   useEffect(() => { setDraft(null); }, [stored]);
-  return [draft ?? stored, (v: number) => { setDraft(v); write(v); }];
+  return [draft ?? stored, (v: number, commit: boolean) => { setDraft(v); if (commit && v !== stored) write(v); }];
 }
 
 const processorText = (status: ProcessorStatus, noise: string): string => `${t('settings.voice.processor', {processor: (status.effective === 'off' || (status.effective === 'browser' && status.browserNoise === 'off')) ? t('settings.voice.processor.off') : status.effective === 'browser' ? t('settings.voice.processor.browser') : status.effective === 'failed' ? t('settings.voice.processor.failed') : status.effective === 'initializing' ? t('settings.voice.processor.initializing') : status.engineName ?? t('settings.voice.lightweight')})} ${status.reason === null ? '' : t(`settings.voice.fallback.${status.reason}`)} ${status.browserNoise === 'unknown' ? t('settings.voice.browserUnknown') : noise === 'off' && status.browserNoise === 'on' ? t('settings.voice.browserStillOn') : ''}`.replace(/\s+/g, ' ').trim();
@@ -76,6 +76,7 @@ export function Voice(): React.JSX.Element {
   const call = useSlice('call');
   const inCall = call !== undefined && ['joining', 'in', 'paused', 'leaving'].includes(call.phase);
   const callStatus = useSyncExternalStore(subscribeProcessorStatus, getProcessorStatus);
+  const stageStatus = useSyncExternalStore(subscribeStageStatus, getStageStatus);
   const noise = noisePreference(settings[SETTINGS.voiceNoise]);
   const prefs = voicePrefs(settings);
   const [support] = useState(processingSupport);
@@ -91,8 +92,13 @@ export function Voice(): React.JSX.Element {
   const [release, setRelease] = useDraft(prefs.pttReleaseMs, v => write(SETTINGS.voicePttRelease, String(v)));
   const input = settings[SETTINGS.voiceInput] ?? '';
   const output = settings[SETTINGS.voiceOutput] ?? '';
+  const mode = settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad';
   const mic = useMicTest({ input, output, noise, processing: prefs.processing, inputVolume, outputVolume,
-    sensitivity: { auto: prefs.sensitivity.auto, thresholdDb: threshold } }, inCall);
+    sensitivity: { auto: prefs.sensitivity.auto, thresholdDb: threshold }, mode }, inCall);
+  // Fix round 1 (M1): the call says when its input stage is not applied, and whether the microphone then passes or is held.
+  const stageNote = !inCall || stageStatus === null || stageStatus === 'active' ? null
+    : stageStatus === 'unsupported' ? t('signalSettings.voice.stageUnsupported')
+      : mode === 'vad' && !prefs.sensitivity.auto ? t('signalSettings.voice.stageFailedClosed') : t('signalSettings.voice.stageFailedOpen');
   const stored = settings[SETTINGS.voicePttKey];
   const pttKey = stored !== undefined && isPushToTalkKey(stored) ? stored : null;
   const onCaptureKey = (action: CaptureKeyAction) => {
@@ -111,12 +117,13 @@ export function Voice(): React.JSX.Element {
       {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
       <VoiceSettings inputs={inputs} outputs={outputs} input={input} output={output}
         canSelectOutput={canSelectOutput} inputVolume={inputVolume} outputVolume={outputVolume}
-        mode={settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad'} pttKey={pttKey} capturing={capturing} pttReleaseMs={release} noise={noise}
-        micTest={{ testing: mic.testing, available: !inCall, levelDb: mic.levelDb, thresholdDb: prefs.sensitivity.auto ? mic.autoDb : threshold, auto: prefs.sensitivity.auto }}
+        mode={mode} pttKey={pttKey} capturing={capturing} pttReleaseMs={release} noise={noise}
+        micTest={{ testing: mic.testing, available: !inCall, levelDb: mic.levelDb, open: mic.open, thresholdDb: prefs.sensitivity.auto ? mic.autoDb : threshold, auto: prefs.sensitivity.auto }}
         echo={support.echo ? prefs.processing.echo : undefined} agc={support.agc ? prefs.processing.agc : undefined}
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
+          pttListening: t('signalSettings.voice.pttListening'), pttCancel: t('signalSettings.voice.pttCancel'),
           pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t('settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
           devices: t('signalSettings.voice.devices'), test: t('signalSettings.voice.test'), inputMode: t('signalSettings.voice.inputMode'),
           processing: t('signalSettings.voice.processing'), pttHint: t('signalSettings.voice.pttHint'),
@@ -125,7 +132,7 @@ export function Voice(): React.JSX.Element {
           noiseTag: noiseBuildMode === 'beta' && noise === 'automatic' ? t('signalSettings.voice.noiseTag') : undefined,
           volume: t('signalSettings.voice.volume'), inputVolume: t('signalSettings.voice.inputVolume'), outputVolume: t('signalSettings.voice.outputVolume'),
           testStart: t('signalSettings.voice.testStart'), testStop: t('signalSettings.voice.testStop'),
-          testHint: mic.failed ? t('settings.voice.testFailed') : t('signalSettings.voice.testHint'), testUnavailable: t('settings.voice.testCall'),
+          testHint: mic.failed ? t('settings.voice.testFailed') : t('signalSettings.voice.testHint'), testUnavailable: t('settings.voice.testCall'), testEchoOff: t('signalSettings.voice.testEchoOff'),
           heard: t('signalSettings.voice.heard'), tooQuiet: t('signalSettings.voice.tooQuiet'), notTesting: t('signalSettings.voice.notTesting'),
           levelValue: t('signalSettings.voice.levelValue', { value: '{value}' }), thresholdValue: t('signalSettings.voice.thresholdValue', { value: '{value}' }), noLevel: t('signalSettings.voice.noLevel'),
           threshold: t('signalSettings.voice.threshold'), auto: t('signalSettings.voice.auto'),
@@ -145,6 +152,7 @@ export function Voice(): React.JSX.Element {
         onAuto={on => write(SETTINGS.voiceSensitivityAuto, on ? 'on' : 'off')}
         onEcho={on => write(SETTINGS.voiceEcho, on ? 'on' : 'off')}
         onAgc={on => write(SETTINGS.voiceAgc, on ? 'on' : 'off')} />
+      {stageNote === null ? null : <p role="status">{stageNote}</p>}
       {noiseBuildMode === 'beta' ? <p>{t('settings.voice.noiseBeta')}</p> : null}
       {status === null ? null : <p role="status">{processorText(status, noise)}</p>}
     </section>

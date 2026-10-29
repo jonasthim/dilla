@@ -60,22 +60,52 @@ describe('SensitivityGate (task 10b)', () => {
     expect(quiet.threshold()).toBe(-70);
   });
 
-  it('automatic: speech over the line never raises the floor into the voice', () => {
+  // Fix round 1: minimum statistics over every frame (the quietest of the last 1.5 s).
+  it('automatic: speech with its pauses never raises the floor into the voice', () => {
     const g = new SensitivityGate(DEFAULT_SENSITIVITY);
     for (let t = 0; t < 1000; t += 10) g.update(-62, t);
-    const before = g.threshold();
-    for (let t = 1000; t < 20_000; t += 10) g.update(-20, t);
-    expect(g.threshold()).toBe(before);
+    expect(g.threshold()).toBe(-47);
+    // 20 s of talk: 350 ms of syllables at −20 dB, then a 120 ms pause at the room's −62.
+    for (let t = 1000; t < 21_000; t += 10) g.update((t % 470) < 350 ? -20 : -62, t);
+    expect(g.threshold()).toBe(-47);
   });
 
-  it('automatic: a louder room raises the floor at most 2 dB/s', () => {
+  it('automatic: a room that is loud from the first frame raises the line at once, up to −30', () => {
     const g = new SensitivityGate(DEFAULT_SENSITIVITY);
-    for (let t = 0; t < 1000; t += 10) g.update(-70, t);
+    for (let t = 0; t < 200; t += 10) g.update(-52, t);
+    expect(g.threshold()).toBe(-37);
+    const loud = new SensitivityGate(DEFAULT_SENSITIVITY);
+    for (let t = 0; t < 200; t += 10) loud.update(-30, t);
+    expect(loud.threshold()).toBe(-30);
+    // The steady room noise stays under the line: the gate does not stick open on it.
+    expect(g.update(-52, 210)).toBe(false);
+  });
+
+  it('automatic: a step rise in the room raises the line at most 6 dB/s, and a quieter room lowers it at once', () => {
+    const g = new SensitivityGate(DEFAULT_SENSITIVITY);
+    for (let t = 0; t < 2000; t += 10) g.update(-70, t);
     expect(g.threshold()).toBe(-55);
-    // −58 is under the line (−55): the floor creeps up, 2 dB per second at most.
-    for (let t = 1000; t < 2000; t += 10) g.update(-58, t);
+    for (let t = 2000; t < 4000; t += 10) g.update(-50, t);
+    // The −70 frames leave the 1.5 s window after 1.5 s; the floor then rises 6 dB/s: still below −35 after 2 s.
     expect(g.threshold()).toBeGreaterThan(-55);
-    expect(g.threshold()).toBeLessThanOrEqual(-53);
+    expect(g.threshold()).toBeLessThan(-35);
+    for (let t = 4000; t < 9000; t += 10) g.update(-50, t);
+    expect(g.threshold()).toBe(-35);
+    for (let t = 9000; t < 9200; t += 10) g.update(-80, t);
+    expect(g.threshold()).toBe(-65);
+  });
+
+  it('resetFloor measures the room again (another device)', () => {
+    const g = new SensitivityGate(DEFAULT_SENSITIVITY);
+    for (let t = 0; t < 1000; t += 10) g.update(-80, t);
+    g.resetFloor();
+    expect(g.threshold()).toBe(SENSITIVITY.autoStartDb);
+  });
+
+  it('a non-finite threshold or level never reaches the gate', () => {
+    expect(new SensitivityGate(manual(Number.NaN)).threshold()).toBe(-50);
+    const g = new SensitivityGate(manual(-40));
+    expect(g.update(Number.NaN, 0)).toBe(false);
   });
 
   it('reset closes the gate and forgets the hold', () => {
@@ -147,12 +177,32 @@ describe('the input stage worklet (task 10b)', () => {
   });
 
   it('a gate message changes the threshold and the level messages carry it', () => {
-    const p = new Stage({ processorOptions: { gate: manual(-40), allowed: true } });
+    const p = new Stage({ processorOptions: { gate: manual(-40), allowed: true, report: true } });
     p.port.onmessage!({ data: { kind: 'gate', gate: manual(-10) } });
     expect(peak(run(p, 0.1, 200))).toBe(0); // −20 dB is under −10 now
     const level = p.port.sent.at(-1) as { kind: string; db: number; thresholdDb: number; open: boolean };
     expect(level).toMatchObject({ kind: 'level', thresholdDb: -10, open: false });
     expect(level.db).toBeCloseTo(-20, 0);
+  });
+
+  it('posts no level messages unless asked (the call reads none)', () => {
+    const p = new Stage({ processorOptions: { gate: manual(-40), allowed: true } });
+    run(p, 0.1, 200);
+    expect(p.port.sent).toEqual([]);
+  });
+
+  it('starts closed when not told it is allowed', () => {
+    const p = new Stage({ processorOptions: { gate: manual(-100) } });
+    expect(peak(run(p, 0.1, 100))).toBe(0);
+  });
+
+  it('a restart (new capture) starts from silence and measures the room again', () => {
+    const p = new Stage({ processorOptions: { gate: { enabled: true, auto: true, thresholdDb: -50 }, allowed: true, report: true } });
+    run(p, 0.03, 500); // about −30 dB: the floor, the line at −30
+    p.port.onmessage!({ data: { kind: 'restart' } });
+    run(p, 0.0001, 150);
+    const level = p.port.sent.at(-1) as { thresholdDb: number };
+    expect(level.thresholdDb).toBe(-65);
   });
 
   it('push to talk (gate disabled) passes everything', () => {
@@ -162,12 +212,40 @@ describe('the input stage worklet (task 10b)', () => {
 });
 
 describe('DillaInputStage', () => {
+  const failing = () => ({ resume: async () => undefined, close: vi.fn(async () => undefined), audioWorklet: { addModule: () => Promise.reject(new Error('blocked')) } }) as unknown as AudioContext;
+  const cloneable = () => {
+    const clone = { enabled: true, stop: vi.fn() };
+    return { clone, track: { clone: () => clone } as unknown as MediaStreamTrack };
+  };
+
+  it('M1: a worklet that fails to start under a manual threshold sends nothing; automatic or push to talk pass through', async () => {
+    const { clone, track } = cloneable();
+    const stage = new DillaInputStage(null, { gate: { enabled: true, auto: false, thresholdDb: -40 }, createContext: failing, workletUrl: 'x' });
+    await stage.init({ track, kind: 'audio' } as never);
+    expect(stage.state).toBe('failed');
+    stage.setCaptureAllowed(true);
+    expect(clone.enabled).toBe(false);
+    stage.setGate({ enabled: true, auto: true, thresholdDb: -40 });
+    expect(clone.enabled).toBe(true);
+    stage.setGate({ enabled: false, auto: false, thresholdDb: -40 });
+    expect(clone.enabled).toBe(true);
+    stage.setCaptureAllowed(false);
+    expect(clone.enabled).toBe(false);
+  });
+
+  it('clamps a gain that is not a number to 1 and a stage starts closed', () => {
+    const stage = new DillaInputStage(null, { gain: Number.NaN });
+    expect((stage as unknown as { gain: number }).gain).toBe(1);
+    expect((stage as unknown as { allowed: boolean }).allowed).toBe(false);
+  });
+
   it('without an AudioWorklet passes a clone through, disabled until capture is allowed', async () => {
     const clone = { enabled: true, stop: vi.fn(), clone: vi.fn() };
     const track = { clone: () => clone } as unknown as MediaStreamTrack;
     const stage = new DillaInputStage(null);
     await stage.init({ track, kind: 'audio' } as never);
     expect(stage.active).toBe(false);
+    expect(stage.state).toBe('unsupported');
     expect(stage.processedTrack).toBe(clone);
     expect(clone.enabled).toBe(false);
     stage.setCaptureAllowed(true);

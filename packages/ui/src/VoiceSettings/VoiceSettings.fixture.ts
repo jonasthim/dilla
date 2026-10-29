@@ -4,7 +4,7 @@ import type { VoiceSettingsProps } from './VoiceSettings.tsx';
 export const VOICE_LABELS: VoiceSettingsProps['labels'] = {
   input: 'Input device', output: 'Output device', systemDefault: 'System default',
   outputUnsupported: 'This browser plays voice on the system default device.', mode: 'Input mode', vad: 'Voice activity', ptt: 'Push to talk',
-  pttKey: 'Push-to-talk key', pttNone: 'No key set', pttSet: 'Set key',
+  pttKey: 'Shortcut', pttNone: 'No key set', pttSet: 'Change', pttListening: 'Press a key…', pttCancel: 'Cancel',
   pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
   pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
   noise: 'Noise suppression', automatic: 'Automatic', lightweight: 'Lightweight', off: 'Off',
@@ -15,6 +15,7 @@ export const VOICE_LABELS: VoiceSettingsProps['labels'] = {
   testStart: 'Let’s check', testStop: 'Stop testing',
   testHint: 'Talk normally. The bar is your level; the white line is where dilla starts sending your voice. Your voice plays back so you hear what others hear, so wear headphones.',
   testUnavailable: 'Microphone testing is unavailable during a call.',
+  testEchoOff: 'Echo cancellation is off: use headphones, or your speakers will feed back into the mic.',
   heard: 'You’re being heard', tooQuiet: 'Too quiet to send', notTesting: 'Not testing', levelValue: 'level {value}', thresholdValue: 'threshold {value}', noLevel: '—',
   threshold: 'Sensitivity threshold', auto: 'Set sensitivity automatically',
   autoHintOn: 'dilla picks the threshold from your room noise. Turn off to drag the line yourself.',

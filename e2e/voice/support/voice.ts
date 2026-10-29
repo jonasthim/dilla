@@ -298,6 +298,9 @@ export async function pushToTalk(page: Page, code: string): Promise<void> {
   await ptt.click();
   await expect(ptt).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
   await dialog.getByRole('button', { name: copy('settings.voice.pttSet'), exact: true }).click();
+  // Ruling AX (Signal task 10b fix round 1): while listening the key box says "Press a key…" and the button is Cancel.
+  await expect(dialog.locator('.d-voice-settings__kbd')).toHaveText(copy('signalSettings.voice.pttListening'), { timeout: WAIT });
+  await expect(dialog.getByRole('button', { name: copy('signalSettings.voice.pttCancel'), exact: true })).toBeFocused();
   await page.keyboard.press(code);
   await expect(dialog.locator('.d-voice-settings__kbd')).toHaveText(code, { timeout: WAIT });
   await closeSettings(page);

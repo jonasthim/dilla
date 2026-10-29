@@ -30,7 +30,12 @@ test('a voice under the threshold is not sent; the threshold and the levels pers
     await line.focus();
     await alice.page.keyboard.press('End');
     await expect(dialog.getByText(copy('signalSettings.voice.thresholdValue', { value: '0 dB' }), { exact: true })).toBeVisible({ timeout: WAIT });
-    await dialog.getByRole('slider', { name: copy('signalSettings.voice.inputVolume'), exact: true }).fill('150');
+    // A range is driven by the keyboard, as a person would: End (200 %), then fifty steps down; each key up writes.
+    const volume = dialog.getByRole('slider', { name: copy('signalSettings.voice.inputVolume'), exact: true });
+    await volume.focus();
+    await alice.page.keyboard.press('End');
+    for (let i = 0; i < 50; i++) await alice.page.keyboard.press('ArrowLeft');
+    await expect(volume).toHaveAttribute('aria-valuetext', '150%');
     await closeSettings(alice.page);
 
     await joinVoice(alice.page, peer.communityName, peer.voiceName);

@@ -65,6 +65,21 @@ try {
           new Promise(resolve => setTimeout(resolve, 2_000)),
         ]));
         await checkStory(page, story);
+        // Task 10b fix round 1: a press on the sensitivity meter sets the value under the pointer (the slider's thumb is 2px,
+        // so the native value and the drawn line agree at every point, ends included).
+        if (story.id === 'settings-sensitivitymeter--manual-drag') {
+          const input = page.locator('.d-sens__input');
+          const box = await input.boundingBox();
+          for (const want of [-80, -20, -2]) {
+            await page.mouse.click(box.x + box.width * (want + 100) / 100, box.y + box.height / 2);
+            const got = Number(await input.inputValue());
+            if (Math.abs(got - want) > 1) throw new Error(`SensitivityMeter: a press at ${want} dB set ${got}`);
+            const line = await page.locator('.d-sens__line').boundingBox();
+            const centre = line.x + line.width / 2;
+            const expected = box.x + box.width * (got + 100) / 100;
+            if (Math.abs(centre - expected) > 1.5) throw new Error(`SensitivityMeter: the line is at ${centre}, the value at ${expected}`);
+          }
+        }
         process.stdout.write(`PASS ${story.id}\n`);
       } catch (error) {
         failures += 1;

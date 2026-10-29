@@ -1,6 +1,7 @@
 // README §8 SensitivityMeter: Idle, TestingHeard, TestingTooQuiet, AutoOn (line locked), ManualDrag, from the worked example
 // (docs/design/signal/stories/SensitivityMeter.stories.tsx). Levels are fixed (no timers) so screenshots stay deterministic.
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { useState } from 'react';
 import { SensitivityMeter, segmentStates, type SensitivityMeterProps } from './SensitivityMeter.tsx';
 
 /** Ruling C: the prototype's geometry and colours, measured in the real browser (scripts/check-stories.mjs runs every play). */
@@ -61,4 +62,11 @@ export const Clipping: Story = { args: { testing: true, levelDb: -6, thresholdDb
 /** Automatic sensitivity: the line sits where dilla put it and cannot be dragged (cursor not-allowed). */
 export const AutoOn: Story = { args: { testing: true, levelDb: -36, thresholdDb: -52, auto: true } };
 /** Automatic off: the line is a slider (arrows 1 dB, Page Up/Down 10 dB), here dragged to −35 dB. */
-export const ManualDrag: Story = { args: { auto: false, testing: true, levelDb: -40, thresholdDb: -35 } };
+export const ManualDrag: Story = {
+  args: { auto: false, testing: true, levelDb: -40, thresholdDb: -35 },
+  // The line follows a press, so scripts/check-stories.mjs can click a spot and read the value under it (fix round 1).
+  render: function Render(args) {
+    const [db, setDb] = useState(args.thresholdDb);
+    return <SensitivityMeter {...args} thresholdDb={db} onThresholdChange={setDb} />;
+  },
+};

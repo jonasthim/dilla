@@ -96,10 +96,10 @@ function Voice({ ptt }: { ptt?: boolean }) {
       <VoiceSettings inputs={[{ id: 'yeti', label: 'Blue Yeti' }]} outputs={[{ id: 'phones', label: 'Headphones' }]} input="" output=""
         canSelectOutput inputVolume={100} outputVolume={100} mode={ptt ? 'ptt' : 'vad'} pttKey={ptt ? 'F13' : null} capturing={false}
         pttReleaseMs={200} noise="automatic" echo agc
-        micTest={{ testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true }}
+        micTest={{ testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true, open: false }}
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
-          ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
+          ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'), pttListening: t('signalSettings.voice.pttListening'), pttCancel: t('signalSettings.voice.pttCancel'),
           pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'),
           automatic: t('settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
           devices: t('signalSettings.voice.devices'), test: t('signalSettings.voice.test'), inputMode: t('signalSettings.voice.inputMode'), processing: t('signalSettings.voice.processing'),
@@ -108,7 +108,7 @@ function Voice({ ptt }: { ptt?: boolean }) {
           noiseTag: t('signalSettings.voice.noiseTag'),
           volume: t('signalSettings.voice.volume'), inputVolume: t('signalSettings.voice.inputVolume'), outputVolume: t('signalSettings.voice.outputVolume'),
           testStart: t('signalSettings.voice.testStart'), testStop: t('signalSettings.voice.testStop'), testHint: t('signalSettings.voice.testHint'),
-          testUnavailable: t('settings.voice.testCall'), heard: t('signalSettings.voice.heard'), tooQuiet: t('signalSettings.voice.tooQuiet'),
+          testUnavailable: t('settings.voice.testCall'), testEchoOff: t('signalSettings.voice.testEchoOff'), heard: t('signalSettings.voice.heard'), tooQuiet: t('signalSettings.voice.tooQuiet'),
           notTesting: t('signalSettings.voice.notTesting'), levelValue: t('signalSettings.voice.levelValue', { value: '{value}' }), thresholdValue: t('signalSettings.voice.thresholdValue', { value: '{value}' }),
           noLevel: t('signalSettings.voice.noLevel'), threshold: t('signalSettings.voice.threshold'), auto: t('signalSettings.voice.auto'),
           autoHintOn: t('signalSettings.voice.autoHintOn'), autoHintOff: t('signalSettings.voice.autoHintOff'),

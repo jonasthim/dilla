@@ -9,7 +9,7 @@ const meta = {
     outputs: [{ id: 'out-1', label: 'Speakers' }, { id: 'out-2', label: 'Headset' }],
     input: '', output: '', canSelectOutput: true, inputVolume: 100, outputVolume: 100, mode: 'vad', pttKey: null, capturing: false, pttReleaseMs: 200,
     noise: 'automatic', echo: true, agc: true,
-    micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true },
+    micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true, open: false },
     labels: VOICE_LABELS,
     ...VOICE_HANDLERS,
   },
@@ -41,12 +41,14 @@ export const OutputUnsupported: Story = { args: { canSelectOutput: false, noise:
 /** Automatic while it is a beta: the row's BETA tag (the app's beta build, Automatic picked). */
 export const NoiseBeta: Story = { args: { labels: { ...VOICE_LABELS, noiseTag: 'BETA' } } };
 /** Let's check running: you are heard (the pill green, Stop testing in the danger outline). */
-export const TestingHeard: Story = { args: { micTest: { testing: true, available: true, levelDb: -24, thresholdDb: -48, auto: true } } };
+export const TestingHeard: Story = { args: { micTest: { testing: true, available: true, levelDb: -24, thresholdDb: -48, auto: true, open: true } } };
 /** Let's check running under the line: "Too quiet to send". */
-export const TestingTooQuiet: Story = { args: { micTest: { testing: true, available: true, levelDb: -64, thresholdDb: -48, auto: true } } };
+export const TestingTooQuiet: Story = { args: { micTest: { testing: true, available: true, levelDb: -64, thresholdDb: -48, auto: true, open: false } } };
 /** Automatic sensitivity off: the line can be dragged. */
-export const ManualSensitivity: Story = { args: { micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -50, auto: false } } };
+export const ManualSensitivity: Story = { args: { micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -50, auto: false, open: false } } };
 /** In a call the microphone is the call's: Let's check waits. */
-export const TestUnavailable: Story = { args: { micTest: { testing: false, available: false, levelDb: -100, thresholdDb: -48, auto: true } } };
+export const TestUnavailable: Story = { args: { micTest: { testing: false, available: false, levelDb: -100, thresholdDb: -48, auto: true, open: false } } };
 /** Ruling AR: Safari has no automatic gain constraint, so that row is not shown. */
 export const NoAutomaticGain: Story = { args: { agc: undefined } };
+/** Echo cancellation off: the Mic test says to use headphones (fix round 1, L3). */
+export const EchoOff: Story = { args: { echo: false } };

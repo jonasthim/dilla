@@ -49,7 +49,14 @@ export interface MicTestState {
   /** The threshold in force (the computed one while automatic). */
   thresholdDb: number;
   auto: boolean;
+  /** Fix round 1: the gate is open (the stage's own decision, with its hold), which the pill shows. */
+  open: boolean;
 }
+
+/** Fix round 1: a slider's value while it moves (`commit` false) and when it is let go (`commit` true: pointer up or key up). */
+export type SliderChange = (value: number, commit: boolean) => void;
+/** The pill's state is announced only once it has held this long, so a talking voice is not read out word by word. */
+export const PILL_ANNOUNCE_MS = 1000;
 
 export interface VoiceSettingsProps {
   inputs: readonly { id: string; label: string }[];
@@ -77,6 +84,8 @@ export interface VoiceSettingsProps {
   labels: {
     input: string; output: string; systemDefault: string; outputUnsupported: string;
     mode: string; vad: string; ptt: string; pttKey: string; pttNone: string; pttSet: string; pttPrompt: string; pttRefused: string;
+    /** Ruling AX: while listening the key box says "Press a key…" and the button "Cancel". */
+    pttListening: string; pttCancel: string;
     noise: string; automatic: string; lightweight: string; off: string;
     /** The prototype's section headings (README §5.9): Devices, Mic test, Input mode, Processing. */
     devices?: string; test?: string; inputMode?: string; processing?: string;
@@ -89,6 +98,8 @@ export interface VoiceSettingsProps {
     volume: string; inputVolume: string; outputVolume: string;
     /** Let's check / Stop testing, the Mic test description, and the description while a call holds the microphone. */
     testStart: string; testStop: string; testHint: string; testUnavailable: string;
+    /** Fix round 1 (L3): said under the description while echo cancellation is off. */
+    testEchoOff: string;
     /** The status pill and the two readouts ("level {value}", "threshold {value}"; the level is "—" while not testing). */
     heard: string; tooQuiet: string; notTesting: string; levelValue: string; thresholdValue: string; noLevel: string;
     /** The threshold slider's name; automatic sensitivity's row and its description in each state. */
@@ -99,8 +110,8 @@ export interface VoiceSettingsProps {
   };
   onInput(id: string): void;
   onOutput(id: string): void;
-  onInputVolume(percent: number): void;
-  onOutputVolume(percent: number): void;
+  onInputVolume: SliderChange;
+  onOutputVolume: SliderChange;
   onMode(mode: 'vad' | 'ptt'): void;
   /**
    * 'start' from the set-key button; then the captured key (its KeyboardEvent.code and modifiers) for an accepted key,
@@ -108,11 +119,11 @@ export interface VoiceSettingsProps {
    * prompt says why (`settings.voice.pttRefused`) and the capture goes on.
    */
   onCaptureKey(action: CaptureKeyAction): void;
-  onPttRelease(ms: number): void;
+  onPttRelease: SliderChange;
   onNoise(mode: 'automatic' | 'lightweight' | 'off'): void;
   /** Let's check pressed: starts the ten-second test, or stops it while it runs. */
   onMicTest(): void;
-  onThreshold(db: number): void;
+  onThreshold: SliderChange;
   onAuto(on: boolean): void;
   onEcho(on: boolean): void;
   onAgc(on: boolean): void;
@@ -134,12 +145,28 @@ function DeviceSelect({ id, value, devices, systemDefault, label, onChange }: {
 }
 
 /** The prototype's volume row under a device: "Volume", the 0–200 % range with its accent fill, the value. */
-function VolumeRow({ label, name, value, onChange }: { label: string; name: string; value: number; onChange(v: number): void }) {
+/** A range's handlers: each move previews, letting go (pointer or key) commits the last value it moved to. */
+export function useSliding(onChange: SliderChange) {
+  const last = useRef<number | null>(null);
+  const commit = (e: { currentTarget: HTMLInputElement }) => {
+    const v = last.current ?? Number(e.currentTarget.value);
+    last.current = null;
+    onChange(v, true);
+  };
+  return {
+    onChange: (e: { target: HTMLInputElement }) => { last.current = Number(e.target.value); onChange(last.current, false); },
+    onPointerUp: commit,
+    onKeyUp: commit,
+  };
+}
+
+function VolumeRow({ label, name, value, onChange }: { label: string; name: string; value: number; onChange: SliderChange }) {
+  const sliding = useSliding(onChange);
   return (
     <div className="d-voice-settings__volume">
       <span className="d-voice-settings__volume-label" aria-hidden="true">{label}</span>
       <input type="range" className="d-voice-settings__range" min={0} max={200} step={1} value={value} aria-label={name}
-        aria-valuetext={`${value}%`} style={fill(value / 2)} onChange={e => onChange(Number(e.target.value))} />
+        aria-valuetext={`${value}%`} style={fill(value / 2)} {...sliding} />
       <span className="d-voice-settings__volume-value" aria-hidden="true">{value}%</span>
     </div>
   );
@@ -172,6 +199,7 @@ export function VoiceSettings({
   onThreshold, onAuto, onEcho, onAgc,
 }: VoiceSettingsProps) {
   const id = useId();
+  const releaseSliding = useSliding(onPttRelease);
   const captureRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (capturing) captureRef.current?.focus(); }, [capturing]);
 
@@ -201,7 +229,16 @@ export function VoiceSettings({
 
   const heading = (text: string | undefined, hid: string) => text ? <h3 id={hid} className="d-voice-settings__heading">{text}</h3> : null;
   const noiseHint = labels.noiseHints?.[noise];
-  const heard = micTest.testing ? (micTest.levelDb > micTest.thresholdDb ? 'heard' : 'quiet') : 'idle';
+  // Fix round 1: the pill follows the gate's own decision (its hold debounces it); the live region says a state only once
+  // it held for a second.
+  const heard = micTest.testing ? (micTest.open ? 'heard' : 'quiet') : 'idle';
+  const [announced, setAnnounced] = useState<'heard' | 'quiet' | 'idle'>('idle');
+  useEffect(() => {
+    if (heard === announced) return;
+    const timer = setTimeout(() => setAnnounced(heard), PILL_ANNOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [heard, announced]);
+  const pillText = (state: typeof heard) => (state === 'heard' ? labels.heard : state === 'quiet' ? labels.tooQuiet : labels.notTesting);
   // README §5.9: four bordered groups (radius 10, 16px padding, 14px apart), each under a micro heading.
   return (
     <div className="d-voice-settings">
@@ -233,13 +270,15 @@ export function VoiceSettings({
           </button>
         </div>
         <p className="d-voice-settings__desc">{micTest.available || micTest.testing ? labels.testHint : labels.testUnavailable}</p>
+        {echo === false ? <p className="d-voice-settings__desc d-voice-settings__echo-off">{labels.testEchoOff}</p> : null}
         <SensitivityMeter levelDb={micTest.levelDb} thresholdDb={micTest.thresholdDb} auto={micTest.auto} testing={micTest.testing}
-          label={labels.threshold} onThresholdChange={onThreshold} />
+          label={labels.threshold} onThresholdChange={(db, commit) => onThreshold(db, commit ?? true)} />
         <div className="d-voice-settings__readout">
-          <span className="d-voice-settings__pill" data-state={heard} role="status">
+          <span className="d-voice-settings__pill" data-state={heard}>
             <span className="d-voice-settings__pill-dot" aria-hidden="true" />
-            {heard === 'heard' ? labels.heard : heard === 'quiet' ? labels.tooQuiet : labels.notTesting}
+            {pillText(heard)}
           </span>
+          <span className="d-sr-only" role="status">{micTest.testing && announced !== 'idle' ? pillText(announced) : null}</span>
           <span className="d-voice-settings__stat">{fmt(labels.levelValue, micTest.testing ? formatDb(micTest.levelDb) : labels.noLevel)}</span>
           <span className="d-voice-settings__stat">{fmt(labels.thresholdValue, formatDb(micTest.thresholdDb))}</span>
         </div>
@@ -257,10 +296,10 @@ export function VoiceSettings({
             <div className="d-voice-settings__field">
               <span className="d-voice-settings__label" id={`${id}-ptt-label`}>{labels.pttKey}</span>
               <span className="d-voice-settings__key" role="group" aria-labelledby={`${id}-ptt-label`}>
-                <kbd className="d-voice-settings__kbd" data-empty={pttKey === null ? 'true' : undefined} data-listening={capturing ? 'true' : undefined}>{pttKey ?? labels.pttNone}</kbd>
+                <kbd className="d-voice-settings__kbd" data-empty={pttKey === null && !capturing ? 'true' : undefined} data-listening={capturing ? 'true' : undefined}>{capturing ? labels.pttListening : pttKey ?? labels.pttNone}</kbd>
                 <button ref={captureRef} type="button" className="d-btn d-voice-settings__capture" data-variant="default" data-size="md"
                   aria-describedby={`${id}-prompt`} onKeyDown={onCaptureKeyDown} onBlur={() => { if (capturing) onCaptureKey('cancel'); }}
-                  onClick={() => { if (!capturing) onCaptureKey('start'); }}>{labels.pttSet}</button>
+                  onClick={() => onCaptureKey(capturing ? 'cancel' : 'start')}>{capturing ? labels.pttCancel : labels.pttSet}</button>
               </span>
               {labels.pttHint ? <span className="d-voice-settings__note">{labels.pttHint}</span> : null}
             </div>
@@ -269,7 +308,7 @@ export function VoiceSettings({
               <div className="d-voice-settings__volume">
                 <input id={`${id}-release`} type="range" className="d-voice-settings__range" min={0} max={1000} step={20} value={pttReleaseMs}
                   aria-valuetext={`${pttReleaseMs} ms`} aria-describedby={`${id}-release-hint`} style={fill(pttReleaseMs / 10)}
-                  onChange={e => onPttRelease(Number(e.target.value))} />
+                  {...releaseSliding} />
                 <span className="d-voice-settings__volume-value d-voice-settings__release-value" aria-hidden="true">{pttReleaseMs} ms</span>
               </div>
               <span id={`${id}-release-hint`} className="d-voice-settings__note">{labels.releaseHint}</span>

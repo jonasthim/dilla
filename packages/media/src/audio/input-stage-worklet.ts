@@ -30,11 +30,14 @@ class DillaInputStage extends AudioWorkletProcessor {
   private peak: number = SENSITIVITY.minDb;
   private samples = 0;
   private stopped = false;
+  /** Fix round 1: level messages only while someone reads them (Settings' Let's check); the call's stage posts none. */
+  private readonly report: boolean;
 
-  constructor(options: { processorOptions?: { gate?: SensitivityConfig; allowed?: boolean } }) {
+  constructor(options: { processorOptions?: { gate?: SensitivityConfig; allowed?: boolean; report?: boolean } }) {
     super();
     this.gate = new SensitivityGate(options.processorOptions?.gate);
-    this.allowed = options.processorOptions?.allowed ?? true;
+    this.allowed = options.processorOptions?.allowed ?? false;
+    this.report = options.processorOptions?.report === true;
     this.ring = new Float32Array(Math.max(1, Math.round(sampleRate * SENSITIVITY.lookaheadMs / 1000)));
     this.port.onmessage = (e: MessageEvent) => this.onMessage(e.data as { kind: string; gate?: SensitivityConfig; allowed?: boolean });
   }
@@ -45,7 +48,11 @@ class DillaInputStage extends AudioWorkletProcessor {
       this.allowed = d.allowed === true;
       // Nothing captured before a mute is sent after it: the delay line and the gate start over.
       this.clear();
-      if (!this.allowed) this.port.postMessage({ kind: 'level', db: SENSITIVITY.minDb, thresholdDb: this.gate.threshold(), open: false });
+      if (!this.allowed && this.report) this.port.postMessage({ kind: 'level', db: SENSITIVITY.minDb, thresholdDb: this.gate.threshold(), open: false });
+    } else if (d.kind === 'restart') {
+      // A new capture (another device or other processing): silence first, and the room is measured again.
+      this.clear();
+      this.gate.resetFloor();
     } else if (d.kind === 'destroy') { this.stopped = true; this.clear(); }
   }
 
@@ -68,7 +75,7 @@ class DillaInputStage extends AudioWorkletProcessor {
         this.target = this.gate.update(db, this.samples * 1000 / sampleRate) ? 1 : 0;
         this.sum = 0; this.n = 0;
         if (db > this.peak) this.peak = db;
-        if (++this.frames % LEVEL_EVERY === 0) {
+        if (++this.frames % LEVEL_EVERY === 0 && this.report) {
           this.port.postMessage({ kind: 'level', db: this.peak, thresholdDb: this.gate.threshold(), open: this.target === 1 });
           this.peak = SENSITIVITY.minDb;
         }

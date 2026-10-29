@@ -23,7 +23,7 @@ vi.mock('@dilla/media', () => ({
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); made.stage.length = 0; });
 
 const SETTINGS: LoopbackSettings = { input: 'mic', output: 'spk', noise: 'off', processing: { echo: false, agc: true }, inputVolume: 150,
-  outputVolume: 50, sensitivity: { auto: false, thresholdDb: -40 } };
+  outputVolume: 50, sensitivity: { auto: false, thresholdDb: -40 }, mode: 'vad' };
 
 function audio() {
   let closed = false, stopped = false;
@@ -58,10 +58,14 @@ it('changes during the test apply at once', async () => {
   const a = audio();
   const test = new LocalMicrophoneTest(events());
   await test.start(SETTINGS);
-  test.update({ inputVolume: 80, sensitivity: { auto: true, thresholdDb: -40 }, outputVolume: 200 });
+  test.update({ inputVolume: 80, sensitivity: { auto: true, thresholdDb: -40 }, mode: 'vad', outputVolume: 200 });
   expect(made.stage[0].gains).toEqual([0.8]);
   expect(made.stage[0].gates).toEqual([{ enabled: true, auto: true, thresholdDb: -40 }]);
-  expect(a.gains[0].gain.setTargetAtTime).toHaveBeenCalledWith(2, 0, 0.01);
+  // L3: the loopback never plays above 100 %.
+  expect(a.gains[0].gain.setTargetAtTime).toHaveBeenCalledWith(1, 0, 0.01);
+  // Under push to talk the gate is off, as in the call.
+  test.update({ sensitivity: { auto: true, thresholdDb: -40 }, mode: 'ptt' });
+  expect(made.stage[0].gates.at(-1)).toEqual({ enabled: false, auto: true, thresholdDb: -40 });
   await test.close();
 });
 

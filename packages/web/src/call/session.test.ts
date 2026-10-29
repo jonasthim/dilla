@@ -4099,3 +4099,70 @@ describe('task 10b: input stage, gate, volumes, push-to-talk release and echo/AG
     expect(stages[0].allowed.at(-1)).toBe(false);
   });
 });
+
+describe('task 10b fix round 1: the stage starts closed, bad levels never reach it, failures release it, its state is reported', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  type Fake = { options: InputStageOptions; allowed: boolean[]; gains: number[]; destroyed: number; state: 'active' | 'failed';
+    setGain(g: number): void; setGate(): void; setCaptureAllowed(a: boolean): void; destroy(): Promise<void> };
+  const stageMaker = (f: ReturnType<typeof fakes>, state: Fake['state'] = 'active') => {
+    const made: Fake[] = [];
+    f.deps.createInputStage = (_inner, options) => {
+      const s: Fake = { options, allowed: [], gains: [], destroyed: 0, state,
+        setGain(g) { s.gains.push(g); }, setGate() {}, setCaptureAllowed(a) { s.allowed.push(a); }, destroy() { s.destroyed += 1; return Promise.resolve(); } };
+      made.push(s);
+      return s;
+    };
+    return made;
+  };
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+
+  it('L1: the stage is made closed; applyMic opens it', async () => {
+    const f = fakes();
+    const made = stageMaker(f);
+    await start(f, { noise: 'off' });
+    expect(made[0].options.allowed).toBe(false);
+    expect(made[0].allowed.at(-1)).toBe(true);
+  });
+
+  it('L2: non-finite or out-of-range levels read as the defaults', async () => {
+    const f = fakes();
+    const made = stageMaker(f);
+    const call = await start(f, { noise: 'off', inputVolume: Number.NaN, sensitivity: { auto: false, thresholdDb: Number.POSITIVE_INFINITY }, pttReleaseMs: Number.NaN });
+    expect(made[0].options.gain).toBe(1);
+    expect(made[0].options.gate).toEqual({ enabled: true, auto: false, thresholdDb: -50 });
+    call.setInputVolume(Number.NaN);
+    call.setSensitivity({ auto: false, thresholdDb: Number.NaN });
+    expect(made[0].gains).toEqual([]);
+  });
+
+  it('a stage whose setProcessor fails is destroyed (with the noise processor inside it)', async () => {
+    const f = fakes();
+    const made = stageMaker(f);
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    f.localTracks.length = 0;
+    const real = f.room.localParticipant.publishTrack;
+    f.room.localParticipant.publishTrack = vi.fn(async (track: unknown, o: unknown) => {
+      const pub = await (real as (t: unknown, o: unknown) => Promise<{ track: { setProcessor: unknown } }>)(track, o);
+      pub.track.setProcessor = vi.fn(async () => { throw new Error('E_AUDIO'); });
+      return pub;
+    }) as typeof real;
+    await start(f, { noise: 'on' });
+    expect(made.length).toBeGreaterThan(0);
+    expect(made.every(s => s.destroyed === 1)).toBe(true);
+  });
+
+  it('M1: the stage state reaches Settings (active, failed), and clears when the call ends', async () => {
+    const { getStageStatus } = await import('./processor-status.ts');
+    const f = fakes();
+    stageMaker(f, 'failed');
+    const call = await start(f, { noise: 'off' });
+    expect(getStageStatus()).toBe('failed');
+    await call.leave('user');
+    expect(getStageStatus()).toBeNull();
+  });
+});

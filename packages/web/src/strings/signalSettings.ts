@@ -35,6 +35,14 @@ export const signalSettings = {
   'signalSettings.voice.echoHint': 'Stops your speakers from feeding back into the mic',
   'signalSettings.voice.agc': 'Automatic gain control',
   'signalSettings.voice.agcHint': 'Evens out loud and quiet speech',
+  // Task 10b fix round 1: Ruling AX (the prototype's push-to-talk row while it listens), and the headphones note (L3).
+  'signalSettings.voice.pttListening': 'Press a key…',
+  'signalSettings.voice.pttCancel': 'Cancel',
+  // Fix round 1 (M1): Settings during a call whose input stage is not applied.
+  'signalSettings.voice.stageUnsupported': 'This browser cannot apply the input volume or sensitivity: your microphone is sent as it is.',
+  'signalSettings.voice.stageFailedOpen': 'Input volume and sensitivity could not start: your microphone is sent as it is.',
+  'signalSettings.voice.stageFailedClosed': 'Sensitivity could not start, so with a manual threshold nothing is sent. Turn on automatic sensitivity or use push to talk to be heard.',
+  'signalSettings.voice.testEchoOff': 'Echo cancellation is off: use headphones, or your speakers will feed back into the mic.',
   'signalSettings.menu.serverSettings': 'Server settings',
   'signalSettings.menu.muteServer': 'Mute server',
   'signalSettings.menu.notifyDefault': 'Notify: default',

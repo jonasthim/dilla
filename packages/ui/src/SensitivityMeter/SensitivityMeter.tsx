@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from 'react';
+import { useRef, type KeyboardEvent } from 'react';
 import './SensitivityMeter.css';
 
 export interface SensitivityMeterProps {
@@ -10,7 +10,8 @@ export interface SensitivityMeterProps {
   auto: boolean;
   /** True while Let's check runs: only then are segments lit. */
   testing: boolean;
-  onThresholdChange(db: number): void;
+  /** The threshold as it moves (`commit` false) and when it is let go (`commit` true: pointer up, key up, Page Up/Down). */
+  onThresholdChange(db: number, commit?: boolean): void;
   /** The threshold slider's name, e.g. "Sensitivity threshold". */
   label?: string;
 }
@@ -42,11 +43,18 @@ export function segmentStates(levelDb: number, thresholdDb: number, testing: boo
  */
 export function SensitivityMeter({ levelDb, thresholdDb, auto, testing, onThresholdChange, label }: SensitivityMeterProps) {
   const thr = clamp(thresholdDb);
+  // The last value the slider moved to: letting go commits it (a controlled range may already show the old prop again).
+  const last = useRef<number | null>(null);
+  const commit = (e: { currentTarget: HTMLInputElement }) => {
+    const v = last.current ?? clamp(Number(e.currentTarget.value));
+    last.current = null;
+    onThresholdChange(v, true);
+  };
   const left = `${thr - MIN}%`;
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (auto || (e.key !== 'PageUp' && e.key !== 'PageDown')) return;
     e.preventDefault();
-    onThresholdChange(clamp(thr + (e.key === 'PageUp' ? 10 : -10)));
+    onThresholdChange(clamp(thr + (e.key === 'PageUp' ? 10 : -10)), true);
   };
   return (
     <div className="d-sens" data-auto={auto ? 'true' : undefined}>
@@ -58,7 +66,9 @@ export function SensitivityMeter({ levelDb, thresholdDb, auto, testing, onThresh
         <span className="d-sens__value" aria-hidden="true" style={{ left }}>{formatDb(thr)}</span>
         <input type="range" className="d-sens__input" min={MIN} max={MAX} step={1} value={thr} disabled={auto}
           aria-label={label} aria-valuetext={formatDb(thr)} onKeyDown={onKeyDown}
-          onChange={e => onThresholdChange(clamp(Number(e.target.value)))} />
+          onChange={e => { last.current = clamp(Number(e.target.value)); onThresholdChange(last.current, false); }}
+          onPointerUp={commit}
+          onKeyUp={e => { if (e.key !== 'PageUp' && e.key !== 'PageDown') commit(e); }} />
       </div>
       <div className="d-sens__scale" aria-hidden="true"><span className="d-sens__tick">-100 dB</span><span className="d-sens__tick">-50</span><span className="d-sens__tick">0 dB</span></div>
     </div>
