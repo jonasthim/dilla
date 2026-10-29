@@ -300,8 +300,8 @@ the right:
 - "Colour": six swatches (pink, blue, amber, green, orange, grey; a role with another colour keeps it as a seventh,
   "current colour"). The colour shows on the names of people who hold the role in the member list, and on the role's
   chip in their profile card. The arrow keys move between swatches. A swatch saves at once.
-- "Permissions": three groups (General, Moderation, Voice), each permission a switch with a hint. A switch
-  saves at once. Voice ends with **Control music (DJ)**: "Play, queue, skip, stop and set volume with Glenn in voice". A
+- "Permissions": four groups (General, Moderation, Voice, Music), each permission a switch with a hint. A switch
+  saves at once. Music has **Control music (DJ)**: "Play, queue, skip, stop and set volume with Glenn in voice". A
   permission you do not hold cannot be switched: "You do not hold this permission, so you cannot give or take it." A
   role at or above your highest role cannot be changed at all.
 

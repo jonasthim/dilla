@@ -19,7 +19,8 @@ type PermKey = string;
 const PERM_GROUPS: readonly { id: string; keys: readonly PermKey[] }[] = [
   { id: 'general', keys: ['view', 'send', 'pin', 'everyone', 'attach', 'react', 'history', 'invite'] },
   { id: 'moderation', keys: ['manageChannels', 'kick', 'ban', 'manageMessages', 'moderate', 'nicknames', 'slowmode', 'manageRoles', 'manageServer', 'auditLog', 'admin'] },
-  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move', 'music'] },
+  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move'] },
+  { id: 'music', keys: ['music'] },
 ];
 export const ALL_KEYS = PERM_GROUPS.flatMap(g => g.keys);
 const RAID: PermKey[] = ['view', 'send', 'pin', 'everyone', 'manageChannels', 'kick', 'ban', 'connect', 'speak', 'screen'];

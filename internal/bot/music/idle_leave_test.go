@@ -18,9 +18,11 @@ type idleStarter struct {
 
 func (s *idleStarter) LeaveIdle() error { s.left++; return nil }
 
-// Task 10c: after Stop/Pause, or when the queue runs out, Glenn leaves voice once nothing has
-// played for the installation's "Leave voice when idle" time. Playing again cancels the pending
-// leave; the setting is read each time the supervisor goes idle.
+// Task 10c: the supervisor's idle-leave timer, with a fake timer and a fake starter (no room). An
+// enqueue while paused starts a timer for the configured time; resuming stops it, and firing the
+// stopped timer calls nothing; a stop starts a new timer that reads the setting again (5 minutes
+// now); firing it calls the starter's LeaveIdle once, and firing it again does not call it twice.
+// Leaving the actual room is pool_idle_test.go's.
 func TestSupervisorLeavesVoiceAfterTheIdleTime(t *testing.T) {
 	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
 	store, err := persistence.New(n, tid(2))

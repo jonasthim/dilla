@@ -256,6 +256,6 @@ All are polite, through the announcer inside settings while the workspace is ope
 - `perm.moderate='Warn and time out members'`
 - `perm.moderate.hint='Warn members or temporarily block their messages and reactions.'`
 - `perm.group.music='Music'`
-- `perm.group.moderation='Moderation'` (the role editor groups permissions as the prototype does: General, Moderation and Voice, with Control music under Voice; channel permissions keep General, Members, Text, Voice and Music)
+- `perm.group.moderation='Moderation'` (the role editor groups permissions as the prototype does: General, Moderation, Voice and Music, with Control music under Music; channel permissions keep General, Members, Text, Voice and Music)
 - `perm.music='Control music (DJ)'`
 - `perm.music.hint='Play, queue, skip, stop and set volume with Glenn in voice'`

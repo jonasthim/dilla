@@ -38,14 +38,15 @@ export const PERM_GROUPS: readonly { id: 'general' | 'members' | 'text' | 'voice
 ];
 
 /**
- * The role editor's three groups, the prototype's General, Moderation and Voice, with every dilla
- * permission folded in (Jonas, Task 10c fix round 1): each starts with the prototype's rows in its
- * order; Control music sits under Voice. Channel permissions keep PERM_GROUPS.
+ * The role editor's groups are the prototype's four headings, General, Moderation, Voice and Music (Ruling AS), with
+ * every other dilla permission folded into the first three. Each group starts with the prototype's rows in its order,
+ * and Control music is under Music. Channel permissions keep PERM_GROUPS.
  */
-export const ROLE_PERM_GROUPS: readonly { id: 'general' | 'moderation' | 'voice'; keys: readonly PermKey[] }[] = [
+export const ROLE_PERM_GROUPS: readonly { id: 'general' | 'moderation' | 'voice' | 'music'; keys: readonly PermKey[] }[] = [
   { id: 'general', keys: ['view', 'send', 'pin', 'everyone', 'attach', 'react', 'history', 'invite'] },
   { id: 'moderation', keys: ['manageChannels', 'kick', 'ban', 'manageMessages', 'moderate', 'nicknames', 'slowmode', 'manageRoles', 'manageServer', 'auditLog', 'admin'] },
-  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move', 'music'] },
+  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move'] },
+  { id: 'music', keys: ['music'] },
 ];
 
 export interface PermRole { id: string; position: number; allow: number; deny: number }

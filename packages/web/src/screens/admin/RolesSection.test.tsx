@@ -22,16 +22,16 @@ describe('RolesSection (Signal task 10c: the inline editor)', () => {
     expect(list().getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent))
       .toEqual(['@everyone, 5 members', 'admins, 1 member', 'mods, 2 members', 'crew, 1 member', en['serverSettings.roles.new']]);
   });
-  it('opens on the highest role and shows its name, colours and the prototype\'s three permission groups', () => {
+  it('opens on the highest role and shows its name, colours and the prototype\'s four permission groups', () => {
     setup();
     expect(roleButton('admins, 1 member')).toHaveAttribute('aria-current', 'true');
     expect(screen.getByRole('textbox', { name: en['roles.editor.name'] })).toHaveValue('admins');
     expect(screen.getByRole('radiogroup', { name: en['roles.editor.color'] })).toBeInTheDocument();
-    // Jonas (Task 10c fix round 1): General, Moderation and Voice; Control music sits under Voice.
-    for (const group of ['perm.group.general', 'perm.group.moderation', 'perm.group.voice'] as const) {
+    // Ruling AS: the prototype's General, Moderation, Voice and Music; Control music is under Music.
+    for (const group of ['perm.group.general', 'perm.group.moderation', 'perm.group.voice', 'perm.group.music'] as const) {
       expect(screen.getByRole('heading', { name: en[group] })).toBeInTheDocument();
     }
-    expect(screen.queryByRole('heading', { name: en['perm.group.music'] })).toBeNull();
+    expect(screen.queryByRole('heading', { name: en['perm.group.members'] })).toBeNull();
     expect(toggle(en['perm.music'])).toHaveAttribute('aria-checked', 'false');
   });
   it('@everyone has a fixed name and no colours', async () => {

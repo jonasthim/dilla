@@ -41,16 +41,16 @@ describe('PERM', () => {
     expect(new Set(Object.values(PERM_BY_KEY)).size).toBe(26);
     expect(Object.values(PERM_BY_KEY).reduce((a, b) => a | b, 0)).toBe(PERM_ALL);
   });
-  it('ROLE_PERM_GROUPS is the prototype\'s General, Moderation and Voice and covers all 26 keys exactly once', () => {
-    expect(ROLE_PERM_GROUPS.map((g) => g.id)).toEqual(['general', 'moderation', 'voice']);
+  it('ROLE_PERM_GROUPS is the prototype\'s General, Moderation, Voice and Music and covers all 26 keys exactly once', () => {
+    expect(ROLE_PERM_GROUPS.map((g) => g.id)).toEqual(['general', 'moderation', 'voice', 'music']);
     const keys = ROLE_PERM_GROUPS.flatMap((g) => g.keys);
     expect(keys).toHaveLength(26);
     expect(new Set(keys)).toEqual(new Set(Object.keys(PERM_BY_KEY) as PermKey[]));
-    // The prototype's rows lead each group in its order; Control music is under Voice.
+    // The prototype's rows lead each group in its order; Control music is alone under Music.
     expect(ROLE_PERM_GROUPS[0].keys.slice(0, 4)).toEqual(['view', 'send', 'pin', 'everyone']);
     expect(ROLE_PERM_GROUPS[1].keys.slice(0, 3)).toEqual(['manageChannels', 'kick', 'ban']);
     expect(ROLE_PERM_GROUPS[2].keys.slice(0, 3)).toEqual(['connect', 'speak', 'screen']);
-    expect(ROLE_PERM_GROUPS[2].keys).toContain('music');
+    expect(ROLE_PERM_GROUPS[3].keys).toEqual(['music']);
   });
   it('includes moderate_members in the members group and community mask', () => {
     expect(Object.values(PERM)).toContain(1 << 24);

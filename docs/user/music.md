@@ -1,7 +1,7 @@
 # Music in chat
 
 Enable the bot's Music capability in **Server settings → Bot**. Who may DJ is a
-role permission: **Control music (DJ)**, under **Voice** in a role's permissions.
+role permission: **Control music (DJ)**, under **Music** in a role's permissions.
 Owners and administrators always can. The bot needs permission to connect and speak
 in the voice channel. Spotify account linking is in **Server settings → Music**;
 YouTube needs the host's yt-dlp playback tools, and its row there says whether they
