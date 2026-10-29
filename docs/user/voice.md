@@ -151,38 +151,63 @@ to come back.
 | Control/⌘+Shift+D | Deafens or undeafens, from anywhere in the app, in a call or out of one |
 | Arrow Left, Arrow Right, Home, End | Move between the buttons of the call panel, the user panel or the stage's controls |
 
-Control or ⌘ works on every system. There are no single-key shortcuts. Settings → keyboard lists both, next to the
-search shortcuts.
+Control or ⌘ works on every system. There are no single-key shortcuts. Settings → Keyboard lists both, next to the
+search shortcut.
 
 When push to talk is on, the mute button in the user panel carries a small "PTT" tag.
 
-**Voice activity** is the default: the microphone sends while you speak. To use **push to talk** instead:
+**Voice activity** is the default: the microphone sends while your voice is over the sensitivity line (below). To use
+**push to talk** instead:
 
-1. Open **Settings → voice**, and under "input mode" choose "push to talk". The microphone closes at once.
-2. Press **set key**: "Press the key to use. Escape cancels. It works only while dilla is the active tab."
+1. Open **Settings → Voice**, and under "Input mode" choose "Push to talk". The microphone closes at once.
+2. Next to "Shortcut", press **Change**. The row says "Press a key…" with **Cancel** (Escape cancels too). It works only
+   while dilla is the active tab.
 3. Press one key on its own: F13 to F24, Pause or Scroll Lock. Any other key, and any key held with Control, Alt, ⌘,
    Shift or AltGr, is refused with "That key types text, moves the focus or needs another key. Use one key on its own,
    such as Pause, Scroll Lock or F13 to F24." Insert works too, but screen readers use it as their own key, so it
    is not suggested.
 
-There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
-tab, never while you type in a text field. While push to talk is in force the call panel says "hold {key} to talk" (for
-example "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → voice. The
-microphone test and its level meter are on the same page.
+There is no key until you set one ("No key set"). Hold it to talk. It works only while the dilla tab is the active
+tab, never while you type in a text field. **Release delay** (0 to 1000 ms, 200 ms unless you change it) keeps sending that
+long after you let go, so word endings are not cut; pressing the key again within the delay keeps the microphone open,
+and **mute** closes it at once. While push to talk is in force the call panel says "hold {key} to talk" (for example
+"hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → Voice.
 
-![Settings → Voice: input device, output device, input mode (voice activity), noise suppression and the input
-level](screenshots/voice-settings-desktop.png)
+![Settings → Voice: devices with their volumes, the mic test with its meter and sensitivity line, input mode, noise
+suppression and processing](screenshots/voice-settings-desktop.png)
 
-Settings → voice also holds:
+Settings → Voice has four groups:
 
-- **input device** and **output device**, or "system default". Choosing the output device works in Chrome and Edge,
-  and the call follows it: change the output device during a call and the sound moves at once. If the browser
-  refuses, the call panel says "The output device did not change. Call sound plays where it did before." Firefox plays call
-  sound on the system default device. A browser that cannot choose where sound plays says "This
-  browser plays voice on the system default device."
-- **noise suppression** has **Automatic (beta)**, **Lightweight** and **Off**. Lightweight uses RNNoise locally and remains the default, including existing On preferences. Automatic (beta) ships in every release, and Lightweight leaves the beta. It currently also uses Lightweight while enhanced suppression is evaluated. The screen shows the effective processor and explains fallback during a call. Off disables both application and browser noise suppression where supported; echo cancellation stays enabled. Browser suppression is disabled for neural processing, avoiding duplicate processing. Switching the setting during a call applies at once.
-- **Test microphone** records up to ten seconds locally. Capture stops before playback; **Close and discard** releases the recording. Testing is disabled during calls. It uses the selected input and suppression setting. No recording is uploaded.
-- **input level**: a meter of what your microphone hears.
+- **Devices**: **Input device** and **Output device** ("System default" unless you pick one), each with its **Volume**
+  (0 to 200 %, 100 % unless you change it). The input volume is applied in this browser before your voice is encrypted;
+  the output volume scales everyone you hear. Choosing the output device works in Chrome and Edge, and the call follows it:
+  change the output device during a call and the sound moves at once. If the browser refuses, the call panel says "The
+  output device did not change. Call sound plays where it did before." Firefox plays call sound on the system default
+  device, and a browser that cannot choose where sound plays says "This browser plays voice on the system default device."
+- **Mic test**: **Let’s check** plays your microphone back to you live for up to ten seconds, through the same chain a
+  call sends (echo cancellation and automatic gain, noise suppression, input volume and the sensitivity gate), on the
+  output device you chose; wear headphones, or your speakers feed back into the microphone. Nothing is recorded or
+  uploaded, and **Stop testing**, the ten seconds, leaving the page or changing a device releases the microphone. The
+  meter shows your level in 50 segments; the white line is the **sensitivity threshold**: dilla sends your voice only
+  while the level is over it. The pill says "Not testing", "You’re being heard" or "Too quiet to send", with the level and
+  the threshold in dB beside it. With **Set sensitivity automatically** on (the default), dilla puts the line 15 dB over
+  your room's noise (between −70 and −30 dB) and keeps it there as the room changes, never raising it into your voice.
+  Turn it off to drag the line yourself, or move it with the arrow keys (1 dB) and Page Up and Page Down (10 dB). A
+  voice under the line is not sent: the others receive silence, encrypted like everything else. The gate opens on the
+  first word at once (10 ms of look-ahead, so the word's start is kept) and stays open 300 ms after you stop. Settings
+  never opens the microphone except during Let’s check, and Let’s check is not available during a call.
+- **Input mode**: **Voice activity** or **Push to talk** (above). Push to talk turns the sensitivity gate off: the key
+  decides.
+- **Processing**: **Noise suppression** has **Automatic** (beta), **Lightweight** and **Off**. Lightweight uses RNNoise
+  locally and remains the default, including existing On preferences; Automatic picks the best processor this device can
+  run and falls back to RNNoise. The screen shows the effective processor and explains a fallback during a call. Off sends
+  the raw microphone. **Echo cancellation** ("Stops your speakers from feeding back into the mic") and **Automatic gain
+  control** ("Evens out loud and quiet speech") are on unless you turn them off; a switch the browser cannot apply is not
+  shown. A change during a call applies at once: the microphone is captured again on the same connection, and the
+  others notice nothing but the difference.
+
+If the browser cannot run the input volume and sensitivity (no AudioWorklet), Settings says "This browser cannot apply
+the input volume or sensitivity: your microphone is sent as it is."
 
 ![Settings → Voice at 360 pixels wide](screenshots/voice-settings-phone.png)
 
