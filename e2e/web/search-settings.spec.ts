@@ -264,11 +264,18 @@ test('settings rows align their controls, and the sign-out button holds its text
   const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-device-row')?.getBoundingClientRect().right ?? 0) + 1);
   expect(fits, 'the sign-out label is inside its button and its column').toBe(true);
   await closeSettings(page);
-  // M-3: every row keeps its own hairline (Signal task 10: the Voice page is groups, not rows, so Notifications' rows are measured).
+  // M-3: every pair of rows is parted by exactly one hairline (Signal task 10: the Voice page is groups, not rows, so
+  // Notifications' rows are measured). Fix round 2: the hairline is the lower row's top edge (the prototype's 56px rows,
+  // 56n + 2 per group), and the group keeps its outer edge.
   dialog = await openSettings(page, 'notifications');
   await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
-  const hairlines = await dialog.locator('.d-settings-row').evaluateAll(els => els.map(el => getComputedStyle(el).borderBottomWidth));
-  expect(hairlines.length).toBeGreaterThan(1);
-  expect(new Set(hairlines)).toEqual(new Set(['1px']));
+  const edges = await dialog.locator('.d-settings-row').evaluateAll(els => els.map(el => {
+    const cs = getComputedStyle(el);
+    return { top: parseFloat(cs.borderTopWidth), bottom: parseFloat(cs.borderBottomWidth) };
+  }));
+  expect(edges.length).toBeGreaterThan(1);
+  for (let i = 1; i < edges.length; i += 1) expect(edges[i - 1].bottom + edges[i].top, `one hairline between rows ${i} and ${i + 1}`).toBe(1);
+  expect(edges[0].top, 'the group\'s top edge').toBe(1);
+  expect(edges.at(-1)!.bottom, 'the group\'s bottom edge').toBe(1);
   await closeSettings(page);
 });
