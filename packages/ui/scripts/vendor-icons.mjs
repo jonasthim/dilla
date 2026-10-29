@@ -22,6 +22,18 @@ const ROOT_WANT = {
 const ALLOWED = { path: ['d'], polyline: ['points'], rect: ['x', 'y', 'width', 'height', 'rx', 'ry'], circle: ['cx', 'cy', 'r'], line: ['x1', 'y1', 'x2', 'y2'] };
 const attrs = s => Object.fromEntries([...s.matchAll(/([a-zA-Z][\w-]*)="([^"]*)"/g)].map(m => [m[1], m[2]]));
 
+// Icons Jonas approved from another Lucide release than <tag> (the prototype's icon loader fetches lucide-static 0.460.0, and
+// these two glyphs differ from 1.57.0). Pass their SVGs from that package; the header records each one's own version and
+// hash, and the note is written above the entry, so a regeneration keeps both geometry and provenance.
+const VERSIONS = {
+  key: { from: 'lucide-static@0.460.0', note: "Fix round 3: the prototype's key (lucide-static 0.460.0, the version its icon loader fetches): the bow at the lower left." },
+  youtube: { from: 'lucide-static@0.460.0', note: "Fix round 3: the prototype's YouTube provider glyph (lucide-static 0.460.0 'youtube', which its icon loader fetches)." },
+};
+
+// Other comments kept above an entry.
+const NOTES = { monitor: "Task 8c: the share picker's sources." };
+const noteOf = n => VERSIONS[n]?.note ?? NOTES[n];
+
 const entries = [];
 const hashes = [];
 for (const file of svgs) {
@@ -39,6 +51,8 @@ for (const file of svgs) {
     const tagName = m[1];
     if (!(tagName in ALLOWED)) throw new Error(`${name}: unexpected <${tagName}>`);
     const a = attrs(m[2]);
+    // A dot drawn with fill="currentColor" (palette) is kept as the stroked dot the Icon component draws; the fill is dropped.
+    if (a.fill === 'currentColor') delete a.fill;
     for (const k of Object.keys(a)) if (!ALLOWED[tagName].includes(k)) throw new Error(`${name}: unexpected ${tagName}@${k}`);
     nodes.push([tagName, a]);
   }
@@ -64,8 +78,10 @@ let ts = `/*
  * viewBox with fill none, stroke currentColor, stroke width 2 and round caps and joins (the Icon component sets these).
  * Do not edit by hand: re-fetch at a pinned tag and regenerate with packages/ui/scripts/vendor-icons.mjs.
  *
- * SHA-256 of each upstream file at ${tag}:
-${hashes.map(([n, h]) => ` *   icons/${n}.svg  ${h}`).join('\n')}
+ * SHA-256 of each upstream file at ${tag} (the Signal wave A icons, from smile on, are hashed from the lucide-static@${tag}
+ * package files, which carry a licence banner the GitHub files lack; the geometry is the same). An icon marked "exception"
+ * comes from another release and is hashed from that one:
+${hashes.map(([n, h]) => ` *   icons/${n}.svg  ${h}${n in VERSIONS ? `  (exception: ${VERSIONS[n].from}, not ${tag})` : ''}`).join('\n')}
  *
  * Lucide's licence (LICENSE at ${tag}):
  *
@@ -84,7 +100,7 @@ export type IconElement =
   | readonly ['line', { readonly x1: string; readonly y1: string; readonly x2: string; readonly y2: string }];
 
 export const ICONS = {
-${entries.map(([n, nodes]) => `  ${q(n)}: [\n${nodes.map(([t, a]) => `    [${q(t)}, { ${Object.entries(a).map(([k, v]) => `${k}: ${q(v)}`).join(', ')} }],`).join('\n')}\n  ],`).join('\n')}
+${entries.map(([n, nodes]) => `${noteOf(n) === undefined ? '' : `  // ${noteOf(n)}\n`}  ${q(n)}: [\n${nodes.map(([t, a]) => `    [${q(t)}, { ${Object.entries(a).map(([k, v]) => `${k}: ${q(v)}`).join(', ')} }],`).join('\n')}\n  ],`).join('\n')}
 } as const satisfies Record<string, readonly IconElement[]>;
 
 export type IconName = keyof typeof ICONS;

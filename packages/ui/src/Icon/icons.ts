@@ -6,7 +6,8 @@
  * Do not edit by hand: re-fetch at a pinned tag and regenerate with packages/ui/scripts/vendor-icons.mjs.
  *
  * SHA-256 of each upstream file at 1.57.0 (the Signal wave A icons, from smile on, are hashed from the lucide-static@1.57.0
- * package files, which carry a licence banner the GitHub files lack; the geometry is the same):
+ * package files, which carry a licence banner the GitHub files lack; the geometry is the same). An icon marked "exception"
+ * comes from another release and is hashed from that one:
  *   icons/mic.svg  9b940cd735d1ffa270ba670c4e677d9a09400f3fa81d6b3f405b12a3b67a59a8
  *   icons/mic-off.svg  bcb5a033b4ecd182ec8d0d0945810ccc5147219b1a21c017b47fd4d5ae3a8320
  *   icons/headphones.svg  7719585dafa921805aefc21fc3262bbcc621507610a653b84e1632236650b35a
@@ -70,7 +71,8 @@
  *   icons/chevron-up.svg  b4bd4d46387207f4e22cc2565a937edf9d830620c0eee4c4bdfb12b7f1b14779
  *   icons/fingerprint.svg  51c89ddf8c0d8690fb07fbe3223fb6718ed5d0c367d4ac75499ee6c4db155070
  *   icons/smartphone.svg  81dd05ac118e3a75719846184185bf0b49075774beb208bbcb4c00e60d2d41a2
- *   icons/key.svg  5b5df114a2ca86b871af7f67d2f322df868c528c49ed3f8b1fe188fb5adb6d38
+ *   icons/key.svg  cd3106e07e1bdf6e22dd5908269f9a8db974be672d858f57ad8285bd7773f2d4  (exception: lucide-static@0.460.0, not 1.57.0)
+ *   icons/youtube.svg  5de2a980d0eb396d510d7a74dd7e4f9def3d10cfcad2015e51f991c517e3c720  (exception: lucide-static@0.460.0, not 1.57.0)
  *   icons/square.svg  ea98f50de2f267b4d866a77d4425fa3da2dec239d3c13a0e2cbde0bdf95dfe37
  *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
  *   icons/house.svg  3ce1e3be357b3d704af39405df420cfd8ebc6b5d73b017f95492f43e09d07dc9
@@ -114,7 +116,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right, monitor are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right, music, monitor are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -517,7 +519,7 @@ export const ICONS = {
   ],
   'bot': [
     ['path', { d: 'M12 8V4H8' }],
-    ['rect', { x: '4', y: '8', width: '16', height: '12', rx: '2' }],
+    ['rect', { width: '16', height: '12', x: '4', y: '8', rx: '2' }],
     ['path', { d: 'M2 14h2' }],
     ['path', { d: 'M20 14h2' }],
     ['path', { d: 'M15 13v2' }],
@@ -543,8 +545,8 @@ export const ICONS = {
   'user-plus': [
     ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
     ['circle', { cx: '9', cy: '7', r: '4' }],
-    ['line', { x1: '19', y1: '8', x2: '19', y2: '14' }],
-    ['line', { x1: '22', y1: '11', x2: '16', y2: '11' }],
+    ['line', { x1: '19', x2: '19', y1: '8', y2: '14' }],
+    ['line', { x1: '22', x2: '16', y1: '11', y2: '11' }],
   ],
   // Task 8c: the share picker's sources.
   'monitor': [
