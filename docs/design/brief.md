@@ -240,14 +240,17 @@ One curve: `--ease-out` = `cubic-bezier(0.16, 1, 0.3, 1)`.
 
 | kind | duration | what |
 |---|---|---|
-| state | 120-160ms (`--duration-press`, `--duration-fast`) | hover, colour, border, opacity |
+| state | 140-150ms (`--duration-hover` 140, `--duration-fast` 150); the toggle track 200ms (`--duration-track`) | hover, colour, border, opacity |
 | press | 120ms (`--duration-press`) | `scale(.92-.96)` on buttons while pressed |
-| enter | 200-380ms (`--duration-normal`, `--duration-enter`) | rows and messages rise 8px and fade in; lists stagger 40-60ms per item |
-| popover / dialog | 160-260ms | from `translateY(-8px) scale(.985)` |
-| layout | 220-320ms (`--duration-normal`, `--duration-slow`) | selection bar `scaleY`, aside width, category chevron |
+| enter | 220ms (`--duration-normal`); 380ms (`--duration-enter`) for a message's rise | rows and messages rise 8px and fade in; lists stagger 40-60ms per item |
+| popover / dialog | 200-260ms (`--duration-popover` 200, `--duration-modal` 260) | from `translateY(-8px) scale(.985)` |
+| layout | 220-340ms (`--duration-normal` 220, `--duration-aside` 280, `--duration-dock` 340) | selection bar `scaleY`, aside width, category chevron |
+| toggle | 240ms (`--duration-toggle`) | the switch knob |
 | badge | 450ms (`--duration-badge`) | pop with overshoot on unread, mention and reminder counts |
-| toast | 220ms | rise and scale in, out after 2.4s |
-| flash | 1.4s | reply-jump highlight in `--accent-soft` |
+| toast | 220ms (`--duration-toast`) | rise and scale in, out after 2.4s |
+| splash | 300ms (`--duration-slow`) | the first-run splash fades in |
+| drop | 150ms (`--duration-fast`) fade, 180ms (`--duration-spin`) panel | the drag-over overlay while files are held over a conversation |
+| flash | 1.4s (`--duration-flash`) | reply-jump highlight in `--accent-soft` |
 | live | continuous | speaking meters (520ms bars), typing sweep (1.4s), caret (1s), speaking pulse (2s) |
 
 Under `prefers-reduced-motion: reduce` (and `[data-motion="reduced"]` in Storybook) every duration

@@ -545,7 +545,7 @@ The factor guards signing in on a **new** browser, not message content.
 
 ### Settings → Sign-in
 
-![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-mesh.png)
+![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-signal.png)
 
 Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
 Browsers that are already set up, like this one, do not ask again." The rows are:
@@ -1065,7 +1065,7 @@ are using. "not yet in the device list" marks a device that signed in with your 
 added; "removed" marks one that was removed. **refresh** reads the list again.
 
 ![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
-remove this browser" and "forget this browser"](screenshots/fullscreen-settings-devices-desktop-mesh.png)
+remove this browser" and "forget this browser"](screenshots/fullscreen-settings-devices-desktop-signal.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1131,7 +1131,7 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 "all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge. "Servers" sets
 the same for a whole server ([Notifications for a server](#notifications-for-a-server)).
 
-![Notification permission before opt-in](screenshots/fullscreen-settings-notifications-desktop-mesh.png)
+![Notification permission before opt-in](screenshots/fullscreen-settings-notifications-desktop-signal.png)
 
 ## 9. Saying more
 
@@ -1320,7 +1320,7 @@ Other people's changes show in your member list the next time it is read, which 
 
 ### Contacts and safety numbers
 
-![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/fullscreen-settings-privacy-desktop-mesh.png)
+![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/fullscreen-settings-privacy-desktop-signal.png)
 
 Before this browser shows a message, it checks that the device which sent it is on its owner's signed device list.
 The first key it sees for a person is kept as that person's key. **Settings → privacy** lists the people you share
@@ -1398,25 +1398,25 @@ message result shows the #channel (or the person, in a direct message), the auth
    closes search from anywhere in it, and gives the focus back to where it was. While search is open, the rest of the app cannot be reached with Tab.
 
 "Searching your messages" shows while it searches, "Nothing in this browser matches …" when nothing matched, and "That
-message is no longer available" when the message was deleted or its conversation is gone. On a computer the **search** icon
-in the channel header opens it too, and on a phone the magnifier beside the server's name does.
+message is no longer available" when the message was deleted or its conversation is gone. On a computer the "Search or jump
+to…" field in the top bar opens it too, and on a phone the magnifier in a channel's header does.
 
 ![Search at 360 pixels wide](screenshots/search-results-phone.png)
 
 ### Appearance
 
-**Settings → appearance** sets the theme: "system", "mesh", "light" or "high contrast". The choice applies at once
-and this browser keeps it.
+**Settings → Appearance** sets the theme: "System", "Signal" (the dark default), "Light" or "High contrast". The
+choice applies at once and this browser keeps it.
 
 ### Keyboard
 
-**Settings → keyboard** ("Keyboard") lists the four shortcuts: "Control/⌘+K" opens search, "Control+/" searches this
-conversation, "Control/⌘+Shift+M" mutes or unmutes and "Control/⌘+Shift+D" deafens or undeafens in a call.
+**Settings → Keyboard** lists the shortcuts: "Control/⌘+K" (or "Control+/") opens search, "Control/⌘+Shift+M" mutes or
+unmutes and "Control/⌘+Shift+D" deafens or undeafens in a call.
 There are no single-key shortcuts.
 
 ### Diagnostics
 
-![Settings → Diagnostics](screenshots/fullscreen-settings-diagnostics-desktop-mesh.png)
+![Settings → Diagnostics](screenshots/fullscreen-settings-diagnostics-desktop-signal.png)
 
 **Settings → diagnostics** shows the connection (online, connecting or offline), the instance's generation, the
 instance's name and the number of your devices. A wide screen has no status bar, so these facts live here, and the line
@@ -1574,10 +1574,10 @@ See [Music](music.md) for setup and the Control music (DJ) permission.
 Participant volume and screen-share volume remain beside the participant/share.
 Channel collapse and conversation-search scope remain in their contextual controls.
 
-![Fullscreen Profile with grouped desktop navigation](screenshots/fullscreen-settings-profile-desktop-mesh.png)
+![Fullscreen Profile with grouped desktop navigation](screenshots/fullscreen-settings-profile-desktop-signal.png)
 
 On a phone, **Back to settings** returns to the index; **Close settings** on that
 index returns to your conversation. Settings covers the app tab bar while your
 ongoing call stays connected.
 
-![Profile on a phone](screenshots/fullscreen-settings-profile-phone-mesh.png)
+![Profile on a phone](screenshots/fullscreen-settings-profile-phone-signal.png)

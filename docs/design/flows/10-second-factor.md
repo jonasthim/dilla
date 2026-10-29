@@ -31,7 +31,7 @@ Every human account on an instance has a second factor, and the server enforces 
 
 ## 1280×800
 
-The factor steps sit in `OnboardingFrame`, centred in the column the other onboarding steps use. The QR code is 192 px, beside the setup key and its Copy button. The backup codes are in two columns. Settings → Sign-in is a `SettingsFrame` section with grouped `FactorRow`s: password, authenticator app, passkeys, backup codes. Each group has its add button after its rows. Dialogs are centred.
+The factor steps sit in `OnboardingFrame`, centred in the column the other onboarding steps use. The QR code is 192 px, beside the setup key and its Copy button. The backup codes are in at most two columns, two only when each column holds one whole code on one line (otherwise one). Settings → Sign-in is a section of `SettingsRow`s in one card: password, authenticator app, each passkey, the passkeys' add row, backup codes; each row's action is its button at the right. Dialogs are centred.
 
 ## 360×740
 

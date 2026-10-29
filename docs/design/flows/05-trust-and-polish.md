@@ -16,8 +16,8 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 | no shared group | no Verify | shared=false | `privacy.noShared` |
 | history pending | no Verify or send | list read not complete | `privacy.unlisted` |
 | validated Remove | sending resumes only in this group; contact stays changed and unverified elsewhere | removed leaf absent from this group's current tree | `privacy.removed` |
-| search loading | keep textbox and scope | current request id | `search.loading` |
-| search empty | keep textbox and scope | current hits=[] | `search.noResults` |
+| search loading | keep textbox | current request id | `search.loading` |
+| search empty | keep textbox | current hits=[] | `search.empty` |
 | search stale | keep destination heading before closing palette | target absent/deleted/quarantined | `search.unavailable` |
 | other tab waiting | no conversation view | no matching release/lock yet | `tabs.wait` |
 | other tab failed or paused | retry, or the paused heading with `tabs.pausedDetail` and Use this tab | lock still owned or local pause failed | `tabs.failed` or `tabs.paused` |
@@ -25,7 +25,7 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 
 First sight means first seen **here**, on this device. An instance may withhold newer signed lists, including on first sight; the first pin is not evidence that the list is current. An unknown history leaves the affected leaf pending and its message body unavailable. A validated Remove restores sending only in the group whose current tree no longer contains that leaf. The changed contact key stays unverified in other shared groups. A remote member can provoke repeated changed-key refusals, so a group-local Remove gives the honest sender a way to recover without approving that key.
 
-Search has channel, community and all scopes. Loading retains the textbox and selected scope. An empty current request shows `search.noResults`; an older response cannot replace a newer one. A result opens its channel, then focuses the target row only after the timeline publishes that row. If the target is missing, deleted or quarantined, announce `search.unavailable`, focus a persistent channel heading or palette textbox, and only then remove the overlay. Search hits never expose quarantined text.
+Search has no visible scopes (Signal §5.8, task 9): one palette groups Channels, People, Settings, Actions and Messages, the open conversation's messages first. Loading retains the textbox. An empty current request shows `search.empty`; an older response cannot replace a newer one. A result opens its channel, then focuses the target row only after the timeline publishes that row. If the target is missing, deleted or quarantined, announce `search.unavailable`, focus a persistent channel heading or palette textbox, and only then remove the overlay. Search hits never expose quarantined text.
 
 Appearance, Keyboard and Diagnostics settings are device-local. Diagnostics displays connection, generation, the instance name (as the status bar shows it), own-device count and the last 20 stable codes with their times; with none it says `diagnostics.empty`. `diagnostics.copy` copies codes only, with no details, tokens or message bodies. Typing is deduplicated by user: one user maps to `typing.one`, multiple users to `typing.many`, even when one user has multiple devices. The other tab has `other-tab` (the `tabs.use` action), waiting, busy, failed, paused and ready phases. Busy keeps the waiting surface while accepted work drains; ready appears only after the old lock releases and this tab acquires it. Failed or paused does not claim release. No follower conversation or message view is rendered.
 
@@ -102,14 +102,14 @@ The browser-tier device depends on code served by its instance. Comparing the sa
 
 Safety-number QR payload (the contract for a future scanner): `dilla-sn:1:<userId>:<12 blocks joined by "-">`, for example `dilla-sn:1:` + the 32-character user id + `:` + `00001-00002-...-00012`. `1` is the format version. It carries public material only (the user id and the displayed blocks); no key, no session data. It is drawn at 256 px (at least 4 px per module for the 53-module, version 7 symbol), shrinking only to the dialog's width on a phone.
 
-Use Mesh's mono/terminal hierarchy, `--bg`, `--surface`, `--fg`, `--fg-2`, `--edge` and `--accent` roles in `mesh`, `light` and `high-contrast`; the same structure and state text appear in all three themes. At 360 CSS pixels, dialog width is bounded by `max-width:min(100vw - 32px, …)`, the public key wraps, controls wrap inside the viewport, and the viewport has no horizontal scroll. Checkbox, buttons and every close control have targets at least 24×24 CSS pixels. At 200% zoom/reflow, no control or text is lost and every focus ring remains visible: `outline: var(--focus-ring)` with a 2px offset. Reduced motion suppresses transition effects without hiding or changing any state.
+Use the mono/terminal hierarchy, `--bg`, `--surface`, `--fg`, `--fg-2`, `--edge` and `--accent` roles in `signal`, `light` and `high-contrast`; the same structure and state text appear in all three themes. At 360 CSS pixels, dialog width is bounded by `max-width:min(100vw - 32px, …)`, the public key wraps, controls wrap inside the viewport, and the viewport has no horizontal scroll. Checkbox, buttons and every close control have targets at least 24×24 CSS pixels. At 200% zoom/reflow, no control or text is lost and every focus ring remains visible: `outline: var(--focus-ring)` with a 2px offset. Reduced motion suppresses transition effects without hiding or changing any state.
 
 ## Keyboard map
 
 | starting focus | action | destination |
 |---|---|---|
-| shell | Control/⌘+K | search textbox, scope preserved |
-| conversation | Control+/ | search textbox, channel scope |
+| shell | Control/⌘+K | search textbox |
+| anywhere | Control+/ | the same search textbox |
 | compare opener | Enter/Space | dialog heading, then first control |
 | inside compare | Tab/Shift+Tab | next/previous control inside dialog; wraps |
 | compare Copy | Enter/Space | Copy button; checkbox stays unchecked |
@@ -196,7 +196,6 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | search.group | Messages | palette results heading (Signal §5.8, task 9) |
 | search.unavailable | That message is no longer available | stale result status |
 | search.loading | Searching your messages | palette status |
-| search.noResults | No results in this scope | scope empty state |
 | keyboard.title | Keyboard | Keyboard settings heading |
 | keyboard.searchAll | Control/⌘+K | Keyboard settings, opens search |
 | keyboard.dmCall | Control/⌘+Shift+Enter | Keyboard settings, calls the open direct message (Ruling Z, task 6b) |

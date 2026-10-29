@@ -101,7 +101,6 @@ export const en = {
   'search.action.dmSub': 'Start a direct message',
   'search.unavailable': 'That message is no longer available',
   'search.loading': 'Searching your messages',
-  'search.noResults': 'No results in this scope',
   'diagnostics.title': 'Diagnostics',
   'diagnostics.copy': 'Copy codes',
   'diagnostics.connection': 'Connection',
