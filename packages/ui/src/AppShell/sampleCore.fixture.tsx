@@ -43,9 +43,12 @@ const SLICES: Record<string, unknown> = {
 const client = {
   get: (name: SliceName) => SLICES[name],
   subscribe: () => () => undefined,
-  call: () => Promise.resolve(null),
+  // The sample's answers to the reads a screen makes on mount (Overview's inactive timeout); anything else answers null.
+  call: (command: { m: string }) => Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 900 } : null),
 } as unknown as CoreClient;
 
+/** Midgard Crew's id in the sample. */
+export const SAMPLE_MC = MC;
 /** The Midgard sample as the worker's slices, for the web screens a story renders. */
 export function SampleCore({ children }: { children: ReactNode }) {
   return <CoreProvider client={client}>{children}</CoreProvider>;

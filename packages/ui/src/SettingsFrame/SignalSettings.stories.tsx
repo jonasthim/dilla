@@ -10,9 +10,10 @@ import { VoiceSettings } from '../VoiceSettings/VoiceSettings.tsx';
 import { DeviceRow } from '../DeviceRow/DeviceRow.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Select } from '../Select/Select.tsx';
-import { SampleCore } from '../AppShell/sampleCore.fixture.tsx';
+import { SAMPLE_MC, SampleCore } from '../AppShell/sampleCore.fixture.tsx';
 import { Profile as WebProfile } from '../../../web/src/screens/settings/Profile.tsx';
 import { SignInFactors as WebSignIn } from '../../../web/src/screens/settings/SignInFactors.tsx';
+import { OverviewSection as WebOverview } from '../../../web/src/screens/admin/OverviewSection.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { LiveRoleEditor } from '../RoleEditor/RoleEditor.fixture.tsx';
@@ -169,20 +170,10 @@ function Profile() {
 function SignIn() {
   return <SampleCore><WebSignIn announce={noop} live="" /></SampleCore>;
 }
-// Task 11: admin/OverviewSection.tsx for Midgard Crew: the server name row and the inactive timeout (15 minutes).
+// Task 11 (Jonas, Q7; rule 3d): the web's own admin/OverviewSection.tsx for Midgard Crew over the sample (a 15-minute
+// inactive timeout): the server name row (dilla's), the segmented timeout and Leave server in one card.
 function Overview() {
-  return (
-    <section className="dw-settings-section" aria-labelledby="overview-title">
-      <h2 id="overview-title" tabIndex={-1}>{t('admin.overview.title')}</h2>
-      <SettingsRow id="overview-name-row" icon="server" label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
-        <div className="dw-overview-field"><TextField id="overview-name" label={t('admin.overview.name')} value={SERVER} onChange={noop} required autoComplete="off" /></div>
-      </SettingsRow>
-      <SettingsRow id="overview-afk-row" icon="moon" label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: 'AFK' })}>
-        <Select label={t('afk.timeout.label')} value="900" onChange={noop}
-          options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t(`afk.timeout.${String(n * 60)}` as Parameters<typeof t>[0]) }))} />
-      </SettingsRow>
-    </section>
-  );
+  return <SampleCore><WebOverview communityId={SAMPLE_MC} serverName={SERVER} announce={noop} /></SampleCore>;
 }
 export const ProfileDesktop: Story = { render: () => <Workspace active="profile"><Profile /></Workspace> };
 export const SignInDesktop: Story = { render: () => <Workspace active="signin"><SignIn /></Workspace> };

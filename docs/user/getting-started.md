@@ -166,9 +166,11 @@ a name.", "That name is too long. A server name is up to 255 characters (fewer f
 cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
 time. Check the name and save again.
 
-Under the name, **Overview** holds the "inactive timeout": how long someone can sit idle in a voice channel on a computer
-before the server disconnects them and lists them as away in the server's AFK channel ("Members idle in voice this long
-are disconnected and listed as away in AFK. Phones are not disconnected."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
+Under the name, **Overview** holds the **Inactive timeout** ("Idle computers in voice move to AFK after"): how long someone
+can sit idle in a voice channel on a computer before the server disconnects them and lists them as away in the server's AFK
+channel; phones are not disconnected. Choose 1m, 5m (the default), 15m, 30m or 1h, and press **Save**. The same card ends with
+**Leave server** ("You can rejoin with a new invite"): **Leave** asks first; an owner is told to hand the server over or
+delete it instead.
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Select, SettingsRow, TextField } from '@dilla/ui';
+import { Button, ConfirmDialog, Segmented, SettingsRow, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { useSettingsEdit, type SettingsEditState } from '../../settings/edit-state.tsx';
@@ -7,8 +7,15 @@ import { t, type StringKey } from '../../strings/index.ts';
 import { SERVER_NAME_MAX_BYTES, nameProblem } from '../Create.tsx';
 import { forbidden, nfc, refused, statusIs, useRun, type SectionProps } from './shared.ts';
 
-/** Server name and AFK timeout. Their baselines stay independent so a partial save retries only what failed. */
-export function OverviewSection({ communityId, serverName, announce }: SectionProps): React.JSX.Element {
+/** The inactive timeouts the prototype offers, in seconds, with its short labels (Task 11, Q7). */
+const TIMEOUTS = [60, 300, 900, 1800, 3600] as const;
+
+/**
+ * Server name and AFK timeout. Their baselines stay independent so a partial save retries only what failed. Task 11 (Jonas, Q7;
+ * the prototype's Overview): the server's name under the heading, one card with the name row (dilla's own), the inactive
+ * timeout as a segmented choice, and Leave server, which an owner is told to hand over first.
+ */
+export function OverviewSection({ communityId, serverName, announce, owner = false, onGone }: SectionProps & { owner?: boolean; onGone?: () => void }): React.JSX.Element {
   const client = useCore();
   const base = useId();
   const fieldId = `${base}-name`;
@@ -98,11 +105,19 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   const state = useMemo<SettingsEditState>(() => ({ dirty, busy, canSave: dirty, save, reset }), [dirty, busy, save, reset]);
   useSettingsEdit(state);
 
-  const afkName = (channels ?? []).find(ch => ch.id === afk?.channelId)?.name ?? 'AFK';
   const error = localError ?? actionError;
+  const [leaving, setLeaving] = useState(false);
+  const [ownerNote, setOwnerNote] = useState(false);
+  const leaveRun = useRun();
+  const leave = () => {
+    void leaveRun.run(() => client.call({ m: 'leaveCommunity', communityId }), e => t('admin.leave.error.other', { code: e.code }))
+      .then(ok => { if (ok) { announce(t('admin.left', { server: serverName })); setLeaving(false); onGone?.(); } });
+  };
+  void channels;
 
   return <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
     <h2 id={`${base}-title`} tabIndex={-1}>{t('admin.overview.title')}</h2>
+    <p>{serverName}</p>
     <SettingsRow id={`${base}-name-row`} icon="server" label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
       <div className="dw-overview-field">
         <TextField id={fieldId} label={t('admin.overview.name')} value={name}
@@ -110,12 +125,19 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
           error={afkFailure ? undefined : error ?? undefined} required autoComplete="off" spellCheck={false} disabled={busy} />
       </div>
     </SettingsRow>
-    <SettingsRow id={`${base}-afk-row`} icon="moon" label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: afkName })}>
-      <Select label={t('afk.timeout.label')} value={String(afkTimeout)} disabled={afkBase === null || busy}
-        options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t(`afk.timeout.${n * 60}` as StringKey) }))}
+    <SettingsRow id={`${base}-afk-row`} icon="moon" label={t('admin.overview.afk')} hint={t('admin.overview.afkHint')}>
+      <Segmented id={`${base}-afk`} label={t('admin.overview.afk')} value={String(afkTimeout)} disabled={afkBase === null || busy}
+        options={TIMEOUTS.map(n => ({ value: String(n), label: t(`admin.overview.afk.${n}` as StringKey) }))}
         onChange={value => { afkEdited.current = true; setAFKTimeout(Number(value)); setAfkFailure(false); resetAction(); }} />
       {afkLoadError ? <p role="alert">{t('admin.afk.loadError')}</p> : null}
       {afkFailure && error ? <p role="alert">{error}</p> : null}
     </SettingsRow>
+    <SettingsRow id={`${base}-leave-row`} icon="log-out" label={t('admin.overview.leave')} hint={t('admin.overview.leaveHint')}>
+      <Button variant="danger" onClick={() => { if (owner) setOwnerNote(true); else { leaveRun.reset(); setLeaving(true); } }}>{t('admin.leave.confirm')}</Button>
+      {ownerNote ? <p role="status">{t('admin.leave.owner', { server: serverName })}</p> : null}
+    </SettingsRow>
+    <ConfirmDialog open={leaving} title={t('admin.leave.title', { server: serverName })} body={t('admin.leave.body', { server: serverName })}
+      confirmLabel={t('admin.leave.confirm')} busyLabel={t('admin.leave.busy')} cancelLabel={t('admin.cancel')}
+      busy={leaveRun.busy} error={leaveRun.error} attempt={leaveRun.attempt} onConfirm={leave} onClose={() => { if (!leaveRun.busy) setLeaving(false); }} />
   </section>;
 }

@@ -142,7 +142,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   const content = useMemo(() => {
     if (!access?.loaded || active === null || shown === undefined) return null;
     switch (active) {
-      case 'overview': return <OverviewSection {...common} />;
+      case 'overview': return <OverviewSection {...common} owner={access.owner === true} onGone={finish} />;
       case 'channels': return <ChannelsSection {...common} />;
       case 'gifs': return <section className="dw-settings-section"><h2 tabIndex={-1}>{t('workspace.gifs')}</h2><GifsSettings communityId={communityId} announce={announceInWorkspace} /></section>;
       case 'members': return <MembersSection communityId={communityId} selfId={account?.user?.id ?? ''} onMessage={onMessage} onCompare={onCompare} announce={announceInWorkspace} />;

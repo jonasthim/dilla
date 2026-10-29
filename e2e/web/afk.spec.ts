@@ -454,14 +454,13 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   const settings = await serverSettings(a.page, 'admin.nav.overview');
-  const timeout = settings.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true });
-  await expect(timeout).toBeEnabled({ timeout: WAIT });
-  await expect(settings.locator('.d-settings-row').filter({ has: a.page.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true }) }))
-    .toHaveCount(1);
-  await expect(timeout.locator('option')).toHaveText(['afk.timeout.60', 'afk.timeout.300', 'afk.timeout.900', 'afk.timeout.1800', 'afk.timeout.3600'].map((k) => copy(k)));
-  await expect(timeout).toHaveValue('300');
-  await expect(timeout.locator('option', { hasText: copy('admin.afk.disabled') })).toHaveCount(0);
-  await timeout.selectOption('60');
+  // Task 11 (Jonas, Q7): the prototype's segmented 1m / 5m / 15m / 30m / 1h.
+  const timeout = settings.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true });
+  await expect(timeout.getByRole('radio').first()).not.toHaveAttribute('aria-disabled', 'true', { timeout: WAIT });
+  await expect(settings.locator('.d-settings-row').filter({ has: timeout })).toHaveCount(1);
+  await expect(timeout.getByRole('radio')).toHaveText(['admin.overview.afk.60', 'admin.overview.afk.300', 'admin.overview.afk.900', 'admin.overview.afk.1800', 'admin.overview.afk.3600'].map((k) => copy(k)));
+  await expect(timeout.getByRole('radio', { name: copy('admin.overview.afk.300'), exact: true })).toHaveAttribute('aria-checked', 'true');
+  await timeout.getByRole('radio', { name: copy('admin.overview.afk.60'), exact: true }).click();
   const saves = dialogOf(a.page, 'admin.title').getByRole('button', { name: copy('admin.overview.save'), exact: true });
   await expect(saves).toHaveCount(1);
   await saves.click();
@@ -771,7 +770,7 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   await expectAccessible(a.page, 'the AFK channel with Ada away');
   await expectAccessible(b.page, 'the channel list with Ada away under AFK');
   await serverSettings(a.page, 'admin.nav.overview');
-  await expect(a.page.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true })).toBeEnabled({ timeout: WAIT });
+  await expect(a.page.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true }).getByRole('radio').first()).not.toHaveAttribute('aria-disabled', 'true', { timeout: WAIT });
   await expectAccessible(a.page, 'server settings, overview');
   await closeServerSettings(a.page);
 });

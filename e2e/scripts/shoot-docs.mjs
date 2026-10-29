@@ -647,7 +647,7 @@ async function main(argv) {
     const prepDialog = byText(ada, 'dialog', 'admin.title');
     const prepNav = prepDialog.getByRole('navigation', { name: t('admin.nav'), exact: true });
     await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.overview), exact: true }).click();
-    await prepDialog.getByRole('combobox', { name: t('afk.timeout.label'), exact: true }).and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await prepDialog.getByRole('radiogroup', { name: t('admin.overview.afk'), exact: true }).waitFor({ timeout: WAIT });
     await settle(ada);
     await shootAda('afk-settings-desktop');
     await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.channels), exact: true }).click();

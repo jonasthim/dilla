@@ -795,7 +795,7 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nameRow = settings.locator('.d-settings-row').filter({ hasText: copy('admin.overview.name') });
-  const timeout = settings.locator('.d-settings-row').filter({ hasText: copy('afk.timeout.label') });
+  const timeout = settings.locator('.d-settings-row').filter({ hasText: copy('admin.overview.afk') });
   await expect(timeout, 'the AFK timeout is a settings row in the Overview').toBeVisible({ timeout: WAIT });
   const [nameBox, timeoutBox] = [await nameRow.boundingBox(), await timeout.boundingBox()];
   expect.soft(nameBox !== null && timeoutBox !== null && timeoutBox.y > nameBox.y, 'the timeout row stands under the name row').toBe(true);
@@ -806,7 +806,7 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   expectOne('A4 the Overview rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
   const save = settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true });
   await expect(save, 'a clean Overview has no Save footer').toHaveCount(0);
-  await settings.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true }).selectOption('900');
+  await settings.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true }).getByRole('radio', { name: copy('admin.overview.afk.900'), exact: true }).click();
   await expect(save, 'one Save appears in the shared footer after a setting changes').toHaveCount(1);
   expect.soft(await settings.getByRole('button', { name: copy('admin.overview.save'), exact: true }).count(), 'the shared footer owns the only Save').toBe(1);
   await save.click();
