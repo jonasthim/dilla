@@ -16,7 +16,9 @@ describe('DeviceRow', () => {
     const item = screen.getByRole('listitem');
     expect(item).toHaveClass('d-device-row');
     expect(item).toHaveAttribute('data-tier', 'web');
-    for (const text of ['0a1b2c3d', 'browser', 'not yet in the device list', 'last seen 20:40']) {
+    // Fix round 2: the name is always isolated (<bdi>); the rest are spans.
+    expect(within(item).getByText('0a1b2c3d').tagName).toBe('BDI');
+    for (const text of ['browser', 'not yet in the device list', 'last seen 20:40']) {
       expect(within(item).getByText(text).tagName).toBe('SPAN');
     }
     expect(item).not.toHaveAttribute('data-own');

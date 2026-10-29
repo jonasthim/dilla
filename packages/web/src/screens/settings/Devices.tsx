@@ -5,7 +5,7 @@ import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
-import { messageTime } from '../shell-model.ts';
+import { timeAgo } from './SignInFactors.tsx';
 import { suggestDeviceName } from './device-name.ts';
 import { RenameDialog } from './RenameDialog.tsx';
 import { KeyDialog } from './KeyDialog.tsx';
@@ -140,10 +140,13 @@ export function Devices(): React.JSX.Element {
             action={{ label: t('workspace.signOut'), onAction: signOut.requestOpen }} />
         ) : null}
         {ordered.map(d => (
-          <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} idHint={d.label === null ? undefined : d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
+          // Fix round 2 (the prototype's sub line): "this browser · active now · d3f9a1" for this browser, "active 2 days ago ·
+          // 8b20ce" for another; the id stays on every row, since a label is the server's to change.
+          <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}
             state={d.revokedAt !== null ? t('devices.revoked') : !d.listed ? t('devices.unlisted') : undefined}
-            lastSeen={d.lastSeen > 0 ? t('devices.lastSeen', { when: messageTime(d.lastSeen, now) }) : undefined}
+            lastSeen={d.own ? t('devices.subOwn', { id: d.id.slice(0, 6) })
+              : d.lastSeen > 0 ? t('devices.subOther', { when: timeAgo(d.lastSeen, now), id: d.id.slice(0, 6) }) : d.id.slice(0, 6)}
             // Signal task 10 fix round 2 (Jonas): Rename is in the row's context menu (right-click, long press, Shift+F10).
             menu={d.revokedAt === null ? { label: t('signalSettings.menu.device', { name: d.label ?? d.id.slice(0, 8) }), items: [{ id: 'rename', label: t('devices.rename') }],
               onSelect: () => choose({ kind: 'rename', deviceId: d.id }) } : undefined}

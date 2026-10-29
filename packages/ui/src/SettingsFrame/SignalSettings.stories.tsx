@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { SettingsFrame } from './SettingsFrame.tsx';
 import { SettingsNav } from '../SettingsNav/SettingsNav.tsx';
 import { SettingsRow } from '../SettingsRow/SettingsRow.tsx';
@@ -7,13 +7,13 @@ import { Segmented } from '../Segmented/Segmented.tsx';
 import { Toggle } from '../Toggle/Toggle.tsx';
 import { KeyboardTable } from '../KeyboardTable/KeyboardTable.tsx';
 import { VoiceSettings } from '../VoiceSettings/VoiceSettings.tsx';
-import { DeviceRow } from '../DeviceRow/DeviceRow.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Select } from '../Select/Select.tsx';
 import { SAMPLE_MC, SampleCore } from '../AppShell/sampleCore.fixture.tsx';
 import { Profile as WebProfile } from '../../../web/src/screens/settings/Profile.tsx';
 import { SignInFactors as WebSignIn } from '../../../web/src/screens/settings/SignInFactors.tsx';
 import { OverviewSection as WebOverview } from '../../../web/src/screens/admin/OverviewSection.tsx';
+import { Devices as WebDevices } from '../../../web/src/screens/settings/Devices.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { LiveRoleEditor } from '../RoleEditor/RoleEditor.fixture.tsx';
@@ -24,14 +24,13 @@ import { t } from '../../../web/src/strings/index.ts';
 import { SETTINGS_ICONS, SETTINGS_REGISTRY } from '../../../web/src/settings/registry.ts';
 import '../../../web/src/settings/workspace.css';
 // Task 11: the web's own section styles (Profile's card, the phone rows), as the app loads them.
-import '../../../web/src/app.css';
 
 /**
  * Task 10, restyle rule 3e: the whole Settings workspace as packages/web composes it (fix round 1: one workspace; the nav is
  * settings/SettingsNavigation.tsx's "You" group and the selected server's group under its name, with only the sections an
  * owner may use; each section as its screens/settings/*.tsx draws it), at 1280 × 800 and on a 390 × 844 phone.
  */
-const meta: Meta = { title: 'Settings/SignalSettings', parameters: { layout: 'fullscreen' } };
+const meta: Meta = { title: 'Settings/SignalSettings', parameters: { layout: 'fullscreen', webStyles: true } };
 export default meta;
 type Story = StoryObj;
 const noop = () => {};
@@ -55,7 +54,18 @@ const ITEMS = [
   ...SETTINGS_REGISTRY.filter(entry => entry.scope === 'server')
     .map(entry => ({ id: `server:${entry.id}`, label: t(entry.labelKey), group: SERVER, icon: SETTINGS_ICONS[entry.id] })),
 ];
+// Fix round 2 (story only): on a phone the section chips scroll sideways; bring the selected one into view once laid out, as a
+// tap on it would leave it.
+function useSelectedChipInView() {
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      document.querySelector('.d-settings-nav [aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+}
 function Workspace({ active, children }: { active: string; children: ReactNode }) {
+  useSelectedChipInView();
   const nav = <SettingsNav label={t('settings.nav.label')} activeId={active} onSelect={noop} items={ITEMS} />;
   return (
     <Responsive>
@@ -143,23 +153,9 @@ function Keyboard() {
   );
 }
 
-// screens/settings/Devices.tsx (fix rounds 1–2) with this browser and one more: the prototype's rows, Sign out on this browser's,
-// Rename in each row's context menu.
+// Fix round 2 (rule 3d): the web's own screens/settings/Devices.tsx over the sample's two browsers.
 function Devices() {
-  return (
-    <section className="dw-settings-section" aria-labelledby="devices-title">
-      <h2 id="devices-title" tabIndex={-1}>{t('devices.title')}</h2>
-      <p>{t('devices.body')}</p>
-      <ul className="dw-device-list">
-        <DeviceRow name="3f9a2c1d" tier="web" own ownLabel={t('devices.thisBrowser')} lastSeen={t('devices.lastSeen', { when: '21:04' })}
-          menu={{ label: t('signalSettings.menu.device', { name: '3f9a2c1d' }), items: [{ id: 'rename', label: t('devices.rename') }], onSelect: noop }}
-          action={{ label: t('workspace.signOut'), onAction: noop }} />
-        <DeviceRow name="b2d4e6f8" tier="native" lastSeen={t('devices.lastSeen', { when: '21:02' })}
-          menu={{ label: t('signalSettings.menu.device', { name: 'b2d4e6f8' }), items: [{ id: 'rename', label: t('devices.rename') }], onSelect: noop }}
-          action={{ label: t('devices.revoke'), onAction: noop, danger: true }} />
-      </ul>
-    </section>
-  );
+  return <SampleCore><WebDevices /></SampleCore>;
 }
 
 // Task 11 (Jonas, Q7; rule 3d): the web's own screens/settings/Profile.tsx over the Midgard sample (Mira, "packing rope", her

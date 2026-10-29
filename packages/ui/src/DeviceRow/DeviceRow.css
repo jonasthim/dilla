@@ -1,7 +1,11 @@
 /* README §5.9 (task 10): a device is a setting row: the 32px monitor tile, the name (12.5/600) with its tags, the meta line
    (11px --fg-2) and the actions on the right. The rows of one list draw one 10px-radius group with hairlines between. */
-.d-device-row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; min-height: 3.5rem; min-width: 0; padding: 10px 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
-.d-device-row + .d-device-row { margin-top: -1px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.d-device-row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; min-height: calc(3.5rem + 2px); min-width: 0; padding: 10px 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+/* Fix round 2: the group steps as the prototype's (56px rows, each after the first drawing its hairline inside its 56, in a
+   1px-edged box): the first row adds the top edge, the last the bottom edge, and no row overlaps another (56n + 2). */
+.d-device-row:has(+ .d-device-row) { min-height: calc(3.5rem + 1px); border-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.d-device-row + .d-device-row { min-height: calc(3.5rem + 1px); border-top-left-radius: 0; border-top-right-radius: 0; }
+.d-device-row + .d-device-row:has(+ .d-device-row) { min-height: 3.5rem; }
 .d-device-row:has(+ .d-device-row) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .d-device-row__icon { display: flex; align-items: center; justify-content: center; flex: none; width: 2rem; height: 2rem; color: var(--accent); background: var(--surface-tile); border-radius: var(--r-lg); }
 .d-device-row__main { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }

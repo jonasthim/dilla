@@ -69,7 +69,9 @@ describe('the device list', () => {
     expect(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     expect(within(rowOf(OLD)).getByText('removed')).toBeInTheDocument();
     expect(within(rowOf(OLD)).queryByRole('button')).toBeNull();
-    expect(within(rowOf(PHONE)).getByText(/^last seen /)).toBeInTheDocument();
+    // Fix round 2 (the prototype's sub line): "this browser · active now · {id}" here, "active {when} · {id}" elsewhere.
+    expect(within(own).getByText(`this browser · active now · ${OWN.slice(0, 6)}`)).toBeInTheDocument();
+    expect(within(rowOf(PHONE)).getByText(`active 1 minute ago · ${PHONE.slice(0, 6)}`)).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
   });
   it('orders by own, then last seen, then removed', () => {
@@ -204,7 +206,7 @@ describe('naming a device', () => {
 
   it('shows the name where there is one and the first eight characters where there is not, and offers rename on live devices only', () => {
     setup(undefined, list());
-    expect(within(rowNamed('work laptop')).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
+    expect(within(rowNamed('work laptop')).getByText(new RegExp(` · ${NAMED.slice(0, 6)}$`))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
     fireEvent.contextMenu(rowNamed(PHONE.slice(0, 8)), { clientX: 10, clientY: 10 });
     expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
@@ -212,11 +214,11 @@ describe('naming a device', () => {
     fireEvent.contextMenu(rowNamed(OLD.slice(0, 8)), { clientX: 10, clientY: 10 });
     expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull();
   });
-  it('keeps the id beside a name, in an isolated span, so a swapped name does not hide which device it is', () => {
+  it('keeps the id under a name, the name isolated, so a swapped name does not hide which device it is', () => {
     setup(undefined, list());
     const row = rowNamed('work laptop');
     expect(within(row).getByText('work laptop').tagName).toBe('BDI');
-    expect(within(row).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
+    expect(within(row).getByText(new RegExp(` · ${NAMED.slice(0, 6)}$`))).toBeInTheDocument();
     // An unnamed device shows its id once.
     expect(within(rowNamed(PHONE.slice(0, 8))).getAllByText(PHONE.slice(0, 8))).toHaveLength(1);
   });

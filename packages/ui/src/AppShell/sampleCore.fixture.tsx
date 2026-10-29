@@ -30,6 +30,11 @@ const SLICES: Record<string, unknown> = {
   // Settings → Sign-in (Task 11, Q7): the prototype's four factors.
   factors: { owed: false, totp: { confirmedAt: Date.UTC(2026, 9, 12, 12) / 1000 }, backupCodesLeft: 8, hasPassword: true,
     passwordChanged: NOW - 21 * 86_400, passkeys: [{ id: 'ab'.repeat(16), name: 'MacBook Touch ID', created: Date.UTC(2026, 9, 12, 12) / 1000, lastUsed: null }] },
+  // Settings → Devices (fix round 2): the prototype's two browsers, this one named "Firefox on Linux".
+  devices: [
+    { id: 'd3f9a1'.padEnd(32, '0'), tier: 1, signerTier: 1, lastSeen: NOW - 30, revokedAt: null, listed: true, own: true, label: 'Firefox on Linux' },
+    { id: '8b20ce'.padEnd(32, '0'), tier: 1, signerTier: 1, lastSeen: NOW - 2 * 86_400, revokedAt: null, listed: true, own: false, label: 'Chrome on macOS' },
+  ],
   badges: {},
   settings: {},
   // The prototype's Activity, oldest first (the tab lists newest first): Ada's DM, Sven's and Liv's mentions in Valhalla Kitchen.

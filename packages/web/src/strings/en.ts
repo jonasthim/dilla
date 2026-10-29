@@ -343,6 +343,8 @@ export const en = {
   'devices.tier.web': 'Browser',
   'devices.tier.native': 'App',
   'devices.lastSeen': 'last seen {when}',
+  'devices.subOwn': 'this browser · active now · {id}',
+  'devices.subOther': 'active {when} · {id}',
   'devices.unlisted': 'not yet in the device list',
   'devices.revoked': 'removed',
   'devices.cap.one': 'One device',

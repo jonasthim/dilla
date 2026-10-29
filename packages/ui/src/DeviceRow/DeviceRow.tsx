@@ -51,8 +51,9 @@ export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state,
       <span className="d-device-row__icon" aria-hidden="true"><Icon name="monitor-smartphone" size={15} /></span>
       <div className="d-device-row__main">
         <div className="d-device-row__head">
-          {/* A label is free text: <bdi> keeps its direction from reordering the id and tags around it. */}
-          <span id={nameId} className="d-device-row__name">{idHint ? <bdi>{name}</bdi> : name}</span>
+          {/* A label is free text: <bdi> keeps its direction from reordering the id and tags around it (the id may be on the
+              line under it, fix round 2). */}
+          <span id={nameId} className="d-device-row__name"><bdi>{name}</bdi></span>
           {idHint ? <span id={idId} className="d-device-row__id">{idHint}</span> : null}
           {tierLabel ? <span className="d-device-row__tag" data-kind="tier">{tierLabel}</span> : null}
           {own && ownLabel ? <span className="d-device-row__tag" data-kind="own">{ownLabel}</span> : null}
