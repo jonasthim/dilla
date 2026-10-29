@@ -406,6 +406,8 @@ describe('phone layout', () => {
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', aside: <button type="button">pane</button>, asideLabel: 'members', asideOpen: true, onAsideClose: vi.fn() })} />);
     expect(screen.getByRole('complementary', { name: 'members' })).toBeInTheDocument();
     expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+    // Fix round 2: the full-screen sheet covers the tab bar (Task 11, Q4), so the bar is inert under it.
+    expect(container.querySelector('.d-app-shell__tabbar')).toHaveAttribute('inert');
   });
 
   it('the phone drops the rail settings tile; the desktop keeps it', () => {

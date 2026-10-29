@@ -1116,14 +1116,18 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   }));
   // Task 11 (Jonas, Q2; the prototype's DM rows): a person's row is their avatar with the online dot over their status (or
   // "@handle"); a group's is the neutral avatar over its members ("Ada, Björn, you").
+  // Fix round 2: a person this account shares no server with has no member row here, so nothing about them is known beyond the
+  // DM's own name (the worker's short id): no dot and no sub line, rather than a guess. A group names every other member, the
+  // unknown ones by that short id, so it never reads as just "you".
   const dmPerson = (d: DmSummary): NonNullable<ListRow['person']> => {
-    const others = d.members.filter(id => id !== self?.id).map(id => allMembers.find(m => m.userId === id)).filter(m => m !== undefined);
+    const otherIds = d.members.filter(id => id !== self?.id);
     if (d.members.length > 2) {
-      const names = [...others.map(m => m.display || m.username), t('shell.dm.you')].join(', ');
+      const names = [...otherIds.map(id => { const m = allMembers.find(x => x.userId === id); return m === undefined ? id.slice(0, 8) : m.display || m.username; }),
+        t('shell.dm.you')].join(', ');
       const words = d.name.trim().split(/\s+/);
       return { group: true, sub: names, initials: (words.length > 1 ? words[0][0] + words[1][0] : d.name.slice(0, 2)).toUpperCase() };
     }
-    const other = others[0];
+    const other = otherIds.length === 0 ? undefined : allMembers.find(m => m.userId === otherIds[0]);
     if (other === undefined) return {};
     return { presence: presenceOf(other.userId), sub: other.statusMsg ? other.statusMsg : `@${other.username}` };
   };

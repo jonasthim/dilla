@@ -425,7 +425,8 @@ export function AppShell({
           </aside> : null}
           {callBar !== undefined && callBar !== null && callBar !== false ? <div className="d-app-shell__callbar" inert={inert}>{callBar}</div> : null}
           {page !== undefined && page !== null && page !== false ? <div className="d-app-shell__page">{page}</div> : null}
-          {hasTabBar ? <div ref={tabBarRef} className="d-app-shell__tabbar" hidden={typing || undefined}>{tabBar}</div> : null}
+          {/* Fix round 2: a sheet covers the tab bar (Task 11, Q4), so the bar is inert under it, out of the tab order and the tree. */}
+          {hasTabBar ? <div ref={tabBarRef} className="d-app-shell__tabbar" hidden={typing || undefined} inert={(overlay && covered !== true) || undefined}>{tabBar}</div> : null}
         </div>
       </div>
       </PhoneLayoutProvider>

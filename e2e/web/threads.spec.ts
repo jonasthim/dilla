@@ -352,6 +352,12 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     expect(box!.width, 'the sheet fills the width').toBeGreaterThanOrEqual(388);
     // Task 11 (Jonas, Q4): the sheet covers the whole screen, the tab bar included (the prototype's phone thread).
     expect(box!.y + box!.height, 'the sheet reaches the bottom of the screen').toBeGreaterThanOrEqual(840);
+    // Fix round 2: the tab bar under it is covered (the sheet is what a tap there hits) and inert (out of the tab order).
+    const bar = page.locator('.d-app-shell__tabbar');
+    const barBox = (await bar.boundingBox())!;
+    expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.d-app-shell__aside') !== null,
+      [barBox.x + barBox.width / 2, barBox.y + barBox.height / 2]), 'the sheet covers the tab bar').toBe(true);
+    await expect(bar, 'the covered tab bar is inert').toHaveAttribute('inert', '');
     // The sheet is an AppShell overlay: it takes focus to its first control, the back button (flow 11 says the composer; see the report).
     await expect(sheet.getByRole('button', { name: copy('thread.close'), exact: true })).toBeFocused();
     // Task 7: the textarea sits in the box's input row over the footer, so the composer (its form) is measured.

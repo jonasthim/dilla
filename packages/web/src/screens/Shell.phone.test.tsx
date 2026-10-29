@@ -223,13 +223,18 @@ describe('the phone shell: the members sheet', () => {
 
   it('closes through its own back control by popping its entry', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await user.click(await screen.findByRole('button', { name: /^Members/ }));
+    const trigger = await screen.findByRole('button', { name: /^Members/ });
+    const index = () => (window.history.state as { dillaHistoryIndex?: number } | null)?.dillaHistoryIndex;
+    const before = index();
+    await user.click(trigger);
     const sheet = await screen.findByRole('complementary', { name: 'members of Midgard' });
     const length = window.history.length;
     await user.click(within(sheet).getByRole('button', { name: t('members.close') }));
     await waitFor(() => expect(screen.queryByRole('complementary')).toBeNull());
     expect(window.history.length).toBe(length);
     expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined();
+    // Fix round 2: the list's own × (Q4) pops the sheet's entry rather than leaving it behind, so the next Back leaves the channel.
+    await waitFor(() => expect(index()).toBe(before));
   });
 });
 
