@@ -857,7 +857,8 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
 
-  // The invites section on a desktop: rows of a label and a control column, as the Overview has them; then the link dialog's Copy at 390.
+  // The invites section on a desktop (Signal task 10c, merge s1+10c): the prototype's Invites card, two choices side by side (Expires
+  // after, Max uses), each a small label over its segmented control; then the card's Copy at 390.
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
   await expect(page.locator('.d-app-shell')).toBeVisible({ timeout: WAIT });
@@ -870,16 +871,18 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
-  const rows = admin.locator('.d-settings-frame__body .d-settings-row');
-  await expect(rows.first(), 'I1 the invites section is on SettingsRow').toBeVisible({ timeout: WAIT });
-  expect.soft(await rows.count(), 'I1 expires after and max uses are two settings rows').toBe(2);
+  const choices = admin.locator('.d-invite-panel__choice');
+  await expect(choices.first(), 'I1 the invites section is the Invites card').toBeVisible({ timeout: WAIT });
+  expect.soft(await choices.count(), 'I1 expires after and max uses are two choices').toBe(2);
   expect.soft(await admin.locator('.d-select__label').count(), 'I1 no stacked micro-uppercase label is left').toBe(0);
-  const labels = await boxes(page, '.d-settings-row__label', '.d-settings-frame__body');
-  expectOne('I1 the invites rows share one label x', labels.map(b => b.x), labels.map(b => b.t));
-  // Signal task 10 (README §5.9): a row's control sits at its right edge, so the controls share one right x (widths differ).
-  const controls = await boxes(page, '.d-settings-row__control', '.d-settings-frame__body');
-  expectOne('I1 the invites rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
+  const labels = await boxes(page, '.d-invite-panel__label', '.d-invite-panel__card');
+  expectOne('I1 the two choice labels share one top', labels.map(b => b.y), labels.map(b => b.t));
+  const controls = await boxes(page, '.d-invite-panel__choice > :last-child', '.d-invite-panel__card');
   expect(controls.length).toBe(labels.length);
+  for (const [i, label] of labels.entries()) {
+    expect(Math.abs(controls[i].x - label.x), `I1 ${label.t}: the control starts under its label`).toBeLessThan(1);
+    expect(controls[i].y, `I1 ${label.t}: the control sits below its label`).toBeGreaterThanOrEqual(label.b);
+  }
 
   // On a phone: the same section's buttons and the link dialog's field and Copy keep the prototype's sizes (32; 36 and 36).
   await page.keyboard.press('Escape');
@@ -893,7 +896,8 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
   await expect(admin.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPrototypeSizes(page, 'server settings, invites at 390', SETTINGS_SIZES.slice(0, 1));
+  // Signal task 10c: the Invites card has no .d-btn; its accent "Make invite link" is the prototype's 36px button.
+  await expectPrototypeSizes(page, 'server settings, invites at 390', [['.d-invite-panel__make', 36]]);
   await admin.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
   // Signal task 10c: the link shows once in the Invites card: a 38px field (36px and its 1px ring) beside a 36px Copy.
   await expect(admin.getByRole('button', { name: copy('serverSettings.invites.copy'), exact: true }), 'the card shows its Copy').toBeVisible({ timeout: WAIT });
