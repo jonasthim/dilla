@@ -18,6 +18,9 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   // Task 6b's ruling (Jonas 2026-10-27, prototype parity): the voice dock's stats in --fg-3 on the --ok tint (4.38:1). Listed here,
   // not only in story-a11y's dock stories, because the e2e axe runs (e2e/web/support/axe.ts) see the real dock beside a DM call.
   { selector: '.d-voice-dock__stats', simple: '.d-voice-dock__stats', why: 'the voice dock stats in #767D89 on the --ok tint (4.38:1)' },
+  // Task 11 (Jonas, Q2): a DM row's sub (its person's status) in #767D89; on the selected row's #171B22 that is 4.16:1. It is
+  // aria-hidden (the row carries it as its description).
+  { selector: '.d-chrow[aria-current="page"] .d-chrow__sub', simple: '.d-chrow__sub', why: 'the selected DM row\'s status in #767D89 on #171B22 (4.16:1)' },
   // Task 8b (README §6.6): the dock's now-playing row says "Now playing · 0:37 / 3:34" in the prototype's #767D89 on the same tint.
   { selector: '.d-np--compact .d-np__sub', simple: '.d-np__sub', why: 'the dock player\'s state line in #767D89 on the --ok tint (4.38:1)' },
   // Task 8b: the open queue's current row keeps the prototype's #767D89 number, requester and duration on its 0.08 accent tint.

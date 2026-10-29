@@ -23,6 +23,8 @@ import type { IconName } from '../Icon/Icon.tsx';
 import { t } from '../../../web/src/strings/index.ts';
 import { SETTINGS_ICONS, SETTINGS_REGISTRY } from '../../../web/src/settings/registry.ts';
 import '../../../web/src/settings/workspace.css';
+// Task 11: the web's own section styles (Profile's card, the phone rows), as the app loads them.
+import '../../../web/src/app.css';
 
 /**
  * Task 10, restyle rule 3e: the whole Settings workspace as packages/web composes it (fix round 1: one workspace; the nav is
