@@ -723,13 +723,13 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
 
   // The activity and You tabs remain app destinations; You now has one settings entry point.
   await tab('nav.tab.activity').click();
-  await expect(page.locator('.d-phone-header')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header', PHONE_HEADER);
+  // Task 11 (Jonas, Q3): Activity opens with the prototype's heading (18px over the 14px title), not a 52px bar.
+  await expect(page.locator('.dw-activity .d-phone-header')).toBeVisible({ timeout: WAIT });
   await expectTargets(page, tag, 'the activity tab');
   await expectNoPhoneReminders(page, `the activity tab at ${tag}`);
   await tab('nav.tab.you').click();
   await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the phone header (you)', '.d-phone-header', PHONE_HEADER);
+  // Task 11 (Jonas, Q3): You starts with the account (its heading is for screen readers only), not a 52px bar.
   await expectTargets(page, tag, 'the you tab');
   await page.locator('[data-settings-section="index"]').click();
   const userSettings = settingsDialog(page);

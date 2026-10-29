@@ -436,7 +436,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await homeTile(page).tap();
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
       await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
-      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(listHeading(page, 'shell.dms.title')).toBeVisible();
       await expect(page.getByText(copy('shell.dms.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
       await expectTapTargets(page.getByRole('button', { name: copy('shell.dms.new'), exact: true }), 'message someone');
       await expectAccessible(page, 'Home with @ selected');
@@ -515,7 +515,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
-      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(listHeading(page, 'shell.dms.title')).toBeVisible();
       await expect(page).toHaveURL(/\/dm$/);
       await expectAccessible(page, '/dm deep link');
       await railItem(page, SERVER).tap();
