@@ -206,7 +206,7 @@ a second factor.
 | `GET /v1/communities/{community}/bot/command-status` | E (human, current community member, wire v3) | — | `null` when no active installation; otherwise `[1,installation_id,bot_user_id|null,state,revision]`; no-store; omits configuration, capabilities and credentials |
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
 | `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
-| `PUT /v1/communities/{community}/bot[?v=2]` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing. Without `v=2` only bits 0–7 may be sent and Polls/Reminders (bits 8, 9) keep their value, both on for a new installation (10-community-bot.md) |
+| `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing. Without `v=2` only bits 0–7 may be sent and Polls/Reminders (bits 8, 9) keep their value, both on for a new installation (10-community-bot.md) |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |
 | `POST /v1/communities/{community}/bot/restart` | E (human, manage_community, wire v3) | `[installation_id]` | `[restart_requested,restart_handled]`; coalesces while a request is pending; audited (protocol/10 § Restart) |

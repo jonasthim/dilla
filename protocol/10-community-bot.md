@@ -1022,7 +1022,7 @@ restore that right. The music publisher also disables automatic subscriptions.
 | --- | --- | --- | --- |
 | `GET /v1/communities/{community}/bot` | E, manage_community | — | installation or CBOR null when absent |
 | `PATCH /v1/communities/{community}/bot/profile` | E, manage_community | `[display_name]` | `[normalized_display_name]`; only the managed bot account's display name changes |
-| `PUT /v1/communities/{community}/bot[?v=2]` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing. With `v=2` the mask is the full ten bits and is stored as sent. Without it the mask may name only bits 0–7 (400 otherwise); bits 8 (Polls) and 9 (Reminders) keep their current value, and a new installation starts with both on. The request hash covers `v=2`. |
+| `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing. With `v=2` the mask is the full ten bits and is stored as sent. Without it the mask may name only bits 0–7 (400 otherwise); bits 8 (Polls) and 9 (Reminders) keep their current value, and a new installation starts with both on. The request hash covers `v=2`. |
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
 | `POST /v1/communities/{community}/bot/restart` | E, manage_community | `[installation_id]` | `[restart_requested, restart_handled]`; 409 for another, disabled or runtime-less installation |

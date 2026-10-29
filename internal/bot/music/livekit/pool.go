@@ -340,10 +340,20 @@ func (p *Pool) markDead(generation uint64, cause error) {
 		p.mu.Unlock()
 		return
 	}
+	conn, cancel := p.markDeadLocked(cause)
+	p.mu.Unlock()
+	teardown(conn, cancel)
+}
+
+// markDeadLocked marks the pool dead and hands back what the caller must tear down once it has
+// released p.mu.
+func (p *Pool) markDeadLocked(cause error) (*poolConnection, context.CancelFunc) {
 	p.dead = true
 	p.deadReason = cause
-	conn, cancel := p.connection, p.roomCancel
-	p.mu.Unlock()
+	return p.connection, p.roomCancel
+}
+
+func teardown(conn *poolConnection, cancel context.CancelFunc) {
 	if cancel != nil {
 		cancel()
 	}
@@ -390,9 +400,12 @@ func (p *Pool) LeaveIdle() error {
 		p.mu.Unlock()
 		return nil
 	}
-	gen := p.generation
+	// Fix round 1 (I4): the idle check and the dead mark share one critical section, so a Start
+	// that begins after the check finds the pool dead and waits for Reset rather than racing a
+	// disconnect of the room it just reused. The disconnect itself runs outside the lock.
+	conn, cancel := p.markDeadLocked(ErrPoolIdle)
 	p.mu.Unlock()
-	p.markDead(gen, ErrPoolIdle)
+	teardown(conn, cancel)
 	return p.Reset()
 }
 

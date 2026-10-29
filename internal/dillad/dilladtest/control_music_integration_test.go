@@ -159,7 +159,11 @@ func testUser(uid id.ID, name string, created int64) store.UserRow {
 // instanceID reads the instance id from GET /v1/instance (field 3), which the bot client pins.
 func instanceID(t *testing.T, base string) id.ID {
 	t.Helper()
-	res, err := http.Get(base + "/v1/instance")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/instance", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

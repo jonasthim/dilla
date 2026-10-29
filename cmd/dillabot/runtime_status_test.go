@@ -72,6 +72,26 @@ func TestRuntimeStatusTrackerHonoursEachRestartOnceAndReportsWhenStale(t *testin
 	}
 }
 
+// Fix round 1 (M3): a build without a version reports once (its restart count) and then stays
+// quiet, though the server's version stays null.
+func TestRuntimeStatusTrackerWithoutAVersionDoesNotRepeatReports(t *testing.T) {
+	tracker := newRuntimeStatusTracker("")
+	reporter := &statusReporterFake{}
+	ctx := context.Background()
+	inst := client.Installation{ID: id.New(), Widened: true, RestartRequested: 1, RestartHandled: 0}
+	tracker.Observe(inst)
+	if err := tracker.Report(ctx, reporter, inst); err != nil || reporter.calls != 1 || reporter.version != nil || reporter.handled != 1 {
+		t.Fatalf("first report = %d calls, version %v, handled %d", reporter.calls, reporter.version, reporter.handled)
+	}
+	inst.RestartHandled = 1
+	for range 3 {
+		tracker.Observe(inst)
+		if err := tracker.Report(ctx, reporter, inst); err != nil || reporter.calls != 1 {
+			t.Fatalf("a versionless runtime reported again: %d calls", reporter.calls)
+		}
+	}
+}
+
 // The Bot enforces the Music page's options itself: anything else, or no report, is today's
 // behaviour (100, 30 minutes).
 func TestMusicDefaultsAreEnforcedByTheBot(t *testing.T) {

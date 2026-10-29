@@ -64,7 +64,10 @@ func (t *runtimeStatusTracker) Report(ctx context.Context, reporter runtimeStatu
 	if !ok {
 		return nil
 	}
-	if installation.RestartHandled >= handled && installation.RuntimeVersion != nil && *installation.RuntimeVersion == version {
+	// A build without a version (fix round 1, M3) has none to report: only the restart count can be
+	// behind, so a steady state still costs no request.
+	versionCurrent := version == "" || installation.RuntimeVersion != nil && *installation.RuntimeVersion == version
+	if installation.RestartHandled >= handled && versionCurrent {
 		return nil
 	}
 	var reported *string

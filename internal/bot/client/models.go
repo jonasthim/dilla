@@ -14,6 +14,7 @@ type Discovery struct {
 	ExternalSenderPub                         []byte
 }
 type Limits struct{ Values [11]uint64 }
+
 // LegacyServerCapabilities are the capability bits (8 Polls, 9 Reminders) a server that answers
 // the eight-field installation cannot switch off; the runtime list treats them as on.
 const LegacyServerCapabilities uint64 = 1<<8 | 1<<9
