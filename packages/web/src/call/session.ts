@@ -174,6 +174,8 @@ export interface InputStage {
   readonly input?: MediaStreamTrack;
   /** Fix round 1 (M1): whether gain and gate run (`active`), or why not. */
   readonly state?: 'pending' | 'active' | 'unsupported' | 'failed';
+  /** Its own audio context, which a browser holding audio back starts suspended (resumed by startAudio). */
+  readonly context?: AudioContext;
   destroy?(): Promise<void>;
 }
 
@@ -1919,6 +1921,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended) return Promise.resolve();
         const tries: unknown[] = [];
         try { if (ctx !== null) tries.push(ctx.resume()); } catch { /* still held back */ }
+        // Merge of Task 10b: the microphone's input stage runs in a context of its own; the same press lets it run.
+        try { const c = stage?.context; if (c !== undefined && c.state === 'suspended') tries.push(c.resume()); } catch { /* still held back */ }
         try { tries.push(room.startAudio()); } catch { /* still held back */ }
         return Promise.allSettled(tries).then(() => { if (!ended) set({ audioBlocked: playbackBlocked() }); });
       },

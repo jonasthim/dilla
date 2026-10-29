@@ -56,7 +56,9 @@ function useDevices(): { inputs: Device[]; outputs: Device[]; granted: boolean }
  */
 function useDraft(stored: number, write: (v: number) => void): [number, (v: number, commit: boolean) => void] {
   const [draft, setDraft] = useState<number | null>(null);
-  useEffect(() => { setDraft(null); }, [stored]);
+  // Merge of Task 10b: hand back only once the stored value caught up with the draft. Clearing on any republish lost keyboard
+  // steps: the write of 199 landing while the draft was already 198 showed 199 again, and the next key moved from there.
+  useEffect(() => { setDraft(d => (d === stored ? null : d)); }, [stored]);
   return [draft ?? stored, (v: number, commit: boolean) => { setDraft(v); if (commit && v !== stored) write(v); }];
 }
 

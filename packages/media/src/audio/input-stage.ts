@@ -88,7 +88,10 @@ export class DillaInputStage implements TrackProcessor<Track.Kind.Audio, AudioPr
     const ctx = (this.opts.createContext ?? (() => new AudioContext({ sampleRate: 48_000, latencyHint: 'interactive' })))();
     this.ctx = ctx;
     try {
-      await ctx.resume().catch(() => undefined);
+      // Merge of Task 10b: never wait on resume. A browser that holds audio back (no gesture yet) leaves the promise pending,
+      // which held the join at "connecting"; the graph is built now and runs once the context does (the call's "turn on
+      // audio" press resumes it, PageCall.startAudio).
+      void ctx.resume().catch(() => undefined);
       await ctx.audioWorklet.addModule(this.opts.workletUrl ?? await defaultWorkletUrl());
       if (this.destroyed) return;
       const node = new AudioWorkletNode(ctx, 'dilla-input-stage', {
