@@ -1,4 +1,4 @@
-.d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) 45% 42%); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
+.d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) var(--avatar-s, 45%) var(--avatar-l, 42%)); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
 .d-avatar[data-shape="bot"] { border-radius: var(--r-bot); background: var(--brand); }
 /* Signal §5.4: an 18px voice occupant, 7.5px initials; the bot's square is 5px at this size (the prototype's avR). */
 .d-avatar[data-size="voice"] { width: 1.125rem /* 18px */; height: 1.125rem; font-size: var(--text-mini); }

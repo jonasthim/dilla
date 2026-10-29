@@ -15,7 +15,7 @@ export { StateDot } from './StateDot/StateDot.tsx';
 export type { StateDotProps, StateDotTone } from './StateDot/StateDot.tsx';
 export { Icon } from './Icon/Icon.tsx';
 export type { IconName, IconProps } from './Icon/Icon.tsx';
-export { Avatar, AVATAR_HUES } from './Avatar/Avatar.tsx';
+export { Avatar, AVATAR_HUES, AVATAR_PALETTE, avatarColour, avatarStyle } from './Avatar/Avatar.tsx';
 export type { AvatarProps, Presence } from './Avatar/Avatar.tsx';
 export { ChannelRow } from './ChannelRow/ChannelRow.tsx';
 export type { ChannelRowProps } from './ChannelRow/ChannelRow.tsx';

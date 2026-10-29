@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import type { ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
-import { Avatar, avatarHue, type Presence } from '../Avatar/Avatar.tsx';
+import { Avatar, avatarStyle, type Presence } from '../Avatar/Avatar.tsx';
 import { focusReturnTarget } from '../Dialog/Dialog.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { hex } from '../internal/hex.ts';
@@ -168,7 +168,7 @@ export function ProfileCard({
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
 
-  const style = { ...(mode === 'popover' ? { position: 'fixed', left: `${at?.x ?? 0}px`, top: `${at?.y ?? 0}px` } : {}), '--avatar-hue': String(isBot ? BOT_HUE : avatarHue(name)) } as CSSProperties;
+  const style = { ...(mode === 'popover' ? { position: 'fixed', left: `${at?.x ?? 0}px`, top: `${at?.y ?? 0}px` } : {}), ...(isBot ? { '--avatar-hue': String(BOT_HUE) } : avatarStyle(name)) } as CSSProperties;
   const word = presence === undefined ? null : presenceLabels?.[presence] ?? PRESENCE_WORD[presence];
   // The prototype's line: "@handle · status", the status being the custom one, else the presence word.
   const line = [username === '' ? null : `@${username}`, status ? null : word].filter(v => v !== null).join(' · ');

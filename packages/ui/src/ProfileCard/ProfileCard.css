@@ -7,7 +7,7 @@
 }
 .d-profile-card:focus-visible { outline: none; }
 /* The 56px band: the person's hue, 45% saturation, 30% to 16% light at 135°. */
-.d-profile-card__band { height: 56px; background: linear-gradient(135deg, hsl(var(--avatar-hue) 45% 30%), hsl(var(--avatar-hue) 45% 16%)); }
+.d-profile-card__band { height: 56px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 30%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 16%)); }
 .d-profile-card__body { margin-top: -28px; padding: 0 16px 16px; }
 .d-profile-card__avatar { display: inline-flex; }
 .d-profile-card__avatar .d-avatar { box-shadow: 0 0 0 4px var(--surface-2); }
