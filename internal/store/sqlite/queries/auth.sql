@@ -5,8 +5,10 @@ ON CONFLICT (user_id) DO UPDATE SET phc = excluded.phc, updated = excluded.updat
 -- name: GetPasswordCredential :one
 SELECT phc FROM password_credentials WHERE user_id = ?;
 
--- name: MarkPasswordChanged :execrows
-UPDATE password_credentials SET changed_at = ? WHERE user_id = ?;
+-- name: ChangePasswordCredential :exec
+-- Fix round 2 (security L1): a change writes the new hash and its change time in one statement.
+INSERT INTO password_credentials (user_id, phc, updated, changed_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (user_id) DO UPDATE SET phc = excluded.phc, updated = excluded.updated, changed_at = excluded.changed_at;
 
 -- name: GetPasswordChangedAt :one
 SELECT changed_at FROM password_credentials WHERE user_id = ?;

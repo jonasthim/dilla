@@ -20,6 +20,8 @@ type Querier interface {
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	// Fix round 2 (security L1): a change writes the new hash and its change time in one statement.
+	ChangePasswordCredential(ctx context.Context, arg ChangePasswordCredentialParams) error
 	ClearAFKAway(ctx context.Context, arg ClearAFKAwayParams) (int64, error)
 	ClearAFKAwayUser(ctx context.Context, arg ClearAFKAwayUserParams) ([]id.ID, error)
 	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
@@ -297,7 +299,6 @@ type Querier interface {
 	// The boot reconcile's first half (web3.6 S1): every live human account that holds no confirmed
 	// TOTP secret and no passkey registered for the instance's rp_id owes a second factor.
 	MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error)
-	MarkPasswordChanged(ctx context.Context, arg MarkPasswordChangedParams) (int64, error)
 	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
 	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
 	// DELETE, so the high-water records exactly what delivery retention took.

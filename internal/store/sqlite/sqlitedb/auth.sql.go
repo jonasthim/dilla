@@ -12,6 +12,29 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const changePasswordCredential = `-- name: ChangePasswordCredential :exec
+INSERT INTO password_credentials (user_id, phc, updated, changed_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (user_id) DO UPDATE SET phc = excluded.phc, updated = excluded.updated, changed_at = excluded.changed_at
+`
+
+type ChangePasswordCredentialParams struct {
+	UserID    id.ID
+	Phc       string
+	Updated   int64
+	ChangedAt sql.NullInt64
+}
+
+// Fix round 2 (security L1): a change writes the new hash and its change time in one statement.
+func (q *Queries) ChangePasswordCredential(ctx context.Context, arg ChangePasswordCredentialParams) error {
+	_, err := q.db.ExecContext(ctx, changePasswordCredential,
+		arg.UserID,
+		arg.Phc,
+		arg.Updated,
+		arg.ChangedAt,
+	)
+	return err
+}
+
 const clearLoginFailures = `-- name: ClearLoginFailures :exec
 DELETE FROM login_attempts WHERE user_id = ? AND ok = 0
 `
@@ -363,23 +386,6 @@ func (q *Queries) ListWebauthnCredentials(ctx context.Context, arg ListWebauthnC
 		return nil, err
 	}
 	return items, nil
-}
-
-const markPasswordChanged = `-- name: MarkPasswordChanged :execrows
-UPDATE password_credentials SET changed_at = ? WHERE user_id = ?
-`
-
-type MarkPasswordChangedParams struct {
-	ChangedAt sql.NullInt64
-	UserID    id.ID
-}
-
-func (q *Queries) MarkPasswordChanged(ctx context.Context, arg MarkPasswordChangedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markPasswordChanged, arg.ChangedAt, arg.UserID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 const pruneCeremonies = `-- name: PruneCeremonies :execrows

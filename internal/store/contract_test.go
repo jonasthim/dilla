@@ -59,7 +59,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ClearLoginFailures", "ConsumeRecoveryCode", "ConsumeTOTPCounter",
 			"CountLoginFailures", "CountRecoveryCodes", "GetOIDCIdentity",
 			"GetPasswordChangedAt", "GetPasswordCredential", "GetTOTP", "GetWebauthnCredential",
-			"GetWebauthnUserByHandle", "GetWebauthnUserHandle", "ListWebauthnCredentials", "MarkPasswordChanged",
+			"GetWebauthnUserByHandle", "GetWebauthnUserHandle", "ListWebauthnCredentials", "ChangePasswordCredential",
 			"PruneCeremonies", "PutCeremony", "PutOIDCIdentity", "PutPasswordCredential",
 			"PutRecoveryCodes", "PutTOTP", "PutWebauthnCredential", "PutWebauthnUser",
 			"RecordLoginAttempt", "TakeCeremony", "UpdateWebauthnCredential",

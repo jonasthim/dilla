@@ -720,15 +720,13 @@ func (r *Repo) PutPasswordCredential(ctx context.Context, userID id.ID, phc stri
 	}))
 }
 
-func (r *Repo) MarkPasswordChanged(ctx context.Context, userID id.ID, at int64) error {
-	n, err := r.w.MarkPasswordChanged(ctx, sqlitedb.MarkPasswordChangedParams{ChangedAt: sql.NullInt64{Int64: at, Valid: true}, UserID: userID})
-	if err != nil {
-		return wrap(err)
-	}
-	if n == 0 {
-		return store.ErrNotFound
-	}
-	return nil
+func (r *Repo) ChangePasswordCredential(ctx context.Context, userID id.ID, phc string, at int64) error {
+	return wrap(r.w.ChangePasswordCredential(ctx, sqlitedb.ChangePasswordCredentialParams{
+		UserID:    userID,
+		Phc:       phc,
+		Updated:   at,
+		ChangedAt: sql.NullInt64{Int64: at, Valid: true},
+	}))
 }
 
 func (r *Repo) GetPasswordChangedAt(ctx context.Context, userID id.ID) (*int64, error) {
