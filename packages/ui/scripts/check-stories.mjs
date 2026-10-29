@@ -74,6 +74,7 @@ try {
             await page.mouse.click(box.x + box.width * (want + 100) / 100, box.y + box.height / 2);
             const got = Number(await input.inputValue());
             if (Math.abs(got - want) > 1) throw new Error(`SensitivityMeter: a press at ${want} dB set ${got}`);
+            await page.waitForTimeout(400); // the line moves over --duration-normal (220ms)
             const line = await page.locator('.d-sens__line').boundingBox();
             const centre = line.x + line.width / 2;
             const expected = box.x + box.width * (got + 100) / 100;
