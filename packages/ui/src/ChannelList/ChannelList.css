@@ -51,3 +51,7 @@
 [data-layout="phone"] .d-channel-list__cat-head { height: 2.75rem; }
 [data-layout="phone"] .d-channel-list__cat-add { height: 2.75rem; }
 
+
+/* Task 11 (Jonas, Q2): the DM list's section label, the prototype's "DIRECT MESSAGES": 26px, 10px into the list, 10px/600
+   uppercase --fg-3 with the category rule; not a control. */
+.d-channel-list__section { display: flex; align-items: center; gap: 6px; height: 1.625rem; margin: 10px 0 0; padding: 0 0.5rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }

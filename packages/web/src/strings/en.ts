@@ -298,6 +298,11 @@ export const en = {
   'shell.tabs.channels': 'channels',
   'shell.tabs.dms': 'direct messages',
   'shell.dms.label': 'direct messages',
+  // Task 11 (Jonas, Q2): the prototype's DM list head: the serif title, its stat line and the section label.
+  'shell.dms.title': 'Direct messages',
+  'shell.dms.section': 'Direct messages',
+  'shell.dms.online': '{n} online',
+  'shell.dms.count': '{n} conversations',
   'shell.dms.empty': 'no direct messages yet',
   'shell.dms.new': 'message someone',
   'shell.dms.newTitle': 'Message someone',

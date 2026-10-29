@@ -138,3 +138,26 @@ describe('ChannelRow', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+// Task 11 (Jonas, Q2): a DM drawn as a person.
+describe('ChannelRow person (a DM row)', () => {
+  it('shows the avatar, the name over its sub, keeps the name as the row name and the sub as its description, and a dot for unread', async () => {
+    const { container } = render(<div className="d-root"><ChannelRow name="Björn" kind="dm" unread={1} onSelect={vi.fn()}
+      person={{ presence: 'online', sub: 'bridge troll survivor' }} /></div>);
+    const row = screen.getByRole('button', { name: /^Björn/ });
+    expect(row).toHaveAttribute('data-person', 'true');
+    expect(row).toHaveAccessibleName('Björn 1 unread');
+    expect(row).toHaveAttribute('aria-description', 'bridge troll survivor');
+    expect(container.querySelector('.d-avatar')).not.toBeNull();
+    expect(container.querySelector('.d-avatar__presence')).not.toBeNull();
+    expect(container.querySelector('.d-chrow__unread-dot')).not.toBeNull();
+    expect(container.querySelector('.d-pill')).toBeNull();
+    await expectNoAxeViolations(container);
+  });
+  it('draws a group DM with the neutral avatar and no presence dot', () => {
+    const { container } = render(<ChannelRow name="raid crew" kind="dm" onSelect={vi.fn()} person={{ group: true, sub: 'Ada, Björn, you', initials: 'RC' }} />);
+    expect(container.querySelector('.d-chrow')).toHaveAttribute('data-group', 'true');
+    expect(container.querySelector('.d-avatar__presence')).toBeNull();
+    expect(container.querySelector('.d-avatar__initials')).toHaveTextContent('RC');
+  });
+});

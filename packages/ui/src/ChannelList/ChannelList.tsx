@@ -17,6 +17,8 @@ export interface ChannelListChannel {
   joined?: boolean;
   /** The built-in AFK channel. */
   afk?: boolean;
+  /** Task 11 (Q2): a DM drawn as a person (ChannelRow's `person`). */
+  person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string };
 }
 
 export interface ChannelListProps {
@@ -25,6 +27,8 @@ export interface ChannelListProps {
   /** 'server' (default) sets the title in the display serif, which is only for the server name. 'plain' (a list's own heading, such as direct messages) is the mono heading style. */
   titleKind?: 'server' | 'plain';
   channels: readonly ChannelListChannel[];
+  /** Task 11 (Q2): a quiet section label over the rows (the prototype's "DIRECT MESSAGES" with its rule). */
+  sectionLabel?: string;
   /** The categories in display order. The uncategorised rows come first, then each category's header and its children. */
   categories?: readonly { id: string; name: string; collapsed: boolean }[];
   /** A header is a button; Enter or a click on it asks to fold or unfold the category. */
@@ -111,7 +115,7 @@ function entriesOf(channels: readonly ChannelListChannel[], categories: NonNulla
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server', stats, newLabel, rowMenu }: ChannelListProps) {
+export function ChannelList({ sectionLabel, label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server', stats, newLabel, rowMenu }: ChannelListProps) {
   const isJoined = (c: ChannelListChannel) => c.joined === true || (voice !== undefined && Object.hasOwn(voice.rooms, c.id) && voice.rooms[c.id].joined);
   const entries = entriesOf(channels, categories, activeId, isJoined);
   const roving = useRovingFocus(entries.findIndex(e => e.kind === 'channel' && e.channel.id === activeId));
@@ -208,13 +212,18 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
     return (
       <li key={c.id} {...rowHandlers(c)}>
         <ChannelRow name={c.name} kind={c.afk === true ? 'afk' : c.kind} readable={c.readable} active={c.id === activeId}
-          unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} newLabel={newLabel} onSelect={() => onSelect(c.id)} />
+          unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} newLabel={newLabel} onSelect={() => onSelect(c.id)}
+          {...(c.person !== undefined ? { person: c.person } : {})} />
       </li>
     );
   };
   const body = content !== undefined ? content : channels.length === 0 && categories.length === 0 ? (
     <p className="d-channel-list__empty">{emptyLabel}</p>
   ) : (
+    <>
+    {sectionLabel !== undefined ? (
+      <p className="d-channel-list__section"><span>{sectionLabel}</span><span className="d-channel-list__cat-rule" aria-hidden="true" /></p>
+    ) : null}
     <ul role="list" className="d-channel-list__list" ref={roving.ref} onKeyDown={onKeyDown} onFocus={onFocus}>
       {entries.map(e => e.kind === 'channel' ? renderChannel(e.channel) : (
         <li key={`cat:${e.id}`} className="d-channel-list__cat">
@@ -235,6 +244,7 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
         </li>
       ))}
     </ul>
+    </>
   );
   const statLine = stats !== undefined && stats.length > 0 ? (
     <p className="d-channel-list__stats">

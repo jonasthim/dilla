@@ -146,7 +146,8 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
  * when focus is not in the row (a pointer that does not focus buttons).
  */
 /** A channel row's or DM row's props: what ChannelList draws, with the badge of requirement 6. */
-type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null };
+type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
+  person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string } };
 
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
 type Side = { channelId: string; view: 'list' } | { channelId: string; view: 'thread'; rootMsgId: string };
@@ -265,6 +266,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const afkOption = useMemo(() => ({ channels: afkChannels }), [afkChannels]);
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const allMembers = useMemo(() => mergeMembers(memberLists), [memberLists]);
+  // Task 11 (Q2): every listed server's presence, for the DM rows' online dots and the DM list's "N online".
+  const presenceLists = useSlices((communities ?? []).map(c => `presence:${c.id}` as const));
+  const presenceOf = (userId: string): 'online' | 'idle' | 'dnd' | 'offline' => {
+    for (const list of presenceLists) { const p = list?.[userId]; if (p !== undefined && p !== 'offline') return p; }
+    return 'offline';
+  };
 
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinInvite, setJoinInvite] = useState<string | null>(null);
@@ -1107,7 +1114,21 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1, parentId: c.parentId,
     ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(c.slowmode > 0 ? { badge: t('slow.badge') } : {}), ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
-  const dmRows: ListRow[] = (dms ?? []).map(d => ({ id: d.id, name: d.name, kind: 'dm', readable: false, ...rowBadge(badges, settings, d.id) }));
+  // Task 11 (Jonas, Q2; the prototype's DM rows): a person's row is their avatar with the online dot over their status (or
+  // "@handle"); a group's is the neutral avatar over its members ("Ada, Björn, you").
+  const dmPerson = (d: DmSummary): NonNullable<ListRow['person']> => {
+    const others = d.members.filter(id => id !== self?.id).map(id => allMembers.find(m => m.userId === id)).filter(m => m !== undefined);
+    if (d.members.length > 2) {
+      const names = [...others.map(m => m.display || m.username), t('shell.dm.you')].join(', ');
+      const words = d.name.trim().split(/\s+/);
+      return { group: true, sub: names, initials: (words.length > 1 ? words[0][0] + words[1][0] : d.name.slice(0, 2)).toUpperCase() };
+    }
+    const other = others[0];
+    if (other === undefined) return {};
+    return { presence: presenceOf(other.userId), sub: other.statusMsg ? other.statusMsg : `@${other.username}` };
+  };
+  const dmRows: ListRow[] = (dms ?? []).map(d => ({ id: d.id, name: d.name, kind: 'dm', readable: false, person: dmPerson(d), ...rowBadge(badges, settings, d.id) }));
+  const dmOnline = (dms ?? []).filter(d => d.members.length === 2 && d.members.some(id => id !== self?.id && presenceOf(id) === 'online')).length;
   const dmCounts = sumBadges(dmRows);
   // R36: a category folds on this device only, the setting `channels.collapsed.<id>` = '1'; unfolding deletes it.
   const collapsedKey = (id: string) => `channels.collapsed.${id}`;
@@ -1250,7 +1271,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     );
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
-        title={onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
+        title={onDms ? t('shell.dms.title') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
+        {...(onDms ? { sectionLabel: t('shell.dms.section'), stats: [{ text: t('shell.dms.online', { n: dmOnline }), live: true }, { text: t('shell.dms.count', { n: (dms ?? []).length }) }] } : {})}
         headerAction={headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.
@@ -1259,7 +1281,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         {...(voiceHere && canManageChannels && !onDms ? { onAddInCategory: (id: string) => { setChannelParent(id); setChannelOpen(true); },
           addInCategoryLabel: (name: string) => t('layout.category.add', { name }) } : {})}
         // Walk 9: only the server name keeps the display serif; the DM list heading (Home) is the plain mono one.
-        titleKind={onDms ? 'plain' : 'server'}
+        titleKind="server"
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join'), joined: t('voice.row.joined') }, rooms: voiceRooms,

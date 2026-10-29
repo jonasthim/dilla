@@ -17,7 +17,7 @@ import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { ActionMenu } from '../ActionMenu/ActionMenu.tsx';
-import { DMS, YOU } from '../internal/sample/midgard.ts';
+import { DMS, PEOPLE, YOU } from '../internal/sample/midgard.ts';
 
 /**
  * Signal task 10 fix round 2–3 (rule 3d): the server head's ⌄ as packages/web/src/screens/Shell.tsx composes it, a menu named
@@ -136,9 +136,14 @@ export function SignalShell({ shell, voice, main, dm = false }: { shell?: Partia
         addLabel="add a server" onAdd={noop} itemLabel={itemLabel}
         items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Valhalla Kitchen', unread: 2, mentions: 2 }]} />}
       sidebar={dm ? (
-        <ChannelList label="direct messages" title="direct messages" titleKind="plain" activeId="ada" onSelect={noop} emptyLabel="no direct messages yet" rowLabel={rowLabel}
+        // Task 11 (Q2): Shell.tsx's DM list: the serif title, "2 online · 3 conversations", DIRECT MESSAGES, a row per DM with its
+        // person (status for one person, the members for a group); Björn's DM is unread.
+        <ChannelList label="direct messages" title="Direct messages" activeId="ada" onSelect={noop} emptyLabel="no direct messages yet" rowLabel={rowLabel}
           headerAction={<><IconButton icon="square-pen" size={28} label="message someone" onClick={noop} /><DmHeadMenu /></>}
-          channels={DMS.map(d => ({ id: d.id, name: d.name, kind: 'dm' as const, readable: false }))} />
+          stats={[{ text: '2 online', live: true }, { text: '3 conversations' }]} sectionLabel="Direct messages"
+          channels={DMS.map(d => ({ id: d.id, name: d.name, kind: 'dm' as const, readable: false, ...(d.id === 'bjorn' ? { unread: 1 } : {}),
+            person: d.id === 'crew' ? { group: true, sub: 'Ada, Björn, you', initials: 'RC' }
+              : { presence: 'online' as const, sub: d.id === 'ada' ? PEOPLE.Ada.status : PEOPLE['Björn'].status } }))} />
       ) : <ChannelList label="channels" title="Midgard Crew" activeId={voice !== undefined ? 'harbour' : 'general'} onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
         headerAction={<ServerHeadMenu />}
         stats={[{ text: '3 online', live: true }, { text: voice?.joined === true ? '6 in voice' : '5 in voice' }]} newLabel={n => `${n} new`}

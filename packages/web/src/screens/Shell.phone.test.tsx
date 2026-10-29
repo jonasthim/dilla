@@ -600,7 +600,7 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
 
   it('Home on @: "direct messages" in the head with the new-message action, and no footer', async () => {
     const { user } = phone({ path: '/dm' });
-    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.label') })).closest('.d-channel-list__head') as HTMLElement;
+    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.title') })).closest('.d-channel-list__head') as HTMLElement;
     expect(head).not.toBeNull();
     const add = within(head).getByRole('button', { name: t('shell.dms.new') });
     expect(add.querySelector('svg[data-icon="square-pen"]')).not.toBeNull();
@@ -612,7 +612,7 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
 
   it('Home on @ has no search in its head, only "message someone"', async () => {
     phone({ path: '/dm' });
-    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.label') })).closest('.d-channel-list__head') as HTMLElement;
+    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.title') })).closest('.d-channel-list__head') as HTMLElement;
     // Signal task 10 fix round 2: beside "message someone", the DM list head's menu (the device-wide notify default).
     expect(within(head).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('shell.dms.new'), t('signalSettings.menu.dms')]);
   });
