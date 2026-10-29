@@ -18,6 +18,18 @@ the web client), `dillabot`, their matching core modules, installers and checksu
   have no use limit (Manage server only), and Music has a default volume and an idle time.
 - The instance signs each account's kind (person or bot); a browser checks it before it trusts a device's claim
   (protocol/03 § Account kind attestation, wire 4).
+- Avatars take their colour from the person's name, picked from the design's own seven-colour palette, so the design's
+  sample people get their sample colours.
+- Direct messages are listed as people: an avatar with an online dot, the name over the person's status or @handle (a
+  group: its members), and an unread dot, under "Direct messages", "N online · M conversations".
+- Phone tabs: Activity is one list (a due reminder, mentions and direct messages, then other channels with something new),
+  and You shows the account, the connection with its round trip ("Connected to {host} · {ms} ms") and this browser, and
+  the rows Settings, Status and Sign out. Sheets (members, a thread) cover the whole screen, tabs included.
+- Settings → Profile saves as you type (with a preview card); Sign-in says when the password was last changed; Overview
+  has the inactive timeout as 1m / 5m / 15m / 30m / 1h and Leave server; Devices says "this browser · active now" and
+  how long ago another device was active.
+- `GET /v1/auth/factors` answers a sixth element, `password_changed` (unix seconds, or null while unknown), set by
+  `POST /v1/auth/password` (protocol/09). A client that reads five elements must accept six.
 
 ## Versions and compatibility
 
@@ -26,6 +38,16 @@ the web client), `dillabot`, their matching core modules, installers and checksu
 | Server database schema | **52** | 47 |
 | Browser client store schema | **13** | 12 |
 | Negotiated wire version | **4** | 3 |
+
+## Database migrations
+
+| Migration | What it does |
+|---|---|
+| `00048_control_music` | Grants the new **Control music** permission (bit 25) to every role the server's current Bot installation had approved as DJ, then drops the DJ roles table. Its down migration recreates that table empty. |
+| `00049_unlimited_invites` | Adds `invites.unlimited_uses` (an invite with no use limit). A down migration turns such an invite into a 1000-use one. |
+| `00050_bot_installation_settings` | Adds the Bot's per-server settings: Polls and Reminders switches (both on), the Music default volume (100) and idle time (30 minutes), the restart counters and the runtime version. |
+| `00051_session_wire4` | Lets a session negotiate wire 4. A down migration deletes the wire-4 sessions (those browsers sign in again). |
+| `00052_password_changed` | Adds `password_credentials.changed_at`. Every existing password's change date is **unknown** after the upgrade, so Settings → Sign-in shows no "Changed …" line until that person next changes the password. |
 
 ## Deploy order
 
@@ -62,6 +84,5 @@ stream is forwarded to every viewer. See [LiveKit](../README.md#livekit).
 
 ## Known limits
 
-- Avatars take their colour from the person's name (eight hues); the design's sample hues differ.
 - Speaking rings in the channel list show only for the call you are in.
 - The design's DM threads, member moves, server mute and disconnect are later waves.

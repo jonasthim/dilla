@@ -132,7 +132,8 @@ const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea,
  *  2026-10-27 (pixel parity): the rail's tiles (38) and the phone header's actions (28 high; search 36 x 28) are the prototype's sizes,
  *  so they are secondary; the header's back and call dot stay 44. */
 const PRIMARY = [
-  '.d-tab-bar__link', '.d-phone-header__back', '.d-phone-header__dot', '.d-chrow', '.d-voice-row', '.d-channel-list__cat-head', '.d-voice-row__join button',
+  // Fix round 2 (rule 0): a category head is the prototype's 26px on a phone too, so it is secondary.
+  '.d-tab-bar__link', '.d-phone-header__back', '.d-phone-header__dot', '.d-chrow', '.d-voice-row', '.d-voice-row__join button',
   // Ruling AB: the server head's ⌄ is the prototype's 26px (secondary tier); the DM head's "message someone" stays primary.
   // Task 7 (rule 0): the composer's send (28) and footer tools (26 x 24) are the prototype's sizes, so they are secondary.
   '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)',
@@ -724,12 +725,22 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   // The activity and You tabs remain app destinations; You now has one settings entry point.
   await tab('nav.tab.activity').click();
   // Task 11 (Jonas, Q3): Activity opens with the prototype's heading (18px over the 14px title), not a 52px bar.
-  await expect(page.locator('.dw-activity .d-phone-header')).toBeVisible({ timeout: WAIT });
+  const activityHead = page.locator('.dw-activity .d-phone-header');
+  await expect(activityHead).toBeVisible({ timeout: WAIT });
+  const headBox = (await activityHead.boundingBox())!;
+  const titleBox = (await activityHead.locator('.d-phone-header__title').boundingBox())!;
+  expectAt(`B1 the Activity title sits 18px into its heading at ${tag}`, titleBox.y - headBox.y, 18, 1);
+  expect.soft(await activityHead.locator('.d-phone-header__title').evaluate(e => getComputedStyle(e).fontSize), `B1 the Activity title is 14px at ${tag}`).toBe('14px');
   await expectTargets(page, tag, 'the activity tab');
   await expectNoPhoneReminders(page, `the activity tab at ${tag}`);
   await tab('nav.tab.you').click();
   await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
-  // Task 11 (Jonas, Q3): You starts with the account (its heading is for screen readers only), not a 52px bar.
+  // Task 11 (Jonas, Q3): You starts with the account (its heading is for screen readers only), not a 52px bar: the 56px avatar
+  // 24px below the pane's top.
+  const youBox = (await page.locator('.dw-you').boundingBox())!;
+  const accountAvatar = (await page.locator('.dw-you__account .d-avatar').boundingBox())!;
+  expectAt(`B1 You's account starts 24px down at ${tag}`, accountAvatar.y - youBox.y, 24, 1);
+  expectAt(`B1 You's avatar is 56px at ${tag}`, accountAvatar.height, 56, 0.5);
   await expectTargets(page, tag, 'the you tab');
   await page.locator('[data-settings-section="index"]').click();
   const userSettings = settingsDialog(page);

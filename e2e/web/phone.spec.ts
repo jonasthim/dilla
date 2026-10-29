@@ -449,7 +449,10 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(listHeading(page, 'activity.title')).toBeFocused();
       await expect(page.getByRole('region', { name: copy('activity.emptyTitle'), exact: true })).toBeVisible();
       // Task 11 (Jonas, Q3): the prototype's Activity heading (18px over the 14px title), not a 48px bar.
-      await expect(page.locator('.d-app-shell__sidebar .dw-activity .d-phone-header')).toBeVisible();
+      const activityHead = page.locator('.d-app-shell__sidebar .dw-activity .d-phone-header');
+      await expect(activityHead).toBeVisible();
+      expect(await activityHead.evaluate(e => getComputedStyle(e).paddingTop), 'Activity: 18px above the title').toBe('18px');
+      expect(await activityHead.locator('.d-phone-header__title').evaluate(e => getComputedStyle(e).fontSize), 'Activity: a 14px title').toBe('14px');
       await expectAccessible(page, 'Activity');
 
       await tab(page, 'nav.tab.you').tap();
@@ -458,11 +461,14 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings, Status and Sign out
       // (48px each, no native select); Diagnostics keeps the node, link, generation and devices.
       await expect(page.locator('.dw-you select')).toHaveCount(0);
-      await expect(page.locator('.dw-you__facts')).toContainText(copy('you.connectedNoPing', { host: '' }).trim().split(' ')[0]);
+      // The box's first line in full: "Connected to {host} · {ms} ms" (or without the ms before the first heartbeat's ack).
+      const pattern = (key: 'you.connected' | 'you.connectedNoPing') =>
+        copy(key, { host: 'HOSTX', ms: 999 }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('HOSTX', '\\S+').replace('999', '\\d+');
+      await expect(page.locator('.dw-you__facts')).toContainText(new RegExp(`^(${pattern('you.connected')}|${pattern('you.connectedNoPing')})`), { timeout: WAIT });
       for (const name of [copy('you.settings'), copy('workspace.signOut')]) {
         expect((await page.getByRole('button', { name, exact: true }).boundingBox())!.height, `${name} is a 48px row`).toBeGreaterThanOrEqual(47);
       }
-      await expect(page.getByRole('button', { name: new RegExp(`^${copy('you.statusRow')}`) })).toBeVisible();
+      await expectTapTargets(page.getByRole('button', { name: new RegExp(`^${copy('you.statusRow')}`) }), 'the status row');
       await expectAccessible(page, 'You');
     });
 

@@ -479,11 +479,13 @@ A thread keeps the replies to one message together, out of the channel's main co
   the chip under its first message: "1 reply" or "{count} replies". Only a message that is not itself a reply can
   start a thread.
 - On a wide screen the thread opens in the side column, where the member list was; closing it gives the member list
-  back. On a phone it is a full-screen sheet over the channel. Opening a thread puts the cursor in its message box
-  ("reply in thread") in the side column, and on **back** on the phone sheet and in the narrow overlay.
+  back. On a phone it is a full-screen sheet over the channel and the tabs, with the same head as the side column:
+  "Thread", the channel's name and the **close thread** ×. Opening a thread puts the cursor in its message box
+  ("reply in thread") in the side column, and on the × on the phone sheet and in the narrow overlay.
   A thread with no replies yet says "No replies yet." The first message is at the top; type your reply at the bottom.
 - In a thread you can react to a message, and edit or delete your own. Pin and reply stay in the channel.
-- **close thread**, **back** or Escape closes it, and the cursor returns to the message or chip you opened it from.
+- **close thread** (the ×), the phone's own back or Escape closes it, and the cursor returns to the message or chip you
+  opened it from.
 - **threads** in the channel header (on a phone: in the **channel menu**) lists every thread in the channel. A channel
   with none says "No threads in #{name} yet." If the list cannot be read it says "Threads could not be loaded." A
   thread whose first message is not available to you says "The message that started this thread cannot be shown here."
@@ -883,13 +885,15 @@ for a screen reader).
 
 ![Home with the @ tile selected: the list of direct messages](screenshots/home-dms-phone.png)
 
-- **activity** lists the mentions and direct messages that came in, and "unread elsewhere" for channels with
-  something new. It lists what arrived since you opened dilla in this tab, and says so: "Since this tab opened."
-  Nothing new says "Nothing new. Mentions and direct messages show up here."
-- **you** holds this device's facts, the connection and the number of devices (what Settings → Diagnostics shows on
-  a wide screen), your status, **settings** and **sign out and remove this browser**.
+- **activity** is one list: a reminder that is due, then the mentions and direct messages that came in, then the other
+  channels with something new ("{count} new"). Each row says where it is (the server and channel, or "Direct message")
+  over who wrote what; tap it to go there. Nothing new says "Nothing new. Mentions and direct messages show up here."
+- **you** shows your name with "@{handle} · {status}", one box with the connection ("Connected to {host} · {ms} ms",
+  the round trip of the link) over this browser ("{browser} on {os} · device {id}"), and three rows: **Settings**,
+  **Status** (online, idle, do not disturb or invisible) and **Sign out**. The full facts of the link (node,
+  generation, devices) are in Settings → Diagnostics.
 
-![The activity tab: a direct message from Ada, the unread #loot under "unread elsewhere" and "Since this tab opened."](screenshots/phone-activity.png)
+![The activity tab: "Activity" over a direct message from Ada and #loot of Midgard Crew with "1 new"](screenshots/phone-activity.png)
 
 ### Opening a channel and going back
 
@@ -906,8 +910,8 @@ On a phone, tap a message to show what you can do with it (**react**, **reply** 
 
 ![A message tapped on a phone: react, reply and reply in thread above the message](screenshots/message-reveal-phone.png)
 
-Sheets (the member list, a thread, a pin list) open over the screen too, above the tabs, and the phone's back button
-closes the sheet first. Tapping a tab closes the sheet and opens that tab. Escape closes a sheet with a keyboard.
+Sheets (the member list, a thread, a pin list) cover the whole screen, the tabs included, with the list's own head and
+its × at the top right. The ×, the phone's back button or Escape closes the sheet, and the tabs are there again.
 User and server settings fill the window and hide the tabs. Choose a section from the grouped settings index; **Back to settings** returns to that index, and **Close settings** returns to the screen you came from. An ongoing voice session continues, with incoming-call controls and **Return to call** inside settings.
 
 ### The call bar
@@ -1060,14 +1064,15 @@ nothing was used up, not even a backup code.
 
 ## 7. Devices
 
-Open **settings** in the server rail, then **devices**. "Every browser and app signed in to your account.
-Removing a device needs your recovery key." Each row is a device, named by the name you gave it or, without one, by the first eight characters of its
-id, with the tag "browser" or "app" and when it was last seen. The row marked "this browser" is the one you
-are using. "not yet in the device list" marks a device that signed in with your password but was never
-added; "removed" marks one that was removed. **refresh** reads the list again.
+Open **settings**, then **Devices**. "Every browser that holds your keys." Each row is a device, named by the name you
+gave it or, without one, by the first eight characters of its id. Under the name, this browser's row says "this browser
+· active now · {id}" and carries the tag "this browser"; another device's row says when it was last active and its id,
+for example "active 2 days ago · 8b20ce". The id stays on every row, because a name is held by the server and can be
+changed there. "not yet in the device list" marks a device that signed in with your password but was never added;
+"removed" marks one that was removed. **Rename** is in each row's menu (right-click, a long press, or Shift+F10).
 
-![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
-remove this browser" and "forget this browser"](screenshots/fullscreen-settings-devices-desktop-signal.png)
+![Settings → Devices: this browser with "this browser · active now" and Sign out, and a second browser with when it was
+last active and Remove](screenshots/fullscreen-settings-devices-desktop-signal.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1077,15 +1082,12 @@ remove this browser" and "forget this browser"](screenshots/fullscreen-settings-
 - **rename**: every device that is not removed has one. "Name this device" starts this browser on a suggestion such as
   "Firefox on Linux" and another device on its current name. Under the field, "The server can change it, so check a
   device by its id before you remove it." and a quiet line "The server can read this, like your display name."
-  **Save** stores it (up to 64 characters), and saving an empty field clears the name. A named device shows its name
-  with the first eight characters of its id beside it, and the remove dialogs show both. Your other devices see the
-  new name after **refresh**.
-- **sign out and remove this browser**: "This browser is removed from your account and its data here is
-  cleared. You can sign in again later with your password and recovery key. Enter the key to confirm."
-  **Sign out** removes it and reloads to the first page.
-- **forget this browser**: "This clears dilla’s data from this browser and signs it out. The device stays in
-  your account’s device list until you remove it from another device." No key is needed. Remove the row from
-  another browser afterwards.
+  **Save** stores it (up to 64 characters), and saving an empty field clears the name. A named device shows its name,
+  with the first six characters of its id on the line under it, and the remove dialogs show the name and the first
+  eight. Your other devices see the new name the next time they open Devices.
+- **Sign out** on this browser's row: "Sign out and remove this browser?" "This browser is removed from your account
+  and its data here is cleared. You can sign in again later with your password and recovery key. Enter the key to
+  confirm." **Sign out** removes it and reloads to the first page.
 
 ![The dialog "Sign out and remove this browser?" with the recovery key field](screenshots/settings-devices-signout.png)
 
