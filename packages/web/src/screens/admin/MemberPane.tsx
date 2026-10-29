@@ -2,7 +2,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MemberList, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
-import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
 import { memberGroups } from './members-model.ts';
 import { useCore } from '../../core/context.tsx';
@@ -32,7 +31,6 @@ export interface MemberPaneProps {
 
 export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const { communityId, selfId } = props;
-  const phone = usePhoneLayout();
   const members = useSlice(`members:${communityId}`);
   const presence = useSlice(`presence:${communityId}`);
   const roles = useSlice(`roles:${communityId}`);
@@ -134,8 +132,9 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
       if (event.target instanceof HTMLElement && event.target.dataset.focusKey?.startsWith('member:')) focusedRow.current = event.target;
     }}>
       {/* The shell's aside carries the name "members of {server}"; the list's own 44px head (Signal §5.7) is "Members" and the close ×,
-          on the header's hairline. A phone's sheet already has its PhoneHeader, and the settings workspace its section heading: no second head. */}
-      <MemberList label={phone || props.focusScope !== undefined ? undefined : t('members.toggle')} closeLabel={t('members.close')} onClose={phone ? undefined : props.onClose} groups={groups} loading={members === undefined || presence === undefined || presence === null}
+          on the header's hairline, on a phone's full-screen sheet too (Task 11, Jonas Q4). The settings workspace has its section
+          heading: no second head there. */}
+      <MemberList label={props.focusScope !== undefined ? undefined : t('members.toggle')} closeLabel={t('members.close')} onClose={props.onClose} groups={groups} loading={members === undefined || presence === undefined || presence === null}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} presenceLabels={presenceLabels()}
         ownerLabel={t('layout.profile.owner')} botLabel={t('layout.profile.bot')} openId={card?.id ?? null} onOpen={onOpen} onMenu={onMenu} />
       <MemberCardHost communityId={communityId} selfId={selfId} card={card} onCard={next => { if (next !== null) props.onCardOpen?.(); setCard(next); }}

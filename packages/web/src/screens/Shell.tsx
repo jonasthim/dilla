@@ -2075,7 +2075,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}
         onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}
-        asideCloseLabel={sideNow !== null || !phone ? undefined : t('members.close')}
+        // Task 11 (Q4): the members sheet's head is the list's own (Members ×), as on a desktop; no PhoneHeader.
+        asideCloseLabel={undefined}
         asideReturnRef={sideNow !== null ? sideReturn : membersToggle}
         asideKind={sideNow !== null ? 'thread' : 'members'}
       >
