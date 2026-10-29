@@ -2,6 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CoreClient, MemberSummary, VoiceMusicState } from '@dilla/client-core';
+import { t } from '../../strings/index.ts';
 
 const adapter = vi.hoisted(() => {
   let state: VoiceMusicState = { status: 'unavailable', reason: 'bot-unavailable' };
@@ -19,7 +20,7 @@ const adapter = vi.hoisted(() => {
 });
 vi.mock('@dilla/client-core', async importOriginal => ({ ...await importOriginal<object>(), createVoiceMusicAdapter: () => adapter }));
 
-const { heldMusicRefreshers, isCommunityBot, MusicPlayer, musicMarker, useMusicCard, useMusicPlayer } = await import('./music.tsx');
+const { heldMusicRefreshers, isCommunityBot, MusicPlayer, musicMarker, useBotRoomLine, useMusicCard, useMusicPlayer } = await import('./music.tsx');
 
 const COMMUNITY = 'ab'.repeat(16);
 const CLIENT = {} as CoreClient;
@@ -139,6 +140,18 @@ describe('useMusicPlayer', () => {
       if (hiddenProp !== undefined) Object.defineProperty(Document.prototype, 'hidden', hiddenProp);
       vi.useRealTimers();
     }
+  });
+
+  // Fix round 2: the Bot's member row ("playing in {room}") reads the cached state and holds no refresher of its own.
+  it('the Bot member line reads the cached state, follows it, and adds no polling', () => {
+    function Line() { return <p>{useBotRoomLine(CLIENT, COMMUNITY, CHANNEL, 'harbour') ?? 'none'}</p>; }
+    adapter.set(playing());
+    render(<Line />);
+    expect(screen.getByText(t('members.playingIn', { room: 'harbour' }))).toBeInTheDocument();
+    expect(heldMusicRefreshers()).toBe(0);
+    expect(adapter.refresh).not.toHaveBeenCalled();
+    act(() => { adapter.set({ ...playing(), track: null }); });
+    expect(screen.getByText(t('members.idleIn', { room: 'harbour' }))).toBeInTheDocument();
   });
 
   it('two views of one channel share one schedule, cleared when both have gone', () => {

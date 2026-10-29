@@ -83,12 +83,22 @@ export function heldMusicRefreshers(): number {
   return n;
 }
 
-function useMusicState(client: CoreClient, communityId: string | null, channelId: string | null): VoiceMusicState | null {
+/**
+ * The player state of one channel. `poll` holds the channel's shared refresher (the player views); without it the hook only
+ * reads the adapter's cached state and follows its changes, so a passive line (the Bot's member row) adds no polling of its own
+ * and is as fresh as whatever view already refreshes that channel.
+ */
+function useMusicState(client: CoreClient, communityId: string | null, channelId: string | null, poll = true): VoiceMusicState | null {
   const [state, setState] = useState<VoiceMusicState | null>(null);
   useEffect(() => {
     setState(null);
     const adapter = adapterFor(client, communityId);
     if (adapter === null || channelId === null) return;
+    if (!poll) {
+      const unsubscribe = adapter.subscribe(channelId, () => setState(adapter.state(channelId)));
+      setState(adapter.state(channelId));
+      return unsubscribe;
+    }
     const hold = holdRefresh(adapter, channelId);
     const read = () => {
       const next = adapter.state(channelId);
@@ -101,7 +111,7 @@ function useMusicState(client: CoreClient, communityId: string | null, channelId
     const unsubscribe = adapter.subscribe(channelId, read);
     read();
     return () => { hold.release(); unsubscribe(); };
-  }, [client, communityId, channelId]);
+  }, [client, communityId, channelId, poll]);
   return state;
 }
 
@@ -156,7 +166,8 @@ function musicView({ state, room, bot, members, trust, inCall, now, onToggle, on
  * Null when nothing is known yet or the player is unavailable, so the caller keeps its own line.
  */
 export function useBotRoomLine(client: CoreClient, communityId: string | null, channelId: string | null, room: string): string | null {
-  const state = useMusicState(client, communityId, channelId);
+  // Fix round 2: the member row only reads (no refresher of its own).
+  const state = useMusicState(client, communityId, channelId, false);
   if (channelId === null || state === null || state.status !== 'available') return null;
   return t(state.track !== null && !state.paused ? 'members.playingIn' : 'members.idleIn', { room });
 }
