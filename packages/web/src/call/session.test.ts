@@ -113,6 +113,8 @@ function fakes(o: Options = {}) {
   const joinEpoch = o.joinEpoch ?? 1n;
   const order: string[] = [];
   const calls: Command[] = [];
+  // Task 11: what the worker answers to callRtt, in order (true once the queue is empty).
+  const rttAnswers: boolean[] = [];
   const listeners = new Set<(id: string, k: CallKeys) => void>();
   const pushKeys = (id: string, k: CallKeys) => { for (const l of [...listeners]) l(id, k); };
 
@@ -219,6 +221,8 @@ function fakes(o: Options = {}) {
         case 'callStats':
           if (o.statsError) throw o.statsError;
           return null;
+        case 'callRtt':
+          return rttAnswers.length > 0 ? rttAnswers.shift() : true;
         default:
           return null;
       }
@@ -282,7 +286,7 @@ function fakes(o: Options = {}) {
     room.emit('trackUnsubscribed', track, pub, p);
   };
   return {
-    deps, order, calls, pushKeys, manager, room, localTracks, advance, verified, addRemote, share, timers, gum,
+    deps, order, calls, rttAnswers, pushKeys, manager, room, localTracks, advance, verified, addRemote, share, timers, gum,
     audioHost, subscribeTrack, unsubscribeTrack, contexts, audio, media,
     get joinOptions() { return joinOptions; },
     setRefresh: (a: typeof refreshAnswer) => { refreshAnswer = a; },
@@ -786,6 +790,27 @@ describe('the page call session (L-WEB-50)', () => {
     expect(rtts()).toEqual([24, 31, 5000, null]);
     await f.advance(2_000);
     expect(rtts()).toEqual([24, 31, 5000, null]); // one clear
+  });
+
+  // Task 11 (8c minor): a report the instance refused (false: 429 or 404) is not counted as sent, and a reconnect that no
+  // tick saw still re-sends the RTT.
+  it('task 11: a refused RTT report is sent again on the next sample, and a fast reconnect re-sends it', async () => {
+    const { f, s } = linkFakes();
+    const rtts = () => f.calls.filter((c) => c.m === 'callRtt').map((c) => (c as { ms: number | null }).ms);
+    await start(f);
+    await f.advance(2_000);
+    f.rttAnswers.push(false);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24]);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 24]); // refused, so the same value goes again
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 24]); // stored: nothing new within 5 ms
+    f.room.emit('reconnecting');
+    f.room.emit('reconnected');
+    s.rtt = 0.026;
+    await f.advance(4_000); // the first read after a reconnect is a fresh baseline
+    expect(rtts()).toEqual([24, 24, 26]); // the reconnect forgot what was sent
   });
 
   it('MP5: a failed getStats keeps the previous totals, so the next good read is no spike', async () => {

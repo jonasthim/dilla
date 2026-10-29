@@ -1431,13 +1431,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // link (every LINK_EVERY_MS) and reported to the instance (callRtt → POST /v1/calls/{id}/rtt), which writes it as this
     // device's `dilla.rtt` attribute: no call token may write its own attributes (fix round 2, security review). Sent only when
     // it moved by RTT_STEP_MS or more, one report in flight at most; cleared (null) while paused or reconnecting. A refused
-    // report is dropped and the next sample tries again. It says nothing the SFU does not already measure.
+    // report (the worker answers false: 429 or 404) is not counted as sent, so the next sample tries again, and a reconnect
+    // forgets what was sent, so a fast one that no tick saw still re-sends (Task 11). It says nothing the SFU does not already
+    // measure.
     let rttSent: number | null = null;
     let rttBusy = false;
     const reportRtt = (ms: number | null): void => {
       if (ended || rttBusy) return;
       rttBusy = true;
-      void deps.bridge.call({ m: 'callRtt', ms }).then(() => { rttSent = ms; }, () => undefined).finally(() => { rttBusy = false; });
+      void deps.bridge.call({ m: 'callRtt', ms }).then(stored => { if (stored !== false) rttSent = ms; }, () => undefined)
+        .finally(() => { rttBusy = false; });
     };
     const publishRtt = (rtt: number): void => {
       const ms = Math.max(0, Math.min(5000, Math.round(rtt)));
@@ -1484,7 +1487,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const onSpeakers = (): void => refresh();
     // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
     onRoomReconnecting = () => { if (!ended) { linkTotals = null; set({ phase: 'reconnecting', link: undefined }); } };
-    onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
+    onRoomReconnected = () => { if (!ended) { rttSent = null; set({ phase: 'connected' }); } };
     onRoomEnd = (reason) => {
       if (ended) return;
       set({ error: endCodeOf(reason) });

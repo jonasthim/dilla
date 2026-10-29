@@ -713,13 +713,17 @@ export class CallController {
     return null;
   }
 
-  /** Signal task 8c: this device's RTT (ms) or a clear (null), for the stage's per-person ping. A refusal by rate (429) or by
-   *  room (404, a reconnect not landed yet) drops the report: the page's next sample comes soon. */
-  async rtt(ms: number | null): Promise<null> {
+  /** Signal task 8c: this device's RTT (ms) or a clear (null), for the stage's per-person ping. True once the instance stored
+   *  it; false when it refused by rate (429) or by room (404, a reconnect not landed yet), so the page does not count it as sent
+   *  and its next sample tries again (Task 11). */
+  async rtt(ms: number | null): Promise<boolean> {
     const live = this.requireLive();
     try { await this.deps.routes.postCallRtt(live.callId, ms); }
-    catch (e) { if (!(e instanceof DillaHttpError && (e.status === 429 || e.status === 404))) throw e; }
-    return null;
+    catch (e) {
+      if (e instanceof DillaHttpError && (e.status === 429 || e.status === 404)) return false;
+      throw e;
+    }
+    return true;
   }
 
   private requireLive(): Live {
