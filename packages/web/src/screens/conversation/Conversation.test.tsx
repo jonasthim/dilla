@@ -106,6 +106,34 @@ describe('the roving log (keyboard map, ruling 21)', () => {
   });
 });
 
+// Fix round 2 (Jonas, the prototype's Keyboard): Ctrl+End jumps to the present from anywhere in the tab.
+describe('jump to present (Ctrl+End)', () => {
+  const scrollAway = (log: HTMLElement) => {
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 400 });
+    log.scrollTop = 100;
+    fireEvent.scroll(log);
+  };
+  const ctrlEnd = (target: Element) => fireEvent.keyDown(target, { key: 'End', ctrlKey: true });
+  it('jumps from outside the log once the reader scrolled away, to the newest row', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'first'), ownRow(O1, '2', 'newest')] });
+    const log = screen.getByRole('log');
+    scrollAway(log);
+    expect(ctrlEnd(document.body)).toBe(false);
+    expect(log.scrollTop).toBe(2000);
+    expect(rowOf(O1)).toHaveFocus();
+  });
+  it('leaves the chord to a text field (the caret moves to the end there), and does nothing at the present', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'first'), ownRow(O1, '2', 'newest')] });
+    const log = screen.getByRole('log');
+    expect(ctrlEnd(document.body), 'at the present the key keeps its default').toBe(true);
+    scrollAway(log);
+    expect(ctrlEnd(composer()), 'in the composer').toBe(true);
+    expect(log.scrollTop).toBe(100);
+    expect(fireEvent.keyDown(document.body, { key: 'End', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+End is not the chord').toBe(true);
+  });
+});
+
 describe('the toolbar (L-UI-41)', () => {
   it('offers react, reply and pin on others’ rows, edit and delete on own rows, and nothing on rows that are not ok', () => {
     renderConversation({ items: [

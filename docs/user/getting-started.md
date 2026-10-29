@@ -846,12 +846,14 @@ While you are in a call, [the call panel](voice.md#the-call-panel) sits above th
 | Escape | In the message list: back to the message field. In a dialog: closes it |
 | Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the server's actions (each its own stop), the channel list, the border between the channel list and the conversation, the user panel (with the call panel above it, in a call), the channel header, the messages, the message field |
 | Arrow keys | Move within the server rail (the @ tile, your servers, then add a server) and the channel list, which are one Tab stop each. On a border between panes they resize it ([Desktop layout](#desktop-layout)) |
-| Ctrl+End | In a conversation: jumps to the newest message |
+| Ctrl+End | Jumps the open conversation to its newest message, from anywhere in the tab except a text field (there it moves the cursor to the end of the text) |
 | Control+K (⌘+K on a Mac) | Opens search across everything this browser holds |
-| Control+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
+| Control+/ | Opens the same search (Control on a Mac too) |
 | Control/⌘+Shift+M, Control/⌘+Shift+D | Mute or unmute, deafen or undeafen: in a call, or before one to set how the next call starts ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
 
 Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
+Settings → Keyboard lists the shortcuts as the design draws them: ⌘ stands for Control off a Mac (either works), and Esc
+("Close a window") closes the topmost dialog, sheet or Settings.
 
 Every step of the sign-up works with the keyboard alone: Tab to a field or button, Space ticks the
 recovery-key box, Enter submits a step.

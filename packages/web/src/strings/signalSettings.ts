@@ -54,5 +54,18 @@ export const signalSettings = {
   'signalSettings.menu.device': '{name} menu',
   'signalSettings.menu.dms': 'Direct messages menu',
   'signalSettings.keyboard.search': 'Search',
+  // Fix round 2 (Jonas): the prototype's five rows, drawn as it draws them, then dilla's other shortcuts in the same style.
+  'signalSettings.keyboard.searchKeys': '⌘+K',
+  'signalSettings.keyboard.mute': 'Mute',
+  'signalSettings.keyboard.muteKeys': '⌘+⇧+M',
+  'signalSettings.keyboard.deafen': 'Deafen',
+  'signalSettings.keyboard.deafenKeys': '⌘+⇧+D',
+  'signalSettings.keyboard.close': 'Close a window',
+  'signalSettings.keyboard.closeKeys': 'Esc',
+  'signalSettings.keyboard.jump': 'Jump to present',
+  'signalSettings.keyboard.jumpKeys': 'Ctrl+End',
+  'signalSettings.keyboard.searchSlash': 'Open search',
+  'signalSettings.keyboard.searchSlashKeys': 'Ctrl+/',
+  'signalSettings.keyboard.dmCallKeys': '⌘+⇧+Enter',
   'signalSettings.keyboard.body': 'Shortcuts work while the dilla tab is active.',
 } as const;

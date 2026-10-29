@@ -268,6 +268,25 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     const newest = items.at(-1);
     if (newest !== undefined) rowEls.current.get(newest.key)?.focus({ preventScroll: true });
   };
+  // Fix round 2 (Jonas, the prototype's "Jump to present"): Ctrl+End jumps the open conversation to its newest message from
+  // anywhere in the tab, not only from inside the log. A text field keeps the chord (it moves the caret to the end), an open
+  // dialog keeps it, and at the present it does nothing (the key keeps its default).
+  const jumpKey = useRef(jumpToPresent);
+  jumpKey.current = jumpToPresent;
+  const awayNow = useRef(false);
+  awayNow.current = awayFrom === p.logKey;
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'End' || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.isComposing || e.defaultPrevented) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select') !== null)) return;
+      if (document.querySelector('dialog[open]') !== null || !awayNow.current) return;
+      e.preventDefault();
+      jumpKey.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const onLogScroll = (e: React.UIEvent<HTMLElement>) => {
     const log = e.target as HTMLElement;
     if (!(log instanceof HTMLElement) || log.getAttribute('role') !== 'log') return;

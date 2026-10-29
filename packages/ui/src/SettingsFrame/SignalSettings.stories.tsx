@@ -5,7 +5,6 @@ import { SettingsNav } from '../SettingsNav/SettingsNav.tsx';
 import { SettingsRow } from '../SettingsRow/SettingsRow.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
 import { Toggle } from '../Toggle/Toggle.tsx';
-import { KeyboardTable } from '../KeyboardTable/KeyboardTable.tsx';
 import { VoiceSettings } from '../VoiceSettings/VoiceSettings.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Select } from '../Select/Select.tsx';
@@ -14,6 +13,7 @@ import { Profile as WebProfile } from '../../../web/src/screens/settings/Profile
 import { SignInFactors as WebSignIn } from '../../../web/src/screens/settings/SignInFactors.tsx';
 import { OverviewSection as WebOverview } from '../../../web/src/screens/admin/OverviewSection.tsx';
 import { Devices as WebDevices } from '../../../web/src/screens/settings/Devices.tsx';
+import { Keyboard as WebKeyboard } from '../../../web/src/screens/settings/Keyboard.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { LiveRoleEditor } from '../RoleEditor/RoleEditor.fixture.tsx';
@@ -135,23 +135,8 @@ function Voice({ ptt }: { ptt?: boolean }) {
   );
 }
 
-/** README §5.9: a chord such as 'Control/⌘+Shift+M' is drawn as one keycap per key. */
-const caps = (chord: string): string[] => chord.split(/\+(?=.)/);
-// screens/settings/Keyboard.tsx.
-function Keyboard() {
-  return (
-    <section className="dw-settings-section" aria-labelledby="keyboard-title">
-      <h2 id="keyboard-title" tabIndex={-1}>{t('keyboard.title')}</h2>
-      <p>{t('signalSettings.keyboard.body')}</p>
-      <KeyboardTable caption={t('keyboard.title')} orLabel={t('keyboard.or')} rows={[
-        { action: t('signalSettings.keyboard.search'), keys: caps(t('keyboard.searchAll')), alt: caps(t('keyboard.searchAlt')) },
-        { action: t('keyboard.muteAction'), keys: caps(t('keyboard.mute')) },
-        { action: t('keyboard.deafenAction'), keys: caps(t('keyboard.deafen')) },
-        { action: t('keyboard.dmCallAction'), keys: caps(t('keyboard.dmCall')) },
-      ]} />
-    </section>
-  );
-}
+// Fix round 2 (rule 3d): the web's own screens/settings/Keyboard.tsx.
+const Keyboard = WebKeyboard;
 
 // Fix round 2 (rule 3d): the web's own screens/settings/Devices.tsx over the sample's two browsers.
 function Devices() {
