@@ -68,7 +68,8 @@ function expectStats(root: HTMLElement, story: string, quality: string, colour: 
   const line2 = root.querySelector<HTMLElement>('.d-voice-dock__where')!;
   if (line2.getBoundingClientRect().height > parseFloat(getComputedStyle(line2).lineHeight) * 1.5) throw new Error(`${story}: line 2 wraps`);
   const probe = document.createElement('span');
-  probe.style.color = colour === null ? 'var(--fg-2)' : `var(${colour})`;
+  // Jonas 2026-10-27 (superseding Ruling V): the stats at rest are the prototype's --fg-3.
+  probe.style.color = colour === null ? 'var(--fg-3)' : `var(${colour})`;
   root.append(probe);
   const want = getComputedStyle(probe).color;
   probe.remove();
@@ -141,13 +142,14 @@ export const StatusIsText: Story = {
     if (canvasElement.querySelector('button.d-voice-dock__line1') !== null) throw new Error('VoiceDock: line 1 is a button without onStatus');
   },
 };
-/** With a handler, the channel name is a button (it opens Diagnostics); it is at least 24px high (WCAG 2.5.8). */
+/** With a handler, the channel name is a button (it opens Diagnostics), its line's height (the prototype's 12px line; axe's
+ *  target-size rule checks its spacing, WCAG 2.5.8). */
 export const StatusIsButton: Story = {
   play: ({ canvasElement }) => {
     expectDock(canvasElement, 'VoiceDock');
     const b = canvasElement.querySelector<HTMLElement>('button.d-voice-dock__line1');
     if (b === null) throw new Error('VoiceDock: line 1 is not a button');
-    if (b.getBoundingClientRect().height < 24) throw new Error('VoiceDock: the status button is under 24px high');
+    if (b.getBoundingClientRect().height < 15) throw new Error('VoiceDock: the status button is under its 15.6px line');
   },
 };
 /** Before the web app wires camera and share, the dock keeps leave. */
@@ -180,7 +182,9 @@ const userPanel = (
 /** In a call: the dock card above the 64px user panel, 8px between the card and the panel's hairline. */
 export const InCall: Story = {
   render: args => <><VoiceDock {...args} />{userPanel}</>,
-  play: ({ canvasElement }) => {
+  play: async ({ canvasElement }) => {
+    // The dock rises in (d-up): measure where it comes to rest.
+    await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => undefined)));
     expectDock(canvasElement, 'VoiceDock');
     const dock = canvasElement.querySelector<HTMLElement>('.d-voice-dock')!.getBoundingClientRect();
     const panel = canvasElement.querySelector<HTMLElement>('.d-user-panel')!.getBoundingClientRect();

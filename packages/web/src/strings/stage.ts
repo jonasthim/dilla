@@ -54,6 +54,8 @@ export const stage = {
   'callStage.share.apply': 'Apply',
   // Tile stats (the prototype's): the own microphone's codec and rate, a screen's frame height and rate.
   'callStage.stat.codec': '{codec} {khz}k',
+  // Fix round 1: another person's ping, as their own device publishes it.
+  'callStage.stat.ping': '{ms} ms',
   'callStage.stat.frame': '{height}p · {fps} fps',
   'callStage.stat.frameAudio': '{height}p · {fps} fps · audio',
   // Task 8b (README §6.6): the music player (NowPlaying), the prototype's copy. 'music.blocked.dj' is today's DJ rule (the

@@ -37,12 +37,12 @@ export const Announcement: Story = {
     if (g.width < 14 || g.right > n.left + 1) throw new Error(`Announcement: the megaphone is ${String(g.width)} wide and ends at ${String(g.right)}, the name starts at ${String(n.left)}`);
   },
 };
-/** R27: a pressed toggle shows aria-pressed and the 2px bar under its glyph, never colour alone. */
+/** R27, Signal (task 6, the prototype's header): a pressed toggle shows aria-pressed and the --accent-soft fill (the 2px bar is gone). */
 export const PressedToggle: Story = {
   play: ({ canvasElement }) => {
     const b = canvasElement.querySelector<HTMLElement>('button[aria-label="members"]');
     if (b === null || b.getAttribute('aria-pressed') !== 'true') throw new Error('PressedToggle: members is not pressed');
-    if (!getComputedStyle(b).boxShadow.includes('inset')) throw new Error('PressedToggle: no 2px bar under the pressed toggle');
+    if (getComputedStyle(b).backgroundColor === 'rgba(0, 0, 0, 0)') throw new Error('PressedToggle: the pressed toggle has no fill');
   },
 };
 

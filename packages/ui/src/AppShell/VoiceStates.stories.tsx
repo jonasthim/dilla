@@ -219,11 +219,15 @@ const centreOf = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height
  */
 async function expectEmptyCentred(root: HTMLElement, story: string, phone: boolean) {
   await nextFrame(); await nextFrame();
+  // Task 8 (Signal §5.6): a channel not joined is the preview (the room, "Nobody is here yet", Join voice); the AFK page keeps
+  // its empty line and its button. The group is centred in the stage under the voice header, as the prototype's.
   const main = root.querySelector<HTMLElement>('.d-app-shell__content');
-  const text = root.querySelector<HTMLElement>('.d-call-stage__empty');
-  const join = root.querySelector<HTMLElement>('.d-call-stage__controls .d-btn');
+  const text = root.querySelector<HTMLElement>('.d-call-stage__preview-text, .d-call-stage__empty');
+  const join = root.querySelector<HTMLElement>('.d-call-stage__join, .d-call-stage__controls .d-btn');
   if (!main || !text || !join) throw new Error(`${story}: the main area, the empty text or the join button is missing`);
-  const m = centreOf(main.getBoundingClientRect());
+  const mr = main.getBoundingClientRect();
+  const under = root.querySelector<HTMLElement>('.d-call-stage__bar')?.getBoundingClientRect().bottom ?? mr.top;
+  const m = centreOf(new DOMRect(mr.left, under, mr.width, mr.bottom - under));
   const tr = text.getBoundingClientRect(); const jr = join.getBoundingClientRect();
   // An outgoing line, when a stage has one, leads the group, above the message.
   const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing')?.getBoundingClientRect();
@@ -231,11 +235,14 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
   const top = lead?.top ?? tr.top;
   const group = centreOf(new DOMRect(Math.min(tr.left, jr.left), top, Math.max(tr.right, jr.right) - Math.min(tr.left, jr.left), jr.bottom - top));
   if (Math.abs(centreOf(tr).x - m.x) > 2 || Math.abs(centreOf(jr).x - m.x) > 2) throw new Error(`${story}: not centred across (main ${String(m.x)}, text ${String(centreOf(tr).x)}, button ${String(centreOf(jr).x)})`);
-  if (Math.abs(group.y - m.y) > 2) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)})`);
+  // The stage's own padding (the prototype's, matched on the whole-screen pairs of task 8) sets the group up to ~8px below
+  // the area's centre; more than 10px is off centre.
+  if (Math.abs(group.y - m.y) > 10) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)})`);
   if (tr.bottom > jr.top) throw new Error(`${story}: the text is not above the button`);
   const label = document.createRange(); label.selectNodeContents(join);
   if (Math.abs(centreOf(label.getBoundingClientRect()).x - m.x) > 2) throw new Error(`${story}: the join label is not centred (main ${String(m.x)}, label ${String(centreOf(label.getBoundingClientRect()).x)})`);
-  if (phone && jr.height < 44) throw new Error(`${story}: the join button is ${String(jr.height)} px tall, under 44`);
+  // Rule 0 (Jonas 2026-10-27): the phone keeps the prototype's 40px Join voice (no 44px enlargement).
+  if (phone && jr.height < 40) throw new Error(`${story}: the join button is ${String(jr.height)} px tall, under 40`);
 }
 /** Nobody is in the voice channel and this device has not joined: the text and the join button, centred. */
 export const EmptyNotJoined: Story = {

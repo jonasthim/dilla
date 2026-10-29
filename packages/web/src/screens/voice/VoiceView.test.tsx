@@ -1165,6 +1165,15 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     expect(document.querySelector('.d-call-tile__inset')).toBeNull();
   });
 
+  // Task 8c fix round 1: another person's ping is the RTT their device publishes; without one their tile has no stat.
+  it('a person tile shows the ping its device publishes ("31 ms"), and none without one; their screen tile never shows it', async () => {
+    const app = await inVoice({ voice: room(FLAG_SCREEN) });
+    act(() => app.session.update({ tiles: [{ ...tile(BOB_DEV, BOB, null, new MediaStream()), rttMs: 31 }] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`).querySelector('.d-call-tile__stat')).toHaveTextContent('31 ms'));
+    act(() => app.session.update({ tiles: [{ ...tile(BOB_DEV, BOB, null, new MediaStream()), rttMs: null }] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`).querySelector('.d-call-tile__stat')).toBeNull());
+  });
+
   it('a participant who shares only a screen keeps an avatar tile with the muted glyph; neither tile has a range of its own', async () => {
     const app = await inVoice({ voice: room(FLAG_MUTE | FLAG_SCREEN) });
     act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));

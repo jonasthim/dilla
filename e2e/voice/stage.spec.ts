@@ -75,9 +75,10 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       // Camera keeps its word, so its state is aria-pressed (Signal §5.6).
       await expect(controls.getByRole('button', { name: copy('callStage.bar.camera'), exact: true })).toHaveAttribute('aria-pressed', 'true');
       const share = controls.locator('[data-control="share"]');
-      // Task 8c: the share picker's options: 720p at 15 fps (the estimate says so before Go live).
+      // Task 8c: the share picker's options: 720p at 15 fps. Before that, the default 1080p at 30 fps estimates 4.5 Mb/s (the
+      // instance's default cap is 8000 kb/s, fix round 1).
       await controls.locator('[data-control="share"]').click();
-      await expect(alice.page.getByText(copy('callStage.share.estimate', { mbps: '2.5' }), { exact: true })).toBeVisible();
+      await expect(alice.page.getByText(copy('callStage.share.estimate', { mbps: '4.5' }), { exact: true })).toBeVisible();
       await alice.page.keyboard.press('Escape');
       await startShare(alice.page, ['720p', '15']);
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
@@ -115,8 +116,9 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       expect(fps, 'the received screen’s frame rate').toBeLessThanOrEqual(16);
       await expect(alice.page.locator('.d-call-tile[data-own]:not([data-source="screen"])').locator('xpath=ancestor::li[1]').locator('.d-call-tile__stat'))
         .toHaveText('opus 48k', { timeout: WAIT });
-      // No stat stands for another person's ping (the client cannot measure it): bob's view of alice's person tile has none.
-      await expect(itemOf(camera).locator('.d-call-tile__stat')).toHaveCount(0);
+      // Fix round 1: alice's ping on bob's view of her person tile is the RTT her own page publishes (dilla.rtt, through the
+      // SFU with the token's own-metadata right), not bob's link.
+      await expect(itemOf(camera).locator('.d-call-tile__stat')).toHaveText(/^\d{1,4} ms$/, { timeout: WAIT });
       await bob.page.screenshot({ path: join(SHOTS, 'stage-focused.png') });
       await expectAccessible(bob.page, 'the focused stage');
     });

@@ -22,7 +22,8 @@ export function expectGlyphLine(root: HTMLElement, story: string): void {
     const box = row.getBoundingClientRect();
     // A caption is one line high. A sidebar person row is --row-h-sub high (R25): its glyphs sit on the name's centre line.
     const sidebar = row.classList.contains('d-voice-row__person');
-    if (!sidebar && box.height > line.height + 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
+    // The compact caption keeps its 20px (1.25rem) floor around a shorter line; two lines would be at least twice the line.
+    if (!sidebar && box.height >= line.height * 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
     for (const glyph of Array.from(row.querySelectorAll<HTMLElement>(':scope > svg.d-icon, :scope > .d-state-dot, .d-voice-row__state svg.d-icon, .d-voice-row__state .d-state-dot, .d-call-tile__state svg.d-icon, .d-call-tile__state .d-state-dot'))) {
       const r = glyph.getBoundingClientRect();
       const off = sidebar ? Math.abs((r.top + r.bottom) / 2 - (line.top + line.bottom) / 2) > 2 : r.top < line.top - 2 || r.bottom > line.bottom + 2;

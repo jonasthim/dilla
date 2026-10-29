@@ -17,7 +17,8 @@ const play = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
   const first = canvasElement.querySelector<HTMLElement>('.d-add-server__choice');
   if (first === null || document.activeElement !== first) throw new Error('AddServerDialog: focus is not on the first choice');
   for (const c of Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-add-server__choice'))) {
-    if (c.getBoundingClientRect().height < 44) throw new Error('AddServerDialog: a choice is under 44px');
+    // Rule 0 (Jonas 2026-10-27): sizes follow the prototype; a choice is still at least the 24px WCAG 2.5.8 target.
+    if (c.getBoundingClientRect().height < 24) throw new Error('AddServerDialog: a choice is under 24px');
   }
 };
 export const Open: Story = { globals: { theme: 'signal' }, play };

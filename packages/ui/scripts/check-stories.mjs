@@ -36,6 +36,12 @@ try {
             set(value) {
               preview = value;
               value.channel.on('storyFinished', result => { window.__dillaStoryResult = result; });
+              // A throwing play function (or render) still ends in storyFinished with status 'success' in this Storybook: its
+              // assertions only count if the exception is caught here (task 8c fix round 1).
+              const threw = event => error => { (window.__dillaStoryErrors ??= []).push(`${event}: ${String(error?.message ?? error?.description ?? error)}`); };
+              value.channel.on('playFunctionThrewException', threw('play'));
+              value.channel.on('storyThrewException', threw('render'));
+              value.channel.on('storyErrored', threw('error'));
             },
           });
         });
@@ -46,6 +52,8 @@ try {
         await page.waitForFunction(id => window.__dillaStoryResult?.storyId === id, story.id, { timeout: 60_000 });
         const result = await page.evaluate(() => window.__dillaStoryResult);
         if (result.status !== 'success') throw new Error(`Storybook reported ${result.status} for ${story.id}`);
+        const errors = await page.evaluate(() => window.__dillaStoryErrors ?? []);
+        if (errors.length > 0) throw new Error(`${story.id} threw: ${errors.join(' | ')}`);
         await page.waitForSelector('#storybook-root > *', { state: 'attached', timeout: 60_000 });
         await page.evaluate(() => document.fonts.ready);
         // Axe should inspect the settled colours; the flash story starts with a

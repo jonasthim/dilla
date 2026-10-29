@@ -48,7 +48,12 @@ type Story = StoryObj<typeof meta>;
 async function settled(root: HTMLElement): Promise<void> {
   for (let i = 0; i < 60; i++) {
     const card = root.querySelector<HTMLElement>('.d-profile-card');
-    if (card !== null && (card.dataset.layout === 'sheet' || card.style.left !== '')) { await new Promise(r => setTimeout(r, 30)); return; }
+    if (card !== null && (card.dataset.layout === 'sheet' || card.style.left !== '')) {
+      // The sheet rises in (d-sheet-up): measure where it comes to rest.
+      await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => undefined)));
+      await new Promise(r => setTimeout(r, 30));
+      return;
+    }
     await new Promise(r => setTimeout(r, 50));
   }
 }

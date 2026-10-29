@@ -1274,7 +1274,17 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   is idempotent for a slot it holds. When the request carries `vdec` — the device's video decoders,
   comma-separated from `vp8`, `h264` and `vp9`, each at most once (any other spelling is
   `400 E_INVALID_REQUEST`) — the token carries it as the participant attribute `dilla.vdec`, which
-  the other devices read to choose a codec every subscriber can decode. The token is valid for one
+  the other devices read to choose a codec every subscriber can decode. A human device's token also
+  carries LiveKit's own-metadata right (`canUpdateOwnMetadata`), for one use: the client publishes
+  its own round-trip time to the SFU as the participant attribute `dilla.rtt` (whole milliseconds,
+  `0`..`5000`, updated only when it moves by 5 ms or more), which other clients show as that
+  participant's ping and read as nothing else — any other spelling or range is ignored. The SFU's
+  configuration limits the right to that: a participant name no longer than an identity (32 bytes;
+  no client reads a remote name),
+  metadata of at most 1 byte, and at most 64 bytes of attributes in a token or one update; the
+  identity and the permissions cannot change through it. A Managed Bot device's token never carries
+  it, and the `/rtc` gate refuses a token that carries it for a device whose permission does not.
+  The token is valid for one
   hour, but its lifetime bounds neither a session nor a rejoin: the SFU re-issues a connected
   participant's token every five minutes from its current grants, valid for at least ten more
   minutes, so a client that stays connected always holds a token it could rejoin with. What bounds

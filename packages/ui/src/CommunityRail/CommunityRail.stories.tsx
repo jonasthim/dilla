@@ -47,12 +47,12 @@ export const WithHomeHighContrast: Story = { args: FULL, globals: { theme: 'high
 /** Home selected (DMs open) with unread messages and a mention (the count at the bottom right). */
 export const HomeSelected: Story = { args: { ...FULL, activeId: null, home: { ...HOME, selected: true, unread: 3, mentions: 1, itemLabel: 'direct messages, unread 3, mentions 1' } }, globals: { theme: 'signal' }, play: badgePlay('HomeSelected') };
 export const HomeUnread: Story = { args: { ...FULL, home: { ...HOME, unread: 5, itemLabel: 'direct messages, unread 5' } }, globals: { theme: 'signal' }, play: badgePlay('HomeUnread') };
-/** On a phone the settings tile is gone (the You tab is the way) and the tiles are 44 (Ruling N: every phone target at least 44). */
+/** On a phone the settings tile is gone (the You tab is the way) and the tiles are the prototype's 38 (Jonas 2026-10-27, superseding Ruling N). */
 export const OnPhone: Story = { args: FULL, globals: { theme: 'signal' },
   decorators: [Story => <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: 56, height: 'calc(100vh - 32px)' }}><Story /></div></PhoneLayoutProvider>],
   play: ({ canvasElement }) => {
     const tiles = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-community-rail__item'));
-    for (const t of tiles) { const b = t.getBoundingClientRect(); if (b.width !== 44 || b.height !== 44) throw new Error(`OnPhone: a tile is ${String(b.width)} x ${String(b.height)}`); }
+    for (const t of tiles) { const b = t.getBoundingClientRect(); if (b.width !== 38 || b.height !== 38) throw new Error(`OnPhone: a tile is ${String(b.width)} x ${String(b.height)}`); }
     if (tiles.length === 0 || canvasElement.querySelector('.d-community-rail__settings') !== null) throw new Error('OnPhone: no tiles, or the settings tile shows');
   } };
 

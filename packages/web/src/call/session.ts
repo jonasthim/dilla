@@ -45,6 +45,21 @@ export interface PageCallTile {
   /** #37: this device has a screen_share_audio publication (subscribed or not). Only for an 'ok' tile and never while
    *  paused, as `screen`; false otherwise. It is about the stream, not the viewer's deafen or volume. */
   screenAudio: boolean;
+  /** Task 8c fix round 1: the RTT this device says it measures to the SFU (its `dilla.rtt` attribute, 0..5000 ms), or null when
+   *  it publishes none or something else. Never this page's own link. */
+  rttMs?: number | null;
+}
+
+/** Task 8c fix round 1: the one participant attribute a page publishes about itself: its own RTT to the SFU in whole ms. */
+export const RTT_ATTRIBUTE = 'dilla.rtt';
+/** A published RTT changes only by at least this much (fewer attribute updates for the room). */
+export const RTT_STEP_MS = 5;
+/** The value another device published, if it is a whole number of ms in 0..5000; anything else is no value. */
+export function rttOf(attributes: Readonly<Record<string, string>> | undefined): number | null {
+  const v = attributes?.[RTT_ATTRIBUTE];
+  if (v === undefined || !/^(0|[1-9]\d{0,3})$/.test(v)) return null;
+  const n = Number(v);
+  return n <= 5000 ? n : null;
 }
 export interface PageCallState {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'ended';
@@ -292,6 +307,7 @@ const EV = {
   disconnected: 'disconnected',
   permissions: 'participantPermissionsChanged',
   audioPlayback: 'audioPlaybackChanged',
+  attributes: 'participantAttributesChanged',
 } as const;
 
 /** livekit DisconnectReason values the session reads (livekit protocol): PARTICIPANT_REMOVED, ROOM_DELETED, ROOM_CLOSED. */
@@ -342,6 +358,8 @@ interface RemoteView {
   setVolume(volume: number, source?: Source): void;
   getTrackPublication(source: Source): { track?: { mediaStream?: MediaStream } } | undefined;
   trackPublications?: Map<string, { track?: unknown; source?: unknown }>;
+  /** LiveKit participant attributes; only `dilla.rtt` is read here (rttOf), `dilla.vdec` by the codec choice. */
+  attributes?: Record<string, string>;
 }
 /** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
 interface RemoteAudio {
@@ -580,6 +598,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       identity: string; audioLevel?: number; isSpeaking?: boolean; permissions?: Permissions;
       publishTrack(track: MediaStreamTrack, o: PublishOptions): Promise<LocalPub>;
       unpublishTrack(track: MediaStreamTrack): Promise<unknown>;
+      /** LiveKit merges these into this participant's attributes (the token's CanUpdateOwnMetadata). */
+      setAttributes?(attributes: Record<string, string>): Promise<void>;
     };
     const remotes = (): RemoteView[] => [...(room.remoteParticipants.values() as Iterable<unknown>)] as RemoteView[];
 
@@ -667,11 +687,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const speaking = !state.paused && (remoteLocal(p.identity) ?? p.isSpeaking === true);
         out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking,
           video: show ? streamOf(p, SOURCE.camera) : null, screen: show ? streamOf(p, SOURCE.screen) : null,
-          screenAudio: show && p.getTrackPublication(SOURCE.screenAudio) !== undefined });
+          screenAudio: show && p.getTrackPublication(SOURCE.screenAudio) !== undefined, rttMs: rttOf(p.attributes) });
       }
       for (const [deviceId, r] of roster) {
         if (r.leaf === selfLeaf || deviceId === local.identity || inRoom.has(deviceId)) continue;
-        out.push({ deviceId, userId: r.userId, state: 'connecting', speaking: false, video: null, screen: null, screenAudio: false });
+        out.push({ deviceId, userId: r.userId, state: 'connecting', speaking: false, video: null, screen: null, screenAudio: false, rttMs: null });
       }
       return out;
     };
@@ -1388,6 +1408,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         link = { ...link, upKbps: keep(link.upKbps, prev?.upKbps, 'up'), downKbps: keep(link.downKbps, prev?.downKbps, 'down') };
       } else { carried.up = false; carried.down = false; }
       if (!sameLink(link, state.link)) set({ link });
+      if (link !== undefined) publishRtt(link.rttMs);
+    };
+    // Task 8c fix round 1: this device's RTT to the SFU, as its own `dilla.rtt` attribute, so the others' tiles can show it (the
+    // prototype's per-person ping). Read with the link (every LINK_EVERY_MS); sent only when it moved by RTT_STEP_MS or more, one
+    // update in flight at most. It says nothing the SFU does not already measure.
+    let rttSent: number | null = null;
+    let rttBusy = false;
+    const publishRtt = (rtt: number): void => {
+      const ms = Math.max(0, Math.min(5000, Math.round(rtt)));
+      if (ended || rttBusy || local.setAttributes === undefined || (rttSent !== null && Math.abs(ms - rttSent) < RTT_STEP_MS)) return;
+      rttBusy = true;
+      void local.setAttributes({ [RTT_ATTRIBUTE]: String(ms) }).then(() => { rttSent = ms; }, () => undefined).finally(() => { rttBusy = false; });
     };
     // Not connected, paused or held: no read, no stats; the first read after is a fresh baseline. A getStats that does not
     // settle within LINK_STALL_MS takes the stats away (the dock falls back to its no-sample text) and no second read starts meanwhile.
@@ -1451,7 +1483,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const roomListeners: Array<[string, AnyListener]> = [
       [EV.participantConnected, onPeople], [EV.participantDisconnected, onLeft], [EV.trackSubscribed, onSubscribed],
       [EV.trackUnsubscribed, onUnsubscribed], [EV.activeSpeakers, onSpeakers], [EV.audioPlayback, onPlayback],
-      [EV.trackPublished, onPublications], [EV.trackUnpublished, onPublications],
+      [EV.trackPublished, onPublications], [EV.trackUnpublished, onPublications], [EV.attributes, onPublications],
     ];
     for (const [e, f] of roomListeners) events.on(e, f);
     ctx?.addEventListener('statechange', onPlayback);

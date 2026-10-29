@@ -248,7 +248,17 @@ What it fixes, and the keys that change it:
   are LiveKit's node-wide join gates, unset by default. They refuse new joins once reached, so size
   them generously: one 25-person voice call is about 600 forwarded tracks.
 - **Publish caps.** `livekit.max_audio_bitrate_kbps` (64) and `livekit.max_share_bitrate_kbps`
-  (2500) are handed to clients with every call token.
+  (8000) are handed to clients with every call token. A screen share encodes at the bitrate its
+  picker's choice asks for (720p 2.5, 1080p 4.5, 1440p 8, source 12 Mb/s at 30 fps; ×0.6 at 15,
+  ×1.6 at 60), never above the share cap, and the picker's "≈ … Mb/s up" shows that capped value.
+  Lower the cap on a host with little upload to spare (each sharer's stream is forwarded to every
+  viewer); the range is 100..20000.
+- **Participant attributes.** A person's call token may update its own LiveKit attributes so their
+  browser can publish its round-trip time to the SFU (`dilla.rtt`, whole milliseconds), which the
+  others' tiles show as their ping. The instance's LiveKit config keeps the rest small: a name no
+  longer than a device id (`limit.max_participant_name_length: 32`; names are never shown), no
+  metadata (`limit.max_metadata_size: 1`) and no more than
+  64 bytes of attributes per update (`limit.max_attributes_size`). Bots' tokens do not get it.
 - **Which addresses LiveKit offers, and `ips_excludes`.** LiveKit opens its media socket
   (`udp_port`) on each address of the host's up interfaces (loopback only when `node_ip` is
   loopback, and never `::1`), skipping those inside `livekit.ips_excludes`, and builds its host

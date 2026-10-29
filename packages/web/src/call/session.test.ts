@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CallJoinResult, CallKeys, Command } from '@dilla/client-core';
 import { screenAudioOptions, type EpochKeys, type JoinCallOptions } from '@dilla/media';
 import { getBrowser } from 'livekit-client';
-import { concurrentCapture, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
+import { concurrentCapture, rttOf, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
 
 const CH = 'c1'.repeat(16);
 const callId = 'a1'.repeat(16);
@@ -418,6 +418,21 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.localTracks[0].setProcessor).toHaveBeenCalledTimes(1);
   });
 
+  it('task 8c: a tile carries the RTT its device publishes (dilla.rtt), updated on an attribute change; nothing else counts', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const carol = f.addRemote(CAROL_DEV);
+    Object.assign(carol, { attributes: { rtt: '12', 'dilla.vdec': 'vp8' } });
+    await f.advance(1_000);
+    const tile = (d: string) => call.state.tiles.find((t) => t.deviceId === d)!;
+    expect(tile(BOB_DEV).rttMs).toBeNull();
+    expect(tile(CAROL_DEV).rttMs).toBeNull();
+    Object.assign(bob, { attributes: { 'dilla.rtt': '31' } });
+    f.room.emit('participantAttributesChanged', {}, bob);
+    expect(tile(BOB_DEV).rttMs).toBe(31);
+  });
+
   it('a tile is "unverified" for a room participant in no roster and "ok" once verifiedIdentities has it', async () => {
     const f = fakes();
     const call = await start(f);
@@ -745,6 +760,28 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 0, downKbps: 0 });
     await call.leave('user');
     expect(call.state.link).toBeUndefined();
+  });
+
+  // Task 8c fix round 1: this device's own RTT goes out as its `dilla.rtt` attribute, only when it moved by RTT_STEP_MS or more.
+  it('task 8c: the own RTT is published as dilla.rtt, rounded, only on a change of 5 ms or more', async () => {
+    const { f, s } = linkFakes();
+    const setAttributes = vi.fn<(a: Record<string, string>) => Promise<void>>(async () => undefined);
+    Object.assign(f.room.localParticipant, { setAttributes });
+    await start(f);
+    await f.advance(2_000); // the baseline: no sample, nothing published
+    expect(setAttributes).not.toHaveBeenCalled();
+    await f.advance(2_000);
+    expect(setAttributes).toHaveBeenLastCalledWith({ 'dilla.rtt': '24' });
+    s.rtt = 0.0274;
+    await f.advance(2_000);
+    expect(setAttributes).toHaveBeenCalledTimes(1); // 27 is within 5 ms of 24
+    s.rtt = 0.0312;
+    await f.advance(2_000);
+    expect(setAttributes).toHaveBeenCalledTimes(2);
+    expect(setAttributes).toHaveBeenLastCalledWith({ 'dilla.rtt': '31' });
+    s.rtt = 9;
+    await f.advance(2_000);
+    expect(setAttributes).toHaveBeenLastCalledWith({ 'dilla.rtt': '5000' }); // clamped to the range readers accept
   });
 
   it('MP5: a failed getStats keeps the previous totals, so the next good read is no spike', async () => {
@@ -3753,6 +3790,18 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
 // ---------------------------------------------------------------------------------------------
 // Signal task 8c: the share picker's options reach the capture and the screen track's encoding, through the dilla transform's publish path.
 // ---------------------------------------------------------------------------------------------
+
+describe('task 8c fix round 1: another device\'s published RTT', () => {
+  it.each([
+    ['24', 24], ['0', 0], ['5000', 5000], ['5001', null], ['024', null], ['-1', null], ['2.5', null], ['', null], ['24 ms', null], ['99999', null],
+  ] as const)('dilla.rtt %j reads as %j', (v, want) => {
+    expect(rttOf({ 'dilla.rtt': v })).toBe(want);
+  });
+  it('no attribute, or only others, is no value', () => {
+    expect(rttOf(undefined)).toBeNull();
+    expect(rttOf({ 'dilla.vdec': 'vp8,vp9', rtt: '20' })).toBeNull();
+  });
+});
 
 describe('task 8c: screen-share options', () => {
   const open: PageCall[] = [];

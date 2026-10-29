@@ -57,14 +57,17 @@ type Story = StoryObj<typeof meta>;
 
 export const Connected: Story = {};
 export const Speaking: Story = { args: { view: { ...VIEW, speaking: true } } };
-/** R25: on the stage the ring is on the tile's edge and on the avatar (2px accent), and there is no dot. */
+/** R25, Signal (task 8, the prototype's tile): speaking is the tile's inset 2px --ok edge and the avatar's 5px --ok ring, and there is no dot. */
 export const SpeakingOnStage: Story = {
   args: { view: { ...VIEW, speaking: true }, onFocusTile: () => {} },
   play: ({ canvasElement }) => {
     const ring = canvasElement.querySelector<HTMLElement>('.d-call-tile__avatar-ring[data-speaking="true"]');
     const tile = canvasElement.querySelector<HTMLElement>('.d-call-tile[data-speaking="true"]');
     if (ring === null || tile === null) throw new Error('SpeakingOnStage: no ring');
-    if (getComputedStyle(ring).outlineWidth !== '2px' || getComputedStyle(tile).outlineWidth !== '2px') throw new Error('SpeakingOnStage: the ring is not 2px');
+    const edge = getComputedStyle(tile).boxShadow;
+    if (!edge.includes('inset') || !edge.includes('2px') || !getComputedStyle(ring).boxShadow.includes('5px')) {
+      throw new Error(`SpeakingOnStage: the tile edge is ${edge} and the ring ${getComputedStyle(ring).boxShadow}; want an inset 2px edge and a 5px ring`);
+    }
     if (canvasElement.querySelector('.d-state-dot') !== null) throw new Error('SpeakingOnStage: a dot is drawn');
   },
 };

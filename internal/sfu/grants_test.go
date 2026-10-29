@@ -56,8 +56,9 @@ func TestPublishGrantMirrorsSpeakVideoAndScreenShare(t *testing.T) {
 		if tc.want == nil && p.CanPublishSources != nil {
 			t.Error("a listen-only grant carries a source list: LiveKit reads an empty list as every source")
 		}
-		if !p.CanSubscribe || p.CanPublishData || p.Hidden || p.CanUpdateMetadata || p.CanSubscribeMetrics || p.CanManageAgentSession {
-			t.Errorf("PublishGrant(%v, %v, %v) = %+v: subscribe only, no data, never hidden", tc.speak, tc.video, tc.screen, p)
+		// Task 8c fix round 1: own metadata (the dilla.rtt attribute) is the one extra right; data, hidden, metrics and agents stay off.
+		if !p.CanSubscribe || p.CanPublishData || p.Hidden || !p.CanUpdateMetadata || p.CanSubscribeMetrics || p.CanManageAgentSession {
+			t.Errorf("PublishGrant(%v, %v, %v) = %+v: subscribe and own metadata only, no data, never hidden", tc.speak, tc.video, tc.screen, p)
 		}
 		// What LiveKit stores from it agrees, source by source.
 		var g auth.VideoGrant
@@ -169,7 +170,6 @@ func TestTokenWithinRefusesAnythingBeyondTheCurrentGrant(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*auth.ClaimGrants){
 		"data":     func(c *auth.ClaimGrants) { c.Video.SetCanPublishData(true) },
-		"metadata": func(c *auth.ClaimGrants) { c.Video.SetCanUpdateOwnMetadata(true) },
 		"hidden":   func(c *auth.ClaimGrants) { c.Video.Hidden = true },
 		"admin":    func(c *auth.ClaimGrants) { c.Video.RoomAdmin = true },
 		"agent":    func(c *auth.ClaimGrants) { c.Kind = "agent" },
@@ -179,6 +179,19 @@ func TestTokenWithinRefusesAnythingBeyondTheCurrentGrant(t *testing.T) {
 		mutate(c)
 		if TokenWithin(c, base, false) == nil {
 			t.Errorf("a token with %s passed, even on a resume", name)
+		}
+	}
+	// Task 8c fix round 1: own metadata passes only while the device's permission holds it (a human's), never a bot's.
+	own := claims(base)
+	own.Video.SetCanUpdateOwnMetadata(true)
+	if err := TokenWithin(own, base, true); err != nil {
+		t.Errorf("own metadata refused for a device that holds it: %v", err)
+	}
+	bot := PublishGrant(true, false, false)
+	bot.CanUpdateMetadata = false
+	for _, withSources := range []bool{true, false} {
+		if TokenWithin(own, bot, withSources) == nil {
+			t.Errorf("own metadata passed for a device without it (withSources=%v)", withSources)
 		}
 	}
 }
@@ -601,5 +614,64 @@ func TestRoomsListsTheRoomsTheSFUHolds(t *testing.T) {
 	}
 	if got, err := srv.Rooms(t.Context()); err != nil || !slices.Equal(got, []string{"room-b"}) {
 		t.Fatalf("Rooms after a delete = %v, %v; want room-b", got, err)
+	}
+}
+
+// Task 8c fix round 1: a call token's own-metadata right reaches only what dilla uses. A participant can publish its own
+// small dilla.rtt attribute and every other participant sees it; it cannot take a name longer than an identity
+// (NameLimitBytes; no client reads a remote name), set metadata (max_metadata_size 1) or send attributes over
+// AttributeLimitBytes in one update; its identity never changes.
+func TestOwnMetadataIsLimitedToSmallAttributes(t *testing.T) {
+	srv := bootGrantSFU(t, 7990, nil)
+	const room = "rtt-room"
+	if err := srv.CreateRoom(t.Context(), room); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	aliceTok, err := srv.Token(room, "alice", PublishGrant(true, false, false), nil)
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	bobTok, err := srv.Token(room, "bob", PublishGrant(true, false, false), nil)
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	bob, err := lksdk.ConnectToRoomWithToken(srv.URL(), bobTok, &lksdk.RoomCallback{})
+	if err != nil {
+		t.Fatalf("bob join: %v", err)
+	}
+	defer bob.Disconnect()
+	alice, err := lksdk.ConnectToRoomWithToken(srv.URL(), aliceTok, &lksdk.RoomCallback{})
+	if err != nil {
+		t.Fatalf("alice join: %v", err)
+	}
+	defer alice.Disconnect()
+	seen := func() *lksdk.RemoteParticipant { return bob.GetParticipantByIdentity("alice") }
+	waitFor := func(what string, ok func(p *lksdk.RemoteParticipant) bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := seen(); p != nil && ok(p) {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("bob never saw %s", what)
+	}
+	alice.LocalParticipant.SetAttributes(map[string]string{"dilla.rtt": "24"})
+	waitFor("alice's dilla.rtt", func(p *lksdk.RemoteParticipant) bool { return p.Attributes()["dilla.rtt"] == "24" })
+
+	// Refused by the limits: a new name, metadata, an oversized attribute set. A later small update still lands, so the
+	// refused ones were seen and dropped rather than delayed.
+	alice.LocalParticipant.SetName(strings.Repeat("b", NameLimitBytes+1))
+	alice.LocalParticipant.SetMetadata(`{"role":"owner"}`)
+	alice.LocalParticipant.SetAttributes(map[string]string{"dilla.big": strings.Repeat("x", AttributeLimitBytes)})
+	alice.LocalParticipant.SetAttributes(map[string]string{"dilla.rtt": "31"})
+	waitFor("alice's second dilla.rtt", func(p *lksdk.RemoteParticipant) bool { return p.Attributes()["dilla.rtt"] == "31" })
+	p := seen()
+	if p.Name() != "alice" || p.Metadata() != "" || p.Identity() != "alice" {
+		t.Errorf("alice is name %q metadata %q identity %q; want alice, none, alice", p.Name(), p.Metadata(), p.Identity())
+	}
+	if _, ok := p.Attributes()["dilla.big"]; ok {
+		t.Error("an attribute set over the limit reached bob")
 	}
 }

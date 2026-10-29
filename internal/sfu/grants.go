@@ -31,7 +31,15 @@ const (
 // drift. It is always fully populated, because UpdateFromPermission overwrites every field and a
 // zero CanSubscribe would drop every subscription the participant has:
 //
-//   - subscribe always, no data (DEV-61), never hidden, no metadata or metrics or agent rights;
+//   - subscribe always, no data (DEV-61), never hidden, no metrics or agent rights;
+//   - own metadata (LiveKit's CanUpdateOwnMetadata) so a page can publish its own RTT as the `dilla.rtt` participant
+//     attribute (Signal task 8c fix round 1, the stage's per-person ping). LiveKit lets such a participant change its
+//     own name, metadata and attributes only — never its identity, another participant or a permission
+//     (livekit-server rtc/participant.go UpdateMetadata). Nothing trusts those: clients read a remote name or metadata
+//     nowhere, the identity (the device id) is what the call roster binds, and the attributes clients read are
+//     `dilla.vdec` (already self-reported at join, it can only steer the room down to VP8) and `dilla.rtt` (a number
+//     0..5000, display only). The generated LiveKit config caps their sizes (Config.YAML, limit.*); a bot's grant
+//     (api.restrictBotCallGrant) keeps it off;
 //   - the sources in the fixed order [MICROPHONE, CAMERA, SCREEN_SHARE, SCREEN_SHARE_AUDIO], filtered
 //     to the held bits (screen_share carries its audio; screen_share_audio never stands alone);
 //   - no bit at all is CanPublish false with NO source list: LiveKit reads an empty list as every
@@ -56,7 +64,7 @@ func PublishGrant(speak, video, screen bool) *livekit.ParticipantPermission {
 		CanPublishData:        false,
 		CanPublishSources:     sources,
 		Hidden:                false,
-		CanUpdateMetadata:     false,
+		CanUpdateMetadata:     true,
 		CanSubscribeMetrics:   false,
 		CanManageAgentSession: false,
 	}
@@ -254,7 +262,7 @@ func (s *Server) VerifyToken(token string) (RoomToken, error) {
 // current permission — and why not otherwise: the /rtc gate's check that a token cannot be replayed
 // for more than the device holds now (a microphone after speak was revoked, a camera after an
 // unshare). Every right a dilla call token never carries is refused outright: a room-wide or admin
-// grant, hidden, recorder, agent or a non-standard kind, data, own metadata, metrics, agent
+// grant, hidden, recorder, agent or a non-standard kind, data, metrics, agent
 // sessions, a room configuration or preset, and every non-video grant. withSources false skips the
 // per-source comparison, for a resume of a participant the SFU already holds: LiveKit keeps that
 // participant's server-side permission and never re-reads the token's grants
@@ -268,8 +276,11 @@ func TokenWithin(c *auth.ClaimGrants, allowed *livekit.ParticipantPermission, wi
 	case v.RoomCreate || v.RoomList || v.RoomRecord || v.RoomAdmin || v.IngressAdmin || v.Hidden ||
 		v.Recorder || v.Agent || v.DestinationRoom != "":
 		return errors.New("sfu: the token carries a right no call token has")
-	case v.GetCanPublishData() || v.GetCanUpdateOwnMetadata() || v.GetCanSubscribeMetrics() || v.GetCanManageAgentSession():
-		return errors.New("sfu: the token grants data, metadata, metrics or agent sessions")
+	case v.GetCanPublishData() || v.GetCanSubscribeMetrics() || v.GetCanManageAgentSession():
+		return errors.New("sfu: the token grants data, metrics or agent sessions")
+	case v.GetCanUpdateOwnMetadata() && !allowed.GetCanUpdateMetadata():
+		// Own metadata (task 8c's dilla.rtt) only while the device's permission holds it: never a bot's.
+		return errors.New("sfu: the token may update its own metadata and the device may not")
 	case c.Kind != "" && c.Kind != "standard", len(c.KindDetails) > 0, c.SIP != nil, c.Agent != nil,
 		c.Inference != nil, c.Observability != nil, c.RoomConfig != nil, c.RoomPreset != "":
 		return errors.New("sfu: the token carries a kind, a grant or a room setting no call token has")

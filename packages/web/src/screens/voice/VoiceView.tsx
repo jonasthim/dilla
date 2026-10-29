@@ -116,6 +116,8 @@ function deviceTiles(base: TileBase, o: {
   menu: (source: 'person' | 'screen') => TileMenu;
   /** #37: a remote screen: whether it carries sound (the mark when not). */
   remoteScreen?: { screenAudio: boolean };
+  /** Task 8c fix round 1: the person tile's stat (another device's published ping, "18 ms"). */
+  personStat?: string;
 }): CallTileProps[] {
   const { view } = base;
   const fullscreenLabel = t('stage.fullscreen');
@@ -123,6 +125,7 @@ function deviceTiles(base: TileBase, o: {
   const out: CallTileProps[] = [{
     ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, 'person'),
     title: o.title ?? o.name, fullscreenLabel, mirror: camera && o.mirrorCamera, menu: o.menu('person'),
+    ...(o.personStat !== undefined ? { stat: o.personStat } : {}),
   }];
   if (o.screen !== null || o.sharing) {
     out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
@@ -163,7 +166,9 @@ function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTi
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name) },
     { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name, ...(title !== undefined ? { title } : {}),
       menu: source => personMenu(v, roomName, { userId: tile.userId, name, bot: view.bot, own: false, ...(title !== undefined ? { title } : {}) }, source, tile.screenAudio),
-      remoteScreen: { screenAudio: tile.screenAudio } });
+      remoteScreen: { screenAudio: tile.screenAudio },
+      // Task 8c fix round 1: the ping that device publishes about itself (its `dilla.rtt`), never this page's own link.
+      ...(tile.rttMs != null ? { personStat: t('callStage.stat.ping', { ms: tile.rttMs }) } : {}) });
   });
   // Signal §5.6 (the prototype's stage): the shared screens first, then the people in the room's own order (yours where the room
   // lists you); a device the room does not list yet keeps its place after them. One stable order, keyed by id (R27).
@@ -176,9 +181,8 @@ function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTi
 
 /**
  * Task 8c (Signal §5.6): the tiles' stats from one read: the own person tile says what its microphone sends ("opus 48k"), a
- * screen what is sent or received ("1440p · 30 fps", "· audio" with the own share's sound). Another person's tile has none: the
- * prototype's ping there is that person's latency, which this client cannot measure (it knows only its own link), and the own
- * link is never shown as someone else's.
+ * screen what is sent or received ("1440p · 30 fps", "· audio" with the own share's sound). Another person's tile keeps the ping
+ * callTiles gave it from that device's own published `dilla.rtt` (fix round 1), never this page's link.
  */
 export function withTileStats(tiles: readonly CallTileProps[], stats: TileStats | null): CallTileProps[] {
   if (stats === null) return [...tiles];

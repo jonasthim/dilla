@@ -11,7 +11,8 @@ import type { SharePickerValue } from '../SharePicker/SharePicker.tsx';
 export function expectVoiceTargets(root: HTMLElement, story: string): void {
   const min = window.innerWidth < 768 ? 44 : 40;
   // Signal (rule 0): the call bar's controls and the tile tools are the prototype's sizes, measured in scripts/story-a11y.ts instead.
-  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]')).filter(e => e.closest('.d-call-controls--bar, .d-call-tile__tools, .d-call-stage__code') === null)) {
+  // The ring banner's Answer and Decline are Task 8's 32px restyle (no prototype counterpart; flagged in the task 8c report).
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]')).filter(e => e.closest('.d-call-controls--bar, .d-call-tile__tools, .d-call-stage__code, .d-ring-banner') === null)) {
     if (el.getClientRects().length === 0) continue; // not drawn (a phone-only control on a desktop width): no target
     const r = el.getBoundingClientRect();
     const range = el instanceof HTMLInputElement;
@@ -87,7 +88,7 @@ export const TooltipOnFocus: Story = {
 const inBar = (controls: React.ReactNode) => (
   <div style={{ width: 980, height: 756, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)', background: 'var(--bg)', margin: -16 }}>
     <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1" controls={controls}
-      tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />
+      tiles={[personTile('Liv', { stat: '18 ms' }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />
   </div>
 );
 const barPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => { expectOneRow(canvasElement, 'CallBar'); };
@@ -105,6 +106,8 @@ function PickerBar({ value, sharing = false, tabOnly = false, noSource = false }
 const pickerPlay = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
   expectOneRow(canvasElement, 'SharePicker');
   await nextFrame();
+  // The picker enters with d-modal (a small rise and scale): measure where it comes to rest.
+  await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => undefined)));
   const pop = canvasElement.querySelector<HTMLElement>('.d-share-picker');
   const anchor = canvasElement.querySelector<HTMLElement>('[data-control="quality"], [data-control="share"][aria-expanded="true"]');
   if (pop === null || anchor === null) throw new Error('SharePicker: the picker is not open over its control');

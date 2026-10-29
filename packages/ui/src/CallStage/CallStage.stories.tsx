@@ -57,7 +57,7 @@ const settle = async () => { await nextFrame(); await nextFrame(); };
 export const Grid2: Story = {
   decorators: [desk],
   render: () => <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1"
-    tiles={[personTile('Liv'), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', speaking: true })]} />,
+    tiles={[personTile('Liv', { stat: '18 ms' }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', speaking: true })]} />,
   play: async ({ canvasElement }) => { await settle(); expectSixteenNine(canvasElement, 'Grid2'); },
 };
 export const Grid3: Story = {
@@ -81,7 +81,7 @@ export const GridHarbour: Story = {
 export const SpeakingTile: Story = {
   decorators: [desk],
   render: () => <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1"
-    tiles={[personTile('Liv', { speaking: true }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
+    tiles={[personTile('Liv', { speaking: true, stat: '18 ms' }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />,
 };
 /** A share focused (the prototype's harbour as you join): 16:9 at the row's height, Grid and full screen, the 188px filmstrip. */
 export const FocusShare: Story = {
