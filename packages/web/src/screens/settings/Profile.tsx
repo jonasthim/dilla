@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '@dilla/client-core';
-import { Banner, Button, TextField } from '@dilla/ui';
+import { Avatar, Banner, TextField, avatarStyle } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -8,6 +8,7 @@ import { t, type StringKey } from '../../strings/index.ts';
 import { useSettingsEdit } from '../../settings/edit-state.tsx';
 
 const TITLE_ID = 'profile-title';
+const SAVE_AFTER_MS = 700;
 const PROBLEM: Record<ProfileTextProblem, StringKey> = { chars: 'profile.error.chars', long: 'profile.error.long', blank: 'profile.error.blank' };
 
 interface Fields { display: string; statusMsg: string; bio: string }
@@ -93,27 +94,54 @@ export function Profile(): React.JSX.Element {
     } finally { setPending(false); }
   };
   const reset = () => { setFields(baseline); setFailed(null); setDone(false); setDisplayError(false); };
-  const managed = useSettingsEdit({ dirty, busy: pending, canSave: dirty && !pending && !invalid, save, reset });
-
-  const submit = (event: FormEvent) => { event.preventDefault(); if (!managed) void save(); };
+  // Task 11 (Jonas, Q7): the prototype saves as you type: a valid change is saved 700 ms after the last keystroke, and the
+  // workspace only holds the section (its unsaved-changes prompt) while a change cannot be saved (invalid, or the save failed).
+  const fieldsKey = `${fields.display}\n${fields.statusMsg}\n${fields.bio}`;
+  const unsaveable = dirty && (invalid || failed !== null || (edited.display && next.display === ''));
+  useEffect(() => {
+    if (!dirty || invalid || pending || failed !== null) return;
+    const handle = setTimeout(() => { void save(); }, SAVE_AFTER_MS);
+    return () => clearTimeout(handle);
+  }, [fieldsKey, dirty, invalid, pending, failed]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Leaving the section with a valid change still typing saves it at once.
+  const flush = useRef(save);
+  flush.current = save;
+  const flushable = useRef(false);
+  flushable.current = dirty && !invalid && !pending;
+  useEffect(() => () => { if (flushable.current) void flush.current(); }, []);
+  useSettingsEdit({ dirty: unsaveable, busy: pending, canSave: dirty && !pending && !invalid, save, reset });
+  const status = pending ? t('profile.saving') : done && !dirty ? t('profile.saved') : '';
+  const preview = { display: next.display || user?.username || '', statusMsg: next.statusMsg, bio: next.bio };
 
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
       <h2 id={TITLE_ID} tabIndex={-1}>{t('profile.title')}</h2>
       <p>{t('profile.body')}</p>
       {failed === null ? null : <Banner tone="danger">{t(failed === 'text' ? 'profile.error.chars' : failed === 'wait' ? 'profile.error.wait' : 'profile.error.save')}</Banner>}
-      <form className="dw-profile-form" onSubmit={submit} noValidate>
-        <TextField id="profile-display" label={t('profile.display.label')} value={fields.display} onChange={display => { edit({ display }); }}
-          maxLength={DISPLAY_MAX_CHARS} required autoComplete="nickname" error={text(problem.display) ?? (displayError ? t('profile.error.display') : undefined)} />
-        <TextField id="profile-status" label={t('profile.status.label')} value={fields.statusMsg} onChange={statusMsg => { edit({ statusMsg: statusMsg.replace(/[\r\n]+/g, ' ') }); }}
-          maxLength={STATUS_MAX_CHARS} hint={t('profile.status.hint')} note={t('profile.serverReads')} error={text(problem.statusMsg)} />
-        <TextField id="profile-bio" label={t('profile.bio.label')} value={fields.bio} onChange={bio => { edit({ bio }); }}
-          maxLength={BIO_MAX_CHARS} multiline rows={5} hint={t('profile.bio.hint')} note={t('profile.serverReads')} error={text(problem.bio)} />
-        <div className="dw-profile-form__actions">
-          {managed ? null : <Button type="submit" disabled={!dirty || pending || invalid}>{t('profile.save')}</Button>}
-          <p role="status" className="dw-profile-form__saved">{done && !dirty ? t('profile.saved') : ''}</p>
+      <div className="dw-profile">
+        {/* Enter in a one-line field saves at once (the form has no Save button to submit it). */}
+        <form className="dw-profile-form" onSubmit={e => { e.preventDefault(); void save(); }} noValidate
+          onKeyDown={e => { if (e.key === 'Enter' && e.target instanceof HTMLInputElement && !e.nativeEvent.isComposing) { e.preventDefault(); void save(); } }}>
+          <TextField id="profile-display" label={t('profile.display.label')} value={fields.display} onChange={display => { edit({ display }); }}
+            maxLength={DISPLAY_MAX_CHARS} required autoComplete="nickname" error={text(problem.display) ?? (displayError ? t('profile.error.display') : undefined)} />
+          <TextField id="profile-status" label={t('profile.status.label')} value={fields.statusMsg} onChange={statusMsg => { edit({ statusMsg: statusMsg.replace(/[\r\n]+/g, ' ') }); }}
+            maxLength={STATUS_MAX_CHARS} error={text(problem.statusMsg)} />
+          <TextField id="profile-bio" label={t('profile.bio.label')} value={fields.bio} onChange={bio => { edit({ bio }); }}
+            maxLength={BIO_MAX_CHARS} multiline rows={3} error={text(problem.bio)} />
+          <p className="dw-profile-form__note">{t('profile.footnote')}</p>
+          <p role="status" className="dw-profile-form__saved">{status}</p>
+        </form>
+        {/* The prototype's preview: how the card shows you, as you type. */}
+        <div className="dw-profile-preview" aria-label={t('profile.preview')} role="group">
+          <div className="dw-profile-preview__band" style={avatarStyle(preview.display) as CSSProperties} />
+          <div className="dw-profile-preview__body">
+            <Avatar name={preview.display} size="card" />
+            <div className="dw-profile-preview__name">{preview.display}</div>
+            <div className="dw-profile-preview__line">{user === null ? '' : preview.statusMsg === '' ? `@${user.username}` : t('you.line', { handle: user.username, status: preview.statusMsg })}</div>
+            {preview.bio === '' ? null : <p className="dw-profile-preview__bio">{preview.bio}</p>}
+          </div>
         </div>
-      </form>
+      </div>
     </section>
   );
 }

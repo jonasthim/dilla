@@ -1303,19 +1303,21 @@ read it never contact giphy.com.
 
 ### Profile
 
-Settings → **profile** is the first section. It has three fields: **display name** (up to 64 characters, and never empty),
-**status message** (one line, up to 190 characters) and **bio** (up to 500 characters, with line breaks). **save** is
-disabled until something changes, and it sends only what you changed; emptying the status message or the bio and saving
-clears it, and spaces at either end are dropped. Text the server would refuse is named under its field as you type or paste:
-"That has characters dilla can’t show." (a tab, an invisible or direction-changing character, or a line break in the status
-message), "Too long.", or "Write something, or leave it empty." for only spaces; **save** stays disabled until it is fixed,
-and again after a save until you change something. "Profile saved" confirms it, and your name, status and bio change at once in the member list and on your
-profile card. If the save fails, "Could not save your profile. Try again." shows and what you typed stays.
+Settings → **Profile** is the first section: "How people see you across your servers." It has three fields: **Display
+name** (up to 64 characters, and never empty), **Status message** (one line, up to 190 characters) and **Bio** (up to 500
+characters, with line breaks), and beside them a preview of your profile card as you type. There is no Save button: a
+change is saved a moment after you stop typing (Enter in the name or the status saves at once), and only what you changed
+is sent; emptying the status message or the bio clears it, and spaces at either end are dropped. "Saving…" then "Profile
+saved" confirm it, and your name, status and bio change at once in the member list and on your profile card. Text the
+server would refuse is named under its field as you type or paste: "That has characters dilla can’t show." (a tab, an
+invisible or direction-changing character, or a line break in the status message), "Too long.", or "Write something, or
+leave it empty." for only spaces; nothing is saved until it is fixed, and leaving the section asks first. If the save fails,
+"Could not save your profile. Try again." shows, what you typed stays, and the next change (or Enter) tries again.
 
-The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
-breaks. Both show to everyone who shares a server with you. They are stored readable by the server, like your display name,
-and are not end-to-end encrypted: do not put anything in them that the host should not read. A quiet line under each
-of the two fields says so: "The server can read this, like your display name." There is no picture yet.
+The status message shows on your profile card after your handle, and the bio shows under your name, with its line breaks.
+Both show to everyone who shares a server with you. "Name, status and bio are stored readable by the host, unlike
+messages.": they are not end-to-end encrypted, so do not put anything in them that the host should not read. There is no
+picture yet.
 Other people's changes show in your member list the next time it is read, which is when you reload or open the server.
 
 ### Contacts and safety numbers

@@ -29,24 +29,21 @@ const nav = () => screen.getByRole('navigation', { name: 'Settings sections' });
 const navButton = (name: string) => within(nav()).getByRole('button', { name: new RegExp(`^${name}$`, 'i') });
 
 describe('Settings', () => {
-  it('uses the shared footer to save Profile edits and removes it after success', async () => {
+  // Task 11 (Jonas, Q7): Profile saves as you type; the shared footer shows only while a change cannot be saved.
+  it('saves Profile edits as you type, with no footer', async () => {
     const { fake, user } = setup('/settings/profile', null);
     const status = screen.getByRole('textbox', { name: /status message/i });
     await user.type(status, 'here');
-    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Save profile' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(fake.callsOf('updateProfile')).toEqual([{ m: 'updateProfile', statusMsg: 'here' }]));
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    await waitFor(() => expect(fake.callsOf('updateProfile')).toEqual([{ m: 'updateProfile', statusMsg: 'here' }]), { timeout: 3000 });
     expect(await screen.findByText('Profile saved')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
   });
-  it('keeps failed Profile edits available and resets them to the latest account values', async () => {
+  it('keeps failed Profile edits available in the footer and resets them to the latest account values', async () => {
     const { fake, user } = setup('/settings/profile', null);
     const status = screen.getByRole('textbox', { name: /status message/i });
-    await user.type(status, 'draft');
     fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK', status: 0 }));
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save your profile. Try again.');
+    await user.type(status, 'draft');
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('Could not save your profile. Try again.');
     expect(status).toHaveValue('draft');
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Reset' }));

@@ -5,9 +5,21 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-settings-section { display: flex; flex-direction: column; gap: var(--group-gap); }
 .dw-settings-section h2, .dw-settings-section h3 { margin: 0; }
 .dw-settings-section p { margin: 0; color: var(--fg-2); }
-.dw-profile-form { display: flex; flex-direction: column; gap: var(--group-gap); max-width: 32rem; }
-.dw-profile-form__actions { display: flex; align-items: center; gap: var(--group-gap); }
-.dw-profile-form__saved { min-height: 1lh; }
+/* Task 11 (Jonas, Q7): the prototype's Profile: the fields (14px apart) and, beside them, the 260px preview card (24px gap; one
+   column on a phone, the card under the fields). The card: radius 10px, --control-edge-field edge, the 52px band in the
+   person's colour, the 48px avatar 24px up with a 4px ring, the name 14px/700, "@handle · status" 11px --fg-2, the bio 11.5px. */
+.dw-profile { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
+[data-layout="phone"] .dw-profile, .d-settings-frame[data-layout="phone"] .dw-profile { grid-template-columns: minmax(0, 1fr); }
+.dw-profile-form { display: grid; gap: 14px; }
+.dw-profile-form__note { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
+.dw-profile-form__saved { margin: 0; min-height: 1lh; font-size: var(--text-xs); color: var(--fg-3); }
+.dw-profile-preview { overflow: hidden; background: var(--bg-3); border: 1px solid var(--control-edge-field); border-radius: 10px; }
+.dw-profile-preview__band { height: 52px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 32%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 18%)); }
+.dw-profile-preview__body { padding: 0 14px 14px; margin-top: -24px; }
+.dw-profile-preview__body .d-avatar { width: 48px; height: 48px; font-size: var(--text-ui); box-shadow: 0 0 0 4px var(--bg-3); }
+.dw-profile-preview__name { margin-top: 8px; font-weight: var(--weight-display); font-size: var(--text-md); }
+.dw-profile-preview__line { font-size: var(--text-xs); color: var(--fg-2); }
+.dw-profile-preview__bio { margin: 8px 0 0; font-size: var(--text-btn); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .dw-device-list, .dw-notify-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-notify-list > li + li { border-top: 1px solid var(--hairline); padding-top: var(--row-gap); }
 /* Buttons and controls side by side keep the group gap: --row-gap is 0 at compact density, where they would touch. */

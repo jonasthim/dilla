@@ -124,7 +124,9 @@ test('a dirty Profile draft survives Keep editing and is discarded only after co
   await peer.waitForDevices(2, setup.channel_id);
   const settings = await openSettings(page, 'profile');
   const display = settings.getByRole('textbox', { name: copy('profile.display.label'), exact: true });
-  await display.fill('Unsaved profile draft');
+  // Task 11 (Q7): Profile saves as you type, so only a change it cannot save (here a character dilla refuses) holds it.
+  const DRAFT = `Unsaved${String.fromCodePoint(0x09)}draft`;
+  await display.fill(DRAFT);
   await expect(settings.locator('.d-settings-frame__footer')).toContainText('Unsaved changes');
   const nav = settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true });
   await nav.getByRole('button', { name: copy('workspace.signin'), exact: true }).click();
@@ -132,7 +134,7 @@ test('a dirty Profile draft survives Keep editing and is discarded only after co
   await expect(prompt).toBeVisible({ timeout: WAIT });
   await prompt.getByRole('button', { name: 'Keep editing', exact: true }).click();
   await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
-  await expect(display).toHaveValue('Unsaved profile draft');
+  await expect(display).toHaveValue(DRAFT);
   await nav.getByRole('button', { name: copy('workspace.signin'), exact: true }).click();
   prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
   await expect(prompt).toBeVisible({ timeout: WAIT });

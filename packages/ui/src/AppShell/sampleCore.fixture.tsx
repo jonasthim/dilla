@@ -27,6 +27,9 @@ const SLICES: Record<string, unknown> = {
   [`members:${VK}`]: [member(ME, YOU), member('ba'.repeat(16), PEOPLE.Liv), member('bb'.repeat(16), PEOPLE.Sven)],
   [`channels:${VK}`]: [{ id: VK_GENERAL, communityId: VK, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, group: 'none', slowmode: 0, announcement: false }],
   dms: [],
+  // Settings → Sign-in (Task 11, Q7): the prototype's four factors.
+  factors: { owed: false, totp: { confirmedAt: Date.UTC(2026, 9, 12, 12) / 1000 }, backupCodesLeft: 8, hasPassword: true,
+    passwordChanged: NOW - 21 * 86_400, passkeys: [{ id: 'ab'.repeat(16), name: 'MacBook Touch ID', created: Date.UTC(2026, 9, 12, 12) / 1000, lastUsed: null }] },
   badges: {},
   settings: {},
   // The prototype's Activity, oldest first (the tab lists newest first): Ada's DM, Sven's and Liv's mentions in Valhalla Kitchen.

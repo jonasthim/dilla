@@ -1156,7 +1156,8 @@ async function main(argv) {
         .getByRole('button', { name: t(WORKSPACE_SETTINGS.profile), exact: true }).click();
       await mira.waitForURL(/\/settings\/profile$/);
       const display = userSettings.getByRole('textbox', { name: t('profile.display.label'), exact: true });
-      await display.fill('Unsaved fullscreen settings draft');
+      // Task 11 (Q7): Profile saves as you type; a character it refuses keeps the draft unsaved for this shot.
+      await display.fill(`Unsaved${String.fromCodePoint(0x09)}draft`);
       await byText(mira, 'navigation', 'settings.nav.label')
         .getByRole('button', { name: t(WORKSPACE_SETTINGS.signin), exact: true }).click();
       const discard = mira.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });

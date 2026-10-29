@@ -10,7 +10,9 @@ import { VoiceSettings } from '../VoiceSettings/VoiceSettings.tsx';
 import { DeviceRow } from '../DeviceRow/DeviceRow.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Select } from '../Select/Select.tsx';
-import { YOU } from '../internal/sample/midgard.ts';
+import { SampleCore } from '../AppShell/sampleCore.fixture.tsx';
+import { Profile as WebProfile } from '../../../web/src/screens/settings/Profile.tsx';
+import { SignInFactors as WebSignIn } from '../../../web/src/screens/settings/SignInFactors.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { LiveRoleEditor } from '../RoleEditor/RoleEditor.fixture.tsx';
@@ -157,43 +159,15 @@ function Devices() {
   );
 }
 
-// Task 11: screens/settings/Profile.tsx with the prototype's sample (Mira, "packing rope", her bio): the three fields with their
-// hints and notes and the Save button.
+// Task 11 (Jonas, Q7; rule 3d): the web's own screens/settings/Profile.tsx over the Midgard sample (Mira, "packing rope", her
+// bio): the three fields, the note and the preview card; it saves as you type.
 function Profile() {
-  return (
-    <section className="dw-settings-section" aria-labelledby="profile-title">
-      <h2 id="profile-title" tabIndex={-1}>{t('profile.title')}</h2>
-      <p>{t('profile.body')}</p>
-      <form className="dw-profile-form" noValidate onSubmit={e => e.preventDefault()}>
-        <TextField id="profile-display" label={t('profile.display.label')} value={YOU.name} onChange={noop} required autoComplete="nickname" />
-        <TextField id="profile-status" label={t('profile.status.label')} value={YOU.status} onChange={noop} hint={t('profile.status.hint')} note={t('profile.serverReads')} />
-        <TextField id="profile-bio" label={t('profile.bio.label')} value={YOU.bio} onChange={noop} multiline rows={5} hint={t('profile.bio.hint')} note={t('profile.serverReads')} />
-        <div className="dw-profile-form__actions"><Button type="submit" disabled>{t('profile.save')}</Button><p role="status" className="dw-profile-form__saved" /></div>
-      </form>
-    </section>
-  );
+  return <SampleCore><WebProfile /></SampleCore>;
 }
-// Task 11: screens/settings/SignInFactors.tsx with a password, an authenticator app, one passkey and eight backup codes (the
-// prototype's four factors): FactorLine rows, the passkeys' add row and the "lost" note.
+// Task 11 (Jonas, Q7; rule 3d): the web's own screens/settings/SignInFactors.tsx over the sample's factors (a password changed
+// three weeks ago, an authenticator app, the passkey "MacBook Touch ID", eight backup codes).
 function SignIn() {
-  const instance = 'midgard.gg';
-  const row = (id: string, icon: IconName, title: string, detail: string | undefined, action: string, danger = false, heading = true) => (
-    <SettingsRow id={id} icon={icon} label={title} hint={detail} headingLevel={heading ? 3 : undefined}>
-      <Button variant={danger ? 'danger' : 'default'} onClick={noop}>{action}</Button>
-    </SettingsRow>
-  );
-  return (
-    <section className="dw-settings-section" aria-labelledby="signin-title">
-      <h2 id="signin-title" tabIndex={-1} className="dw-settings-heading">{t('factorSettings.title')}</h2>
-      <p>{t('factorSettings.body', { instance })}</p>
-      {row('signin-password', 'lock', t('factorSettings.password'), t('factorSettings.password.set'), t('settings.password.change'))}
-      {row('signin-totp', 'smartphone', t('factorSettings.totp'), t('factorSettings.totp.on', { date: '12 October' }), t('factorSettings.totp.remove'), true)}
-      {row('signin-passkey-1', 'fingerprint', 'MacBook Touch ID', t('factorSettings.passkeys.unused', { created: '12 October' }), t('factorSettings.passkeys.remove'), true, false)}
-      {row('signin-passkeys', 'fingerprint', t('factorSettings.passkeys'), undefined, t('factorSettings.passkeys.add'))}
-      {row('signin-codes', 'key', t('factorSettings.codes'), t('factorSettings.codes.other', { count: 8 }), t('factorSettings.codes.make'))}
-      <p>{t('factorSettings.lost', { instance })}</p>
-    </section>
-  );
+  return <SampleCore><WebSignIn announce={noop} live="" /></SampleCore>;
 }
 // Task 11: admin/OverviewSection.tsx for Midgard Crew: the server name row and the inactive timeout (15 minutes).
 function Overview() {
