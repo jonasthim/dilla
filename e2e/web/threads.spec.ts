@@ -125,9 +125,12 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await expect(threadPane(page).getByRole('heading', { name: copy('thread.title'), exact: true })).toBeVisible();
       await expect(paneRow(page, plan)).toHaveCount(1);
       // The aside is a column beside the channel, not on top of it.
-      const log = await logRegion(page, GENERAL).boundingBox();
-      const aside = await threadPane(page).boundingBox();
-      expect(aside!.x, 'the thread pane starts where the channel ends').toBeGreaterThanOrEqual(log!.x + log!.width - 1);
+      // Measured together and polled: Firefox can report the log before the grid has narrowed it for the new column.
+      await expect.poll(async () => {
+        const log = await logRegion(page, GENERAL).boundingBox();
+        const aside = await threadPane(page).boundingBox();
+        return aside!.x - (log!.x + log!.width);
+      }, { message: 'the thread pane starts where the channel ends', timeout: WAIT }).toBeGreaterThanOrEqual(-1);
       await expect(threadComposer(page)).toBeFocused();
       await expectAccessible(page, 'thread pane in the aside');
 
@@ -347,11 +350,8 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     const box = await sheet.boundingBox();
     expect(box!.x, 'the sheet starts at the left edge').toBeLessThanOrEqual(1);
     expect(box!.width, 'the sheet fills the width').toBeGreaterThanOrEqual(388);
-    // web3.7.1: the tab bar stays under the sheet, so the sheet ends where the bar starts.
-    const bar = await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).boundingBox();
-    expect(bar, 'the tab bar stays under the sheet').not.toBeNull();
-    expect(Math.abs(box!.y + box!.height - bar!.y), 'the sheet ends at the top of the tab bar').toBeLessThanOrEqual(1);
-    expect(bar!.y + bar!.height, 'the tab bar reaches the bottom').toBeGreaterThanOrEqual(840);
+    // Task 11 (Jonas, Q4): the sheet covers the whole screen, the tab bar included (the prototype's phone thread).
+    expect(box!.y + box!.height, 'the sheet reaches the bottom of the screen').toBeGreaterThanOrEqual(840);
     // The sheet is an AppShell overlay: it takes focus to its first control, the back button (flow 11 says the composer; see the report).
     await expect(sheet.getByRole('button', { name: copy('thread.close'), exact: true })).toBeFocused();
     // Task 7: the textarea sits in the box's input row over the footer, so the composer (its form) is measured.

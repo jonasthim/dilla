@@ -457,7 +457,7 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   // Task 11 (Jonas, Q7): the prototype's segmented 1m / 5m / 15m / 30m / 1h.
   const timeout = settings.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true });
   await expect(timeout.getByRole('radio').first()).not.toHaveAttribute('aria-disabled', 'true', { timeout: WAIT });
-  await expect(settings.locator('.d-settings-row').filter({ has: timeout })).toHaveCount(1);
+  await expect(settings.locator('.d-settings-row').filter({ has: a.page.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true }) })).toHaveCount(1);
   await expect(timeout.getByRole('radio')).toHaveText(['admin.overview.afk.60', 'admin.overview.afk.300', 'admin.overview.afk.900', 'admin.overview.afk.1800', 'admin.overview.afk.3600'].map((k) => copy(k)));
   await expect(timeout.getByRole('radio', { name: copy('admin.overview.afk.300'), exact: true })).toHaveAttribute('aria-checked', 'true');
   await timeout.getByRole('radio', { name: copy('admin.overview.afk.60'), exact: true }).click();

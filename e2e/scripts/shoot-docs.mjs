@@ -1049,7 +1049,7 @@ async function main(argv) {
         await mira.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
         await phoneTab('nav.tab.you').click();
-        await mira.getByRole('button', { name: t('workspace.open'), exact: true }).click();
+        await mira.getByRole('button', { name: t('you.settings'), exact: true }).click();
         const settings = mira.getByRole('dialog', { name: t('settings.title'), exact: true });
         await settings.waitFor({ timeout: WAIT });
         await phoneTabs.waitFor({ state: 'hidden', timeout: WAIT });

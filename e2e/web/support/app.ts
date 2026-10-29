@@ -890,7 +890,8 @@ export async function openSettings(page: Page, section: SettingsSection): Promis
       await you.click();
       await expect(page).toHaveURL(/\/you$/, { timeout: WAIT });
     }
-    const open = page.getByRole('button', { name: copy('workspace.open'), exact: true });
+    // Task 11 (Q3): the You tab's Settings row.
+    const open = page.getByRole('button', { name: copy('you.settings'), exact: true });
     await expect(open).toBeVisible({ timeout: WAIT });
     await open.click();
   } else {

@@ -483,7 +483,10 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   // The direct messages (A5, A4, B1): the `@` tile shows the DM list.
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
+  // Task 11 (Jonas, Q2): a DM row is the prototype's person row (avatar, name over status, unread dot), without a trailing slot,
+  // so only the names' shared x is measured.
+  const dmNames = await boxes(page, '.d-chrow__name', '.d-channel-list__list');
+  expectOne(`A5 direct messages names share one left x at ${tag}`, dmNames.map(b => b.x), dmNames.map(b => b.t));
   await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title', SIDEBAR_HEAD_DMS);
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
   await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
@@ -705,7 +708,10 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   // The direct messages: the rail's `@` tile, then a conversation.
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
+  // Task 11 (Jonas, Q2): a DM row is the prototype's person row (avatar, name over status, unread dot), without a trailing slot,
+  // so only the names' shared x is measured.
+  const dmNames = await boxes(page, '.d-chrow__name', '.d-channel-list__list');
+  expectOne(`A5 direct messages names share one left x at ${tag}`, dmNames.map(b => b.x), dmNames.map(b => b.t));
   await expectBar(page, tag, 'the direct messages head', '.d-channel-list__head', PHONE_LIST_HEAD);
   await expectTargets(page, tag, 'the direct messages');
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
@@ -911,7 +917,7 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await expect(admin).toBeHidden({ timeout: WAIT });
   // Opened from the app (You → Open settings), so Settings knows the server; a reload of /settings/notifications would not.
   await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
-  await page.getByRole('button', { name: copy('workspace.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('you.settings'), exact: true }).click();
   await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
   await expect(page.locator('.d-settings-frame__body .d-segmented__option').first()).toBeVisible({ timeout: WAIT });
   await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
@@ -1181,7 +1187,7 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
     const settingsEntry = page.locator('[data-settings-section="index"]');
     await expect(settingsEntry).toBeVisible({ timeout: WAIT });
-    await expect(settingsEntry).toContainText(copy('workspace.open'));
+    await expect(settingsEntry).toContainText(copy('you.settings'));
     await expect(page.locator('[data-settings-section]')).toHaveCount(1);
     await expectAccessibleInThemes(page, 'the You tab');
     await settingsEntry.click();
@@ -1236,7 +1242,7 @@ test('FB1, FB2: the desktop Home title is not the server name; a file card stack
   const channelPath = new URL(page.url()).pathname;
   await homeTile(page).click();
   const title = dmsNav(page).getByRole('heading', { level: 1 });
-  await expect.soft(title, 'FB1 the Home sidebar is titled for the direct messages').toHaveText(copy('shell.dms.label'), { timeout: WAIT });
+  await expect.soft(title, 'FB1 the Home sidebar is titled for the direct messages').toHaveText(copy('shell.dms.title'), { timeout: WAIT });
   await expect.soft(title, 'FB1 not the server name').not.toHaveText('Vanaheim');
 
   await page.setViewportSize({ width: 360, height: 740 });

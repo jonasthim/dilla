@@ -416,7 +416,9 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await menu.click();
       const close = page.getByRole('button', { name: copy('members.close'), exact: true });
       await expect(close).toBeVisible({ timeout: WAIT });
-      await expectAbove(page.getByRole('complementary', { name: /members/ }), tabBar(page), 'the members sheet');
+      // Task 11 (Jonas, Q4): the members sheet covers the whole screen, the tab bar included (the prototype's).
+      const sheet = await page.getByRole('complementary', { name: /members/ }).boundingBox();
+      expect(sheet!.y + sheet!.height, 'the members sheet reaches the bottom of the screen').toBeGreaterThanOrEqual(844 - 1);
       await page.goBack();
       await expect(close).toBeHidden({ timeout: WAIT });
       await expect(menu).toBeFocused();
@@ -446,28 +448,28 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
       await expect(listHeading(page, 'activity.title')).toBeFocused();
       await expect(page.getByRole('region', { name: copy('activity.emptyTitle'), exact: true })).toBeVisible();
-      expect((await page.locator('.d-app-shell__sidebar .d-phone-header').boundingBox())!.height, 'a 48 header on Activity').toBeGreaterThanOrEqual(48);
+      // Task 11 (Jonas, Q3): the prototype's Activity heading (18px over the 14px title), not a 48px bar.
+      await expect(page.locator('.d-app-shell__sidebar .dw-activity .d-phone-header')).toBeVisible();
       await expectAccessible(page, 'Activity');
 
       await tab(page, 'nav.tab.you').tap();
       await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('heading', { level: 2, name: copy('you.title'), exact: true })).toBeFocused();
-      await expect(page.getByRole('heading', { name: copy('you.status'), exact: true })).toBeVisible();
-      // H1/H6: a 48 header on the tab root, and the status is a 44 row, not a native select.
-      expect((await page.locator('.dw-you .d-phone-header').boundingBox())!.height).toBeGreaterThanOrEqual(48);
+      // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings, Status and Sign out
+      // (48px each, no native select); Diagnostics keeps the node, link, generation and devices.
       await expect(page.locator('.dw-you select')).toHaveCount(0);
-      await expectTapTargets(page.getByRole('button', { name: new RegExp(copy('presence.label')) }), 'the status row');
-      for (const fact of ['shell.status.node', 'shell.status.link', 'shell.status.gen', 'shell.status.devices']) {
-        await expect(page.locator('.dw-you__facts dt').filter({ hasText: copy(fact) })).toBeVisible();
+      await expect(page.locator('.dw-you__facts')).toContainText(copy('you.connectedNoPing', { host: '' }).trim().split(' ')[0]);
+      for (const name of [copy('you.settings'), copy('workspace.signOut')]) {
+        expect((await page.getByRole('button', { name, exact: true }).boundingBox())!.height, `${name} is a 48px row`).toBeGreaterThanOrEqual(47);
       }
-      await expect(page.getByRole('button', { name: copy('devices.signOut'), exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: new RegExp(`^${copy('you.statusRow')}`) })).toBeVisible();
       await expectAccessible(page, 'You');
     });
 
     // The You tab has one settings entry. The modal index selects a section, and Back returns to the index.
     await test.step('phone settings follows index → section → index', async () => {
       const row = page.locator('[data-settings-section="index"]');
-      await expect(row).toContainText(copy('workspace.open'));
+      await expect(row).toContainText(copy('you.settings'));
       await row.tap();
       const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
       await expect(settings).toBeVisible({ timeout: WAIT });
