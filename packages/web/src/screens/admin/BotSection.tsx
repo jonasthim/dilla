@@ -17,6 +17,7 @@ import { MusicProviderStatus } from './MusicProviderStatus.tsx';
 import { useRoute } from '../../router.ts';
 import { useBotDraftState, useBotMutation } from './bot-settings-context.tsx';
 import { openRoleOnNextVisit } from './RolesSection.tsx';
+import { communityBotMember } from '../bot-member.ts';
 
 export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'automoderation' | 'moderationLog';
 
@@ -366,8 +367,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
     }).finally(() => { setBusyFor(value => value === requestCommunity ? null : value); finishMutation?.(); });
   };
 
-  const bot = currentInstallation?.userId === null || currentInstallation?.userId === undefined
-    ? undefined : members?.find(m => m.userId === currentInstallation.userId && m.kind === 1);
+  const bot = communityBotMember(members, currentInstallation?.userId);
   const botDisplay = bot && botNameOverride?.userId === bot.userId ? botNameOverride.display : bot?.display || bot?.username || '';
   useEffect(() => {
     if (bot && botNameOverride?.userId !== bot.userId && botNameDraft === '') setBotNameDraft(bot.display || bot.username || '');

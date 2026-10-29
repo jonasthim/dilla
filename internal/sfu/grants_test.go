@@ -169,11 +169,11 @@ func TestTokenWithinRefusesAnythingBeyondTheCurrentGrant(t *testing.T) {
 		t.Error("a token with no source list (every source) passed")
 	}
 	for name, mutate := range map[string]func(*auth.ClaimGrants){
-		"data":     func(c *auth.ClaimGrants) { c.Video.SetCanPublishData(true) },
-		"hidden":   func(c *auth.ClaimGrants) { c.Video.Hidden = true },
-		"admin":    func(c *auth.ClaimGrants) { c.Video.RoomAdmin = true },
-		"agent":    func(c *auth.ClaimGrants) { c.Kind = "agent" },
-		"preset":   func(c *auth.ClaimGrants) { c.RoomPreset = "x" },
+		"data":   func(c *auth.ClaimGrants) { c.Video.SetCanPublishData(true) },
+		"hidden": func(c *auth.ClaimGrants) { c.Video.Hidden = true },
+		"admin":  func(c *auth.ClaimGrants) { c.Video.RoomAdmin = true },
+		"agent":  func(c *auth.ClaimGrants) { c.Kind = "agent" },
+		"preset": func(c *auth.ClaimGrants) { c.RoomPreset = "x" },
 	} {
 		c := claims(base)
 		mutate(c)

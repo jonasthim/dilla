@@ -57,7 +57,6 @@ var webhookEvents = []string{
 	"participant_connection_aborted", "track_published", "track_unpublished",
 }
 
-// Config is the in-process SFU configuration.
 // AttributeLimitBytes is LiveKit's limit.max_attributes_size for every room: the summed key and value bytes a participant's
 // attributes may carry in its token or in one update of its own (task 8c fix round 1).
 const AttributeLimitBytes = 64
@@ -66,6 +65,7 @@ const AttributeLimitBytes = 64
 // characters), which livekit-client sends again with every own-attribute update, so a shorter cap would refuse dilla.rtt.
 const NameLimitBytes = 32
 
+// Config is the in-process SFU configuration.
 type Config struct {
 	Port                    int    // 7880
 	BindAddress             string // "127.0.0.1"

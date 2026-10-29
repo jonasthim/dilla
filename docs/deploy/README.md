@@ -25,6 +25,11 @@ Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload 
   the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
   Upgrade both together.
 
+Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it
+negotiates wire 4 and starts checking each person's signed account kind. `dillabot` stays on wire 3 next to wire-4
+people, so the order above still holds. Once browsers run wire 4, do not roll `dillad` back below it (see
+[Client data version per release](#client-data-version-per-release)).
+
 For upgrades already running the media sidecar, the normal path is:
 
 ```mermaid
@@ -966,7 +971,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 | web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
 | bot1 (`v0.1.0-bot1`) | **12** | **47** | Dilla Bot and its server/browser support. A rollback to web3.12.4 needs a server down migration to 23 with the new binary first; the older browser cannot read a schema-12 store. See the [bot1 release notes](releases/v0.1.0-bot1.md). |
-| Signal wave A (wire 4) | **13** | **51** | The instance-signed account kind (protocol/03 § Account kind attestation). Migration `00051_session_wire4` lets a session record wire 4. **Do not roll `dillad` back below a wire-4 build**: a browser that has stored an attestation leaves every person without one pending, so after a rollback it stops showing other people's messages. One-way for the browser too: an older bundle refuses the schema-13 store ("too old" screen); redeploy the wire-4 build, or clear site data and sign in again with the recovery key. |
+| Signal wave A (wire 4) | **13** | **51** | Server settings (task 10c): `00048_control_music` turns every DJ role into a role with the **Control music** permission and drops the DJ roles table (its down migration recreates the table empty, so a rollback loses the DJ list; the permission bits stay on the roles), `00049_unlimited_invites` and `00050_bot_installation_settings` (Polls and Reminders on for every existing Bot, default music volume and idle time, restart and version). The instance-signed account kind (task S1, protocol/03 § Account kind attestation): `00051_session_wire4` lets a session record wire 4. **Do not roll `dillad` back below a wire-4 build**: a browser that has stored an attestation leaves every person without one pending, so after a rollback it stops showing other people's messages. One-way for the browser too: an older bundle refuses the schema-13 store ("too old" screen); redeploy the wire-4 build, or clear site data and sign in again with the recovery key. |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is

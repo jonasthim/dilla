@@ -293,6 +293,4 @@ export function useMusicRoomName(communityId: string | null, voiceChannelId: str
  * Security review M1: the card is drawn only for an unedited message from this community's managed Bot account (a member row
  * of account kind 1, the server's account kind, not the sender's credential).
  */
-export function isCommunityBot(members: readonly MemberSummary[], userId: string | null): boolean {
-  return userId !== null && members.some(m => m.userId === userId && m.kind === 1);
-}
+export { isCommunityBot } from '../bot-member.ts';
