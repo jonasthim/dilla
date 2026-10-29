@@ -75,8 +75,11 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
  * One person under a voice row. Fix round 1 (Jonas): with `menu`, a right-click, the ContextMenu key or Shift+F10, or a long
  * press opens the person menu (Signal §5.4) at the pointer; focus comes back to the row.
  */
-function PersonRow({ menu, speaking, away, label, children }: { menu: TileMenu | undefined; speaking: boolean; away: boolean; label: string; children: ReactNode }) {
+function PersonRow({ menu, speaking, away, label, children }: { menu: TileMenu | undefined; speaking: boolean; away: boolean; label: string;
+  /** The row's content; `statesId` names the two state wrappers the row's description points at. */
+  children: (statesId: string) => ReactNode }) {
   const ref = useRef<HTMLLIElement>(null);
+  const statesId = useId();
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const trigger = useContextMenuTrigger<HTMLLIElement>(menu !== undefined ? (_el, point) => { setAt(point); } : undefined);
   // Fix round 2: with a menu, the person is a keyboard stop outside the tab order (no extra Tab stops in the sidebar): ArrowRight
@@ -94,8 +97,10 @@ function PersonRow({ menu, speaking, away, label, children }: { menu: TileMenu |
   };
   return (
     <li ref={ref} className="d-voice-row__person" data-row data-speaking={speaking ? 'true' : undefined} data-away={away ? 'true' : undefined}
-      data-menu={at !== null ? 'true' : undefined} {...trigger} {...(menu !== undefined ? { tabIndex: -1, 'aria-label': label, onKeyDown } : {})}>
-      {children}
+      data-menu={at !== null ? 'true' : undefined} {...trigger}
+      // Task 11 (8 minor): the label names the person; the state words (speaking, muted, camera on…) stay readable as its description.
+      {...(menu !== undefined ? { tabIndex: -1, 'aria-label': label, 'aria-describedby': `${statesId}-a ${statesId}-b`, onKeyDown } : {})}>
+      {children(statesId)}
       {menu !== undefined && at !== null ? createPortal(
         <PersonContextMenu {...menu} open at={at} onOpenChange={open => { if (!open) setAt(null); }} returnFocus={() => ref.current} />, document.body) : null}
     </li>
@@ -150,10 +155,10 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
           {participants.map(p => {
             const words = rowWords(voiceStateWords(p, labels.state));
             return (
-              <PersonRow key={p.userId} menu={personMenu?.(p)} speaking={p.speaking} away={p.away === true} label={p.name}>
+              <PersonRow key={p.userId} menu={personMenu?.(p)} speaking={p.speaking} away={p.away === true} label={p.name}>{statesId => <>
                 <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="voice" shape={p.bot ? 'bot' : 'circle'} /></span>
                 <span className="d-voice-row__person-name">{p.name}</span>
-                <span className="d-voice-row__states">
+                <span className="d-voice-row__states" id={`${statesId}-a`}>
                   {p.bot ? (
                     <>
                       {/* Signal §5.4 (fix round 1): the rounded-square avatar marks the bot; the word stays for a screen reader. */}
@@ -167,9 +172,11 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
                   {p.speaking ? <>{' '}<span className="d-sr-only">{labels.state.speaking}</span></> : null}
                 </span>
                 <TrailingSlot>
-                  <VoiceStates words={words.filter(w => SLOT_STATES.has(w.key))} prefix="d-voice-row" />
+                  {words.some(w => SLOT_STATES.has(w.key)) ? (
+                    <span className="d-voice-row__slot-states" id={`${statesId}-b`}><VoiceStates words={words.filter(w => SLOT_STATES.has(w.key))} prefix="d-voice-row" /></span>
+                  ) : null}
                 </TrailingSlot>
-              </PersonRow>
+              </>}</PersonRow>
             );
           })}
         </ul>

@@ -112,6 +112,7 @@
   --weight-display: 700;
   --weight-body: 420;
   --weight-label: 600;
+  --weight-btn: 400;
   --label-tracking: 0.08em;
   --label-tracking-wide: 0.12em;
   --tracking-soft: 0.04em;
@@ -157,6 +158,7 @@
   --list-gap: 0.0625rem;
   --focus-ring: 2px solid var(--accent);
   --duration-toggle: 240ms;
+  --duration-track: 200ms;
   --duration-press: 120ms;
   --duration-fast: 150ms;
   --duration-normal: 220ms;
@@ -676,6 +678,7 @@
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration-toggle: 0ms;
+    --duration-track: 0ms;
     --duration-press: 0ms;
     --duration-fast: 0ms;
     --duration-normal: 0ms;
@@ -720,6 +723,7 @@
 
 [data-motion="reduced"] {
     --duration-toggle: 0ms;
+    --duration-track: 0ms;
     --duration-press: 0ms;
     --duration-fast: 0ms;
     --duration-normal: 0ms;

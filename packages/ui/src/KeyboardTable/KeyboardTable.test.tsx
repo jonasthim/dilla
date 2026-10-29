@@ -39,4 +39,10 @@ describe('KeyboardTable', () => {
     const { container } = render(<div className="d-root"><KeyboardTable caption="keyboard shortcuts" rows={ROWS} /></div>);
     await expectNoAxeViolations(container);
   });
+  // Task 11 (merge 9+10 minor): an alt chord without orLabel shows both chords and no empty word element.
+  it('a row with alt and no orLabel draws both chords and no empty or element', () => {
+    const { container } = render(<KeyboardTable caption="keyboard shortcuts" rows={[{ action: 'search', keys: ['ctrl', 'k'], alt: ['ctrl', '/'] }]} />);
+    expect(container.querySelector('.d-keyboard-table__or')).toBeNull();
+    expect(container.querySelectorAll('.d-keyboard-table__keys kbd').length).toBeGreaterThanOrEqual(4);
+  });
 });

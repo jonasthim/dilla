@@ -127,3 +127,11 @@ describe('structural tokens', () => {
     }
   });
 });
+
+// Task 11 (Task 4 minors): the prototype's settings and dialog buttons are weight 400 and its toggle track changes colour over 200ms.
+describe('Task 11 button weight and toggle track', () => {
+  it('weight.btn is 400 and motion.track is 200ms', () => {
+    expect(structural.weight.btn).toBe('400');
+    expect(structural.motion.track).toBe('200ms');
+  });
+});

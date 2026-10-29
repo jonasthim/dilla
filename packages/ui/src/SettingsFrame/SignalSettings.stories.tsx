@@ -123,7 +123,7 @@ function Keyboard() {
       <h2 id="keyboard-title" tabIndex={-1}>{t('keyboard.title')}</h2>
       <p>{t('signalSettings.keyboard.body')}</p>
       <KeyboardTable caption={t('keyboard.title')} orLabel={t('keyboard.or')} rows={[
-        { action: t('signalSettings.keyboard.search'), keys: caps(t('keyboard.searchAll')), alt: caps(t('keyboard.searchChannel')) },
+        { action: t('signalSettings.keyboard.search'), keys: caps(t('keyboard.searchAll')), alt: caps(t('keyboard.searchAlt')) },
         { action: t('keyboard.muteAction'), keys: caps(t('keyboard.mute')) },
         { action: t('keyboard.deafenAction'), keys: caps(t('keyboard.deafen')) },
         { action: t('keyboard.dmCallAction'), keys: caps(t('keyboard.dmCall')) },

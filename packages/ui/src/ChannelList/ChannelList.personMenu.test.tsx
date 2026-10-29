@@ -15,7 +15,7 @@ function List() {
       channels={[{ id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'harbour', name: 'harbour', kind: 'voice', readable: false }]}
       rowMenu={{ label: name => `menu for ${name}`, items: id => (id === 'harbour' ? [{ id: 'code', label: 'call code' }] : []), onSelect: () => {} }}
       voice={{ labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected', state: STATE },
-        rooms: { harbour: { joined: true, participants: [person('Ada'), person('Ole')] } },
+        rooms: { harbour: { joined: true, participants: [{ ...person('Ada'), muted: true, video: true }, person('Ole')] } },
         personMenu: (_room, p) => tileMenu(p.name) }} />
   );
 }
@@ -23,6 +23,17 @@ function List() {
 afterEach(() => { vi.useRealTimers(); });
 
 describe('fix round 2: the person menu of a sidebar occupant', () => {
+  // Task 11 (8 minor): the label is the name alone; the state words stay readable as the row's description.
+  it('an occupant with a menu is named by the name and described by its state words', () => {
+    render(<List />);
+    const ada = screen.getByRole('listitem', { name: 'Ada' });
+    // jsdom's description walk skips role=img children, so the ids are followed by hand: they hold every state word.
+    const words = (ada.getAttribute('aria-describedby') ?? '').split(' ')
+      .flatMap(id => [...(document.getElementById(id)?.querySelectorAll('[data-state]') ?? [])])
+      .map(el => el.getAttribute('aria-label') ?? el.textContent);
+    expect(words).toEqual(['camera on', 'muted']);
+  });
+
   it('a long press on an occupant opens only the person menu, never the voice row\'s menu as well', () => {
     vi.useFakeTimers();
     render(<List />);

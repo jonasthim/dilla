@@ -8,14 +8,14 @@ import { Tooltip } from '../Tooltip/Tooltip.tsx';
 // R27: pins, threads, search, edit channel and members as 32px toggles; pins and threads fold into the "⋯" menu below 36rem.
 const ACTIONS = (
   <>
-    <IconButton icon="pin" label="pinned messages" data-foldable="true" />
+    <IconButton icon="pin" label="pinned" data-foldable="true" />
     <IconButton icon="messages-square" label="threads" data-foldable="true" />
     <IconButton icon="search" label="search" />
     <IconButton icon="square-pen" label="edit channel" />
     <IconButton icon="users" label="members" pressed />
   </>
 );
-const OVERFLOW = { label: 'more', items: [{ id: 'pins', label: 'pinned messages' }, { id: 'threads', label: 'threads' }], onSelect: () => {} };
+const OVERFLOW = { label: 'more', items: [{ id: 'pins', label: 'pinned' }, { id: 'threads', label: 'threads' }], onSelect: () => {} };
 
 const meta = { title: 'Shell/ChannelHeader', component: ChannelHeader, args: { name: 'general', actions: ACTIONS, overflow: OVERFLOW } } satisfies Meta<typeof ChannelHeader>;
 export default meta;

@@ -2,7 +2,7 @@
   display: inline-flex; align-items: center; gap: 8px;
   /* The prototype draws 30px of content inside a 1px border: 32 in all (content-box), so 2rem here (border-box). */
   height: 2rem /* 32px */; padding: 0 12px;
-  font: inherit; font-size: var(--text-btn); font-weight: var(--weight-body);
+  font: inherit; font-size: var(--text-btn); font-weight: var(--weight-btn);
   color: var(--fg); background: transparent;
   border: 1px solid var(--control-edge); border-radius: var(--r-md);
   cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-press) var(--ease-out);

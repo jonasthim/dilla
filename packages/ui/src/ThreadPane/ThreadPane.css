@@ -44,6 +44,9 @@
    adding a row, and a foot with nothing but its spacer takes no room (fix round 2). */
 .d-thread-pane__composer .d-composer__sweep { position: absolute; inset: 0 0 auto 0; }
 .d-thread-pane__composer .d-composer__foot:not(:has(> :not(.d-composer__spacer))) { display: none; }
+/* Task 11 (the prototype's thread reply box is the line alone): no attach, emoji, code or hint row in a thread; files still drop and
+   paste into it, and ":" still suggests emoji (rule 0: functions the prototype doesn't draw take invisible routes). */
+.d-thread-pane__composer .d-composer__foot { display: none; }
 .d-thread-pane__composer .d-composer__box:focus-within { border-color: var(--accent); box-shadow: none; }
 .d-thread-pane__composer .d-composer__row { padding: 4px 4px 4px 10px; }
 .d-thread-pane__composer .d-composer__input { min-height: 30px; font-size: var(--text-input); }
