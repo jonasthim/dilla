@@ -856,6 +856,11 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
     await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? SETTINGS_SIZES : SETTINGS_SIZES.slice(0, 1));
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
+  // Task 11 (merge 9+10 minor): Notifications has no button, so its segmented choice carries the size there: each option is the
+  // prototype's 26px (README §5.9; the Sg option's height:26px), not a 44px phone target.
+  await page.goto('/settings/notifications');
+  await expect(page.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
+  await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
 
   // The invites section on a desktop (Signal task 10c, merge s1+10c): the prototype's Invites card, two choices side by side (Expires
   // after, Max uses), each a small label over its segmented control; then the card's Copy at 390.

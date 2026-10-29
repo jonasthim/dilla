@@ -197,14 +197,11 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | search.unavailable | That message is no longer available | stale result status |
 | search.loading | Searching your messages | palette status |
 | search.noResults | No results in this scope | scope empty state |
-| search.scope.channel | this conversation | scope option |
-| search.scope.community | this community | scope option |
-| search.scope.all | everything | scope option |
 | keyboard.title | Keyboard | Keyboard settings heading |
 | keyboard.searchAll | Control/⌘+K | Keyboard settings, opens search |
 | keyboard.dmCall | Control/⌘+Shift+Enter | Keyboard settings, calls the open direct message (Ruling Z, task 6b) |
 | keyboard.dmCallAction | Call the open direct message | Keyboard settings, the action of keyboard.dmCall |
-| keyboard.searchChannel | Control+/ | Keyboard settings, the Search row's second chord (opens the same palette) |
+| keyboard.searchAlt | Control+/ | Keyboard settings, the Search row's second chord (opens the same palette) |
 | keyboard.or | or | Keyboard settings, between a row's two chords |
 | diagnostics.title | Diagnostics | heading |
 | diagnostics.copy | Copy codes | diagnostics action |

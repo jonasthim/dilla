@@ -64,7 +64,7 @@ async function checkAside(page: Page, context: StoryContext, want: number): Prom
 
 /**
  * Fix round 2: the web app's close path (the content goes with the close). The same aside element animates its width to 0:
- * ~100ms after the click it is between 0 and 232, then it ends hidden or unmounted; a reopen animates from 0 again.
+ * some animation frame of the close is between 0 and 232 wide, then it ends hidden or unmounted; a reopen animates from 0 again.
  */
 async function checkAsideTransition(page: Page, context: StoryContext): Promise<void> {
   const name = `${context.title} / ${context.name}`;
@@ -76,18 +76,30 @@ async function checkAsideTransition(page: Page, context: StoryContext): Promise<
   const before = await read();
   if (before === null || Math.abs(before.width - 232) > 0.5) throw new Error(`${name}: the open aside is ${String(before?.width)} wide, want 232`);
   await page.evaluate(() => { (document.querySelector('#storybook-root .d-app-shell__aside') as (HTMLElement & { __mark?: boolean }) | null)!.__mark = true; });
-  await page.click('#storybook-root .story-aside-toggle');
-  await page.waitForTimeout(100);
-  const mid = await read();
-  if (mid === null || !mid.same) throw new Error(`${name}: closing replaced or removed the aside at once`);
-  if (mid.open !== 'false' || !(mid.width > 0.5 && mid.width < 231.5)) throw new Error(`${name}: 100ms into the close the aside is ${String(mid.width)} wide (data-open ${String(mid.open)}), want between 0 and 232`);
+  // Task 11 (Task 5 minor): the toggle is clicked in the page and the width is sampled every animation frame for 400ms, so a
+  // slow machine cannot miss the transition the way one read 100ms after a click could. Some frame must lie strictly between
+  // closed and open, on the same element.
+  const toggleAndSample = () => page.evaluate(async () => {
+    const el = () => document.querySelector<HTMLElement & { __mark?: boolean }>('#storybook-root .d-app-shell__aside');
+    document.querySelector<HTMLElement>('#storybook-root .story-aside-toggle')!.click();
+    const samples: { width: number; same: boolean; open: string | undefined }[] = [];
+    const start = performance.now();
+    while (performance.now() - start < 400) {
+      await new Promise(r => requestAnimationFrame(r));
+      const a = el();
+      samples.push(a === null ? { width: -1, same: false, open: undefined } : { width: a.getBoundingClientRect().width, same: a.__mark === true, open: a.dataset.open });
+    }
+    return samples;
+  });
+  const closing = await toggleAndSample();
+  if (closing.some(x => !x.same)) throw new Error(`${name}: closing replaced or removed the aside at once`);
+  if (closing.some(x => x.open !== 'false')) throw new Error(`${name}: the closing aside is not data-open false in every frame`);
+  if (!closing.some(x => x.width > 0.5 && x.width < 231.5)) throw new Error(`${name}: no frame of the close is between 0 and 232 wide (${closing.map(x => x.width.toFixed(0)).join(', ')})`);
   await page.waitForTimeout(800);
   const after = await read();
   if (after !== null && (after.width > 0.5 || after.visibility !== 'hidden')) throw new Error(`${name}: the closed aside is ${String(after.width)} wide and ${after.visibility}`);
-  await page.click('#storybook-root .story-aside-toggle');
-  await page.waitForTimeout(100);
-  const reopening = await read();
-  if (reopening === null || !(reopening.width > 0.5 && reopening.width < 231.5)) throw new Error(`${name}: 100ms into the reopen the aside is ${String(reopening?.width)} wide, want between 0 and 232`);
+  const opening = await toggleAndSample();
+  if (!opening.some(x => x.width > 0.5 && x.width < 231.5)) throw new Error(`${name}: no frame of the reopen is between 0 and 232 wide (${opening.map(x => x.width.toFixed(0)).join(', ')})`);
   await page.waitForTimeout(600);
   const reopened = await read();
   if (reopened === null || Math.abs(reopened.width - 232) > 0.5) throw new Error(`${name}: the reopened aside is ${String(reopened?.width)} wide, want 232`);
