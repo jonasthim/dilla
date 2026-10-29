@@ -117,6 +117,11 @@ type musicCallStarter interface {
 	StartCall(context.Context, id.ID) (client.Call, error)
 }
 
+// callRTTReporter is what reports the bot's RTT to the SFU for its call (client.Session.ReportCallRTT).
+type callRTTReporter interface {
+	ReportCallRTT(context.Context, id.ID, uint32) error
+}
+
 type installationMusicNative interface {
 	Binding() native.Binding
 	livekit.EpochSource
@@ -173,6 +178,10 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		pool, err := livekit.NewPool(deps.Lifetime)
 		if err != nil {
 			return session.QueueStarter{}, err
+		}
+		// Signal task 8c (Ruling AU): the bot's ping on the stage, reported through dillad like a person's.
+		if r, ok := deps.Calls.(callRTTReporter); ok {
+			pool.SetRTTReporter(r.ReportCallRTT)
 		}
 		publisher = session.RetainedLiveKitPublisher{Pool: pool}
 		resetConnection, closeConnection, leaveConnection = pool.Reset, pool.Close, pool.LeaveIdle

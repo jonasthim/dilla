@@ -8,7 +8,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CallState, CoreClient } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
-import { isPushToTalkKey } from '@dilla/ui';
+import { isPushToTalkKey, showToast } from '@dilla/ui';
 import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
 import { DEFAULT_SHARE_OPTIONS, type ShareOptions } from '../../call/share-options.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
@@ -1001,14 +1001,18 @@ export function useCall(o: UseCallOptions): CallView {
     const s = sessionRef.current;
     if (s !== null) s.setSharing(!s.state.sharing, shareOptionsRef.current).catch(shareRefused);
   }, [shareRefused]);
+  // Task 8c fix round 2 (Ruling AV): the prototype's toasts once the share is live, and once Apply took.
   const startShare = useCallback((options: ShareOptions) => {
     setShareOptions(options);
     const s = sessionRef.current;
-    if (s !== null && !s.state.sharing) s.setSharing(true, options).catch(shareRefused);
+    if (s !== null && !s.state.sharing) s.setSharing(true, options).then(() => { if (s.state.sharing) showToast(t('callStage.share.live')); }, shareRefused);
   }, [shareRefused]);
   const applyShare = useCallback((options: ShareOptions) => {
     setShareOptions(options);
-    sessionRef.current?.setShareOptions(options).catch(shareRefused);
+    const s = sessionRef.current;
+    s?.setShareOptions(options).then(() => {
+      if (s.state.sharing) showToast(t('callStage.share.applied', { res: options.resolution === 'source' ? t('callStage.share.native') : options.resolution, fps: options.fps }));
+    }, shareRefused);
   }, [shareRefused]);
   // Fix round 1 (Jonas): no sound-source pick for a share any more (a silent share keeps the default source; the session's
   // setShareSource stays for wave C's capture work).

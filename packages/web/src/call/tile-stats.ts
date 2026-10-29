@@ -1,7 +1,7 @@
 // Signal task 8c (README §5.6, the prototype's tile stats): what the stage's tiles say about their streams, read from the
 // RTCPeerConnection stats of each track (a sender's outbound-rtp, a receiver's inbound-rtp). Nothing here leaves the page.
-// A person's latency is not among them: the client measures only its own link (stats.ts), never another person's, so no
-// tile shows a ping (NEEDS_CONTEXT, task 8c report).
+// A person's ping is not read here: each device reports its own RTT through the instance (session.ts, POST …/rtt), which
+// writes it as that device's dilla.rtt attribute, and the tiles read it from there (PageCallTile.rttMs).
 
 /** One read of the stage's stats; a value the browser did not report (yet) is absent, never guessed. */
 export interface TileStats {

@@ -464,7 +464,7 @@ function liveScreenIds(v: VoiceContext, channelId: string, tiles: readonly CallT
 /**
  * R26: the one rule that focuses a tile by itself. A new screen tile of another person takes focus while no tile is
  * focused; an id the stage already offered in this call is never offered again until leave (a tile the person unfocused
- * stays unfocused, also across a pause that withholds every remote stream); the own screen never does. An id is forgotten
+ * stays unfocused, also across a pause that withholds every remote stream); the own screen never does here (Stage focuses it when this device starts it, Ruling AV). An id is forgotten
  * early only when its person's room flag says the share really ended, so a restarted share may focus again. Focus is
  * dropped when the focused tile goes away. The DM call box has no focus (`dm`): it stays the compact grid.
  */
@@ -529,6 +529,15 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
   const [focusedId, setFocusedId] = useState<string | null>(null);
   useAutoFocus(tiles, liveScreenIds(v, channelId, tiles), joined, dm, focusedId, setFocusedId);
+  // Fix round 2 (Ruling AV): a share this device starts (Go live, or an Apply that restarts it) takes the focus, as the
+  // prototype's goLive does; other people's shares keep R26's rule.
+  const ownSharing = joined && !dm && (v.call.state?.sharing ?? false);
+  const wasSharing = useRef(ownSharing);
+  const ownScreen = tileId(v.ownDevice ?? 'own', 'screen');
+  useEffect(() => {
+    if (ownSharing && !wasSharing.current) setFocusedId(ownScreen);
+    wasSharing.current = ownSharing;
+  }, [ownSharing, ownScreen]);
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>

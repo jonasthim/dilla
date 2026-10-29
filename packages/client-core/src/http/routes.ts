@@ -1266,6 +1266,11 @@ export class Routes {
   async postCallStats(callId: Uint8Array, report: CallStats): Promise<void> {
     await this.body('POST', callPath(callId, '/stats'), 'write', false, { body: encode(report), ok: [204], retry429: false });
   }
+  /** Signal task 8c: `POST /v1/calls/{call_id}/rtt` `[ms]` (0..5000) or `[]` (clear): this device's RTT to the SFU, which
+   *  the instance writes as its dilla.rtt participant attribute. A 429 is not waited out: the next sample replaces it. */
+  async postCallRtt(callId: Uint8Array, ms: number | null): Promise<void> {
+    await this.body('POST', callPath(callId, '/rtt'), 'write', false, { body: encode(ms === null ? [] : [ms]), ok: [204], retry429: false });
+  }
   /** L-HTTP-103: a core-built [epoch, proposal] body, unchanged. */
   async postProposal(groupId: Uint8Array, body: Uint8Array, signal?: AbortSignal): Promise<{ seq: bigint }> {
     const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body, signal })), 1);

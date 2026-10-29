@@ -101,12 +101,12 @@ export function harbourTiles(speaking: string | null = null): StageTile[] {
   const s = (n: string) => (speaking === n ? { speaking: true } : {});
   return [
     // Task 8c: the stats VoiceView passes: a received screen's frame, the own microphone's codec, and (fix round 1) each person's
-    // ping as their device publishes it (dilla.rtt; the prototype's sample values). The bot publishes none.
+    // ping as their device reports it (dilla.rtt through dillad; the prototype's sample values), the bot's too (Ruling AU).
     screenTile('Ada', '1440p · 30 fps'), screenTile('Kari', '1440p · 30 fps'),
     personTile('Ada', { stat: '18 ms', ...s('Ada') }), personTile('Björn', { video: true, stat: '27 ms', ...s('Björn') }),
     personTile('Kari', { video: true, stat: '36 ms', ...s('Kari') }),
     personTile('Ole', { stat: '45 ms', ...s('Ole') }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k', ...s('Mira') }),
-    personTile('Glenn', { bot: true, title: 'Glenn · playback only', ...s('Glenn') }),
+    personTile('Glenn', { bot: true, title: 'Glenn · playback only', stat: '63 ms', ...s('Glenn') }),
   ];
 }
 

@@ -673,6 +673,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can end own community call", pattern: "DELETE /v1/calls/{call_id}", method: http.MethodDelete, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can decline own community call", pattern: "POST /v1/calls/{call_id}/decline", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can report its rtt in own community call", pattern: "POST /v1/calls/{call_id}/rtt", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

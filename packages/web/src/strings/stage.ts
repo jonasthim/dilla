@@ -52,6 +52,9 @@ export const stage = {
   'callStage.share.estimateHeavy': '≈ {mbps} Mb/s up · may drop frames on your link',
   'callStage.share.go': 'Go live',
   'callStage.share.apply': 'Apply',
+  // Fix round 2 (Ruling AV): the prototype's toasts.
+  'callStage.share.live': 'You’re live',
+  'callStage.share.applied': 'Stream set to {res} · {fps} fps',
   // Tile stats (the prototype's): the own microphone's codec and rate, a screen's frame height and rate.
   'callStage.stat.codec': '{codec} {khz}k',
   // Fix round 1: another person's ping, as their own device publishes it.

@@ -96,9 +96,10 @@ Stated plainly in the product's documentation and onboarding:
   and so block sending there (fail closed: no member encrypts to a leaf it could not validate).
   A validated Remove of that leaf releases that group only; the committer stays usable elsewhere
   and the audit names it.
-- In a call, each human participant's round-trip time to the SFU (`dilla.rtt`, `09` § Voice) is
-  visible to every other participant of that call and to the instance, which measures it anyway. A
-  participant can publish a false value; it is display only and nothing else reads it.
+- In a call, each participant's round-trip time to the SFU (`dilla.rtt`, `09` § Voice, reported
+  through the instance) is visible to every other participant of that call and to the instance,
+  which measures it anyway. A participant can report a false value; it is display only and nothing
+  else reads it.
 - Media authenticity is group-level: any member can derive any sender's frame keys
   (`05-media-frames.md`); a colluding operator and member can inject media attributed to another
   participant. A member a Commit removed still holds the superseded epoch's key while receivers

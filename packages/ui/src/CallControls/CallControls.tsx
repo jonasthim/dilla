@@ -3,6 +3,7 @@ import { Button } from '../Button/Button.tsx';
 import { Icon, type IconName } from '../Icon/Icon.tsx';
 import { arrowIndex } from '../internal/arrow-select.ts';
 import { SharePicker, type SharePickerProps } from '../SharePicker/SharePicker.tsx';
+import { newToastHostId, ToastHost } from '../Toast/Toast.tsx';
 import './CallControls.css';
 
 /**
@@ -313,6 +314,7 @@ export function CallControls({
   muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, keyshortcuts, picker, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const [toastHost] = useState(newToastHostId);
   const opener = sharing ? 'quality' : 'share';
   const focusOpener = () => { rootRef.current?.querySelector<HTMLElement>(`[data-control="${opener}"]`)?.focus(); };
   const shareInert = busy || !canShare;
@@ -343,7 +345,9 @@ export function CallControls({
       onSubmit={() => { picker.onOpenChange(false); picker.onSubmit(); focusOpener(); }}
       onClose={reason => { picker.onOpenChange(false); if (reason !== 'outside') focusOpener(); }} />,
   } : null;
-  return <VoiceToolbar label={labels.region} controls={controls} className={bar === undefined ? 'd-call-controls' : 'd-call-controls d-call-controls--bar'}
-    keyshortcuts={keyshortcuts} popover={popover} rootRef={rootRef} />;
+  // Task 8c fix round 2: the share's toasts ("You're live", "Stream set to …", shown by the caller through showToast) need a
+  // host while the call bar shows, as the prototype's toast stack.
+  return <><VoiceToolbar label={labels.region} controls={controls} className={bar === undefined ? 'd-call-controls' : 'd-call-controls d-call-controls--bar'}
+    keyshortcuts={keyshortcuts} popover={popover} rootRef={rootRef} />{picker !== undefined ? <ToastHost id={toastHost} /> : null}</>;
 }
 

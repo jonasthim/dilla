@@ -295,6 +295,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callJoin',
   'callLeave',
   'callShare',
+  'callRtt',
   'callRefresh',
   'callStats',
   'callNote',
@@ -597,6 +598,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callJoin',
     'callLeave',
     'callShare',
+    'callRtt',
     'callRefresh',
     'callStats',
     'callNote',
@@ -925,6 +927,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callRtt' && command.ms !== null && (typeof command.ms !== 'number' || !Number.isInteger(command.ms) || command.ms < 0 || command.ms > 5000)) return 'ms is not null or 0..5000';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
   if (m === 'callNote' && !CALL_NOTES.has(command.code as string)) return 'not a call note code';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
@@ -1523,6 +1526,7 @@ export class Controller {
       case 'callJoin': return this.calls.join(command.channelId, command.vdec);
       case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
       case 'callShare': return this.calls.share(command.on);
+      case 'callRtt': return this.calls.rtt(command.ms);
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
       case 'callNote': this.recordError(command.code); return Promise.resolve(null);

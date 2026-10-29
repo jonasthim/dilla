@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useId, useRef, useState } from 'react';
+import { newToastHostId, showToast, ToastHost } from '../Toast/Toast.tsx';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import './NowPlaying.css';
@@ -66,44 +66,6 @@ export function playerTime(seconds: number): string {
 const fill = (template: string, values: Record<string, string | number>): string =>
   template.replace(/\{(\w+)\}/g, (m, k: string) => (k in values ? String(values[k]) : m));
 
-/**
- * Fix round 2: one toast host for every NowPlaying on the page (the prototype's single toast stack, one live region). The
- * first mounted player renders it; any player shows a toast through it.
- */
-const toasts = {
-  current: null as { text: string; n: number } | null,
-  hosts: [] as number[],
-  version: 0,
-  timer: null as ReturnType<typeof setTimeout> | null,
-  listeners: new Set<() => void>(),
-  emit() { this.version++; for (const l of [...this.listeners]) l(); },
-};
-let nextHost = 0;
-function showToast(text: string): void {
-  if (toasts.timer !== null) clearTimeout(toasts.timer);
-  toasts.current = { text, n: (toasts.current?.n ?? 0) + 1 };
-  toasts.timer = setTimeout(() => { toasts.current = null; toasts.timer = null; toasts.emit(); }, 2400);
-  toasts.emit();
-}
-const subscribeToasts = (l: () => void) => { toasts.listeners.add(l); return () => { toasts.listeners.delete(l); }; };
-const toastVersion = () => toasts.version;
-
-/** The shared toast region, rendered by the first mounted player only. */
-function ToastHost({ id }: { id: number }) {
-  useSyncExternalStore(subscribeToasts, toastVersion, toastVersion);
-  useEffect(() => {
-    toasts.hosts.push(id);
-    toasts.emit();
-    return () => { toasts.hosts = toasts.hosts.filter(h => h !== id); toasts.emit(); };
-  }, [id]);
-  if (toasts.hosts[0] !== id || typeof document === 'undefined') return null;
-  const toast = toasts.current;
-  return createPortal(
-    <div className="d-np-toasts" role="status" aria-live="polite">
-      {toast !== null ? <div key={toast.n} className="d-np-toast"><Icon name="check" size={14} stroke={2.6} />{toast.text}</div> : null}
-    </div>, document.body);
-}
-
 /** The prototype's three --live bars beside a playing state (d-bar 520ms, 130ms apart). */
 const BARS = <span className="d-np__bars" aria-hidden="true"><span /><span /><span /></span>;
 
@@ -125,7 +87,7 @@ export function NowPlaying({
   const ids = useId();
   const [openOwn, setOpenOwn] = useState(false);
   const open = queueOpen ?? openOwn;
-  const [hostId] = useState(() => ++nextHost);
+  const [hostId] = useState(newToastHostId);
   const show = showToast;
   const shown = useRef<number | null>(null);
   const toastId = toastProp?.id ?? null;

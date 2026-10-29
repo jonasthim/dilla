@@ -1426,7 +1426,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return communityPathForBot(ctx, s.repo, bot)
 	case "DELETE /v1/calls/{call_id}", "POST /v1/calls/{call_id}/share",
-		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline":
+		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline", "POST /v1/calls/{call_id}/rtt":
 		if !ready {
 			return false, nil
 		}

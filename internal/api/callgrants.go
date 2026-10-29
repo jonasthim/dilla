@@ -862,7 +862,5 @@ func restrictBotCallGrant(ctx context.Context, repo store.Repository, dev id.ID,
 	}
 	grant := sfu.PublishGrant(perm.CanPublish && slices.Contains(perm.CanPublishSources, livekit.TrackSource_MICROPHONE), false, false)
 	grant.CanSubscribe = false
-	// A bot publishes no RTT (task 8c's dilla.rtt): no own metadata either.
-	grant.CanUpdateMetadata = false
 	return grant, nil
 }

@@ -26,7 +26,7 @@ export const WAIT_LIST_MS = 10_000;
 /** web3.7 3a-client: a join waits at most this long for the boot sweep of leftover call groups (calls/sweep.ts). */
 export const SWEEP_JOIN_WAIT_MS = 5000;
 
-export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
+export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postCallRtt' | 'postProposal'
   | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
 
 /** What the call controller reads from, and publishes through, the worker's composition root. */
@@ -710,6 +710,15 @@ export class CallController {
     const live = this.requireLive();
     try { await this.deps.routes.postCallStats(live.callId, report); }
     catch (e) { if (!(e instanceof DillaHttpError && e.status === 429)) throw e; }
+    return null;
+  }
+
+  /** Signal task 8c: this device's RTT (ms) or a clear (null), for the stage's per-person ping. A refusal by rate (429) or by
+   *  room (404, a reconnect not landed yet) drops the report: the page's next sample comes soon. */
+  async rtt(ms: number | null): Promise<null> {
+    const live = this.requireLive();
+    try { await this.deps.routes.postCallRtt(live.callId, ms); }
+    catch (e) { if (!(e instanceof DillaHttpError && (e.status === 429 || e.status === 404))) throw e; }
     return null;
   }
 

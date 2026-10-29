@@ -57,12 +57,13 @@ var webhookEvents = []string{
 	"participant_connection_aborted", "track_published", "track_unpublished",
 }
 
-// AttributeLimitBytes is LiveKit's limit.max_attributes_size for every room: the summed key and value bytes a participant's
-// attributes may carry in its token or in one update of its own (task 8c fix round 1).
+// AttributeLimitBytes is LiveKit's limit.max_attributes_size: the summed key and value bytes of one attribute update or of a
+// token's attributes. Defence in depth only: no call token may update its own attributes (sfu.PublishGrant), so the updates
+// are dillad's (dilla.rtt, UpdateAttributes) and the join's (dilla.vdec). LiveKit checks each update, not the merged map.
 const AttributeLimitBytes = 64
 
-// NameLimitBytes is LiveKit's limit.max_participant_name_length: a call token's name is its identity, a device id in hex (32
-// characters), which livekit-client sends again with every own-attribute update, so a shorter cap would refuse dilla.rtt.
+// NameLimitBytes is LiveKit's limit.max_participant_name_length, defence in depth like AttributeLimitBytes: a call token's
+// name is its identity, a device id in hex (32 characters).
 const NameLimitBytes = 32
 
 // Config is the in-process SFU configuration.
@@ -204,10 +205,10 @@ func (c Config) YAML() (string, error) {
 		b.WriteString("    - mime: video/AV1\n")
 	}
 	b.WriteString("    - mime: video/rtx\n")
-	// Task 8c fix round 1: a call token may update its own metadata (sfu.PublishGrant, for the dilla.rtt attribute). These caps
-	// keep that to what dilla uses: a name no longer than an identity (NameLimitBytes: livekit-client resends its current name,
-	// the identity, with every attribute update; no client reads a remote name), no metadata (1 byte; never read), and at most
-	// AttributeLimitBytes of attributes per update and in a token (dilla.vdec at join is 22 bytes at most, dilla.rtt 13).
+	// Task 8c: defence in depth. No call token may update its own name, metadata or attributes (sfu.PublishGrant); these caps
+	// bound what an update from anyone else could carry: a name no longer than an identity, no metadata, and at most
+	// AttributeLimitBytes per update or token (dilla.vdec at join is 22 bytes at most, dillad's dilla.rtt 13). They bound one
+	// update, not the merged map: the grant is what keeps a participant from growing it.
 	b.WriteString("limit:\n")
 	if c.LimitNumTracks > 0 {
 		fmt.Fprintf(&b, "  num_tracks: %d\n", c.LimitNumTracks)

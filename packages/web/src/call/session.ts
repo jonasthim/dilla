@@ -598,8 +598,6 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       identity: string; audioLevel?: number; isSpeaking?: boolean; permissions?: Permissions;
       publishTrack(track: MediaStreamTrack, o: PublishOptions): Promise<LocalPub>;
       unpublishTrack(track: MediaStreamTrack): Promise<unknown>;
-      /** LiveKit merges these into this participant's attributes (the token's CanUpdateOwnMetadata). */
-      setAttributes?(attributes: Record<string, string>): Promise<void>;
     };
     const remotes = (): RemoteView[] => [...(room.remoteParticipants.values() as Iterable<unknown>)] as RemoteView[];
 
@@ -1148,18 +1146,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     });
     /** Captures and publishes a screen with `o` (in the lane, not sharing). The encoding goes with the publish, so the
      *  screen's sender gets the dilla transform as every sender does (attachSender); no option takes another path. */
-    const startScreen = async (o: ShareOptions): Promise<void> => {
+    const startScreen = async (o: ShareOptions, captured?: ScreenCapture): Promise<void> => {
       shareOpts = o;
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
-      if (!getDisplayMedia) throw new PageCallError('E_UNAVAILABLE');
-      await ensureShare('screen');
+      if (!getDisplayMedia && captured === undefined) throw new PageCallError('E_UNAVAILABLE');
       let tracks: ScreenCapture;
-      try {
-        usable();
-        tracks = await acquireScreen({ getDisplayMedia }, o);
-      } catch (err) {
-        await shareOffIfIdle();
-        throw pageCallError(err);
+      if (captured !== undefined) {
+        tracks = captured;
+      } else {
+        await ensureShare('screen');
+        try {
+          usable();
+          tracks = await acquireScreen({ getDisplayMedia: getDisplayMedia! }, o);
+        } catch (err) {
+          await shareOffIfIdle();
+          throw pageCallError(err);
+        }
       }
       // #37: the sound the share carries, as published: none when the browser gave no audio or the grant did not allow it.
       let shareAudio: ShareAudioKind = 'none';
@@ -1207,11 +1209,26 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const s = screen;
       if (s === null) { shareOpts = o; return; }
       usable();
-      // A new source or sound choice is a new capture: the browser's picker again (the press is its activation).
+      // A new source or sound choice is a new capture: the browser's picker again (the press is its activation). The new capture
+      // is taken first, so a cancelled picker (or a refusal) leaves the running share as it was; then the old one is swapped
+      // out and the new one published through the same publishTrack path.
       if (o.surface !== s.opts.surface || o.systemAudio !== s.opts.systemAudio) {
+        const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
+        if (!getDisplayMedia) throw new PageCallError('E_UNAVAILABLE');
+        let next: ScreenCapture;
+        try {
+          next = await acquireScreen({ getDisplayMedia }, o);
+        } catch (err) {
+          throw pageCallError(err);
+        }
+        if (ended || state.paused || screen !== s) {
+          next.video.stop();
+          next.audio?.stop();
+          throw new PageCallError('E_UNAVAILABLE');
+        }
         await stopScreen();
         try {
-          await startScreen(o);
+          await startScreen(o, next);
         } catch (err) {
           await shareOffIfIdle();
           throw err;
@@ -1410,16 +1427,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!sameLink(link, state.link)) set({ link });
       if (link !== undefined) publishRtt(link.rttMs);
     };
-    // Task 8c fix round 1: this device's RTT to the SFU, as its own `dilla.rtt` attribute, so the others' tiles can show it (the
-    // prototype's per-person ping). Read with the link (every LINK_EVERY_MS); sent only when it moved by RTT_STEP_MS or more, one
-    // update in flight at most. It says nothing the SFU does not already measure.
+    // Task 8c: this device's RTT to the SFU, so the others' tiles can show it (the prototype's per-person ping). Read with the
+    // link (every LINK_EVERY_MS) and reported to the instance (callRtt → POST /v1/calls/{id}/rtt), which writes it as this
+    // device's `dilla.rtt` attribute: no call token may write its own attributes (fix round 2, security review). Sent only when
+    // it moved by RTT_STEP_MS or more, one report in flight at most; cleared (null) while paused or reconnecting. A refused
+    // report is dropped and the next sample tries again. It says nothing the SFU does not already measure.
     let rttSent: number | null = null;
     let rttBusy = false;
+    const reportRtt = (ms: number | null): void => {
+      if (ended || rttBusy) return;
+      rttBusy = true;
+      void deps.bridge.call({ m: 'callRtt', ms }).then(() => { rttSent = ms; }, () => undefined).finally(() => { rttBusy = false; });
+    };
     const publishRtt = (rtt: number): void => {
       const ms = Math.max(0, Math.min(5000, Math.round(rtt)));
-      if (ended || rttBusy || local.setAttributes === undefined || (rttSent !== null && Math.abs(ms - rttSent) < RTT_STEP_MS)) return;
-      rttBusy = true;
-      void local.setAttributes({ [RTT_ATTRIBUTE]: String(ms) }).then(() => { rttSent = ms; }, () => undefined).finally(() => { rttBusy = false; });
+      if (rttSent !== null && Math.abs(ms - rttSent) < RTT_STEP_MS) return;
+      reportRtt(ms);
     };
     // Not connected, paused or held: no read, no stats; the first read after is a fresh baseline. A getStats that does not
     // settle within LINK_STALL_MS takes the stats away (the dock falls back to its no-sample text) and no second read starts meanwhile.
@@ -1428,6 +1451,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.phase !== 'connected' || state.paused) {
         linkTotals = null;
         if (state.link !== undefined) set({ link: undefined });
+        if (rttSent !== null && state.phase !== 'ended') reportRtt(null);
       } else if (!linkBusy) {
         linkBusy = true;
         linkStartedAt = deps.now();

@@ -661,6 +661,9 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 3 && parts[0] == "channels" && parts[2] == "call" && method == http.MethodGet {
 		return http.StatusOK, true
 	}
+	if len(parts) == 3 && parts[0] == "calls" && parts[2] == "rtt" && method == http.MethodPost {
+		return 204, true
+	}
 	if len(parts) == 2 && parts[0] == "calls" && method == http.MethodDelete {
 		return http.StatusNoContent, true
 	}

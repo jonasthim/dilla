@@ -92,14 +92,16 @@ sharing it is a grid.
   the grid. Each tile has a button that covers its picture, named by the tile and pressed while it is focused, so Tab
   and Enter or Space do the same.
 - **A new screen share** from someone else comes to the front on its own, when no tile is focused. It happens once
-  for a share: if you unfocus it, it stays a tile. Your own screen never takes the focus.
+  for a share: if you unfocus it, it stays a tile. Your own screen comes to the front when you start it (and after
+  **Apply** restarts it); a share someone starts while another tile is focused does not take over.
 - **Full screen** for one tile: the button in its top right corner, or a double-click on the picture. Only a tile that
   shows a camera or a screen has it (not an avatar), and only where the browser allows full screen. Escape leaves it.
 - Nothing restarts when you change the focus: the pictures keep playing.
 - **Stats** in a tile's corner (on a computer, not on a phone): your own tile shows what your microphone sends ("opus
-  48k"), another person's tile their ping to the server as their own browser measures it ("18 ms"; none until it has
-  one), and a focused screen its picture as it arrives ("1440p · 30 fps", with "· audio" on your own share when its
-  sound goes too). Your ping is visible to the others in the call this way.
+  48k"), another person's tile their ping to the server as their own browser (or the bot) measures and reports it
+  through the server ("18 ms"; none until it has one, and none while their call is paused or reconnecting), and a
+  focused screen its picture as it arrives ("1440p · 30 fps", with "· audio" on your own share when its sound goes too).
+  Your ping is visible to the others in the call this way.
 
 ![The same stage in the grid: Mira, Ada, Ada's screen and Björn as four tiles](screenshots/voice-stage-grid-desktop.png)
 
@@ -196,10 +198,13 @@ opens the share picker above it:
 - **Resolution**: 720p, 1080p, 1440p or Source, and **Frame rate**: 15, 30 or 60.
 - **Also share system audio**, where the browser can share sound from the picked source (see below).
 - The estimate, like "≈ 4.5 Mb/s up": what the stream will send. It is never above the server's share cap (8 Mb/s
-  unless the server's operator changed it); above 9 Mb/s it turns amber and warns that your link may drop frames.
-- **Go live** starts the share. While you share, **Share** reads **Stop sharing** and ends it at once, and the small
+  unless the server's operator changed it; a share also sends a small lower-quality copy on top). Above 9 Mb/s, which
+  only Source and 1440p at 60 fps can ask for, and only a server whose cap its operator raised can send, it turns amber
+  and warns that your link may drop frames.
+- **Go live** starts the share ("You’re live"). While you share, **Share** reads **Stop sharing** and ends it at once, and the small
   arrow beside it opens the same picker as **Stream quality**: **Apply** changes resolution and frame rate without
-  stopping; a new source or sound choice asks the browser again.
+  stopping ("Stream set to 1080p · 30 fps"); a new source or sound choice asks the browser again, and if you cancel the
+  browser's picker the running share goes on unchanged.
 
 In a DM call, **share screen** starts at once with your last choices. Pressed again it ends the share. A share is its own tile, "{name}’s screen",
 beside the person's own tile, so with the camera and a share both on, a person has two tiles

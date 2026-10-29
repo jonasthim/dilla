@@ -42,7 +42,12 @@ export const PressedToggle: Story = {
   play: ({ canvasElement }) => {
     const b = canvasElement.querySelector<HTMLElement>('button[aria-label="members"]');
     if (b === null || b.getAttribute('aria-pressed') !== 'true') throw new Error('PressedToggle: members is not pressed');
-    if (getComputedStyle(b).backgroundColor === 'rgba(0, 0, 0, 0)') throw new Error('PressedToggle: the pressed toggle has no fill');
+    const probe = document.createElement('span');
+    probe.style.backgroundColor = 'var(--accent-soft)';
+    canvasElement.append(probe);
+    const want = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    if (getComputedStyle(b).backgroundColor !== want) throw new Error(`PressedToggle: the pressed fill is ${getComputedStyle(b).backgroundColor}, not --accent-soft ${want}`);
   },
 };
 

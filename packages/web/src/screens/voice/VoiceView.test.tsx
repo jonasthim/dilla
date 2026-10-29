@@ -1275,11 +1275,19 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
   });
 
   describe('R26: auto-focus', () => {
-    it('another person’s new screen takes the focus, and the own share does not', async () => {
+    // Task 8c fix round 2 (Ruling AV, superseding R26's "never the own share"): the own share takes the focus when it starts, as
+    // the prototype's Go live does; another person's new share then does not steal it.
+    it('the own share takes the focus when it starts, and a later share of another person does not steal it', async () => {
       const app = await inVoice({ voice: room(0) });
       act(() => app.session.update({ sharing: true, localScreen: new MediaStream() }));
-      await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
-      expect(focusedIds()).toEqual([]);
+      await waitFor(() => expect(focusedIds()).toEqual([`${OWN_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+      expect(focusedIds()).toEqual([`${OWN_DEV}:screen`]);
+    });
+
+    it('another person’s new screen takes the focus when nothing is focused', async () => {
+      const app = await inVoice({ voice: room(0) });
       act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
       await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
     });

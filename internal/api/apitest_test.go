@@ -390,6 +390,7 @@ type stubSFU struct {
 	created    []string // rooms CreateRoom was asked to open
 	createFail error
 	updates    []permUpdate
+	attrs      []attrUpdate // UpdateAttributes calls (task 8c)
 	updateFail error
 	absent     map[string]bool  // identities UpdatePermission answers sfu.ErrNoParticipant for
 	onUpdate   func(permUpdate) // runs after the update is recorded, outside the lock
@@ -629,6 +630,29 @@ func (s *stubSFU) minted() [][2]string {
 		out = append(out, [2]string{m.Room, m.Identity})
 	}
 	return out
+}
+
+// attrUpdate is one UpdateAttributes call (task 8c's dilla.rtt).
+type attrUpdate struct {
+	Room, Identity string
+	Attrs          map[string]string
+}
+
+// UpdateAttributes records the call; an identity in absent answers sfu.ErrNoParticipant.
+func (s *stubSFU) UpdateAttributes(_ context.Context, room, identity string, attrs map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.absent[identity] {
+		return sfu.ErrNoParticipant
+	}
+	s.attrs = append(s.attrs, attrUpdate{Room: room, Identity: identity, Attrs: attrs})
+	return nil
+}
+
+func (s *stubSFU) attrUpdates() []attrUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]attrUpdate(nil), s.attrs...)
 }
 
 func (s *stubSFU) lastMint() mint {

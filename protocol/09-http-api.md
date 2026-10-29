@@ -1137,6 +1137,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; a `201` that opens a DM or group-DM call carries a seventh element, `rung([user_id(bstr16)])`, the users this start rang (see **Ringing**); `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**) | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
+| `POST /v1/calls/{call_id}/rtt` | `[ms(uint)]` or `[]` | `204` once the SFU carries `ms` (0..5000, the device's round-trip time to the SFU in whole milliseconds) as the device's participant attribute `dilla.rtt`, or, with `[]`, no longer carries one (the client is paused or reconnecting; a clear is never rate limited and is a no-op when nothing is set); only the caller's own identity and only that key are written, through the SFU's admin API; `400 E_INVALID_REQUEST` for any other body; `429 E_RATE_LIMITED` with `retry_after_ms` for a second value within 1.5 s; `404 E_NOT_FOUND` when the call has ended or the device is not in its room | `view_channel`, and a current leaf of the call's group |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended or its call group is closed; `403 E_FORBIDDEN` for a barred device and for a device that is listen-only in the call's room for media that is not dilla's | `view_channel` and `connect`, and a current leaf of the call's group while that group is open |
 | `DELETE /v1/calls/{call_id}?if_alone=1` | — | as `DELETE /v1/calls/{call_id}`, but a live call ends only while the caller's device is the call group's only current leaf (no other member that is not removed), checked under the group lock that every commit takes; `409 E_CALL_NOT_ALONE` otherwise, and nothing ends; `400 E_INVALID_REQUEST` for any other value of `if_alone` | as `DELETE /v1/calls/{call_id}` |
@@ -1293,16 +1294,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   is idempotent for a slot it holds. When the request carries `vdec` — the device's video decoders,
   comma-separated from `vp8`, `h264` and `vp9`, each at most once (any other spelling is
   `400 E_INVALID_REQUEST`) — the token carries it as the participant attribute `dilla.vdec`, which
-  the other devices read to choose a codec every subscriber can decode. A human device's token also
-  carries LiveKit's own-metadata right (`canUpdateOwnMetadata`), for one use: the client publishes
-  its own round-trip time to the SFU as the participant attribute `dilla.rtt` (whole milliseconds,
-  `0`..`5000`, updated only when it moves by 5 ms or more), which other clients show as that
-  participant's ping and read as nothing else — any other spelling or range is ignored. The SFU's
-  configuration limits the right to that: a participant name no longer than an identity (32 bytes;
-  no client reads a remote name),
-  metadata of at most 1 byte, and at most 64 bytes of attributes in a token or one update; the
-  identity and the permissions cannot change through it. A Managed Bot device's token never carries
-  it, and the `/rtc` gate refuses a token that carries it for a device whose permission does not.
+  the other devices read to choose a codec every subscriber can decode. No call token carries LiveKit's
+  own-metadata right (`canUpdateOwnMetadata`), human or bot, and the `/rtc` gate refuses one that
+  does: LiveKit bounds the size of one attribute update but neither the merged map nor the rate, so
+  any participant with the right could flood the room. A device's round-trip time to the SFU
+  reaches the others through `POST …/rtt` (below), which the instance writes as that device's
+  participant attribute `dilla.rtt`.
   The token is valid for one
   hour, but its lifetime bounds neither a session nor a rejoin: the SFU re-issues a connected
   participant's token every five minutes from its current grants, valid for at least ten more

@@ -1432,6 +1432,19 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     await expect(routes.endCallIfAlone(CALL)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
   });
 
+  it('task 8c: rtt is POST /v1/calls/{call_id}/rtt with [ms] or [] to clear, and a 429 is not waited out', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent(), noContent());
+    await routes.postCallRtt(CALL, 24);
+    await routes.postCallRtt(CALL, null);
+    expect(t.seen.map((s) => `${s.method} ${new URL(s.url).pathname}`)).toEqual([`POST /v1/calls/${hex(CALL)}/rtt`, `POST /v1/calls/${hex(CALL)}/rtt`]);
+    expect(t.seen[0].body).toEqual(encode([24]));
+    expect(t.seen[1].body).toEqual(encode([]));
+    t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 1500));
+    await expect(routes.postCallRtt(CALL, 30)).rejects.toMatchObject({ status: 429 });
+    expect(t.sleeps).toEqual([]);
+  });
+
   it('a 429 on the stats route is not waited out', async () => {
     const { t, routes } = setup();
     t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 4000));

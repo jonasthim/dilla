@@ -762,26 +762,30 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link).toBeUndefined();
   });
 
-  // Task 8c fix round 1: this device's own RTT goes out as its `dilla.rtt` attribute, only when it moved by RTT_STEP_MS or more.
-  it('task 8c: the own RTT is published as dilla.rtt, rounded, only on a change of 5 ms or more', async () => {
+  // Task 8c fix round 2: this device's own RTT goes to the instance (callRtt), only when it moved by RTT_STEP_MS or more, and
+  // is cleared while the call reconnects; no LiveKit attribute is written by the page.
+  it('task 8c: the own RTT is reported through the worker, rounded, on a change of 5 ms or more, and cleared on reconnecting', async () => {
     const { f, s } = linkFakes();
-    const setAttributes = vi.fn<(a: Record<string, string>) => Promise<void>>(async () => undefined);
-    Object.assign(f.room.localParticipant, { setAttributes });
+    const rtts = () => f.calls.filter((c) => c.m === 'callRtt').map((c) => (c as { ms: number | null }).ms);
     await start(f);
-    await f.advance(2_000); // the baseline: no sample, nothing published
-    expect(setAttributes).not.toHaveBeenCalled();
+    await f.advance(2_000); // the baseline: no sample, nothing reported
+    expect(rtts()).toEqual([]);
     await f.advance(2_000);
-    expect(setAttributes).toHaveBeenLastCalledWith({ 'dilla.rtt': '24' });
+    expect(rtts()).toEqual([24]);
     s.rtt = 0.0274;
     await f.advance(2_000);
-    expect(setAttributes).toHaveBeenCalledTimes(1); // 27 is within 5 ms of 24
+    expect(rtts()).toEqual([24]); // 27 is within 5 ms of 24
     s.rtt = 0.0312;
     await f.advance(2_000);
-    expect(setAttributes).toHaveBeenCalledTimes(2);
-    expect(setAttributes).toHaveBeenLastCalledWith({ 'dilla.rtt': '31' });
+    expect(rtts()).toEqual([24, 31]);
     s.rtt = 9;
     await f.advance(2_000);
-    expect(setAttributes).toHaveBeenLastCalledWith({ 'dilla.rtt': '5000' }); // clamped to the range readers accept
+    expect(rtts()).toEqual([24, 31, 5000]); // clamped to the range the instance accepts
+    f.room.emit('reconnecting');
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 31, 5000, null]);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 31, 5000, null]); // one clear
   });
 
   it('MP5: a failed getStats keeps the previous totals, so the next good read is no spike', async () => {
@@ -3881,6 +3885,19 @@ describe('task 8c: screen-share options', () => {
     expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(track);
     expect(f.room.localParticipant.publishTrack.mock.calls.filter(([, o]) => o.source === 'screen_share')).toHaveLength(2);
     expect(call.state.sharing).toBe(true);
+  });
+
+  it('Apply with a new source whose browser picker is cancelled leaves the running share as it was', async () => {
+    const f = fakes();
+    const { track } = screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const first = f.deps.media.getDisplayMedia;
+    f.deps.media.getDisplayMedia = vi.fn(async () => { throw Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }); });
+    await expect(call.setShareOptions({ ...OPTS, surface: 'browser' })).rejects.toBeDefined();
+    expect(f.room.localParticipant.unpublishTrack).not.toHaveBeenCalledWith(track);
+    expect(call.state.sharing).toBe(true);
+    void first;
   });
 
   it('Apply while not sharing keeps the options for the next start', async () => {
