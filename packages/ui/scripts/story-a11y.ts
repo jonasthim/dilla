@@ -92,8 +92,10 @@ async function checkAsideTransition(page: Page, context: StoryContext): Promise<
     return samples;
   });
   const closing = await toggleAndSample();
-  if (closing.some(x => !x.same)) throw new Error(`${name}: closing replaced or removed the aside at once`);
-  if (closing.some(x => x.open !== 'false')) throw new Error(`${name}: the closing aside is not data-open false in every frame`);
+  // Once closed it may unmount; while it still has width it must be the same element, marked closing.
+  const wide = closing.filter(x => x.width > 0.5);
+  if (wide.length === 0 || wide.some(x => !x.same)) throw new Error(`${name}: closing replaced or removed the aside at once`);
+  if (wide.some(x => x.open !== 'false')) throw new Error(`${name}: the closing aside is not data-open false in every frame`);
   if (!closing.some(x => x.width > 0.5 && x.width < 231.5)) throw new Error(`${name}: no frame of the close is between 0 and 232 wide (${closing.map(x => x.width.toFixed(0)).join(', ')})`);
   await page.waitForTimeout(800);
   const after = await read();

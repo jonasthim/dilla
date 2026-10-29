@@ -32,8 +32,7 @@
 .d-voice-row__people { margin: 0; padding: 0 0.5rem 0 30px; list-style: none; }
 .d-voice-row__person:focus-visible { outline: var(--focus-ring); outline-offset: -2px; border-radius: var(--r-row); }
 .d-voice-row__person { display: flex; align-items: center; gap: 8px; min-width: 0; height: var(--row-h-sub); box-sizing: border-box; padding: 0; font-size: var(--text-ui); color: var(--fg-strong); }
-/* Task 11 (rule 0, the prototype's phone sidebar): a phone keeps the 26px person rows, their states ending under the count. */
-[data-layout="phone"] .d-voice-row__people { padding-right: 0; }
+/* Task 11 (rule 0, the prototype's phone sidebar): a phone keeps the 26px person rows. */
 [data-layout="phone"] .d-voice-row__person { height: 1.625rem; }
 .d-voice-row__avatar { display: inline-flex; flex: none; }
 /* Task 11: the trailing states' wrapper only carries the id the row's description names; it lays nothing out. */
