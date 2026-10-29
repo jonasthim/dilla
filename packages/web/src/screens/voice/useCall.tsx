@@ -11,6 +11,7 @@ import { SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey, showToast } from '@dilla/ui';
 import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
 import { DEFAULT_SHARE_OPTIONS, type ShareOptions } from '../../call/share-options.ts';
+import { voicePrefs, type VoicePrefs } from '../../call/voice-prefs.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
 import type { PageCall, PageCallState } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
@@ -280,6 +281,8 @@ export function useCall(o: UseCallOptions): CallView {
   /** web3.4 V1: the output device the session is asked to play to: the one it started with, then each one Settings moved
    *  it to. `outputPlaying` is the last one the session took (fix round 1): a refusal falls back to it. */
   const outputInForce = useRef('');
+  /** Signal task 10b: Settings → Voice's levels and switches the session started with or was last given. */
+  const prefsInForce = useRef<VoicePrefs | null>(null);
   const outputPlaying = useRef('');
   // The join button the unsupported dialog was opened from: focus returns there when it closes (flow 06).
   const opener = useRef<HTMLElement | null>(null);
@@ -689,6 +692,8 @@ export function useCall(o: UseCallOptions): CallView {
         const target = { channelId: id, vdec: mod.localDecodeList() };
         outputInForce.current = settings[SETTINGS.voiceOutput] ?? '';
         outputPlaying.current = outputInForce.current;
+        const prefs = voicePrefs(settings);
+        prefsInForce.current = prefs;
         const opts: Parameters<VoiceModule['startPageCall']>[2] = {
           instanceId: client.get('account')?.instance?.id ?? '',
           input: settings[SETTINGS.voiceInput] ?? '',
@@ -697,6 +702,11 @@ export function useCall(o: UseCallOptions): CallView {
           noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : settings[SETTINGS.voiceNoise] === 'automatic' ? 'automatic' : settings[SETTINGS.voiceNoise] === 'lightweight' ? 'lightweight' : 'on',
           volumes: mod.volumesFromSettings(settings),
           streamVolumes: mod.streamVolumesFromSettings(settings),
+          inputVolume: prefs.inputVolume,
+          outputVolume: prefs.outputVolume,
+          sensitivity: prefs.sensitivity,
+          pttReleaseMs: prefs.pttReleaseMs,
+          processing: prefs.processing,
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
           self: selfNow(),
@@ -1291,6 +1301,23 @@ export function useCall(o: UseCallOptions): CallView {
       announce(t('voice.outputFailed'));
     });
   }, [session, wantedOutput, announce]);
+  // Signal task 10b: input and output volume, the sensitivity, push to talk's release delay and echo cancellation / automatic
+  // gain follow Settings → Voice during the call; only what changed since the session was given it is applied.
+  const prefs = voicePrefs(o.settings);
+  const { inputVolume, outputVolume, pttReleaseMs } = prefs;
+  const { auto: sensitivityAuto, thresholdDb } = prefs.sensitivity;
+  const { echo, agc } = prefs.processing;
+  useEffect(() => {
+    const was = prefsInForce.current;
+    if (session === null || was === null) return;
+    const now: VoicePrefs = { inputVolume, outputVolume, pttReleaseMs, sensitivity: { auto: sensitivityAuto, thresholdDb }, processing: { echo, agc } };
+    prefsInForce.current = now;
+    if (was.inputVolume !== inputVolume) session.setInputVolume(inputVolume);
+    if (was.outputVolume !== outputVolume) session.setOutputVolume(outputVolume);
+    if (was.pttReleaseMs !== pttReleaseMs) session.setPttRelease(pttReleaseMs);
+    if (was.sensitivity.auto !== sensitivityAuto || was.sensitivity.thresholdDb !== thresholdDb) session.setSensitivity(now.sensitivity);
+    if (was.processing.echo !== echo || was.processing.agc !== agc) session.setProcessing(now.processing).catch(() => undefined);
+  }, [session, inputVolume, outputVolume, pttReleaseMs, sensitivityAuto, thresholdDb, echo, agc]);
   // Push to talk (decision 2): only in ptt mode with a key that is one non-text key on its own; a stored key that is
   // not (an older rule saved KeyV) binds nothing, and Settings shows it as unset.
   const applied = state?.mode;

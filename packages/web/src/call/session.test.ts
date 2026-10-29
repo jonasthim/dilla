@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await -- the doubles answer as the async functions they stand for do */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CallJoinResult, CallKeys, Command } from '@dilla/client-core';
-import { screenAudioOptions, type EpochKeys, type JoinCallOptions } from '@dilla/media';
+import { screenAudioOptions, type EpochKeys, type InputStageOptions, type JoinCallOptions, type SensitivityConfig } from '@dilla/media';
 import { getBrowser } from 'livekit-client';
 import { concurrentCapture, rttOf, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
 
@@ -3948,5 +3948,154 @@ describe('task 8c: screen-share options', () => {
     Object.assign(mic!.track, { getRTCStatsReport: async () => report([{ id: 'c', type: 'codec', mimeType: 'audio/opus', clockRate: 48000 }, { id: 'o', type: 'outbound-rtp', kind: 'audio', codecId: 'c' }]) });
     Object.assign(screen!.track, { getRTCStatsReport: async () => report([{ id: 'v', type: 'outbound-rtp', kind: 'video', frameHeight: 720, framesPerSecond: 15 }]) });
     expect(await call.tileStats()).toEqual({ ownAudio: { codec: 'opus', clockRate: 48000 }, ownScreen: { height: 720, fps: 15, audio: false }, screens: {} });
+  });
+});
+
+describe('task 10b: input stage, gate, volumes, push-to-talk release and echo/AGC', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+  type FakeStage = { inner: unknown; options: InputStageOptions; gains: number[]; gates: SensitivityConfig[]; allowed: boolean[];
+    setGain(g: number): void; setGate(c: SensitivityConfig): void; setCaptureAllowed(a: boolean): void; input?: MediaStreamTrack };
+  const withStage = (f: ReturnType<typeof fakes>) => {
+    const made: FakeStage[] = [];
+    f.deps.createInputStage = (inner, options) => {
+      const s: FakeStage = { inner, options, gains: [], gates: [], allowed: [],
+        setGain(g) { s.gains.push(g); }, setGate(c) { s.gates.push(c); }, setCaptureAllowed(a) { s.allowed.push(a); } };
+      made.push(s);
+      return s;
+    };
+    return made;
+  };
+
+  it('sets the stage around the noise processor, with the input volume, the automatic gate and capture closed until allowed', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    const noise = { setPttActive: vi.fn() };
+    f.deps.createNoiseProcessor = () => noise;
+    const call = await start(f, { noise: 'on', inputVolume: 150, sensitivity: { auto: true, thresholdDb: -50 } });
+    expect(stages).toHaveLength(1);
+    expect(stages[0].inner).toBe(noise);
+    expect(f.localTracks[0].setProcessor).toHaveBeenCalledWith(stages[0]);
+    expect(stages[0].options).toMatchObject({ gain: 1.5, gate: { enabled: true, auto: true, thresholdDb: -50 } });
+    expect(stages[0].allowed.at(-1)).toBe(true);
+    call.setMuted(true);
+    expect(stages[0].allowed.at(-1)).toBe(false);
+  });
+
+  it('noise off still gets the stage alone, so the volume and the gate apply', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    await start(f, { noise: 'off' });
+    expect(stages).toHaveLength(1);
+    expect(stages[0].inner).toBeNull();
+    expect(f.localTracks[0].setProcessor).toHaveBeenCalledWith(stages[0]);
+  });
+
+  it('input volume, sensitivity and the input mode reach the stage during the call; push to talk turns the gate off', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const call = await start(f);
+    call.setInputVolume(80);
+    expect(stages[0].gains).toEqual([0.8]);
+    call.setInputVolume(250);
+    call.setInputVolume(12.5);
+    expect(stages[0].gains).toEqual([0.8]);
+    call.setSensitivity({ auto: false, thresholdDb: -35 });
+    expect(stages[0].gates.at(-1)).toEqual({ enabled: true, auto: false, thresholdDb: -35 });
+    call.setSensitivity({ auto: false, thresholdDb: -400 });
+    expect(stages[0].gates.at(-1)).toEqual({ enabled: true, auto: false, thresholdDb: -100 });
+    call.setMode('ptt');
+    expect(stages[0].gates.at(-1)).toMatchObject({ enabled: false });
+    call.setMode('vad');
+    expect(stages[0].gates.at(-1)).toMatchObject({ enabled: true });
+  });
+
+  it('the output volume multiplies every remote voice volume', async () => {
+    const f = fakes();
+    const call = await start(f, { outputVolume: 50, volumes: { [BOB]: 150 } });
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'microphone');
+    expect(bob.gains.microphone).toBe(0.75);
+    call.setOutputVolume(200);
+    expect(bob.gains.microphone).toBe(3);
+    call.setOutputVolume(201);
+    expect(bob.gains.microphone).toBe(3);
+  });
+
+  it('push to talk keeps sending for the release delay after the key is let go; a new press inside it keeps it open', async () => {
+    const f = fakes();
+    const call = await start(f, { mode: 'ptt', pttReleaseMs: 200 });
+    const mic = f.localTracks[0];
+    call.pushToTalk(true);
+    expect(mic.muted).toBe(false);
+    call.pushToTalk(false);
+    await f.advance(150);
+    expect(mic.muted).toBe(false);
+    call.pushToTalk(true);
+    call.pushToTalk(false);
+    await f.advance(199);
+    expect(mic.muted).toBe(false);
+    await f.advance(2);
+    expect(mic.muted).toBe(true);
+    call.setPttRelease(0);
+    call.pushToTalk(true);
+    call.pushToTalk(false);
+    expect(mic.muted).toBe(true);
+  });
+
+  it('a mute during the release delay closes the microphone at once', async () => {
+    const f = fakes();
+    const call = await start(f, { mode: 'ptt', pttReleaseMs: 1000 });
+    const mic = f.localTracks[0];
+    call.pushToTalk(true);
+    call.pushToTalk(false);
+    call.setMuted(true);
+    expect(mic.muted).toBe(true);
+  });
+
+  it('the microphone is captured with the echo cancellation and automatic gain asked for', async () => {
+    const f = fakes();
+    await start(f, { processing: { echo: false, agc: true } });
+    expect((f.gum.mock.calls[0] as unknown[])[0]).toMatchObject({ audio: { echoCancellation: false, autoGainControl: true } });
+  });
+
+  it('echo/AGC changes capture the microphone again without leaving; while muted with no stage the capture waits', async () => {
+    const f = fakes();
+    const call = await start(f, { noise: 'off' });
+    const mic = f.localTracks[0] as unknown as { restartTrack: ReturnType<typeof vi.fn>; mediaStreamTrack: MediaStreamTrack };
+    const raw = f.room.localParticipant.publishTrack.mock.calls[0][0];
+    raw.getSettings = () => ({ deviceId: 'chosen', noiseSuppression: false }); raw.getConstraints = () => ({}); mic.mediaStreamTrack = raw;
+    const fresh = { enabled: true, stop: vi.fn(), getSettings: () => ({}), getConstraints: () => ({}) } as unknown as MediaStreamTrack;
+    mic.restartTrack = vi.fn(async () => { mic.mediaStreamTrack = fresh; });
+    call.setMuted(true);
+    await call.setProcessing({ echo: false, agc: false });
+    expect(mic.restartTrack).not.toHaveBeenCalled();
+    call.setMuted(false);
+    await flush();
+    expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: { exact: 'chosen' }, echoCancellation: false, autoGainControl: false, noiseSuppression: false }));
+    expect(call.state.phase).toBe('connected');
+    await call.setProcessing({ echo: false, agc: false });
+    expect(mic.restartTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('with a stage the new capture is taken at once even while muted (the stage holds it closed)', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    const call = await start(f, { noise: 'off' });
+    const mic = f.localTracks[0] as unknown as { restartTrack: ReturnType<typeof vi.fn>; mediaStreamTrack: MediaStreamTrack };
+    const raw = f.room.localParticipant.publishTrack.mock.calls[0][0];
+    raw.getSettings = () => ({ deviceId: 'chosen' }); raw.getConstraints = () => ({}); mic.mediaStreamTrack = raw;
+    stages[0].input = raw;
+    mic.restartTrack = vi.fn(async () => undefined);
+    call.setMuted(true);
+    await call.setProcessing({ echo: true, agc: false });
+    expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ echoCancellation: true, autoGainControl: false }));
+    expect(stages[0].allowed.at(-1)).toBe(false);
   });
 });

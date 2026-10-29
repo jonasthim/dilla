@@ -163,6 +163,12 @@ export class FakeSession implements PageCall {
   }
   readonly setMode = vi.fn((mode: 'vad' | 'ptt') => { this.log.push(`mode:${mode}`); this.update({ mode }); });
   readonly setNoise = vi.fn((noise: 'on' | 'off') => { this.log.push(`noise:${noise}`); this.update({ noise }); return Promise.resolve(); });
+  // Signal task 10b: Settings → Voice's levels and switches during the call.
+  readonly setInputVolume = vi.fn((p: number) => { this.log.push(`inputVolume:${p}`); });
+  readonly setOutputVolume = vi.fn((p: number) => { this.log.push(`outputVolume:${p}`); });
+  readonly setSensitivity = vi.fn((s: { auto: boolean; thresholdDb: number }) => { this.log.push(`sensitivity:${s.auto ? 'auto' : s.thresholdDb}`); });
+  readonly setPttRelease = vi.fn((ms: number) => { this.log.push(`pttRelease:${ms}`); });
+  readonly setProcessing = vi.fn((p: { echo: boolean; agc: boolean }) => { this.log.push(`processing:${p.echo ? 'echo' : '-'}/${p.agc ? 'agc' : '-'}`); return Promise.resolve(); });
   setMuted(on: boolean): void { this.log.push(`muted:${String(on)}`); this.update({ muted: on }); }
   setDeafened(on: boolean): void { this.log.push(`deafened:${String(on)}`); this.update({ deafened: on, muted: on || this.state.muted }); }
   readonly setCamera = vi.fn((on: boolean): Promise<void> => { this.update({ camera: on }); return Promise.resolve(); });

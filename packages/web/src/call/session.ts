@@ -9,8 +9,8 @@
 import type { CallJoinResult, CoreClient, IceServerTuple } from '@dilla/client-core';
 import { getBrowser } from 'livekit-client';
 import {
-  chooseVideoCodec, decodeCaps, DillaMicrophoneProcessor, noisePreference, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
-  screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
+  chooseVideoCodec, decodeCaps, DillaInputStage, DillaMicrophoneProcessor, noisePreference, processingConstraints, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
+  screenAudioOptions, SpeakerPolicy, VoiceGate, type CaptureProcessing, type InputStageOptions, type SensitivityConfig, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
 import { reportProcessorStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
@@ -23,7 +23,7 @@ import {
 import {
   callStatsReport, connectionOf, EMPTY_REPORT, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
 } from './stats.ts';
-import { gainOf, isVolume, type Volumes } from './volume.ts';
+import { gainOf, isPercent, isVolume, type Volumes } from './volume.ts';
 
 export { isVoiceSupported, localDecodeList } from '@dilla/media';
 export type { ShareOptions } from './share-options.ts';
@@ -144,6 +144,16 @@ export interface PageCall {
   setMode(mode: 'vad' | 'ptt'): void;
   /** Product walk M1: switches noise suppression during the call (the microphone's processor is set or stopped). */
   setNoise(noise: NoisePreference | 'on'): Promise<void>;
+  /** Signal task 10b: the input volume, 0..200 %, applied by the input stage's gain before the sender. */
+  setInputVolume(percent: number): void;
+  /** Signal task 10b: the output volume, 0..200 %, multiplied into every remote person's gain. */
+  setOutputVolume(percent: number): void;
+  /** Signal task 10b: the voice-activity gate's automatic or manual threshold (in force under voice activity only). */
+  setSensitivity(sensitivity: { auto: boolean; thresholdDb: number }): void;
+  /** Signal task 10b: push to talk keeps sending this long (ms) after the key is let go. */
+  setPttRelease(ms: number): void;
+  /** Signal task 10b: echo cancellation and automatic gain; the microphone is captured again with them, the call goes on. */
+  setProcessing(processing: CaptureProcessing): Promise<void>;
   /** web3.3: the "turn on audio" press: room.startAudio(), then canPlaybackAudio read again; a refusal never throws. */
   startAudio(): Promise<void>;
   /** web3.4 V1: moves the call's sound to output device `id` ('' is the system default) during the call. A no-op where
@@ -153,7 +163,16 @@ export interface PageCall {
 }
 
 /** What the session needs of an RNNoise processor; DillaRnnoiseProcessor by default. */
-export interface NoiseProcessor { setPttActive(active: boolean): void; setCaptureAllowed?(allowed: boolean): void; setMode?(mode: 'vad' | 'ptt'): void; flush?(): void; destroy?(): Promise<void> }
+export interface NoiseProcessor { setPttActive(active: boolean): void; setCaptureAllowed?(allowed: boolean): void; setMode?(mode: 'vad' | 'ptt'): void; flush?(): void; destroy?(): Promise<void>; setProcessing?(processing: CaptureProcessing): void }
+/** Signal task 10b: what the session needs of the input stage (DillaInputStage in the browser): the processor set on the
+ *  microphone, wrapping the noise processor (or none), with the input gain and the voice-activity gate. */
+export interface InputStage {
+  setGain(gain: number): void;
+  setGate(gate: SensitivityConfig): void;
+  setCaptureAllowed(allowed: boolean): void;
+  /** The raw capture the stage was last given. */
+  readonly input?: MediaStreamTrack;
+}
 
 export interface PageCallDeps {
   bridge: Pick<CoreClient, 'call' | 'onCallKeys'>;
@@ -165,6 +184,9 @@ export interface PageCallDeps {
   media: CaptureMedia & Partial<DisplayMedia>;
   /** Defaults to a DillaRnnoiseProcessor in the given mode. */
   createNoiseProcessor?: (mode: 'vad' | 'ptt') => NoiseProcessor;
+  /** Signal task 10b: the input stage around the noise processor (null: noise suppression off). Absent: no stage (no input
+   *  volume, no gate); browserDeps gives DillaInputStage. */
+  createInputStage?: (inner: NoiseProcessor | null, options: InputStageOptions) => InputStage;
   /** The key relay’s copy step (tests observe that every copy is zero-filled); a plain copy by default. */
   copyKey?: (buffer: ArrayBuffer) => Uint8Array;
   /** Where pagehide is heard; the page’s window by default. */
@@ -245,6 +267,14 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
+  /** Signal task 10b (Settings → Voice): input and output volume (0..200 %, 100 by default), the sensitivity (automatic by
+   *  default), push to talk's release delay (ms, 0 by default here; the setting's default is 200) and the capture's echo
+   *  cancellation and automatic gain (both on by default). */
+  inputVolume?: number;
+  outputVolume?: number;
+  sensitivity?: { auto: boolean; thresholdDb: number };
+  pttReleaseMs?: number;
+  processing?: CaptureProcessing;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -276,6 +306,7 @@ export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     concurrentCapture: concurrentCapture(getBrowser(navigator.userAgent), navigator.userAgent),
+    createInputStage: (inner, options) => new DillaInputStage(inner as ConstructorParameters<typeof DillaInputStage>[0], options),
     media: {
       getUserMedia: (c) => md.getUserMedia(c),
       enumerateDevices: () => md.enumerateDevices(),
@@ -430,7 +461,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
   let mic: Awaited<ReturnType<typeof acquireMic>>;
   try {
-    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+    mic = await abortable(acquireMic(deps.media, opts.input, false, opts.processing), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
   } catch (err) {
     closeCtx();
     throw err;
@@ -618,6 +649,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let ended = false;
     const volumes: Volumes = { ...opts.volumes };
     const streamVolumes: Volumes = { ...opts.streamVolumes };
+    // Signal task 10b: Settings → Voice's levels and switches, as the call applies them now.
+    let inputVolume = opts.inputVolume ?? 100;
+    let outputVolume = opts.outputVolume ?? 100;
+    let sensitivity = opts.sensitivity ?? { auto: true, thresholdDb: -50 };
+    let pttReleaseMs = opts.pttReleaseMs ?? 0;
+    let processing: CaptureProcessing = opts.processing ?? { echo: true, agc: true };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
     let mutedBeforeDeafen = opts.self === 'deafened';
@@ -714,7 +751,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
      *  and pause hold both at 0. */
     const gainFor = (identity: string, kind: 'voice' | 'stream' = 'voice'): number =>
       gainOf(roster.get(identity)?.userId ?? '', kind === 'voice' ? volumes : streamVolumes,
-        { deafened: state.deafened, paused: state.paused });
+        { deafened: state.deafened, paused: state.paused, output: outputVolume });
     /** The gains of every remote person; first, the held-back tracks whose gain rose above 0 are attached (fix round 1,
      *  I3), so each new gain node takes its gain at once. */
     const applyGains = (): void => {
@@ -823,6 +860,17 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let micPub: LocalPub | null = null;
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
+    /** Signal task 10b: the input stage set on the microphone (around `processor`, or alone), or null. */
+    let stage: InputStage | null = null;
+    /** The capture the session holds: the raw one, which the stage (when set) was given; LiveKit's mediaStreamTrack is the
+     *  processed output whenever a processor is set. */
+    const rawOf = (track: NonNullable<LocalPub['track']>): MediaStreamTrack | undefined => stage?.input ?? track.mediaStreamTrack;
+    /** The gate in force: voice activity only (push to talk is governed by its key). */
+    const gateConfig = (): SensitivityConfig => ({ enabled: mode !== 'ptt', auto: sensitivity.auto, thresholdDb: sensitivity.thresholdDb });
+    const stageOptions = (): InputStageOptions => ({ gain: inputVolume / 100, gate: gateConfig(), allowed: sendNow() });
+    /** Echo cancellation and automatic gain changed while the microphone could not send and no stage holds it closed:
+     *  the new capture waits for the next open (as R2's restart). */
+    let processingWaiting = false;
     const reportStatus = (status: ProcessorStatus): void => { if (!ended && !aborted) reportProcessorStatus(statusOwner, status); };
     /** web3.8 MUTE (R2): a capture restart wanted while the microphone must not send waits here; the next open runs it.
      *  LiveKit puts the new capture on the sender before it disables it, so a restart while muted would send it briefly. */
@@ -873,20 +921,21 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     const browserStatus = async (reason: ProcessorStatus['reason'] = null, parked = false): Promise<void> => {
       if (!micTrack) return;
-      let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+      let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off', processing);
       const track = micPub?.track;
       const wanted = track?.restartTrack !== undefined && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on');
       restartWaiting = wanted && !sendNow() ? { reason } : null;
       if (track?.restartTrack && wanted && restartWaiting === null) {
         try {
-          const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
+          const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', ...processingConstraints(processing), channelCount:1, sampleRate:48000 };
           let swapped = true;
           // Fix round 1 (I1): only where a second capture of the microphone stays live beside the first (an allowlist,
           // concurrentCapture); everywhere else, and with no answer, the stop-first restartTrack of web3.8.
           if (parked && track.replaceTrack !== undefined && deps.concurrentCapture === true) swapped = await handOver(track, constraints);
           else {
             await restartCapture(track, constraints);
-            if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
+            const raw = rawOf(track);
+            if (raw) micTrack = raw;
           }
           // A failed hand-over keeps the old capture and reports what it observed, as a failed restart does.
           if (swapped) {
@@ -894,7 +943,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
             applyMic();
             // web3.8 FX I3: the old capture is stopped, so the own meter moves to the new one (own speaking, AFK).
             restartOwnMeter();
-            browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+            browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off', processing);
           }
         } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
       }
@@ -906,16 +955,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!track?.setProcessor) { await browserStatus('initialization-failed'); return; }
       if (processor !== null) return;
       processorMode = mode;
-      const made = (deps.createNoiseProcessor ?? ((m) => new DillaMicrophoneProcessor({ mode: m, preference: noisePreference(state.noise), allowed: false, onStatus: reportStatus })))(processorMode);
+      const made = (deps.createNoiseProcessor ?? ((m) => new DillaMicrophoneProcessor({ mode: m, preference: noisePreference(state.noise), allowed: false, onStatus: reportStatus, processing })))(processorMode);
+      const wrap = deps.createInputStage?.(made, stageOptions()) ?? null;
       try {
-        await track.setProcessor(made);
-        if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+        await track.setProcessor(wrap ?? made);
+        if (ended) { made.setCaptureAllowed?.(false); wrap?.setCaptureAllowed(false); await made.destroy?.(); return; }
         processor = made;
+        stage = wrap;
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
-          await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,...processingConstraints(processing),channelCount:1,sampleRate:48000});
           // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
-          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
+          const raw = rawOf(track);
+          if (raw) micTrack = raw;
           if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
           applyMic();
         }
@@ -925,8 +977,53 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       } catch {
         await made.destroy?.().catch(() => undefined);
         processor = null;
+        stage = null;
         await browserStatus('initialization-failed');
+        await startStage();
       }
+    };
+    /** Signal task 10b: the input stage on its own (noise suppression off, or its processor failed), so the input volume and
+     *  the gate still apply. Without a stage maker, or when it cannot be set, the microphone goes on as before. */
+    const startStage = async (): Promise<void> => {
+      const track = micPub?.track;
+      if (deps.createInputStage === undefined || !track?.setProcessor || stage !== null || processor !== null || ended) return;
+      const wrap = deps.createInputStage(null, stageOptions());
+      try {
+        await track.setProcessor(wrap);
+        if (ended) { wrap.setCaptureAllowed(false); return; }
+        stage = wrap;
+        applyMic();
+      } catch { stage = null; }
+    };
+    /**
+     * Signal task 10b: the microphone captured again with the echo cancellation and automatic gain in force, through LiveKit's
+     * restartTrack (the same publication and sender: the call goes on; the processors are restarted on the new capture). With
+     * no stage to hold the new capture closed, a restart while the microphone must not send waits for the next open (R2).
+     */
+    const reacquire = async (): Promise<void> => {
+      const track = micPub?.track;
+      if (ended || !track?.restartTrack || micTrack === null) return;
+      if (!sendNow() && stage === null) { processingWaiting = true; return; }
+      const now = micTrack.getSettings?.() ?? {};
+      const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId: { exact: now.deviceId || opts.input || 'default' },
+        noiseSuppression: now.noiseSuppression ?? false, ...processingConstraints(processing), channelCount: 1, sampleRate: 48000 };
+      try {
+        await restartCapture(track, constraints);
+        const raw = rawOf(track);
+        if (raw) micTrack = raw;
+        if (ended) { micTrack?.stop(); return; }
+        applyMic();
+        restartOwnMeter();
+      } catch { /* the capture in force stays */ }
+    };
+    /** Push to talk's key, applied (the release delay's timer calls it with false). */
+    let releaseTimer: unknown = null;
+    const applyKey = (down: boolean): void => {
+      gate.setPtt(down);
+      if (processorMode === 'ptt') processor?.setPttActive(down);
+      keyOpen = down;
+      applyMic();
+      if (!down) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); } // no hold after the release
     };
     /** Whether the microphone may send now: not muted, deafened, paused or ended, and push to talk's key down. */
     const sendNow = (): boolean => !ended && !state.muted && !state.deafened && !state.paused && (mode !== 'ptt' || gate.update(0, deps.now()));
@@ -966,6 +1063,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (micTrack) micTrack.enabled = send;
       if (!track) return;
       processor?.setCaptureAllowed?.(send);
+      stage?.setCaptureAllowed(send);
+      if (send && processingWaiting) { processingWaiting = false; void reacquire().catch(() => undefined); }
       // R2: a capture restart that waited while the microphone could not send runs now that it can.
       if (send && restartWaiting !== null && processor === null) {
         const waited = restartWaiting;
@@ -1019,7 +1118,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         await startNoise();
         restartOwnMeter();
         checkAborted();
-      } else { await browserStatus(); }
+      } else {
+        await browserStatus();
+        await startStage();
+        if (stage !== null) restartOwnMeter();
+        checkAborted();
+      }
     } else {
       state = { ...state, mic: mic.mic };
     }
@@ -1714,15 +1818,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       pushToTalk(down) {
         if (ended || mode !== 'ptt') return;
-        gate.setPtt(down);
-        if (processorMode === 'ptt') processor?.setPttActive(down);
-        keyOpen = down;
-        applyMic();
-        if (!down) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); } // no hold after the release
+        if (releaseTimer !== null) { cancel(releaseTimer); releaseTimer = null; }
+        // Signal task 10b: the release delay keeps the key open a moment after it is let go, so word endings are sent.
+        if (!down && keyOpen && pttReleaseMs > 0) {
+          releaseTimer = later(() => { releaseTimer = null; if (!ended && mode === 'ptt') applyKey(false); }, pttReleaseMs);
+          return;
+        }
+        applyKey(down);
       },
       setMode(next) {
         if (ended || next === mode) return;
+        if (releaseTimer !== null) { cancel(releaseTimer); releaseTimer = null; }
         mode = next;
+        stage?.setGate(gateConfig());
         gate.setMode(next === 'ptt' ? 'ptt' : 'open');
         gate.setPtt(false);
         // A processor built for push to talk is held open under voice activity and closed again for push to talk.
@@ -1741,15 +1849,41 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const track = micPub?.track;
         processor?.setCaptureAllowed?.(false);
         processor?.flush?.();
-        if (processor !== null) {
+        stage?.setCaptureAllowed(false);
+        if (processor !== null || stage !== null) {
           processor = null;
+          stage = null;
           applyMic();
           await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
         }
         if (next !== 'off') await startNoise();
-        else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); }
+        else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); await startStage(); }
         restartOwnMeter(); // the processor or a restarted capture swaps the published track
         applyMic();
+      }),
+      setInputVolume(percent) {
+        if (ended || !isPercent(percent)) return;
+        inputVolume = percent;
+        stage?.setGain(percent / 100);
+      },
+      setOutputVolume(percent) {
+        if (ended || !isPercent(percent)) return;
+        outputVolume = percent;
+        applyGains();
+      },
+      setSensitivity(next) {
+        if (ended) return;
+        sensitivity = { auto: next.auto, thresholdDb: Math.max(-100, Math.min(0, Math.round(next.thresholdDb))) };
+        stage?.setGate(gateConfig());
+      },
+      setPttRelease(ms) {
+        if (Number.isFinite(ms)) pttReleaseMs = Math.max(0, Math.min(1000, ms));
+      },
+      setProcessing: (next) => inLane(async () => {
+        if (ended || (next.echo === processing.echo && next.agc === processing.agc)) return;
+        processing = { echo: next.echo, agc: next.agc };
+        processor?.setProcessing?.(processing);
+        await reacquire();
       }),
       // Fix round 1 (M2): both run synchronously inside the "turn on audio" press (the dock’s button, the user activation
       // the browser asks for); nothing is awaited before them. A refusal leaves the line on offer. (The context itself is

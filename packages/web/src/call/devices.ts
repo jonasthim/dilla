@@ -15,9 +15,10 @@ export type MicResult = { track: MediaStreamTrack } | { mic: 'denied' | 'missing
 
 const stopAll = (s: MediaStream): void => { for (const t of s.getTracks()) t.stop(); };
 
-function micConstraints(input: string, noise = true): MediaStreamConstraints {
-  const capture = { echoCancellation: MIC_CAPTURE.echoCancellation, noiseSuppression: noise,
-    autoGainControl: MIC_CAPTURE.autoGainControl } as MediaTrackConstraints;
+/** Signal task 10b: `processing` is Settings → Voice's echo cancellation and automatic gain (both on by default). */
+function micConstraints(input: string, noise = true, processing?: { echo: boolean; agc: boolean }): MediaStreamConstraints {
+  const capture = { echoCancellation: processing?.echo ?? MIC_CAPTURE.echoCancellation, noiseSuppression: noise,
+    autoGainControl: processing?.agc ?? MIC_CAPTURE.autoGainControl } as MediaTrackConstraints;
   return { audio: input === '' ? capture : { deviceId: { exact: input }, ...capture } };
 }
 
@@ -25,7 +26,7 @@ function micConstraints(input: string, noise = true): MediaStreamConstraints {
  * The microphone: 'denied' when the person or the browser refused it, 'missing' when there is none (none listed, not
  * found, or unreadable). A chosen input that is gone falls back to the system default once.
  */
-export async function acquireMic(media: CaptureMedia, input: string, noise = true): Promise<MicResult> {
+export async function acquireMic(media: CaptureMedia, input: string, noise = true, processing?: { echo: boolean; agc: boolean }): Promise<MicResult> {
   let devices: MediaDeviceInfo[] = [];
   try {
     devices = await media.enumerateDevices();
@@ -35,7 +36,7 @@ export async function acquireMic(media: CaptureMedia, input: string, noise = tru
   if (!devices.some((d) => d.kind === 'audioinput')) return { mic: 'missing' };
   const attempt = async (id: string): Promise<MicResult | 'retry'> => {
     try {
-      const stream = await media.getUserMedia(micConstraints(id, noise));
+      const stream = await media.getUserMedia(micConstraints(id, noise, processing));
       const track = stream.getAudioTracks()[0];
       if (track === undefined) {
         stopAll(stream);
