@@ -277,7 +277,8 @@ const byText = (page, role, key, vars) => page.getByRole(role, { name: t(key, va
 /** The `@` tile (web3.9), the rail's first item: it carries the DM counts in `data-unread` and its name once a count shows. */
 const homeTile = (page) => byText(page, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${t('home.tile')}(,|$)`) });
 /** The gear in the user panel at the bottom left (web3.8): the rail has no settings button. */
-const gear = (page) => page.locator('.d-user-panel').getByRole('button', { name: t('panel.settings'), exact: true });
+// Signal: settings opens from the top bar's gear ("Open settings"); the user panel has none.
+const gear = (page) => page.getByRole('button', { name: t('workspace.open'), exact: true }).first();
 const composer = (page, channel) => page.getByRole('textbox', { name: t('shell.composer.label', { channel }), exact: true });
 const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.label', { channel }), exact: true })
   .locator('.d-message-row').filter({ hasText: text });
@@ -486,10 +487,10 @@ const voiceRow = (page, name) => page.getByRole('button', { name: t('voice.open'
 const stage = (page) => page.locator('.dw-voice-stage');
 const dock = (page) => page.locator('.dw-voice-dock');
 
-/** The call phase is `in` and the dock shows a connected session. */
+/** The call phase is `in` and the dock holds a connected session (Signal: the dock hides while the stage is on screen). */
 async function connected(page) {
   await page.locator('[data-call-phase="in"]').first().waitFor({ timeout: WAIT });
-  await dock(page).locator('.d-voice-dock[data-phase="connected"]').waitFor({ timeout: WAIT });
+  await dock(page).locator('.d-voice-dock[data-phase="connected"]').waitFor({ state: 'attached', timeout: WAIT });
 }
 
 /** Clicks the voice channel `name` of the server `server` (one click joins it) and waits for a connected call. */
@@ -505,7 +506,10 @@ async function joinVoice(page, server, name) {
  * no controls (web3.7), so the button is the stage's; from another channel it is the dock's.
  */
 async function leaveVoice(page) {
-  await page.getByRole('button', { name: t('voice.leave'), exact: true }).locator('visible=true').first().click();
+  // Signal: the stage's leave is its [data-control="leave"] ("Leave"); without the stage, the dock's "leave".
+  const stageLeave = page.locator('.dw-voice-stage [data-control="leave"]');
+  if (await stageLeave.isVisible().catch(() => false)) await stageLeave.click();
+  else await page.locator('.dw-voice-dock').getByRole('button', { name: t('voice.leave'), exact: true }).click();
   await dock(page).waitFor({ state: 'detached', timeout: WAIT });
 }
 
@@ -804,7 +808,11 @@ async function main(argv) {
 
     await toolbarAction(pages.ada, packId, 'shell.message.pin');
     await byId(mira, packId).and(mira.locator('[data-pinned="true"]')).waitFor({ timeout: WAIT });
-    await mira.getByRole('button', { name: t('shell.pins.open'), exact: true }).click();
+    // Signal (Ruling X): pins are in the channel row's context menu, not a header button.
+    await mira.getByRole('navigation', { name: t('shell.channels.label'), exact: true })
+      .getByRole('button', { name: /^general(,|$)/ }).first().click({ button: 'right' });
+    await mira.getByRole('menu', { name: t('nav.channel.menuOf', { name: 'general' }), exact: true })
+      .getByRole('menuitem', { name: t('shell.pins.open'), exact: true }).click();
     const pins = mira.getByRole('dialog', { name: t('shell.pins.title', { channel: 'general' }), exact: true });
     await pins.getByText(t('shell.pins.by', { name: PEOPLE.ada.display }), { exact: true })
       .waitFor({ timeout: WAIT });
@@ -1176,18 +1184,14 @@ async function main(argv) {
       await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await mira.setViewportSize(PHONE_APP);
       await mira.waitForTimeout(250);
-      // Task 10 fix round 1: a phone has no settings index; /settings opens Profile with the nav's chips (README §5.10).
-      // Task 11: /settings on a phone opens Profile with the nav's chips (no index any more), so the shot is named for that.
-      await mira.goBack();
-      await mira.waitForURL(/\/settings$/);
+      // Task 10 fix round 1: a phone has no settings index; Settings opens on Profile with the nav's chips (README §5.10).
+      // Task 11: the shot is named for that, and the sections are reached by their chips (no index to go back to).
       await capture(mira, 'phone-settings-entry');
       for (const section of ['privacy', 'diagnostics']) {
         await userSettings.getByRole('navigation', { name: t('settings.nav.label'), exact: true })
           .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
         await mira.waitForURL(new RegExp(`/settings/${section}$`));
         await capture(mira, `${section}-phone`);
-        await mira.goBack();
-        await mira.waitForURL(/\/settings$/);
       }
       await userSettings.getByRole('button', { name: t('settings.close'), exact: true }).click();
       await userSettings.waitFor({ state: 'hidden', timeout: WAIT });
@@ -1243,7 +1247,9 @@ async function main(argv) {
     await homeTile(pages.ada).click();
     await pages.ada.getByRole('button', { name: new RegExp(`^${PEOPLE.mira.display}`) }).click();
     await pages.ada.getByRole('textbox', { name: t('shell.dm.composer', { name: PEOPLE.mira.display }), exact: true }).waitFor({ timeout: WAIT });
-    await pages.ada.locator('.d-channel-header').getByRole('button', { name: t('call.start'), exact: true }).click();
+    // Signal (Ruling Z): a DM's call starts from the DM row's context menu.
+    await pages.ada.getByRole('navigation', { name: t('shell.dms.label'), exact: true }).locator('.d-chrow[aria-current="page"]').click({ button: 'right' });
+    await pages.ada.getByRole('menuitem', { name: t('call.start'), exact: true }).click();
     await connected(pages.ada);
     const ring = mira.locator('.d-ring-banner__ring');
     await ring.getByRole('button', { name: t('call.ring.answer'), exact: true }).waitFor({ timeout: WAIT });
@@ -1282,9 +1288,12 @@ async function main(argv) {
     // web3.8 (item 14): Ada shares her screen. Mira's stage brings it to the front on its own (R26), which is the focused
     // shot; a click on that tile again returns the grid, with the camera or avatar tile and the screen as separate tiles.
     // Both at 1440×900, the size the stage was designed at.
-    const adaShare = pages.ada.getByRole('toolbar', { name: t('voice.controls.voice'), exact: true })
-      .getByRole('button', { name: t('voice.shareOn'), exact: true });
+    // Task 8c: Share opens the share picker; Go live starts the share, and Share (now Stop sharing) ends it.
+    const adaShare = pages.ada.getByRole('toolbar', { name: t('voice.controls.voice'), exact: true }).locator('[data-control="share"]');
     await adaShare.click();
+    const sharePicker = pages.ada.getByRole('dialog', { name: t('callStage.share.title'), exact: true });
+    await sharePicker.getByRole('button', { name: t('callStage.share.go'), exact: true }).click();
+    await sharePicker.waitFor({ state: 'detached', timeout: WAIT });
     const adaScreen = stage(mira).locator('.d-call-tile[data-source="screen"]:not([data-own])');
     await adaScreen.waitFor({ timeout: WAIT });
     await adaScreen.locator('video').waitFor({ timeout: WAIT });
@@ -1341,7 +1350,7 @@ async function main(argv) {
     const jumpToPresent = mira.getByRole('button', { name: t('layout.log.jump'), exact: true });
     if (await jumpToPresent.isVisible()) await jumpToPresent.click();
     await jumpToPresent.waitFor({ state: 'hidden', timeout: WAIT });
-    const membersButton = mira.locator('.d-channel-header').getByRole('button', { name: t('members.toggle'), exact: true });
+    const membersButton = mira.locator('.d-channel-header [data-members-toggle]');
     const membersWereOpen = await membersButton.getAttribute('aria-pressed') === 'true';
     if (!membersWereOpen) await membersButton.click();
     await mira.locator('.d-member-list').waitFor({ timeout: WAIT });
