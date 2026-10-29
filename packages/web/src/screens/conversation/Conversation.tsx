@@ -269,8 +269,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     if (newest !== undefined) rowEls.current.get(newest.key)?.focus({ preventScroll: true });
   };
   // Fix round 2 (Jonas, the prototype's "Jump to present"): Ctrl+End jumps the open conversation to its newest message from
-  // anywhere in the tab, not only from inside the log. A text field keeps the chord (it moves the caret to the end), an open
-  // dialog keeps it, and at the present it does nothing (the key keeps its default).
+  // anywhere in the tab, not only from inside the log. A text field keeps the chord (it moves the caret to the end), a modal
+  // layer keeps it, and at the present it does nothing (the key keeps its default).
   const jumpKey = useRef(jumpToPresent);
   jumpKey.current = jumpToPresent;
   const awayNow = useRef(false);
@@ -280,7 +280,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       if (e.key !== 'End' || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.isComposing || e.defaultPrevented) return;
       const target = e.target;
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select') !== null)) return;
-      if (document.querySelector('dialog[open]') !== null || !awayNow.current) return;
+      // Fix round 3: not under any modal layer: a <dialog>, an aria-modal overlay (search, pickers) or a sheet's backdrop.
+      if (document.querySelector('dialog[open], [aria-modal="true"]:not(dialog), .d-app-shell__backdrop') !== null || !awayNow.current) return;
       e.preventDefault();
       jumpKey.current();
     };

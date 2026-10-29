@@ -450,10 +450,16 @@ export const ICONS = {
     ['rect', { width: '14', height: '20', x: '5', y: '2', rx: '2', ry: '2' }],
     ['path', { d: 'M12 18h.01' }],
   ],
+  // Fix round 3: the prototype's key (lucide-static 0.460.0, the version its icon loader fetches): the bow at the lower left.
   'key': [
-    ['path', { d: 'm2 21 9.6-9.6' }],
-    ['path', { d: 'm7.5 15.5 2.3 2.3a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0L4 19' }],
-    ['circle', { cx: '15.5', cy: '7.5', r: '5.5' }],
+    ['path', { d: 'm15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4' }],
+    ['path', { d: 'm21 2-9.6 9.6' }],
+    ['circle', { cx: '7.5', cy: '15.5', r: '5.5' }],
+  ],
+  // Fix round 3: the prototype's YouTube provider glyph (lucide-static 0.460.0 'youtube', which its icon loader fetches).
+  'youtube': [
+    ['path', { d: 'M2.5 17a24.12 24.12 0 0 1 0-10 2 2 0 0 1 1.4-1.4 49.56 49.56 0 0 1 16.2 0A2 2 0 0 1 21.5 7a24.12 24.12 0 0 1 0 10 2 2 0 0 1-1.4 1.4 49.55 49.55 0 0 1-16.2 0A2 2 0 0 1 2.5 17' }],
+    ['path', { d: 'm10 15 5-3-5-3z' }],
   ],
   'square': [
     ['rect', { width: '18', height: '18', x: '3', y: '3', rx: '2' }],

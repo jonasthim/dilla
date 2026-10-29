@@ -131,6 +131,13 @@ describe('jump to present (Ctrl+End)', () => {
     expect(ctrlEnd(composer()), 'in the composer').toBe(true);
     expect(log.scrollTop).toBe(100);
     expect(fireEvent.keyDown(document.body, { key: 'End', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+End is not the chord').toBe(true);
+    // Fix round 3: not under a modal layer (an aria-modal overlay such as the search palette).
+    const modal = document.createElement('div');
+    modal.setAttribute('aria-modal', 'true');
+    document.body.append(modal);
+    expect(ctrlEnd(document.body), 'under a modal overlay').toBe(true);
+    expect(log.scrollTop).toBe(100);
+    modal.remove();
   });
 });
 

@@ -271,10 +271,15 @@ test('settings rows align their controls, and the sign-out button holds its text
   await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
   const edges = await dialog.locator('.d-settings-row').evaluateAll(els => els.map(el => {
     const cs = getComputedStyle(el);
-    return { top: parseFloat(cs.borderTopWidth), bottom: parseFloat(cs.borderBottomWidth) };
+    const box = el.getBoundingClientRect();
+    return { top: parseFloat(cs.borderTopWidth), bottom: parseFloat(cs.borderBottomWidth), y: box.top, end: box.bottom };
   }));
   expect(edges.length).toBeGreaterThan(1);
-  for (let i = 1; i < edges.length; i += 1) expect(edges[i - 1].bottom + edges[i].top, `one hairline between rows ${i} and ${i + 1}`).toBe(1);
+  for (let i = 1; i < edges.length; i += 1) {
+    expect(edges[i - 1].bottom + edges[i].top, `one hairline between rows ${i} and ${i + 1}`).toBe(1);
+    // Fix round 3: the rows touch (no section spacing between them), so the group is one closed box.
+    expect(Math.abs(edges[i].y - edges[i - 1].end), `row ${i + 1} starts where row ${i} ends`).toBeLessThanOrEqual(0.5);
+  }
   expect(edges[0].top, 'the group\'s top edge').toBe(1);
   expect(edges.at(-1)!.bottom, 'the group\'s bottom edge').toBe(1);
   await closeSettings(page);

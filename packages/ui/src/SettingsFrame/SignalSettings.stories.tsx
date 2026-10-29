@@ -158,18 +158,37 @@ function SignIn() {
 function Overview() {
   return <SampleCore><WebOverview communityId={SAMPLE_MC} serverName={SERVER} announce={noop} /></SampleCore>;
 }
-export const ProfileDesktop: Story = { render: () => <Workspace active="profile"><Profile /></Workspace> };
-export const SignInDesktop: Story = { render: () => <Workspace active="signin"><SignIn /></Workspace> };
-export const OverviewDesktop: Story = { render: () => <Workspace active="server:overview"><Overview /></Workspace> };
+// Fix round 3 (story-a11y geometry): a group of settings rows touches. Each lower row starts where the upper one ends, one
+// hairline parts them (the lower row's top edge), and the group keeps its outer top and bottom edges: 56n + 2.
+function rowsTouch({ canvasElement }: { canvasElement: HTMLElement }) {
+  const rows = Array.from(canvasElement.ownerDocument.querySelectorAll<HTMLElement>('.d-settings-row'));
+  for (const upper of rows) {
+    const lower = upper.nextElementSibling;
+    if (!(lower instanceof HTMLElement) || !lower.classList.contains('d-settings-row')) continue;
+    const gap = lower.getBoundingClientRect().top - upper.getBoundingClientRect().bottom;
+    if (Math.abs(gap) > 0.5) throw new Error(`settings rows ${upper.id} and ${lower.id} are ${String(gap)}px apart`);
+    const lines = parseFloat(getComputedStyle(upper).borderBottomWidth) + parseFloat(getComputedStyle(lower).borderTopWidth);
+    if (lines !== 1) throw new Error(`settings rows ${upper.id} and ${lower.id} are parted by ${String(lines)} hairlines`);
+  }
+  for (const row of rows) {
+    const prev = row.previousElementSibling, next = row.nextElementSibling;
+    if (!prev?.classList.contains('d-settings-row') && parseFloat(getComputedStyle(row).borderTopWidth) !== 1) throw new Error(`${row.id} opens a group without its top edge`);
+    if (!next?.classList.contains('d-settings-row') && parseFloat(getComputedStyle(row).borderBottomWidth) !== 1) throw new Error(`${row.id} closes a group without its bottom edge`);
+  }
+}
 
-export const NotificationsDesktop: Story = { render: () => <Workspace active="notifications"><Notifications /></Workspace> };
+export const ProfileDesktop: Story = { render: () => <Workspace active="profile"><Profile /></Workspace> };
+export const SignInDesktop: Story = { play: rowsTouch, render: () => <Workspace active="signin"><SignIn /></Workspace> };
+export const OverviewDesktop: Story = { play: rowsTouch, render: () => <Workspace active="server:overview"><Overview /></Workspace> };
+
+export const NotificationsDesktop: Story = { play: rowsTouch, render: () => <Workspace active="notifications"><Notifications /></Workspace> };
 export const ProfilePhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="profile"><section className="dw-settings-section" aria-labelledby="p-title"><h2 id="p-title">{t('workspace.profile')}</h2></section></Workspace> };
-export const VoiceDesktop: Story = { render: () => <Workspace active="voice"><Voice /></Workspace> };
+export const VoiceDesktop: Story = { play: rowsTouch, render: () => <Workspace active="voice"><Voice /></Workspace> };
 export const VoicePushToTalk: Story = { render: () => <Workspace active="voice"><Voice ptt /></Workspace> };
 export const KeyboardDesktop: Story = { render: () => <Workspace active="keyboard"><Keyboard /></Workspace> };
-export const DevicesDesktop: Story = { render: () => <Workspace active="devices"><Devices /></Workspace> };
-export const NotificationsPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="notifications"><Notifications /></Workspace> };
-export const VoicePhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="voice"><Voice /></Workspace> };
+export const DevicesDesktop: Story = { play: rowsTouch, render: () => <Workspace active="devices"><Devices /></Workspace> };
+export const NotificationsPhone: Story = { play: rowsTouch, parameters: { phoneViewport: true }, render: () => <Workspace active="notifications"><Notifications /></Workspace> };
+export const VoicePhone: Story = { play: rowsTouch, parameters: { phoneViewport: true }, render: () => <Workspace active="voice"><Voice /></Workspace> };
 
 // Task 10c: Server settings → Roles, Invites, Bot and Music as packages/web composes them (screens/admin/RolesSection.tsx,
 // InvitesSection.tsx and BotSection.tsx's 'bot' and 'music' pages), owner's view, prototype sample data.
@@ -229,7 +248,7 @@ function Music() {
       <SettingsRow id="music-dj" icon="disc-3" label={t('serverSettings.music.dj')} hint={t('serverSettings.music.djRoles', { roles: 'DJ' })}>
         <Button size="sm" onClick={noop}>{t('serverSettings.music.djEdit')}</Button>
       </SettingsRow>
-      <SettingsRow id="music-provider-youtube" anchor="music-providers" icon="play" label={t('serverSettings.music.youtube')} hint={t('serverSettings.music.youtubeReady')}
+      <SettingsRow id="music-provider-youtube" anchor="music-providers" icon="youtube" label={t('serverSettings.music.youtube')} hint={t('serverSettings.music.youtubeReady')}
           tag={t('serverSettings.music.youtubeTag')}>
         <Button size="sm" onClick={noop}>{t('serverSettings.music.checkAgain')}</Button>
       </SettingsRow>
@@ -247,9 +266,9 @@ function Music() {
 
 export const RolesDesktop: Story = { render: () => <Workspace active="server:roles"><Roles /></Workspace> };
 export const InvitesDesktop: Story = { render: () => <Workspace active="server:invites"><Invites /></Workspace> };
-export const BotDesktop: Story = { render: () => <Workspace active="server:bot"><Bot /></Workspace> };
-export const MusicDesktop: Story = { render: () => <Workspace active="server:music"><Music /></Workspace> };
+export const BotDesktop: Story = { play: rowsTouch, render: () => <Workspace active="server:bot"><Bot /></Workspace> };
+export const MusicDesktop: Story = { play: rowsTouch, render: () => <Workspace active="server:music"><Music /></Workspace> };
 export const RolesPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:roles"><Roles /></Workspace> };
 export const InvitesPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:invites"><Invites /></Workspace> };
-export const BotPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:bot"><Bot /></Workspace> };
-export const MusicPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:music"><Music /></Workspace> };
+export const BotPhone: Story = { play: rowsTouch, parameters: { phoneViewport: true }, render: () => <Workspace active="server:bot"><Bot /></Workspace> };
+export const MusicPhone: Story = { play: rowsTouch, parameters: { phoneViewport: true }, render: () => <Workspace active="server:music"><Music /></Workspace> };

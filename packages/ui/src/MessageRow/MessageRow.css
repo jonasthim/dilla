@@ -69,6 +69,9 @@
 .d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
 
 .d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
+/* Fix round 3: a card (Glenn's now-playing) is a block, not a flex item, so it takes its 440px (the prototype's max-width)
+   instead of shrinking to its content. */
+.d-message-row__attachments.d-message-row__card { display: block; margin-top: 6px; }
 .d-message-row__pending { margin: 0; font-size: var(--text-xs); color: var(--fg-3); display: flex; gap: 0.5rem; align-items: center; }
 /* A failed action: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-message-row__pending[data-tone="failed"] { color: var(--danger); }
