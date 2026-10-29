@@ -37,6 +37,17 @@ export const PERM_GROUPS: readonly { id: 'general' | 'members' | 'text' | 'voice
   { id: 'music', keys: ['music'] },
 ];
 
+/**
+ * The role editor's three groups, the prototype's General, Moderation and Voice, with every dilla
+ * permission folded in (Jonas, Task 10c fix round 1): each starts with the prototype's rows in its
+ * order; Control music sits under Voice. Channel permissions keep PERM_GROUPS.
+ */
+export const ROLE_PERM_GROUPS: readonly { id: 'general' | 'moderation' | 'voice'; keys: readonly PermKey[] }[] = [
+  { id: 'general', keys: ['view', 'send', 'pin', 'everyone', 'attach', 'react', 'history', 'invite'] },
+  { id: 'moderation', keys: ['manageChannels', 'kick', 'ban', 'manageMessages', 'moderate', 'nicknames', 'slowmode', 'manageRoles', 'manageServer', 'auditLog', 'admin'] },
+  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move', 'music'] },
+];
+
 export interface PermRole { id: string; position: number; allow: number; deny: number }
 export interface PermOverwrite { kind: 0 | 1; targetId: string; allow: number; deny: number }
 export interface PermMember { userId: string; roleIds: readonly string[] }

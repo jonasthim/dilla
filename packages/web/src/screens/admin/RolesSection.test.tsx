@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { refusal } from '../../test/fake-client.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { ADMINS, CREW, EVERY, MODS, OWNER_ACCESS, ROLES, SERVER, harness, role, type HarnessOptions } from '../../test/roles-harness.tsx';
@@ -22,12 +22,16 @@ describe('RolesSection (Signal task 10c: the inline editor)', () => {
     expect(list().getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent))
       .toEqual(['@everyone, 5 members', 'admins, 1 member', 'mods, 2 members', 'crew, 1 member', en['serverSettings.roles.new']]);
   });
-  it('opens on the highest role and shows its name, colours and permission groups including Music', () => {
+  it('opens on the highest role and shows its name, colours and the prototype\'s three permission groups', () => {
     setup();
     expect(roleButton('admins, 1 member')).toHaveAttribute('aria-current', 'true');
     expect(screen.getByRole('textbox', { name: en['roles.editor.name'] })).toHaveValue('admins');
     expect(screen.getByRole('radiogroup', { name: en['roles.editor.color'] })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: en['perm.group.music'] })).toBeInTheDocument();
+    // Jonas (Task 10c fix round 1): General, Moderation and Voice; Control music sits under Voice.
+    for (const group of ['perm.group.general', 'perm.group.moderation', 'perm.group.voice'] as const) {
+      expect(screen.getByRole('heading', { name: en[group] })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('heading', { name: en['perm.group.music'] })).toBeNull();
     expect(toggle(en['perm.music'])).toHaveAttribute('aria-checked', 'false');
   });
   it('@everyone has a fixed name and no colours', async () => {
@@ -91,6 +95,20 @@ describe('RolesSection (Signal task 10c: the inline editor)', () => {
     await waitFor(() => expect(fake.callsOf('createRole')).toEqual([{ m: 'createRole', communityId: SERVER, name: 'new role', color: 0xB0BEC5,
       hoist: false, mentionable: false, allow: 3 }]));
     await waitFor(() => expect(screen.getByRole('textbox', { name: en['roles.editor.name'] })).toHaveValue('new role'));
+  });
+  it('a new role the list does not carry yet: the editor waits read-only, then selects it when it arrives', async () => {
+    const NEW = 'e8'.repeat(16);
+    const { user, fake } = setup({ handler: c => c.m === 'createRole' ? Promise.resolve({ roleId: NEW }) : Promise.resolve(null) });
+    expect(toggle(en['perm.music'])).not.toHaveAttribute('aria-disabled', 'true');
+    await user.click(roleButton(en['serverSettings.roles.new']));
+    await waitFor(() => expect(fake.callsOf('createRole')).toHaveLength(1));
+    // The fallback role shows, but nothing can be changed on it while the new role is on its way.
+    await waitFor(() => expect(toggle(en['perm.music'])).toHaveAttribute('aria-disabled', 'true'));
+    fireEvent.click(toggle(en['perm.music']));
+    expect(fake.callsOf('updateRole')).toHaveLength(0);
+    act(() => { fake.set(`roles:${SERVER}`, [...ROLES, role(NEW, 'new role', 1, { color: 0xB0BEC5, allow: 3 })]); });
+    await waitFor(() => expect(screen.getByRole('textbox', { name: en['roles.editor.name'] })).toHaveValue('new role'));
+    expect(roleButton('new role, 0 members')).toHaveAttribute('aria-current', 'true');
   });
   it('without Manage roles there is no New role', () => {
     setup({ access: { ...OWNER_ACCESS, owner: false, manageRoles: false, top: 0 } });

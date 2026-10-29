@@ -62,6 +62,7 @@ export const serverSettings = {
   'serverSettings.bot.restart': 'Restart',
   'serverSettings.bot.restarting': 'Restarting…',
   'serverSettings.bot.restarted': '{bot} restarted. Pending results recover on their own.',
+  'serverSettings.bot.restartPending': '{bot} has not picked up the restart yet. It restarts when it next checks in.',
   'serverSettings.bot.enable': 'Enable',
   'serverSettings.bot.menu': '{bot}',
   'serverSettings.bot.menu.rename': 'Rename',

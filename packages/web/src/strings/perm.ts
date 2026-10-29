@@ -2,6 +2,7 @@
 export const perm = {
   'perm.group.general': 'General',
   'perm.group.members': 'Members',
+  'perm.group.moderation': 'Moderation',
   'perm.group.text': 'Text',
   'perm.group.voice': 'Voice',
   'perm.group.music': 'Music',

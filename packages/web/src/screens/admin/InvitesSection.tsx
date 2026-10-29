@@ -139,7 +139,7 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
   const useOptions = USES_OPTIONS.filter(n => n !== 0 || manager).map(n => ({ value: String(n), label: usesLabel(n) }));
 
   return (
-    <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
+    <section className="dw-settings-section" data-measure="full" aria-labelledby={`${base}-title`}>
       <h2 id={`${base}-title`} ref={headingRef} tabIndex={-1}>{t('admin.invites.title')}</h2>
       <p>{t('serverSettings.invites.body', { server: serverName })}</p>
       {loadError !== null ? (

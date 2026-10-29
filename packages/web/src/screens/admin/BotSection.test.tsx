@@ -1005,6 +1005,30 @@ describe('the server bot settings', () => {
         vi.useRealTimers();
       }
     });
+    it('Restart comes back with a note when the runtime has not picked it up by the end of polling', async () => {
+      vi.useFakeTimers();
+      try {
+        const { fake } = setup(ready, false, false, true, true, command => {
+          if (command.m === 'getBotInstallation') return Promise.resolve({ ...ready, restartRequested: '1', restartHandled: '0' });
+          if (command.m === 'restartBot') return Promise.resolve({ requested: '1', handled: '0' });
+          return Promise.resolve(null);
+        });
+        glenn(fake);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        act(() => { fireEvent.click(screen.getByRole('button', { name: en['serverSettings.bot.restart'] })); });
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(screen.getByRole('button', { name: en['serverSettings.bot.restarting'] })).toHaveAttribute('aria-disabled', 'true');
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000 * 46); });
+        const again = screen.getByRole('button', { name: en['serverSettings.bot.restart'] });
+        expect(again).not.toHaveAttribute('aria-disabled');
+        expect(screen.getByText(en['serverSettings.bot.restartPending'].replace('{bot}', 'Glenn'))).toBeInTheDocument();
+        act(() => { fireEvent.click(again); });
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(fake.callsOf('restartBot')).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
     it('a refused Restart says why', async () => {
       const { fake, user } = setup(ready);
       fake.handler = command => command.m === 'restartBot' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }))

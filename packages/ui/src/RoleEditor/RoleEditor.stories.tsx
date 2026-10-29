@@ -8,9 +8,11 @@ const meta: Meta<typeof RoleEditor> = { title: 'Settings/RoleEditor', component:
 export default meta;
 type Story = StoryObj<typeof RoleEditor>;
 
-export const RaidLead: Story = { render: () => <LiveRoleEditor /> };
+// The prototype's settings column is 720px wide; the parity stories hold the editor at that width.
+const AT_720 = (Story: () => React.JSX.Element) => <div style={{ width: 720 }}><Story /></div>;
+export const RaidLead: Story = { decorators: [AT_720], render: () => <LiveRoleEditor /> };
 export const Everyone: Story = { render: () => <LiveRoleEditor initial="everyone" /> };
-export const DJRole: Story = { render: () => <LiveRoleEditor initial="dj" /> };
+export const DJRole: Story = { decorators: [AT_720], render: () => <LiveRoleEditor initial="dj" /> };
 export const Saved: Story = {
   args: {
     roles: ROLES, selectedId: 'crew', onSelect: () => {}, name: 'crew', nameReadOnly: false, onName: () => {}, onNameCommit: () => {},

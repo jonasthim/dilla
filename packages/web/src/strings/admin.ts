@@ -125,7 +125,6 @@ export const admin = {
   'admin.bot.music.callbackCancelled': 'Spotify authorization was cancelled.',
   'admin.bot.music.callbackCancelError': 'Could not cancel this Spotify authorization attempt.',
   'admin.bot.music.commands': 'Music commands',
-  'admin.bot.music.chatHelp': 'Join a voice channel, then type /play <song or YouTube/Spotify URL> in text chat. Use /pause, /resume, /skip, /queue, and /stop to control music. The bot replies in that text channel. Owners, administrators, and members with a configured DJ role can control playback.',
   'admin.bot.welcomeSettings.title': 'Welcome messages',
   'admin.bot.welcomeSettings.help': 'Choose a text channel and the message the bot posts when a member joins.',
   'admin.bot.welcomeSettings.requiresCapability': 'Enable the welcome messages capability on a ready bot installation first.',

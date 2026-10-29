@@ -429,7 +429,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       }
     },
   }), [formDirty, busy, canSavePage, saveBotForm, page, joinRole, setJoinRoleValue,
-    setSelectedCapabilities, setEditingCapabilities, currentInstallation?.capabilities]);
+    setSelectedCapabilities, setEditingCapabilities, currentInstallation]);
   const managedBotForm = useSettingsEdit(botEditState);
   const botName = botDisplay || t('serverSettings.bot.fallbackName');
   const manager = access?.loaded === true && access.manageCommunity;
@@ -438,11 +438,15 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   // up on its next check-in and reports back. The button says "Restarting…" until the reported count catches up.
   const [restartWanted, setRestartWanted] = useState<bigint | null>(null);
   const [restartError, setRestartError] = useState<string | null>(null);
+  // Fix round 1 (M1): when the runtime has not reported the restart by the end of the polling window, the button comes
+  // back with a note; the request stays counted on the instance, and pressing Restart again joins it.
+  const [restartNote, setRestartNote] = useState<string | null>(null);
   const restartHandled = BigInt(currentInstallation?.restartHandled ?? '0');
   const restarting = restartWanted !== null && restartHandled < restartWanted;
   const restart = () => {
     if (restarting || currentInstallation === null || !manager) return;
     setRestartError(null);
+    setRestartNote(null);
     const generation = readGeneration.current;
     void client.call({ m: 'restartBot', communityId, installationId: currentInstallation.id }).then(value => {
       if (generation !== readGeneration.current) return;
@@ -459,7 +463,12 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
     }
     let polls = 0;
     const timer = window.setInterval(() => {
-      if (++polls > RESTART_POLL_LIMIT) { window.clearInterval(timer); return; }
+      if (++polls > RESTART_POLL_LIMIT) {
+        window.clearInterval(timer);
+        setRestartWanted(null);
+        setRestartNote(t('serverSettings.bot.restartPending', { bot: botName }));
+        return;
+      }
       void client.call({ m: 'getBotInstallation', communityId }).then(value => {
         const next = value as Installation | null;
         if (next !== null && next.communityId === communityId) setInstallation(previous => previous === null ? next : { ...previous, ...next });
@@ -515,7 +524,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       : page === 'automoderation' ? 'admin.bot.automod.title' : 'admin.bot.moderationLog.title';
 
   return (
-    <section className="dw-settings-section dw-bot-settings" aria-labelledby={`${base}-title`}>
+    <section className="dw-settings-section dw-bot-settings" data-measure="full" aria-labelledby={`${base}-title`}>
       <h2 id={`${base}-title`} tabIndex={-1}>{t(pageTitle)}</h2>
       {page === 'bot' ? <p>{t('serverSettings.bot.body', { bot: botName, server: serverName })}</p> : null}
       {page === 'music' ? <p>{t('serverSettings.music.body', { bot: botName })}</p> : null}
@@ -621,6 +630,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       {page === 'bot' && currentError !== null ? <p role="alert">{currentError}</p> : null}
       {page === 'bot' && statusRefreshError !== null ? <p role="alert">{statusRefreshError}</p> : null}
       {page === 'bot' && restartError !== null ? <p role="alert">{restartError}</p> : null}
+      {page === 'bot' && restartNote !== null ? <p role="status">{restartNote}</p> : null}
       {page === 'bot' && factors === undefined && !enabled ? <p id={`${base}-stepup-reason`}>{t('admin.bot.stepUpMissing')}</p> : null}
       <Dialog open={renaming} title={t('serverSettings.bot.rename.title', { bot: botName })} closeLabel={t('admin.cancel')}
         onClose={() => { setRenaming(false); setBotNameError(null); setBotNameDraft(botDisplay); }}

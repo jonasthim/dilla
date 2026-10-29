@@ -1,7 +1,7 @@
 # Music in chat
 
 Enable the bot's Music capability in **Server settings → Bot**. Who may DJ is a
-role permission: **Control music (DJ)**, under **Music** in a role's permissions.
+role permission: **Control music (DJ)**, under **Voice** in a role's permissions.
 Owners and administrators always can. The bot needs permission to connect and speak
 in the voice channel. Spotify account linking is in **Server settings → Music**;
 YouTube needs the host's yt-dlp playback tools, and its row there says whether they
@@ -19,7 +19,13 @@ first of them.
 
 The permission is checked for the voice channel you are in, with that channel's
 permission settings: a channel can switch **Control music (DJ)** off for a role (or
-on for one person) in that channel only. Servers that had approved DJ roles under the
+on for one person) in that channel only. A DJ also needs **View channels** in that
+voice channel: someone who cannot see the channel cannot control its music.
+
+Control music is an ordinary permission, like the others in a role. Anyone who may
+manage roles can give it to a role below their own highest role, or switch it on for
+a role or a person in one channel's permission settings, as they can with any
+permission they hold themselves. Servers that had approved DJ roles under the
 old Music page keep them: on upgrade, every role the server's bot had approved got
 **Control music (DJ)**.
 
@@ -29,8 +35,9 @@ change them; they save as you pick them):
 - **Default volume** (25, 50, 75 or 100, "For new sessions"): a track started while
   nothing plays or waits starts at this volume. A DJ can still change the volume.
 - **Leave voice when idle** (5m, 15m or 30m): once nothing has played for this long
-  (after Stop or Pause, or when the queue ends), the bot leaves the voice channel.
-  The next play brings it back.
+  (after Stop or Pause, or when the queue ends), the bot leaves the voice channel:
+  it disconnects from the call, as it does when its connection ends any other way,
+  and drops off the channel's list of people in voice. The next play brings it back.
 
 Until someone changes them, they are 100 and 30 minutes.
 

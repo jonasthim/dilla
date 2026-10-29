@@ -3,7 +3,7 @@
 // context menu (Ruling X), since the prototype draws no button for them.
 import { useEffect, useId, useRef, useState } from 'react';
 import { ConfirmDialog, RoleEditor, type ActionMenuItem, type PermValue, type RoleEditorRole } from '@dilla/ui';
-import { PERM, PERM_BY_KEY, PERM_GROUPS, resolveCommunity, type PermKey, type RoleSummary } from '@dilla/client-core';
+import { PERM, PERM_BY_KEY, ROLE_PERM_GROUPS, resolveCommunity, type PermKey, type RoleSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -60,6 +60,9 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [deleting, setDeleting] = useState<RoleSummary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Fix round 1 (M4): a role New role made, until the roles list carries it. Meanwhile the editor shows the role it fell
+  // back to read-only, so a quick toggle cannot land on the wrong role; the new one is selected once it arrives.
+  const [awaiting, setAwaiting] = useState<string | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
 
   const locked = (r: RoleSummary): boolean => access?.owner !== true && r.position >= (access?.top ?? 0);
@@ -76,6 +79,8 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   }, [absent]); // eslint-disable-line react-hooks/exhaustive-deps
   // A change the instance has applied replaces the optimistic one.
   useEffect(() => { setOverride(null); }, [roles]);
+  const arrived = awaiting !== null && ordered.some(r => r.id === awaiting);
+  useEffect(() => { if (arrived) setAwaiting(null); }, [arrived]);
 
   const say = (text: string, alert = false) => setStatus(s => ({ text, alert, n: (s?.n ?? 0) + 1 }));
   const refuse = (e: UiError): string =>
@@ -92,7 +97,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
 
   if (roles === undefined || role === undefined) {
     return (
-      <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
+      <section className="dw-settings-section" data-measure="full" aria-labelledby={`${base}-title`}>
         <h2 id={`${base}-title`} tabIndex={-1}>{t('roles.title')}</h2>
         <p>{t('serverSettings.roles.body')}</p>
         <p aria-busy="true">{t('roles.loading')}</p>
@@ -102,13 +107,13 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   }
 
   const isEveryone = role.id === everyoneId;
-  const editable = canManage && !locked(role);
+  const editable = canManage && !locked(role) && (awaiting === null || role.id === awaiting);
   const allow = override?.roleId === role.id && override.allow !== undefined ? override.allow : role.allow;
   const color = override?.roleId === role.id && override.color !== undefined ? override.color : role.color;
   const name = draft?.roleId === role.id ? draft.name : isEveryone ? t('roles.everyone') : role.name;
   const values: Record<string, PermValue> = Object.fromEntries((Object.keys(PERM_BY_KEY) as PermKey[])
     .map(k => [k, (allow & PERM_BY_KEY[k]) !== 0 ? 'allow' : 'inherit']));
-  const groups = PERM_GROUPS.map(g => ({
+  const groups = ROLE_PERM_GROUPS.map(g => ({
     id: g.id, title: t(`perm.group.${g.id}` as StringKey),
     rows: g.keys.map(k => {
       const reason = !editable ? t('serverSettings.roles.locked') : (mine & PERM_BY_KEY[k]) === 0 ? t('roles.editor.notHeld') : null;
@@ -140,7 +145,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
     client.call({ m: 'createRole', communityId, name: created, color: NEW_ROLE_COLOR, hoist: false, mentionable: false,
       allow: PERM.viewChannel | PERM.sendMessages }).then(value => {
       const id = typeof value === 'object' && value !== null ? (value as { roleId?: unknown }).roleId : undefined;
-      if (typeof id === 'string') select(id);
+      if (typeof id === 'string') { setAwaiting(id); select(id); }
       announce(t('roles.editor.created', { name: created }));
       say(t('roles.editor.created', { name: created }));
     }).catch((e: unknown) => {
@@ -175,7 +180,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   };
 
   return (
-    <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
+    <section className="dw-settings-section" data-measure="full" aria-labelledby={`${base}-title`}>
       <h2 id={`${base}-title`} tabIndex={-1}>{t('roles.title')}</h2>
       <p>{t('serverSettings.roles.body')}</p>
       <RoleEditor roles={list} selectedId={role.id} onSelect={select} {...(canManage ? { onNew: newRole } : {})}

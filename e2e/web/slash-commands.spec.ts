@@ -1,8 +1,8 @@
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import type { Locator } from '@playwright/test';
 import {
-  addServerVia, attachInput, channelRow, composerBox, completeSignUp, copy, logRegion, makeInviteLink, messageRow, newAccount, openChannel,
-  rowAction, rowToolbar, sendText, signIn, signUp, trayEntries, type Guard,
+  addServerVia, attachInput, botRowMenu, channelRow, chooseBotCapabilities, composerBox, completeSignUp, copy, enableBotButton, logRegion,
+  makeInviteLink, messageRow, newAccount, openChannel, rowAction, rowToolbar, sendText, signIn, signUp, trayEntries, type Guard,
 } from './support/app';
 import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { test, type SecondBrowser } from './support/second';
@@ -63,17 +63,19 @@ async function createCommunity(page: Page): Promise<void> {
   await openChannel(page, COMMUNITY, GENERAL);
 }
 
-/** Enable the built-in Bot through the shipped settings, then wait for the native daemon to install it. */
-async function enableBot(page: Page, password: string, capabilities: string[] = []): Promise<void> {
+/**
+ * Enable the built-in Bot through the shipped settings, then wait for the native daemon to install it. The Bot page's
+ * capability switches (serverSettings.bot.cap.<name>, Signal task 10c); Polls and Reminders start on for a first
+ * enable, and the names listed are switched on as well.
+ */
+async function enableBot(page: Page, password: string, capabilities: string[] = ['polls', 'reminders']): Promise<void> {
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });
   await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-  for (const capability of capabilities) {
-    await settings.getByRole('checkbox', { name: copy(`admin.bot.capability.${capability}`), exact: true }).check();
-  }
-  await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
+  await chooseBotCapabilities(settings, capabilities);
+  await enableBotButton(settings).click();
   const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
   await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(password);
   await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -89,8 +91,9 @@ async function disableBot(page: Page): Promise<void> {
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });
   await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-  await settings.getByRole('button', { name: 'Disable bot', exact: true }).click();
-  await expect(settings.getByRole('button', { name: 'Enable bot', exact: true })).toBeVisible({ timeout: WAIT });
+  // Signal task 10c: Disable is in Glenn's row menu; the row then offers Enable.
+  await botRowMenu(page, settings, 'serverSettings.bot.menu.disable');
+  await expect(enableBotButton(settings)).toBeVisible({ timeout: WAIT });
   await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
   await expect(settings).toBeHidden();
 }

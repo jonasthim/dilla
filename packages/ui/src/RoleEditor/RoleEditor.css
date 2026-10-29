@@ -1,6 +1,9 @@
 /* README §5.9, the prototype's Server settings → Roles (Task 10c): a 200px role list beside the editor, 18px apart, top
    aligned; at a phone's width (the editor's own width, so it also holds in a narrow frame) the list sits above it. */
 .d-role-editor { container-type: inline-size; min-width: 0; font-family: var(--font-mono); }
+/* The prototype's role editor sets no box-sizing on a permission row: 46px of content, then the 6px padding and the
+   hairline, 59px in all. Channel permissions keep PermissionGrid's own 46px rows (fix round 1, M5). */
+.d-role-editor .d-permission-grid__row { box-sizing: content-box; }
 .d-role-editor__grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 18px; align-items: start; }
 @container (max-width: 34rem) { .d-role-editor__grid { grid-template-columns: minmax(0, 1fr); } }
 

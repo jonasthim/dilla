@@ -13,6 +13,18 @@ writes, and the Proxmox LXC helper. There is no container image.
 Music player (task 8b): upgrade `dillad` with its web client first and reload open tabs, then `dillabot`. An older
 web client cannot read the newer Bot's music snapshot; an older Bot simply does not post the "started music" message.
 
+Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload open tabs. Until then:
+
+- A tab opened before the upgrade still shows the old DJ roles card on the Music page. The upgrade removes that setting:
+  every DJ role becomes a role with the **Control music (DJ)** permission, so that card can no longer be saved. Reload
+  the tab.
+- A tab opened before the upgrade can still save the Bot's capabilities. Its request does not mention Polls and
+  Reminders, so the server keeps them as they are.
+- An older `dillabot` reports no version, so Glenn's card shows none. A Restart stays "not picked up yet" until the newer
+  `dillabot` runs. The Music page's default volume and idle-leave time take effect only with the newer `dillabot`, and
+  the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
+  Upgrade both together.
+
 For upgrades already running the media sidecar, the normal path is:
 
 ```mermaid

@@ -5,7 +5,7 @@
 .d-permission-grid__group { display: grid; gap: 0; min-width: 0; }
 .d-permission-grid__title { margin: 0; padding: 10px 14px 6px; font-size: var(--text-micro); font-weight: var(--weight-label); line-height: 1.5; letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); background: var(--bg-2); }
 .d-permission-grid__group + .d-permission-grid__group .d-permission-grid__title { border-top: 1px solid var(--hairline); }
-.d-permission-grid__row { box-sizing: content-box /* the prototype sets no box-sizing: 46px of content, then the 6px padding and the hairline, 59px in all (Task 10c) */; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; min-height: 2.875rem /* 46px */; padding: 6px 14px; border-top: 1px solid var(--hairline); }
+.d-permission-grid__row { box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; min-height: 2.875rem /* 46px */; padding: 6px 14px; border-top: 1px solid var(--hairline); }
 .d-permission-grid__text { display: grid; min-width: 0; flex: 1; line-height: 1.35; }
 .d-permission-grid__name { font-size: var(--text-sm); color: var(--fg); }
 .d-permission-grid__hint { font-size: var(--text-meta); color: var(--fg-3); }

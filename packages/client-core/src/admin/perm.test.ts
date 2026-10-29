@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { PERM_ALL } from '../http/routes';
 import {
-  COMMUNITY_BITS, PERM, PERM_BY_KEY, PERM_GROUPS, channelBitsOf, isPrivate, resolveChannel, resolveCommunity,
+  COMMUNITY_BITS, PERM, PERM_BY_KEY, PERM_GROUPS, ROLE_PERM_GROUPS, channelBitsOf, isPrivate, resolveChannel, resolveCommunity,
   type PermKey, type PermOverwrite,
 } from './perm';
 
@@ -40,6 +40,17 @@ describe('PERM', () => {
     expect(new Set(keys)).toEqual(new Set(Object.keys(PERM_BY_KEY) as PermKey[]));
     expect(new Set(Object.values(PERM_BY_KEY)).size).toBe(26);
     expect(Object.values(PERM_BY_KEY).reduce((a, b) => a | b, 0)).toBe(PERM_ALL);
+  });
+  it('ROLE_PERM_GROUPS is the prototype\'s General, Moderation and Voice and covers all 26 keys exactly once', () => {
+    expect(ROLE_PERM_GROUPS.map((g) => g.id)).toEqual(['general', 'moderation', 'voice']);
+    const keys = ROLE_PERM_GROUPS.flatMap((g) => g.keys);
+    expect(keys).toHaveLength(26);
+    expect(new Set(keys)).toEqual(new Set(Object.keys(PERM_BY_KEY) as PermKey[]));
+    // The prototype's rows lead each group in its order; Control music is under Voice.
+    expect(ROLE_PERM_GROUPS[0].keys.slice(0, 4)).toEqual(['view', 'send', 'pin', 'everyone']);
+    expect(ROLE_PERM_GROUPS[1].keys.slice(0, 3)).toEqual(['manageChannels', 'kick', 'ban']);
+    expect(ROLE_PERM_GROUPS[2].keys.slice(0, 3)).toEqual(['connect', 'speak', 'screen']);
+    expect(ROLE_PERM_GROUPS[2].keys).toContain('music');
   });
   it('includes moderate_members in the members group and community mask', () => {
     expect(Object.values(PERM)).toContain(1 << 24);

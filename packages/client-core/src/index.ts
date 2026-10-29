@@ -31,7 +31,7 @@ export { safeName } from './attachments/name';
 export { accessOf, topOf, canModerate } from './admin/rank';
 export { AFK_BUILTIN_POSITION, isBuiltinAFK } from './admin/afk';
 export { canCreateAnnouncement } from './admin/roles';
-export { PERM, COMMUNITY_BITS, PERM_GROUPS, PERM_BY_KEY, resolveCommunity, resolveChannel, channelBitsOf, isPrivate } from './admin/perm';
+export { PERM, COMMUNITY_BITS, PERM_GROUPS, ROLE_PERM_GROUPS, PERM_BY_KEY, resolveCommunity, resolveChannel, channelBitsOf, isPrivate } from './admin/perm';
 export { BOT_MUSIC_VOLUMES, BOT_MUSIC_IDLE_MINUTES } from './http/routes';
 export type { PermKey, PermRole, PermOverwrite, PermMember, PermInput } from './admin/perm';
 export type { PendingLeaf, TrustRecord, SearchScope, SearchCursor, SearchHit } from './core-port';

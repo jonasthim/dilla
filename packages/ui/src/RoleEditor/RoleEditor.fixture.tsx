@@ -14,14 +14,12 @@ export const ROLES = [
   { id: 'crew', name: 'crew', color: 0x5AA8E6, count: 2 },
   { id: 'dj', name: 'DJ', color: 0xFFD16A, count: 2 },
 ].map(r => ({ ...r, label: t(r.count === 1 ? 'serverSettings.roles.row.one' : 'serverSettings.roles.row.other', { name: r.name, count: r.count }) }));
-// client-core admin/perm.ts's PERM_GROUPS (copied, as PermissionGrid's stories do; the library does not depend on the core).
+// client-core admin/perm.ts's ROLE_PERM_GROUPS (copied, as PermissionGrid's stories do; the library does not depend on the core).
 type PermKey = string;
 const PERM_GROUPS: readonly { id: string; keys: readonly PermKey[] }[] = [
-  { id: 'general', keys: ['view', 'manageChannels', 'manageRoles', 'manageServer', 'invite', 'auditLog', 'admin'] },
-  { id: 'members', keys: ['kick', 'ban', 'nicknames', 'moderate'] },
-  { id: 'text', keys: ['send', 'attach', 'react', 'history', 'pin', 'everyone', 'manageMessages', 'slowmode'] },
-  { id: 'voice', keys: ['connect', 'speak', 'video', 'screen', 'mute', 'move'] },
-  { id: 'music', keys: ['music'] },
+  { id: 'general', keys: ['view', 'send', 'pin', 'everyone', 'attach', 'react', 'history', 'invite'] },
+  { id: 'moderation', keys: ['manageChannels', 'kick', 'ban', 'manageMessages', 'moderate', 'nicknames', 'slowmode', 'manageRoles', 'manageServer', 'auditLog', 'admin'] },
+  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move', 'music'] },
 ];
 export const ALL_KEYS = PERM_GROUPS.flatMap(g => g.keys);
 const RAID: PermKey[] = ['view', 'send', 'pin', 'everyone', 'manageChannels', 'kick', 'ban', 'connect', 'speak', 'screen'];

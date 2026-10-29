@@ -333,7 +333,6 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.callbackCancelled='Spotify authorization was cancelled.'`
 - `admin.bot.music.callbackCancelError='Could not cancel this Spotify authorization attempt.'`
 - `admin.bot.music.commands='Music commands'`
-- `admin.bot.music.chatHelp='Join a voice channel, then type /play <song or YouTube/Spotify URL> in text chat. Use /pause, /resume, /skip, /queue, and /stop to control music. The bot replies in that text channel. Owners, administrators, and members with a configured DJ role can control playback.'`
 - `admin.bot.moderationLog.title='Moderation log'`
 - `admin.bot.moderationLog.load='Load manual evidence'`
 - `admin.bot.moderationLog.loadAutomatic='Load automatic cases'`

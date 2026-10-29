@@ -37,13 +37,13 @@ takes no visible space; the connection live region remains mounted.
 | Server | Channels | Categories, text/voice channels, ordering, editors and permissions (`admin/ChannelsSection`, `ChannelEditFlow`, `ChannelPermissions`) |
 | Server | GIFs | Provider-key replacement/removal and rating (`admin/GifsSettings`) |
 | People | Members | Browsing and existing role/moderation actions; cards scoped to settings (`admin/MembersSection`, `MemberPane`, `MemberCardHost`) |
-| People | Roles | Create/edit/order/permissions (`admin/RolesSection`, `RoleEditorFlow`) |
+| People | Roles | Create/edit/order/permissions inline (`admin/RolesSection`, `RoleEditor`) |
 | People | Invites | Existing creation and management (`admin/InvitesSection`) |
 | People | Self-assignable roles | Personal selection, authorized configuration and panel publication (`admin/SelfRolesSection`) |
 | Automation | Bot | Installation lifecycle, enable/disable, display name and capabilities |
 | Automation | Welcome messages | Configuration, destination, preview and confirmed save |
 | Automation | Join roles | Automatic role assignment to new members |
-| Automation | Music | DJ roles, Spotify app configuration/linking and runtime provider observations |
+| Automation | Music | Who can DJ (roles with Control music, edited in Roles), default volume, idle leave, Spotify app configuration/linking and runtime provider observations |
 | Moderation | Automoderation | Rules, actions, exemptions and configuration |
 | Moderation | Moderation log | Automatic cases and manual evidence; separate journal |
 | Moderation | Bans | Banned members and unban (`admin/BansSection`) |

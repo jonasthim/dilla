@@ -37,7 +37,8 @@ composer they appear as named fields with suggestions where available.
 Some commands open a prefilled dialog for actions with more choices. Voice/music
 commands target the voice channel you joined. Music playback selects the first
 search result or plays a supplied URL or playlist. Owners and administrators can
-control playback; configured DJs need the applicable DJ role. The bot needs access
+control playback; anyone else needs the **Control music (DJ)** role permission and
+**View channels** in that voice channel. The bot needs access
 to connect and speak in the voice channel. See [Music](music.md) for setup and
 playback details.
 

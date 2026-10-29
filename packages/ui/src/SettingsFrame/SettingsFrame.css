@@ -40,7 +40,10 @@
 .d-settings-frame__body > section > h2[tabindex="-1"]:focus-visible { outline: none; }
 .d-settings-frame__body > section > h3 { margin-top: 22px; font-size: var(--text-micro); font-weight: var(--weight-label); line-height: 1.5; letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-settings-frame__body > section > h3 + * { margin-top: 8px; }
-.d-settings-frame__body > section > p { font-size: var(--text-ui); color: var(--fg-2); }
+.d-settings-frame__body > section > p { max-width: 60ch; font-size: var(--text-ui); color: var(--fg-2); }
+/* The Signal server pages (Roles, Invites, Bot, Music; Task 10c) set their intro and row hints at the full width, as the
+   prototype does; the other sections keep the 60ch measure (fix round 1, M5). */
+.d-settings-frame__body > section[data-measure="full"] > p, section[data-measure="full"] .d-settings-row__hint { max-width: none; }
 .d-settings-frame__body > section > .d-settings-row + .d-settings-row { margin-top: -1px; }
 .d-settings-frame__footer { position: sticky; bottom: 0; flex: none; z-index: 1; padding: 10px 40px max(10px, env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--hairline); }
 
@@ -49,6 +52,9 @@
 .d-settings-frame.d-settings-frame[data-layout="phone"] { position: fixed; inset-block-start: calc(var(--d-vvtop, 0px) + env(safe-area-inset-top)); inset-inline: 0; width: 100vw; height: calc(var(--d-vvh, 100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom)); margin: 0; border: 0; border-radius: 0; }
 .d-settings-frame[data-layout="phone"] .d-settings-frame__panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 .d-settings-frame[data-layout="phone"] .d-settings-frame__close { top: 12px; }
+/* On a phone a row's control that wrapped under its text starts at the left, as the prototype's do (Task 10c fix round 1,
+   I3); the right edge (SettingsRow.css's margin-left: auto) is the desktop sign-in row's. */
+.d-settings-frame[data-layout="phone"] .d-settings-row__control { margin-left: 0; justify-content: flex-start; }
 .d-settings-frame[data-layout="phone"] .d-settings-frame__close-key { display: none; }
 .d-settings-frame[data-layout="phone"] .d-settings-frame__side { padding: 56px 10px 8px; border-right: 0; border-bottom: 1px solid var(--hairline); }
 .d-settings-frame[data-layout="phone"][data-phone-page="section"] .d-settings-frame__identity,

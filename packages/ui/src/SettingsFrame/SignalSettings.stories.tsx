@@ -161,7 +161,7 @@ export const VoicePhone: Story = { parameters: { phoneViewport: true }, render: 
 // InvitesSection.tsx and BotSection.tsx's 'bot' and 'music' pages), owner's view, prototype sample data.
 function Roles() {
   return (
-    <section className="dw-settings-section" aria-labelledby="roles-title">
+    <section className="dw-settings-section" data-measure="full" aria-labelledby="roles-title">
       <h2 id="roles-title" tabIndex={-1}>{t('roles.title')}</h2>
       <p>{t('serverSettings.roles.body')}</p>
       <LiveRoleEditor />
@@ -170,7 +170,7 @@ function Roles() {
 }
 function Invites() {
   return (
-    <section className="dw-settings-section" aria-labelledby="invites-title">
+    <section className="dw-settings-section" data-measure="full" aria-labelledby="invites-title">
       <h2 id="invites-title" tabIndex={-1}>{t('admin.invites.title')}</h2>
       <p>{t('serverSettings.invites.body', { server: SERVER })}</p>
       <LiveInvites />
@@ -186,7 +186,7 @@ const CAPS: readonly { name: string; icon: IconName; on: boolean }[] = [
 const GLENN = 'Glenn';
 function Bot() {
   return (
-    <section className="dw-settings-section dw-bot-settings" aria-labelledby="bot-title">
+    <section className="dw-settings-section dw-bot-settings" data-measure="full" aria-labelledby="bot-title">
       <h2 id="bot-title" tabIndex={-1}>{t('admin.bot.title')}</h2>
       <p>{t('serverSettings.bot.body', { bot: GLENN, server: SERVER })}</p>
       <SettingsRow id="bot-glenn" icon="bot" label={GLENN} tag={t('serverSettings.bot.tag')}
@@ -209,7 +209,7 @@ function Bot() {
 }
 function Music() {
   return (
-    <section className="dw-settings-section dw-bot-settings" aria-labelledby="music-title">
+    <section className="dw-settings-section dw-bot-settings" data-measure="full" aria-labelledby="music-title">
       <h2 id="music-title" tabIndex={-1}>{t('serverSettings.music.title')}</h2>
       <p>{t('serverSettings.music.body', { bot: GLENN })}</p>
       <SettingsRow id="music-dj" icon="disc-3" label={t('serverSettings.music.dj')} hint={t('serverSettings.music.djRoles', { roles: 'DJ' })}>

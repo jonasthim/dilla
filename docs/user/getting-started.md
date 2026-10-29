@@ -193,11 +193,13 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
   ends. Deleting a category keeps its channels, without a category. Focus starts on **Cancel**.
 
-**Invites** makes and lists invite links. Choose "Expires after" (30 minutes up to 30 days) and "Max uses" (1 use, or
-a number), then **Make link**. "An invite lasts at most 30 days and admits at most 1000 people." The new link shows
-as in [Invite people](#invite-people). The list under it has one row per live link: "by {name}, {used} of {max}
-uses, expires {date}", with **revoke**. "Invite link revoked." means people can no longer join with it. An empty list
-says "No live invite links." **Invites** is open to everyone whose roles allow them to invite, not only to the owner.
+**Invites** makes and lists invite links, as in [Invite people](#invite-people). Under "Active links" each live
+link shows its uses ("3 / 10 uses", or "3 / ∞ uses" with no limit) and its expiry ("expires {date}", or "expires
+never"), with **Revoke**. **Invites** is open to everyone whose roles allow them to invite, not only to the owner.
+
+A link that never expires or has no use limit keeps working after the person who made it loses the right to make
+one, or leaves the server: revoke it from "Active links" if it should stop. Such links are marked "∞" or "expires
+never" in the list.
 
 Invite links cannot be shown again. "The server keeps only a fingerprint of each link, so a link cannot be shown
 again. Make a new one to share." Copy a link when you make it; if it is lost, revoke it and make another.
@@ -298,8 +300,8 @@ the right:
 - "Colour": six swatches (pink, blue, amber, green, orange, grey; a role with another colour keeps it as a seventh,
   "current colour"). The colour shows on the names of people who hold the role in the member list, and on the role's
   chip in their profile card. The arrow keys move between swatches. A swatch saves at once.
-- "Permissions": five groups (General, Members, Text, Voice, Music), each permission a switch with a hint. A switch
-  saves at once. Music has **Control music (DJ)**: "Play, queue, skip, stop and set volume with Glenn in voice". A
+- "Permissions": three groups (General, Moderation, Voice), each permission a switch with a hint. A switch
+  saves at once. Voice ends with **Control music (DJ)**: "Play, queue, skip, stop and set volume with Glenn in voice". A
   permission you do not hold cannot be switched: "You do not hold this permission, so you cannot give or take it." A
   role at or above your highest role cannot be changed at all.
 
@@ -1556,8 +1558,9 @@ save. A pending bot request can continue after you leave; acceptance is not a
 confirmation that the bot has applied it.
 
 Server settings group server configuration, people, automation and moderation.
-Music contains DJ roles, Spotify application configuration and linking, and provider
-status. **Authorization received; waiting for the bot** means the authorization
+Music contains who can DJ (the roles with **Control music (DJ)**, set in **Roles**),
+the bot's default volume and idle-leave time, Spotify application configuration and
+linking, and provider status. **Authorization received; waiting for the bot** means the authorization
 was delivered. **Linked** appears only when the bot reports valid stored credentials
 for this installation. It does not confirm Spotify Premium, current token acceptance
 or successful playback. Spotify and YouTube playback setup separately report
@@ -1566,7 +1569,7 @@ observations older than a minute are stale. An older or offline bot may leave st
 unavailable while configuration and linking remain usable.
 
 Playback uses music commands from the command picker. Join a voice channel first.
-See [Music](music.md) for setup and DJ-role requirements.
+See [Music](music.md) for setup and the Control music (DJ) permission.
 
 Participant volume and screen-share volume remain beside the participant/share.
 Channel collapse and conversation-search scope remain in their contextual controls.
