@@ -1837,7 +1837,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list > li > :first-child')[at] ?? null;
     openedId.current = null;
     openSettings.current = null;
-    const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-phone-header__title, .d-app-shell__sidebar .d-empty-state h2');
+    const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-phone-header__title, .d-app-shell__sidebar .d-empty-state h2, .d-app-shell__sidebar [data-tab-heading]');
     if (target === null) return;
     target.tabIndex = row === null ? -1 : target.tabIndex;
     target.focus();
@@ -2092,7 +2092,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
               onMention={mentionFromMembers}
-              announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)} onClose={() => setMembersOpen(false)} /> : undefined}
+              announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)}
+              onClose={phone ? () => { memberSheet.close(); } : () => setMembersOpen(false)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}

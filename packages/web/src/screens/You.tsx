@@ -54,13 +54,12 @@ export function You(props: { onOpenSettings(section: SettingsSection | null): vo
     void client.call({ m: 'setPresenceChoice', choice: next }).catch(() => setError(true)).finally(() => setPending(false));
   };
   const signOut = useSignOut();
-  const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { client.call({ m: 'refreshDevices' }).catch(() => undefined); }, [client]);
 
   return (
     <div className="dw-phone-pane dw-you">
       {/* The prototype's You has no title bar; the tab root's heading is for screen readers and the tab's focus. */}
-      <h2 ref={heading} tabIndex={-1} className="d-sr-only">{t('you.title')}</h2>
+      <h2 tabIndex={-1} className="d-sr-only" data-tab-heading="">{t('you.title')}</h2>
       <div className="dw-you__account">
         <Avatar name={name} size="card" />
         <div className="dw-you__who">
