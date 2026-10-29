@@ -102,7 +102,34 @@ function CleanRouteProbe() {
   </>;
 }
 
+function AutosaveDraft({ flush }: { flush: () => Promise<boolean> }) {
+  useSettingsEdit({ dirty: false, busy: false, canSave: true, save: flush, reset: () => undefined, flush });
+  return <>{useSettingsWorkspace()?.confirmation}</>;
+}
+
 describe('useSettingsEdit', () => {
+  // Fix round 2: a section that saves as you type (Profile) is let go only once its last change has landed.
+  it('lets a saving-as-you-type section go once its flush lands, and prompts when the flush fails', async () => {
+    const action = vi.fn();
+    let land!: (ok: boolean) => void;
+    const flush = vi.fn(() => new Promise<boolean>(resolve => { land = resolve; }));
+    const view = render(<SettingsEditProvider><AutosaveDraft flush={flush} /></SettingsEditProvider>);
+    let request!: Promise<boolean>;
+    act(() => { request = requestNavigation(action); });
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+    expect(action).not.toHaveBeenCalled();
+    await act(async () => { land(true); await request; });
+    await expect(request).resolves.toBe(true);
+    expect(action).toHaveBeenCalledTimes(1);
+    act(() => { request = requestNavigation(action); });
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(2));
+    act(() => { land(false); });
+    expect(await screen.findByRole('dialog', { name: copy.leaveTitle })).toBeVisible();
+    expect(action).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await expect(request).resolves.toBe(false);
+  });
+
   it('keeps standalone forms unmanaged', () => {
     render(<Draft />);
     expect(screen.getByTestId('managed')).toHaveTextContent('false');

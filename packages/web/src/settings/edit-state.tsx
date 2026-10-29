@@ -9,6 +9,11 @@ export interface SettingsEditState {
   canSave: boolean;
   save(): Promise<boolean>;
   reset(): void;
+  /**
+   * A section that saves as you type (Profile) sends its last change before the workspace lets it go: the guard awaits this,
+   * leaves at once when it resolves true, and otherwise shows the unsaved-changes prompt.
+   */
+  flush?(): Promise<boolean>;
 }
 
 export interface SettingsEditFlags {
@@ -111,6 +116,14 @@ export function SettingsEditProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const guard = async (): Promise<boolean> => {
+      const before = editRef.current;
+      if (before?.flush !== undefined && !before.dirty && pendingCountRef.current === 0) {
+        let landed = false;
+        try { landed = await before.flush(); } catch { landed = false; }
+        if (landed) return true;
+        setPrompt(true);
+        return new Promise(resolve => promptResolvers.current.push(resolve));
+      }
       const state = editRef.current;
       if ((!state || (!state.dirty && !state.busy)) && pendingCountRef.current === 0) return true;
       setPrompt(true);

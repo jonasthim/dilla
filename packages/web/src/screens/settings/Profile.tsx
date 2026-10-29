@@ -77,21 +77,41 @@ export function Profile(): React.JSX.Element {
   const text = (p: ProfileTextProblem | null) => (p === null ? undefined : t(PROBLEM[p]));
   const dirty = Object.keys(changed).length > 0;
 
+  // Fix round 2: one save at a time, and a save asked for while one is in flight waits for it and then sends the form as it is
+  // by then, so keystrokes typed during a save (or before leaving) are never dropped. The latest render's view of the form is
+  // read through a ref, because the wait outlives the render that started it (and, on leaving, the section itself).
+  // What the stored profile is once `changed` lands: the baseline with each edited field as typed.
+  const written: Fields = { ...baseline, ...Object.fromEntries(Object.entries(edited).filter(([, on]) => on).map(([k]) => [k, fields[k as keyof Fields]])) };
+  const view = { fields, dirty, invalid, blank: edited.display && next.display === '', changed, written };
+  const latest = useRef(view);
+  latest.current = view;
+  const inflight = useRef<Promise<boolean> | null>(null);
+  // The fields the last successful save wrote, so a save that waited for it does not send the same text twice.
+  const lastWritten = useRef<Fields | null>(null);
   const save = async (): Promise<boolean> => {
-    if (pending || !dirty || invalid) return false;
-    if (edited.display && next.display === '') { setDisplayError(true); return false; }
-    setPending(true);
-    setFailed(null);
-    try {
-      await client.call({ m: 'updateProfile', ...changed });
-      setSent({ ...baseline, ...Object.fromEntries(Object.entries(edited).filter(([, on]) => on).map(([k]) => [k, fields[k as keyof Fields]])) });
-      setDone(true);
-      return true;
-    } catch (e: unknown) {
-      const code = errorOf(e).code;
-      setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : code === 'E_RATE_LIMITED' ? 'wait' : 'save');
-      return false;
-    } finally { setPending(false); }
+    while (inflight.current !== null) await inflight.current;
+    const now = latest.current;
+    if (lastWritten.current !== null && same(now.fields, lastWritten.current)) return true;
+    if (!now.dirty) return true;
+    if (now.invalid) return false;
+    if (now.blank) { setDisplayError(true); return false; }
+    const run = (async () => {
+      setPending(true);
+      setFailed(null);
+      try {
+        await client.call({ m: 'updateProfile', ...now.changed });
+        lastWritten.current = now.fields;
+        setSent(now.written);
+        setDone(true);
+        return true;
+      } catch (e: unknown) {
+        const code = errorOf(e).code;
+        setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : code === 'E_RATE_LIMITED' ? 'wait' : 'save');
+        return false;
+      } finally { setPending(false); }
+    })();
+    inflight.current = run;
+    try { return await run; } finally { if (inflight.current === run) inflight.current = null; }
   };
   const reset = () => { setFields(baseline); setFailed(null); setDone(false); setDisplayError(false); };
   // Task 11 (Jonas, Q7): the prototype saves as you type: a valid change is saved 700 ms after the last keystroke, and the
@@ -99,17 +119,17 @@ export function Profile(): React.JSX.Element {
   const fieldsKey = `${fields.display}\n${fields.statusMsg}\n${fields.bio}`;
   const unsaveable = dirty && (invalid || failed !== null || (edited.display && next.display === ''));
   useEffect(() => {
-    if (!dirty || invalid || pending || failed !== null) return;
+    if (!dirty || invalid || failed !== null) return;
     const handle = setTimeout(() => { void save(); }, SAVE_AFTER_MS);
     return () => clearTimeout(handle);
-  }, [fieldsKey, dirty, invalid, pending, failed]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Leaving the section with a valid change still typing saves it at once.
+  }, [fieldsKey, dirty, invalid, failed]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Leaving the section: the workspace's guard calls `flush` first and only lets the section go once the change has landed (a
+  // failure keeps it, with the unsaved-changes prompt and the error). Unmounting some other way still sends the latest
+  // valid change, after any save in flight.
   const flush = useRef(save);
   flush.current = save;
-  const flushable = useRef(false);
-  flushable.current = dirty && !invalid && !pending;
-  useEffect(() => () => { if (flushable.current) void flush.current(); }, []);
-  useSettingsEdit({ dirty: unsaveable, busy: pending, canSave: dirty && !pending && !invalid, save, reset });
+  useEffect(() => () => { if (latest.current.dirty && !latest.current.invalid && !latest.current.blank) void flush.current(); }, []);
+  useSettingsEdit({ dirty: unsaveable, busy: pending, canSave: dirty && !pending && !invalid, save, reset, flush: save });
   const status = pending ? t('profile.saving') : done && !dirty ? t('profile.saved') : '';
   const preview = { display: next.display || user?.username || '', statusMsg: next.statusMsg, bio: next.bio };
 

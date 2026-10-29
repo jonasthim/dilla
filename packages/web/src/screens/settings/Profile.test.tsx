@@ -199,6 +199,44 @@ describe('Settings → Profile', () => {
     return waitFor(() => { expect(display()).toHaveValue('Ada L'); expect(status()).toHaveValue('away'); });
   });
 
+  // Fix round 2: Enter, a save in flight, and leaving.
+  it('saves at once on Enter in a one-line field, without waiting for the pause', async () => {
+    const { fake } = setup();
+    fireEvent.change(status(), { target: { value: 'on call' } });
+    fireEvent.keyDown(status(), { key: 'Enter' });
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'updateProfile', statusMsg: 'on call' }]), { timeout: 300 });
+  });
+
+  it('keeps what is typed while a save is in flight and sends it once that save lands', async () => {
+    const { fake } = setup();
+    let land!: () => void;
+    fake.handler = () => new Promise(resolve => { land = () => resolve(null); });
+    fireEvent.change(status(), { target: { value: 'on' } });
+    fireEvent.keyDown(status(), { key: 'Enter' });
+    await waitFor(() => expect(fake.calls).toHaveLength(1));
+    fireEvent.change(status(), { target: { value: 'on call' } });
+    fireEvent.keyDown(status(), { key: 'Enter' });
+    await new Promise(r => setTimeout(r, 50));
+    expect(fake.calls, 'one save at a time').toHaveLength(1);
+    fake.handler = () => Promise.resolve(null);
+    land();
+    await saved(fake, [{ m: 'updateProfile', statusMsg: 'on' }, { m: 'updateProfile', statusMsg: 'on call' }]);
+  });
+
+  it('sends a change still waiting for the pause when the section goes, after the save in flight', async () => {
+    const { fake, view } = setup();
+    let land!: () => void;
+    fake.handler = () => new Promise(resolve => { land = () => resolve(null); });
+    fireEvent.change(bio(), { target: { value: 'first' } });
+    fireEvent.keyDown(status(), { key: 'Enter' });
+    await waitFor(() => expect(fake.calls).toHaveLength(1));
+    fireEvent.change(bio(), { target: { value: 'first and more' } });
+    view.unmount();
+    fake.handler = () => Promise.resolve(null);
+    land();
+    await saved(fake, [{ m: 'updateProfile', bio: 'first' }, { m: 'updateProfile', bio: 'first and more' }]);
+  });
+
   it('has no serious axe violations', async () => {
     const { view } = setup({ statusMsg: 'x', bio: 'y' });
     await expectNoAxeViolations(view.container);
