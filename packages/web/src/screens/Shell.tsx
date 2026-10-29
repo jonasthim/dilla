@@ -551,6 +551,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // Product walk M8: {where} of a call names a DM's call as "the call with {name}", a voice channel by its name.
   const callWhere = useCallback((id: string) => (dms?.some(d => d.id === id) === true ? t('call.where', { name: whereOf(id) }) : whereOf(id)),
     [dms, whereOf]);
+  // Task 11: the user panel's line names the room of this device's call ("in harbour").
+  const selfRoom = callSlice?.phase === 'in' && callSlice.channelId !== null ? callWhere(callSlice.channelId) : null;
   const upgradeRejoinUntil = useRef(0);
   const recoverEnded = useCallback((id: string) => Date.now() < upgradeRejoinUntil.current
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
@@ -1320,7 +1322,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         content={content} />
       {/* Ruling AE (Jonas 2026-10-27): the phone's home lists end in the prototype's user panel, above the tab bar, as the desktop's
           sidebar does (the same panel, the same data). */}
-      {phone && self !== null ? <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
+      {phone && self !== null ? <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call} statusMsg={self.statusMsg} inRoom={selfRoom}
         ptt={settings?.['voice.mode'] === 'ptt' ? { held: call.state?.speaking === true } : false} /> : null}
     </div>);
   }
@@ -1350,7 +1352,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const composerLabel = channel !== null ? t('shell.composer.label', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
-    : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
+    : dm !== null ? t('shell.dm.placeholder', { name: dm.name }) : null;
   const composer = targetId === null || composerLabel === null || composerPlaceholder === null ? null : (
     <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
       blocked={reason} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
@@ -1489,7 +1491,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // search is the top bar's (and Control/⌘+K) on a desktop, the reminders inbox the top bar's bell or the phone's Activity tab.
   const memberCount = members == null ? null : members.length;
   const membersName = memberCount === null ? t('layout.header.members') : t('layout.header.membersCount', { n: memberCount });
-  const threadsOn = sideNow?.view === 'list';
+  // Task 11 (the prototype's thrBg): Threads is pressed while the aside shows a thread or the thread list; a press closes it.
+  const threadsOn = sideNow !== null;
   const toggleThreads = () => (threadsOn ? closeSide() : openList());
   const membersButton = (
     <Tooltip label={t('layout.header.members')}>
@@ -2036,7 +2039,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
             server={dockServer}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
-          <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
+          <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call} statusMsg={self.statusMsg} inRoom={selfRoom}
             ptt={settings?.['voice.mode'] === 'ptt' ? { held: call.state?.speaking === true } : false} />
         </>}
         ring={!overlay && rings !== undefined && rings.length > 0 ? ringFlow : undefined}

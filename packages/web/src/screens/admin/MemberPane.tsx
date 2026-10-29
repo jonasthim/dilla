@@ -87,7 +87,9 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     if (ch !== undefined) inVoice.set(selfId, ch.name);
   }
   const lineOf = (userId: string): string => {
-    const custom = statusOf.get(userId) ?? '';
+    // Task 11 (the prototype's member rows): your own row says where your call is, else your presence; your custom status is the
+    // user panel's line.
+    const custom = userId === selfId ? '' : statusOf.get(userId) ?? '';
     if (custom !== '') return custom;
     const room = inVoice.get(userId);
     if (room !== undefined) return userId === selfId ? t('members.inChannel', { channel: room }) : t('members.inVoice');

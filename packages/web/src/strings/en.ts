@@ -315,6 +315,8 @@ export const en = {
   'shell.dm.topicGroup': 'group DM · {names}',
   'shell.dm.you': 'you',
   'shell.dm.composer': 'message @{name}',
+  // Task 11: the prototype's DM composer placeholder ('Message ' + name), as the channel's 'Message #{channel}'.
+  'shell.dm.placeholder': 'Message {name}',
   'shell.status.devices': 'devices',
   'join.title': 'Join a server',
   'join.invite': 'Invite',

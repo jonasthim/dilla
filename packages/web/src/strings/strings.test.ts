@@ -84,7 +84,9 @@ describe('the copy rules', () => {
     // Task 6b fix round 1 (Ruling Z): the DM header topic adds shell.dm.topic, topicHandle, topicGroup and you.
     // Task 7 (Signal §5.5, §6.4, §6.8): the toolbar's "more", the code block's four, the composer's five, the welcome's three
     // and the tray's remove tooltip. shell.composer.attach is the prototype's sentence-case tooltip (fix round 1).
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(213);
+    // Task 11: the DM composer's placeholder, the prototype's 'Message {name}' (the label keeps 'message @{name}').
+    expect(en['shell.dm.placeholder']).toBe('Message {name}');
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(214);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
