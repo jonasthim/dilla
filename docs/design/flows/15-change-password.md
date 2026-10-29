@@ -50,7 +50,7 @@ Polite, through the Settings announcer: `settings.password.changed` after a chan
 
 ## Copy
 
-`settings.password.change='Change password'`
+`settings.password.change='Change'`
 `settings.password.add='Set password'`
 `settings.password.titleChange='Change your password'`
 `settings.password.titleSet='Set a password'`

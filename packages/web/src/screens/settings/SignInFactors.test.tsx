@@ -97,12 +97,13 @@ describe('Settings → Sign-in rows', () => {
     expect(await screen.findByRole('heading', { level: 2, name: en['factorSettings.title'] })).toBeInTheDocument();
     expect(fake.callsOf('refreshFactors')).toHaveLength(1);
     expect(screen.getByText(en['factorSettings.body'].replace('{instance}', 'dilla.test'))).toBeInTheDocument();
-    expect(screen.getByText(en['factorSettings.password.set'])).toBeInTheDocument();
+    // Task 11 (Jonas, Q7): the prototype's copy; a password whose change date is unknown shows no line under it.
+    expect(screen.queryByText(/^Changed /)).toBeNull();
     expect(screen.getByText(en['factorSettings.totp.on'].replace('{date}', formatDay(1_900_000_000)))).toBeInTheDocument();
-    expect(screen.getByText(en['factorSettings.passkeys.used'].replace('{created}', formatDay(1_900_000_100)).replace('{used}', formatDay(1_900_000_200)))).toBeInTheDocument();
-    expect(screen.getByText(en['factorSettings.passkeys.unused'].replace('{created}', formatDay(1_900_000_300)))).toBeInTheDocument();
+    expect(screen.getAllByText(en['factorSettings.passkey'], { exact: true })).toHaveLength(2);
+    expect(screen.getByText('laptop')).toBeInTheDocument();
     expect(screen.getByText(en['factorSettings.codes.other'].replace('{count}', '8'))).toBeInTheDocument();
-    expect(screen.getByText(en['factorSettings.lost'].replace('{instance}', 'dilla.test'))).toBeInTheDocument();
+    expect(screen.queryByText(/Lost your phone/)).toBeNull();
     expect(button('Remove the authenticator app')).toBeInTheDocument();
     expect(button('Remove laptop')).toBeInTheDocument();
     expect(button(en['factorSettings.passkeys.add'])).toBeInTheDocument();
@@ -144,21 +145,22 @@ describe('Settings → Sign-in rows', () => {
     });
     expect(await screen.findByRole('alert')).toHaveTextContent(en['factorSettings.error.load'].replace('{code}', 'E_NETWORK'));
     await user.click(button(en['factorSettings.retry']));
-    expect(await screen.findByText(en['factorSettings.password.set'])).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 3, name: en['factorSettings.password'] })).toBeInTheDocument();
     expect(fake.callsOf('refreshFactors')).toHaveLength(2);
   });
   // I1, I2: every factor is a settings row, its action in the control column.
   it('draws the password, app, each passkey, the add-passkey action and the codes as settings rows', async () => {
     const { view } = setup();
-    await screen.findByText(en['factorSettings.password.set']);
+    await screen.findByRole('heading', { level: 3, name: en['factorSettings.password'] });
     expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(6);
     const laptop = button('Remove laptop').closest('.d-settings-row') as HTMLElement;
-    expect(laptop.querySelector('.d-settings-row__label')).toHaveTextContent('laptop');
+    expect(laptop.querySelector('.d-settings-row__label')).toHaveTextContent(en['factorSettings.passkey']);
+    expect(laptop).toHaveTextContent('laptop');
     expect(laptop.querySelector('.d-settings-row__control')).toContainElement(button('Remove laptop'));
   });
   it('has no axe violations', async () => {
     const { view } = setup();
-    await screen.findByText(en['factorSettings.password.set']);
+    await screen.findByRole('heading', { level: 3, name: en['factorSettings.password'] });
     await expectNoAxeViolations(view.container);
   });
 });
@@ -464,7 +466,7 @@ describe('review fixes', () => {
   });
   it('keeps the one live region in the topmost open modal', async () => {
     const { user } = setup();
-    await screen.findByText(en['factorSettings.password.set']);
+    await screen.findByRole('heading', { level: 3, name: en['factorSettings.password'] });
     expect(regionHome()).toBeNull();
     await user.click(button('Remove laptop'));
     await waitFor(() => expect(regionHome()).toBe(stepUp()));
@@ -491,9 +493,10 @@ describe('review fixes', () => {
   });
   it('walk I3: keeps the passkeys together, one row each, with the add row after them and before the backup codes', async () => {
     const { view } = setup();
-    await screen.findByText(en['factorSettings.password.set']);
+    await screen.findByRole('heading', { level: 3, name: en['factorSettings.password'] });
     const rows = Array.from(view.container.querySelectorAll('.d-settings-row__label')).map(l => l.textContent);
-    expect(rows).toEqual([en['factorSettings.password'], en['factorSettings.totp'], 'laptop', 'phone', en['factorSettings.passkeys'], en['factorSettings.codes']]);
+    // Task 11 (Q7): each passkey row is the prototype's "Passkey" over its name.
+    expect(rows).toEqual([en['factorSettings.password'], en['factorSettings.totp'], en['factorSettings.passkey'], en['factorSettings.passkey'], en['factorSettings.passkeys'], en['factorSettings.codes']]);
     const add = screen.getByRole('button', { name: en['factorSettings.passkeys.add'] });
     expect(button('Remove phone').compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(add.compareDocumentPosition(screen.getByRole('button', { name: en['factorSettings.codes.make'] })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

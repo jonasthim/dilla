@@ -10,6 +10,15 @@ import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { formatDay, t } from '../../strings/index.ts';
+
+/** Task 11 (Q7): "3 weeks ago" for a unix time, in the largest unit that fits (the prototype's "Changed 3 weeks ago"). */
+export function timeAgo(unix: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round(now / 1000 - unix));
+  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+  const steps: [Intl.RelativeTimeFormatUnit, number][] = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3600], ['minute', 60]];
+  for (const [unit, size] of steps) if (s >= size) return rtf.format(-Math.floor(s / size), unit);
+  return rtf.format(0, 'second');
+}
 import { useRun } from '../admin/shared.ts';
 import { FactorSetup, sharedRefusal } from '../factor/FactorSetup.tsx';
 import { PasswordDialog } from './PasswordDialog.tsx';
@@ -241,7 +250,9 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
         <>
           <p>{t('factorSettings.body', { instance })}</p>
           <FactorLine id="signin-password" icon="lock" heading title={t('factorSettings.password')}
-            detail={t(factors.hasPassword ? 'factorSettings.password.set' : 'factorSettings.password.none')}
+            // Task 11 (Q7): "Changed 3 weeks ago" when the server knows; an unknown date shows no line.
+            detail={!factors.hasPassword ? t('factorSettings.password.none')
+              : factors.passwordChanged == null ? undefined : t('factorSettings.password.changed', { when: timeAgo(factors.passwordChanged) })}
             action={askPassword} actionLabel={t(factors.hasPassword ? 'settings.password.change' : 'settings.password.add')} />
           {factors.totp === null ? (
             <FactorLine id="signin-totp" icon="smartphone" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.off')}
@@ -253,9 +264,9 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
           )}
           {/* Walk I3: the passkeys sit together, one row each, with the add action in the passkeys row after them. */}
           {passkeys.map(k => (
-            <FactorLine key={k.id} id={`signin-passkey-${k.id}`} icon="fingerprint" danger title={k.name}
-              detail={k.lastUsed === null ? t('factorSettings.passkeys.unused', { created: formatDay(k.created) })
-                : t('factorSettings.passkeys.used', { created: formatDay(k.created), used: formatDay(k.lastUsed) })}
+            // Task 11 (Q7): the prototype's passkey row: "Passkey" over its name.
+            <FactorLine key={k.id} id={`signin-passkey-${k.id}`} icon="fingerprint" danger title={t('factorSettings.passkey')}
+              detail={k.name}
               action={() => { begin({ kind: 'remove', which: 'passkey', credId: k.id, name: k.name }); }}
               actionLabel={t('factorSettings.passkeys.remove')} actionAriaLabel={t('factorSettings.passkeys.removeLabel', { name: k.name })}
               disabledReason={only} />
@@ -266,7 +277,6 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
             detail={factors.backupCodesLeft === 0 ? t('factorSettings.codes.none') : factors.backupCodesLeft === 1
               ? t('factorSettings.codes.one') : t('factorSettings.codes.other', { count: factors.backupCodesLeft })}
             action={askCodes} actionLabel={t('factorSettings.codes.make')} />
-          <p>{t('factorSettings.lost', { instance })}</p>
         </>
       )}
 

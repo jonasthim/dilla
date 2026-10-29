@@ -1,6 +1,6 @@
 // Flow 15 (docs/design/flows/15-change-password.md): Settings → Sign-in, change or set the password. Keys: settings.password.*
 export const password = {
-  'settings.password.change': 'Change password',
+  'settings.password.change': 'Change',
   'settings.password.add': 'Set password',
   'settings.password.titleChange': 'Change your password',
   'settings.password.titleSet': 'Set a password',

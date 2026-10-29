@@ -547,16 +547,16 @@ The factor guards signing in on a **new** browser, not message content.
 
 ![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-signal.png)
 
-Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
-Browsers that are already set up, like this one, do not ask again." The rows are:
+Open **Settings** (the gear in the top bar, or **You → Settings** on a phone), then **Sign-in**: "Password and second
+factors for new browsers." The rows are:
 
-- **Password**: whether the account has one, with **change password** (or **set password** when it has none). "Password changed." or "Password set." confirms it.
-- **Authenticator app**: **add authenticator app**, or **remove** when it is set up.
-- **Passkeys**: one row per passkey with its name, when it was added and when it was last used, each with its own
-  **remove**, then **add passkey**.
-- **Backup codes**: how many are left ("{count} backup codes left."), and **make new backup codes**. New codes make
-  the old ones stop working at once, so it asks "Make new backup codes?" first; the new list is shown once. When none
-  are left it says "No backup codes left. Make new ones so you are not locked out."
+- **Password**: "Changed 3 weeks ago" (from the first change after this release; a password set earlier shows no date),
+  with **Change** (or **Set password** when it has none). "Password changed." or "Password set." confirms it.
+- **Authenticator app**: "Added {date}" with **Remove**, or **Add authenticator app** when it is not set up.
+- **Passkey**: one row per passkey, its name under it, each with its own **Remove**; then **Passkeys** with **Add passkey**.
+- **Backup codes**: how many are left ("8 of 10 left"), and **New codes**. New codes make the old ones stop working at
+  once, so it asks "Make new backup codes?" first; the new list is shown once. When none are left it says "No backup
+  codes left. Make new ones so you are not locked out."
 
 Every change asks "Confirm it is you": type your password (or use a passkey, on an account without a password).
 Adding or removing a factor asks it first; making new backup codes asks it after you said yes. **remove** is disabled while it is your only second factor: "This is your only second factor. Add another
