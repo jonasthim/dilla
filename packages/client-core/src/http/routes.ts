@@ -153,7 +153,9 @@ export const BACKUP_CODES_MAX = 16;
 export const PASSKEYS_MAX = 1024;
 export const PASSKEY_NAME_MAX_BYTES = 64;
 export interface PasskeyRow { credId: Uint8Array; name: string; created: number; lastUsed: number | null }
-export interface Factors { owed: boolean; totp: number | null; passkeys: PasskeyRow[]; backupCodesLeft: number; hasPassword: boolean }
+export interface Factors { owed: boolean; totp: number | null; passkeys: PasskeyRow[]; backupCodesLeft: number; hasPassword: boolean;
+  /** Task 11 (Q7): when the password was last changed (unix seconds); null when unknown, absent from an older server. */
+  passwordChanged?: number | null }
 export interface TotpEnrol { secret: string; uri: string }
 export interface Ceremony { ceremonyId: Uint8Array; options: string }
 export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
@@ -1289,11 +1291,12 @@ export class Routes {
       { body: encode([assertion, code]), auth: false, retry429: false })), 1);
     return { assertion: str(a[0]) };
   }
-  /** GET /v1/auth/factors: [owed, totp confirmed_at | null, [[cred_id, name, created, last_used | null]], backup_codes_left, password]. */
+  /** GET /v1/auth/factors: [owed, totp confirmed_at | null, [[cred_id, name, created, last_used | null]], backup_codes_left, password,
+   *  password_changed | null]; the sixth element is Task 11's and an older server leaves it out. */
   async getFactors(): Promise<Factors> {
     const a = atLeast(decode(await this.body('GET', '/v1/auth/factors', 'read', true)), 5);
     return { owed: flag(a[0]), totp: opt(a[1], u53), passkeys: bounded(a[2], PASSKEYS_MAX, 'passkeys').map(passkeyRow),
-      backupCodesLeft: u53(a[3]), hasPassword: flag(a[4]) };
+      backupCodesLeft: u53(a[3]), hasPassword: flag(a[4]), passwordChanged: a.length > 5 ? opt(a[5], u53) : null };
   }
   /** POST /v1/auth/totp/enroll: [stepup | null] → [secret, otpauth_url]. The secret is returned, never kept. */
   async totpEnroll(stepup: string | null): Promise<TotpEnrol> {

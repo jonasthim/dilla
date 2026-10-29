@@ -23,7 +23,7 @@ the web client), `dillabot`, their matching core modules, installers and checksu
 
 | Component | This release | bot1 |
 |---|---:|---:|
-| Server database schema | **51** | 47 |
+| Server database schema | **52** | 47 |
 | Browser client store schema | **13** | 12 |
 | Negotiated wire version | **4** | 3 |
 
@@ -32,7 +32,7 @@ the web client), `dillabot`, their matching core modules, installers and checksu
 1. Back up the server database and config (see bot1's notes for SQLite and PostgreSQL). Check that no call is live
    (`dillad media --rooms --config=/etc/dilla/dilla.toml`): the upgrade restarts media and ends calls.
 2. **Upgrade `dillad` (which serves the web client) first**, with `install.sh --upgrade`. Confirm `dillad migrate status`
-   shows 51, the service is healthy, and a browser signs in.
+   shows 52, the service is healthy, and a browser signs in.
 3. **Ask everyone to reload their open tabs.** The server still accepts wire 3 and 2 (the managed Bot speaks wire 3), so
    a tab from before the upgrade keeps connecting, but it runs the old client: without the new screens and without the
    account-kind check. Open tabs also find the new build by themselves and reload it.

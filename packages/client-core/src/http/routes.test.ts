@@ -670,16 +670,16 @@ const FACTOR_CASES: Case[] = [
     reply: () => cborReply(200, [ASSERTION, 2]), expected: { assertion: ASSERTION, needs: 2 },
   },
   {
-    name: 'getFactors reads the five elements', call: (r) => r.getFactors(),
+    name: 'getFactors reads the six elements (Task 11: password_changed)', call: (r) => r.getFactors(),
     method: 'GET', path: '/v1/auth/factors', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [1, 1_800_000_000, [[CRED, 'Laptop', 1_800_000_100, null], [fill(16, 0x22), 'Phone', 1_800_000_200, 1_800_000_300]], 4, 1, 'appended']),
-    expected: { owed: true, totp: 1_800_000_000, backupCodesLeft: 4, hasPassword: true,
+    reply: () => cborReply(200, [1, 1_800_000_000, [[CRED, 'Laptop', 1_800_000_100, null], [fill(16, 0x22), 'Phone', 1_800_000_200, 1_800_000_300]], 4, 1, 1_800_000_400, 'appended']),
+    expected: { owed: true, totp: 1_800_000_000, backupCodesLeft: 4, hasPassword: true, passwordChanged: 1_800_000_400,
       passkeys: [{ credId: CRED, name: 'Laptop', created: 1_800_000_100, lastUsed: null }, { credId: fill(16, 0x22), name: 'Phone', created: 1_800_000_200, lastUsed: 1_800_000_300 }] },
   },
   {
     name: 'getFactors of an account with no app and no password', call: (r) => r.getFactors(),
     method: 'GET', path: '/v1/auth/factors', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [0, null, [], 0, 0]), expected: { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false },
+    reply: () => cborReply(200, [0, null, [], 0, 0]), expected: { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false, passwordChanged: null },
   },
   {
     name: 'totpEnroll without a step-up sends null', call: (r) => r.totpEnroll(null),

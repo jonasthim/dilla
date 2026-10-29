@@ -204,6 +204,21 @@ func (q *Queries) GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams
 	return user_id, err
 }
 
+const getPasswordChangedAt = `-- name: GetPasswordChangedAt :one
+SELECT changed_at FROM password_credentials WHERE user_id = ?
+`
+
+type GetPasswordChangedAtParams struct {
+	UserID id.ID
+}
+
+func (q *Queries) GetPasswordChangedAt(ctx context.Context, arg GetPasswordChangedAtParams) (sql.NullInt64, error) {
+	row := q.db.QueryRowContext(ctx, getPasswordChangedAt, arg.UserID)
+	var changed_at sql.NullInt64
+	err := row.Scan(&changed_at)
+	return changed_at, err
+}
+
 const getPasswordCredential = `-- name: GetPasswordCredential :one
 SELECT phc FROM password_credentials WHERE user_id = ?
 `
@@ -348,6 +363,23 @@ func (q *Queries) ListWebauthnCredentials(ctx context.Context, arg ListWebauthnC
 		return nil, err
 	}
 	return items, nil
+}
+
+const markPasswordChanged = `-- name: MarkPasswordChanged :execrows
+UPDATE password_credentials SET changed_at = ? WHERE user_id = ?
+`
+
+type MarkPasswordChangedParams struct {
+	ChangedAt sql.NullInt64
+	UserID    id.ID
+}
+
+func (q *Queries) MarkPasswordChanged(ctx context.Context, arg MarkPasswordChangedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markPasswordChanged, arg.ChangedAt, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const pruneCeremonies = `-- name: PruneCeremonies :execrows

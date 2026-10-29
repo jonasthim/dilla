@@ -5,6 +5,12 @@ ON CONFLICT (user_id) DO UPDATE SET phc = excluded.phc, updated = excluded.updat
 -- name: GetPasswordCredential :one
 SELECT phc FROM password_credentials WHERE user_id = $1;
 
+-- name: MarkPasswordChanged :execrows
+UPDATE password_credentials SET changed_at = $1 WHERE user_id = $2;
+
+-- name: GetPasswordChangedAt :one
+SELECT changed_at FROM password_credentials WHERE user_id = $1;
+
 -- name: PutTOTP :exec
 INSERT INTO totp_secrets (user_id, secret, digits, period, algorithm, confirmed_at, last_counter, created)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

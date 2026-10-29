@@ -571,9 +571,10 @@ type OidcIdentities struct {
 }
 
 type PasswordCredentials struct {
-	UserID  id.ID
-	Phc     string
-	Updated int64
+	UserID    id.ID
+	Phc       string
+	Updated   int64
+	ChangedAt sql.NullInt64
 }
 
 type PendingJoins struct {

@@ -205,7 +205,9 @@ export interface RemovalNotice { id: number; communityId: string; name: string }
  *  backup codes travel only in command results. `totp` is null without a confirmed app; a passkey `id` is its credential
  *  id in lower-case hex; times are unix seconds. */
 export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | null;
-  passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean }
+  passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean;
+  /** Task 11 (Q7): when the password was last changed, unix seconds; null when unknown. */
+  passwordChanged?: number | null }
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }

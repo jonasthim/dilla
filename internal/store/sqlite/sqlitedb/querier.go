@@ -6,6 +6,7 @@ package sqlitedb
 
 import (
 	"context"
+	"database/sql"
 
 	id "github.com/jonasthim/dilla/internal/id"
 )
@@ -148,6 +149,7 @@ type Querier interface {
 	GetLastResortKeyPackage(ctx context.Context, arg GetLastResortKeyPackageParams) (KeyPackages, error)
 	GetMember(ctx context.Context, arg GetMemberParams) (Members, error)
 	GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams) (id.ID, error)
+	GetPasswordChangedAt(ctx context.Context, arg GetPasswordChangedAtParams) (sql.NullInt64, error)
 	GetPasswordCredential(ctx context.Context, arg GetPasswordCredentialParams) (string, error)
 	GetProposal(ctx context.Context, arg GetProposalParams) (MlsPendingProposals, error)
 	GetReadState(ctx context.Context, arg GetReadStateParams) (int64, error)
@@ -293,6 +295,7 @@ type Querier interface {
 	// The boot reconcile's first half (web3.6 S1): every live human account that holds no confirmed
 	// TOTP secret and no passkey registered for the instance's rp_id owes a second factor.
 	MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error)
+	MarkPasswordChanged(ctx context.Context, arg MarkPasswordChangedParams) (int64, error)
 	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
 	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
 	// DELETE, so the high-water records exactly what delivery retention took.
