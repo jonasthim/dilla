@@ -663,6 +663,11 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     // refuses a schema-13 store (`refuse_newer`), so a downgrade cannot shed the "attestation seen"
     // flag and fall back to trusting a credential's self-signed kind.
     c.execute_batch(super::account_kind::ACCOUNT_KINDS_SCHEMA)?;
+    // Fix round 3: the UMK an attestation verified over (unreleased schema 13 stores lack it; a
+    // row without it never stands in for a person-verified changed key).
+    if !has_column(c, "app_account_kinds", "umk_pub")? {
+        c.execute_batch("ALTER TABLE app_account_kinds ADD COLUMN umk_pub BLOB CHECK(umk_pub IS NULL OR length(umk_pub)=32)")?;
+    }
     if found < 13 {
         meta_put(c, SCHEMA, &[13])?;
     }

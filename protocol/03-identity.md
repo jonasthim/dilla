@@ -227,6 +227,24 @@ again, with the leaf's own `umk_pub`, its pinned instance key and its own `insta
   "attestation seen" flag), the leaf stays pending; before that, the earlier rule applies (the
   credential's kind is not checked by the core).
 
+**The person's verification wins** (fix round 3). The instance attests the UMK it holds for the
+account, and a key the user moves to without proving it to the instance (a changed UMK registered by
+session assertion) is never attested. A UMK **this person verified** — exact-key verification, or
+approving a changed key (§ Safety number, `trust_verify`) — is the authority for that key, and it is
+trusted for the kind check without an attestation over it:
+
+- an attestation over the leaf's own UMK, if the client holds one, still decides as above;
+- otherwise, for a person-verified UMK with no change pending: an account's kind never changes, so
+  an attestation this client verified over an **earlier** UMK of the same user still states it, and
+  the credential's `kind` must equal it (`E_CREDENTIAL` otherwise — a Bot-kind credential under a
+  person-verified human key is still refused);
+- with no attestation ever verified for that user, the earlier rule applies for that key: the core
+  does not judge `kind`, and a client still shows a sender as a Bot only when the server's member row
+  is of account kind 1.
+
+Every key the person has not verified, and every other user, stays under the attestation rule above
+(fail closed).
+
 A tombstoned account (`DELETE /v1/accounts/me`) has its UMK purged, so an attestation over it
 could never verify; the instance serves none for it (its wire-4 head is the four elements). A
 client that verified the account's attestation before the deletion keeps it, so the account's

@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS app_account_kinds (
   key_id BLOB NOT NULL CHECK(length(key_id)=16),
   signature BLOB NOT NULL CHECK(length(signature)=64),
   instance_key BLOB NOT NULL CHECK(length(instance_key)=32),
-  instance_id BLOB NOT NULL CHECK(length(instance_id)=16)
+  instance_id BLOB NOT NULL CHECK(length(instance_id)=16),
+  umk_pub BLOB CHECK(umk_pub IS NULL OR length(umk_pub)=32)
 );
 CREATE TABLE IF NOT EXISTS app_account_kind_staged (
   user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
@@ -53,6 +54,8 @@ CREATE TABLE IF NOT EXISTS app_account_kind_staged (
 type PinnedInstance = ([u8; 32], [u8; 16]);
 /// A stored attestation row: kind, signature, instance key, instance id.
 type StoredAttestation = (i64, Vec<u8>, Vec<u8>, Vec<u8>);
+/// A stored row with the UMK its signature verified over (fix round 3).
+type StoredRow = (i64, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>);
 
 /// The pinned instance key and this store's instance id, or `None` before either exists.
 fn pinned_instance(c: &rusqlite::Connection) -> Result<Option<PinnedInstance>, StorageError> {
@@ -79,66 +82,105 @@ pub(super) fn leaf_kind_verdict(
     c: &rusqlite::Connection,
     leaf: &CredentialIdentity,
 ) -> Result<Option<&'static str>, StorageError> {
-    let row: Option<StoredAttestation> = c
+    let user = leaf.user_id.as_bytes();
+    let row: Option<StoredRow> = c
         .query_row(
-            "SELECT kind,signature,instance_key,instance_id FROM app_account_kinds WHERE user_id=?1",
-            [leaf.user_id.as_bytes().as_slice()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            "SELECT kind,signature,instance_key,instance_id,umk_pub FROM app_account_kinds WHERE user_id=?1",
+            [user.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((kind, signature, key, instance)) = row else {
-        // Missing: refused (pending) once this client has seen an attestation from its instance.
-        return Ok(if schema::meta_get(c, ACCOUNT_KIND_SEEN)?.is_some() {
-            Some(E_DEVICE_LIST_STALE)
-        } else {
+    let judge = |kind: u8| {
+        if kind == leaf.kind.as_u8() {
             None
+        } else {
+            Some(E_CREDENTIAL)
+        }
+    };
+    // An attestation over the leaf's own UMK decides, whoever verified the key.
+    let stored = row
+        .as_ref()
+        .map(|(kind, sig, key, instance, _)| (*kind, sig.clone(), key.clone(), instance.clone()));
+    if let Some(kind) = stored
+        .as_ref()
+        .and_then(|s| stored_verifies(s, user, &leaf.umk_pub))
+    {
+        return Ok(judge(kind));
+    }
+    // Fix round 3 ("your verification wins"): a UMK this person verified needs no attestation
+    // over it; the server cannot attest a key it never saw registered with proof. An account's kind
+    // never changes, so an attestation the client verified over an earlier UMK of the same user
+    // still states it: the credential's kind must match it. With none, the earlier rule holds for
+    // this key (the core does not judge kind; the web still requires the server's member row of
+    // account kind 1 before it shows a Bot).
+    if person_verified(c, user, &leaf.umk_pub)? {
+        let earlier = row.as_ref().and_then(|(.., umk)| {
+            let umk = <[u8; 32]>::try_from(umk.as_deref()?).ok()?;
+            stored.as_ref().and_then(|s| stored_verifies(s, user, &umk))
         });
-    };
-    let (Ok(signature), Ok(key), Ok(instance)) = (
-        <[u8; 64]>::try_from(signature.as_slice()),
-        <[u8; 32]>::try_from(key.as_slice()),
-        <[u8; 16]>::try_from(instance.as_slice()),
-    ) else {
-        return Ok(Some(E_DEVICE_LIST_STALE));
-    };
-    let Ok(kind) = u8::try_from(kind) else {
-        return Ok(Some(E_DEVICE_LIST_STALE));
-    };
-    let message = account_kind_message(&instance, leaf.user_id.as_bytes(), &leaf.umk_pub, kind);
-    let verifies = VerifyingKey::from_bytes(&key)
-        .map(|k| {
-            k.verify_strict(&message, &Signature::from_bytes(&signature))
-                .is_ok()
-        })
-        .unwrap_or(false);
-    if !verifies {
-        // Not the instance's statement about this account and key: the leaf stays untrusted until
-        // a valid attestation arrives (a server can withhold, never forge).
+        return Ok(earlier.and_then(judge));
+    }
+    if row.is_some() {
+        // Not the instance's statement about this account and key, and not a key this person
+        // verified: the leaf stays untrusted until a valid attestation arrives.
         return Ok(Some(E_DEVICE_LIST_STALE));
     }
-    Ok(if kind == leaf.kind.as_u8() {
-        None
+    // Missing: refused (pending) once this client has seen an attestation from its instance.
+    Ok(if schema::meta_get(c, ACCOUNT_KIND_SEEN)?.is_some() {
+        Some(E_DEVICE_LIST_STALE)
     } else {
-        Some(E_CREDENTIAL)
+        None
     })
 }
 
-/// Whether `attestation` is the pinned instance's statement about `user` under one of `umks`.
+/// The UMK of `umks` over which `attestation` is the pinned instance's statement about `user`.
 fn verifies(
     key: &[u8; 32],
     instance: &[u8; 16],
     user: &[u8; 16],
     umks: &[[u8; 32]],
     a: &AccountKindAttestation,
-) -> bool {
-    let Ok(k) = VerifyingKey::from_bytes(key) else {
-        return false;
-    };
+) -> Option<[u8; 32]> {
+    let k = VerifyingKey::from_bytes(key).ok()?;
     let sig = Signature::from_bytes(&a.signature);
-    umks.iter().any(|umk| {
+    umks.iter().copied().find(|umk| {
         k.verify_strict(&account_kind_message(instance, user, umk, a.kind), &sig)
             .is_ok()
     })
+}
+
+/// Whether `stored` (kind, signature, instance key, instance id) is the instance's statement about
+/// `user` over `umk`.
+fn stored_verifies(stored: &StoredAttestation, user: &[u8; 16], umk: &[u8; 32]) -> Option<u8> {
+    let (kind, signature, key, instance) = stored;
+    let signature = <[u8; 64]>::try_from(signature.as_slice()).ok()?;
+    let key = <[u8; 32]>::try_from(key.as_slice()).ok()?;
+    let instance = <[u8; 16]>::try_from(instance.as_slice()).ok()?;
+    let kind = u8::try_from(*kind).ok()?;
+    let message = account_kind_message(&instance, user, umk, kind);
+    VerifyingKey::from_bytes(&key)
+        .ok()?
+        .verify_strict(&message, &Signature::from_bytes(&signature))
+        .ok()
+        .map(|()| kind)
+}
+
+/// Fix round 3 ("your verification wins"): the leaf's UMK is the user's pinned key, verified by
+/// this person (`trust_verify`: exact-key verification, or approving a changed key) and with no
+/// change pending.
+fn person_verified(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+    umk: &[u8; 32],
+) -> Result<bool, StorageError> {
+    Ok(c
+        .query_row(
+            "SELECT 1 FROM app_trust_pins WHERE user_id=?1 AND umk_pub=?2 AND verified=1 AND changed_umk IS NULL",
+            params![user.as_slice(), umk.as_slice()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 /// The outcome of offering an attestation for storage.
@@ -162,9 +204,9 @@ pub(super) fn promote(
     let Some((key, instance)) = pinned_instance(c)? else {
         return Ok(Promotion::Refused);
     };
-    if !verifies(&key, &instance, user, umks, a) {
+    let Some(over) = verifies(&key, &instance, user, umks, a) else {
         return Ok(Promotion::Refused);
-    }
+    };
     let held: Option<StoredAttestation> = c
         .query_row(
             "SELECT kind,signature,instance_key,instance_id FROM app_account_kinds WHERE user_id=?1",
@@ -178,17 +220,18 @@ pub(super) fn promote(
     let mut changed = false;
     if !same {
         c.execute(
-            "INSERT INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id) \
-             VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET kind=excluded.kind, \
+            "INSERT INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id,umk_pub) \
+             VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(user_id) DO UPDATE SET kind=excluded.kind, \
              key_id=excluded.key_id,signature=excluded.signature,instance_key=excluded.instance_key, \
-             instance_id=excluded.instance_id",
+             instance_id=excluded.instance_id,umk_pub=excluded.umk_pub",
             params![
                 user.as_slice(),
                 i64::from(a.kind),
                 a.key_id.as_slice(),
                 a.signature.as_slice(),
                 key.as_slice(),
-                instance.as_slice()
+                instance.as_slice(),
+                over.as_slice()
             ],
         )?;
         changed = true;

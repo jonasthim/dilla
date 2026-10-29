@@ -2792,3 +2792,59 @@ fn a_umk_change_on_wire_4_is_recorded_and_its_attestation_verified_over_the_new_
         (0, "comet under B after approval")
     );
 }
+
+// ---- Task S1 fix round 3: "your verification wins" ----
+
+/// The server attests users.umk_pub, which a key registered by session assertion never changes: after
+/// Bob moves to B, every head still carries the attestation over A. B stays pending until the person
+/// verifies it, and then passes, judged by the kind A's attestation states.
+#[test]
+fn a_person_verified_changed_key_needs_no_attestation_over_it() {
+    let (_, mut relay, mut alice, bob) = alice_and_bob();
+    let v1 = sec_bob_v1(&mut alice, &relay, &bob);
+    let original = sec_cached_umk(&alice, &bob.user);
+    let over_a = attestation_over(&bob.user, &original, 0);
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &over_a)
+        .expect("A attested");
+    assert!(alice.core.account_kind_seen().expect("seen"));
+
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    let changed_umk = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    rotated.join_external(&mut relay);
+    alice.sync(&relay);
+    // The served head still carries the attestation over A.
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &over_a)
+        .expect("A again");
+    let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    assert_eq!(changed, 1);
+    let seq = rotated.send(&mut relay, "under B before verification");
+    alice.sync(&relay);
+    assert_eq!(
+        alice.row_at(&GROUP, seq).status,
+        1,
+        "B pending before the person verifies it"
+    );
+
+    alice
+        .core
+        .trust_verify(&bob.user, &changed_umk)
+        .expect("the person verifies B");
+    let held = alice.row_at(&GROUP, seq);
+    assert_eq!(
+        (held.status, held.body.as_str()),
+        (0, "under B before verification"),
+        "the text held while B was unverified is released by the verification"
+    );
+    let seq = rotated.send(&mut relay, "under B after verification");
+    alice.sync(&relay);
+    let row = alice.row_at(&GROUP, seq);
+    assert_eq!(
+        (row.status, row.body.as_str()),
+        (0, "under B after verification")
+    );
+}

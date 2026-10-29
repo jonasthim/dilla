@@ -3305,7 +3305,7 @@ mod tests {
             ),
         ];
         for (name, signed, key) in cases {
-            let db = interaction_trust_db(&leaf, &list, true);
+            let db = unverified_db(&leaf, &list);
             attest(
                 &db,
                 &user,
@@ -3324,7 +3324,7 @@ mod tests {
     #[test]
     fn once_an_attestation_was_seen_a_missing_one_is_refused() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = unverified_db(&leaf, &list);
         schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
         assert_eq!(
             leaf_verdict(&db, &leaf).expect("verdict"),
@@ -3466,5 +3466,130 @@ mod tests {
         let (mut bot, _) = fixture();
         bot_leaf(&mut bot);
         assert_eq!(leaf_verdict(&db, &bot).expect("verdict"), Err(E_CREDENTIAL));
+    }
+
+    /// The trust db with the user's pin first-seen, not verified by the person (fix round 3: a
+    /// person-verified key falls back to the earlier rule, so the attestation rule is tested on
+    /// an unverified one).
+    fn unverified_db(leaf: &LeafEvidence, list: &DeviceList) -> rusqlite::Connection {
+        let db = interaction_trust_db(leaf, list, true);
+        db.execute("UPDATE app_trust_pins SET verified=0", [])
+            .expect("unverify");
+        db
+    }
+
+    /// Store an attestation row recording the UMK it verified over, as `promote` does.
+    fn attest_over(db: &rusqlite::Connection, user: &[u8; 16], umk: &[u8; 32], kind: u8) {
+        use ed25519_dalek::Signer;
+        let message = super::super::account_kind::account_kind_message(&INSTANCE, user, umk, kind);
+        let sig = instance_key().sign(&message).to_bytes();
+        db.execute(
+            "INSERT OR REPLACE INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id,umk_pub) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                user.as_slice(),
+                i64::from(kind),
+                [0x53u8; 16].as_slice(),
+                sig.as_slice(),
+                instance_key().verifying_key().to_bytes().as_slice(),
+                INSTANCE.as_slice(),
+                umk.as_slice()
+            ],
+        )
+        .expect("attestation row");
+        schema::meta_put(db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
+    }
+
+    /// Move the fixture leaf's user to a new UMK (seed 0x91), as a key change does: the leaf,
+    /// its signed list and the cached list are all under the new key.
+    fn changed_key(leaf: &mut LeafEvidence) -> DeviceList {
+        substitute_leaf_keys(leaf, 0x91)
+    }
+
+    fn pin_new_key(
+        db: &rusqlite::Connection,
+        leaf: &LeafEvidence,
+        list: &DeviceList,
+        verified: bool,
+    ) {
+        db.execute(
+            "UPDATE app_trust_pins SET umk_pub=?2,verified=?3,changed_umk=NULL WHERE user_id=?1",
+            params![
+                leaf.credential.user_id.as_bytes().as_slice(),
+                leaf.credential.umk_pub.as_slice(),
+                i64::from(verified)
+            ],
+        )
+        .expect("pin");
+        db.execute(
+            "UPDATE app_device_lists SET list=?2,umk_pub=?3,ssk_pub=?4 WHERE user_id=?1",
+            params![
+                leaf.credential.user_id.as_bytes().as_slice(),
+                list.encode(),
+                leaf.credential.umk_pub.as_slice(),
+                leaf.credential.ssk_pub.as_slice()
+            ],
+        )
+        .expect("list");
+    }
+
+    // ---- Fix round 3: "your verification wins" ----
+
+    #[test]
+    fn a_person_verified_key_needs_no_attestation_and_an_unverified_one_stays_pending() {
+        let (mut leaf, list) = fixture();
+        let user = *leaf.credential.user_id.as_bytes();
+        let db = unverified_db(&leaf, &list);
+        // Wire 4 seen, the user attested as a human over UMK A.
+        attest_over(&db, &user, &leaf.credential.umk_pub, 0);
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+        // The user moves to UMK B; the server never attests B (it was registered without proof).
+        let b_list = changed_key(&mut leaf);
+        pin_new_key(&db, &leaf, &b_list, false);
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_DEVICE_LIST_STALE),
+            "B unverified and unattested: pending"
+        );
+        // The person verifies B: B's leaves pass, judged by the kind A's attestation states.
+        pin_new_key(&db, &leaf, &b_list, true);
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+    }
+
+    #[test]
+    fn a_bot_kind_credential_under_a_person_verified_human_key_is_refused() {
+        let (mut leaf, list) = fixture();
+        let user = *leaf.credential.user_id.as_bytes();
+        let db = unverified_db(&leaf, &list);
+        attest_over(&db, &user, &leaf.credential.umk_pub, 0);
+        let b_list = changed_key(&mut leaf);
+        pin_new_key(&db, &leaf, &b_list, true);
+        // A credential under the verified B that claims Bot kind, re-signed by B's SSK (seed 0x92).
+        leaf.credential.kind = Kind::Bot;
+        leaf.credential.sig_ssk_dev = SskSigner::from_bytes(&[0x92; 32]).sign_device(
+            &leaf.credential.device_id,
+            &leaf.dsk_pub,
+            Kind::Bot,
+            leaf.credential.tier,
+            leaf.credential.signer_tier,
+        );
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_CREDENTIAL),
+            "an account's kind never changes: A's attestation still states it"
+        );
+    }
+
+    #[test]
+    fn a_person_verified_key_with_no_attestation_ever_keeps_the_earlier_rule() {
+        let (leaf, list) = fixture();
+        let db = interaction_trust_db(&leaf, &list, true); // pin verified by the person
+        schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+        let db = unverified_db(&leaf, &list);
+        schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_DEVICE_LIST_STALE)
+        );
     }
 }
