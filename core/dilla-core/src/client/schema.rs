@@ -663,6 +663,9 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     // refuses a schema-13 store (`refuse_newer`), so a downgrade cannot shed the "attestation seen"
     // flag and fall back to trusting a credential's self-signed kind.
     c.execute_batch(super::account_kind::ACCOUNT_KINDS_SCHEMA)?;
+    // An unreleased schema-13 build (S1 fix rounds 2-3) staged attestations in a table that fix
+    // round 4 removed; a development store that ran it drops the orphan (Task 11).
+    c.execute_batch("DROP TABLE IF EXISTS app_account_kind_staged;")?;
     if found < 13 {
         meta_put(c, SCHEMA, &[13])?;
     }
@@ -1194,6 +1197,24 @@ mod newer_store_tests {
             meta_get(&db, super::super::account_kind::ACCOUNT_KIND_SEEN).expect("meta"),
             None
         );
+    }
+
+    /// Task 11: a schema-13 development store holding the removed staging table loses it on open.
+    #[test]
+    fn a_v13_store_drops_the_orphan_staging_table() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh");
+        db.execute_batch("CREATE TABLE app_account_kind_staged (user_id BLOB PRIMARY KEY);")
+            .expect("simulate the orphan");
+        assert_eq!(migrate_conn(&db).expect("current"), 13);
+        let n: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_account_kind_staged'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("sqlite_master");
+        assert_eq!(n, 0, "the staging table is gone");
     }
 
     #[test]

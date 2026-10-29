@@ -79,13 +79,21 @@ export function headAttestation(head: Uint8Array): Uint8Array | null {
  * instance key) is handled exactly like a withheld attestation: nothing is stored and the history ingest still runs, so a
  * key change is still recorded and the removal feed never stalls; a user without a verified attestation stays pending once
  * one was seen. No refusal ever surfaces as a leaf verdict (E_CREDENTIAL is the core's verdict on a verified attestation
- * of another kind), so a server cannot steer which verdict the client shows.
+ * of another kind), so a server cannot steer which verdict the client shows. Task 11: a refusal other than the expected
+ * two (E_CORE_INPUT, the server's bytes; E_CORE_STATE, no pinned instance key yet), such as a storage failure, is still
+ * handled as withheld but goes to `onError` (the worker's diagnostics) rather than vanishing.
  */
-export function ingestAccountKind(core: { accountKindIngest(userId: Id, attestation: Uint8Array): void }, userId: Id, head: Uint8Array): void {
+export function ingestAccountKind(core: { accountKindIngest(userId: Id, attestation: Uint8Array): void }, userId: Id, head: Uint8Array,
+  onError?: (code: string) => void): void {
   let attestation: Uint8Array | null;
   try { attestation = headAttestation(head); } catch { return; }
   if (attestation === null) return;
-  try { core.accountKindIngest(userId, attestation); } catch { /* withheld: the ingest runs without it */ }
+  try { core.accountKindIngest(userId, attestation); }
+  catch (e) {
+    // Withheld: the ingest runs without it.
+    const code = e instanceof CoreError ? e.code : 'E_CORE_UNKNOWN';
+    if (code !== 'E_CORE_INPUT' && code !== 'E_CORE_STATE') onError?.(code);
+  }
 }
 
 /**

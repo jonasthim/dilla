@@ -4868,7 +4868,7 @@ export class Controller {
         let verdict: { version: bigint; changed: boolean; quarantined: number };
         const own = this.me !== null && toHex(this.me.userId) === user;
         try {
-          ingestAccountKind(core, leaf.userId, head);
+          ingestAccountKind(core, leaf.userId, head, code => this.recordError(code));
           verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS());
         }
         catch (e) {

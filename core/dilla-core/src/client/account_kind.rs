@@ -3,8 +3,8 @@
 //!
 //! A leaf credential's `kind` is signed by its own user's SSK, so it is the user's claim. The
 //! instance states each account's kind in an attestation signed with its external-sender key,
-//! which this client pinned (`schema::INSTANCE_SIGNER_KEY`, or `BOT_INSTANCE_KEY` for a managed
-//! Bot):
+//! which this client pinned (`schema::INSTANCE_SIGNER_KEY`; a managed Bot's store pins the same
+//! key as `schema::BOT_INSTANCE_KEY`, see `pinned_instance`):
 //!
 //! ```text
 //! message     = "dilla account kind v1" || CBOR([1, instance_id(16), user_id(16), kind])
@@ -30,8 +30,9 @@ use crate::mls::StorageError;
 use ed25519_dalek::{Signature, VerifyingKey};
 use rusqlite::{OptionalExtension, params};
 
-/// `app_meta` key: this client has stored an attestation from its instance (the per-instance
-/// "attestation seen" flag; a store holds one instance's identity).
+/// `app_meta` key: this client has verified and stored an attestation from its instance (the
+/// per-instance "attestation seen" flag, set by `account_kind_ingest` and never cleared; a store
+/// holds one instance's identity).
 pub(super) const ACCOUNT_KIND_SEEN: &str = "account_kind_seen";
 
 /// `app_account_kinds` holds one verified attestation per user.

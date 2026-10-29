@@ -216,4 +216,14 @@ describe('the account-kind attestation on a wire-4 head', () => {
     const six = encode([3, new Uint8Array([3]), new Uint8Array(64), key32(3), ATTESTATION, 0]);
     expect(() => ingestAccountKind({ accountKindIngest: () => { throw new Error('not called'); } }, id16(2), six)).not.toThrow();
   });
+
+  // Task 11 (S1 minor): the expected refusals stay quiet; anything else (a storage failure) reaches onError, still withheld.
+  it('reports a refusal other than E_CORE_INPUT or E_CORE_STATE to onError, without throwing', () => {
+    const logged: string[] = [];
+    for (const code of ['E_CORE_STATE', 'E_CORE_INPUT', 'E_CORE_STORAGE', 'E_CREDENTIAL']) {
+      ingestAccountKind({ accountKindIngest: () => { throw new CoreError(code, 'refused'); } }, id16(2), head4(3), c => logged.push(c));
+    }
+    ingestAccountKind({ accountKindIngest: () => { throw new Error('boom'); } }, id16(2), head4(3), c => logged.push(c));
+    expect(logged).toEqual(['E_CORE_STORAGE', 'E_CREDENTIAL', 'E_CORE_UNKNOWN']);
+  });
 });
