@@ -186,6 +186,8 @@ export class Gateway {
     ws.binaryType = 'arraybuffer';
     this.lastN = 0n;
     this.hello = null;
+    // Fix round 2: a beat of an earlier socket (closed by the server or torn down here) is never timed against this one's ack.
+    this.beatSentAt = null;
     this.phase = 'hello';
     ws.addEventListener('message', (event) => { if (id === this.attempt) this.onMessage(event); });
     ws.addEventListener('close', (event) => { if (id === this.attempt) this.onClose(event); });
@@ -311,6 +313,7 @@ export class Gateway {
 
   private teardown(code: number, reconnect: boolean): void {
     this.accepted = null;
+    this.beatSentAt = null;
     const ws = this.socket;
     this.attempt += 1;
     this.cancel('handshakeTimer');

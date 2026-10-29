@@ -347,6 +347,22 @@ describe('Gateway heartbeat', () => {
     expect(rtts()).toEqual([24]); // an ack with no beat outstanding reports nothing
   });
 
+  it('forgets an unacknowledged beat when its socket goes, so the next socket reports no stale round trip', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const rtts = () => h.events.flatMap((e) => (e.type === 'rtt' ? [e.ms] : []));
+    h.clock.advance(15_000);
+    s.serverClose(1006);
+    h.clock.advance(h.clock.pending()[0] ?? 0);
+    await flush();
+    const next = h.last();
+    next.open();
+    next.receive(hello());
+    next.receive(ready());
+    next.receive(encodeFrame(Op.heartbeatAck, 0, null, [1_700_000_000]));
+    expect(rtts()).toEqual([]);
+  });
+
   it('uses half of a short heartbeat_ms', async () => {
     const h = harness();
     const s = await connected(h, hello({ heartbeatMs: 10_000 }));
