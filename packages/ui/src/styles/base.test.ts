@@ -25,7 +25,8 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/:has\(\.d-app-shell__callbar\) \.d-composer \{ padding-bottom: 0\.5rem; \}/);
     expect(css).toMatch(/\[data-typing="true"\]\):has\(\.d-app-shell__tabbar\) \.d-composer \{ padding-bottom: 0\.5rem; \}/);
     expect(css).toMatch(/\.d-app-shell__tabbar\[hidden\], [^{]*\[data-typing="true"\] \.d-app-shell__tabbar \{ display: none; \}/);
-    expect(css).toMatch(/\.d-app-shell__aside, [^{]*__backdrop \{ bottom: var\(--d-tabbar-h, 0px\); \}/);
+    // Task 11 (Jonas, Q4): a phone sheet covers the whole screen, the tab bar included.
+    expect(css).toMatch(/\.d-app-shell__aside, [^{]*__backdrop \{ bottom: 0; \}/);
   });
   it('leaves fullscreen settings to the modal frame and pads the thread sheet composer once', () => {
     expect(css).not.toMatch(/\.d-settings-frame[^{}]*\[data-modeless\]/);

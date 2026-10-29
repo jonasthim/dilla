@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '@dilla/client-core';
 import { Avatar, Banner, TextField, avatarStyle } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
@@ -119,7 +119,8 @@ export function Profile(): React.JSX.Element {
       <p>{t('profile.body')}</p>
       {failed === null ? null : <Banner tone="danger">{t(failed === 'text' ? 'profile.error.chars' : failed === 'wait' ? 'profile.error.wait' : 'profile.error.save')}</Banner>}
       <div className="dw-profile">
-        {/* Enter in a one-line field saves at once (the form has no Save button to submit it). */}
+        {/* Enter in a one-line field saves at once (the form has no Save button to submit it); the keys are the fields'. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
         <form className="dw-profile-form" onSubmit={e => { e.preventDefault(); void save(); }} noValidate
           onKeyDown={e => { if (e.key === 'Enter' && e.target instanceof HTMLInputElement && !e.nativeEvent.isComposing) { e.preventDefault(); void save(); } }}>
           <TextField id="profile-display" label={t('profile.display.label')} value={fields.display} onChange={display => { edit({ display }); }}
@@ -133,7 +134,7 @@ export function Profile(): React.JSX.Element {
         </form>
         {/* The prototype's preview: how the card shows you, as you type. */}
         <div className="dw-profile-preview" aria-label={t('profile.preview')} role="group">
-          <div className="dw-profile-preview__band" style={avatarStyle(preview.display) as CSSProperties} />
+          <div className="dw-profile-preview__band" style={avatarStyle(preview.display)} />
           <div className="dw-profile-preview__body">
             <Avatar name={preview.display} size="card" />
             <div className="dw-profile-preview__name">{preview.display}</div>

@@ -10,6 +10,10 @@ import { useSignOut } from './settings/SignOut.tsx';
 import { suggestDeviceName } from './settings/device-name.ts';
 
 const CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
+const SETTINGS_ICON = 'settings';
+const CHEVRON = 'chevron-right';
+const CHECK = 'check';
+const SIGN_OUT_ICON = 'log-out';
 const DOT = { online: 'ok', idle: 'idle', dnd: 'dnd', invisible: 'off' } as const;
 
 /**
@@ -70,7 +74,7 @@ export function You(props: { onOpenSettings(section: SettingsSection | null): vo
       </div>
       <div className="dw-you__rows">
         <button type="button" className="dw-you__row" data-settings-section="index" onClick={() => props.onOpenSettings(null)}>
-          <Icon name="settings" size={16} /><span className="dw-you__label">{t('you.settings')}</span><Icon name="chevron-right" size={15} />
+          <Icon name={SETTINGS_ICON} size={16} /><span className="dw-you__label">{t('you.settings')}</span><Icon name={CHEVRON} size={15} />
         </button>
         <button ref={statusRow} type="button" className="dw-you__row" aria-expanded={open} aria-controls={open ? listId : undefined}
           aria-disabled={pending ? true : undefined} onClick={() => { if (!pending) setOpen(o => !o); }}>
@@ -83,13 +87,13 @@ export function You(props: { onOpenSettings(section: SettingsSection | null): vo
               <button key={value} type="button" className="dw-you__row dw-you__choice" aria-pressed={value === choice} onClick={() => choose(value)}>
                 <span className="dw-you__dot" aria-hidden="true"><StateDot tone={DOT[value]} /></span>
                 <span className="dw-you__label">{t(`presence.${value}`)}</span>
-                {value === choice ? <Icon name="check" size={15} /> : null}
+                {value === choice ? <Icon name={CHECK} size={15} /> : null}
               </button>
             ))}
           </div>
         ) : null}
         <button type="button" className="dw-you__row" data-danger="true" onClick={signOut.requestOpen}>
-          <Icon name="log-out" size={16} /><span className="dw-you__label">{t('workspace.signOut')}</span>
+          <Icon name={SIGN_OUT_ICON} size={16} /><span className="dw-you__label">{t('workspace.signOut')}</span>
         </button>
       </div>
       {error ? <p role="alert" className="dw-you__error">{t('presence.error')}</p> : null}

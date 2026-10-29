@@ -7,6 +7,7 @@ import { requestThread } from '../thread-request.ts';
 import { mergeMembers, nameBook, plainBody, rowBadge } from './shell-model.ts';
 
 const CATEGORY = 2;
+const CHANNEL_GLYPH = 'hash';
 
 /** One row of the list: the 32px avatar (or a channel's glyph), "where" over "who text". */
 interface Row { key: string; who: string; avatar: { name: string; bot?: boolean } | 'channel'; where: string; text: string; onOpen(el: HTMLElement): void;
@@ -92,7 +93,7 @@ export function Activity(props: {
             <button type="button" className="dw-activity__row" {...(r.popup === true ? { 'aria-haspopup': 'dialog' as const } : {})}
               onClick={e => r.onOpen(e.currentTarget)}>
               <span className="dw-activity__avatar" aria-hidden="true">
-                {r.avatar === 'channel' ? <span className="dw-activity__glyph"><Icon name="hash" size={14} /></span>
+                {r.avatar === 'channel' ? <span className="dw-activity__glyph"><Icon name={CHANNEL_GLYPH} size={14} /></span>
                   : <Avatar name={r.avatar.name} size="row" shape={r.avatar.bot === true ? 'bot' : 'circle'} />}
               </span>
               <span className="dw-activity__text">

@@ -7,7 +7,7 @@ import { CoreProvider } from '../core/context.tsx';
 import { FakeClient } from '../test/fake-client.ts';
 import { account, timelineItem } from '../test/fixtures.ts';
 import { PHONE_QUERY } from '../layout.ts';
-import { en, t } from '../strings/index.ts';
+import { en } from '../strings/index.ts';
 import { Shell } from './Shell.tsx';
 
 const A = 'a1'.repeat(16);
