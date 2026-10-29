@@ -374,6 +374,15 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `settings.voice.pttPrompt='Press the key to use. Escape cancels. It works only while dilla is the active tab.'`
 - `settings.voice.pttRefused='That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.'` (added 2026-10-13, task-7 review M9; reworded 2026-10-13, task-8b review I2; 2026-10-14, WB a11y m2: Insert is no longer suggested, since NVDA and JAWS use it as their modifier key; it is still accepted)
 - `settings.voice.noise='Noise suppression'`, `settings.voice.level='Input level'`
+- Signal task 10b (README §5.9): input and output volume (0–200 %), the Mic test's Let's check (a ten-second loopback through the call's own chain, only you hear it), the sensitivity meter and its threshold (automatic by default; the voice-activity gate in the call), push to talk's release delay, echo cancellation and automatic gain. `settings.voice.level` and the record-and-play test's strings are no longer shown.
+- `signalSettings.voice.volume='Volume'`, `signalSettings.voice.inputVolume='Input volume'`, `signalSettings.voice.outputVolume='Output volume'`
+- `signalSettings.voice.testStart='Let’s check'`, `signalSettings.voice.testStop='Stop testing'`, `signalSettings.voice.testHint='Talk normally. The bar is your level; the white line is where dilla starts sending your voice. Your voice plays back so you hear what others hear, so wear headphones.'`
+- `signalSettings.voice.heard='You’re being heard'`, `signalSettings.voice.tooQuiet='Too quiet to send'`, `signalSettings.voice.notTesting='Not testing'`
+- `signalSettings.voice.levelValue='level {value}'`, `signalSettings.voice.thresholdValue='threshold {value}'`, `signalSettings.voice.noLevel='—'`
+- `signalSettings.voice.threshold='Sensitivity threshold'`, `signalSettings.voice.auto='Set sensitivity automatically'`, `signalSettings.voice.autoHintOn='dilla picks the threshold from your room noise. Turn off to drag the line yourself.'`
+- `signalSettings.voice.autoHintOff='Drag the white line on the meter to set the threshold.'`, `signalSettings.voice.release='Release delay'`, `signalSettings.voice.releaseHint='Keeps sending this long after you let go, so word endings aren’t cut.'`
+- `signalSettings.voice.echo='Echo cancellation'`, `signalSettings.voice.echoHint='Stops your speakers from feeding back into the mic'`, `signalSettings.voice.agc='Automatic gain control'`
+- `signalSettings.voice.agcHint='Evens out loud and quiet speech'`
 - `settings.notify.sounds='Sounds'`, `settings.sound.voice='Join and leave sounds'`, `settings.sound.ring='Ring for calls'`
 - `voice.diag.tracks='hearing {attached} of {expected}'`, `voice.outputFailed='The output device did not change. Call sound plays where it did before.'`
 

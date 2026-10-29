@@ -138,6 +138,7 @@ export type { AudioMeterProps } from './AudioMeter/AudioMeter.tsx';
 export { VoiceSettings } from './VoiceSettings/VoiceSettings.tsx';
 export { isPushToTalkKey, PUSH_TO_TALK_KEYS, typesOrOperates } from './VoiceSettings/VoiceSettings.tsx';
 export type { VoiceSettingsProps, CaptureKeyAction, CapturedKey } from './VoiceSettings/VoiceSettings.tsx';
+export { SensitivityMeter, formatDb, segmentStates, type SensitivityMeterProps } from './SensitivityMeter/SensitivityMeter.tsx';
 export { UnsupportedVoice } from './UnsupportedVoice/UnsupportedVoice.tsx';
 export type { UnsupportedVoiceProps } from './UnsupportedVoice/UnsupportedVoice.tsx';
 export { RingBanner } from './RingBanner/RingBanner.tsx';

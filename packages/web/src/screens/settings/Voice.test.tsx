@@ -11,7 +11,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 /** The worker republishes what setSetting stored, as the real one does. */
 function setup(settings: Record<string, string> = {}, media?: { permission: PermissionState | 'throws'; devices: MediaDeviceInfo[];
-  getUserMedia?: () => Promise<MediaStream> }) {
+  getUserMedia?: () => Promise<MediaStream>; supported?: MediaTrackSupportedConstraints }) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('settings', settings);
@@ -25,7 +25,8 @@ function setup(settings: Record<string, string> = {}, media?: { permission: Perm
   };
   const enumerateDevices = vi.fn(() => Promise.resolve(media?.devices ?? []));
   const getUserMedia = vi.fn(media?.getUserMedia ?? (() => Promise.reject(new Error('no'))));
-  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices, getUserMedia } });
+  const supported = media?.supported ?? { echoCancellation: true, autoGainControl: true };
+  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices, getUserMedia, getSupportedConstraints: () => supported } });
   Object.defineProperty(navigator, 'permissions', { configurable: true,
     value: { query: vi.fn(() => (media?.permission === 'throws' ? Promise.reject(new TypeError('microphone is not a permission name'))
       : Promise.resolve({ state: media?.permission ?? 'prompt' }))) } });
@@ -86,33 +87,60 @@ describe('Settings → Voice', () => {
     expect(await screen.findByRole('option', { name: 'Desk mic' })).toBeInTheDocument();
   });
 
-  it('shows the microphone level once the permission was granted, and releases the microphone when the section goes', async () => {
-    const stopped = vi.fn();
-    let closed = false;
-    vi.stubGlobal('AudioContext', class {
-      createMediaStreamSource() { return { connect: () => undefined, disconnect: () => undefined }; }
-      createAnalyser() { return { fftSize: 512, getFloatTimeDomainData: (b: Float32Array) => { b.fill(0.25); } }; }
-      close() { closed = true; return Promise.resolve(); }
-    });
-    const stream = { getTracks: () => [{ stop: stopped }] } as unknown as MediaStream;
+  // Task 10b: the meter is the Mic test's; it reads the microphone only while Let's check runs, never on its own.
+  it('never opens the microphone for the meter: at rest the pill says Not testing and the level is a dash', async () => {
     const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
-    const { fake, view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
-    await waitFor(() => expect(screen.getByRole('meter', { name: 'Input level' })).toHaveAttribute('aria-valuenow', '12'), { timeout: 2000 });
-    expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'mic-1' } } });
-    act(() => fake.publish('call', callState({ phase: 'in' })));
-    expect(screen.queryByRole('meter', { name: 'Input level' })).toBeNull();
-    expect(screen.getByText('The input meter is paused during calls and microphone tests.')).toBeVisible();
-    expect(getUserMedia).toHaveBeenCalledTimes(1);
-    view.unmount();
-    expect(stopped).toHaveBeenCalled();
-    expect(closed).toBe(true);
-  });
-
-  it('never opens the microphone for the meter before the permission was granted', async () => {
-    const { getUserMedia } = setup({}, { permission: 'prompt', devices: [] });
-    await screen.findByRole('meter', { name: 'Input level' });
+    const { getUserMedia } = setup({}, { permission: 'granted', devices: [mic] });
+    expect(await screen.findByRole('option', { name: 'Desk mic' })).toBeInTheDocument();
+    expect(screen.getByText('Not testing')).toBeInTheDocument();
+    expect(screen.getByText('level —')).toBeInTheDocument();
+    expect(screen.getByText('threshold -48 dB')).toBeInTheDocument();
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it('in a call Let’s check is disabled and says why', () => {
+    const { fake } = setup();
+    act(() => fake.publish('call', callState({ phase: 'in' })));
+    expect(screen.getByRole('button', { name: 'Let’s check' })).toBeDisabled();
+    expect(screen.getByText('Microphone testing is unavailable during a call.')).toBeVisible();
+  });
+});
+
+describe('Settings → Voice: task 10b levels and switches', () => {
+  it('writes the volumes, the sensitivity, the release delay and the processing switches, each validated by client-core', async () => {
+    const { fake, user } = setup({ 'voice.mode': 'ptt' });
+    fireEvent.change(screen.getByRole('slider', { name: 'Input volume' }), { target: { value: '150' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Output volume' }), { target: { value: '40' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Release delay' }), { target: { value: '400' } });
+    await user.click(screen.getByRole('switch', { name: 'Set sensitivity automatically' }));
+    expect(fake.get('settings')?.['voice.sensitivityAuto']).toBe('off');
+    expect(screen.getByRole('slider', { name: 'Sensitivity threshold' })).not.toBeDisabled();
+    expect(screen.getByText('threshold -50 dB')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('slider', { name: 'Sensitivity threshold' }), { target: { value: '-30' } });
+    await user.click(screen.getByRole('switch', { name: 'Echo cancellation' }));
+    await user.click(screen.getByRole('switch', { name: 'Automatic gain control' }));
+    expect(settingCalls(fake)).toEqual(expect.arrayContaining([['voice.inputVolume', '150'], ['voice.outputVolume', '40'], ['voice.pttRelease', '400'],
+      ['voice.sensitivityAuto', 'off'], ['voice.sensitivity', '-30'], ['voice.echo', 'off'], ['voice.agc', 'off']]));
+    expect(screen.getByRole('slider', { name: 'Input volume' })).toHaveAttribute('aria-valuetext', '150%');
+    expect(screen.getByText('threshold -30 dB')).toBeInTheDocument();
+  });
+
+  it('shows the stored values', () => {
+    setup({ 'voice.inputVolume': '57', 'voice.outputVolume': '200', 'voice.sensitivityAuto': 'off', 'voice.sensitivity': '-35', 'voice.mode': 'ptt',
+      'voice.pttRelease': '0', 'voice.echo': 'off', 'voice.agc': 'on' });
+    expect(screen.getByRole('slider', { name: 'Input volume' })).toHaveValue('57');
+    expect(screen.getByRole('slider', { name: 'Output volume' })).toHaveValue('200');
+    expect(screen.getByRole('slider', { name: 'Sensitivity threshold' })).toHaveValue('-35');
+    expect(screen.getByRole('slider', { name: 'Release delay' })).toHaveValue('0');
+    expect(screen.getByRole('switch', { name: 'Echo cancellation' })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('switch', { name: 'Automatic gain control' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('Ruling AR: a processing switch the browser cannot apply is not shown', () => {
+    setup({}, { permission: 'prompt', devices: [], supported: { echoCancellation: true } });
+    expect(screen.getByRole('switch', { name: 'Echo cancellation' })).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Automatic gain control' })).toBeNull();
   });
 });
 
@@ -150,11 +178,12 @@ it('keeps legacy On on Lightweight and offers Automatic explicitly', async () =>
 
 // Task 10 (README §5.9): the microphone test sits in the Voice page's Mic test group with the input level, under its heading.
 describe('Settings → Voice grammar', () => {
-  it('puts the microphone test in the Mic test group', () => {
+  it('puts Let’s check and the sensitivity meter in the Mic test group', () => {
     const { view } = setup();
     const group = screen.getByRole('region', { name: 'Mic test' });
-    expect(group).toContainElement(screen.getByRole('button', { name: 'Test microphone' }));
-    expect(group.querySelector('[data-setting="voice-test"]')).not.toBeNull();
+    expect(group).toContainElement(screen.getByRole('button', { name: 'Let’s check' }));
+    expect(group).toContainElement(screen.getByRole('slider', { name: 'Sensitivity threshold' }));
+    expect(group).toHaveAttribute('data-setting', 'voice-test');
     expect(view.container.querySelectorAll('.d-voice-settings__group')).toHaveLength(4);
   });
 });

@@ -4,6 +4,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 import { typesOrOperates, VoiceSettings, type VoiceSettingsProps } from './VoiceSettings.tsx';
 import meta from './VoiceSettings.stories.tsx';
+import { VOICE_HANDLERS, VOICE_LABELS } from './VoiceSettings.fixture.ts';
 
 const labels: VoiceSettingsProps['labels'] = {
   input: 'input device', output: 'output device', systemDefault: 'system default',
@@ -11,12 +12,19 @@ const labels: VoiceSettingsProps['labels'] = {
   pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
   pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
   pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
-  noise: 'noise suppression', automatic: 'automatic', lightweight: 'lightweight', off: 'off', level: 'input level',
+  noise: 'noise suppression', automatic: 'automatic', lightweight: 'lightweight', off: 'off',
+  volume: VOICE_LABELS.volume, inputVolume: 'input volume', outputVolume: 'output volume', testStart: 'Let’s check', testStop: 'Stop testing',
+  testHint: 'hint', testUnavailable: 'unavailable in a call', heard: 'You’re being heard', tooQuiet: 'Too quiet to send', notTesting: 'Not testing',
+  levelValue: 'level {value}', thresholdValue: 'threshold {value}', noLevel: '—', threshold: 'sensitivity threshold',
+  auto: 'set sensitivity automatically', autoHintOn: 'auto on', autoHintOff: 'drag the line', release: 'release delay', releaseHint: 'keeps sending',
+  echo: 'echo cancellation', echoHint: 'no feedback', agc: 'automatic gain control', agcHint: 'evens out',
 };
+const prompt = () => document.querySelector('.d-voice-settings__prompt') as HTMLElement;
 const base: VoiceSettingsProps = {
   inputs: [{ id: 'mic-1', label: 'USB microphone' }, { id: 'mic-2', label: 'Headset' }], outputs: [{ id: 'out-1', label: 'Speakers' }],
-  input: '', output: '', canSelectOutput: true, mode: 'vad', pttKey: null, capturing: false, noise: 'lightweight', level: 4, labels,
-  onInput: () => {}, onOutput: () => {}, onMode: () => {}, onCaptureKey: () => {}, onNoise: () => {},
+  input: '', output: '', canSelectOutput: true, inputVolume: 100, outputVolume: 100, mode: 'vad', pttKey: null, capturing: false, pttReleaseMs: 200,
+  noise: 'lightweight', echo: true, agc: true, micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true }, labels,
+  ...VOICE_HANDLERS,
 };
 
 afterEach(() => { delete document.documentElement.dataset.theme; });
@@ -41,7 +49,7 @@ describe('VoiceSettings', () => {
     expect(screen.getByText('This browser plays voice on the system default device.')).toBeInTheDocument();
   });
 
-  it('voice activity is the default; push to talk shows its key row; noise suppression has three choices; the level is a meter', async () => {
+  it('voice activity is the default; push to talk shows its key row; noise suppression has three choices', async () => {
     const onMode = vi.fn();
     const onNoise = vi.fn();
     const { rerender } = render(<VoiceSettings {...base} onMode={onMode} onNoise={onNoise} />);
@@ -51,7 +59,6 @@ describe('VoiceSettings', () => {
     expect(onMode).toHaveBeenCalledWith('ptt');
     await userEvent.click(screen.getByRole('radio', { name: 'off' }));
     expect(onNoise).toHaveBeenCalledWith('off');
-    expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '4');
     rerender(<VoiceSettings {...base} mode="ptt" />);
     expect(screen.getByText('no key set')).toBeInTheDocument();
     rerender(<VoiceSettings {...base} mode="ptt" pttKey="F8" />);
@@ -66,7 +73,7 @@ describe('VoiceSettings', () => {
     rerender(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
     const capture = screen.getByRole('button', { name: 'set key' });
     expect(capture).toHaveFocus();
-    expect(screen.getByRole('status')).toHaveTextContent('Press the key to use. Escape cancels.');
+    expect(prompt()).toHaveTextContent('Press the key to use. Escape cancels.');
     const typed = fireEvent.keyDown(capture, { key: 'F13', code: 'F13' });
     expect(typed).toBe(false);
     expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F13', ctrl: false, alt: false, meta: false, shift: false });
@@ -93,7 +100,7 @@ describe('VoiceSettings', () => {
       expect(typed).toBe(false);
     }
     expect(onCaptureKey).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('That key types text, moves the focus or needs another key.'));
+    await waitFor(() => expect(prompt()).toHaveTextContent('That key types text, moves the focus or needs another key.'));
     fireEvent.keyDown(capture, { key: 'Control', code: 'ControlLeft', ctrlKey: true });
     expect(onCaptureKey).not.toHaveBeenCalled();
     for (const code of ['F13', 'F24', 'Pause', 'ScrollLock', 'Insert']) {
@@ -108,7 +115,7 @@ describe('VoiceSettings', () => {
   it('says the refusal again for a second refused key', async () => {
     render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={vi.fn()} />);
     const capture = screen.getByRole('button', { name: 'set key' });
-    const status = screen.getByRole('status');
+    const status = prompt();
     fireEvent.keyDown(capture, { key: 'a', code: 'KeyA' });
     expect(status).toHaveTextContent('That key types text');
     fireEvent.keyDown(capture, { key: 'b', code: 'KeyB' });
@@ -126,6 +133,85 @@ describe('VoiceSettings', () => {
     expect(onCaptureKey).not.toHaveBeenCalled();
     expect(typesOrOperates({ key: '@', code: 'Digit2', ctrlKey: true, altKey: true, metaKey: false, getModifierState: (k) => k === 'AltGraph' })).toBe(true);
     expect(typesOrOperates({ key: 'Pause', code: 'Pause', ctrlKey: false, altKey: false, metaKey: false, getModifierState: () => false })).toBe(false);
+  });
+
+  // Task 10b
+  it('input and output volume are named ranges 0–200 % with their value', () => {
+    const onInputVolume = vi.fn();
+    const onOutputVolume = vi.fn();
+    render(<VoiceSettings {...base} inputVolume={57} onInputVolume={onInputVolume} onOutputVolume={onOutputVolume} />);
+    const input = screen.getByRole('slider', { name: 'input volume' });
+    expect(input).toHaveAttribute('max', '200');
+    expect(input).toHaveAttribute('aria-valuetext', '57%');
+    expect(input.style.getPropertyValue('--d-fill')).toBe('28.5%');
+    fireEvent.change(input, { target: { value: '140' } });
+    expect(onInputVolume).toHaveBeenCalledWith(140);
+    fireEvent.change(screen.getByRole('slider', { name: 'output volume' }), { target: { value: '0' } });
+    expect(onOutputVolume).toHaveBeenCalledWith(0);
+  });
+
+  it('the output volume stays where the browser cannot choose the output device', () => {
+    render(<VoiceSettings {...base} canSelectOutput={false} />);
+    expect(screen.getByRole('slider', { name: 'output volume' })).toBeInTheDocument();
+  });
+
+  it('Mic test: Let’s check / Stop testing, the pill as live text, the readouts, and automatic sensitivity', async () => {
+    const onMicTest = vi.fn();
+    const onAuto = vi.fn();
+    const onThreshold = vi.fn();
+    const { rerender } = render(<VoiceSettings {...base} onMicTest={onMicTest} onAuto={onAuto} onThreshold={onThreshold} />);
+    const pill = () => document.querySelector('.d-voice-settings__pill') as HTMLElement;
+    expect(pill()).toHaveAttribute('role', 'status');
+    expect(pill()).toHaveTextContent('Not testing');
+    expect(screen.getByText('level —')).toBeInTheDocument();
+    expect(screen.getByText('threshold -48 dB')).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: 'sensitivity threshold' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Let’s check' }));
+    expect(onMicTest).toHaveBeenCalledTimes(1);
+    rerender(<VoiceSettings {...base} micTest={{ testing: true, available: true, levelDb: -30.4, thresholdDb: -48, auto: true }} onAuto={onAuto} />);
+    expect(screen.getByRole('button', { name: 'Stop testing' })).toHaveAttribute('data-testing', 'true');
+    expect(pill()).toHaveTextContent('You’re being heard');
+    expect(screen.getByText('level -30 dB')).toBeInTheDocument();
+    rerender(<VoiceSettings {...base} micTest={{ testing: true, available: true, levelDb: -60, thresholdDb: -48, auto: true }} onAuto={onAuto} />);
+    expect(pill()).toHaveTextContent('Too quiet to send');
+    await userEvent.click(screen.getByRole('switch', { name: 'set sensitivity automatically' }));
+    expect(onAuto).toHaveBeenCalledWith(false);
+    rerender(<VoiceSettings {...base} micTest={{ testing: false, available: true, levelDb: -100, thresholdDb: -35, auto: false }} onThreshold={onThreshold} />);
+    expect(screen.getByText('drag the line')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('slider', { name: 'sensitivity threshold' }), { target: { value: '-20' } });
+    expect(onThreshold).toHaveBeenCalledWith(-20);
+  });
+
+  it('Let’s check is disabled while a call holds the microphone, and says so', () => {
+    render(<VoiceSettings {...base} micTest={{ testing: false, available: false, levelDb: -100, thresholdDb: -48, auto: true }} />);
+    expect(screen.getByRole('button', { name: 'Let’s check' })).toBeDisabled();
+    expect(screen.getByText('unavailable in a call')).toBeInTheDocument();
+  });
+
+  it('push to talk shows the release delay: 0–1000 ms in steps of 20', () => {
+    const onPttRelease = vi.fn();
+    render(<VoiceSettings {...base} mode="ptt" pttReleaseMs={200} onPttRelease={onPttRelease} />);
+    const range = screen.getByRole('slider', { name: 'release delay' });
+    expect(range).toHaveAttribute('step', '20');
+    expect(range).toHaveAttribute('max', '1000');
+    expect(range).toHaveAttribute('aria-valuetext', '200 ms');
+    expect(range).toHaveAccessibleDescription('keeps sending');
+    fireEvent.change(range, { target: { value: '340' } });
+    expect(onPttRelease).toHaveBeenCalledWith(340);
+  });
+
+  it('echo cancellation and automatic gain are switches; a switch the browser cannot apply is not shown (Ruling AR)', async () => {
+    const onEcho = vi.fn();
+    const onAgc = vi.fn();
+    const { rerender } = render(<VoiceSettings {...base} onEcho={onEcho} onAgc={onAgc} />);
+    await userEvent.click(screen.getByRole('switch', { name: 'echo cancellation' }));
+    expect(onEcho).toHaveBeenCalledWith(false);
+    await userEvent.click(screen.getByRole('switch', { name: 'automatic gain control' }));
+    expect(onAgc).toHaveBeenCalledWith(false);
+    expect(screen.getByRole('switch', { name: 'echo cancellation' })).toHaveAccessibleDescription('no feedback');
+    rerender(<VoiceSettings {...base} agc={undefined} echo={undefined} />);
+    expect(screen.queryByRole('switch', { name: 'automatic gain control' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'echo cancellation' })).toBeNull();
   });
 
   it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

@@ -62,7 +62,7 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
     anchor('notify-sounds', 'notify.sounds.label', 'join', 'leave', 'ring', 'sound'),
   ]),
   user('voice', 'workspace.group.you', ['microphone', 'input', 'output', 'speaker', 'permission', 'push to talk', 'ptt', 'noise', 'test'], [
-    anchor('voice-test', 'settings.voice.test', 'microphone', 'input', 'test'),
+    anchor('voice-test', 'signalSettings.voice.testStart', 'microphone', 'input', 'test', 'sensitivity', 'threshold', 'volume'),
   ]),
   user('keyboard', 'workspace.group.you', ['shortcut', 'binding', 'keys', 'push to talk']),
   user('appearance', 'workspace.group.you', ['theme', 'dark', 'light', 'contrast', 'density', 'motion'], [

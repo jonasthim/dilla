@@ -27,6 +27,9 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   // Task 9 (README §5.7): the members aside's status line is the prototype's #767D89 (--fg-3); on the open member's row (the --hover
   // fill #14171C, the prototype's p.bg while the card is open) that is 4.33:1. Light and high-contrast keep their accessible pairs.
   { selector: '.d-member-list__row[data-open] .d-member-list__line2', simple: '.d-member-list__line2', why: 'the open member row\'s status line in #767D89 on #14171C (4.33:1)' },
+  // Task 10b (README §5.9): the sensitivity meter's scale (−100 dB / −50 / 0 dB) is the prototype's 9.5px #636A75 on bg (3.65:1).
+  // It is aria-hidden: the threshold slider's value text and the readouts beside the pill carry the numbers.
+  { selector: '.d-sens__tick', simple: '.d-sens__tick', why: 'the sensitivity meter scale in #636A75 on bg (3.65:1)' },
   // Not listed because axe cannot see it: a code block's line numbers, the prototype's #4A5059 on bg-2 (2.4:1), are CSS-generated
   // (`::before` counters) and decorative (never part of the code's text). Light and high-contrast draw them in fg-3 / #C8C8C8.
 ];

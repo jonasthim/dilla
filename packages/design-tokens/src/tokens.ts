@@ -44,6 +44,10 @@ export type ColorTokens = {
   accentTag: string; dangerEdge: string; dangerFaint: string; accentRing: string; brandGlow: string; accentPick: string;
   /** Task 8c: the seam between a live Share and its Stream quality chevron (the prototype's rgba(3,18,30,.25), --accent-ink at 0.25). */
   accentSplit: string;
+  // Task 10b
+  /** The sensitivity meter (Settings → Voice), each the prototype's literal: an unlit segment (#161A20), the heard pill's
+   *  0.3 --ok edge, the too-quiet pill's 0.08 --warn fill and 0.3 --warn edge. */
+  meterOff: string; okLine: string; warnFaint: string; warnLine: string;
   linkUnderline: 0 | 1;
 };
 
@@ -66,6 +70,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     // Task 10
     accentTag: 'rgba(90,168,230,0.14)', dangerEdge: 'rgba(255,110,110,0.4)', dangerFaint: 'rgba(255,110,110,0.08)', accentRing: 'rgba(90,168,230,0.15)', brandGlow: 'rgba(0,87,153,0.28)', accentPick: 'rgba(90,168,230,0.06)',
     accentSplit: 'rgba(3,18,30,0.25)',
+    // Task 10b
+    meterOff: '#161A20', okLine: 'rgba(124,255,142,0.3)', warnFaint: 'rgba(255,209,106,0.08)', warnLine: 'rgba(255,209,106,0.3)',
     linkUnderline: 0,
   },
   light: {
@@ -86,6 +92,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     // Task 10
     accentTag: 'rgba(0,87,153,0.12)', dangerEdge: 'rgba(179,38,30,0.45)', dangerFaint: 'rgba(179,38,30,0.08)', accentRing: 'rgba(0,87,153,0.2)', brandGlow: 'rgba(0,87,153,0.12)', accentPick: 'rgba(0,87,153,0.06)',
     accentSplit: 'rgba(255,255,255,0.25)',
+    // Task 10b
+    meterOff: '#DDE1DD', okLine: 'rgba(27,115,52,0.3)', warnFaint: 'rgba(138,90,0,0.08)', warnLine: 'rgba(138,90,0,0.3)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -106,6 +114,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     // Task 10
     accentTag: 'rgba(156,203,255,0.2)', dangerEdge: '#FF9A9A', dangerFaint: 'rgba(255,154,154,0.12)', accentRing: 'rgba(156,203,255,0.35)', brandGlow: 'rgba(0,0,0,0)', accentPick: 'rgba(156,203,255,0.1)',
     accentSplit: 'rgba(0,0,0,0.25)',
+    // Task 10b
+    meterOff: '#1C1C1C', okLine: 'rgba(155,255,168,0.5)', warnFaint: 'rgba(255,224,138,0.12)', warnLine: '#FFE08A',
     linkUnderline: 1,
   },
 };
@@ -234,7 +244,9 @@ export const structural = {
     // Task 9 (the prototype's overlays): a scrim's fade, a form dialog's entrance and the profile card's entrance.
     scrim: '160ms', dialog: '240ms', profile: '260ms',
     // Task 10: Settings entering (sModal), the sign-in card entering, and a sign-in step's rise.
-    modal: '260ms', card: '420ms', step: '360ms' },
+    modal: '260ms', card: '420ms', step: '360ms',
+    // Task 10b: the sensitivity meter's segment fade (70ms). Like `meter`, a live level readout: never zeroed under reduced motion.
+    meterSegment: '70ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

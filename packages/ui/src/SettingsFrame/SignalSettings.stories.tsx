@@ -86,30 +86,36 @@ function Notifications() {
   );
 }
 
-// screens/settings/Voice.tsx: VoiceSettings with the shipped labels and MicrophoneTest in its Mic test section.
+// screens/settings/Voice.tsx: VoiceSettings with the shipped labels, as the app passes them at rest (task 10b: volumes 100 %,
+// automatic sensitivity at the resting −48 dB, not testing, release delay 200 ms, echo cancellation and automatic gain on).
 function Voice({ ptt }: { ptt?: boolean }) {
   return (
     <section className="dw-settings-section" aria-labelledby="voice-settings-title">
       <h2 id="voice-settings-title" tabIndex={-1}>{t('settings.voice.section')}</h2>
       <p>{t('signalSettings.voice.body')}</p>
       <VoiceSettings inputs={[{ id: 'yeti', label: 'Blue Yeti' }]} outputs={[{ id: 'phones', label: 'Headphones' }]} input="" output=""
-        canSelectOutput mode={ptt ? 'ptt' : 'vad'} pttKey={ptt ? 'F13' : null} capturing={false} noise="automatic" level={0}
+        canSelectOutput inputVolume={100} outputVolume={100} mode={ptt ? 'ptt' : 'vad'} pttKey={ptt ? 'F13' : null} capturing={false}
+        pttReleaseMs={200} noise="automatic" echo agc
+        micTest={{ testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true }}
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
           pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'),
-          automatic: t('settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'), level: t('settings.voice.level'),
+          automatic: t('settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
           devices: t('signalSettings.voice.devices'), test: t('signalSettings.voice.test'), inputMode: t('signalSettings.voice.inputMode'), processing: t('signalSettings.voice.processing'),
           pttHint: t('signalSettings.voice.pttHint'),
           noiseHints: { automatic: t('signalSettings.voice.noiseHint.automatic'), lightweight: t('signalSettings.voice.noiseHint.lightweight'), off: t('signalSettings.voice.noiseHint.off') },
-          noiseTag: t('signalSettings.voice.noiseTag') }}
-        test={<div data-setting="voice-test"><div>
-          <p>{t('settings.voice.testHelp')}</p>
-          <button type="button" className="d-btn">{t('settings.voice.test')}</button>
-          <p role="status" />
-        </div></div>}
-        onInput={noop} onOutput={noop} onMode={noop} onCaptureKey={noop} onNoise={noop} />
-      <p>{t('settings.voice.noisePending')}</p>
+          noiseTag: t('signalSettings.voice.noiseTag'),
+          volume: t('signalSettings.voice.volume'), inputVolume: t('signalSettings.voice.inputVolume'), outputVolume: t('signalSettings.voice.outputVolume'),
+          testStart: t('signalSettings.voice.testStart'), testStop: t('signalSettings.voice.testStop'), testHint: t('signalSettings.voice.testHint'),
+          testUnavailable: t('settings.voice.testCall'), heard: t('signalSettings.voice.heard'), tooQuiet: t('signalSettings.voice.tooQuiet'),
+          notTesting: t('signalSettings.voice.notTesting'), levelValue: t('signalSettings.voice.levelValue', { value: '{value}' }), thresholdValue: t('signalSettings.voice.thresholdValue', { value: '{value}' }),
+          noLevel: t('signalSettings.voice.noLevel'), threshold: t('signalSettings.voice.threshold'), auto: t('signalSettings.voice.auto'),
+          autoHintOn: t('signalSettings.voice.autoHintOn'), autoHintOff: t('signalSettings.voice.autoHintOff'),
+          release: t('signalSettings.voice.release'), releaseHint: t('signalSettings.voice.releaseHint'),
+          echo: t('signalSettings.voice.echo'), echoHint: t('signalSettings.voice.echoHint'), agc: t('signalSettings.voice.agc'), agcHint: t('signalSettings.voice.agcHint') }}
+        onInput={noop} onOutput={noop} onInputVolume={noop} onOutputVolume={noop} onMode={noop} onCaptureKey={noop} onPttRelease={noop}
+        onNoise={noop} onMicTest={noop} onThreshold={noop} onAuto={noop} onEcho={noop} onAgc={noop} />
     </section>
   );
 }

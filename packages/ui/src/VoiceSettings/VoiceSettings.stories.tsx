@@ -1,26 +1,17 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { VoiceSettings } from './VoiceSettings.tsx';
+import { VOICE_HANDLERS, VOICE_LABELS } from './VoiceSettings.fixture.ts';
 
-// Every string is L-COPY-05's, quoted (en.ts gains them in task 9); the device names are the browser's.
 const meta = {
   title: 'Voice/VoiceSettings', component: VoiceSettings,
   args: {
     inputs: [{ id: 'mic-1', label: 'USB microphone' }, { id: 'mic-2', label: 'Headset microphone' }],
     outputs: [{ id: 'out-1', label: 'Speakers' }, { id: 'out-2', label: 'Headset' }],
-    input: '', output: '', canSelectOutput: true, mode: 'vad', pttKey: null, capturing: false, noise: 'automatic', level: 5,
-    // The shipped copy (packages/web/src/strings/en.ts, the prototype's Voice page), as Settings → Voice passes it.
-    labels: {
-      input: 'Input device', output: 'Output device', systemDefault: 'System default',
-      outputUnsupported: 'This browser plays voice on the system default device.', mode: 'Input mode', vad: 'Voice activity', ptt: 'Push to talk',
-      pttKey: 'Push-to-talk key', pttNone: 'No key set', pttSet: 'Set key',
-      pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
-      pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
-      noise: 'Noise suppression', automatic: 'Automatic', lightweight: 'Lightweight', off: 'Off', level: 'Input level',
-      devices: 'Devices', test: 'Mic test', inputMode: 'Input mode', processing: 'Processing',
-      pttHint: 'Works only while the dilla tab is active. F13–F24, Pause, Scroll Lock or Insert.',
-      noiseHints: { automatic: 'Picks the best processor this device can run. Falls back to RNNoise.', lightweight: 'Lower CPU, removes less', off: 'Raw microphone, nothing removed' },
-    },
-    onInput: () => {}, onOutput: () => {}, onMode: () => {}, onCaptureKey: () => {}, onNoise: () => {},
+    input: '', output: '', canSelectOutput: true, inputVolume: 100, outputVolume: 100, mode: 'vad', pttKey: null, capturing: false, pttReleaseMs: 200,
+    noise: 'automatic', echo: true, agc: true,
+    micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -48, auto: true },
+    labels: VOICE_LABELS,
+    ...VOICE_HANDLERS,
   },
   decorators: [Story => <div style={{ maxWidth: 720 }}><Story /></div>],
 } satisfies Meta<typeof VoiceSettings>;
@@ -31,7 +22,7 @@ type Story = StoryObj<typeof meta>;
 export const VoiceActivity: Story = {};
 /** Push to talk with no key yet: there is no default key. */
 export const PushToTalkNoKey: Story = { args: { mode: 'ptt' } };
-/** README §5.9: push to talk with its shortcut, as the prototype opens it. */
+/** README §5.9: push to talk with its shortcut and release delay, as the prototype opens it. */
 export const PushToTalk: Story = { args: { mode: 'ptt', pttKey: 'F13', input: 'mic-2' } };
 /** Listening for the next key: the key box takes the accent and its ring. */
 export const PushToTalkListening: Story = { args: { mode: 'ptt', pttKey: 'F13', capturing: true } };
@@ -48,4 +39,14 @@ export const CapturingRefused: Story = {
 /** Firefox: the output follows the system default. */
 export const OutputUnsupported: Story = { args: { canSelectOutput: false, noise: 'off' } };
 /** Automatic while it is a beta: the row's BETA tag (the app's beta build, Automatic picked). */
-export const NoiseBeta: Story = { args: { labels: { ...meta.args.labels, noiseTag: 'BETA' } } };
+export const NoiseBeta: Story = { args: { labels: { ...VOICE_LABELS, noiseTag: 'BETA' } } };
+/** Let's check running: you are heard (the pill green, Stop testing in the danger outline). */
+export const TestingHeard: Story = { args: { micTest: { testing: true, available: true, levelDb: -24, thresholdDb: -48, auto: true } } };
+/** Let's check running under the line: "Too quiet to send". */
+export const TestingTooQuiet: Story = { args: { micTest: { testing: true, available: true, levelDb: -64, thresholdDb: -48, auto: true } } };
+/** Automatic sensitivity off: the line can be dragged. */
+export const ManualSensitivity: Story = { args: { micTest: { testing: false, available: true, levelDb: -100, thresholdDb: -50, auto: false } } };
+/** In a call the microphone is the call's: Let's check waits. */
+export const TestUnavailable: Story = { args: { micTest: { testing: false, available: false, levelDb: -100, thresholdDb: -48, auto: true } } };
+/** Ruling AR: Safari has no automatic gain constraint, so that row is not shown. */
+export const NoAutomaticGain: Story = { args: { agc: undefined } };

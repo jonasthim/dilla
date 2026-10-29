@@ -85,6 +85,13 @@ describe('renderCss', () => {
       expect(root).toContain(decl);
     }
   });
+  // Task 10b
+  it('emits the sensitivity meter values (task 10b, the prototype literals); the segment fade is never zeroed', () => {
+    const root = css.slice(0, css.indexOf('}'));
+    for (const decl of ['--meter-off: #161A20;', '--ok-line: rgba(124,255,142,0.3);', '--warn-faint: rgba(255,209,106,0.08);',
+      '--warn-line: rgba(255,209,106,0.3);', '--duration-meter-segment: 70ms;']) expect(root).toContain(decl);
+    expect(css).not.toContain('--duration-meter-segment: 0ms;');
+  });
   it('zeroes --duration-toggle under reduced motion', () => {
     expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-toggle: 0ms;/);
   });
