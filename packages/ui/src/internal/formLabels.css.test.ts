@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
 const read = (name: string) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-const rule = (css: string, sel: string) => css.match(new RegExp(`${sel.replace(/[.[\]]/g, '\\$&')} \\{[^}]*\\}`))?.[0] ?? '';
+const rule = (css: string, sel: string) => css.match(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{[^}]*\\}`))?.[0] ?? '';
 
 // Ruling J: a form field label is sentence case, 11px, #8C939E (real --fg-2) - the prototype's, not the micro-label style.
 describe('form field labels follow the prototype (CSS pin)', () => {
