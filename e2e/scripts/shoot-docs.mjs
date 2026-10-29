@@ -1177,10 +1177,10 @@ async function main(argv) {
       await mira.setViewportSize(PHONE_APP);
       await mira.waitForTimeout(250);
       // Task 10 fix round 1: a phone has no settings index; /settings opens Profile with the nav's chips (README §5.10).
-      // FIXME(task 11): this capture is now Profile, not an index; rename the shot.
+      // Task 11: /settings on a phone opens Profile with the nav's chips (no index any more), so the shot is named for that.
       await mira.goBack();
       await mira.waitForURL(/\/settings$/);
-      await capture(mira, 'phone-index');
+      await capture(mira, 'phone-settings-entry');
       for (const section of ['privacy', 'diagnostics']) {
         await userSettings.getByRole('navigation', { name: t('settings.nav.label'), exact: true })
           .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
