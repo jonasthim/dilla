@@ -831,8 +831,10 @@ async function expectPrototypeSizes(page: Page, what: string, sizes: readonly (r
 }
 /** The sign-in card: 40px fields and the 40px primary button. */
 const AUTH_SIZES = [['.d-onboarding-frame .d-text-field__input', 40], ['.d-onboarding-frame__footer .d-btn[data-variant="accent"]', 40]] as const;
-/** A settings button is 32 (30 of content); a device select and the push-to-talk key 38. */
+/** A settings button is 32 (30 of content); a device select and the push-to-talk key 38. Merge of Task 10b: the Voice page has
+ *  no .d-btn under voice activity; its Let's check is the prototype's 32px of content and its 1px border (34). */
 const SETTINGS_SIZES = [['.d-settings-frame__body .d-btn:not(.d-voice-settings__capture)', 32], ['.d-voice-settings__select', 38]] as const;
+const VOICE_SIZES = [['.d-voice-settings__check', 34], ['.d-voice-settings__select', 38]] as const;
 
 test('FA1: phone controls outside the shell keep the prototype sizes, and the invites section keeps the settings grammar', async ({ page }) => {
   const h = started();
@@ -853,14 +855,9 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
     await page.goto(`/settings/${section}`);
     // Task 10 fix round 1: Devices draws only device rows (no settings rows), so a device row also says the section is in.
     await expect(page.locator('.d-settings-row, .d-voice-settings, .d-device-row').first()).toBeVisible({ timeout: WAIT });
-    await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? SETTINGS_SIZES : SETTINGS_SIZES.slice(0, 1));
+    await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? VOICE_SIZES : SETTINGS_SIZES.slice(0, 1));
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
-  // Task 11 (merge 9+10 minor): Notifications has no button, so its segmented choice carries the size there: each option is the
-  // prototype's 26px (README §5.9; the Sg option's height:26px), not a 44px phone target.
-  await page.goto('/settings/notifications');
-  await expect(page.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
-  await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
 
   // The invites section on a desktop (Signal task 10c, merge s1+10c): the prototype's Invites card, two choices side by side (Expires
   // after, Max uses), each a small label over its segmented control; then the card's Copy at 390.
@@ -907,6 +904,17 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   // Signal task 10c: the link shows once in the Invites card: a 38px field (36px and its 1px ring) beside a 36px Copy.
   await expect(admin.getByRole('button', { name: copy('serverSettings.invites.copy'), exact: true }), 'the card shows its Copy').toBeVisible({ timeout: WAIT });
   await expectPrototypeSizes(page, 'the invite link at 390', [['.d-invite-panel__link', 38], ['.d-invite-panel__made .d-invite-panel__primary', 36]]);
+
+  // Task 11 (merge 9+10 minor): with a server selected, Notifications has its segmented choice and no button, so the choice
+  // carries the size there: each option is the prototype's 26px (README §5.9; the Sg option's height:26px), not 44px.
+  await page.keyboard.press('Escape');
+  await expect(admin).toBeHidden({ timeout: WAIT });
+  // Opened from the app (You → Open settings), so Settings knows the server; a reload of /settings/notifications would not.
+  await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
+  await page.getByRole('button', { name: copy('workspace.open'), exact: true }).click();
+  await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
+  await expect(page.locator('.d-settings-frame__body .d-segmented__option').first()).toBeVisible({ timeout: WAIT });
+  await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
 });
 
 

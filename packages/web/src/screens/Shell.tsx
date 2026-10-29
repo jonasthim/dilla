@@ -1996,7 +1996,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onTab={section => void navigate({ name: 'serverSettings', communityId: adminFor, section, from: null }, !phone || section === null)}
     onClose={closeSettings} announce={announce} activity={settingsActivity} activityVisible={settingsActivityVisible}
     onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} /> : null;
-  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} activityVisible={settingsActivityVisible} communityId={communityId} /> : adminPage;
+  // Task 11 (the prototype's phone Settings lists the server's rows and sections): opened from a page with no server of its own (a
+  // phone's You tab, a DM), Settings speaks for the server you were last in.
+  const settingsPage = route.name === 'settings' ? <Settings activity={settingsActivity} activityVisible={settingsActivityVisible} communityId={communityId ?? fallbackCommunity} /> : adminPage;
   return (
     <CommandProvider runtime={{ call, getCall: () => liveCall.current, navigate: route => { void navigate(route); }, openThread, openSearch: openCommandSearch }} handlers={commandHandlers} suggest={commandSuggest}>
     <>
