@@ -1434,7 +1434,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const memberSheet = usePhoneSheet('members', phone && membersShown, () => setMembersOpen(false));
   // A thread (or the list of threads) is a sheet of its own on a phone, with the same history rules.
   const threadSheet = usePhoneSheet('thread', phone && sideNow !== null, () => setSide(null));
-
   const closeSide = phone ? threadSheet.close : () => setSide(null);
   // Task 9 fix rounds 1-2 (Jonas): the member menu's Mention puts "@username " at the end of the open text channel's draft and
   // focuses the composer. Only while that composer can send (no timeout, block or failed open). An aside drawn over the

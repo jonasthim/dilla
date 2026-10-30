@@ -325,6 +325,12 @@
     },
     {
      "wait": 1200
+    },
+    {
+     "hover": "h2#profile-title"
+    },
+    {
+     "wait": 500
     }
    ]
   }
@@ -552,14 +558,17 @@
    ]
   },
   "app": {
-   "who": "phone",
+   "who": "ada",
    "path": "{community}",
    "steps": [
     {
      "click": "role=button[name=\"general\"s]"
     },
     {
-     "wait": 1200
+     "waitFor": ".d-message-row"
+    },
+    {
+     "wait": 800
     }
    ]
   }
