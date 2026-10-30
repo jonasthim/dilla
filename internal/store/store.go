@@ -537,6 +537,9 @@ type MLS interface {
 	// groups, ordered by group and ref: the sweep voids them, since no commit lands in a closed
 	// group and none is reopened.
 	ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]ProposalRow, error)
+	// CountLiveInstanceProposals is the non-void instance proposals (origin 0) by kind, in every
+	// group, closed ones included: dilla_ds_proposals_outstanding's seed.
+	CountLiveInstanceProposals(ctx context.Context) (map[uint8]int64, error)
 	DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error
 	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error // keeps action_id
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error

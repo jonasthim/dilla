@@ -98,6 +98,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// ListClosedGroupLiveProposals is the sweep's void of a closed group's proposals,
 			// which every open-group walk misses (fix/ds-maintenance-sweeper).
 			"ListClosedGroupLiveProposals",
+			// CountLiveInstanceProposals seeds dilla_ds_proposals_outstanding at start.
+			"CountLiveInstanceProposals",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes", "LockGroup",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",

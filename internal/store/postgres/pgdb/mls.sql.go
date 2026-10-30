@@ -119,6 +119,41 @@ func (q *Queries) CountKeyPackages(ctx context.Context, arg CountKeyPackagesPara
 	return count, err
 }
 
+const countLiveInstanceProposals = `-- name: CountLiveInstanceProposals :many
+SELECT kind::bigint AS kind, count(*)::bigint AS n FROM mls_pending_proposals
+WHERE origin = 0 AND void_at IS NULL GROUP BY kind ORDER BY kind
+`
+
+type CountLiveInstanceProposalsRow struct {
+	Kind int64
+	N    int64
+}
+
+// dilla_ds_proposals_outstanding's seed: the non-void INSTANCE proposals (origin 0) by kind, in
+// every group. A closed group's rows are counted too: the sweep voids them and decrements.
+func (q *Queries) CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error) {
+	rows, err := q.db.QueryContext(ctx, countLiveInstanceProposals)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountLiveInstanceProposalsRow{}
+	for rows.Next() {
+		var i CountLiveInstanceProposalsRow
+		if err := rows.Scan(&i.Kind, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countPendingJoins = `-- name: CountPendingJoins :one
 SELECT count(*) FROM pending_joins WHERE group_id = $1
 `

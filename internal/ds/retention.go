@@ -48,6 +48,13 @@ type SweepReport struct {
 // by the same run.
 func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 	var report SweepReport
+	// Whatever this tick did, or failed to do, the outstanding-proposals gauge ends it equal to SQL:
+	// that corrects the paths that end a proposal without decrementing (proposal_gauge.go).
+	defer func() {
+		if err := d.seedProposalGauge(ctx); err != nil {
+			d.log().Error("re-seeding the outstanding-proposals gauge failed", "err", err)
+		}
+	}()
 
 	voided, err := d.sweepProposals(ctx)
 	if err != nil {

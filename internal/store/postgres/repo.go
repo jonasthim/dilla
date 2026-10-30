@@ -1674,6 +1674,18 @@ func (r *Repo) ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([
 	return out, nil
 }
 
+func (r *Repo) CountLiveInstanceProposals(ctx context.Context) (map[uint8]int64, error) {
+	rows, err := r.r.CountLiveInstanceProposals(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make(map[uint8]int64, len(rows))
+	for _, row := range rows {
+		out[uint8(row.Kind)] = row.N // kind is CHECKed to 0..3 by the schema
+	}
+	return out, nil
+}
+
 func (r *Repo) VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error {
 	return wrap(r.w.VoidProposal(ctx, pgdb.VoidProposalParams{
 		VoidAt: sql.NullInt64{Int64: at, Valid: true}, GroupID: groupID, Ref: ref,

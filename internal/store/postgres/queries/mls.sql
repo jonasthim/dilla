@@ -130,6 +130,12 @@ JOIN mls_groups g ON g.group_id = p.group_id
 WHERE g.closed_at IS NOT NULL AND p.void_at IS NULL
 ORDER BY p.group_id, p.ref LIMIT sqlc.arg(max_rows)::bigint;
 
+-- name: CountLiveInstanceProposals :many
+-- dilla_ds_proposals_outstanding's seed: the non-void INSTANCE proposals (origin 0) by kind, in
+-- every group. A closed group's rows are counted too: the sweep voids them and decrements.
+SELECT kind::bigint AS kind, count(*)::bigint AS n FROM mls_pending_proposals
+WHERE origin = 0 AND void_at IS NULL GROUP BY kind ORDER BY kind;
+
 -- name: VoidProposal :exec
 UPDATE mls_pending_proposals SET void_at = $1 WHERE group_id = $2 AND ref = $3;
 

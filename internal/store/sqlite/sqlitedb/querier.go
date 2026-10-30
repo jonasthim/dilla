@@ -45,6 +45,9 @@ type Querier interface {
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	// dilla-web-2a (L-SQL-21, Q04): the per-user device cap counts unrevoked devices only.
 	CountLiveDevicesByUser(ctx context.Context, arg CountLiveDevicesByUserParams) (int64, error)
+	// dilla_ds_proposals_outstanding's seed: the non-void INSTANCE proposals (origin 0) by kind, in
+	// every group. A closed group's rows are counted too: the sweep voids them and decrements.
+	CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
