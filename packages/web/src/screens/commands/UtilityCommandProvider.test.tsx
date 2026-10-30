@@ -116,34 +116,33 @@ describe('utility command provider', () => {
   it('reconciles an accepted reminder from its owner list before opening a retry dialog', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const context = commandContext(f.client, 'b2'.repeat(16)); const invoke = () => mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Keep one copy' } }, context);
-    const user = userEvent.setup(); let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'Set a reminder' });
-    f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' }); expect(f.reminder).not.toBeNull();
+    let run!: Promise<unknown>; f.failNext(80); act(() => { run = invoke(); });
+    expect(await run).toMatchObject({ status: 'uncertain' }); expect(f.reminder).not.toBeNull();
     act(() => { run = invoke(); }); expect(await run).toMatchObject({ status: 'success' });
     expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 80).map(row => row.requestId)).toEqual(['b2'.repeat(16)]); mounted.unmount();
   });
   it('returns an explicit reminder list only after its owned snapshot completes', async () => {
-    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let created!: Promise<unknown>;
     act(() => { created = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Listed reminder' } }, commandContext(f.client, 'b4'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await created).toMatchObject({ status: 'success' });
+    expect(await created).toMatchObject({ status: 'success' });
     let result: CommandResult | undefined; act(() => { void mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'b5'.repeat(16))).then(value => { result = value; }); });
     await waitFor(() => { expect(result?.status).toBe('success'); expect(result?.message).toContain('Listed reminder'); }); mounted.unmount();
   });
   it.each(['reminders cancel', 'reminders dismiss'] as const)('%s resolves its first target lookup before dispatch', async commandId => {
-    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let created!: Promise<unknown>;
     act(() => { created = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: `Target for ${commandId}` } }, commandContext(f.client, 'b6'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await created;
+    await created;
     let result: CommandResult | undefined; act(() => { void mounted.captured.value!.handlers[commandId]!({ commandId, args: { reminder: 'b6'.repeat(16) } }, commandContext(f.client, 'b7'.repeat(16))).then(value => { result = value; }); });
     await waitFor(() => expect(result).toMatchObject({ status: 'success' })); expect(f.requests.some(row => row.operation === (commandId.endsWith('cancel') ? 82 : 83))).toBe(true); mounted.unmount();
   });
   it('reconciles timezone aliases using the adapter canonical zone', async () => {
-    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
-    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'Alias zone' } }; const context = commandContext(f.client, 'b8'.repeat(16)); let run!: Promise<unknown>;
-    act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); }); await screen.findByRole('heading', { name: 'Set a reminder' });
-    await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'US/Eastern');
-    f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'Alias zone', timezone: 'US/Eastern' } }; const context = commandContext(f.client, 'b8'.repeat(16)); let run!: Promise<unknown>;
+    f.failNext(80); act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); });
+    expect(await run).toMatchObject({ status: 'uncertain' });
     act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); }); expect(await run).toMatchObject({ status: 'success' });
     expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument(); mounted.unmount();
   });
@@ -172,12 +171,12 @@ describe('utility command provider', () => {
     expect(f.poll.myChoices).toEqual([1]); expect(f.poll.counts).toEqual([0n, 1n]); mounted.unmount();
   });
   it('requires an explicit DST fold choice before creating an ambiguous reminder', async () => {
-    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
-    let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: '2026-11-01 01:30', text: 'Call home' } }, commandContext(f.client, 'cc'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'America/New_York');
-    expect(await screen.findByText('This local time occurs twice. Choose which time you mean.')).toBeInTheDocument();
-    const choices = screen.getAllByRole('radio'); expect(choices).toHaveLength(2); await user.click(choices[1]); await user.click(screen.getByRole('button', { name: 'Save' }));
-    const result = await run; expect(result).toMatchObject({ status: 'success' }); const mutation = f.requests.find(row => row.operation === 80)!;
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const args = { when: '2026-11-01 01:30', text: 'Call home', timezone: 'America/New_York' };
+    expect(await mounted.captured.value!.handlers.remind!({ commandId: 'remind', args }, commandContext(f.client, 'cc'.repeat(16))))
+      .toMatchObject({ status: 'failure', message: 'This local time occurs twice. Choose which time you mean.' });
+    // The picker sends the later candidate the person chose from the two (Wave B Task 2: the chips, not a dialog).
+    const result = await mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { ...args, chosen: '1793514600' } }, commandContext(f.client, 'cc'.repeat(16))); expect(result).toMatchObject({ status: 'success' }); const mutation = f.requests.find(row => row.operation === 80)!;
     expect(mutation.requestId).toBe('cc'.repeat(16)); const payload = decode(mutation.args[0] as Uint8Array) as unknown[];
     expect(payload[1]).toBe(1n); expect(payload[4]).toBe('America/New_York'); expect(payload[2]).toBe(1_793_514_600n); mounted.unmount();
   });
@@ -188,12 +187,11 @@ describe('utility command provider', () => {
     await waitFor(() => expect(f.requests.some(row => row.operation === 81)).toBe(true));
     let create!: Promise<unknown>;
     act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Call home' } }, commandContext(f.client, 'dd'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await create).toMatchObject({ status: 'success' });
     f.markReminderDue();
     await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ee'.repeat(16))); });
     await waitFor(() => expect(screen.getByRole('button', { name: /1 due/ })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: /Reminders/ }));
+    await user.click(await screen.findByRole('tab', { name: /^Due/ }));
     expect(await screen.findByText('Call home')).toBeInTheDocument();
     f.failNext(83, false); await user.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(await screen.findByText('The change may have been saved. Refresh reminders before trying again.')).toBeInTheDocument();
@@ -207,9 +205,9 @@ describe('utility command provider', () => {
   it('cancels an upcoming reminder from the Upcoming tab; a due one offers Dismiss only', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Cancel me' } }, commandContext(f.client, 'ad'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
+    await create;
     await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ae'.repeat(16))); });
-    await user.click(screen.getByRole('button', { name: /Reminders/ })); await screen.findByText('Cancel me');
+    await screen.findByText('Cancel me');
     expect(screen.getByRole('tab', { name: /^Upcoming/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Cancel' })); await waitFor(() => expect(f.requests.some(row => row.operation === 82)).toBe(true));
@@ -231,7 +229,7 @@ describe('utility command provider', () => {
   it('redacts a source link immediately when the source channel is no longer active', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Still private' } }, commandContext(f.client, 'af'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
+    await create;
     // The text is the link to its source message (a button drawn as text); a source that went away leaves plain text.
     await user.click(screen.getByRole('button', { name: 'Reminders' })); await screen.findByRole('button', { name: 'Still private' });
     act(() => f.client.set(`channels:${COMMUNITY}`, f.client.get(`channels:${COMMUNITY}`)!.map(row => ({ ...row, group: 'removed' })) as never)); mounted.rerenderProbe();
@@ -307,10 +305,9 @@ describe('utility command provider', () => {
     await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let create!: Promise<unknown>;
     act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Private account reminder' } }, commandContext(f.client, 'ff'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await create).toMatchObject({ status: 'success' }); f.markReminderDue();
     await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, '01'.repeat(16))); });
-    await user.click(screen.getByRole('button', { name: /Reminders/ }));
+    await user.click(await screen.findByRole('tab', { name: /^Due/ }));
     expect(await screen.findByText('Private account reminder')).toBeInTheDocument();
     const nextAccount = { ...f.client.get('account')!, user: { ...f.client.get('account')!.user!, id: 'ab'.repeat(16) } };
     act(() => f.client.set('account', nextAccount)); mounted.rerenderProbe();
@@ -720,9 +717,8 @@ describe('byte-bounded utility discovery and reconciliation', () => {
   it('recovers a created reminder after six other long one-record pages', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const context = commandContext(f.client, 'c1'.repeat(16)); const invoke = { commandId: 'remind', args: { when: 'in 1h', text: 'Recovered seventh reminder' } };
-    const user = userEvent.setup(); let first!: Promise<CommandResult>;
-    act(() => { first = mounted.captured.value!.handlers.remind!(invoke, context); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' }));
+    let first!: Promise<CommandResult>;
+    f.failNext(80); act(() => { first = mounted.captured.value!.handlers.remind!(invoke, context); });
     expect(await first).toMatchObject({ status: 'uncertain' });
     const saved = f.reminder!; const base = f.client.handler; let pages = 0;
     f.client.handler = command => {

@@ -61,7 +61,7 @@ describe('CommandHost', () => {
     expect(screen.getByText('command mode')).toBeInTheDocument();
     const field = screen.getByRole('combobox', { name: 'text' });
     await user.type(field, 'waves');
-    await user.click(screen.getByRole('button', { name: /run/i }));
+    await user.click(screen.getByRole('button', { name: 'send' }));
     await screen.findByText('Sent.');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves_' }]);
   });
@@ -73,7 +73,7 @@ describe('CommandHost', () => {
     await user.type(picker, 'me waves hello');
     await user.keyboard('{Enter}');
     expect(await screen.findByRole('combobox', { name: 'text' })).toHaveValue('waves hello');
-    await user.click(screen.getByRole('button', { name: /run/i }));
+    await user.click(screen.getByRole('button', { name: 'send' }));
     await screen.findByText('Sent.');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves hello_' }]);
   });
@@ -119,19 +119,19 @@ describe('CommandHost', () => {
       encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
     const field = await screen.findByRole('combobox', { name: 'user' });
     await user.type(field, 'target');
-    expect(await screen.findByRole('option', { name: 'target' })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /^target,/ })).toBeInTheDocument();
     await user.clear(field);
     await user.type(field, 'owner');
-    await waitFor(() => expect(screen.queryByRole('option', { name: 'owner' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('option', { name: /^owner,/ })).toBeNull());
   });
 
   it('refreshes an empty moderation suggestion when the member arrives without retyping', async () => {
     const { core, communityId, members, user } = moderationHarness(false);
     const field = await screen.findByRole('combobox', { name: 'user' });
     await user.type(field, 'Bea');
-    expect(screen.queryByRole('option', { name: 'Bea' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /^Bea,/ })).not.toBeInTheDocument();
     core.publish(`members:${communityId}`, members);
-    expect(await screen.findByRole('option', { name: 'Bea' })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /^Bea,/ })).toBeInTheDocument();
     expect(field).toHaveValue('Bea');
   });
 
@@ -139,11 +139,11 @@ describe('CommandHost', () => {
     const { core, communityId, access, roles, members, user } = moderationHarness();
     const field = await screen.findByRole('combobox', { name: 'user' });
     await user.type(field, 'Bea');
-    expect(await screen.findByRole('option', { name: 'Bea' })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /^Bea,/ })).toBeInTheDocument();
     if (change === 'permission') core.publish(`permissions:${communityId}`, { ...access, kickMembers: false });
     else if (change === 'rank') core.publish(`roles:${communityId}`, roles.map(role => role.id === roles[0].id ? { ...role, position: 5 } : role));
     else core.publish(`members:${communityId}`, members.slice(0, 1));
-    await waitFor(() => expect(screen.queryByRole('option', { name: 'Bea' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('option', { name: /^Bea,/ })).not.toBeInTheDocument());
     expect(field).toHaveValue('Bea');
   });
 
@@ -192,12 +192,12 @@ describe('CommandHost', () => {
     }
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><Harness /></CoreProvider>);
-    await user.click(await screen.findByRole('button', { name: /run/i }));
+    await user.click(await screen.findByRole('button', { name: 'send' }));
     await screen.findByText('uncertain');
     const first = ids[0];
     await user.click(screen.getByRole('button', { name: 'toggle host' }));
     await user.click(screen.getByRole('button', { name: 'toggle host' }));
-    await user.click(await screen.findByRole('button', { name: /run/i }));
+    await user.click(await screen.findByRole('button', { name: 'send' }));
     await waitFor(() => expect(ids).toHaveLength(2));
     expect(ids[1]).toBe(first);
   });
@@ -213,10 +213,10 @@ describe('CommandHost', () => {
         onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
     </CommandProvider></CoreProvider>);
     const user = userEvent.setup();
-    const run = await screen.findByRole('button', { name: /run/i });
+    const run = await screen.findByRole('button', { name: 'send' });
     await user.click(run);
     await screen.findByText('done');
-    await user.click(screen.getByRole('button', { name: /run/i }));
+    await user.click(screen.getByRole('button', { name: 'send' }));
     await waitFor(() => expect(ids).toHaveLength(2));
     expect(ids[1]).not.toBe(ids[0]);
   });
@@ -246,10 +246,11 @@ describe('CommandHost', () => {
         draft="/dm" onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
     </CommandProvider></CoreProvider>);
     await user.type(await screen.findByRole('combobox', { name: 'user' }), 'bob');
-    await user.click(await screen.findByRole('option', { name: 'bob' }));
-    await user.click(screen.getByRole('button', { name: /run/i }));
+    await user.click(await screen.findByRole('option', { name: /^bob,/ }));
+    await user.click(screen.getByRole('button', { name: 'send' }));
     await waitFor(() => expect(fake.callsOf('openDm')).toHaveLength(1));
-    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    await user.click(screen.getByRole('combobox', { name: 'user' }));
+    await user.keyboard('{Escape}');
     await act(() => { resolveDm({ channelId: '88'.repeat(16) }); return Promise.resolve(); });
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -265,7 +266,7 @@ it.each([true, false])('preserves suggestion ownership when a provider handles t
       onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
   </CommandProvider></CoreProvider>);
   await user.type(await screen.findByRole('combobox', { name: 'user' }), 'known');
-  await waitFor(() => expect(screen.queryByRole('option', { name: 'known member' }) !== null).toBe(!handled));
+  await waitFor(() => expect(screen.queryByRole('option', { name: /^known member,/ }) !== null).toBe(!handled));
 });
 
 

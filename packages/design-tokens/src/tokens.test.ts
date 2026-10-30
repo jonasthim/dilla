@@ -135,3 +135,12 @@ describe('Task 11 button weight and toggle track', () => {
     expect(structural.motion.track).toBe('200ms');
   });
 });
+
+// Wave B Task 2: the command picker's prototype values (an invalid chip's ring, the source tag's tracking, a row's 100ms).
+describe('Wave B Task 2 command picker tokens', () => {
+  it('carries the prototype literals', () => {
+    expect(themes.signal.dangerRing).toBe('rgba(255,110,110,0.15)');
+    expect(structural.trackingTag).toBe('0.06em');
+    expect(structural.motion.cmdRow).toBe('100ms');
+  });
+});

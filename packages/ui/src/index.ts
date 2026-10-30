@@ -185,3 +185,6 @@ export { KeyboardTable } from './KeyboardTable/KeyboardTable.tsx';
 export type { KeyboardTableProps } from './KeyboardTable/KeyboardTable.tsx';
 export { SettingsFooter } from './SettingsFrame/SettingsFooter.tsx';
 export { PhoneLayoutProvider } from './internal/phoneLayout.ts';
+// Wave B Task 2
+export { CommandList, CommandChips, CommandField, CommandSuggestions, CommandBar, commandOptionId } from './CommandPicker/CommandPicker.tsx';
+export type { CommandListItem, CommandListProps, CommandChipsProps, CommandFieldProps, CommandSuggestion, CommandSuggestionsProps, CommandBarProps } from './CommandPicker/CommandPicker.tsx';

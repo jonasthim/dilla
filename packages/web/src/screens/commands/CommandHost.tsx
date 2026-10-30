@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ConfirmDialog, Dialog } from '@dilla/ui';
 import { InviteFlow } from '../Create.tsx';
 import { ModerationLog } from '../admin/ModerationLog.tsx';
 import { COMMANDS, commandAvailability, type CommandContext as Binding, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
-import { useSlices } from '../../core/use-slice.ts';
+import { useSlice, useSlices } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { useCommandProviders } from './CommandContext.tsx';
-import { CommandComposer } from './CommandComposer.tsx';
+import { CommandPicker, type PickerFrame } from './CommandPicker.tsx';
+import { commandListed, useCommandBot } from './capabilities.ts';
 import { builtinHandlers, eligibleAssignableRole, eligibleModerationTarget } from './builtin.ts';
 import type { CommandExecutionContext, CommandSuggestionList } from './command-types.ts';
 import type { TimelineItem } from '@dilla/client-core';
@@ -44,6 +45,8 @@ export interface CommandHostProps {
   communityId: string | null; channelId: string; threadId?: string; bits?: number; items: readonly TimelineItem[]; selfId: string | null;
   draft: string; onDraft(text: string): void; onSendLiteral(text: string): void; onModeChange?(active: boolean): void; encodeMessage(text: string): string; openGif(query: string): void; gifsEnabled: boolean;
   slashSubmission?: { text: string; id: number } | null;
+  /** Wave B Task 2: draws the composer around the picker (ComposerArea's Composer, its frame kept). */
+  renderFrame?: (parts: PickerFrame) => ReactNode;
 }
 
 export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
@@ -157,6 +160,17 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       ? builtinHandlers[command.id] !== undefined || extra[command.id] !== undefined
       : extra[command.id] !== undefined));
   }, [binding, handlers, gifsEnabled]);
+  // Wave B Task 2: a Bot command is listed only while the server's Bot reports its operation (read when the picker opens
+  // and every 30 s while it is open); its source tag is the Bot's display name.
+  const bot = useCommandBot(client, props.communityId, active);
+  const listed = useMemo(() => new Set(definitions.filter(command => commandListed(command, bot.operations)).map(command => command.id)), [definitions, bot.operations]);
+  const members = useSlice(`members:${props.communityId ?? ''}`);
+  const botMember = bot.botUserId === null ? undefined : members?.find(row => row.userId === bot.botUserId);
+  const botName = botMember === undefined ? undefined : botMember.display || botMember.username;
+  const channels = useSlice(`channels:${props.communityId ?? ''}`);
+  const callChannel = runtime?.call?.channelId ?? null;
+  const room = callChannel === null ? null : channels?.find(row => row.id === callChannel)?.name ?? null;
+  const [announcement, setAnnouncement] = useState('');
   const execution = useCallback((invocation: CommandInvocation): Promise<CommandResult> => {
     const handler = (handlers ?? {})[invocation.commandId] ?? builtinHandlers[invocation.commandId];
     if (handler === undefined) return Promise.resolve({ status: 'failure', private: true, message: 'This command is temporarily unavailable.' });
@@ -183,6 +197,8 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
         const row = memory.get(key);
         if (row?.requestId === attempt) remember(memory, key, { ...row, requestId: requestId(), invocationKey: '', mode: 'canceled' });
       }
+      // The picker leaves on success; its result is spoken here (Task 6 draws it in the feed).
+      if (response.status === 'success' && isCurrent()) setAnnouncement(response.message ?? '');
       return response;
     });
   }, [handlers, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif]);
@@ -199,14 +215,17 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     if (option.kind === 'user' && binding.communityId !== null) {
       const communityId = binding.communityId;
       const rows = client.get(`members:${communityId}`) ?? [];
+      // The prototype's Members: the server's people minus you and the Bot, avatar, name and @handle.
       return rows.filter(row => {
         const name = row.display || row.username;
-        if (row.userId !== query && !name.toLowerCase().includes(query.toLowerCase())) return false;
+        if (row.userId === selfId || row.kind === 1) return false;
+        const needle = query.toLowerCase().replace(/^@/u, '');
+        if (row.userId !== query && !name.toLowerCase().includes(needle) && !row.username.toLowerCase().includes(needle)) return false;
         if (commandId === 'kick' || commandId === 'ban' || commandId === 'timeout' || commandId === 'untimeout' || commandId === 'warn')
           return selfId !== null && eligibleModerationTarget(client, communityId, selfId, row.userId, commandId === 'kick' ? 'kick' : commandId === 'ban' ? 'ban' : 'timeout') !== undefined;
         if (commandId === 'role add' || commandId === 'role remove') return selfId !== null && (client.get(`roles:${communityId}`) ?? []).some(role => eligibleAssignableRole(client, communityId, selfId, row.userId, role.id, commandId === 'role add' ? 'add' : 'remove') !== undefined);
         return true;
-      }).slice(0, 20).map(row => ({ id: row.userId, value: row.userId, label: row.display || row.username }));
+      }).slice(0, 20).map(row => ({ id: row.userId, value: row.userId, label: row.display || row.username, description: `@${row.username}` }));
     }
     if (option.kind === 'user' && binding.communityId === null && commandId === 'dm') {
       const dms = client.get('dms') ?? [];
@@ -251,14 +270,28 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     setCommandText(''); setActive(false); onModeChange?.(false); activeRef.current = false;
     props.onSendLiteral(text);
   };
-  if (!active) return null;
+  // A run that ended well (or a command that opens its own form) leaves command mode without ending what it opened
+  // (the moderation log, the poll dialog): no generation step, no dialog closed, an empty draft.
+  const leaveAfterRun = () => {
+    const saved = memory.get(key);
+    remember(memory, key, { text: '', requestId: saved?.requestId ?? requestId(), invocationKey: saved?.invocationKey ?? '', mode: 'canceled' });
+    setCommandText(''); setActive(false); onModeChange?.(false); activeRef.current = false;
+    suppress.current = '';
+    onDraft('');
+  };
+  const runDetached = (invocation: CommandInvocation) => {
+    const done = execution(invocation);
+    leaveAfterRun();
+    void done.catch(() => undefined);
+  };
   const saved = memory.get(key)?.text ?? commandText;
   const community = binding.communityId === null ? null : client.get('communities')?.find(row => row.id === binding.communityId) ?? null;
-  return <>{inviteOpen && community !== null ? <InviteFlow open community={{ id: community.id, name: community.name }} onClose={() => { setInviteOpen(false); inviteResolve.current?.(false); inviteResolve.current = null; }} onCreated={() => { inviteResolve.current?.(true); inviteResolve.current = null; }} /> : null}
+  return <><p className="d-sr-only" role="status" data-command-result="">{announcement}</p>{inviteOpen && community !== null ? <InviteFlow open community={{ id: community.id, name: community.name }} onClose={() => { setInviteOpen(false); inviteResolve.current?.(false); inviteResolve.current = null; }} onCreated={() => { inviteResolve.current?.(true); inviteResolve.current = null; }} /> : null}
     {modlogOpen && binding.communityId !== null ? <Dialog open title={t('admin.bot.moderationLog.title')} closeLabel={t('dialog.close')} onClose={() => setModlogOpen(false)}><ModerationLog communityId={binding.communityId} /></Dialog> : null}
     {confirmation !== null ? <ConfirmDialog open title={confirmation.title} body={confirmation.body} confirmLabel="Continue" busyLabel="Working…" cancelLabel="Cancel" busy={false} error={null}
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.(true); confirmationResolve.current = null; }}
-    onClose={() => { setConfirmation(null); confirmationResolve.current?.(false); confirmationResolve.current = null; }} /> : null}<CommandComposer key={contextKey} definitions={definitions} initialText={saved}
-    onExecute={execution} onCancel={cancel} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
-    onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /></>;
+    onClose={() => { setConfirmation(null); confirmationResolve.current?.(false); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
+    onExecute={execution} onCancel={cancel} onDone={leaveAfterRun} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
+    listed={listed} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
+    onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /> : null}</>;
 }

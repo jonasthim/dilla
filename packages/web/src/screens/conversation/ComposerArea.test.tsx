@@ -29,7 +29,7 @@ describe('mentions in the composer (L-TS-37)', () => {
     await waitFor(() => expect(fake.callsOf('gifStatus')).toHaveLength(1));
     await waitFor(() => expect(screen.getByRole('button', { name: 'add a gif' })).toBeInTheDocument());
     fireEvent.change(box(), { target: { value: '/giphy cats' } });
-    await user.click(await screen.findByRole('button', { name: /run/i }));
+    await user.click(await screen.findByRole('button', { name: 'send' }));
     expect(await screen.findByRole('dialog', { name: 'gifs' })).toBeInTheDocument();
     expect(fake.callsOf('gifSearch')).toContainEqual(expect.objectContaining({ m: 'gifSearch', q: 'cats' }));
   });
@@ -47,7 +47,8 @@ describe('mentions in the composer (L-TS-37)', () => {
   it('reopens command mode after a canceled slash draft is edited to a new slash command', async () => {
     const { user } = renderConversation();
     fireEvent.change(box(), { target: { value: '/me first' } });
-    await user.click(await screen.findByRole('button', { name: /cancel/i }));
+    await screen.findByRole('combobox', { name: 'text' });
+    await user.keyboard('{Escape}');
     fireEvent.change(box(), { target: { value: '/search second' } });
     expect(await screen.findByRole('combobox', { name: 'query' })).toHaveValue('second');
   });

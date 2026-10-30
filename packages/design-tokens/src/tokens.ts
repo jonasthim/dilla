@@ -48,6 +48,9 @@ export type ColorTokens = {
   /** The sensitivity meter (Settings → Voice), each the prototype's literal: an unlit segment (#161A20), the heard pill's
    *  0.3 --ok edge, the too-quiet pill's 0.08 --warn fill and 0.3 --warn edge. */
   meterOff: string; okLine: string; warnFaint: string; warnLine: string;
+  // Wave B Task 2
+  /** The command picker: an invalid chip's 3px ring (the prototype's rgba(255,110,110,.15)). */
+  dangerRing: string;
   linkUnderline: 0 | 1;
 };
 
@@ -72,6 +75,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentSplit: 'rgba(3,18,30,0.25)',
     // Task 10b
     meterOff: '#161A20', okLine: 'rgba(124,255,142,0.3)', warnFaint: 'rgba(255,209,106,0.08)', warnLine: 'rgba(255,209,106,0.3)',
+    // Wave B Task 2
+    dangerRing: 'rgba(255,110,110,0.15)',
     linkUnderline: 0,
   },
   light: {
@@ -94,6 +99,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentSplit: 'rgba(255,255,255,0.25)',
     // Task 10b
     meterOff: '#DDE1DD', okLine: 'rgba(27,115,52,0.3)', warnFaint: 'rgba(138,90,0,0.08)', warnLine: 'rgba(138,90,0,0.3)',
+    // Wave B Task 2
+    dangerRing: 'rgba(179,38,30,0.2)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -116,6 +123,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentSplit: 'rgba(0,0,0,0.25)',
     // Task 10b
     meterOff: '#1C1C1C', okLine: 'rgba(155,255,168,0.5)', warnFaint: 'rgba(255,224,138,0.12)', warnLine: '#FFE08A',
+    // Wave B Task 2
+    dangerRing: 'rgba(255,154,154,0.35)',
     linkUnderline: 1,
   },
 };
@@ -196,6 +205,8 @@ export const structural = {
   weight: { display: '700', body: '420', label: '600', btn: '400' },
   labelTracking: '0.08em',
   trackingSoft: '0.04em',
+  // Wave B Task 2: the command list's source tag (the prototype's .06em).
+  trackingTag: '0.06em',
   labelTrackingWide: '0.12em',
   radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px', menu: '9px',
     // Task 9: the phone bottom sheet's top corners (the profile card).
@@ -246,7 +257,9 @@ export const structural = {
     // Task 10: Settings entering (sModal), the sign-in card entering, and a sign-in step's rise.
     modal: '260ms', card: '420ms', step: '360ms',
     // Task 10b: the sensitivity meter's segment fade (70ms). Like `meter`, a live level readout: never zeroed under reduced motion.
-    meterSegment: '70ms' },
+    meterSegment: '70ms',
+    // Wave B Task 2: the command list's row background (the prototype's 100ms).
+    cmdRow: '100ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

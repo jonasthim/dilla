@@ -111,7 +111,12 @@ async function invoke(box: ReturnType<typeof composerBox>, page: Page, command: 
   await box.fill(command.startsWith('/') ? command : `/${command}`);
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
   await expect(region).toBeVisible({ timeout: WAIT });
-  await region.getByRole('button', { name: 'Run command', exact: true }).click();
+  await region.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
+}
+
+/** The last command result the host spoke (a run that ended well leaves command mode). */
+function commandResult(page: Page): Locator {
+  return page.locator('[data-command-result]');
 }
 
 async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, command: string): Promise<Locator> {
@@ -119,8 +124,7 @@ async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, co
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
   const picker = region.getByRole('combobox', { name: 'Command', exact: true });
   await picker.fill(command);
-  await expect(region.getByRole('option', { name: new RegExp(`/${command}(?:\\s|$)`) })).toBeVisible({ timeout: WAIT });
-  await picker.press('ArrowDown');
+  await expect(region.getByRole('option', { name: new RegExp(`^/${command},`) })).toBeVisible({ timeout: WAIT });
   await picker.press('Enter');
   return region;
 }
@@ -328,7 +332,7 @@ async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>
   const region = await chooseCommand(box, page, 'kick');
   const user = region.getByRole('combobox', { name: 'user', exact: true });
   await user.fill('Bea');
-  const memberOption = region.getByRole('option', { name: 'Bea', exact: true });
+  const memberOption = region.getByRole('option', { name: /^Bea,/ });
   try { await expect(memberOption).toBeVisible({ timeout: WAIT }); }
   catch (error) {
     await test.info().attach('slash-moderation.json', {
@@ -336,15 +340,14 @@ async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>
     });
     throw error;
   }
-  await user.press('ArrowDown');
-  await user.press('Enter');
-  await region.getByRole('button', { name: 'Run command', exact: true }).click();
+  await user.press('Tab');
+  await region.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
   return region;
 }
 
 async function leaveCommandMode(page: Page): Promise<void> {
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
-  if (await region.count() > 0 && await region.isVisible()) await region.getByRole('button', { name: 'Cancel', exact: true }).click();
+  if (await region.count() > 0) { await region.locator('input, textarea').first().focus(); await page.keyboard.press('Escape'); }
   await expect(region).toHaveCount(0, { timeout: WAIT });
 }
 
@@ -387,17 +390,15 @@ test('composer keeps private results private, publishes only explicit text, and 
     await expect(root).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     const composer = await chooseCommand(box, page, 'help');
-    await composer.getByRole('button', { name: 'Run command', exact: true }).click();
-    await expect(composer.getByRole('status')).toContainText('/help');
+    await composer.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
+    await expect(commandResult(page)).toContainText('/help');
     await expect(logRegion(page, GENERAL)).not.toContainText('/help');
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
-    await page.keyboard.press('Escape');
     await expect(composer).toHaveCount(0, { timeout: WAIT });
 
     const shrug = await chooseCommand(box, page, 'shrug');
-    await shrug.getByRole('button', { name: 'Add optional text', exact: true }).click();
     await shrug.getByLabel('text', { exact: true }).fill('made by the command');
-    await shrug.getByRole('button', { name: 'Run command', exact: true }).click();
+    await shrug.getByLabel('text', { exact: true }).press('Enter');
     await expect(messageRow(page, GENERAL, '¯\\_(ツ)_/¯ made by the command')).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     await leaveCommandMode(page);
 
@@ -406,9 +407,10 @@ test('composer keeps private results private, publishes only explicit text, and 
     await expect(messageRow(page, GENERAL, literal)).toHaveCount(0);
     await page.getByRole('button', { name: 'Send as text', exact: true }).click();
     await expect(messageRow(page, GENERAL, literal)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    // `//` at the start posts the rest with one leading slash (the prototype's send()).
     const escaped = `//exact slash ${Date.now()}`;
     await box.fill(escaped);
-    await page.getByRole('button', { name: 'Send as text', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Command', exact: true }).press('Enter');
     await expect(messageRow(page, GENERAL, '/exact slash ' + escaped.split(' ').at(-1))).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     await rowAction(root, 'reply');
@@ -657,7 +659,7 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
         await invoke(composerBox(page, GENERAL), page, command);
         const region = page.getByRole('region', { name: 'Command composer', exact: true });
         await expect(region.getByRole('alert')).toHaveText('Join a voice channel in this community before using music commands.');
-        await expect(region.getByRole('status')).toHaveText('');
+        await expect(commandResult(page)).toHaveText('');
         await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
         await leaveCommandMode(page);
       }
@@ -687,13 +689,11 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     await expect(page.getByRole('toolbar', { name: 'voice controls', exact: true })).toBeVisible({ timeout: WAIT });
     const box = composerBox(page, GENERAL);
     await invoke(box, page, '/queue');
-    await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
-      .toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
+    await expect(commandResult(page)).toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
     await leaveCommandMode(page);
     await invoke(box, page, '/queue clear');
-    await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
-      .toContainText('Music queue cleared.', { timeout: BOT_WAIT });
+    await expect(commandResult(page)).toContainText('Music queue cleared.', { timeout: BOT_WAIT });
     await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
   } catch (error) {
     primaryFailure = error;
@@ -791,11 +791,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await enableBot(page, owner.password);
     const reminderText = `cross-device reminder ${Date.now()}`;
     await invoke(composerBox(page, GENERAL), page, `/remind when:1m text:"${reminderText}"`);
-    const dialog = page.getByRole('dialog', { name: 'Set a reminder', exact: true });
-    await expect(dialog).toBeVisible({ timeout: BOT_WAIT });
-    await expect(dialog.getByRole('textbox', { name: 'Reminder', exact: true })).toHaveValue(reminderText);
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(dialog).toBeHidden({ timeout: BOT_WAIT });
+    await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });
     await expect.poll(() => lastReminderRequestId(page), { timeout: BOT_WAIT }).toMatch(/^[0-9a-f]{32}$/u);
     const reminderId = await lastReminderRequestId(page);
     expect(reminderId).toMatch(/^[0-9a-f]{32}$/u);
@@ -868,4 +864,34 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     try { await secondContext?.close(); }
     finally { await stopAppBeforeHost(page, host); }
   }
+});
+
+// Signal wave B Task 2: `/remind` from the picker's chips (the browser's time zone, Q10) creates a reminder, and
+// `/reminders list` opens the bell's popover on Upcoming with it.
+test('a reminder set from the picker chips appears under Upcoming', async ({ page, instanceName }) => {
+  let host: StartedHost | null = null;
+  try {
+    host = await startTestHost(HOST);
+    const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
+    await createCommunity(page);
+    await enableBot(page, owner.password);
+    const reminderText = `chip reminder ${Date.now()}`;
+    const region = await chooseCommand(composerBox(page, GENERAL), page, 'remind');
+    const when = region.getByRole('combobox', { name: 'when', exact: true });
+    await expect(when).toBeFocused();
+    await expect(region.getByRole('listbox', { name: 'When', exact: true })).toBeVisible();
+    await when.fill('in 1 hour');
+    await expect(region.getByText(/^Reminds you /u)).toBeVisible();
+    await when.press('Tab');
+    const text = region.getByRole('combobox', { name: 'text', exact: true });
+    await text.fill(reminderText);
+    await text.press('Enter');
+    await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });
+    await expect(region).toHaveCount(0);
+    const list = await chooseCommand(composerBox(page, GENERAL), page, 'reminders list');
+    await list.getByRole('textbox', { name: 'press ↵ to run', exact: true }).press('Enter');
+    const inbox = page.getByRole('dialog', { name: 'Reminders', exact: true });
+    await expect(inbox.getByRole('tab', { name: /^Upcoming/u })).toHaveAttribute('aria-selected', 'true', { timeout: BOT_WAIT });
+    await expect(inbox).toContainText(reminderText, { timeout: BOT_WAIT });
+  } finally { await stopAppBeforeHost(page, host); }
 });

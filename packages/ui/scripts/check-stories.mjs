@@ -81,6 +81,27 @@ try {
             if (Math.abs(centre - expected) > 1.5) throw new Error(`SensitivityMeter: the line is at ${centre}, the value at ${expected}`);
           }
         }
+        // Wave B Task 2: the command picker's prototype geometry (a 260px list, rows of at least 40px, the chip rings) and
+        // no keyboard hints on a phone.
+        if (story.id.startsWith('conversation-commandpicker--')) {
+          const got = await page.evaluate(() => {
+            const style = selector => { const el = document.querySelector(selector); return el === null ? null : getComputedStyle(el); };
+            return {
+              listMax: style('.d-cmd-list__scroll')?.maxHeight ?? null,
+              rows: [...document.querySelectorAll('.d-cmd-row')].map(el => el.getBoundingClientRect().height),
+              ring: style('.d-cmd-field[data-active="true"]')?.boxShadow ?? null,
+              invalid: document.querySelector('.d-cmd-field[data-invalid="true"]') !== null,
+              hints: [...document.querySelectorAll('.d-cmd-list__hint, .d-cmd-bar__hint')].map(el => getComputedStyle(el).display),
+              phone: document.querySelector('[data-layout="phone"]') !== null,
+            };
+          });
+          if (got.listMax !== null && got.listMax !== '260px') throw new Error(`CommandPicker: the list's max height is ${got.listMax}, want 260px`);
+          if (got.rows.some(h => h < 40)) throw new Error(`CommandPicker: a command row is under 40px (${got.rows.join(', ')})`);
+          const wantRing = got.invalid ? 'rgba(255, 110, 110, 0.15) 0px 0px 0px 3px' : 'rgba(90, 168, 230, 0.12) 0px 0px 0px 3px';
+          if (got.ring !== null && got.ring !== wantRing) throw new Error(`CommandPicker: the active chip's ring is ${got.ring}, want ${wantRing}`);
+          if (got.phone && got.hints.some(display => display !== 'none')) throw new Error('CommandPicker: a keyboard hint shows on a phone');
+          if (!got.phone && got.hints.some(display => display === 'none')) throw new Error('CommandPicker: a keyboard hint is hidden on a desktop');
+        }
         process.stdout.write(`PASS ${story.id}\n`);
       } catch (error) {
         failures += 1;

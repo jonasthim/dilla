@@ -97,6 +97,16 @@
  *   icons/hand.svg  fdd60b469094d42d8abec6ef4afa0552e792fa25047aaeccd5c6f0aded10e05e
  *   icons/user-x.svg  7fcc94a0ad34c466b6800fee162b447332e6e48e3d3ce9bd40afd2023c0897c7
  *   icons/message-square-x.svg  2d14420bdf28bf3d41690aebbc20be5e050efcd204d35db41f00c00adfb1b674
+ *   icons/circle-help.svg  4fa4f34eb9a3bfb99807af609ae99de7fe2f3b385e03fa97bbd57a4ef6968fab
+ *   icons/sparkles.svg  cca35a8c0dda692e57e3ec4c2688660aaa847428f7d26f239adaea4354fbd724
+ *   icons/table.svg  4e9b688b87e8fa2ee12cee695cafd6ba34bf1ece258580a774cd78572facb968
+ *   icons/code.svg  ac13c67edfe690bd0505995c1ae2495ce1522feaad61165c95a7d560e1ea856c
+ *   icons/image.svg  55b62e55b83b02b86b7d86f913dc6a2160966c601dfa06bd38779c9b99c689ca
+ *   icons/pencil.svg  e0d56786cf7a6ca62246e653fbbd2696bd2a918e5acc15d04815a6956a3b81f9
+ *   icons/fast-forward.svg  041cb0fe5e0c2c82df68f1932dece91af635c2626baa52abbb89fe0e263130e3
+ *   icons/shuffle.svg  e6f5b2698e2501c44a0531277a3ae17f7447d15c2acbebf6c3968b705a7d6b5f
+ *   icons/repeat.svg  5452d083297f8c3873284b24fde83cc351b1476c9e6d5ff2c94e337948a8df43
+ *   icons/timer-off.svg  2045ffa8bc3e3df5a2beb2ff1d36f1e2479665eca3c137a333a5deae3ea5182c
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -116,7 +126,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right, music, monitor are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right, music, monitor, code are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -597,6 +607,60 @@ export const ICONS = {
     ['path', { d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z' }],
     ['path', { d: 'm14.5 8.5-5 5' }],
     ['path', { d: 'm9.5 8.5 5 5' }],
+  ],
+  'circle-help': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3' }],
+    ['path', { d: 'M12 17h.01' }],
+  ],
+  'sparkles': [
+    ['path', { d: 'M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z' }],
+    ['path', { d: 'M20 2v4' }],
+    ['path', { d: 'M22 4h-4' }],
+    ['circle', { cx: '4', cy: '20', r: '2' }],
+  ],
+  'table': [
+    ['path', { d: 'M12 3v18' }],
+    ['rect', { width: '18', height: '18', x: '3', y: '3', rx: '2' }],
+    ['path', { d: 'M3 9h18' }],
+    ['path', { d: 'M3 15h18' }],
+  ],
+  'code': [
+    ['path', { d: 'm16 18 6-6-6-6' }],
+    ['path', { d: 'm8 6-6 6 6 6' }],
+  ],
+  'image': [
+    ['rect', { width: '18', height: '18', x: '3', y: '3', rx: '2', ry: '2' }],
+    ['circle', { cx: '9', cy: '9', r: '2' }],
+    ['path', { d: 'm21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21' }],
+  ],
+  'pencil': [
+    ['path', { d: 'M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z' }],
+    ['path', { d: 'm15 5 4 4' }],
+  ],
+  'fast-forward': [
+    ['path', { d: 'M12 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 12 18z' }],
+    ['path', { d: 'M2 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 2 18z' }],
+  ],
+  'shuffle': [
+    ['path', { d: 'm18 14 4 4-4 4' }],
+    ['path', { d: 'm18 2 4 4-4 4' }],
+    ['path', { d: 'M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22' }],
+    ['path', { d: 'M2 6h1.972a4 4 0 0 1 3.6 2.2' }],
+    ['path', { d: 'M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45' }],
+  ],
+  'repeat': [
+    ['path', { d: 'm17 2 4 4-4 4' }],
+    ['path', { d: 'M3 11v-1a4 4 0 0 1 4-4h14' }],
+    ['path', { d: 'm7 22-4-4 4-4' }],
+    ['path', { d: 'M21 13v1a4 4 0 0 1-4 4H3' }],
+  ],
+  'timer-off': [
+    ['path', { d: 'M10 2h4' }],
+    ['path', { d: 'M4.6 11a8 8 0 0 0 1.7 8.7 8 8 0 0 0 8.7 1.7' }],
+    ['path', { d: 'M7.4 7.4a8 8 0 0 1 10.3 1 8 8 0 0 1 .9 10.2' }],
+    ['path', { d: 'm2 2 20 20' }],
+    ['path', { d: 'M12 12v-2' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

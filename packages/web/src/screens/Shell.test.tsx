@@ -2031,8 +2031,8 @@ it('selects a builtin member through the shipping Shell provider and executes dm
   fireEvent.change(composer(), { target: { value: '/dm' } });
   const member = await screen.findByRole('combobox', { name: 'user' });
   await user.type(member, 'bob');
-  await user.click(await screen.findByRole('option', { name: 'bob' }));
-  await user.click(screen.getByRole('button', { name: /run command/i }));
+  await user.click(await screen.findByRole('option', { name: /^bob/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
   await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
 });
 

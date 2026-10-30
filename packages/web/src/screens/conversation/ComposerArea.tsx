@@ -13,6 +13,7 @@ import { GifPickerPanel } from './GifPicker.tsx';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
 import { formatWait, spokenStep } from './slow.ts';
 import { CommandHost } from '../commands/CommandHost.tsx';
+import type { PickerFrame } from '../commands/CommandPicker.tsx';
 
 export interface OutgoingMessage { raw: string; text: string; replyTo: string | null; attachments: readonly string[];
   /** The thread a send belongs to (the thread composer); absent for the channel's own composer. */
@@ -161,7 +162,10 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     }
     return false;
   };
-  const send = (value: string, explicitLiteral = false) => {
+  const send = (raw: string, explicitLiteral = false) => {
+    // `//` at the start posts the rest with one leading slash (the prototype's send(): `//shrug` → `/shrug`).
+    const value = !explicitLiteral && raw.startsWith('//') ? raw.slice(1) : raw;
+    if (!explicitLiteral && raw.startsWith('//')) explicitLiteral = true;
     if (value.startsWith('/') && !explicitLiteral) {
       setSlashSubmission({ text: value, id: ++slashSubmissionId.current });
       return;
@@ -184,12 +188,41 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const noticeBody = readOnly ? null : waiting ? <>
     <span aria-hidden="true">{waitText}</span>{queued ? <span> {t('slow.queued')}</span> : null}
   </> : null;
+  // The composer, and in command mode the same composer around the picker (Signal wave B Task 2): the chips replace
+  // the textarea in place, the box keeps its frame; the picker's list or suggestions and its bar sit above.
+  const composer = (cmd?: PickerFrame) => <Composer label={p.label} placeholder={p.placeholder} maxLength={4000} value={cmd === undefined ? p.draft : cmd.draft}
+      onChange={text => { if (cmd !== undefined) return; p.onDraft(text); setActive(0);
+        setCaret(textareaRef.current?.selectionStart ?? text.length); }}
+      disabled={blocked !== null} disabledReason={blocked ?? undefined} onSend={cmd === undefined ? send : () => cmd.run()}
+      sendLabel={t('shell.composer.send')}
+      counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
+      attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
+      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => { setEmojiOpen(false); setGifOpen(o => !o); }, buttonRef: gifButton } } : {})}
+      emoji={{ label: t('shell.composer.emoji'), open: emojiOpen && blocked === null, controls: `${id}-emoji`, onToggle: () => { setGifOpen(false); setEmojiOpen(o => !o); }, buttonRef: emojiButton }}
+      codeLabel={t('shell.composer.code')} hint={t('shell.composer.newLine')} typing={p.typing} replying={p.ui.reply !== null}
+      {...(noticeBody !== null ? { notice: noticeBody } : {})}
+      {...(cmd !== undefined ? { input: cmd.input } : {})}
+      top={<>
+        {cmd?.top}
+        {p.ui.reply !== null ? <ReplyChip label={t('shell.composer.replying', { name: p.ui.reply.author })} name={p.ui.reply.author}
+          excerpt={p.ui.reply.excerpt} cancelLabel={t('shell.composer.replyCancel')}
+          onCancel={() => { p.dispatch({ type: 'reply', reply: null }); textareaRef.current?.focus(); }} /> : null}
+        <TrayList channelId={p.channelId} items={tray} onError={e => p.onError(e)} />
+        {p.ui.trayError !== null ? <p className="dw-tray-error d-composer__alert" role="alert">{p.ui.trayError}</p> : null}
+        {cmd === undefined && open ? <MentionList id={listId} label={t('shell.composer.mentions')} title={t('shell.composer.mentionsTitle')}
+          options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary, person: o.id.startsWith('m-') }))}
+          activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}
+      </>}
+      measure={value => new TextEncoder().encode(encodeMentions(value, p.encodeWith, broadcast, roleMentions)).length}
+      {...(cmd === undefined ? { combobox: { expanded: open, controls: listId, activeDescendant: open ? optionId(options[index]) : null, onKey: (key: 'ArrowUp' | 'ArrowDown' | 'Enter' | 'Tab' | 'Escape') => blocked === null && onKey(key) } } : {})}
+      onCaret={setCaret} onArrowUpEmpty={() => {
+        if (blocked !== null) return;
+        const item = [...p.items].reverse().find(i => i.senderUser === p.book.self?.id && i.state === 'ok' && i.msgId !== null && i.seq !== null);
+        if (item?.msgId) p.dispatch({ type: 'edit', msgId: item.msgId, value: editableText(item.body, p.book) });
+      }}
+      onPasteFiles={files => { void attachFiles(client, p.channelId, files, a => p.dispatch(a)); }} textareaRef={textareaRef}
+      canSendEmpty={tray.length > 0} />;
   return <>
-    <CommandHost communityId={route.name === 'channel' ? route.communityId : null} channelId={p.channelId}
-      {...(p.threadId !== undefined ? { threadId: p.threadId } : {})} {...(bits !== null ? { bits } : {})}
-      items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
-      encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
-      onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={setCommandMode} slashSubmission={slashSubmission} />
     <div className="d-composer-pop">
     {emojiOpen && blocked === null ? <EmojiGrid id={`${id}-emoji`} label={t('shell.composer.emoji')} items={REACTION_EMOJI.map(a => ({ emoji: a.emoji, name: t(a.key) }))}
       search={{ label: t('shell.composer.emojiSearch'), placeholder: t('shell.composer.emojiSearch') }}
@@ -205,36 +238,13 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     </div>
     <input ref={inputRef} className="dw-attach-input" type="file" multiple hidden
       onChange={e => { void attachFiles(client, p.channelId, Array.from(e.currentTarget.files ?? []), a => p.dispatch(a)); e.currentTarget.value = ''; }} />
-    {!commandMode ? <Composer label={p.label} placeholder={p.placeholder} maxLength={4000} value={p.draft}
-      onChange={text => { p.onDraft(text); setActive(0);
-        setCaret(textareaRef.current?.selectionStart ?? text.length); }}
-      disabled={blocked !== null} disabledReason={blocked ?? undefined} onSend={send}
-      sendLabel={t('shell.composer.send')}
-      counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
-      attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
-      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => { setEmojiOpen(false); setGifOpen(o => !o); }, buttonRef: gifButton } } : {})}
-      emoji={{ label: t('shell.composer.emoji'), open: emojiOpen && blocked === null, controls: `${id}-emoji`, onToggle: () => { setGifOpen(false); setEmojiOpen(o => !o); }, buttonRef: emojiButton }}
-      codeLabel={t('shell.composer.code')} hint={t('shell.composer.newLine')} typing={p.typing} replying={p.ui.reply !== null}
-      {...(noticeBody !== null ? { notice: noticeBody } : {})}
-      top={<>
-        {p.ui.reply !== null ? <ReplyChip label={t('shell.composer.replying', { name: p.ui.reply.author })} name={p.ui.reply.author}
-          excerpt={p.ui.reply.excerpt} cancelLabel={t('shell.composer.replyCancel')}
-          onCancel={() => { p.dispatch({ type: 'reply', reply: null }); textareaRef.current?.focus(); }} /> : null}
-        <TrayList channelId={p.channelId} items={tray} onError={e => p.onError(e)} />
-        {p.ui.trayError !== null ? <p className="dw-tray-error d-composer__alert" role="alert">{p.ui.trayError}</p> : null}
-        {open ? <MentionList id={listId} label={t('shell.composer.mentions')} title={t('shell.composer.mentionsTitle')}
-          options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary, person: o.id.startsWith('m-') }))}
-          activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}
-      </>}
-      measure={value => new TextEncoder().encode(encodeMentions(value, p.encodeWith, broadcast, roleMentions)).length}
-      combobox={{ expanded: open, controls: listId, activeDescendant: open ? optionId(options[index]) : null, onKey: key => blocked === null && onKey(key) }}
-      onCaret={setCaret} onArrowUpEmpty={() => {
-        if (blocked !== null) return;
-        const item = [...p.items].reverse().find(i => i.senderUser === p.book.self?.id && i.state === 'ok' && i.msgId !== null && i.seq !== null);
-        if (item?.msgId) p.dispatch({ type: 'edit', msgId: item.msgId, value: editableText(item.body, p.book) });
-      }}
-      onPasteFiles={files => { void attachFiles(client, p.channelId, files, a => p.dispatch(a)); }} textareaRef={textareaRef}
-      canSendEmpty={tray.length > 0} /> : null}
+    <CommandHost communityId={route.name === 'channel' ? route.communityId : null} channelId={p.channelId}
+      {...(p.threadId !== undefined ? { threadId: p.threadId } : {})} {...(bits !== null ? { bits } : {})}
+      items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
+      encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
+      onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={setCommandMode} slashSubmission={slashSubmission}
+      renderFrame={parts => composer(parts)} />
+    {!commandMode ? composer() : null}
     <p className="d-sr-only" role="status" data-slow="">{spoken.text}</p>
   </>;
 }
