@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -891,5 +893,33 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 				t.Fatalf("log=%v", row)
 			}
 		})
+	}
+}
+
+func TestMusicEnqueueRejectedInputIsUnavailableWithoutRevision(t *testing.T) {
+	dir := t.TempDir()
+	marker, tool := filepath.Join(dir, "called"), filepath.Join(dir, "must-not-run")
+	if err := os.WriteFile(tool, []byte(fmt.Sprintf("#!/bin/sh\ntouch %q\nexit 99\n", marker)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := youtube.NewMetadataResolver(tool, tool, tool, tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, community := id.New(), id.New()
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver,
+		OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+			t.Fatal("rejected input handed to playback")
+			return 0, nil
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"https://a@youtube.com/watch?v=aqz-KE-bpKQ"}}
+	result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != 5 || result.Revision != nil || store.saves != 0 || store.snapshot.Revision != 0 || len(store.snapshot.State.Queue) != 0 {
+		t.Fatalf("result=%+v err=%v store=%+v", result, err, store)
+	}
+	if _, err = os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("metadata runner was called: %v", err)
 	}
 }

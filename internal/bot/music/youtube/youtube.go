@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	MaxInputBytes    = 200
+	MaxInputBytes    = 512
 	MaxSearchResults = 5
 	MaxPlaylistItems = 500
 	MaxTitleBytes    = music.MaxMetadataBytes
@@ -78,6 +78,10 @@ func NormalizeInput(value string) (kind string, canonical string, err error) {
 		looksLikeHost(value) {
 		return "", "", ErrInvalidInput
 	}
+	// Keep the search-text byte limit unchanged.
+	if len(value) > 200 {
+		return "", "", ErrInvalidInput
+	}
 	return "search", "ytsearch5:" + value, nil
 }
 
@@ -86,35 +90,42 @@ func normalizeURL(raw string) (string, string, error) {
 		return "", "", ErrInvalidInput
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Fragment != "" || u.RawFragment != "" {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Opaque != "" || u.User != nil || u.Fragment != "" || u.RawFragment != "" {
 		return "", "", ErrInvalidInput
 	}
 	host := strings.ToLower(u.Hostname())
 	if host == "" || u.Port() != "" || u.Host != host {
 		return "", "", ErrInvalidInput
 	}
-	if host != "youtube.com" && host != "www.youtube.com" && host != "m.youtube.com" && host != "youtu.be" {
+	if host != "youtube.com" && host != "www.youtube.com" && host != "m.youtube.com" && host != "youtu.be" && host != "music.youtube.com" {
 		return "", "", ErrInvalidInput
 	}
 	values, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
 		return "", "", ErrInvalidInput
 	}
-	for key, all := range values {
-		if len(all) != 1 || all[0] == "" {
-			return "", "", ErrInvalidInput
-		}
-		_ = key
-	}
 	if host == "youtu.be" {
 		videoID := strings.TrimPrefix(u.EscapedPath(), "/")
-		if strings.Count(u.EscapedPath(), "/") != 1 || !idPattern.MatchString(videoID) || len(values) != 0 {
+		if strings.Count(u.EscapedPath(), "/") != 1 || !idPattern.MatchString(videoID) {
 			return "", "", ErrInvalidInput
 		}
 		return "video", videoURL(videoID), nil
 	}
-	if u.Path == "/watch" && len(values) == 1 && values.Has("v") && idPattern.MatchString(values.Get("v")) && u.RawQuery == "v="+values.Get("v") {
+	if u.Path == "/watch" && len(values["v"]) == 1 && idPattern.MatchString(values.Get("v")) {
+		for key := range values {
+			switch key {
+			case "v", "si", "t", "pp", "feature", "list", "index", "ab_channel", "start_radio":
+			default:
+				return "", "", ErrInvalidInput
+			}
+		}
+		if strings.HasSuffix(u.RawQuery, "&") {
+			return "", "", ErrInvalidInput
+		}
 		return "video", videoURL(values.Get("v")), nil
+	}
+	if match := strings.TrimPrefix(u.Path, "/live/"); match != u.Path && idPattern.MatchString(match) && len(values) == 0 {
+		return "video", videoURL(match), nil
 	}
 	if match := strings.TrimPrefix(u.Path, "/shorts/"); match != u.Path && idPattern.MatchString(match) && len(values) == 0 {
 		return "video", videoURL(match), nil
