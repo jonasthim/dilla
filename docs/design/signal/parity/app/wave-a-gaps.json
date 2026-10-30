@@ -36,7 +36,19 @@
     "name": "gap16-reminders-empty-due",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 300 }, { "click": "div[data-rem='1'] > div >> nth=0" }, { "wait": 500 }, { "click": "div[data-rem='1'] >> text=Dismiss" }, { "wait": 3600 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }, { "wait": 2500 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }, { "wait": 2500 }] },
+    "judge": { "elements": [
+      {"id":"search","name":"the search box at the top centre of the window"},
+      {"id":"composer","name":"the message composer at the bottom of the main column"},
+      {"id":"popover","name":"the Reminders popover open under the bell button at the top right"},
+      {"id":"heading","name":"the bold heading at the top left of the popover","copy":"Reminders","anchor":"popover"},
+      {"id":"owner_badge","name":"the small square avatar badge with two letters just left of the popover's bold heading","anchor":"popover","region":{"x":880,"y":40,"width":380,"height":190}},
+      {"id":"tabs","name":"the two-tab switch at the top right of the popover","anchor":"popover"},
+      {"id":"due_tab","name":"the Due tab of the two-tab switch in the popover","compare":["presence"],"state":{"selected":{"phrase":"drawn as the selected tab","true":"the Due tab has a lighter filled background than the Upcoming tab next to it","false":"the Due tab has the same background as the Upcoming tab next to it"}}},
+      {"id":"empty_text","name":"the centred grey line in the middle of the popover","copy":"Nothing due.","anchor":"popover"},
+      {"id":"footer","name":"the small grey note at the bottom of the popover","copy":"Private to you, across your devices. Add one with /remind.","anchor":"popover"},
+      {"id":"loading_line","name":"a line saying that reminders are loading","expect":"absent"}
+    ] }
   },
   {
     "name": "gap16-reminders-empty-upcoming",
@@ -48,7 +60,18 @@
     "name": "gap24-status-menu-desktop",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside > div:last-child > div:nth-child(1)" }, { "wait": 600 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=/your status/]" }, { "wait": 600 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=/your status/]" }, { "wait": 600 }] },
+    "judge": { "elements": [
+      {"id":"search","name":"the search box at the top centre of the window"},
+      {"id":"composer","name":"the message composer at the bottom of the main column"},
+      {"id":"user_panel","name":"the user panel at the bottom of the channel sidebar, with an avatar and microphone and headphone buttons"},
+      {"id":"status_menu","name":"the status menu open above the user panel"},
+      {"id":"online_row","name":"the first row of the status menu","copy":"online","anchor":"status_menu","state":{"checked":{"phrase":"marked with a check mark","true":"a check mark at the right end of the row","false":"nothing at the right end of the row"}}},
+      {"id":"idle_row","name":"the second row of the status menu","copy":"idle","anchor":"status_menu"},
+      {"id":"dnd_row","name":"the third row of the status menu","copy":"do not disturb","anchor":"status_menu"},
+      {"id":"invisible_row","name":"the fourth row of the status menu","copy":"invisible","anchor":"status_menu"},
+      {"id":"online_dot","name":"the green dot at the left of the first row of the status menu","compare":["presence"]}
+    ] }
   },
   {
     "name": "gap96-status-menu-phone",
@@ -78,7 +101,16 @@
     "name": "gap52-sent-image-and-file", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "main textarea" }, { "press": "Enter" }, { "wait": 1500 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "role=textbox[name=/^message/i]" }, { "press": "Enter" }, { "wait": 3000 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "role=textbox[name=/^message/i]" }, { "press": "Enter" }, { "wait": 3000 }] },
+    "judge": { "elements": [
+      {"id":"search","name":"the search box at the top centre of the window"},
+      {"id":"composer","name":"the message composer at the bottom of the main column"},
+      {"id":"members_heading","name":"the Members heading at the top of the right-hand panel"},
+      {"id":"image_tile","name":"the image attachment in the last message of the conversation"},
+      {"id":"file_card","name":"the file attachment card in the last message of the conversation, with a document icon and a download button","anchor":"image_tile"},
+      {"id":"download_button","name":"the download button at the right end of the file attachment card","compare":["presence","size"]},
+      {"id":"file_meta","name":"the small grey size line under the file name in the file attachment card","compare":["presence"]}
+    ] }
   },
   {
     "name": "gap53-code-block-copied", "mutates": true,
@@ -90,7 +122,16 @@
     "name": "gap71-voice-preview-nobody-desktop",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=1" }, { "wait": 1200 }, { "click": "main >> text=Leave" }, { "wait": 1200 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice general\"s]" }, { "wait": 2500 }, { "click": "role=button[name=\"leave\"i]" }, { "wait": 1500 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice general\"s]" }, { "wait": 2500 }, { "click": "role=button[name=\"leave\"i]" }, { "wait": 1500 }] },
+    "judge": { "elements": [
+      {"id":"search","name":"the search box at the top centre of the window"},
+      {"id":"header","name":"the channel header bar at the top of the main column, with a speaker icon"},
+      {"id":"user_panel","name":"the user panel at the bottom of the channel sidebar, with an avatar and microphone and headphone buttons"},
+      {"id":"voice_row","name":"the second channel row at the top of the channel sidebar, with a speaker icon","compare":["presence"],"state":{"selected":{"phrase":"drawn as the selected channel","true":"the row has a lighter background than the rows around it and a blue bar on its left edge","false":"the row has the same background as the rows around it and no bar on its left edge"}}},
+      {"id":"title","name":"the bold channel name in the middle of the main column","anchor":"header"},
+      {"id":"subtitle","name":"the grey line under the bold channel name in the middle of the main column","copy":"Nobody is here yet","anchor":"header"},
+      {"id":"join_button","name":"the green button in the middle of the main column","copy":"Join voice","anchor":"header"}
+    ] }
   },
   {
     "name": "gap99-voice-preview-nobody-phone",
@@ -138,7 +179,17 @@
     "name": "gap89-phone-message-toolbar",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }, { "click": "article >> nth=2" }, { "wait": 700 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }, { "click": "role=article >> nth=2" }, { "wait": 700 }] }
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }, { "click": "role=article >> nth=2" }, { "wait": 700 }] },
+    "judge": { "elements": [
+      {"id":"header","name":"the channel header at the top of the screen, with a back arrow"},
+      {"id":"header_topic","name":"the grey channel topic next to the channel name in the header","compare":["presence"]},
+      {"id":"toolbar","name":"the small pill-shaped toolbar of message action icons floating over the conversation"},
+      {"id":"first_message","name":"the first message in the conversation","compare":["presence"],"state":{"selected":{"phrase":"drawn as the selected message","true":"the message has a blue bar on its left edge","false":"the message has no bar on its left edge, like the messages below it"}}},
+      {"id":"code_block","name":"the code block with line numbers in the conversation","compare":["presence","size"]},
+      {"id":"composer","name":"the message composer above the bottom tab bar"},
+      {"id":"tab_bar","name":"the bottom tab bar with Home, Activity and You tabs"},
+      {"id":"older_bar","name":"a bar saying that older messages are being viewed, with a link to jump to the present","expect":"absent"}
+    ] }
   },
   {
     "name": "gap90-phone-emoji-picker",
@@ -162,7 +213,19 @@
     "name": "gap97-phone-dm-list",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "d-icon[name='at-sign'] >> nth=0" }, { "wait": 1200 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=/^direct messages/]" }, { "wait": 1200 }] }
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=/^direct messages/]" }, { "wait": 1200 }] },
+    "judge": { "elements": [
+      {"id":"heading","name":"the large italic heading at the top of the list","copy":"Direct messages"},
+      {"id":"section_label","name":"the small upper-case section label above the list of conversations","copy":"DIRECT MESSAGES","anchor":"heading"},
+      {"id":"first_row","name":"the first conversation row in the list","compare":["presence","size"],"state":{"selected":{"phrase":"drawn as the selected row","true":"the row has a lighter background than the rows below it and a blue bar on its left edge","false":"the row has the same background as the rows below it and no bar on its left edge"}}},
+      {"id":"unread_dot","name":"a small blue unread dot at the right end of a conversation row","compare":["presence"]},
+      {"id":"server_rail","name":"the narrow rail of round server buttons along the left edge","compare":["presence","size"]},
+      {"id":"rail_dm_button","name":"the @ button at the top of the narrow left rail","compare":["presence"],"state":{"selected":{"phrase":"drawn as selected","true":"the button has a blue outline","false":"the button has no outline, like the buttons below it"}}},
+      {"id":"user_panel","name":"the user panel above the bottom tab bar, with an avatar and microphone and headphone buttons","compare":["presence","size"]},
+      {"id":"tab_bar","name":"the bottom tab bar with Home, Activity and You tabs"},
+      {"id":"home_tab","name":"the Home tab of the bottom tab bar","compare":["presence"],"state":{"selected":{"phrase":"drawn as the selected tab","true":"a blue line above the tab and brighter text than the other tabs","false":"no line above the tab and the same grey text as the other tabs"}}},
+      {"id":"compose_button","name":"a pencil button for starting a new message next to the large heading","expect":"absent","accepted":[{"facet":"presence","why":"findings.md gap97: DM compose and chevron head ACCEPTED (wave A)"}]}
+    ] }
   },
   {
     "name": "gap97-phone-dm-conversation",
@@ -174,7 +237,18 @@
     "name": "gap102-phone-settings-profile",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 600 }, { "click": "div:has(> d-icon[name='settings']):visible >> nth=0" }, { "wait": 900 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }] }
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }] },
+    "judge": { "elements": [
+      {"id":"close","name":"the round close button with an X at the top right","compare":["presence","size"]},
+      {"id":"tabs","name":"the row of settings tabs under the close button"},
+      {"id":"profile_tab","name":"the Profile tab, the first tab in the row","anchor":"tabs","state":{"selected":{"phrase":"drawn as the selected tab","true":"a lighter background and a blue bar on its left edge","false":"plain text on the page background like the other tabs"}}},
+      {"id":"title","name":"the large page heading under the tabs","copy":"Profile"},
+      {"id":"subtitle","name":"the grey line under the page heading","copy":"How people see you across your servers.","anchor":"title"},
+      {"id":"name_field","name":"the text field under the label Display name","anchor":"title","state":{"focused":{"phrase":"focused for typing","true":"the field's border is brighter than the other fields' borders","false":"the field's border looks like the other fields' borders"}}},
+      {"id":"bio_field","name":"the tall text box under the label Bio","anchor":"title"},
+      {"id":"storage_hint","name":"the grey note saying that name, status and bio are stored readable by the host","anchor":"title"},
+      {"id":"preview_card","name":"the profile preview card with a coloured banner and a round avatar","anchor":"storage_hint"}
+    ] }
   },
   {
     "name": "gap102-phone-settings-signin",

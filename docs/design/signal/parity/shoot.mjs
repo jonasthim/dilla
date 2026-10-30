@@ -113,11 +113,17 @@ export const sideOf = pair => (pair.app !== undefined ? 'app' : 'story');
 /** Output path of one frame of a pair: kind is prototype, app, story or pair. */
 export const pairFile = (outDir, pair, kind) => path.join(outDir, `${pair.name}.${kind}.png`);
 
-/** Command line: `<spec> <outDir> [--storybook url] [--app [state.json]]`. `app` is the state file path, or null without --app. */
+/**
+ * Command line: `<spec> <outDir> [--storybook url] [--app [state.json]] [--judge]`. `app` is the state file path, or null
+ * without --app. `--judge` adds `judge: true` (run judge.mjs on the pairs that shot ok).
+ */
 export function parseArgs(argv) {
   const args = [...argv];
   let storybook = 'http://127.0.0.1:6006';
   let app = null;
+  const k = args.indexOf('--judge');
+  const judge = k >= 0;
+  if (judge) args.splice(k, 1);
   const i = args.indexOf('--storybook');
   if (i >= 0) { storybook = args[i + 1]; args.splice(i, 2); }
   const j = args.indexOf('--app');
@@ -126,7 +132,7 @@ export function parseArgs(argv) {
     if (next !== undefined && !next.startsWith('--')) { app = next; args.splice(j, 2); } else { app = DEFAULT_STATE; args.splice(j, 1); }
   }
   const [specFile, outDir] = args;
-  return { specFile, outDir, storybook, app };
+  return { specFile, outDir, storybook, app, ...(judge ? { judge: true } : {}) };
 }
 
 /** The iframe URL of a story; globals use Storybook's `key:value;key:value` form and are URL-encoded. */
@@ -299,14 +305,15 @@ async function composePair(browser, left, right, out) {
 }
 
 export async function main(argv) {
-  const { specFile, outDir, storybook, app } = parseArgs(argv.slice(2));
-  if (!specFile || !outDir || !storybook) { console.error(`usage: shoot.mjs <spec.json> <outDir> [--storybook http://127.0.0.1:6006] [--app [${DEFAULT_STATE}]]`); return 2; }
+  const { specFile, outDir, storybook, app, judge } = parseArgs(argv.slice(2));
+  if (!specFile || !outDir || !storybook) { console.error(`usage: shoot.mjs <spec.json> <outDir> [--storybook http://127.0.0.1:6006] [--app [${DEFAULT_STATE}]] [--judge]`); return 2; }
   const spec = validateSpec(JSON.parse(fs.readFileSync(specFile, 'utf8')));
   const state = app !== null && spec.some(p => p.app !== undefined) ? JSON.parse(fs.readFileSync(app ?? DEFAULT_STATE, 'utf8')) : null;
   if (spec.some(p => p.app !== undefined) && state === null) { console.error('the spec has app pairs: pass --app [state.json]'); return 2; }
   fs.mkdirSync(outDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
   let failed = 0;
+  const shot = [];
   try {
     for (const pair of orderPairs(spec)) {
       const p = kind => pairFile(outDir, pair, kind);
@@ -317,6 +324,7 @@ export async function main(argv) {
         else await shootStory(browser, pair, storybook, p('story'));
         await composePair(browser, p('prototype'), p(side), p('pair'));
         console.log(`ok   ${pair.name}  ${p('pair')}`);
+        shot.push(pair.name);
       } catch (e) {
         failed += 1;
         console.log(`FAIL ${pair.name}  ${e?.message ?? e}`);
@@ -324,6 +332,12 @@ export async function main(argv) {
     }
   } finally { await browser.close(); }
   if (state !== null && spec.some(p => p.mutates === true)) console.log('note: pairs marked mutates changed the world; restart it before shooting again');
+  if (judge && shot.length > 0) {
+    // Advisory TypeSafe judge over the frames just shot (judge.mjs; README "Judge a pair"). Only pairs that printed ok.
+    const { judgeSpec } = await import('./judge.mjs');
+    const { exit } = await judgeSpec(spec, outDir, { only: shot });
+    if (exit !== 0) failed += 1;
+  }
   return failed > 0 ? 1 : 0;
 }
 
