@@ -63,7 +63,7 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 	// A closed group's proposals are past every walk above, which reads open groups only.
 	closedVoided, err := d.voidClosedGroupProposals(ctx)
 	if err != nil {
-		return report, err
+		d.log().Error("voiding closed-group proposals failed", "err", err)
 	}
 	report.ProposalsVoided = voided + closedVoided
 

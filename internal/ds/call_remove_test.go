@@ -205,6 +205,9 @@ func TestTheSweepVoidsTheLiveProposalsOfAClosedGroup(t *testing.T) {
 	if n := len(h.proposals(t, reg.GroupID, false)); n != 2 {
 		t.Fatalf("%d live proposals before the close, want 2", n)
 	}
+	for _, origin := range []uint8{0, 1} {
+		h.putProposalRow(t, reg.GroupID, 5, origin, h.clk.Now().Unix(), 3600)
+	}
 	if err := h.ds.Close(ctx, reg.GroupID); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -216,8 +219,13 @@ func TestTheSweepVoidsTheLiveProposalsOfAClosedGroup(t *testing.T) {
 		t.Fatalf("call sweep: %v", err)
 	}
 	rows := h.proposals(t, reg.GroupID, true)
-	if len(rows) != 2 {
-		t.Fatalf("%d rows after the sweep, want the 2 kept (voided, not re-driven or deleted)", len(rows))
+	old, err := h.repo.ListProposals(ctx, reg.GroupID, 5, true)
+	if err != nil || len(old) != 2 {
+		t.Fatalf("old-epoch proposals = %v, %v, want 2", old, err)
+	}
+	rows = append(rows, old...)
+	if len(rows) != 4 {
+		t.Fatalf("%d rows after the sweep, want the 4 kept (voided, not re-driven or deleted)", len(rows))
 	}
 	for _, r := range rows {
 		if r.VoidAt == nil {

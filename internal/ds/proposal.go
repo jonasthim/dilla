@@ -890,9 +890,8 @@ func (d *DS) addStillEligible(ctx context.Context, groupID, deviceID id.ID) (boo
 // the only rows the gauge counts; Void reads it before voiding, so a second void of one row, or a
 // void of a member proposal, never decrements.
 //
-// It looks at the GROUP'S CURRENT EPOCH, which is where every live proposal is: a re-issue moves a
-// proposal to the new epoch and a commit deletes what it applied. A row at an older epoch is not
-// found, and the gauge is then simply not decremented — Sweep's re-seed corrects it.
+// It reads the group's current epoch, the only epoch whose proposals can be committed. Old
+// open-group rows are excluded from the seed too; closed-group voids count their own rows.
 func (d *DS) liveInstanceKind(ctx context.Context, groupID id.ID, ref []byte) (uint8, bool) {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {

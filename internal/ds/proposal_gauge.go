@@ -6,7 +6,7 @@ import (
 )
 
 // proposalGauge keeps dilla_ds_proposals_outstanding{kind}: the non-void instance proposals
-// (origin 0), every group. The count lives here, under one mutex, and the gauge is Set from it, so
+// (origin 0), at open groups' current epoch and every epoch of closed groups. The count lives here, under one mutex, and the gauge is Set from it, so
 // a decrement can never take it below zero.
 //
 // A bare Inc/Dec gauge started at zero on every process start: a void of a proposal issued before

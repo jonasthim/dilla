@@ -145,3 +145,49 @@ func TestAProposalGaugeDecrementBelowZeroIsClamped(t *testing.T) {
 		t.Fatalf("gauge = %v after an unseeded decrement, want 0", got)
 	}
 }
+
+func TestVoidingAnInstanceProposalTwiceDecrementsTheGaugeOnlyOnce(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	ref := h.putProposalRow(t, reg.GroupID, 6, 0, h.clk.Now().Unix(), 86400)
+	h.putProposalRow(t, reg.GroupID, 6, 0, h.clk.Now().Unix(), 86400)
+	m := h.restartWithMetrics()
+	if err := h.ds.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := gaugeValue(t, m, "remove"); got != 2 {
+		t.Fatalf("gauge after Start = %v, want 2", got)
+	}
+	for i := range 2 {
+		if err := h.ds.Void(ctx, reg.GroupID, ref); err != nil {
+			t.Fatalf("Void: %v", err)
+		}
+		if got := gaugeValue(t, m, "remove"); got != 1 {
+			t.Fatalf("gauge after void %d = %v, want 1", i+1, got)
+		}
+	}
+}
+
+func TestAStrandedOldEpochProposalDoesNotRaiseTheGaugeAfterSweep(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	h.putProposalRow(t, reg.GroupID, 5, 0, h.clk.Now().Add(-time.Hour).Unix(), 30)
+	h.putProposalRow(t, reg.GroupID, 6, 0, h.clk.Now().Unix(), 86400)
+	m := h.restartWithMetrics()
+	if err := h.ds.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := gaugeValue(t, m, "remove"); got != 1 {
+		t.Errorf("gauge after Start = %v, want 1", got)
+	}
+	for range 2 {
+		if _, err := h.ds.Sweep(ctx); err != nil {
+			t.Fatalf("Sweep: %v", err)
+		}
+		if got := gaugeValue(t, m, "remove"); got != 1 {
+			t.Fatalf("gauge after Sweep = %v, want 1", got)
+		}
+	}
+}

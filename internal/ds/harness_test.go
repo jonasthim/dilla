@@ -806,3 +806,10 @@ func testInstanceKeys(tb testing.TB) ds.InstanceKeys {
 	}
 	return k
 }
+
+func (r *failingRepo) ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]store.ProposalRow, error) {
+	if r.take("ListClosedGroupLiveProposals") {
+		return nil, errInjected
+	}
+	return r.Repository.ListClosedGroupLiveProposals(ctx, limit)
+}

@@ -120,8 +120,10 @@ func (q *Queries) CountKeyPackages(ctx context.Context, arg CountKeyPackagesPara
 }
 
 const countLiveInstanceProposals = `-- name: CountLiveInstanceProposals :many
-SELECT kind::bigint AS kind, count(*)::bigint AS n FROM mls_pending_proposals
-WHERE origin = 0 AND void_at IS NULL GROUP BY kind ORDER BY kind
+SELECT p.kind::bigint AS kind, count(*)::bigint AS n FROM mls_pending_proposals p
+JOIN mls_groups g ON g.group_id = p.group_id
+WHERE p.origin = 0 AND p.void_at IS NULL AND (g.closed_at IS NOT NULL OR p.epoch = g.epoch)
+GROUP BY p.kind ORDER BY p.kind
 `
 
 type CountLiveInstanceProposalsRow struct {
@@ -129,8 +131,8 @@ type CountLiveInstanceProposalsRow struct {
 	N    int64
 }
 
-// dilla_ds_proposals_outstanding's seed: the non-void INSTANCE proposals (origin 0) by kind, in
-// every group. A closed group's rows are counted too: the sweep voids them and decrements.
+// The gauge counts current-epoch instance proposals in open groups and all epochs in closed
+// groups, whose rows the closed-group void clears. Old open-group rows cannot be committed.
 func (q *Queries) CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error) {
 	rows, err := q.db.QueryContext(ctx, countLiveInstanceProposals)
 	if err != nil {
