@@ -83,6 +83,43 @@ func TestGroupEventPollerDropsAHeldEventAfterAnHourWhateverItsGroup(t *testing.T
 	}
 }
 
+// The held-event age counts only consecutive HELD passes: a pass that fails for another reason
+// resets it, so an event that was held, then failed otherwise, then is held again only becomes
+// droppable an hour (and three held passes) after the hold resumed.
+func TestGroupEventPollerHeldAgeCountsOnlyConsecutiveHeldPasses(t *testing.T) {
+	q := ageTestQueue()
+	q.interaction = q.interaction[1:] // a text event: its non-held limit is 24 hours
+	stale := id.New()
+	q.events[0].SenderUser = stale
+	other := errors.New("moderation action endpoint unavailable")
+	held := HoldUnrefreshedSenders(groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return nil }), map[id.ID]bool{stale: true})
+	failing := groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
+		if e.DeliveryID == 1 {
+			return other
+		}
+		return nil
+	})
+	start := time.Unix(1_800_000_000, 0)
+	pass := func(at time.Duration, handler GroupEventHandler) GroupEventPollResult {
+		t.Helper()
+		result, _ := pollAt(t, context.Background(), q, start.Add(at), handler)
+		return result
+	}
+	pass(0, held)
+	pass(20*time.Minute, held)
+	pass(40*time.Minute, failing) // a non-held failure resets the hold age
+	resumed := 50 * time.Minute
+	for _, at := range []time.Duration{resumed, resumed + 20*time.Minute, resumed + 40*time.Minute, resumed + HeldEventMaxPendingAge - time.Second} {
+		if result := pass(at, held); len(result.Skipped) != 0 || q.acked != 0 {
+			t.Fatalf("at +%s: skipped=%v acked=%d; the hold resumed at +%s, so it is younger than an hour", at, result.Skipped, q.acked, resumed)
+		}
+	}
+	result := pass(resumed+HeldEventMaxPendingAge, held)
+	if len(result.Skipped) != 1 || !result.Skipped[0].FirstFailure.Equal(start.Add(resumed)) || !errors.Is(result.Skipped[0].Cause, ErrGroupEventHeld) {
+		t.Fatalf("an hour after the hold resumed: skipped=%+v; want the held event dropped with the resumed hold time", result.Skipped)
+	}
+}
+
 // A text event that fails for a reason other than a held sender still keeps 24 hours, even after
 // held events got the shorter limit.
 func TestGroupEventPollerKeepsTwentyFourHoursForAFailingTextEventThatIsNotHeld(t *testing.T) {

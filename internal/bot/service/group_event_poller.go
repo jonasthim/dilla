@@ -40,9 +40,11 @@ type groupEventKindSource interface {
 }
 
 const (
-	groupEventFailureArea    = uint64(8)
-	groupEventFailureKey     = "dilla.bot.group-event-failure.v1/"
-	groupEventFailureVersion = uint64(2)
+	groupEventFailureArea = uint64(8)
+	groupEventFailureKey  = "dilla.bot.group-event-failure.v1/"
+	// Version 3 adds the hold fields (HeldFirst, HeldAttempts). A version-2 record is replaced by a
+	// fresh one, which only restarts an age, never shortens it.
+	groupEventFailureVersion = uint64(3)
 	// groupEventMinFailedPasses failed passes are required besides the age limit, so a forward
 	// clock jump alone can never skip an event.
 	groupEventMinFailedPasses = 3
@@ -217,6 +219,11 @@ type groupEventFailureRecord struct {
 	Sequence uint64
 	First    uint64 // unix seconds of the first failed pass
 	Attempts uint64 // failed passes, at least 1
+	// HeldFirst and HeldAttempts count only the current run of consecutive HELD passes
+	// (ErrGroupEventHeld); a pass that fails for any other reason resets both to zero, so the
+	// held-event age limit is bound to the hold reason.
+	HeldFirst    uint64
+	HeldAttempts uint64
 }
 
 func (r groupEventFailureRecord) matches(event native.GroupEvent) bool {
@@ -247,6 +254,9 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 		return time.Time{}, false, err
 	}
 	next := groupEventFailureRecord{Version: groupEventFailureVersion, Delivery: event.DeliveryID, Group: event.Group, Sequence: event.SourceSequence, First: nowUnix, Attempts: 1}
+	if held {
+		next.HeldFirst, next.HeldAttempts = nowUnix, 1
+	}
 	if !current.Tombstone && len(current.Value) > 0 {
 		var stored groupEventFailureRecord
 		if cborx.Unmarshal(current.Value, &stored) == nil && stored.Version == groupEventFailureVersion &&
@@ -254,6 +264,14 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 			if storedFirst, inRange := checkedInt64(stored.First); inRange &&
 				time.Unix(storedFirst, 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
 				next.First, next.Attempts = stored.First, stored.Attempts+1
+				// Continue the run of held passes only if this pass is held too and the stored
+				// run is sane; any other failure leaves the hold fields at zero (reset).
+				if held && stored.HeldFirst > 0 && stored.HeldAttempts > 0 && stored.HeldAttempts < math.MaxInt64 {
+					if heldFirst, ok := checkedInt64(stored.HeldFirst); ok &&
+						time.Unix(heldFirst, 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
+						next.HeldFirst, next.HeldAttempts = stored.HeldFirst, stored.HeldAttempts+1
+					}
+				}
 			}
 		}
 	}
@@ -269,12 +287,18 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 		return time.Time{}, false, errors.New("invalid group event first-failure time")
 	}
 	first := time.Unix(firstUnix, 0)
+	if held {
+		// A held event's age counts only the current run of consecutive held passes.
+		heldUnix, ok := checkedInt64(next.HeldFirst)
+		if !ok {
+			return time.Time{}, false, errors.New("invalid held-event first time")
+		}
+		heldFirst := time.Unix(heldUnix, 0)
+		return heldFirst, next.HeldAttempts >= groupEventMinFailedPasses && now.Sub(heldFirst) >= HeldEventMaxPendingAge, nil
+	}
 	age := now.Sub(first)
 	if next.Attempts < groupEventMinFailedPasses || age < InteractionEventMaxPendingAge {
 		return first, false, nil
-	}
-	if held {
-		return first, age >= HeldEventMaxPendingAge, nil
 	}
 	return first, age >= p.maxPendingAge(ctx, event), nil
 }
