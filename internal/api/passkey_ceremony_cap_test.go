@@ -1,13 +1,16 @@
 package api_test
 
 import (
+	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Wave B task 3, security review round 6. A: past auth.webauthn.max_open_logins the oldest open discoverable login
@@ -215,5 +218,57 @@ func TestABadBindingIsRefusedGenerically(t *testing.T) {
 	ceremony, options := beginCeremony(t, h)
 	if code, _ := finishCeremony(h, ceremony, device.login(t, options), live); code != http.StatusOK {
 		t.Fatalf("the control, a live binding of the same account = %d, want 200", code)
+	}
+}
+
+// Re-check M3: a bad binding is refused before the ceremony runs, so the same ceremony and the same response then work
+// with the right binding.
+func TestABadBindingLeavesTheCeremonyUnspent(t *testing.T) {
+	h, deps, _ := newPasskeyAPITuned(t, "", false, func(c *config.Config) { c.Limits.Rate.LoginBurst = 100 })
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	enrolTOTP(t, h, deps, token)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	enrolPasskeyWith(t, h, token, device, stepUp(t, h, token, stepUpPassword, pw))
+	_, out := login(t, h, u.Username, pw)
+	held, _ := out[0].(string)
+
+	ceremony, options := beginCeremony(t, h)
+	response := device.login(t, options)
+	if code, _ := finishCeremony(h, ceremony, response, "not-a-token"); code != http.StatusUnauthorized {
+		t.Fatalf("a bad binding = %d, want 401", code)
+	}
+	if code, body := finishCeremony(h, ceremony, response, held); code != http.StatusOK {
+		t.Fatalf("the same ceremony and response with the right binding = %d %#v, want 200", code, body)
+	}
+}
+
+// Re-check M3: the cap holds under concurrent writes on both engines (Postgres when DILLA_TEST_PG is set, as in CI).
+func TestPutCeremonyCappedHoldsUnderConcurrencyOnBothEngines(t *testing.T) {
+	for name, repo := range policyEngines(t) {
+		t.Run(name, func(t *testing.T) {
+			const limit, writers = 5, 40
+			now := int64(1_800_000_000)
+			var wg sync.WaitGroup
+			errs := make(chan error, writers)
+			for i := 0; i < writers; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					row := store.CeremonyRow{ID: id.New(), Kind: 1, SessionJSON: "{}", Created: now, Expires: now + 120}
+					if _, err := repo.PutCeremonyCapped(context.Background(), row, limit, now); err != nil {
+						errs <- err
+					}
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Fatalf("PutCeremonyCapped: %v", err)
+			}
+			if n, err := repo.CountOpenCeremonies(context.Background(), nil, now); err != nil || n != limit {
+				t.Fatalf("open discoverable ceremonies after %d concurrent writes = %d, %v; want %d", writers, n, err, limit)
+			}
+		})
 	}
 }

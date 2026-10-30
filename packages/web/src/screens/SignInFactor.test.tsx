@@ -10,7 +10,7 @@ import { account, INSTANCE } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/index.ts';
 import { liveRegions, watchRegion } from '../test/live-regions.ts';
-import { SignIn } from './SignIn.tsx';
+import { CONDITIONAL_RENEW_MS, SignIn } from './SignIn.tsx';
 import { COMPLETE_DELAY_MS } from '@dilla/ui';
 // Wave B task 3 fix round 1: the code boxes send the sixth digit after the prototype's 350 ms.
 const settleCode = () => act(async () => { await new Promise<void>((resolve) => { setTimeout(resolve, COMPLETE_DELAY_MS + 20); }); });
@@ -420,6 +420,33 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(plain.fake.callsOf('signInPasskeyBegin')).toEqual([]);
     expect(conditionalGet).not.toHaveBeenCalled();
+  });
+
+  it('re-check I1: the autofill request is renewed 110 s after each begin while the username field has focus, never when idle', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { fake } = setup('signin-login', worker());
+      act(() => { field('Username').focus(); });
+      await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(1); });
+      const first = conditionalGet.mock.calls[0]?.[0].signal;
+      await act(async () => { vi.advanceTimersByTime(CONDITIONAL_RENEW_MS - 1_000); await Promise.resolve(); });
+      expect(first?.aborted).toBe(false);
+      await act(async () => { vi.advanceTimersByTime(1_000); await Promise.resolve(); });
+      await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(2); });
+      expect(first?.aborted).toBe(true);
+      expect(fake.callsOf('signInPasskeyBegin')).toHaveLength(2);
+      // Focus leaves the field: the next renewal time closes the request and begins nothing.
+      act(() => { screen.getByLabelText('Password').focus(); });
+      await act(async () => { vi.advanceTimersByTime(CONDITIONAL_RENEW_MS); await Promise.resolve(); });
+      expect(conditionalGet.mock.calls[1]?.[0].signal.aborted).toBe(true);
+      await act(async () => { vi.advanceTimersByTime(CONDITIONAL_RENEW_MS * 3); await Promise.resolve(); });
+      expect(fake.callsOf('signInPasskeyBegin')).toHaveLength(2);
+      // Focusing it again opens a new one.
+      act(() => { field('Username').focus(); });
+      await waitFor(() => { expect(fake.callsOf('signInPasskeyBegin')).toHaveLength(3); });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fix round 2: a browser without conditional mediation shows "Sign in with a passkey", and it works', async () => {

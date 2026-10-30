@@ -311,8 +311,9 @@ type WebAuthn struct {
 	RPDisplayName    string   `toml:"rp_display_name"`
 	RPOrigins        []string `toml:"rp_origins"`
 	UserVerification string   `toml:"user_verification"`
-	// MaxOpenLogins caps the unexpired passkey login ceremonies the instance holds at once (wave B task 3 security
-	// review): past it a begin answers 429, so begins spread over many addresses cannot fill webauthn_ceremonies.
+	// MaxOpenLogins caps the unexpired discoverable passkey login ceremonies the instance holds at once (wave B task 3
+	// security review): past it a begin evicts the oldest, in the same transaction, so begins spread over many addresses
+	// cannot fill webauthn_ceremonies and an honest begin still works.
 	MaxOpenLogins int `toml:"max_open_logins"`
 	// MaxOpenPerUser caps one user's open registration and step-up ceremonies; past it the oldest is evicted.
 	MaxOpenPerUser int `toml:"max_open_per_user"`

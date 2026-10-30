@@ -334,3 +334,38 @@ func TestConcurrentBeginsNeverPassTheOpenLoginCap(t *testing.T) {
 		t.Fatalf("open discoverable ceremonies after 40 concurrent begins = %d, %v; want exactly the cap, 5", open, err)
 	}
 }
+
+// Re-check M3: a discoverable login ceremony lives 120 s, and its options ask the browser for the same 120000 ms.
+func TestADiscoverableLoginCeremonyLivesAsLongAsItsTimeout(t *testing.T) {
+	pk, repo, clk := newPasskeys(t)
+	_, options, err := pk.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	var doc struct {
+		PublicKey struct {
+			Timeout int64 `json:"timeout"`
+		} `json:"publicKey"`
+	}
+	if err := json.Unmarshal(options, &doc); err != nil {
+		t.Fatalf("options: %v", err)
+	}
+	if doc.PublicKey.Timeout != 120000 {
+		t.Fatalf("the options' timeout = %d ms, want 120000", doc.PublicKey.Timeout)
+	}
+	count := func() int64 {
+		n, err := repo.CountOpenCeremonies(context.Background(), nil, clk.Now().Unix())
+		if err != nil {
+			t.Fatalf("CountOpenCeremonies: %v", err)
+		}
+		return n
+	}
+	clk.Advance(119 * time.Second)
+	if count() != 1 {
+		t.Fatal("the ceremony expired before 120 s")
+	}
+	clk.Advance(2 * time.Second)
+	if count() != 0 {
+		t.Fatal("the ceremony outlived 120 s")
+	}
+}

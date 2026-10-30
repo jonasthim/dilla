@@ -1206,7 +1206,11 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		d.logf(r, "api: finish passkey login", "err", err)
 		d.recordAttempt(r, store.UserRow{}, false, addrKey, methodPasskey, false)
-		d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+		// An absent ceremony (expired, evicted, spent, unknown) is the same 401 but no failure on the address: nothing
+		// was guessed. A present ceremony with an assertion that does not verify is a failure, as a wrong password is.
+		if !errors.Is(err, auth.ErrCeremonyGone) {
+			d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+		}
 		code := server.CodeUnauthenticated
 		if errors.Is(err, auth.ErrPasskeyUnknown) {
 			code = server.CodePasskeyUnknown

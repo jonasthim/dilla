@@ -105,38 +105,67 @@ export interface SignInTarget { communityId: string; channelId: string }
  * one: the password, then "Use a passkey" on the code step, is its way. Nothing here sends the assertion: the parent's
  * onCredential does, with the same guards as every other passkey ceremony.
  */
+/** Re-check I1: a discoverable login ceremony lives 120 s on the instance, and an autofill request has no timeout of its
+ *  own, so the request is renewed (aborted and begun again) this long after each begin, while the username field still
+ *  has focus. An unfocused field renews nothing: no begin, so no rate-limit cost, while the page sits idle. */
+export const CONDITIONAL_RENEW_MS = 110_000;
+
 function ConditionalPasskey(props: {
   begin: () => Promise<{ ceremonyId: string; options: string }>;
   onCredential: (ceremonyId: string, response: string) => void;
   onFailed: () => void;
   abortRef: MutableRefObject<AbortController | null>;
+  /** Whether a renewal is still wanted (the username field has focus). */
+  stillWanted: () => boolean;
+  /** No renewal: the request is left closed until the field is focused again. */
+  onIdle: () => void;
 }): null {
   const latest = useRef(props);
   useEffect(() => { latest.current = props; });
   useEffect(() => {
-    const abort = new AbortController();
-    latest.current.abortRef.current = abort;
-    const go = async () => {
-      if (!(await conditionalMediationAvailable()) || abort.signal.aborted) return;
-      let began: { ceremonyId: string; options: string };
-      try { began = await latest.current.begin(); } catch { return; }
-      if (abort.signal.aborted) return;
-      let response: string;
-      try {
-        response = await getPasskey(began.options, { signal: abort.signal });
-      } catch (e) {
-        // An aborted request (the password was sent, the step left) and the browser's own cancel say nothing.
-        if (abort.signal.aborted || (e instanceof PasskeyError && e.kind === 'cancelled')) return;
-        latest.current.onFailed();
-        return;
-      }
-      if (abort.signal.aborted) return;
-      latest.current.onCredential(began.ceremonyId, response);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let current: AbortController | null = null;
+    const clearRenewal = () => { if (timer !== undefined) { clearTimeout(timer); timer = undefined; } };
+    const round = () => {
+      const abort = new AbortController();
+      current = abort;
+      latest.current.abortRef.current = abort;
+      const go = async () => {
+        if (!(await conditionalMediationAvailable()) || abort.signal.aborted) return;
+        let began: { ceremonyId: string; options: string };
+        try { began = await latest.current.begin(); } catch { return; }
+        if (abort.signal.aborted) return;
+        timer = setTimeout(() => {
+          timer = undefined;
+          // A request the page already ended (the password was sent, the step left) is not renewed.
+          if (stopped || abort.signal.aborted) return;
+          abort.abort();
+          if (latest.current.stillWanted()) round();
+          else latest.current.onIdle();
+        }, CONDITIONAL_RENEW_MS);
+        let response: string;
+        try {
+          response = await getPasskey(began.options, { signal: abort.signal });
+        } catch (e) {
+          // An aborted request (renewed, the password sent, the step left) and the browser's own cancel say nothing.
+          if (abort.signal.aborted || (e instanceof PasskeyError && e.kind === 'cancelled')) return;
+          clearRenewal();
+          latest.current.onFailed();
+          return;
+        }
+        clearRenewal();
+        if (abort.signal.aborted) return;
+        latest.current.onCredential(began.ceremonyId, response);
+      };
+      void go();
     };
-    void go();
+    round();
     return () => {
-      abort.abort();
-      if (latest.current.abortRef.current === abort) latest.current.abortRef.current = null;
+      stopped = true;
+      clearRenewal();
+      current?.abort();
+      if (latest.current.abortRef.current === current) latest.current.abortRef.current = null;
     };
   }, []);
   return null;
@@ -639,7 +668,8 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
       {passkeysUsable(instance) && autofillArmed ? (
         <ConditionalPasskey abortRef={conditionalAbort}
           begin={() => client.call({ m: 'signInPasskeyBegin' }) as Promise<{ ceremonyId: string; options: string }>}
-          onCredential={conditionalCredential} onFailed={conditionalFailed} />
+          onCredential={conditionalCredential} onFailed={conditionalFailed}
+          stillWanted={() => document.activeElement?.id === FIELD_ID.username} onIdle={() => { setAutofillArmed(false); }} />
       ) : null}
       {passkeysUsable(instance) && autofill === false ? (
         <Button id={FIELD_ID.passkey} variant="ghost" type="button" onClick={() => { submitPasskey('login'); }} {...blockedProps}>
