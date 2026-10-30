@@ -1732,3 +1732,83 @@ describe('wave B task 4 fix round 2: where Mention and Come back go', () => {
     expect(names(await mentionOf(app))).not.toContain('Mention');
   });
 });
+
+describe('wave B task 4 fix round 2b: announcement, timeout, unknown bits and a positive Come back', () => {
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const names = (menu: HTMLElement) => [...menu.querySelectorAll('[role^="menuitem"]')].map(i => i.textContent);
+  const NEWS = 'b7'.repeat(16);
+  const EVERYONE = 'ab'.repeat(16);
+  const channelsOf = (ids: string[]) => CHANNELS.filter(c => ids.includes(c.id));
+  const text = (id: string, name: string, position: number, announcement = false) =>
+    ({ id, communityId: A, kind: 0 as const, mode: 0 as const, name, topic: '', parentId: null, position, slowmode: 0, announcement, group: 'active' as const });
+  const room = { [GENV]: { callId: GENV, participants: [
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } };
+  const bobTile = { deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking: false, video: null, screen: null, screenAudio: false };
+  type App = Awaited<ReturnType<typeof inVoice>>;
+  const publishAccess = (app: App, deny: string[], overwritesLoaded = true) => {
+    const bits = PERM.viewChannel | PERM.sendMessages | PERM.readHistory | PERM.connect | PERM.speak;
+    app.client.publish(`roles:${A}`, [{ id: EVERYONE, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: true, allow: bits, deny: 0, members: 0 }]);
+    app.client.publish(`overwrites:${A}`, Object.fromEntries(deny.map(id => [id, [{ kind: 0 as const, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }]])));
+    app.client.publish(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: false, loaded: true, overwritesLoaded, everyoneId: EVERYONE });
+  };
+  const bobMenu = async (app: App) => {
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    return screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+  };
+  const away = (app: ReturnType<typeof renderVoiceShell>) => app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1,
+    away: [{ userId: ME.id, since: 1_900_000_000 }] });
+
+  it('an announcement channel the person cannot post in is skipped by Mention', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'news', 0, true), text(NEWS, 'chat', 1), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, [TEXT]);
+    await app.user.click(within(await bobMenu(app)).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+  });
+
+  it('with only an announcement channel to post in: no Mention, and Come back stays', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'news', 0, true), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, [TEXT]);
+    expect(names(await bobMenu(app))).not.toContain('Mention');
+    go(`/c/${A}/${MUSIC}`);
+    away(app);
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`);
+  });
+
+  it('Come back with a sendable text channel opens it and focuses its composer', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'lobby', 0), text(NEWS, 'chat', 1), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, []);
+    away(app);
+    go(`/c/${A}/${NEWS}`);
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+    go(`/c/${A}/${MUSIC}`);
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /message/i })).toHaveFocus());
+  });
+
+  it('a self-timeout in the community: no Mention target, and Come back stays', async () => {
+    const app = await inVoice({ voice: room, timeoutUntil: Math.floor(Date.now() / 1000) + 3600 });
+    expect(names(await bobMenu(app))).not.toContain('Mention');
+    await app.user.keyboard('{Escape}');
+    go(`/c/${A}/${MUSIC}`);
+    away(app);
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`);
+  });
+
+  it('unknown bits (overwrites not loaded yet): the overwrite and announcement fallback decides', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'news', 0, true), text(NEWS, 'closed', 1), text('d9'.repeat(16), 'chat', 2), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, [NEWS], false);
+    await app.user.click(within(await bobMenu(app)).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${'d9'.repeat(16)}`));
+  });
+});
