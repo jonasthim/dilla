@@ -122,6 +122,20 @@ ORDER BY issued_at, ref;
 SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2
 ORDER BY issued_at, ref;
 
+-- name: ListClosedGroupLiveProposals :many
+-- The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+-- no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+SELECT p.* FROM mls_pending_proposals p
+JOIN mls_groups g ON g.group_id = p.group_id
+WHERE g.closed_at IS NOT NULL AND p.void_at IS NULL
+ORDER BY p.group_id, p.ref LIMIT sqlc.arg(max_rows)::bigint;
+
+-- name: CountLiveInstanceProposals :many
+-- dilla_ds_proposals_outstanding's seed: the non-void INSTANCE proposals (origin 0) by kind, in
+-- every group. A closed group's rows are counted too: the sweep voids them and decrements.
+SELECT kind::bigint AS kind, count(*)::bigint AS n FROM mls_pending_proposals
+WHERE origin = 0 AND void_at IS NULL GROUP BY kind ORDER BY kind;
+
 -- name: VoidProposal :exec
 UPDATE mls_pending_proposals SET void_at = $1 WHERE group_id = $2 AND ref = $3;
 

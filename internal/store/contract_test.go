@@ -95,6 +95,11 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListGroupsForRetention",
 			// ListIdleCallGroups is web-3's idle call-group close (L-HTTP-105, RV-2).
 			"ListIdleCallGroups",
+			// ListClosedGroupLiveProposals is the sweep's void of a closed group's proposals,
+			// which every open-group walk misses (fix/ds-maintenance-sweeper).
+			"ListClosedGroupLiveProposals",
+			// CountLiveInstanceProposals seeds dilla_ds_proposals_outstanding at start.
+			"CountLiveInstanceProposals",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes", "LockGroup",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",

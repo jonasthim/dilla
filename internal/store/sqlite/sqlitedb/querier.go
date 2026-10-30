@@ -45,6 +45,9 @@ type Querier interface {
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	// dilla-web-2a (L-SQL-21, Q04): the per-user device cap counts unrevoked devices only.
 	CountLiveDevicesByUser(ctx context.Context, arg CountLiveDevicesByUserParams) (int64, error)
+	// dilla_ds_proposals_outstanding's seed: the non-void INSTANCE proposals (origin 0) by kind, in
+	// every group. A closed group's rows are counted too: the sweep voids them and decrements.
+	CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
@@ -214,6 +217,9 @@ type Querier interface {
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
 	// participant of, newest first, ties broken by id.
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
+	// The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+	// no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+	ListClosedGroupLiveProposals(ctx context.Context, arg ListClosedGroupLiveProposalsParams) ([]MlsPendingProposals, error)
 	// dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 	// The CAST keeps the parameter an int64: without it sqlc infers *int64 from the nullable
 	// unref_since, and a nil cutoff would compare against NULL and collect nothing (gap-47 section 19.4).
