@@ -587,9 +587,9 @@ jobs:
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
-    # The full browser suite now takes about 35–38 minutes on hosted runners (2026-10-24).
-    # Allow room for runner variance while retaining a bounded job.
-    timeout-minutes: 50
+    # The full browser suite took about 35–38 minutes on hosted runners (2026-10-24); on 2026-10-29 the web suite alone
+    # took 45.6 minutes (run 40968460827) and the job was cancelled before voice, so it gets 70 minutes like Firefox.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

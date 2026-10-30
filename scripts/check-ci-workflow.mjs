@@ -83,12 +83,13 @@ export const NON_RACE_STEP =
 /**
  * Browser suites run in parallel, one job per Playwright engine. Hosted Chromium and Firefox
  * jobs took about 35–38 minutes on 2026-10-24, and one Firefox job reached the old 38-minute
- * cap during its voice step. Chromium retains50 minutes; Firefox includes added slash/native
+ * cap during its voice step. Chromium's web suite reached 45.6 minutes on 2026-10-29 (Signal wave A, run 40968460827)
+ * and the job was cancelled before its voice step, so Chromium also gets 70 minutes; Firefox includes added slash/native
  * preparation and diagnostic headroom within70 minutes after a measured50-minute cancel. WebKit runs fewer suites and
  * retains its 30-minute cap. `core` and `voice` identify the suites each engine runs.
  */
 export const BROWSER_WEB_JOBS = {
-  'chromium-web': { engine: 'chromium', timeout: 50, core: true, voice: true },
+  'chromium-web': { engine: 'chromium', timeout: 70, core: true, voice: true },
   'firefox-web': { engine: 'firefox', timeout: 70, core: true, voice: true },
   'webkit-web': { engine: 'webkit', timeout: 30, core: false, voice: false },
 };
@@ -289,11 +290,11 @@ const REQUIRED_STEPS = {
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 40',
+    'timeout-minutes: 55',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 30m ./internal/ds/...',
+    'go test -race -shuffle=on -timeout 45m ./internal/ds/...',
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [

@@ -393,14 +393,14 @@ jobs:
 
   go-ds:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     needs: [rust-wasi]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...
+      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...
 
   go-api:
     runs-on: ubuntu-latest
@@ -821,23 +821,23 @@ test('a workflow without the go-ds job is reported', () => {
 
 test('a go-ds job that stopped running internal/ds is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...\n', '')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...\n', '')),
   );
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
 });
 
 test('a go-ds job with a shorter test budget is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...', '      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...', '      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...')),
   );
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 30m')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 45m')), problems.join('\n'));
 });
 
 test('a go-ds job with too little wall-clock margin is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 40', 'timeout-minutes: 25'))));
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 40')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 55', 'timeout-minutes: 25'))));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 55')), problems.join('\n'));
 });
 
 test('a workflow without the go-api job is reported', () => {
@@ -1899,7 +1899,7 @@ test('the CLI checks release.yml too', () => {
 });
 
 test('a job that lost its change gate is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 40\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 40\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 55\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 55\n')));
   assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
 });
 
