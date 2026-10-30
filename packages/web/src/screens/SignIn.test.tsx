@@ -62,6 +62,9 @@ const worker = (opts: { totp?: boolean } = {}): Script => (c, fake) => {
     case 'signInCancel':
       move(fake, { phase: 'needs-signup', signIn: null });
       return Promise.resolve(null);
+    case 'signInBack':
+      move(fake, { phase: 'signin-login', signIn: { username: fake.get('account')!.signIn?.username ?? null, factor: null } });
+      return Promise.resolve(null);
     default:
       return Promise.resolve(null);
   }
@@ -97,7 +100,7 @@ describe('the ceremony', () => {
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
     expect(button('Add browser')).toHaveAttribute('type', 'submit');
     await expectNoAxeViolations(view.container);
     expect(fake.callsOf('signInKey')).toEqual([]);
@@ -122,7 +125,7 @@ describe('the ceremony', () => {
     expect(h1()).toHaveTextContent('Enter your code');
     expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     expect(screen.getByText('Six digits from your authenticator app.')).toBeInTheDocument();
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
     await expectNoAxeViolations(view.container);
     await user.type(field('Code'), '123456');
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
@@ -292,10 +295,10 @@ describe('the ceremony', () => {
     expect(h1()).toHaveTextContent('Add this browser');
     expect(screen.getByRole('status')).toHaveTextContent('Adding this browser to your account…');
     expect(button('Add browser')).toHaveAttribute('aria-disabled', 'true');
-    expect(button('Cancel')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('aria-disabled', 'true');
     expect(document.activeElement).toBe(button('Add browser'));
     await user.click(button('Add browser'));
-    await user.click(button('Cancel'));
+    await user.click(button('Have an invite? Create an account'));
     expect(fake.callsOf('signInKey')).toHaveLength(1);
     expect(fake.callsOf('signInCancel')).toEqual([]);
   });
@@ -305,7 +308,7 @@ describe('the ceremony', () => {
     expect(h1()).toHaveTextContent('Add this browser');
     expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(field('Recovery key')).toHaveValue('');
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
   });
 
   it('shows the working state when it mounts in enrolling', () => {
@@ -321,13 +324,79 @@ describe('the ceremony', () => {
     expect(first.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     first.view.unmount();
     const second = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
-    await second.user.click(button('Cancel'));
+    await second.user.click(button('Have an invite? Create an account'));
     expect(second.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     second.view.unmount();
     const third = setup('signin-key', worker());
-    await third.user.click(button('Cancel'));
+    await third.user.click(button('Have an invite? Create an account'));
     expect(third.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     expect(third.fake.callsOf('signInKey')).toEqual([]);
+  });
+
+  it('wave B task 3: Back on the code step returns to the login with the code dropped and the password asked again', async () => {
+    const { fake, user } = setup('signin-login', worker({ totp: true }));
+    await login(user);
+    expect(h1()).toHaveTextContent('Enter your code');
+    await user.type(field('Code'), '123');
+    await user.click(button('Back'));
+    expect(fake.callsOf('signInBack')).toEqual([{ m: 'signInBack' }]);
+    expect(fake.callsOf('signInCancel')).toEqual([]);
+    expect(fake.callsOf('signInTotp')).toEqual([]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(field('Username')).toHaveValue(' Ada ');
+    expect(password()).toHaveValue('');
+    expect(document.activeElement).toBe(password());
+    // A second login shows an empty code: the three digits typed before Back are gone.
+    await user.type(password(), 'correct horse');
+    await user.click(button('Continue'));
+    expect(field('Code')).toHaveValue('');
+  });
+
+  it('wave B task 3: Back on the key step drops the typed key and sends no key', async () => {
+    const { fake, user } = setup('signin-login', worker());
+    await login(user);
+    await pasteKey(user);
+    await user.click(button('Back'));
+    expect(fake.callsOf('signInBack')).toEqual([{ m: 'signInBack' }]);
+    expect(fake.callsOf('signInKey')).toEqual([]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+  });
+
+  it('wave B task 3: Back and the new-account link sit under the button on the code and key steps, blocked while a step works', async () => {
+    const { user } = setup('signin-key', (c, f) => {
+      if (c.m === 'signInKey') move(f, { phase: 'enrolling' });
+      return new Promise(() => {});
+    });
+    expect(button('Back')).toHaveAttribute('type', 'button');
+    expect(button('Back').closest('.d-onboarding-frame__nav')).not.toBeNull();
+    await pasteKey(user);
+    await user.click(button('Add browser'));
+    expect(button('Back')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('wave B task 3: the done step names the first server and its first text channel in the green panel', () => {
+    const { fake, view } = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    expect(view.container.querySelector('.d-onboarding-frame__ready')).toBeNull();
+    const cid = 'c1'.repeat(16);
+    const row = (id: string, kind: 0 | 1 | 2, name: string, position: number, parentId: string | null = null) => ({
+      id, communityId: cid, kind, mode: 0 as const, name, topic: '', parentId, position, slowmode: 0, announcement: false, group: 'active' as const });
+    act(() => {
+      fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      fake.set(`channels:${cid}`, [row('v1'.repeat(16), 1, 'harbour', 0), row('t2'.repeat(16), 0, 'random', 2), row('t1'.repeat(16), 0, 'general', 1)]);
+    });
+    expect(screen.getByText('Midgard Crew is waiting in #general.')).toBeInTheDocument();
+  });
+
+  it('wave B task 3: no panel when the first server has no text channel', () => {
+    const { fake, view } = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    const cid = 'c1'.repeat(16);
+    act(() => {
+      fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      fake.set(`channels:${cid}`, [{ id: 'v1'.repeat(16), communityId: cid, kind: 1, mode: 0, name: 'harbour', topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' as const }]);
+    });
+    expect(view.container.querySelector('.d-onboarding-frame__ready')).toBeNull();
+    expect(h1()).toHaveTextContent('You’re in');
   });
 
   it('shows the loading splash without an instance', () => {

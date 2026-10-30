@@ -51,6 +51,9 @@ export type ColorTokens = {
   // Wave B Task 2
   /** The command picker: an invalid chip's 3px ring (the prototype's rgba(255,110,110,.15)). */
   dangerRing: string;
+  // Wave B Task 3
+  /** The sign-in done panel, each the prototype's literal: its 0.06 --ok fill and its #C9F7D0 text. */
+  okPanel: string; okPanelText: string;
   linkUnderline: 0 | 1;
 };
 
@@ -77,6 +80,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     meterOff: '#161A20', okLine: 'rgba(124,255,142,0.3)', warnFaint: 'rgba(255,209,106,0.08)', warnLine: 'rgba(255,209,106,0.3)',
     // Wave B Task 2
     dangerRing: 'rgba(255,110,110,0.15)',
+    // Wave B Task 3
+    okPanel: 'rgba(124,255,142,0.06)', okPanelText: '#C9F7D0',
     linkUnderline: 0,
   },
   light: {
@@ -101,6 +106,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     meterOff: '#DDE1DD', okLine: 'rgba(27,115,52,0.3)', warnFaint: 'rgba(138,90,0,0.08)', warnLine: 'rgba(138,90,0,0.3)',
     // Wave B Task 2
     dangerRing: 'rgba(179,38,30,0.2)',
+    // Wave B Task 3
+    okPanel: 'rgba(27,115,52,0.06)', okPanelText: '#1B7334',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -125,6 +132,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     meterOff: '#1C1C1C', okLine: 'rgba(155,255,168,0.5)', warnFaint: 'rgba(255,224,138,0.12)', warnLine: '#FFE08A',
     // Wave B Task 2
     dangerRing: 'rgba(255,154,154,0.35)',
+    // Wave B Task 3
+    okPanel: 'rgba(155,255,168,0.1)', okPanelText: '#9BFFA8',
     linkUnderline: 1,
   },
 };
@@ -135,7 +144,7 @@ export type ColorKey = Exclude<keyof ColorTokens, 'linkUnderline'>;
 export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['fg', 'bg'], ['fg', 'bg2'], ['fg', 'surface'], ['fg', 'surface2'], ['fg', 'surfaceHi'],
   ['fg2', 'bg'], ['fg2', 'bg2'], ['fg2', 'surface2'], ['fg2', 'surfaceHi'],
-  ['fgBody', 'bg'], ['fgStrong', 'surface2'], ['okText', 'bg2'], ['fgChip', 'surface2'],
+  ['fgBody', 'bg'], ['fgStrong', 'surface2'], ['okText', 'bg2'], ['fgChip', 'surface2'], ['okPanelText', 'bg2'],
   ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'], ['fg3', 'surface2'],
   ['fgLink', 'bg'], ['danger', 'bg'], ['warn', 'bg'], ['ok', 'bg2'],
   ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'], ['brandInk', 'brand'], ['okInk', 'ok'], ['dangerInk', 'danger'], ['dangerInk', 'dangerHover'],

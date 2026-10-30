@@ -4312,6 +4312,44 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
   });
 
+  it('wave B task 3: signInBack from the code step drops the held assertion and returns to the login, username kept', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const, passkey: true }); });
+    await toKeyStep(w);
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', factor: 'totp', passkey: true } });
+    w.call(4, { m: 'signInBack' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', factor: null }, error: null });
+    expect(w.account()?.signIn).not.toHaveProperty('passkey');
+    // Back at the login a code is refused: nothing half-signed-in is left to finish.
+    w.call(5, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: false });
+    expect(w.enrol.totp).not.toHaveBeenCalled();
+  });
+
+  it('wave B task 3: signInBack from the key step drops the assertion; it is refused at the login itself', async () => {
+    const w = world({ phase: 0 });
+    await toKeyStep(w);
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(4, { m: 'signInBack' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+    expect(w.account()).toMatchObject({ phase: 'signin-login', error: null });
+    w.call(5, { m: 'signInBack' });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: false });
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('a login with no passkey flag leaves signIn without one', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1 as const }));
+    await toKeyStep(w);
+    expect(w.account()?.signIn).toEqual({ username: 'web', factor: 'totp' });
+  });
+
   it('signInCancel resets the enrolment and returns to needs-signup', async () => {
     const w = world({ phase: 0 });
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });

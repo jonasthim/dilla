@@ -153,6 +153,16 @@ describe('the code step (flow 10 state 16)', () => {
     expect(fake.callsOf('signInTotp')).toEqual([]);
   });
 
+  it('wave B task 3: after a password login the instance says holds a passkey, the code step offers it', () => {
+    setup('signin-totp', worker(), { signIn: { username: 'ada', factor: 'totp', passkey: true } });
+    expect(button(en['factorSignin.code.usePasskey'])).toHaveAttribute('type', 'button');
+  });
+
+  it('wave B task 3: and not where the browser cannot run one', () => {
+    setup('signin-totp', worker(), { signIn: { username: 'ada', factor: 'totp', passkey: true } }, { webauthn: false });
+    expect(screen.queryByRole('button', { name: en['factorSignin.code.usePasskey'] })).toBeNull();
+  });
+
   it('no "Use a passkey" on the code step in a browser without passkeys', () => {
     setup('signin-totp', worker(), { signIn: { username: null, factor: 'passkey' } }, { webauthn: false });
     expect(screen.queryByRole('button', { name: en['factorSignin.code.usePasskey'] })).toBeNull();

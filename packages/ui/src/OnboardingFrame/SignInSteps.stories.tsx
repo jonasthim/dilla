@@ -6,6 +6,7 @@ import { RecoveryKeyField } from '../RecoveryKeyField/RecoveryKeyField.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { Button } from '../Button/Button.tsx';
 import { CodeBoxes } from '../CodeBoxes/CodeBoxes.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t } from '../../../web/src/strings/index.ts';
 
@@ -17,6 +18,15 @@ type Story = StoryObj<typeof meta>;
 const instance = 'midgard.gg';
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
 const blocked = { 'aria-disabled': true } as const;
+// Wave B task 3 continuation: the row under the button on the code and key steps, as SignIn.tsx's navRow draws it.
+function Nav({ working }: { working?: boolean }) {
+  return (
+    <div className="d-onboarding-frame__nav">
+      <Button variant="ghost" type="button" data-back="" {...(working ? blocked : {})}>{t('factor.back')}</Button>
+      <Button variant="ghost" type="button" {...(working ? blocked : {})}>{t('signin.login.createInstead')}</Button>
+    </div>
+  );
+}
 
 function Step({ n, title, footer, children }: { n: number; title: string; footer: ReactNode; children: ReactNode }) {
   return (
@@ -44,11 +54,11 @@ function Key({ value, error, working }: { value: string; error?: string; working
   const short = n !== 52;
   return (
     <Step n={3} title={t('signin.key.title')}
-      footer={<><Button variant="ghost" type="button" {...(working ? blocked : {})}>{t('signin.cancel')}</Button>
+      footer={<><Nav working={working} />
         <Button variant="accent" type="submit" {...(short || working ? blocked : {})} aria-describedby={short ? 's-key-length' : undefined}>{t('signin.key.submit')}</Button></>}>
       <p>{t('signin.key.body')}</p>
       <RecoveryKeyField id="s-key" label={t('signin.key.label')} value={text} onChange={setText} hint={t('signin.key.hint', { n })} error={error} />
-      {short ? <p id="s-key-length">{t('signin.error.keyLength')}</p> : null}
+      {short ? <p id="s-key-length" className="d-onboarding-frame__note">{t('signin.error.keyLength')}</p> : null}
       {working ? <p role="status">{t('signin.key.working')}</p> : null}
     </Step>
   );
@@ -64,7 +74,7 @@ function Code({ initial, afterPasskey }: { initial?: string; afterPasskey?: bool
   useEffect(() => { document.getElementById('s-code')?.focus(); }, []);
   return (
     <Step n={2} title={t('signin.totp.title')}
-      footer={<><Button variant="ghost" type="button">{t('signin.cancel')}</Button>
+      footer={<><Nav />
         <Button variant="accent" type="submit" {...(/^\d{6}$/.test(code) ? {} : blocked)}>{t('signin.totp.submit')}</Button></>}>
       {afterPasskey ? <p>{t('factorSignin.passkey.needsCode', { instance })}</p> : null}
       <p id="s-code-body">{t('signin.totp.body')}</p>
@@ -95,6 +105,10 @@ export const Done: Story = {
     <OnboardingFrame title={t('signin.done.title')} stepLabel={t('signin.step', { n: 4, total: 4 })} progress={{ n: 4, total: 4 }}
       footer={<Button variant="accent" type="button">{t('signin.done.next')}</Button>}>
       <p>{t('signin.done.body', { username: 'ada', instance })}</p>
+      <div className="d-onboarding-frame__ready">
+        <span className="d-onboarding-frame__ready-mark"><Icon name="check" size={16} stroke={3} /></span>
+        <span>{t('signin.done.ready', { server: 'Midgard Crew', channel: 'general' })}</span>
+      </div>
     </OnboardingFrame>
   ),
 };

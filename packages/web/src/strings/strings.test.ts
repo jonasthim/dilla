@@ -45,7 +45,7 @@ describe('the copy rules', () => {
     expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');
     expect(en['signin.error.required']).toBe('Fill in this field.');
     expect(en['signin.error.evicted']).toBe('Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.');
-    expect(Object.keys(en).filter(k => k.startsWith('signin.'))).toHaveLength(35);
+    expect(Object.keys(en).filter(k => k.startsWith('signin.'))).toHaveLength(36);
   });
   // Flow 03 as task 15 froze it (L-COPY-02): the count line has two forms, `devices.cap.one` and `devices.cap.other`, in
   // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.

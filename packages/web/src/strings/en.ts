@@ -213,6 +213,7 @@ export const en = {
   'signin.done.title': 'You’re in',
   'signin.done.body': 'This browser is now one of your devices.',
   'signin.done.next': 'Open dilla',
+  'signin.done.ready': '{server} is waiting in #{channel}.',
   'signin.cancel': 'Cancel',
   'signin.error.loginFailed': 'That username and password did not work.',
   'signin.error.totpFailed': 'That code did not work. Sign in again with a fresh code.',

@@ -78,8 +78,8 @@ by the page.
 | n | name | heading (`<h1>`) | parts |
 |---|---|---|---|
 | 1 | login | `signin.login.title` | `OnboardingFrame`, one paragraph, `TextField` username and password, ghost `Button` `signin.login.createInstead` and `Button` Continue (`signin.login.submit`) |
-| 2 | second factor | `signin.totp.title` | one paragraph, `CodeBoxes` (six boxes over one input; the sixth digit sends the code), the links `factorSignin.code.usePasskey` and `factorSignin.useBackup`, `Button` Cancel and `signin.totp.submit` |
-| 3 | recovery key | `signin.key.title` | one paragraph, `RecoveryKeyField`, `Button` Cancel and `signin.key.submit`; step 2 when no factor step was shown (R7) |
+| 2 | second factor | `signin.totp.title` | one paragraph, `CodeBoxes` (six boxes over one input; the sixth digit sends the code), the links `factorSignin.code.usePasskey` and `factorSignin.useBackup`, `signin.totp.submit`, then the row Back (`signInBack`: back to the login, the held assertion dropped) and `signin.login.createInstead` (`signInCancel`) |
+| 3 | recovery key | `signin.key.title` | one paragraph, `RecoveryKeyField`, `signin.key.submit`, then Back and `signin.login.createInstead` as on step 2; step 2 when no factor step was shown (R7) |
 | 4 | done | `signin.done.title` | one paragraph, `Button` `signin.done.next` |
 
 Step 2 has three forms, all in flow 10 (`10-second-factor.md`): an authenticator code, a passkey or a backup code. The set-up for an account that has no second factor yet comes after the enrolment, as step 3.
@@ -891,6 +891,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.key.working` | `Adding this browser to your account…` | status line, steps 1–3, while the enrolment runs |
 | `signin.done.title` | `You’re in` | step heading, step 4 |
 | `signin.done.body` | `This browser is now one of your devices.` | paragraph, step 4 |
+| `signin.done.ready` | `{server} is waiting in #{channel}.` | the done step's green panel: the account's first server and its first text channel (wave B task 3); no panel when there is none |
 | `signin.done.next` | `Open dilla` | button, step 4 |
 | `signin.cancel` | `Cancel` | button, first in the footer of steps 2 and 3 (the second factor and the recovery key); sends `signInCancel` |
 | `signin.error.loginFailed` | `That username and password did not work.` | field error, password, step 1 |

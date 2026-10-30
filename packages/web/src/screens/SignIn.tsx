@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { BACKUP_CODE, normaliseBackupCode, normaliseRecoveryKey } from '@dilla/client-core';
-import { Banner, Button, CodeBoxes, OnboardingFrame, RecoveryKeyField, Splash, TextField } from '@dilla/ui';
+import { Banner, Button, CodeBoxes, Icon, OnboardingFrame, RecoveryKeyField, Splash, TextField, type IconName } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice } from '../core/use-slice.ts';
+import { orderChannels } from './shell-model.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { PasskeyError, getPasskey, passkeysUsable } from '../webauthn.ts';
 import { useAnnouncer } from './announcer.ts';
@@ -25,6 +26,8 @@ const LENGTH_ID = 'signin-key-length';
 const CODE_BODY_ID = 'signin-code-body';
 const CODE_ERROR_ID = 'signin-code-error';
 const SIX_DIGITS = /^\d{6}$/;
+/** The done panel's check (prototype: d-icon check, 16, stroke 3). */
+const READY_ICON: IconName = 'check';
 const BACKUP_ID = 'signin-key-backup';
 /** How long the key field rests before a backup code is named (R44): a key being typed passes 26 characters on the way. */
 const BACKUP_NOTE_MS = 600;
@@ -121,6 +124,10 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [factorDone, setFactorDone] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
   const { text: announcement, announce } = useAnnouncer();
   const factors = useSlice('factors');
+  // Wave B task 3 (Jonas, Q4): the done step's green panel names the account's first server and its first text channel.
+  const communities = useSlice('communities');
+  const firstServer = communities?.[0] ?? null;
+  const firstChannels = useSlice(`channels:${firstServer?.id ?? ''}`);
   const [focusRequest, setFocusRequest] = useState<{ target: 'heading' | Field; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -336,6 +343,19 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       default: break;
     }
   };
+  /** Wave B task 3 (Jonas, Q1): Back on the code and key steps. The worker drops the held assertion (signInBack), so nothing
+   *  half-signed-in survives; the page drops the typed code, key and any held backup code, and the login asks for the
+   *  password again with the username kept. */
+  const goBack = () => {
+    if (blocked) return;
+    setBanner(null);
+    setErrors({});
+    setCode('');
+    setKey('');
+    setBackupHeld(false);
+    setBackup('');
+    client.call({ m: 'signInBack' }).then(() => { requestFocus('password'); }, (e: unknown) => { apply(errorOf(e), 'login'); });
+  };
   const cancel = () => {
     if (blocked) return;
     setBackupHeld(false);
@@ -361,6 +381,14 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const cancelButton = (label: StringKey) => (
     <Button variant="ghost" type="button" onClick={cancel} {...blockedProps}>{t(label)}</Button>
   );
+  // The prototype's row under the button on the code and key steps: Back at the left, the new-account link at the right
+  // (signInCancel, which lands on the new-account screen, as Cancel did).
+  const navRow = (
+    <div className="d-onboarding-frame__nav">
+      <Button variant="ghost" type="button" data-back="" onClick={goBack} {...blockedProps}>{t('factor.back')}</Button>
+      <Button variant="ghost" type="button" onClick={cancel} {...blockedProps}>{t('signin.login.createInstead')}</Button>
+    </div>
+  );
   const bannerEl = banner === null ? null : <Banner tone={banner.tone}>{t(banner.key, banner.vars)}</Banner>;
   const form = (title: string, n: number, foot: ReactNode, children: ReactNode) => (
     <form noValidate onSubmit={onSubmit}>
@@ -375,10 +403,17 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   if (shown === 'done') {
     const who = account.user?.username ?? account.signIn?.username ?? username.trim().toLowerCase();
     const left = usedBackup && factors !== undefined ? factors.backupCodesLeft : null;
+    const channel = firstChannels === undefined ? null : orderChannels(firstChannels).find(c => c.kind === 0 && c.mode === 0) ?? null;
     content = (
       <OnboardingFrame title={t('signin.done.title')} stepLabel={stepLabel(total)} progress={progress(total)}
         footer={<Button variant="accent" type="button" onClick={() => props.onFinish()}>{t('signin.done.next')}</Button>}>
         <p>{t('signin.done.body', { username: who, instance: name })}</p>
+        {firstServer === null || channel === null ? null : (
+          <div className="d-onboarding-frame__ready">
+            <span className="d-onboarding-frame__ready-mark"><Icon name={READY_ICON} size={16} stroke={3} /></span>
+            <span>{t('signin.done.ready', { server: firstServer.name, channel: channel.name })}</span>
+          </div>
+        )}
         {left === null ? null : <p>{t(left === 1 ? 'factorSignin.left.one' : 'factorSignin.left.other', { count: left })}</p>}
       </OnboardingFrame>
     );
@@ -428,10 +463,10 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     // Wave B task 3, the prototype's code step: six boxes over one input, then "Use a passkey" (only for an account that
     // just used one, in a browser that can run one: the login does not say whether an app account also holds a passkey)
     // and "Use a backup code", which open today's passkey ceremony and backup-code step.
-    const passkeyLink = account.signIn?.factor === 'passkey' && passkeysUsable(instance);
+    const passkeyLink = (account.signIn?.factor === 'passkey' || account.signIn?.passkey === true) && passkeysUsable(instance);
     const codeError = errorText('code');
     content = form(t('signin.totp.title'), 2, <>
-      {cancelButton('signin.cancel')}
+      {navRow}
       <Button variant="accent" type="submit" {...(blocked || !SIX_DIGITS.test(code) ? { 'aria-disabled': true } : {})}>
         {t(busy === 'totp' ? 'signin.login.working' : 'signin.totp.submit')}
       </Button>
@@ -459,7 +494,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     // The text cannot change under a running enrolment.
     const onKey = change('key', setKey);
     content = form(t('signin.key.title'), keyStep, <>
-      {cancelButton('signin.cancel')}
+      {navRow}
       <Button variant="accent" type="submit" {...(short || blocked ? { 'aria-disabled': true } : {})}
         aria-describedby={short ? LENGTH_ID : undefined}>{t('signin.key.submit')}</Button>
     </>, <>
@@ -470,7 +505,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
         describedBy={showBackup ? BACKUP_ID : undefined}
         hint={t('signin.key.hint', { n })} error={errorText('key')} />
       {showBackup ? <p id={BACKUP_ID}>{t('signIn.key.isBackupCode')}</p> : null}
-      {short ? <p id={LENGTH_ID}>{t('signin.error.keyLength')}</p> : null}
+      {short ? <p id={LENGTH_ID} className="d-onboarding-frame__note">{t('signin.error.keyLength')}</p> : null}
       {/* A11Y-DESIGN-04: the live region is there before its text, so the text is announced when it arrives. */}
       <p role="status">{working ? t('signin.key.working') : null}</p>
       <p className="d-sr-only" aria-live="polite" data-testid="signin-announcer">{announcement}</p>

@@ -235,6 +235,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInTotp',
   'signInKey',
   'signInCancel',
+  'signInBack',
   'signInPasskeyBegin',
   'signInPasskey',
   'signInBackupCode',
@@ -370,8 +371,8 @@ const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
   passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
 });
-const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
-  ({ username, factor });
+const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null, passkey = false): NonNullable<AccountState['signIn']> =>
+  ({ username, factor, ...(passkey ? { passkey: true as const } : {}) });
 const SEQ = /^[1-9][0-9]{0,19}$/;
 const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
 const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
@@ -496,9 +497,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signup-keys': ['signupSubmit', 'signupReset'],
   // web3.6: a passkey on its own signs in from the login step (W2's usePasskey), so signin-login takes its finish too.
   'signin-login': ['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel'],
-  'signin-totp': ['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
-  'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
-  'signin-key': ['signInKey', 'signInCancel'],
+  'signin-totp': ['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel', 'signInBack'],
+  'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel', 'signInBack'],
+  'signin-key': ['signInKey', 'signInCancel', 'signInBack'],
   // web3.6: a person owing a factor enrols one (the five that need no step-up) and reads the list; the rest need a factor held.
   // Walk M9: a tab on the forced screen hands the store to a tab that asks ("Use this tab"), as a ready one does.
   'factor-setup': ['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish', 'resign'],
@@ -1455,6 +1456,7 @@ export class Controller {
       case 'signInTotp': return this.step(() => this.signInTotp(command.code));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
       case 'signInCancel': return this.signInCancel();
+      case 'signInBack': return this.signInBack();
       case 'signInPasskeyBegin': return this.signInPasskeyBegin();
       case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response));
       case 'signInBackupCode': return this.step(() => this.signInBackupCode(command.code, command.recoveryKey));
@@ -2918,8 +2920,11 @@ export class Controller {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();
     let needs: 0 | 1 | 2;
+    let passkey = false;
     try {
-      ({ needs } = await enrol.login(username, password));
+      const answer = await enrol.login(username, password);
+      needs = answer.needs;
+      passkey = answer.passkey === true;
     } catch (e) {
       this.setAccount({ phase: 'signin-login', error: errorOf(e) });
       throw e;
@@ -2927,7 +2932,7 @@ export class Controller {
     this.assertionAt = this.elapsed();
     // web3.6: needs 1 asks for the app's code, needs 2 (passkeys and no app) for a passkey; either takes a backup code.
     if (needs === 1) {
-      this.setAccount({ phase: 'signin-totp', signIn: signInOf(username, 'totp'), error: null });
+      this.setAccount({ phase: 'signin-totp', signIn: signInOf(username, 'totp', passkey), error: null });
       return { needs };
     }
     if (needs === 2) {
@@ -3122,6 +3127,17 @@ export class Controller {
 
   /** Requirement 9; Enrol.reset also drops a held assertion, so it runs in every sign-in phase (it resets
    *  the core's enrolment only in phase 3). The pending session is left to expire. */
+  /** Wave B task 3, the code and key steps' Back: the held assertion (and anything registered with it) is dropped exactly
+   *  as by signInCancel, so no half-signed-in state survives, and the ceremony returns to the login with the username
+   *  kept; the password is asked again. */
+  private signInBack(): Promise<null> {
+    const username = this.slices.get('account')?.signIn?.username ?? null;
+    this.requireEnrol().reset();
+    this.fetched = null;
+    this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: null });
+    return Promise.resolve(null);
+  }
+
   private signInCancel(): Promise<null> {
     this.requireEnrol().reset();
     this.fetched = null;
