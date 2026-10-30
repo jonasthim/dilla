@@ -411,6 +411,19 @@ describe('CommandPicker: fix round 1', () => {
     expect(onRunDetached).toHaveBeenCalledWith({ commandId: 'poll create', args: {} });
   });
 
+  it('Esc on a multi-line /code value round-trips with its newlines', async () => {
+    const user = userEvent.setup();
+    const first = renderPicker({ initialText: '/code yaml' });
+    await user.click(screen.getByRole('textbox', { name: 'text' }));
+    await user.keyboard('name: harbour{Shift>}{Enter}{/Shift}size: 6{Shift>}{Enter}{/Shift}crew: 4');
+    await user.keyboard('{Escape}');
+    const text = vi.mocked(first.props.onCancel).mock.calls.at(-1)![0];
+    first.unmount();
+    renderPicker({ initialText: text });
+    expect(screen.getByRole('combobox', { name: 'language' })).toHaveValue('yaml');
+    expect(screen.getByRole('textbox', { name: 'text' })).toHaveValue('name: harbour\nsize: 6\ncrew: 4');
+  });
+
   it('a multi-line /code value grows its chip, survives edits and runs with its newlines', async () => {
     const user = userEvent.setup();
     const { props } = renderPicker({ initialText: '/code yaml' });
