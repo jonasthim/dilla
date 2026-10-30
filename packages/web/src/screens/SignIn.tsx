@@ -55,6 +55,11 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
   // web3.8 (R6, pre-flight C-15/C-16): the held assertion ran out during the key, from the registration or from the
   // backup code on its path; nothing was spent and the worker is back at signin-login. The person logs in again.
   if (e.code === 'E_SIGNIN_EXPIRED') return { banner: { tone: 'warn', key: 'enrol.expired', vars: {} }, focus: 'password' };
+  // Wave B task 3 (Jonas, M2): a passkey of another account than the password login on the code or passkey step; the
+  // instance refused it and issued nothing. The step stays, with focus on the passkey control that started it.
+  if (e.code === 'E_PASSKEY_OTHER_ACCOUNT' && command === 'passkey') {
+    return { banner: { tone: 'danger', key: 'factorSignin.passkey.otherAccount', vars: {} }, focus: 'passkey' };
+  }
   // web3.6: the instance gives an unknown passkey its own code (never read from the detail text).
   if (e.code === 'E_PASSKEY_UNKNOWN' && command === 'passkey') {
     return { banner: { tone: 'danger', key: 'factorSignin.passkey.unknown', vars: { instance } }, focus: 'passkey' };

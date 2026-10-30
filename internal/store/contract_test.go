@@ -57,7 +57,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Auth", reflect.TypeOf((*store.Auth)(nil)).Elem(), []string{
 			"ClearLoginFailures", "ConsumeRecoveryCode", "ConsumeTOTPCounter",
-			"CountLoginFailures", "CountOpenCeremonies", "CountRecoveryCodes", "GetOIDCIdentity",
+			"CountLoginFailures", "CountOpenCeremonies", "CountRecoveryCodes", "PutCeremonyCapped", "GetOIDCIdentity",
 			"GetPasswordChangedAt", "GetPasswordCredential", "GetTOTP", "GetWebauthnCredential",
 			"GetWebauthnUserByHandle", "GetWebauthnUserHandle", "ListWebauthnCredentials", "ChangePasswordCredential",
 			"PruneCeremonies", "PutCeremony", "PutOIDCIdentity", "PutPasswordCredential",

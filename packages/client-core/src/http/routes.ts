@@ -1327,11 +1327,15 @@ export class Routes {
     return ceremony(decode(await this.body('POST', '/v1/auth/passkey/login/begin', 'none', false,
       { body: encode([]), auth: false, retry429: false })));
   }
-  /** POST /v1/auth/passkey/login/finish: [ceremony_id, response] → [assertion, needs]; needs 1 when the authenticator did
-   *  not verify the user. A passkey this instance does not hold is 401 E_PASSKEY_UNKNOWN. */
-  async passkeyLoginFinish(ceremonyId: Uint8Array, response: string): Promise<PasskeyLogin> {
+  /** POST /v1/auth/passkey/login/finish: [ceremony_id, response] or, bound to a password login (wave B task 3),
+   *  [ceremony_id, response, assertion] → [assertion, needs]; needs 1 when the authenticator did not verify the user. A
+   *  passkey this instance does not hold is 401 E_PASSKEY_UNKNOWN; a bound one of another account 403
+   *  E_PASSKEY_OTHER_ACCOUNT. */
+  async passkeyLoginFinish(ceremonyId: Uint8Array, response: string, boundTo: string | null = null): Promise<PasskeyLogin> {
+    const parts: CborInput[] = [inputId('ceremonyId', ceremonyId), response];
+    if (boundTo !== null) parts.push(boundTo);
     const a = atLeast(decode(await this.body('POST', '/v1/auth/passkey/login/finish', 'none', false,
-      { body: encode([inputId('ceremonyId', ceremonyId), response]), auth: false, retry429: false })), 2);
+      { body: encode(parts), auth: false, retry429: false })), 2);
     return { assertion: str(a[0]), needs: oneOf(a[1], [0, 1]) };
   }
   /** POST /v1/auth/stepup: [method, secret] → 201 [stepup, expires]; method 0 password, 1 code, 2 backup code. A wrong

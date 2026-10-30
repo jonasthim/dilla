@@ -193,6 +193,18 @@ describe('the code step (flow 10 state 16)', () => {
     expect(screen.queryByRole('button', { name: en['factorSignin.code.usePasskey'] })).toBeNull();
   });
 
+  it('wave B task 3 (M2): a passkey of another account on the code step says so and keeps the code step', async () => {
+    const script: Script = (c, f) => c.m === 'signInPasskey'
+      ? Promise.reject(refusal({ code: 'E_PASSKEY_OTHER_ACCOUNT', status: 403 }))
+      : worker()(c, f);
+    const { fake, user } = setup('signin-totp', script, { signIn: { username: 'ada', factor: 'totp', passkey: true } });
+    get.mockResolvedValue(assertion());
+    await user.click(button(en['factorSignin.code.usePasskey']));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That passkey belongs to another account.');
+    expect(h1()).toHaveTextContent('Enter your code');
+    expect(fake.callsOf('signInKey')).toEqual([]);
+  });
+
   it('no "Use a passkey" on the code step in a browser without passkeys', () => {
     setup('signin-totp', worker(), { signIn: { username: null, factor: 'passkey' } }, { webauthn: false });
     expect(screen.queryByRole('button', { name: en['factorSignin.code.usePasskey'] })).toBeNull();

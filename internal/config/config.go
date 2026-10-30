@@ -258,7 +258,10 @@ type Rate struct {
 	// page opens a passkey ceremony when the username field gains focus, and those begins must not spend password attempts.
 	PasskeyBeginPerSecond float64 `toml:"passkey_begin_per_second"`
 	PasskeyBeginBurst     int     `toml:"passkey_begin_burst"`
-	PasswordConcurrency   int     `toml:"password_concurrency"`
+	// PasskeyBeginNet* meter the same begins per network (IPv4 /24, IPv6 /48), beside the per-address bucket.
+	PasskeyBeginNetPerSecond float64 `toml:"passkey_begin_net_per_second"`
+	PasskeyBeginNetBurst     int     `toml:"passkey_begin_net_burst"`
+	PasswordConcurrency      int     `toml:"password_concurrency"`
 }
 
 type Retention struct {
@@ -311,6 +314,8 @@ type WebAuthn struct {
 	// MaxOpenLogins caps the unexpired passkey login ceremonies the instance holds at once (wave B task 3 security
 	// review): past it a begin answers 429, so begins spread over many addresses cannot fill webauthn_ceremonies.
 	MaxOpenLogins int `toml:"max_open_logins"`
+	// MaxOpenPerUser caps one user's open registration and step-up ceremonies; past it the oldest is evicted.
+	MaxOpenPerUser int `toml:"max_open_per_user"`
 }
 
 type OIDC struct {

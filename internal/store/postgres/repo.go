@@ -1055,9 +1055,52 @@ func (r *Repo) PruneCeremonies(ctx context.Context, now int64) (int64, error) {
 	return n, wrap(err)
 }
 
-func (r *Repo) CountOpenCeremonies(ctx context.Context, kind uint8, now int64) (int64, error) {
-	n, err := r.w.CountOpenCeremonies(ctx, pgdb.CountOpenCeremoniesParams{Kind: int64(kind), Expires: now})
+func (r *Repo) CountOpenCeremonies(ctx context.Context, userID *id.ID, now int64) (int64, error) {
+	if userID == nil {
+		n, err := r.w.CountOpenDiscoverableLogins(ctx, pgdb.CountOpenDiscoverableLoginsParams{Expires: now})
+		return n, wrap(err)
+	}
+	n, err := r.w.CountOpenUserCeremonies(ctx, pgdb.CountOpenUserCeremoniesParams{UserID: userID, Expires: now})
 	return n, wrap(err)
+}
+
+// ceremonyCapLock is the advisory lock key PutCeremonyCapped serialises on ("dillacer").
+const ceremonyCapLock int64 = 0x64696c6c61636572
+
+func (r *Repo) PutCeremonyCapped(ctx context.Context, c store.CeremonyRow, limit int, now int64) (int64, error) {
+	var evicted int64
+	put := func(tx store.Repository) error {
+		rr, ok := tx.(*Repo)
+		if !ok {
+			return fmt.Errorf("store: PutCeremonyCapped: unexpected transaction type %T", tx)
+		}
+		// Concurrent begins take this transaction-scoped lock in turn, so the count and the eviction see every
+		// committed ceremony and the cap holds exactly (read committed would let two inserts pass it together).
+		if err := rr.w.LockCeremonies(ctx, pgdb.LockCeremoniesParams{Key: ceremonyCapLock}); err != nil {
+			return wrap(err)
+		}
+		if err := rr.PutCeremony(ctx, c); err != nil {
+			return err
+		}
+		open, err := rr.CountOpenCeremonies(ctx, c.UserID, now)
+		if err != nil {
+			return err
+		}
+		over := open - int64(limit)
+		if over <= 0 {
+			return nil
+		}
+		if c.UserID == nil {
+			evicted, err = rr.w.EvictOldestDiscoverableLogins(ctx, pgdb.EvictOldestDiscoverableLoginsParams{Now: now, Keep: c.ID, N: over})
+		} else {
+			evicted, err = rr.w.EvictOldestUserCeremonies(ctx, pgdb.EvictOldestUserCeremoniesParams{UserID: c.UserID, Now: now, Keep: c.ID, N: over})
+		}
+		return wrap(err)
+	}
+	if r.inTx {
+		return evicted, put(r)
+	}
+	return evicted, r.Tx(ctx, put)
 }
 
 func (r *Repo) PutOIDCIdentity(ctx context.Context, issuer, subject string, userID id.ID, created int64) error {

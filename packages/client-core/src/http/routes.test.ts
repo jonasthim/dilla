@@ -737,6 +737,12 @@ const FACTOR_CASES: Case[] = [
     reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
   },
   {
+    name: 'passkeyLoginFinish bound to a password login sends its assertion as a third element (wave B task 3)',
+    call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE, 'held-asrt'),
+    method: 'POST', path: '/v1/auth/passkey/login/finish', bucket: 'none', idempotent: false, auth: false, sent: encode([CEREMONY, RESPONSE, 'held-asrt']),
+    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
+  },
+  {
     name: 'passkeyLoginFinish without user verification', call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE),
     method: 'POST', path: '/v1/auth/passkey/login/finish', bucket: 'none', idempotent: false, auth: false, sent: encode([CEREMONY, RESPONSE]),
     reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needs: 1 },

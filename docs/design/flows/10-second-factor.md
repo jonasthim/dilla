@@ -122,6 +122,7 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factor.error.network='The connection dropped. Check it and try again.'`
 - `factor.error.other='That did not work ({code}). Try again.'`
 - `factorSignin.usePasskey='Sign in with a passkey'`
+- `factorSignin.passkey.otherAccount='That passkey belongs to another account.'`
 - `factorSignin.passkey.title='Use your passkey'`
 - `factorSignin.passkey.body='This account signs in with a passkey. Your browser asks for it when you continue.'`
 - `factorSignin.passkey.submit='Use passkey'`

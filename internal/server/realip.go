@@ -63,6 +63,25 @@ func inAny(a netip.Addr, prefixes []netip.Prefix) bool {
 // RateKey is the bucket key for an address: IPv4 by address, IPv6 by /64. A
 // residential IPv6 customer holds a /56 or a /64, so keying by /128 would give
 // one household unlimited buckets.
+// RatePrefixKey is the coarser key of a network's buckets (wave B task 3): an IPv4 address by its /24, an IPv6 one by
+// its /48, so one network spreading requests over many addresses still meets one bucket. Mapped IPv4 is unmapped first,
+// as in RateKey.
+func RatePrefixKey(a netip.Addr) string {
+	if !a.IsValid() {
+		return "invalid"
+	}
+	a = a.Unmap()
+	bits := 48
+	if a.Is4() {
+		bits = 24
+	}
+	p, err := a.Prefix(bits)
+	if err != nil {
+		return a.String()
+	}
+	return "net\x00" + p.String()
+}
+
 func RateKey(a netip.Addr) string {
 	if !a.IsValid() {
 		return "invalid"

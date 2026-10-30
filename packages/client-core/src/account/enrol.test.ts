@@ -467,6 +467,40 @@ describe('Enrol second factors', () => {
   });
 });
 
+// Wave B task 3 (Jonas, M2): after a password login, a passkey finish carries the held assertion and the instance refuses
+// a passkey of another account before it issues anything.
+describe('Enrol: a passkey bound to the password login', () => {
+  it('another account\'s passkey is refused E_PASSKEY_OTHER_ACCOUNT, sends the held assertion, and keeps the code step', async () => {
+    const a = account({ totp: '123456' });
+    a.server.register('bo', new Uint8Array(16).fill(0x77));
+    const bos = a.server.addPasskey('bo', 'Phone');
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 1, passkey: false });
+    const held = a.server.assertions.at(-1);
+    const other = await httpError(a.enrol.passkey((await a.routes.passkeyLoginBegin()).ceremonyId, toHex(bos)));
+    expect([other.status, other.code]).toEqual([403, 'E_PASSKEY_OTHER_ACCOUNT']);
+    const sent = arr(decode(a.server.log.filter((r) => r.path === '/v1/auth/passkey/login/finish').at(-1)?.body ?? new Uint8Array()));
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toBe(held);
+    // Nothing was issued: the password login's assertion still settles with the app code, and registers Ada.
+    await a.enrol.totp('123456');
+    expect((await a.enrol.register(INSTANCE)).userId).toEqual(a.userId);
+  });
+
+  it('her own passkey after the password signs in; a passkey on the login step goes unbound', async () => {
+    const a = account({ totp: '123456' });
+    const mine = a.server.addPasskey('ada', 'Laptop');
+    await a.enrol.login('ada', PASSWORD);
+    expect(await a.enrol.passkey((await a.routes.passkeyLoginBegin()).ceremonyId, toHex(mine))).toEqual({ needs: 0 });
+    expect((await a.enrol.register(INSTANCE)).userId).toEqual(a.userId);
+
+    const b = account();
+    const key = b.server.addPasskey('ada', 'Laptop');
+    await b.enrol.passkey((await b.routes.passkeyLoginBegin()).ceremonyId, toHex(key));
+    const sent = arr(decode(b.server.log.filter((r) => r.path === '/v1/auth/passkey/login/finish').at(-1)?.body ?? new Uint8Array()));
+    expect(sent).toHaveLength(2);
+  });
+});
+
 /** A browser of a web-1-era account: identified with its v1 accepted; the instance holds no list until a test publishes one. */
 function enrolled() {
   const server = new FakeServer();

@@ -55,7 +55,7 @@ func TestTheMaintenanceTickPrunesExpiredPasskeyCeremonies(t *testing.T) {
 	}
 	// Every row, expired or not: expires > 0.
 	rows := func() int64 {
-		n, err := repo.CountOpenCeremonies(ctx, 1, 0)
+		n, err := repo.CountOpenCeremonies(ctx, nil, 0)
 		if err != nil {
 			t.Fatalf("CountOpenCeremonies: %v", err)
 		}

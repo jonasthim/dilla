@@ -3,7 +3,6 @@ package api_test
 import (
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
@@ -74,34 +73,10 @@ func TestAFailedPasskeyFinishChargesTheLoginBudget(t *testing.T) {
 	}
 }
 
-// Security review I1: an instance-wide cap on open login ceremonies. Past it a begin is 429; an expired or pruned
-// ceremony frees its place.
-func TestOpenLoginCeremoniesAreCapped(t *testing.T) {
-	h, deps, _ := newPasskeyAPITuned(t, "", false, func(c *config.Config) { c.Auth.WebAuthn.MaxOpenLogins = 3 })
-	for i := 0; i < 3; i++ {
-		if code := passkeyBegin(h); code != http.StatusOK {
-			t.Fatalf("begin %d = %d, want 200", i+1, code)
-		}
-	}
-	empty, _ := cborx.Marshal([]any{})
-	over := postCBOR(h, "/v1/auth/passkey/login/begin", empty)
-	if over.Code != http.StatusTooManyRequests || errorCode(t, over) != "E_RATE_LIMITED" {
-		t.Fatalf("a begin past the cap = %d %s, want 429 E_RATE_LIMITED", over.Code, errorCode(t, over))
-	}
-	// Expired ceremonies no longer count, even before they are pruned.
-	advance(t, deps, 5*time.Minute+time.Second)
-	if code := passkeyBegin(h); code != http.StatusOK {
-		t.Fatalf("a begin once the open ceremonies expired = %d, want 200", code)
-	}
-	// And a prune removes them from the table.
-	if n, err := deps.Passkeys.PruneCeremonies(t.Context()); err != nil || n != 3 {
-		t.Fatalf("PruneCeremonies = %d, %v; want the 3 expired rows", n, err)
-	}
-}
-
 func TestTheOpenLoginCapIsConfiguredAndValidated(t *testing.T) {
 	c := config.Default()
-	if c.Auth.WebAuthn.MaxOpenLogins != 10000 {
-		t.Fatalf("auth.webauthn.max_open_logins defaults to %d, want 10000", c.Auth.WebAuthn.MaxOpenLogins)
+	if c.Auth.WebAuthn.MaxOpenLogins != 10000 || c.Auth.WebAuthn.MaxOpenPerUser != 5 {
+		t.Fatalf("auth.webauthn max_open_logins / max_open_per_user default to %d / %d, want 10000 / 5",
+			c.Auth.WebAuthn.MaxOpenLogins, c.Auth.WebAuthn.MaxOpenPerUser)
 	}
 }

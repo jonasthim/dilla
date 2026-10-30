@@ -429,6 +429,23 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_PASSKEY_UNKNOWN' } });
   });
 
+  it('wave B task 3 (M2): another account\'s passkey on the code step is refused before this browser is enrolled', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1, passkey: true }));
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await answered(w, 3);
+    w.enrol.passkey.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_PASSKEY_OTHER_ACCOUNT')));
+    w.call(4, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r' });
+    expect(await answered(w, 4)).toMatchObject({ ok: false, error: { code: 'E_PASSKEY_OTHER_ACCOUNT', status: 403 } });
+    // Fail closed: the code step stays, nothing was registered, and the result was dropped.
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', error: { code: 'E_PASSKEY_OTHER_ACCOUNT' } });
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    w.call(5, KEY);
+    expect(await answered(w, 5)).toMatchObject({ ok: false });
+    expect(w.enrol.register).not.toHaveBeenCalled();
+  });
+
   it('a backup code after needs 2 signs in; it is sent normalised', async () => {
     const w = world({ phase: 0 });
     w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 2 }));

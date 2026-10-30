@@ -1019,9 +1019,44 @@ func (r *Repo) PruneCeremonies(ctx context.Context, now int64) (int64, error) {
 	return n, wrap(err)
 }
 
-func (r *Repo) CountOpenCeremonies(ctx context.Context, kind uint8, now int64) (int64, error) {
-	n, err := r.w.CountOpenCeremonies(ctx, sqlitedb.CountOpenCeremoniesParams{Kind: int64(kind), Expires: now})
+func (r *Repo) CountOpenCeremonies(ctx context.Context, userID *id.ID, now int64) (int64, error) {
+	if userID == nil {
+		n, err := r.w.CountOpenDiscoverableLogins(ctx, sqlitedb.CountOpenDiscoverableLoginsParams{Expires: now})
+		return n, wrap(err)
+	}
+	n, err := r.w.CountOpenUserCeremonies(ctx, sqlitedb.CountOpenUserCeremoniesParams{UserID: userID, Expires: now})
 	return n, wrap(err)
+}
+
+func (r *Repo) PutCeremonyCapped(ctx context.Context, c store.CeremonyRow, limit int, now int64) (int64, error) {
+	var evicted int64
+	put := func(tx store.Repository) error {
+		rr, ok := tx.(*Repo)
+		if !ok {
+			return fmt.Errorf("store: PutCeremonyCapped: unexpected transaction type %T", tx)
+		}
+		if err := rr.PutCeremony(ctx, c); err != nil {
+			return err
+		}
+		open, err := rr.CountOpenCeremonies(ctx, c.UserID, now)
+		if err != nil {
+			return err
+		}
+		over := open - int64(limit)
+		if over <= 0 {
+			return nil
+		}
+		if c.UserID == nil {
+			evicted, err = rr.w.EvictOldestDiscoverableLogins(ctx, sqlitedb.EvictOldestDiscoverableLoginsParams{Now: now, Keep: c.ID, N: over})
+		} else {
+			evicted, err = rr.w.EvictOldestUserCeremonies(ctx, sqlitedb.EvictOldestUserCeremoniesParams{UserID: c.UserID, Now: now, Keep: c.ID, N: over})
+		}
+		return wrap(err)
+	}
+	if r.inTx {
+		return evicted, put(r)
+	}
+	return evicted, r.Tx(ctx, put)
 }
 
 func (r *Repo) PutOIDCIdentity(ctx context.Context, issuer, subject string, userID id.ID, created int64) error {

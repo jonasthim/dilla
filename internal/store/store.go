@@ -449,8 +449,13 @@ type Auth interface {
 	PutCeremony(ctx context.Context, c CeremonyRow) error
 	TakeCeremony(ctx context.Context, ceremonyID id.ID, now int64) (CeremonyRow, error) // single use
 	PruneCeremonies(ctx context.Context, now int64) (int64, error)
-	// CountOpenCeremonies counts the unexpired ceremonies of one kind (wave B task 3: the cap on open login ceremonies).
-	CountOpenCeremonies(ctx context.Context, kind uint8, now int64) (int64, error)
+	// CountOpenCeremonies counts unexpired ceremonies (wave B task 3): with a nil userID the discoverable login
+	// ceremonies (kind 1, no user), else every ceremony of that user (registrations and passkey step-ups).
+	CountOpenCeremonies(ctx context.Context, userID *id.ID, now int64) (int64, error)
+	// PutCeremonyCapped writes c and, in the same transaction, evicts the oldest unexpired ceremonies of its scope (the
+	// discoverable logins when c.UserID is nil, else c's user's) beyond limit, never c itself. It returns how many it
+	// evicted. A finish on an evicted ceremony fails as one on an expired ceremony does (TakeCeremony finds none).
+	PutCeremonyCapped(ctx context.Context, c CeremonyRow, limit int, now int64) (int64, error)
 	PutOIDCIdentity(ctx context.Context, issuer, subject string, userID id.ID, created int64) error
 	GetOIDCIdentity(ctx context.Context, issuer, subject string) (id.ID, error)
 	RecordLoginAttempt(ctx context.Context, a LoginAttemptRow) error

@@ -179,6 +179,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dillad: passkeys: %w", err)
 		}
+		passkeys.SetLimits(o.Config.Auth.WebAuthn.MaxOpenLogins, o.Config.Auth.WebAuthn.MaxOpenPerUser)
 	}
 
 	deps := api.Deps{

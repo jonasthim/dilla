@@ -46,7 +46,8 @@ type Querier interface {
 	// dilla-web-2a (L-SQL-21, Q04): the per-user device cap counts unrevoked devices only.
 	CountLiveDevicesByUser(ctx context.Context, arg CountLiveDevicesByUserParams) (int64, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
-	CountOpenCeremonies(ctx context.Context, arg CountOpenCeremoniesParams) (int64, error)
+	CountOpenDiscoverableLogins(ctx context.Context, arg CountOpenDiscoverableLoginsParams) (int64, error)
+	CountOpenUserCeremonies(ctx context.Context, arg CountOpenUserCeremoniesParams) (int64, error)
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
@@ -122,6 +123,8 @@ type Querier interface {
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
+	EvictOldestDiscoverableLogins(ctx context.Context, arg EvictOldestDiscoverableLoginsParams) (int64, error)
+	EvictOldestUserCeremonies(ctx context.Context, arg EvictOldestUserCeremoniesParams) (int64, error)
 	FinalizeBotDeviceCredential(ctx context.Context, arg FinalizeBotDeviceCredentialParams) (int64, error)
 	GetActiveBotInstallationByCommunity(ctx context.Context, arg GetActiveBotInstallationByCommunityParams) (BotInstallations, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
@@ -274,6 +277,7 @@ type Querier interface {
 	LockBotCommunity(ctx context.Context, arg LockBotCommunityParams) (id.ID, error)
 	LockBotInstallation(ctx context.Context, arg LockBotInstallationParams) (id.ID, error)
 	LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) (id.ID, error)
+	LockCeremonies(ctx context.Context, arg LockCeremoniesParams) error
 	// The join and the ban both take this lock before they read or write the
 	// membership, so a join's ban check and its member insert cannot interleave with
 	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -20,6 +21,21 @@ import (
 // ceremonyTTL is how long a Begin* result is good for. Short, because the whole
 // ceremony is one user gesture.
 const ceremonyTTL = 5 * 60 // seconds
+
+// discoverableTTL is an unauthenticated (discoverable) login ceremony's life (wave B task 3 security review): as long as
+// the browser's get() is allowed to run (LoginTimeout, sent in the options as `timeout`) and no longer, so rows a
+// distributed attacker opens leave the table sooner. Step-ups and registrations keep ceremonyTTL.
+const discoverableTTL = 120 // seconds
+
+// LoginTimeout is the WebAuthn login timeout the options carry (go-webauthn's default is 5 minutes).
+const LoginTimeout = time.Duration(discoverableTTL) * time.Second
+
+// The default caps on open ceremonies (security review I1/B): discoverable logins instance-wide, and a user's own
+// (registrations and step-ups). Past either, the oldest of that scope is evicted: a fresh begin always works.
+const (
+	DefaultMaxOpenLogins  = 10000
+	DefaultMaxOpenPerUser = 5
+)
 
 // webauthn_ceremonies.kind is CHECK (kind IN (0, 1)) (schema/003_auth.sql), so a step-up has no
 // kind of its own: it is a ceremonyLogin row WITH user_id set, where a discoverable login's is
@@ -59,6 +75,8 @@ func ConfigFromDilla(c config.WebAuthn) *webauthn.Config {
 			ResidentKey:      protocol.ResidentKeyRequirementRequired,
 			UserVerification: protocol.UserVerificationRequirement(c.UserVerification),
 		},
+		// The browser's get() may run as long as a discoverable login ceremony lives (discoverableTTL), no longer.
+		Timeouts: webauthn.TimeoutsConfig{Login: webauthn.TimeoutConfig{Timeout: LoginTimeout, TimeoutUVD: LoginTimeout}},
 	}
 }
 
@@ -69,6 +87,9 @@ type Passkeys struct {
 	repo store.Repository
 	clk  clock.Clock
 	rpID string
+	// The caps PutCeremonyCapped enforces: discoverable logins instance-wide, and each user's own ceremonies.
+	maxOpenLogins  int
+	maxOpenPerUser int
 }
 
 func NewPasskeys(cfg *webauthn.Config, repo store.Repository, clk clock.Clock) (*Passkeys, error) {
@@ -76,7 +97,19 @@ func NewPasskeys(cfg *webauthn.Config, repo store.Repository, clk clock.Clock) (
 	if err != nil {
 		return nil, fmt.Errorf("auth: webauthn config: %w", err)
 	}
-	return &Passkeys{wa: wa, repo: repo, clk: clk, rpID: cfg.RPID}, nil
+	return &Passkeys{wa: wa, repo: repo, clk: clk, rpID: cfg.RPID,
+		maxOpenLogins: DefaultMaxOpenLogins, maxOpenPerUser: DefaultMaxOpenPerUser}, nil
+}
+
+// SetLimits sets the caps on open ceremonies (auth.webauthn.max_open_logins and max_open_per_user). A value below 1
+// keeps the default.
+func (p *Passkeys) SetLimits(maxOpenLogins, maxOpenPerUser int) {
+	if maxOpenLogins > 0 {
+		p.maxOpenLogins = maxOpenLogins
+	}
+	if maxOpenPerUser > 0 {
+		p.maxOpenPerUser = maxOpenPerUser
+	}
 }
 
 // dillaUser is go-webauthn's User over dilla's rows. There are exactly four
@@ -212,11 +245,16 @@ func (p *Passkeys) storeSession(ctx context.Context, kind uint8, userID *id.ID, 
 	}
 	now := p.clk.Now().Unix()
 	ceremonyID := id.New()
+	ttl, limit := int64(ceremonyTTL), p.maxOpenPerUser
+	if userID == nil {
+		ttl, limit = discoverableTTL, p.maxOpenLogins
+	}
 	row := store.CeremonyRow{
 		ID: ceremonyID, Kind: kind, UserID: userID,
-		SessionJSON: string(body), Created: now, Expires: now + ceremonyTTL,
+		SessionJSON: string(body), Created: now, Expires: now + ttl,
 	}
-	if err := p.repo.PutCeremony(ctx, row); err != nil {
+	// The write and the eviction of the oldest beyond the cap are one transaction (security review I1/B).
+	if _, err := p.repo.PutCeremonyCapped(ctx, row, limit, now); err != nil {
 		return id.ID{}, err
 	}
 	return ceremonyID, nil
@@ -470,10 +508,9 @@ func (p *Passkeys) PruneCeremonies(ctx context.Context) (int64, error) {
 	return p.repo.PruneCeremonies(ctx, p.clk.Now().Unix())
 }
 
-// OpenLogins counts the unexpired login ceremonies (discoverable logins and passkey step-ups), for the cap
-// BeginPasskeyLogin applies before it opens another.
+// OpenLogins counts the unexpired discoverable login ceremonies (the instance-wide cap's scope).
 func (p *Passkeys) OpenLogins(ctx context.Context) (int64, error) {
-	return p.repo.CountOpenCeremonies(ctx, ceremonyLogin, p.clk.Now().Unix())
+	return p.repo.CountOpenCeremonies(ctx, nil, p.clk.Now().Unix())
 }
 
 // CredentialsForTest exposes the stored-to-library conversion so a test can
