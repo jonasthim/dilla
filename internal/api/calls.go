@@ -191,6 +191,8 @@ type Calls struct {
 	log      *slog.Logger
 	leases   *shareLeases
 	counters CallCounters
+	// rtts limits POST /v1/calls/{call_id}/rtt per device (callrtt.go; task 8c).
+	rtts rttLimiter
 
 	// sweepMu keeps room sweeps from overlapping and guards sweepCursor, the last room a sweep pass
 	// visited, where the next one goes on. sweepEvery is the retry loop's sweep cadence.
@@ -402,6 +404,7 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
+	mux.HandleFunc("POST /v1/calls/{call_id}/rtt", h.rtt)
 	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
 	h.registerReads(mux)
 }

@@ -31,7 +31,6 @@ describe('bot settings pages', () => {
     expect(screen.queryByRole('heading', { name: 'Automatic moderation' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Moderation log' })).not.toBeInTheDocument();
     expect(client.callsOf('getBotJoinRole')).toHaveLength(0);
-    expect(client.callsOf('getBotDjRoles')).toHaveLength(0);
     expect(client.callsOf('getBotSpotifyConfig')).toHaveLength(0);
   });
 

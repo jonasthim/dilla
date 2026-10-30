@@ -571,6 +571,11 @@ export class ModelCore implements CorePort {
       throw e;
     }
   }
+  /** Task S1 part 2: the model records the attestations it is handed; the Rust core judges them. */
+  readonly accountKinds: { userId: Id; attestation: Uint8Array }[] = [];
+  accountKindIngest(userId: Id, attestation: Uint8Array): void {
+    this.accountKinds.push({ userId, attestation });
+  }
   deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array,
     now: bigint): { version: bigint; changed: boolean; quarantined: number } {
     const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
@@ -2241,7 +2246,7 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   | 'getModerationRemovals'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
-  | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
+  | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postCallRtt' | 'postProposal' | 'declineCall'
   | 'endCallIfAlone'
   // v0.1.0-web3.1: the create flow (internal/api communities.go, channels.go, invites.go), so a suite creates its server
   // and its channels through the client path.
@@ -3008,6 +3013,7 @@ export class ModelDs {
         return true;
       }),
       postCallStats: (callId) => this.call(d, 'postCallStats', null, null, () => { this.liveCall(callId); }),
+      postCallRtt: (callId) => this.call(d, 'postCallRtt', null, null, () => { this.liveCall(callId); }),
       postProposal: (id, body) => this.call(d, 'postProposal', id, null, () => this.postProposal(d, id, body)),
       declineCall: (callId) => this.call(d, 'declineCall', null, null, () => {
         const call = this.liveCall(callId);

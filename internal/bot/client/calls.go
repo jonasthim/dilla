@@ -241,6 +241,28 @@ func (s *Session) ChannelCall(ctx context.Context, channel id.ID) (ChannelCallSt
 	return out, nil
 }
 
+// MaxCallRTTMS is the largest RTT POST /v1/calls/{call_id}/rtt accepts, in milliseconds.
+const MaxCallRTTMS = 5000
+
+// ReportCallRTT reports this device's round-trip time to the SFU (whole milliseconds, at most MaxCallRTTMS) for the call's
+// stage: the instance writes it as this device's dilla.rtt participant attribute (Signal task 8c, the bot's "63 ms"). The
+// instance refuses more than one report per device every 1.5 s (429) and a device that is not in the call (404).
+func (s *Session) ReportCallRTT(ctx context.Context, callID id.ID, ms uint32) error {
+	if ms > MaxCallRTTMS {
+		return ErrInvalidConfig
+	}
+	p, err := pathID(callID)
+	if err != nil {
+		return err
+	}
+	body, err := encode([]any{ms})
+	if err != nil {
+		return err
+	}
+	_, _, err = s.c.do(ctx, s.token, http.MethodPost, "calls/"+p+"/rtt", nil, body, MaxSmallBody, true)
+	return err
+}
+
 // EndCall leaves a call, optionally ending it only if this device is alone.
 func (s *Session) EndCall(ctx context.Context, callID id.ID, ifAlone bool) error {
 	p, err := pathID(callID)

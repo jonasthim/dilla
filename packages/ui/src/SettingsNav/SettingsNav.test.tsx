@@ -103,11 +103,11 @@ describe('SettingsNav', () => {
 describe('SettingsNav glyph column', () => {
   const ICONS = [{ id: 'general', label: 'general', icon: 'settings' }, { id: 'about', label: 'about' }, { id: 'keyboard', label: 'keyboard', icon: 'keyboard' }] as const;
 
-  it('draws a 16px icon per item and keeps the empty column for an item without one, so names align', () => {
+  it('draws a 15px icon per item (README §5.9) and keeps the empty column for an item without one, so names align', () => {
     render(<SettingsNav {...props({ items: ICONS, activeId: 'general' })} />);
     const items = screen.getAllByRole('button');
     for (const item of items) expect(item.querySelectorAll('.d-settings-nav__glyph')).toHaveLength(1);
-    expect(items[0].querySelector('[data-icon="settings"]')).toHaveAttribute('width', '16');
+    expect(items[0].querySelector('[data-icon="settings"]')).toHaveAttribute('width', '15');
     expect(items[1].querySelector('.d-settings-nav__glyph svg')).toBeNull();
     expect(items.map(b => b.textContent)).toEqual(['general', 'about', 'keyboard']);
   });
@@ -125,12 +125,12 @@ describe('SettingsNav glyph column', () => {
 
 // M4: the glyph column is 16px and never shrinks, which is what aligns the names (jsdom has no layout).
 describe('SettingsNav glyph column CSS', () => {
-  it('is 1rem wide with flex: none', async () => {
+  it('is 15px wide with flex: none', async () => {
     const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
     const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
     const css = fs.readFileSync(`${cwd}/src/SettingsNav/SettingsNav.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const rule = /\.d-settings-nav__glyph \{([^}]*)\}/.exec(css)?.[1] ?? '';
     expect(rule).toMatch(/flex: none;/);
-    expect(rule).toMatch(/width: 1rem;/);
+    expect(rule).toMatch(/width: 15px;/);
   });
 });

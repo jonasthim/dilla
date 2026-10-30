@@ -3,8 +3,8 @@
 // a live person in it, the built-in AFK channel and a direct message; then every rule of the grammar is read as a rect at
 // 1440x900, 1024x768, 390x844 and 360x740 (the phone sizes on a touch phone context where the engine has one):
 //   A5  every list's names share one left x           A4  every row's trailing slot shares one right edge
-//   B1  every bar's bottom hairline is at y=48        R9  phone targets: primary 44x44, secondary 24x24
-//   C1  at 1024 the header keeps its name             R22 the rail is 72 wide, its tiles 48
+//   B1  every bar's bottom hairline is at y=44+44     R9  phone targets: primary 44x44, secondary 24x24
+//   C1  at 1024 the header keeps its name             R22 the rail is 56 wide, its tiles 38
 //   R23 a collapsed category keeps its current and unread rows, and nothing in `main` leaves its column sideways.
 // Assertions are soft: one run names every broken rule at every size, and a control that is missing counts as a broken rule
 // too. The world is always built through the current client; DILLA_E2E_CHECK_WEBROOT, a directory holding another build of
@@ -15,7 +15,7 @@ import { join, relative, resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { addServerVia, REPO_ROOT, attachInput, drawImage, messageRow, trayEntries,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, completeSignUp, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, homeTile, makeInviteLink, newAccount, openSettings, railItem, railNav,
-  sendText, settingsDialog, signIn, signUp, test, isExpectedInteractionAdmissionContextRefusal, type Account,
+  sendText, settingsDialog, signIn, signUp, test, isExpectedInteractionAdmissionContextRefusal, type Account, membersToggle,
 } from './support/app';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { PROFILE_ROOT } from './support/persistent';
@@ -128,11 +128,18 @@ async function expectListGrammar(page: Page, tag: string, list: string, names: s
 
 /** Every visible control that takes a tap or a click. */
 const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], [role="checkbox"], [role="radio"]';
-/** The controls a thumb works all day: 44x44 on a phone (R9). Everything else is secondary (24x24, with the 2.5.8 spacing). */
+/** The controls a thumb works all day: 44x44 on a phone (R9). Everything else is secondary (24x24, with the 2.5.8 spacing). Jonas
+ *  2026-10-27 (pixel parity): the rail's tiles (38) and the phone header's actions (28 high; search 36 x 28) are the prototype's sizes,
+ *  so they are secondary; the header's back and call dot stay 44. */
 const PRIMARY = [
-  '.d-tab-bar__link', '.d-phone-header button', '.d-chrow', '.d-voice-row', '.d-channel-list__cat-head', '.d-voice-row__join button',
-  '.d-channel-list__cat-add button', '.d-channel-list__head button', '.d-community-rail__item', '.d-community-rail__join', '.d-composer button',
-  '.d-call-bar button', '.d-call-stage__controls button',
+  // Fix round 2 (rule 0): a category head is the prototype's 26px on a phone too, so it is secondary.
+  '.d-tab-bar__link', '.d-phone-header__back', '.d-phone-header__dot', '.d-chrow', '.d-voice-row', '.d-voice-row__join button',
+  // Ruling AB: the server head's ⌄ is the prototype's 26px (secondary tier); the DM head's "message someone" stays primary.
+  // Task 7 (rule 0): the composer's send (28) and footer tools (26 x 24) are the prototype's sizes, so they are secondary.
+  '.d-channel-list__cat-add button', '.d-channel-list__head button:not(.d-channel-list__head-btn)',
+  // Task 8 (rule 0): the stage's call bar is the prototype's 44 x 40 controls (Signal §5.6), so it is secondary; the DM call box
+  // (no call bar) keeps the 44px check.
+  '.d-call-bar button', '.d-call-stage__controls:not([data-bar]) button',
 ].join(', ');
 
 async function expectTargets(page: Page, tag: string, state: string): Promise<void> {
@@ -143,8 +150,14 @@ async function expectTargets(page: Page, tag: string, state: string): Promise<vo
       const cs = getComputedStyle(el);
       if (cs.visibility === 'hidden' || cs.display === 'inline' || el.getClientRects().length === 0) continue;
       if (el instanceof HTMLInputElement && ['checkbox', 'radio'].includes(el.type) && el.closest('label') !== null) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width <= 1 || r.height <= 1) continue;
+      const box = el.getBoundingClientRect();
+      if (box.width <= 1 || box.height <= 1) continue;
+      // A control that reaches out by an absolutely placed ::after (the author name and the mention pill on a phone) is measured with it.
+      const after = getComputedStyle(el, '::after');
+      const px = (v: string) => (v.endsWith('px') ? parseFloat(v) : 0);
+      const grow = after.content !== 'none' && after.position === 'absolute' && cs.position !== 'static'
+        ? { t: Math.max(0, -px(after.top)), b: Math.max(0, -px(after.bottom)), l: Math.max(0, -px(after.left)), r: Math.max(0, -px(after.right)) } : { t: 0, b: 0, l: 0, r: 0 };
+      const r = { width: box.width + grow.l + grow.r, height: box.height + grow.t + grow.b, top: box.top, bottom: box.bottom, left: box.left, right: box.right };
       if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
       const tier = el.matches(primary) ? 44 : 24;
       if (r.width + 0.5 < tier || r.height + 0.5 < tier) {
@@ -211,18 +224,18 @@ async function expectWrapsInLog(page: Page, tag: string, state: string): Promise
   expect.soft(m.textLeft, `the text's left edge is inside the log's content box in ${state} at ${tag}`).toBeGreaterThanOrEqual(m.left - TOL);
 }
 
-/** On Chromium, a notched phone: with a 47 px top inset the header clears it (48 + 47), and where base.css zeroes its padding-top
- *  (the ring or the link banner already cleared the notch) it is exactly 48 in the same inset. Other engines have no override. */
+/** On Chromium, a notched phone: with a 47 px top inset the header clears it (52 + 47, Signal §5.10), and where base.css zeroes its
+ *  padding-top (the ring or the link banner already cleared the notch) it is exactly 52 in the same inset. Other engines have no override. */
 async function expectSafeAreaBar(page: Page, tag: string): Promise<void> {
   if (page.context().browser()?.browserType().name() !== 'chromium') return;
   const cdp = await page.context().newCDPSession(page);
   try {
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 47, bottom: 0, left: 0, right: 0 } });
     const height = () => page.evaluate(() => document.querySelector('.d-phone-header')?.getBoundingClientRect().height ?? NaN);
-    await expect.poll(height, { message: `the phone header with a notch at ${tag}` }).toBeCloseTo(95, 0);
+    await expect.poll(height, { message: `the phone header with a notch at ${tag}` }).toBeCloseTo(99, 0);
     // The page's CSP forbids a style element; the CSSOM is allowed, and zeroing the padding is what base.css does in those states.
     await page.evaluate(() => { document.querySelector<HTMLElement>('.d-phone-header')?.style.setProperty('padding-top', '0', 'important'); });
-    expectAt(`B1 the phone header with a notch but its padding zeroed is 48 high at ${tag}`, await height(), 48, 0.5);
+    expectAt(`B1 the phone header with a notch but its padding zeroed is 52 high at ${tag}`, await height(), 52, 0.5);
     await page.evaluate(() => { document.querySelector<HTMLElement>('.d-phone-header')?.style.removeProperty('padding-top'); });
   } finally {
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } }).catch(() => undefined);
@@ -239,7 +252,21 @@ async function barBottom(page: Page, bar: string, from?: string): Promise<number
     return el.getBoundingClientRect().bottom - origin;
   }, { bar, from });
 }
-async function expectBar(page: Page, tag: string, name: string, bar: string, want = 48, from?: string): Promise<void> {
+/** Signal (README §5.1, §5.2): a desktop bar (--bar-h, 44) stands under the 44px top bar, so its hairline is at 88. A phone has no
+ *  top bar (§5.10): its list head is one --bar-h (44) from the top, and its PhoneHeader is 52 (§5.10, Task 6). */
+const TOP_BAR = 44;
+const BAR = 44;
+const DESKTOP_BAR = TOP_BAR + BAR;
+/** Signal §5.4: the sidebar head is no bar. It is padded 14px over and 8px under its tallest item: the 19px serif server name
+ *  (line box 28.5) on a desktop, the 28px new-message icon button beside the 14px mono DM heading (line box 21), and the 44px head buttons
+ *  on a phone (Ruling N). */
+const SIDEBAR_HEAD = TOP_BAR + 14 + 28.5 + 8;
+const SIDEBAR_HEAD_DMS = TOP_BAR + 14 + 28 + 8;
+const PHONE_LIST_HEAD = 14 + 44 + 8;
+/** Ruling AB: a server's phone head holds only the 26px ⌄, so it is the desktop's head without the top bar: 14 + 28.5 + 8. */
+const PHONE_SERVER_HEAD = 14 + 28.5 + 8;
+const PHONE_HEADER = 52;
+async function expectBar(page: Page, tag: string, name: string, bar: string, want: number, from?: string): Promise<void> {
   const got = await barBottom(page, bar, from);
   expect.soft(got, `B1 ${name} (${bar}) is on screen at ${tag}`).not.toBeNull();
   if (got !== null) expectAt(`B1 ${name} bottom hairline at ${tag}`, got, want, 0.5);
@@ -252,7 +279,7 @@ const nav = (page: Page) => channelsNav(page);
 /** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
 const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
 async function makeCategory(page: Page, name: string): Promise<void> {
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.channels'), exact: true }).click();
   await settings.getByRole('button', { name: copy('admin.channels.newCategory'), exact: true }).click();
@@ -417,28 +444,32 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
 
   // The rail (R22).
   const rail = await boxes(page, '.d-app-shell__rail');
-  expectAt(`R22 the rail is 72 wide at ${tag}`, rail[0]?.w ?? 0, 72, 0.5);
+  // README §5.3: --rail-w 56, --rail-tile 38.
+  expectAt(`R22 the rail is 56 wide at ${tag}`, rail[0]?.w ?? 0, 56, 0.5);
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {
-    expectAt(`R22 rail tile "${tile.t}" is 48 wide at ${tag}`, tile.w, 48, 0.5);
-    expectAt(`R22 rail tile "${tile.t}" is 48 high at ${tag}`, tile.h, 48, 0.5);
+    expectAt(`R22 rail tile "${tile.t}" is 38 wide at ${tag}`, tile.w, 38, 0.5);
+    expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
 
-  // The channel list (A5, A4): channel rows, voice rows and category labels, and every slot in it.
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list');
+  // The channel list (A5, A4): channel rows and voice rows, and every slot in it. Signal §5.4: a category label follows its 11px
+  // chevron (8 + 11 + 6), so the category labels share one x of their own.
+  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list');
+  const cats = await boxes(page, '.d-channel-list__cat-label', '.d-channel-list__list');
+  expectOne(`A5 category labels share one left x at ${tag}`, cats.map(b => b.x), cats.map(b => b.t));
 
-  // Bars (B1): the sidebar head, the channel header, the members head.
-  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head');
-  await expectBar(page, tag, 'the channel header', '.d-channel-header');
-  if (size.width >= 1440) await expectBar(page, tag, 'the members head', '.d-member-list__bar');
+  // Bars (B1): the channel header and the members head; the sidebar head (Signal §5.4) is the padded head over the stat line.
+  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', SIDEBAR_HEAD);
+  await expectBar(page, tag, 'the channel header', '.d-channel-header', DESKTOP_BAR);
+  if (size.width >= 1440) await expectBar(page, tag, 'the members head', '.d-member-list__bar', DESKTOP_BAR);
   await expectNoOverflow(page, tag, 'a channel');
   await expectReminderInbox(page, `channel at ${tag}`);
 
   // C1: at 1024 with the members aside open the header keeps its name and every action stays inside the header.
   if (size.width === 1024) {
-    const toggle = page.locator('.d-channel-header').getByRole('button', { name: copy('members.toggle'), exact: true });
+    const toggle = membersToggle(page);
     if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
     await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
-    await expectBar(page, tag, 'the members head', '.d-member-list__bar');
+    await expectBar(page, tag, 'the members head', '.d-member-list__bar', DESKTOP_BAR);
   }
   const header = (await boxes(page, '.d-channel-header'))[0];
   const name = (await boxes(page, '.d-channel-header__name'))[0];
@@ -453,11 +484,14 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   // The direct messages (A5, A4, B1): the `@` tile shows the DM list.
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
-  await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title');
+  // Task 11 (Jonas, Q2): a DM row is the prototype's person row (avatar, name over status, unread dot), without a trailing slot,
+  // so only the names' shared x is measured.
+  const dmNames = await boxes(page, '.d-chrow__name', '.d-channel-list__list');
+  expectOne(`A5 direct messages names share one left x at ${tag}`, dmNames.map(b => b.x), dmNames.map(b => b.t));
+  await expectBar(page, tag, 'the sidebar head (direct messages)', '.d-channel-list__head, .d-channel-list__title', SIDEBAR_HEAD_DMS);
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
   await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the conversation header', '.d-channel-header');
+  await expectBar(page, tag, 'the conversation header', '.d-channel-header', DESKTOP_BAR);
   await expectNoOverflow(page, tag, 'a direct message');
   await expectReminderInbox(page, `direct message at ${tag}`);
 
@@ -465,8 +499,8 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
   if (voicePath !== '') {
     await openPath(page, voicePath);
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
-    await expectBar(page, tag, 'the stage header', '.d-call-stage__bar');
-    await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list with a live person');
+    await expectBar(page, tag, 'the stage header', '.d-call-stage__bar', DESKTOP_BAR);
+    await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list with a live person');
     const avatars = await boxes(page, '.d-voice-row__person .d-voice-row__avatar', '.d-channel-list__list');
     const rowNames = await boxes(page, '.d-voice-row__name', '.d-channel-list__list');
     if (avatars.length > 0 && rowNames.length > 0) expectAt(`A7 a person's avatar starts at the names' x at ${tag}`, avatars[0].x, rowNames[0].x, TOL);
@@ -503,14 +537,17 @@ async function desktopGrammar(page: Page, size: Size, serverPath: string, voiceP
     expect(settingsGeometry.frame.width).toBe(settingsGeometry.viewport.width);
     expect(settingsGeometry.frame.height).toBeLessThanOrEqual(settingsGeometry.viewport.height + 1);
     expect(settingsGeometry.side.width).toBe(settingsGeometry.viewport.width);
-    await expect(settings.locator('.d-settings-frame__bar')).toContainText(copy('workspace.back'));
+    // Task 10 (README §5.10): the phone section shows the nav as chips above the content, the close button at the top right.
+    await expect(settings.locator('.d-settings-nav__item[aria-current="page"]')).toHaveText(copy('workspace.profile'));
+    await expect(settings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
   }
   await page.keyboard.press('Escape');
   await expect(settings).toBeHidden({ timeout: WAIT });
 }
 
-/** The private inbox stays reachable when its one trigger moves between existing header slots. */
+/** On a desktop the top bar's bell opens the reminders popover (README §6.7): non-modal, under the bell; Escape closes it and
+ *  gives focus back to the bell. A phone has no reminders button anywhere (Jonas 2026-10-27): a due reminder is an Activity row. */
 async function expectReminderInbox(page: Page, state: string): Promise<void> {
   await test.step(`reminder inbox on ${state}`, async () => {
     const before = page.url();
@@ -518,13 +555,19 @@ async function expectReminderInbox(page: Page, state: string): Promise<void> {
     await expect(opener).toHaveCount(1);
     await expect(opener).toBeVisible();
     await opener.click();
-    const inbox = page.getByRole('dialog', { name: 'Your reminders', exact: true });
+    const inbox = page.getByRole('dialog', { name: 'Reminders', exact: true });
     await expect(inbox).toHaveCount(1);
     await expect(inbox).toBeVisible();
-    await inbox.getByRole('button', { name: 'Close reminders', exact: true }).click();
+    await expect(page.locator('.d-topbar__bell')).toContainText('Reminders');
+    await page.keyboard.press('Escape');
     await expect(inbox).toBeHidden();
     await expect(opener).toBeFocused();
     await expect(page).toHaveURL(before);
+  });
+}
+async function expectNoPhoneReminders(page: Page, state: string): Promise<void> {
+  await test.step(`no reminders button on ${state}`, async () => {
+    await expect(page.getByRole('button', { name: 'Reminders', exact: true })).toHaveCount(0);
   });
 }
 
@@ -623,11 +666,13 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await toList();
   await tab('home.tab').click();
   await expect(nav(page).getByRole('button', { name: new RegExp(`^${escapeRegExp(RAID)}`) })).toBeVisible({ timeout: WAIT });
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label', 'channel list');
-  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head');
+  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list');
+  await expectBar(page, tag, 'the sidebar head', '.d-channel-list__head', PHONE_SERVER_HEAD);
   await expectTargets(page, tag, 'the home tab');
   for (const tile of await boxes(page, '.d-community-rail__item, .d-community-rail__join')) {
-    expect.soft(Math.min(tile.w, tile.h), `R9 rail tile "${tile.t}" is at least 44 at ${tag}`).toBeGreaterThanOrEqual(44 - TOL);
+    // The prototype's 38px tiles on a phone too (Jonas 2026-10-27, supersedes Ruling N).
+    expectAt(`R22 rail tile "${tile.t}" is 38 wide at ${tag}`, tile.w, 38, 0.5);
+    expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
   // The controller addition (UI-2 review): in the real app the voice join button and the category "+" are 44 on a phone.
   for (const [selector, what] of [['.d-voice-row__join button', 'the voice join button'], ['.d-channel-list__cat-add button', 'the category "+"']] as const) {
@@ -642,11 +687,10 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   // A channel is a pushed view under the phone header.
   await channelRow(page, 'general').click();
   await pane('view');
-  await expectBar(page, tag, 'the phone header (channel)', '.d-phone-header');
+  await expectBar(page, tag, 'the phone header (channel)', '.d-phone-header', PHONE_HEADER);
   await expectSafeAreaBar(page, tag);
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
-  await expectReminderInbox(page, `channel at ${tag}`);
   await expectWrapsInLog(page, tag, 'a channel');
   await toList();
 
@@ -655,34 +699,48 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
     await openPath(page, voicePath);
     await pane('view');
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
-    await expectBar(page, tag, 'the phone header (voice)', '.d-phone-header');
+    await expectBar(page, tag, 'the phone header (voice)', '.d-phone-header', PHONE_HEADER);
     await expectTargets(page, tag, 'the voice stage');
     await expectNoOverflow(page, tag, 'the voice stage');
-    await expectReminderInbox(page, `idle voice at ${tag}`);
+    await expectNoPhoneReminders(page, `idle voice at ${tag}`);
     await toList();
   }
 
   // The direct messages: the rail's `@` tile, then a conversation.
   await homeTile(page).click();
   await expect(dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) })).toBeVisible({ timeout: WAIT });
-  await expectListGrammar(page, tag, '.d-channel-list__list', '.d-chrow__name', 'direct messages');
-  await expectBar(page, tag, 'the direct messages head', '.d-channel-list__head');
+  // Task 11 (Jonas, Q2): a DM row is the prototype's person row (avatar, name over status, unread dot), without a trailing slot,
+  // so only the names' shared x is measured.
+  const dmNames = await boxes(page, '.d-chrow__name', '.d-channel-list__list');
+  expectOne(`A5 direct messages names share one left x at ${tag}`, dmNames.map(b => b.x), dmNames.map(b => b.t));
+  await expectBar(page, tag, 'the direct messages head', '.d-channel-list__head', PHONE_LIST_HEAD);
   await expectTargets(page, tag, 'the direct messages');
   await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}`) }).click();
   await pane('view');
-  await expectBar(page, tag, 'the phone header (direct message)', '.d-phone-header');
+  await expectBar(page, tag, 'the phone header (direct message)', '.d-phone-header', PHONE_HEADER);
   await expectNoOverflow(page, tag, 'a direct message');
-  await expectReminderInbox(page, `direct message at ${tag}`);
+  await expectNoPhoneReminders(page, `direct message at ${tag}`);
   await toList();
 
   // The activity and You tabs remain app destinations; You now has one settings entry point.
   await tab('nav.tab.activity').click();
-  await expect(page.locator('.d-phone-header')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the phone header (activity)', '.d-phone-header');
+  // Task 11 (Jonas, Q3): Activity opens with the prototype's heading (18px over the 14px title), not a 52px bar.
+  const activityHead = page.locator('.dw-activity .d-phone-header');
+  await expect(activityHead).toBeVisible({ timeout: WAIT });
+  const headBox = (await activityHead.boundingBox())!;
+  const titleBox = (await activityHead.locator('.d-phone-header__title').boundingBox())!;
+  expectAt(`B1 the Activity title sits 18px into its heading at ${tag}`, titleBox.y - headBox.y, 18, 1);
+  expect.soft(await activityHead.locator('.d-phone-header__title').evaluate(e => getComputedStyle(e).fontSize), `B1 the Activity title is 14px at ${tag}`).toBe('14px');
   await expectTargets(page, tag, 'the activity tab');
+  await expectNoPhoneReminders(page, `the activity tab at ${tag}`);
   await tab('nav.tab.you').click();
   await expect(page.locator('[data-settings-section="index"]')).toBeVisible({ timeout: WAIT });
-  await expectBar(page, tag, 'the phone header (you)', '.d-phone-header');
+  // Task 11 (Jonas, Q3): You starts with the account (its heading is for screen readers only), not a 52px bar: the 56px avatar
+  // 24px below the pane's top.
+  const youBox = (await page.locator('.dw-you').boundingBox())!;
+  const accountAvatar = (await page.locator('.dw-you__account .d-avatar').boundingBox())!;
+  expectAt(`B1 You's account starts 24px down at ${tag}`, accountAvatar.y - youBox.y, 24, 1);
+  expectAt(`B1 You's avatar is 56px at ${tag}`, accountAvatar.height, 56, 0.5);
   await expectTargets(page, tag, 'the you tab');
   await page.locator('[data-settings-section="index"]').click();
   const userSettings = settingsDialog(page);
@@ -697,8 +755,9 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true }).click();
   await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
   await expectTargets(page, tag, 'a user settings section');
-  await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-  await page.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+  await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+  await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.goBack();
   await expect(page).toHaveURL('/settings', { timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(userSettings).toBeHidden({ timeout: WAIT });
@@ -707,13 +766,13 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await openPath(page, serverPath);
   await toList();
   const serverSettingsOrigin = page.url();
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await expect(admin).toBeVisible({ timeout: WAIT });
   await expectTargets(page, tag, 'the server settings index');
   const side = (await boxes(page, '.d-settings-frame__side'))[0];
   expect.soft(side !== undefined, `the server settings index has its grouped navigation at ${tag}`).toBe(true);
-  const close = admin.locator('.d-settings-frame__bar').getByRole('button', { name: copy('settings.close'), exact: true });
+  const close = admin.getByRole('button', { name: copy('settings.close'), exact: true });
   await expect(close).toBeVisible({ timeout: WAIT });
   const closeBox = await close.boundingBox();
   const viewport = page.viewportSize();
@@ -725,8 +784,8 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await overview.click();
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings\/overview$/, { timeout: WAIT });
   await expectTargets(page, tag, 'a server settings section');
-  await expect(admin.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-  await admin.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+  await expect(admin.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+  await page.goBack();
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
   await close.click();
   await expect(admin).toBeHidden({ timeout: WAIT });
@@ -750,10 +809,10 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   const afk = nav(page).getByRole('button', { name: copy('voice.open', { name: 'AFK' }), exact: true });
   await expect(afk, 'the built-in AFK channel is a voice row').toBeVisible({ timeout: WAIT });
   await expectListGrammar(page, 'AFK 1440x900', '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list with the AFK row');
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nameRow = settings.locator('.d-settings-row').filter({ hasText: copy('admin.overview.name') });
-  const timeout = settings.locator('.d-settings-row').filter({ hasText: copy('afk.timeout.label') });
+  const timeout = settings.locator('.d-settings-row').filter({ hasText: copy('admin.overview.afk') });
   await expect(timeout, 'the AFK timeout is a settings row in the Overview').toBeVisible({ timeout: WAIT });
   const [nameBox, timeoutBox] = [await nameRow.boundingBox(), await timeout.boundingBox()];
   expect.soft(nameBox !== null && timeoutBox !== null && timeoutBox.y > nameBox.y, 'the timeout row stands under the name row').toBe(true);
@@ -764,7 +823,7 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   expectOne('A4 the Overview rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
   const save = settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true });
   await expect(save, 'a clean Overview has no Save footer').toHaveCount(0);
-  await settings.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true }).selectOption('900');
+  await settings.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true }).getByRole('radio', { name: copy('admin.overview.afk.900'), exact: true }).click();
   await expect(save, 'one Save appears in the shared footer after a setting changes').toHaveCount(1);
   expect.soft(await settings.getByRole('button', { name: copy('admin.overview.save'), exact: true }).count(), 'the shared footer owns the only Save').toBe(1);
   await save.click();
@@ -776,37 +835,49 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
 // (onboarding, sign-in), and the invites section is on the settings grammar.
 
 /** Every visible button, select and switch inside `root` (the whole page when omitted) is at least 44 high on a phone. */
-async function expectPhoneTargets(page: Page, what: string, root?: string): Promise<void> {
-  const found = await boxes(page, 'button, select, [role="switch"], a.d-btn', root);
-  expect.soft(found.length, `H4 ${what}: something to measure`).toBeGreaterThan(0);
-  for (const b of found) expect.soft(b.h, `H4 ${what}: "${b.t}" is ${b.h.toFixed(1)} high, want 44`).toBeGreaterThanOrEqual(44 - TOL);
+/**
+ * Signal task 10 (Jonas 2026-10-27, pixel parity): settings and the sign-in card keep the prototype's sizes on a phone, not the
+ * 44px tier. Each [selector, height] pair names a control and the height the prototype draws it (content plus its 1px edges).
+ */
+async function expectPrototypeSizes(page: Page, what: string, sizes: readonly (readonly [string, number])[], root?: string): Promise<void> {
+  for (const [selector, height] of sizes) {
+    const found = await boxes(page, selector, root);
+    expect.soft(found.length, `${what}: ${selector} is drawn`).toBeGreaterThan(0);
+    for (const b of found) expect.soft(Math.abs(b.h - height), `${what}: "${b.t}" (${selector}) is ${b.h.toFixed(1)} high, want ${height}`).toBeLessThanOrEqual(1);
+  }
 }
+/** The sign-in card: 40px fields and the 40px primary button. */
+const AUTH_SIZES = [['.d-onboarding-frame .d-text-field__input', 40], ['.d-onboarding-frame__footer .d-btn[data-variant="accent"]', 40]] as const;
+/** A settings button is 32 (30 of content); a device select and the push-to-talk key 38. Merge of Task 10b: the Voice page has
+ *  no .d-btn under voice activity; its Let's check is the prototype's 32px of content and its 1px border (34). */
+const SETTINGS_SIZES = [['.d-settings-frame__body .d-btn:not(.d-voice-settings__capture)', 32], ['.d-voice-settings__select', 38]] as const;
+const VOICE_SIZES = [['.d-voice-settings__check', 34], ['.d-voice-settings__select', 38]] as const;
 
-test('FA1: phone targets are 44 high outside the shell, and the invites section keeps the settings grammar', async ({ page }) => {
+test('FA1: phone controls outside the shell keep the prototype sizes, and the invites section keeps the settings grammar', async ({ page }) => {
   const h = started();
   await page.setViewportSize({ width: 390, height: 844 });
   const account = newAccount('Fia', h.control);
   const invite = h.invite.split(',')[0];
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await expect(page.getByRole('heading', { name: copy('onboarding.connect.title', { instance }), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'onboarding connect step at 390');
+  await expectPrototypeSizes(page, 'onboarding connect step at 390', AUTH_SIZES);
   await page.getByRole('button', { name: copy('onboarding.connect.signIn'), exact: true }).click();
   await expect(page.getByRole('heading', { name: copy('signin.login.title', { instance }), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'sign-in at 390');
+  await expectPrototypeSizes(page, 'sign-in at 390', AUTH_SIZES);
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await completeSignUp(page, account, instance);
 
-  for (const section of ['voice', 'devices', 'notifications'] as const) {
+  // Task 10 fix round 1: Notifications is four switch and segmented rows with no button, so voice and devices carry the sizes.
+  for (const section of ['voice', 'devices'] as const) {
     await page.goto(`/settings/${section}`);
-    await expect(page.locator('.d-settings-row, .d-voice-settings').first()).toBeVisible({ timeout: WAIT });
-    await expectPhoneTargets(page, `settings, ${section} at 390`);
+    // Task 10 fix round 1: Devices draws only device rows (no settings rows), so a device row also says the section is in.
+    await expect(page.locator('.d-settings-row, .d-voice-settings, .d-device-row').first()).toBeVisible({ timeout: WAIT });
+    await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? VOICE_SIZES : SETTINGS_SIZES.slice(0, 1));
   }
-  await page.goto('/settings/devices');
-  const refresh = page.getByRole('button', { name: copy('devices.refresh'), exact: true });
-  await expect(refresh).toBeVisible({ timeout: WAIT });
-  expect.soft((await refresh.boundingBox())?.height ?? 0, 'H4 the refresh button is 44 high on a phone').toBeGreaterThanOrEqual(44 - TOL);
+  // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
 
-  // The invites section on a desktop: rows of a label and a control column, as the Overview has them; then the link dialog's Copy at 390.
+  // The invites section on a desktop (Signal task 10c, merge s1+10c): the prototype's Invites card, two choices side by side (Expires
+  // after, Max uses), each a small label over its segmented control; then the card's Copy at 390.
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
   await expect(page.locator('.d-app-shell')).toBeVisible({ timeout: WAIT });
@@ -816,25 +887,23 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   await page.keyboard.press('Enter');
   await expect(start).toBeHidden({ timeout: WAIT });
   await expectComposerReady(page, 'general');
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
-  const rows = admin.locator('.d-settings-frame__body .d-settings-row');
-  await expect(rows.first(), 'I1 the invites section is on SettingsRow').toBeVisible({ timeout: WAIT });
-  expect.soft(await rows.count(), 'I1 expires after and max uses are two settings rows').toBe(2);
+  const choices = admin.locator('.d-invite-panel__choice');
+  await expect(choices.first(), 'I1 the invites section is the Invites card').toBeVisible({ timeout: WAIT });
+  expect.soft(await choices.count(), 'I1 expires after and max uses are two choices').toBe(2);
   expect.soft(await admin.locator('.d-select__label').count(), 'I1 no stacked micro-uppercase label is left').toBe(0);
-  const labels = await boxes(page, '.d-settings-row__label', '.d-settings-frame__body');
-  expectOne('I1 the invites rows share one label x', labels.map(b => b.x), labels.map(b => b.t));
-  const controls = await boxes(page, '.d-settings-row__control', '.d-settings-frame__body');
-  expectOne('I1 the invites rows share one control x', controls.map(b => b.x), controls.map(b => b.t));
-  expectOne('I1 the invites rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
+  const labels = await boxes(page, '.d-invite-panel__label', '.d-invite-panel__card');
+  expectOne('I1 the two choice labels share one top', labels.map(b => b.y), labels.map(b => b.t));
+  const controls = await boxes(page, '.d-invite-panel__choice > :last-child', '.d-invite-panel__card');
   expect(controls.length).toBe(labels.length);
-  for (const [index, c] of controls.entries()) {
-    expectAt(`I1 the control column "${c.t}" balances its label column`, c.w, labels[index]!.w, 1);
-    expect.soft(c.w, 'I1 fullscreen controls have room beyond the compact 16rem column').toBeGreaterThanOrEqual(320);
+  for (const [i, label] of labels.entries()) {
+    expect(Math.abs(controls[i].x - label.x), `I1 ${label.t}: the control starts under its label`).toBeLessThan(1);
+    expect(controls[i].y, `I1 ${label.t}: the control sits below its label`).toBeGreaterThanOrEqual(label.b);
   }
 
-  // On a phone: the same section, its selects, its make button and the link dialog's Copy are 44 high.
+  // On a phone: the same section's buttons and the link dialog's field and Copy keep the prototype's sizes (32; 36 and 36).
   await page.keyboard.press('Escape');
   await expect(admin).toBeHidden({ timeout: WAIT });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -842,15 +911,27 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
   if (await back.isVisible().catch(() => false)) await back.click();
   await expect(page.locator('.d-app-shell')).toHaveAttribute('data-pane', 'list', { timeout: WAIT });
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
-  await expect(admin.getByRole('button', { name: copy('admin.invites.create'), exact: true })).toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'server settings, invites at 390', '.d-settings-frame__body');
-  await admin.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-  const link = page.locator('.d-invite-link');
-  await expect(link.locator('button').first(), 'the link dialog shows its Copy').toBeVisible({ timeout: WAIT });
-  await expectPhoneTargets(page, 'the invite link dialog at 390', '.d-invite-link');
+  await expect(admin.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true })).toBeVisible({ timeout: WAIT });
+  // Signal task 10c: the Invites card has no .d-btn; its accent "Make invite link" is the prototype's 36px button.
+  await expectPrototypeSizes(page, 'server settings, invites at 390', [['.d-invite-panel__make', 36]]);
+  await admin.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+  // Signal task 10c: the link shows once in the Invites card: a 38px field (36px and its 1px ring) beside a 36px Copy.
+  await expect(admin.getByRole('button', { name: copy('serverSettings.invites.copy'), exact: true }), 'the card shows its Copy').toBeVisible({ timeout: WAIT });
+  await expectPrototypeSizes(page, 'the invite link at 390', [['.d-invite-panel__link', 38], ['.d-invite-panel__made .d-invite-panel__primary', 36]]);
+
+  // Task 11 (merge 9+10 minor): with a server selected, Notifications has its segmented choice and no button, so the choice
+  // carries the size there: each option is the prototype's 26px (README §5.9; the Sg option's height:26px), not 44px.
+  await page.keyboard.press('Escape');
+  await expect(admin).toBeHidden({ timeout: WAIT });
+  // Opened from the app (You → Open settings), so Settings knows the server; a reload of /settings/notifications would not.
+  await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
+  await page.getByRole('button', { name: copy('you.settings'), exact: true }).click();
+  await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
+  await expect(page.locator('.d-settings-frame__body .d-segmented__option').first()).toBeVisible({ timeout: WAIT });
+  await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
 });
 
 
@@ -910,12 +991,11 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await dmsNav(page).getByRole('button', { name: /^Cy/ }).click();
     await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
     const header = (await boxes(page, '.d-channel-header'))[0];
-    await expect.soft(page.locator('.d-channel-header').getByRole('button', { name: copy('call.start'), exact: true }), 'N1 the call is a button in the DM header').toBeVisible({ timeout: WAIT });
-    const callBox = (await boxes(page, '.d-channel-header button[aria-label]')).find(b => b.t === copy('call.start'));
-    if (header !== undefined && callBox !== undefined) {
-      expect.soft(callBox.y >= header.y - TOL && callBox.b <= header.b + TOL && callBox.r <= header.r + TOL, 'N1 the call button stands inside the header').toBe(true);
-      expect.soft(callBox.w, 'N1 the call is an icon, not a text button').toBeLessThanOrEqual(44 + TOL);
-    }
+    // Ruling Z (Jonas 2026-10-27): the DM header is the prototype's (name and topic); the call is the DM row's menu item.
+    await expect.soft(page.locator('.d-channel-header').getByRole('button'), 'N1 the DM header has no buttons').toHaveCount(0);
+    await dmsNav(page).getByRole('button', { name: /^Cy/ }).click({ button: 'right' });
+    await expect.soft(page.getByRole('menuitem', { name: copy('call.start'), exact: true }), 'N1 the call is in the DM row menu').toBeVisible({ timeout: WAIT });
+    await page.keyboard.press('Escape');
     expect.soft((await boxes(page, '.dw-call-strip')).map(b => b.h), 'N1 no band under the header: the call strip is collapsed').toEqual((await boxes(page, '.dw-call-strip')).map(() => 0));
     const log = (await boxes(page, '[role="log"]'))[0];
     if (header !== undefined && log !== undefined) expect.soft(log.y - header.b, 'N1 the log starts directly under the header').toBeLessThanOrEqual(8);
@@ -959,11 +1039,11 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
     await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
     await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
-    const phoneJoin = cy.locator('.dw-voice-join');
+    const phoneJoin = cy.locator('.d-call-stage__join');
     await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
-    await expectReminderInbox(cy, 'joined voice at 390x844');
+    await expectNoPhoneReminders(cy, 'joined voice at 390x844');
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];
     const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
     expect.soft(tabs !== undefined && controls !== undefined, 'D4 the voice controls and tab bar are on screen').toBe(true);
@@ -983,7 +1063,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 // with sign out; one phone settings entry point and an index/back traversal; the admin reorder as arrow icon buttons with truncated names; privacy
 // "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in all three themes where the surface is new.
 
-const THEMES = ['mesh', 'light', 'high-contrast'] as const;
+const THEMES = ['signal', 'light', 'high-contrast'] as const;
 async function expectAccessibleInThemes(page: Page, state: string): Promise<void> {
   const before = await page.evaluate(() => document.documentElement.dataset.theme ?? '');
   try {
@@ -1039,12 +1119,14 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
       expect.soft(text, 'J1 the result shows a time').toMatch(/\d{1,2}:\d{2}/);
       const own = (await page.getByRole('option', { name: /lamp from Cleo/ }).innerText()).replace(/\s+/g, ' ');
       expect.soft(own, 'J1 the own result names its author').toContain('Cleo');
-      const hints = await boxes(page, '.d-search-palette__hints .d-keyhint');
-      expect.soft(hints.map(k => k.t), 'J1 the footer lists the three keys').toEqual([`↑↓${copy('layout.search.hint.move')}`, `↵${copy('layout.search.hint.open')}`, `esc${copy('layout.search.hint.close')}`]);
+      // Task 9 (Signal §5.8): the footer is the prototype's "↑↓ move  ↵ open … Searches messages held in this browser"; esc is the input row's cap.
+      const hints = await boxes(page, '.d-search-palette__hints > span');
+      expect.soft(hints.map(k => k.t), 'J1 the footer lists the keys').toEqual([`↑↓ ${copy('layout.search.hint.move')}`, `↵ ${copy('layout.search.hint.open')}`]);
+      await expect.soft(page.locator('.d-search-palette__note')).toHaveText(copy('search.note'));
       const list = (await boxes(page, '.d-search-palette [role="listbox"]'))[0];
       const dialog = (await boxes(page, '.d-search-palette'))[0];
       expect.soft(hints.length > 0 && list !== undefined && hints[0].y >= list.b - TOL, 'J1 the footer stands under the results').toBe(true);
-      expect.soft(dialog?.w ?? 999, 'J1 the palette is at most 40rem (640)').toBeLessThanOrEqual(640 + TOL);
+      expect.soft(dialog?.w ?? 999, 'J1 the palette is at most 600px (Signal §5.8)').toBeLessThanOrEqual(600 + TOL);
       const meta = (await boxes(page, '.d-search-palette__meta'))[0];
       expect.soft(meta !== undefined && meta.h < 24, `J1 the meta line is one line (${String(meta?.h)})`).toBe(true);
     });
@@ -1053,7 +1135,7 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     await expect(page.locator('dialog.d-search-palette-dialog')).toBeHidden({ timeout: WAIT });
 
     // I6: move up/down are 32px arrow icon buttons in trailing slots; one right edge; the long name is cut to one line.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.channels'), exact: true }).click();
     await expect(admin.locator('.dw-admin-row').first()).toBeVisible({ timeout: WAIT });
@@ -1066,9 +1148,12 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
         expect.soft(glyphs, `I6 every move ${kind} is an icon`).toBe(all.length);
       }
       expect.soft(await admin.locator('[data-move]').evaluateAll(els => els.map(e => (e.textContent ?? '').trim()).filter(Boolean)), 'I6 the moves carry no visible text').toEqual([]);
+      // Task 10 (README §5.9): ManageList rows are the prototype's 48 (8px 16px around the 32px slots) in one hairline group; a row
+      // under another carries the 1px hairline, so heights are 48 or 49 and the row pitch is one value.
       const rows = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
-      expectOne('I6 every channel row is as high as the others', rows.map(b => b.h), rows.map(b => b.t));
-      expect.soft(rows[0]?.h ?? 99, 'I6 the long-named row is 44 high, not wrapped').toBeLessThanOrEqual(44.5);
+      const ownH = (bs: readonly { h: number }[]) => bs.map(b => Math.floor(b.h));
+      expect.soft(Math.max(...ownH(rows)) - Math.min(...ownH(rows)), 'I6 every channel row is as high as the others (hairline aside): ' + rows.map(b => b.t + '=' + b.h.toFixed(1)).join(' | ')).toBeLessThanOrEqual(1);
+      expect.soft(rows[0]?.h ?? 99, 'I6 the long-named row is 48 high (+1 hairline), not wrapped').toBeLessThanOrEqual(49.5);
       const trail = await boxes(page, '.dw-admin-row .d-manage-list__trail', '.d-settings-frame__body');
       expectOne('I6 the trailing icons share one right edge', trail.map(b => b.r), trail.map(b => b.t));
       // The longest name fits a wide dialog; at a phone's width it must be cut to one line, with the row still 44 high.
@@ -1082,8 +1167,8 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
       const cut = await name.evaluate(e => ({ h: e.getBoundingClientRect().height, ellipsis: getComputedStyle(e).textOverflow, ws: getComputedStyle(e).whiteSpace, row: e.closest('.dw-admin-row')?.getBoundingClientRect().height ?? 0 }));
       expect.soft(cut.h, 'I6 the long name is one line high at 390').toBeLessThan(26);
       const rowsPhone = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
-      expectOne('I6 every channel row is as high as the others at 390 (one line each)', rowsPhone.map(b => b.h), rowsPhone.map(b => b.t));
-      expect.soft(cut.row, 'I6 the long-named row is one line plus the 44 slots (<= 54) at 390').toBeLessThanOrEqual(54);
+      expect.soft(Math.max(...ownH(rowsPhone)) - Math.min(...ownH(rowsPhone)), 'I6 every channel row is as high as the others at 390 (one line each): ' + rowsPhone.map(b => b.t + '=' + b.h.toFixed(1)).join(' | ')).toBeLessThanOrEqual(1);
+      expect.soft(cut.row, 'I6 the long-named row is the 44 slots plus the 8px paddings and a hairline (<= 61) at 390').toBeLessThanOrEqual(61);
       expect.soft(cut.ellipsis === 'ellipsis' && cut.ws === 'nowrap', `I6 the long name is cut with an ellipsis (${JSON.stringify(cut)})`).toBe(true);
       const trailPhone = await boxes(page, '.dw-admin-row .d-manage-list__trail', '.d-settings-frame__body');
       expectOne('I6 the trailing icons share one right edge at 390', trailPhone.map(b => b.r), trailPhone.map(b => b.t));
@@ -1113,22 +1198,23 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
     const settingsEntry = page.locator('[data-settings-section="index"]');
     await expect(settingsEntry).toBeVisible({ timeout: WAIT });
-    await expect(settingsEntry).toContainText(copy('workspace.open'));
+    await expect(settingsEntry).toContainText(copy('you.settings'));
     await expect(page.locator('[data-settings-section]')).toHaveCount(1);
     await expectAccessibleInThemes(page, 'the You tab');
     await settingsEntry.click();
     const phoneSettings = settingsDialog(page);
     await expect(phoneSettings).toBeVisible({ timeout: WAIT });
     await expect(page).toHaveURL('/settings', { timeout: WAIT });
-    await expect(phoneSettings.locator('.d-settings-frame__bar').getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
+    await expect(phoneSettings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toBeVisible();
     await phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).click();
     await expect(page).toHaveURL('/settings/privacy', { timeout: WAIT });
-    await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toBeVisible();
-    await expect(phoneSettings.locator('.d-settings-frame__nav')).toBeHidden();
+    // Task 10 (README §5.10): chips above the section, no Back.
+    await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+    await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
     await expectAccessibleInThemes(page, 'a phone settings section');
-    await phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true }).click();
+    await page.goBack();
     await expect(page).toHaveURL('/settings', { timeout: WAIT });
     await expectAccessibleInThemes(page, 'the phone settings index');
     await page.keyboard.press('Escape');
@@ -1167,7 +1253,7 @@ test('FB1, FB2: the desktop Home title is not the server name; a file card stack
   const channelPath = new URL(page.url()).pathname;
   await homeTile(page).click();
   const title = dmsNav(page).getByRole('heading', { level: 1 });
-  await expect.soft(title, 'FB1 the Home sidebar is titled for the direct messages').toHaveText(copy('shell.dms.label'), { timeout: WAIT });
+  await expect.soft(title, 'FB1 the Home sidebar is titled for the direct messages').toHaveText(copy('shell.dms.title'), { timeout: WAIT });
   await expect.soft(title, 'FB1 not the server name').not.toHaveText('Vanaheim');
 
   await page.setViewportSize({ width: 360, height: 740 });
@@ -1244,12 +1330,11 @@ test('FC: the save button of a file card beside an image is not clipped at 1280 
     const row = messageRow(page, 'general', text);
     const save = row.getByRole('button', { name: copy('shell.attachment.save', { name: 'loot-list.txt' }), exact: true });
     await expect(save, `${tag} the save button is named for the file`).toBeVisible({ timeout: WAIT });
-    await expect.soft(save, `${tag} its visible text is just the save word`).toHaveText(copy('media.save'));
-    const clip = await save.evaluate(e => ({ sw: e.scrollWidth, cw: e.clientWidth }));
-    expect.soft(clip.sw, `${tag} the save text is not clipped (scrollWidth ${String(clip.sw)} > clientWidth ${String(clip.cw)})`).toBeLessThanOrEqual(clip.cw);
+    // Task 7 (§6.8): the prototype's 28px download icon; its word is the tooltip, its name the file's.
+    await expect.soft(save, `${tag} its tooltip is the save word`).toHaveAttribute('title', copy('media.save'));
     const log = (await boxes(page, '[role="log"]'))[0];
     const card = (await boxes(page, '.d-attachment-card[data-kind="file"]'))[0];
-    const btn = (await boxes(page, '.d-attachment-card__file .d-attachment-card__save'))[0];
+    const btn = (await boxes(page, '.d-attachment-card__file .d-attachment-card__download'))[0];
     expect(log !== undefined && card !== undefined && btn !== undefined, `${tag} the log, the file card and its save are drawn`).toBe(true);
     if (log === undefined || card === undefined || btn === undefined) return;
     expect.soft(card.r, `${tag} the card is not wider than the log`).toBeLessThanOrEqual(log.r + TOL);
@@ -1259,7 +1344,7 @@ test('FC: the save button of a file card beside an image is not clipped at 1280 
   await measure('1280');
 
   await page.setViewportSize({ width: 1024, height: 768 });
-  const toggle = page.locator('.d-channel-header').getByRole('button', { name: copy('members.toggle'), exact: true });
+  const toggle = membersToggle(page);
   if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
   await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
   await measure('1024 with the members aside');

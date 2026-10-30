@@ -1,5 +1,5 @@
 import { SettingsFrame, PhoneLayoutProvider } from '@dilla/ui';
-import { goBack, routeOf, useRoute, type SettingsSection } from '../router.ts';
+import { routeOf, useRoute, type ServerSettingsSection, type SettingsSection } from '../router.ts';
 import { phoneNow, usePhoneLayout } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
@@ -12,7 +12,6 @@ import { Privacy } from './settings/Privacy.tsx';
 import { Diagnostics } from './settings/Diagnostics.tsx';
 import { Keyboard } from './settings/Keyboard.tsx';
 import { Voice } from './settings/Voice.tsx';
-import { SignOutAction } from './settings/SignOut.tsx';
 import { useSlice } from '../core/use-slice.ts';
 import { useCore } from '../core/context.tsx';
 import { errorOf } from '../core/errors.ts';
@@ -37,20 +36,24 @@ function compareState(record: TrustSummary): 'first-seen' | 'changed' | 'verifie
   return record.unlisted === true ? 'unlisted' : record.verified ? 'verified' : 'first-seen';
 }
 
-export interface SettingsProps { activity?: ReactNode; activityVisible?: boolean }
+export interface SettingsProps {
+  activity?: ReactNode; activityVisible?: boolean;
+  /** The selected server, whose group follows "You" in the nav (Signal task 10 fix round 1); null with none. */
+  communityId?: string | null;
+}
 
 /** Section metadata shared with the phone's You tab. */
 export const NAV: readonly { id: SettingsSection; key: StringKey }[] = SETTINGS_REGISTRY.filter(entry => entry.scope === 'user')
   .map(entry => ({ id: entry.id as SettingsSection, key: entry.labelKey }));
 
 /** Full user settings workspace. Only the active section is mounted. */
-export function Settings({ activity, activityVisible }: SettingsProps = {}): React.JSX.Element {
+export function Settings({ activity, activityVisible, communityId = null }: SettingsProps = {}): React.JSX.Element {
   const [route] = useRoute();
   if (route.name !== 'settings') return <></>;
-  return <SettingsEditProvider><SettingsWorkspaceScreen activity={activity} activityVisible={activityVisible} /></SettingsEditProvider>;
+  return <SettingsEditProvider><SettingsWorkspaceScreen activity={activity} activityVisible={activityVisible} communityId={communityId} /></SettingsEditProvider>;
 }
 
-function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): React.JSX.Element {
+function SettingsWorkspaceScreen({ activity, activityVisible, communityId = null }: SettingsProps): React.JSX.Element {
   const [route, navigate] = useRoute();
   const phone = usePhoneLayout();
   const client = useCore();
@@ -63,9 +66,10 @@ function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): 
   const [anchor, setAnchor] = useState<string | null>(null);
   const focusHeading = useRef(false);
   const section = route.name === 'settings' ? route.section : null;
+  // README §5.10 (Signal task 10 fix round 1): no index page on a phone either; /settings opens Profile, as the prototype's
+  // You tab does, with the nav's chips above it.
   const activeSection: UserSettingsSection = section ?? 'profile';
-  const phoneIndex = phone && section === null;
-  const contentRef = useSettingsFocus(phoneIndex ? null : activeSection, anchor);
+  const contentRef = useSettingsFocus(activeSection, anchor);
   const compareUser = route.name === 'settings' ? route.compare ?? null : null;
   const compared = useRef<string | null>(null);
 
@@ -108,27 +112,24 @@ function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): 
     setAnchor(targetAnchor);
     if (id !== 'privacy') setComparison(null);
     const next = { name: 'settings', section: id as SettingsSection, from } as const;
-    if (phoneNow()) void navigate(next, false, { phoneBack: phoneIndex });
+    if (phoneNow()) void navigate(next, false);
     else void navigate(next, true);
+  };
+  const selectServer = (id: string) => {
+    if (communityId === null) return;
+    setComparison(null);
+    const next = { name: 'serverSettings', communityId, section: id as ServerSettingsSection, from } as const;
+    void navigate(next, !phoneNow());
   };
   const close = () => {
     setComparison(null);
     void navigate(from === null ? { name: 'root' } : routeOf(from), true);
   };
-  const back = () => {
-    const index = { name: 'settings', section: null, from } as const;
-    goBack(index, navigate, index);
-  };
-  const identity = account?.user ? <div className="dw-settings-identity">
-    <strong>{account.user.display || account.user.username}</strong>
-    <span>{t('workspace.username', { username: account.user.username })}</span>
-  </div> : null;
-  const nav = <SettingsNavigation scope="user" activeId={activeSection} onSelect={select} />;
-  const signOut = <div className="dw-settings-signout"><SignOutAction label={t('workspace.signOut')} /></div>;
-  const sectionContent = phoneIndex ? null : activeSection === 'profile' ? <Profile />
+  const nav = <SettingsNavigation active={{ scope: 'user', id: activeSection }} communityId={communityId} onUser={id => select(id)} onServer={selectServer} />;
+  const sectionContent = activeSection === 'profile' ? <Profile />
     : activeSection === 'devices' ? <Devices />
       : activeSection === 'signin' ? <SignInFactors announce={announce} live={announcement} />
-        : activeSection === 'notifications' ? <Notifications />
+        : activeSection === 'notifications' ? <Notifications communityId={communityId} />
           : activeSection === 'appearance' ? <Appearance />
             : activeSection === 'voice' ? <Voice />
               : activeSection === 'privacy' ? <Privacy records={records} onCompare={compare} />
@@ -137,9 +138,8 @@ function SettingsWorkspaceScreen({ activity, activityVisible }: SettingsProps): 
                     instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />;
 
   return <PhoneLayoutProvider value={phone}><SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
-    nav={signOut} identity={identity} search={nav} phonePage={phoneIndex ? 'index' : 'section'}
-    sectionTitle={t(`workspace.${activeSection}`)} backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={back}
-    contentRef={contentRef} wide={activeSection === 'devices' || activeSection === 'privacy' || activeSection === 'diagnostics'}
+    nav={nav} phonePage="section"
+    contentRef={contentRef} wide={activeSection === 'privacy' || activeSection === 'diagnostics'}
     overlays={workspace?.confirmation} activity={activity} activityVisible={activityVisible} footer={workspace?.footer}>
     {sectionContent}
 

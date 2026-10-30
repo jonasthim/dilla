@@ -5223,6 +5223,17 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     expect(w.routes.patchDevice).not.toHaveBeenCalled();
   });
 
+  it('Task S1 fix round 1: a wire-4 head (five elements) revokes with its four-element chain row, never the raw head', async () => {
+    const w = world();
+    await toReady(w);
+    const head5 = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32), new Uint8Array([0x84])]);
+    w.routes.getDeviceList.mockImplementation(() => Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw: head5 }));
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.core.deviceListRevoke).toHaveBeenCalledWith(expect.objectContaining({
+      listBody: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) }));
+  });
+
   it('signOutRevoke writes the state object, stops the engine and the gateway, publishes the list, then wipes to cleared', async () => {
     const w = world();
     await toReady(w);
@@ -6786,7 +6797,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
       [106, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'x'.repeat(101) }],
       [107, { m: 'createChannel', communityId: 'C0'.repeat(16), kind: 'text', name: 'x' }],
       [108, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: ' ' }],
-      [109, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 0, ttlSeconds: 60 }],
+      [109, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: -1, ttlSeconds: 60 }],
       [110, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 30 * 24 * 3600 + 1 }],
       [111, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: '10', ttlSeconds: 60 }],
     ];

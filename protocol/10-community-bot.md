@@ -46,6 +46,7 @@ Operation, arguments, channel requirement, mutation:
 - 22 music.move: [queue_item_id, before_item_id|null], channel required, mutation
 - 23 music.clear: [], channel required, mutation
 - 24 music.providers.status: [], no channel, read; returns a fresh bounded provider snapshot
+- 25 music.announce: [text_channel_id], channel required (the voice channel), mutation, revision must be 0
 - 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read; requires current `manage_community` and returns data `[1, rendered_text]` using the sample references `member`, `server`, and `channel` without posting
 - 31 roles.panel.publish: [destination_channel_id, mappings_bstr], no interaction channel, mutation; requires current `manage_roles`, ready Roles-capable Bot, and a readable destination; sends a normal Bot-authored encrypted text message through the send coordinator and returns `[destination_channel_id, accepted_message_seq]` only after its accepted send receipt
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
@@ -268,6 +269,40 @@ search and enqueue remain unavailable until separately qualified. The existing
 YouTube resolver accepts only its bounded search/video/playlist grammar and
 runs extraction in its public-YouTube-only network sandbox; arbitrary extractor
 syntax and other hosts are rejected.
+
+`music.state` data is `[1, revision, current_track|null, queue, position_ms,
+paused, volume, shuffle, repeat, can_control, position_at_ms, now_ms]`. The last
+two slots: the Bot's Unix milliseconds at which `position_ms` was the playhead
+(0 unknown) and the Bot's Unix milliseconds when it answered. While a track
+plays, a client shows `position_ms + (now_ms - position_at_ms)` plus its own
+time since receipt, clamped to the track; it never compares its clock with the
+Bot's. The Bot settles the reached playhead at every mutation and restarts it at
+0 when a provider starts a track (providers start from the beginning; `seek` is
+validated and acknowledged but moves nothing until a provider applies seeks).
+Readers accept arrays of at least 10 slots (and track tuples of at least 8),
+read the stamp only when slots 10 and 11 are present, and ignore later slots.
+Reading the state requires the actor's current View channel permission on the
+voice channel, resolved with its overrides.
+
+`music.announce` posts the one public "started music" message: body
+`Music started.\n[dilla-music:v1:<voice_channel>:<requester>:<queue_item>]`,
+sent through the Bot's MLS group with a durable receipt, into the named text
+channel's group. The Bot accepts it only from the requester of the current,
+playing track that started at most 30 seconds ago, who may DJ in that call and
+whose effective permissions in the named text channel (overrides included, no
+owner/administrator shortcut) allow view, send and read history; at most one new
+track per requester per minute. The operation id derives from (community, voice
+channel, queue item), so a repeat resumes the first message instead of posting
+again. A conflict between live and stored state answers 4. Clients draw the live
+card only for an unedited message from the community's managed Bot account
+(member kind 1) and only while that queue item plays. Text other members author
+for the Bot to post (announcements, welcome messages, role panels) has
+`[dilla-music:` neutralized.
+
+Upgrade order for this change: update `dillad` and its web client first, reload
+open tabs, then update `dillabot`. A web client from before it rejects a snapshot
+longer than 10 slots; a Bot from before it refuses operation 25 (no announcement
+appears).
 
 ## Signed moderation removal
 
@@ -908,23 +943,67 @@ capability's corresponding permission and role ceiling. A bit alone never grants
 new authority to the runtime or bot account.
 
 Capabilities are a uint bitmask: bit0 music,1 welcomes,2 roles,3 announcements,
-4 warnings/timeouts,5 message removal,6 kick,7 ban. Unknown bits fail. Enabled
-capabilities are approved constraints in addition to normal current permissions.
-Default automation actions are log-only; automatic bans are unavailable.
+4 warnings/timeouts,5 message removal,6 kick,7 ban, 8 polls, 9 reminders. Unknown
+bits fail. Enabled capabilities are approved constraints in addition to normal
+current permissions. Default automation actions are log-only; automatic bans are
+unavailable. Polls and reminders (bits 8 and 9) need no community permission and
+gate only creation (`poll.create`, op 70, and `reminder.create`, op 80): with the
+bit off, op 3 omits the create operation, so `/poll` or `/remind` leaves the
+picker, and the Bot refuses a create with status 5 after reading the
+installation's current mask. Every other poll and reminder operation stays:
+existing polls can still be voted on and closed, and members still list, cancel,
+dismiss and receive due reminders. Installations from before the bits existed
+have both on (migration 00050), which is how they behaved.
 
 `installation = [installation_id, community_id, state, revision, bot_user|null,
  bot_device|null, capabilities, updated_at]`; state uses the structural event enum.
+The manager's read (`GET /v1/communities/{community}/bot`) and a runtime that asks
+for `GET /v1/bot-runtime/installations?v=2` get the widened installation: those
+eight fields followed by `[restart_requested, restart_handled,
+runtime_version|null, music_volume, music_idle_minutes]`. A runtime that does not
+ask for `v=2`, and every Bot-session credential or ready answer, gets the eight
+fields with only the original capability byte (bits 0..7), which every runtime
+parses. A runtime that asked for `v=2` and still gets eight fields is talking to
+a server that predates bits 8 and 9; it treats Polls and Reminders as on, as that
+server has no switch for them.
+
+**Restart.** `POST /v1/communities/{community}/bot/restart` (manage_community)
+counts a restart request on the installation and is audited (`bot.restart`). A
+request while an earlier one is still unhandled joins it, so a double click or
+a repeat restarts once. The runtime sees `restart_requested` above what it last
+honoured on its next poll, tears down everything it holds for the installation
+(native helper, music queues and voice rooms, automatic moderation state,
+gateway connection) and builds them again from durable state. Pending
+interaction results recover through the usual durable outbox. A runtime that
+starts counts any pending request as honoured: starting is the restart. It then
+reports `PUT /v1/bot-runtime/installations/{installation}/status` (R, owning
+runtime) with `[version|null, restart_handled]`: `version` is its build string
+(1..32 of `[0-9A-Za-z.+_-]`), and `restart_handled` is stored as at most
+`restart_requested` and never goes backwards. A runtime that never reports
+leaves `runtime_version` null, and clients show no version.
+
+**Music defaults.** `PUT /v1/communities/{community}/bot/music-settings`
+(manage_community, audited `bot.music_settings`) stores the default volume (25,
+50, 75 or 100) and the idle-leave time (5, 15 or 30 minutes). Installations from
+before them have 100 and 30, which is today's behaviour. The Bot applies them
+and enforces the same options itself: any other value, or a server that does
+not send them, is 100 and 30. A new session (a track enqueued while nothing
+plays or waits) starts at the default volume. Once nothing has played for the
+idle time (paused, stopped or the queue finished), the Bot leaves the voice
+room. Playing again cancels the timer, and the next explicit play reconnects.
+The room's absolute 30-minute connection lifetime still applies.
 A single non-removed installation exists per community; repeat enable with the
 same request id and payload returns the original result. Removed installations
 are never reactivated; a new enable creates a new identity and installation id.
-Soft disable retains the installation ID and its DJ role approvals, but the DJ
-role policy routes stay unavailable while the installation is disabled or
-re-enrolling. Explicitly enabling that same installation and returning it to
-ready makes the saved approvals available again. Permanent removal tombstones
-the old installation; a later installation does not inherit its policy.
+Soft disable retains the installation ID. Who may DJ is not installation
+state: it is the `control_music` role permission (09 § Permissions), so it
+survives disable, re-enable and replacing the installation.
 
-Music playback controls require current community owner/administrator authority
-or an approved DJ role, plus membership in the target's current voice call. The
+Music playback controls require `view_channel` and `control_music` in the
+target call's voice channel, resolved now by the server with that channel's
+overwrites (`GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority`;
+owners and administrators resolve to every bit), plus membership in the
+target's current voice call. The
 Bot must retain connect and speak permissions and an active, ready Music-enabled
 installation. These checks run again before a queue mutation is committed,
 including after provider lookup. Owners and administrators may additionally
@@ -943,10 +1022,13 @@ restore that right. The music publisher also disables automatic subscriptions.
 | --- | --- | --- | --- |
 | `GET /v1/communities/{community}/bot` | E, manage_community | — | installation or CBOR null when absent |
 | `PATCH /v1/communities/{community}/bot/profile` | E, manage_community | `[display_name]` | `[normalized_display_name]`; only the managed bot account's display name changes |
-| `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing |
+| `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing. With `v=2` the mask is the full ten bits and is stored as sent. Without it the mask may name only bits 0–7 (400 otherwise); bits 8 (Polls) and 9 (Reminders) keep their current value, and a new installation starts with both on. The request hash covers `v=2`. |
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
-| `GET /v1/bot-runtime/installations` | R | — | array of installation tuples, at most 100; `after` is last returned installation id |
+| `POST /v1/communities/{community}/bot/restart` | E, manage_community | `[installation_id]` | `[restart_requested, restart_handled]`; 409 for another, disabled or runtime-less installation |
+| `PUT /v1/communities/{community}/bot/music-settings` | E, manage_community | `[installation_id, volume, idle_minutes]` | widened installation; 400 off the options, 409 for another installation |
+| `GET /v1/bot-runtime/installations` | R | — | array of installation tuples, at most 100; `after` is last returned installation id; `v=2` asks for the widened tuple |
+| `PUT /v1/bot-runtime/installations/{installation}/status` | R, owning runtime | `[version|null, restart_handled]` | 204; 404 for an installation this runtime does not own |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation_id, claim_id, claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |
@@ -959,7 +1041,6 @@ restore that right. The music publisher also disables automatic subscriptions.
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
 | `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B, ready, wire 3 | — | CBOR boolean; true only while the matching admission is live and its exact group ID is absent |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
-| `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B, ready, Music capability | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current approved DJ roles, `Cache-Control: no-store` |
 | `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer

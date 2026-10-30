@@ -14,14 +14,25 @@ import (
 const commandCapabilitiesDataLimit = 2400
 
 const (
-	commandCapMusic         uint8 = 1 << 0
-	commandCapWelcome       uint8 = 1 << 1
-	commandCapRoles         uint8 = 1 << 2
-	commandCapAnnouncements uint8 = 1 << 3
-	commandCapWarnings      uint8 = 1 << 4
-	commandCapRemoval       uint8 = 1 << 5
-	commandCapKick          uint8 = 1 << 6
-	commandCapBan           uint8 = 1 << 7
+	commandCapMusic         uint16 = 1 << 0
+	commandCapWelcome       uint16 = 1 << 1
+	commandCapRoles         uint16 = 1 << 2
+	commandCapAnnouncements uint16 = 1 << 3
+	commandCapWarnings      uint16 = 1 << 4
+	commandCapRemoval       uint16 = 1 << 5
+	commandCapKick          uint16 = 1 << 6
+	commandCapBan           uint16 = 1 << 7
+	// Task 10c: creating polls and reminders. Off removes /poll and /remind from the picker; the
+	// other poll and reminder operations stay, so existing ones keep working.
+	commandCapPolls     uint16 = 1 << 8
+	commandCapReminders uint16 = 1 << 9
+)
+
+// CommandCapPolls and CommandCapReminders are the installation capability bits that gate
+// creating polls and reminders (Task 10c).
+const (
+	CommandCapPolls     = commandCapPolls
+	CommandCapReminders = commandCapReminders
 )
 
 const (
@@ -40,7 +51,7 @@ type CommandCapabilitiesInteractions struct {
 	CommunityID    id.ID
 	InstallationID id.ID
 	BotUserID      id.ID
-	Capabilities   uint8
+	Capabilities   uint16
 	Supported      []protocol.Operation
 }
 
@@ -83,7 +94,7 @@ func (h CommandCapabilitiesInteractions) get(ctx context.Context, actor Interact
 	return InteractionResult{Status: 0, Data: data}, nil
 }
 
-func commandOperationAllowed(operation protocol.Operation, capabilities uint8, actor client.ActorAuthority) bool {
+func commandOperationAllowed(operation protocol.Operation, capabilities uint16, actor client.ActorAuthority) bool {
 	const manager = commandPermManageCommunity
 	if actor.Owner || actor.Administrator {
 		actor.EffectiveBits |= manager | commandPermManageRoles | commandPermViewAuditLog | commandPermManageMessages
@@ -99,7 +110,7 @@ func commandOperationAllowed(operation protocol.Operation, capabilities uint8, a
 	case protocol.OpMusicState, protocol.OpMusicSearch, protocol.OpMusicEnqueue,
 		protocol.OpMusicPause, protocol.OpMusicResume, protocol.OpMusicSkip, protocol.OpMusicStop,
 		protocol.OpMusicSeek, protocol.OpMusicVolume, protocol.OpMusicShuffle, protocol.OpMusicRepeat,
-		protocol.OpMusicRemove, protocol.OpMusicMove, protocol.OpMusicClear:
+		protocol.OpMusicRemove, protocol.OpMusicMove, protocol.OpMusicClear, protocol.OpMusicAnnounce:
 		return capabilities&commandCapMusic != 0
 	case protocol.OpMusicProvidersStatus:
 		return capabilities&commandCapMusic != 0 && (actor.Owner || actor.Administrator || actor.EffectiveBits&manager != 0)
@@ -118,8 +129,12 @@ func commandOperationAllowed(operation protocol.Operation, capabilities uint8, a
 		// Creator status and channel-scoped manage_messages need poll and target
 		// context; the registered close handler checks both against current state.
 		return true
-	case protocol.OpPollCreate, protocol.OpPollGet, protocol.OpPollList, protocol.OpPollVote, protocol.OpPollVoters,
-		protocol.OpReminderCreate, protocol.OpReminderList, protocol.OpReminderCancel, protocol.OpReminderDismiss, protocol.OpReminderDue:
+	case protocol.OpPollCreate:
+		return capabilities&commandCapPolls != 0
+	case protocol.OpReminderCreate:
+		return capabilities&commandCapReminders != 0
+	case protocol.OpPollGet, protocol.OpPollList, protocol.OpPollVote, protocol.OpPollVoters,
+		protocol.OpReminderList, protocol.OpReminderCancel, protocol.OpReminderDismiss, protocol.OpReminderDue:
 		return true
 	default:
 		return false

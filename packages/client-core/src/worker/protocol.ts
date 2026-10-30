@@ -34,8 +34,8 @@ export type Command =
   | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
-  | { m: 'getBotDjRoles'; communityId: string }
-  | { m: 'configureBotDjRoles'; communityId: string; requestId: string; installationId: string; roleIds: string[] }
+  | { m: 'restartBot'; communityId: string; installationId: string }
+  | { m: 'setBotMusicSettings'; communityId: string; installationId: string; volume: number; idleMinutes: number }
   | { m: 'listSelfRoles'; communityId: string }
   | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
   | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }
@@ -141,6 +141,8 @@ export type Command =
   | { m: 'callShare'; on: boolean }                                                      // → null
   | { m: 'callRefresh' }                                                                 // → { token, iceServers }
   | { m: 'callStats'; report: CallStatsReport }                                          // → null
+  // Signal task 8c: this device's RTT to the SFU in whole ms (0..5000), or null to clear it (paused, reconnecting).
+  | { m: 'callRtt'; ms: number | null }                                                  // → boolean (false: refused, not stored)
   // fix/firefox-misrouted-audio: the page's media layer notes a case Diagnostics should show; code is one of CALL_NOTES.
   | { m: 'callNote'; code: 'E_MEDIA_MISROUTE' }                                         // → null
   | { m: 'loadVoice'; communityId: string | null; channelId: string | null }            // exactly one id → null

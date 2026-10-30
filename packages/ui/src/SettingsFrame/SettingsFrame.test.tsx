@@ -56,29 +56,19 @@ describe('SettingsFrame', () => {
     expect(screen.getByRole('button', { name: 'Keep editing' })).toBeVisible();
   });
 
-  it('shows Back and the section on a phone section page, with no section index', () => {
-    const onBack = vi.fn();
-    render(<PhoneLayoutProvider value><SettingsFrame {...props({ phonePage: 'section', sectionTitle: 'Devices', onBack })} /></PhoneLayoutProvider>);
+  // Task 10, README §5.10: a phone section shows the nav as a row of chips above the content, and the close button leaves.
+  it('shows the nav and the section on a phone section page, with the close button and no Back', () => {
+    render(<PhoneLayoutProvider value><SettingsFrame {...props({ phonePage: 'section' })} /></PhoneLayoutProvider>);
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    expect(within(dialog).queryByRole('navigation', { name: 'settings sections' })).toBeNull();
-    expect(within(dialog).getByRole('button', { name: 'Back' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('navigation', { name: 'settings sections' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Back' })).toBeNull();
     expect(within(dialog).getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: 'Close settings' })).toBeNull();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }));
-    expect(onBack).toHaveBeenCalledOnce();
+    expect(within(dialog).getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
   });
 
-  it('keeps a short visible Back label and its full accessible destination alongside call controls', () => {
-    const onBack = vi.fn();
-    render(<PhoneLayoutProvider value><SettingsFrame {...props({
-      phonePage: 'section', sectionTitle: 'Appearance', backLabel: 'Back to settings', backText: 'Back', onBack,
-      activity: <button type="button">Return to call</button>,
-    })} /></PhoneLayoutProvider>);
-    const back = screen.getByRole('button', { name: 'Back to settings' });
-    expect(back).toHaveTextContent(/^Back$/);
+  it('keeps call controls visible beside the content', () => {
+    render(<PhoneLayoutProvider value><SettingsFrame {...props({ phonePage: 'section', activity: <button type="button">Return to call</button> })} /></PhoneLayoutProvider>);
     expect(screen.getByRole('button', { name: 'Return to call' })).toBeVisible();
-    fireEvent.click(back);
-    expect(onBack).toHaveBeenCalledOnce();
   });
 
   it('keeps idle activity announcements mounted when their visible header space is removed', () => {
@@ -92,14 +82,10 @@ describe('SettingsFrame', () => {
     expect(region.closest('.d-settings-frame__activity')).toHaveAttribute('data-visible', 'true');
   });
 
-  it('moves focus between the selected section and Back across phone pages', () => {
-    const onBack = vi.fn();
-    const p = props({ phonePage: 'index', onBack });
+  it('moves focus to the current chip when a phone index opens a section', () => {
+    const p = props({ phonePage: 'index' });
     const { rerender } = render(<PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider>);
-    rerender(<PhoneLayoutProvider value><SettingsFrame {...p} phonePage="section" sectionTitle="Devices" /></PhoneLayoutProvider>);
-    expect(screen.getByRole('button', { name: 'Back' })).toHaveFocus();
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
-    rerender(<PhoneLayoutProvider value><SettingsFrame {...p} phonePage="index" /></PhoneLayoutProvider>);
+    rerender(<PhoneLayoutProvider value><SettingsFrame {...p} phonePage="section" /></PhoneLayoutProvider>);
     expect(screen.getByRole('button', { name: 'devices' })).toHaveFocus();
   });
 
@@ -130,13 +116,14 @@ describe('SettingsFrame', () => {
     expect(within(dialog).getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
   });
 
-  it('tabs from the heading to the navigation, the close button, then the section', async () => {
+  // Task 10: the close button is the viewport's (README §5.9), first in the order after the heading.
+  it('tabs from the heading to the close button, the navigation, then the section', async () => {
     const user = userEvent.setup();
     render(<SettingsFrame {...props()} />);
     await user.tab();
-    expect(screen.getByRole('button', { name: 'devices' })).toHaveFocus();
-    await user.tab();
     expect(screen.getByRole('button', { name: 'Close settings' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'devices' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: 'refresh' })).toHaveFocus();
   });
@@ -240,6 +227,23 @@ describe('SettingsFrame', () => {
     const { rerender } = render(<><SettingsFrame {...p} /><Probe open /></>);
     rerender(<><SettingsFrame {...p} open={false} /><Probe open={false} /></>);
     expect(seen.at(-1)).toBe('false:false:0');
+  });
+
+  // Signal task 10 fix round 1: the user's and a server's settings are one workspace; swapping frames in one commit keeps
+  // the entrance still and hands the opener over, so closing the second frame still returns focus there.
+  it('hands its opener to a frame that replaces it in the same commit, without replaying the entrance', () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'gear';
+    document.body.append(opener);
+    opener.focus();
+    const { rerender } = render(<SettingsFrame key="user" {...props()} />);
+    rerender(<SettingsFrame key="server" {...props()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    expect(dialog).toHaveAttribute('data-handoff', 'true');
+    expect(opener).not.toHaveFocus();
+    rerender(<SettingsFrame key="server" {...props({ open: false })} />);
+    expect(opener).toHaveFocus();
+    opener.remove();
   });
 
   it('renders no content while closed', () => {
@@ -351,12 +355,12 @@ describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
     expect(stacked).toMatch(/\.d-settings-frame__body \{[^}]*overflow-y: auto;/);
   });
 
-  it('uses a 15rem grouped sidebar and bounded 48rem and 64rem content measures', async () => {
+  it('uses a 240px grouped sidebar and bounded 720px and 64rem content measures (README §5.9)', async () => {
     const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
     const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
     const css = fs.readFileSync(`${cwd}/src/SettingsFrame/SettingsFrame.css`, 'utf8');
-    expect(css).toMatch(/grid-template-columns: 15rem minmax\(0, 1fr\)/);
-    expect(css).toContain('width: min(100%, 48rem)');
+    expect(css).toMatch(/grid-template-columns: 240px minmax\(0, 1fr\)/);
+    expect(css).toContain('width: min(100%, 720px)');
     expect(css).toContain('width: min(100%, 64rem)');
     expect(css).toMatch(/\.d-settings-frame \{[^}]*width: 100vw;[^}]*height: 100dvh;/);
     expect(css).toMatch(/\.d-settings-frame__panel \{[^}]*max-width: 80rem;/);
@@ -367,7 +371,8 @@ describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
     expect(base).not.toMatch(/\.d-settings-frame[^{}]*\[data-modeless\]/);
     expect(base).toContain('.d-settings-frame[data-layout="phone"] .d-settings-row, [data-phone] .d-settings-row');
     expect(stacked).toMatch(/\.d-settings-frame__body \{[^}]*overflow-y: auto;/);
-    expect(stacked).toMatch(/\.d-settings-frame\[data-layout="phone"\] \.d-settings-frame__nav \{[^}]*overflow-y: auto;/);
+    expect(stacked).toMatch(/\.d-settings-frame\[data-layout="phone"\]\[data-phone-page="index"\] \.d-settings-frame__nav \{[^}]*overflow-y: auto;/);
+    expect(stacked).toMatch(/\.d-settings-frame\[data-layout="phone"\]\[data-phone-page="section"\] \.d-settings-frame__side \{[^}]*flex-direction: row; overflow-x: auto;/);
   });
 });
 
@@ -382,10 +387,10 @@ describe('SettingsFrame bar and footer (I8, R17)', () => {
   });
   const rule = (src: string, selector: string) => new RegExp(`${selector.replace(/[.[\]"=-]/g, '\\$&')} \\{([^}]*)\\}`).exec(src)?.[1] ?? '';
 
-  it('uses the 2rem and 1rem body spacing and has no floating shadow or perimeter', () => {
+  it('uses the prototype 36/40/60 body padding and has no floating shadow or perimeter', () => {
     const body = rule(css, '.d-settings-frame__body');
     const frame = rule(css, '.d-settings-frame');
-    expect(body).toMatch(/padding: 2rem 1rem 1rem;/);
+    expect(body).toMatch(/padding: 36px 40px 60px;/);
     expect(frame).toMatch(/border: 0;/);
     expect(frame).toMatch(/box-shadow: none;/);
   });
@@ -406,11 +411,11 @@ describe('SettingsFrame bar and footer (I8, R17)', () => {
     expect(r).toMatch(/bottom: 0;/);
   });
 
-  it('a phone layout sets the section page and hides the repeated title', () => {
+  it('a phone layout sets the section page; the frame title is for assistive technology only', () => {
     render(<PhoneLayoutProvider value><SettingsFrame {...props()} /></PhoneLayoutProvider>);
     expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('data-layout', 'phone');
     expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('data-phone-page', 'section');
-    expect(rule(css, '.d-settings-frame[data-layout="phone"] .d-settings-frame__title')).toMatch(/clip-path: inset\(50%\);/);
+    expect(rule(css, '.d-settings-frame__title')).toMatch(/clip-path: inset\(50%\);/);
   });
 
   it('uses the existing narrow and landscape/coarse-pointer phone breakpoint with visual viewport and safe area', () => {
@@ -420,9 +425,19 @@ describe('SettingsFrame bar and footer (I8, R17)', () => {
     expect(css).toContain('env(safe-area-inset-bottom)');
   });
 
-  it('keeps the content section heading available to assistive technology without repeating the phone bar title', () => {
-    const selector = '.d-settings-frame[data-layout="phone"][data-phone-page="section"] .d-settings-frame__body > section > h2:first-child';
-    expect(rule(css, selector)).toMatch(/clip-path: inset\(50%\);/);
+  it('draws the section title 20/700 on every layout (the prototype shows it on a phone too)', () => {
+    expect(rule(css, '.d-settings-frame__body > section > h2')).toMatch(/font-size: var\(--text-heading\); font-weight: var\(--weight-display\);/);
+    expect(css).not.toMatch(/section > h2:first-child/);
+  });
+
+  it('draws the close button as a 34px circle that turns 90° on hover, with ESC under it except on a phone', () => {
+    render(<SettingsFrame {...props()} />);
+    const close = screen.getByRole('button', { name: 'Close settings' });
+    expect(close).toHaveAttribute('aria-keyshortcuts', 'Escape');
+    expect(close.querySelector('.d-settings-frame__close-key')).toHaveAttribute('aria-hidden', 'true');
+    expect(rule(css, '.d-settings-frame__close-ring')).toMatch(/width: 34px; height: 34px;/);
+    expect(rule(css, '.d-settings-frame__close:hover .d-settings-frame__close-ring')).toMatch(/transform: rotate\(90deg\);/);
+    expect(rule(css, '.d-settings-frame[data-layout="phone"] .d-settings-frame__close-key')).toMatch(/display: none;/);
   });
 
   it('a desktop frame has no data-layout', () => {

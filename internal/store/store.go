@@ -413,6 +413,12 @@ type Sessions interface {
 type Auth interface {
 	PutPasswordCredential(ctx context.Context, userID id.ID, phc string, updated int64) error
 	GetPasswordCredential(ctx context.Context, userID id.ID) (string, error)
+	// ChangePasswordCredential stores a changed password and records when it changed (Task 11, Q7), in one statement, so the
+	// hash is never written without its change time (fix round 2, security L1).
+	ChangePasswordCredential(ctx context.Context, userID id.ID, phc string, at int64) error
+	// GetPasswordChangedAt is that time, or nil when it is unknown (set before migration 00052, or never changed since sign-up);
+	// ErrNotFound when the account has no password.
+	GetPasswordChangedAt(ctx context.Context, userID id.ID) (*int64, error)
 	PutTOTP(ctx context.Context, t TOTPRow) error
 	GetTOTP(ctx context.Context, userID id.ID) (TOTPRow, error)
 	// DeleteTOTP drops the user's TOTP secret, confirmed or not; no row is not an error.
@@ -787,10 +793,6 @@ type Communities interface {
 	// Callers hold LockCommunity in the same transaction.
 	SetSelfRolePolicy(ctx context.Context, communityID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
 	ListSelfRolePolicy(ctx context.Context, communityID id.ID) ([]SelfRolePolicyRow, error)
-	// SetDJRolePolicy atomically replaces the installation's approved DJ role IDs.
-	// Callers hold LockCommunity in the same transaction.
-	SetDJRolePolicy(ctx context.Context, installationID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
-	ListDJRolePolicy(ctx context.Context, installationID id.ID) ([]DJRolePolicyRow, error)
 	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
@@ -806,14 +808,6 @@ type SelfRolePolicyRow struct {
 	RoleID      id.ID
 	ApprovedBy  id.ID
 	ApprovedAt  int64
-}
-
-// DJRolePolicyRow is a manager-approved role in one installation's DJ authority allowlist.
-type DJRolePolicyRow struct {
-	InstallationID id.ID
-	RoleID         id.ID
-	ApprovedBy     id.ID
-	ApprovedAt     int64
 }
 
 const (

@@ -31,7 +31,7 @@ func TestCommandCapabilitiesAllowsMemberSafeDiscoveryAndPreservesManagerGate(t *
 	community, installation, bot, actor := interactionID(2), interactionID(3), interactionID(4), interactionID(6)
 	authority := &commandCapabilitiesAuthorityFake{present: true}
 	h := CommandCapabilitiesInteractions{Authority: authority, CommunityID: community, InstallationID: installation, BotUserID: bot,
-		Capabilities: 0xff, Supported: []protocol.Operation{protocol.OpReminderList, protocol.OpMusicSearch, protocol.OpCapabilities,
+		Capabilities: 0x3ff, Supported: []protocol.Operation{protocol.OpReminderList, protocol.OpMusicSearch, protocol.OpCapabilities,
 			protocol.OpPollVote, protocol.OpPollClose, protocol.OpOverviewGet, protocol.OpPollCreate, protocol.OpPollVote, 999}}
 	handler := h.Handlers()[protocol.OpCapabilities].Handle
 	result, err := handler(context.Background(), InteractionActor{User: actor, Kind: 0}, protocol.Request{CommunityID: community, Operation: protocol.OpCapabilities})
@@ -137,16 +137,15 @@ func TestCommandCapabilitiesKeepsCreatorPollCloseDiscoverable(t *testing.T) {
 
 func TestCommandCapabilitiesKeepsMusicDiscoverableForCurrentCallDJ(t *testing.T) {
 	ctx := context.Background()
-	community, installation, channel, actor, callID, djRole := id.New(), id.New(), id.New(), id.New(), id.New(), id.New()
-	resolved := client.ActorAuthority{RoleIDs: []id.ID{djRole}} // no community-wide connect permission
+	community, installation, channel, actor, callID := id.New(), id.New(), id.New(), id.New(), id.New()
+	resolved := client.ActorAuthority{} // no community-wide connect permission
 	session := &musicAuthoritySessionFake{
-		actor: resolved, present: true,
+		actor: resolved, present: true, channel: musicPermissionControl,
 		call:        client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actor}}},
 		permissions: musicPermissionConnect | musicPermissionSpeak,
 	}
 	state := &musicAuthorityStoreFake{
 		installation: store.BotInstallationRow{ID: installation, CommunityID: community, State: store.BotInstallationReady, Capabilities: musicBotCapability},
-		policy:       []store.DJRolePolicyRow{{InstallationID: installation, RoleID: djRole}},
 	}
 	authority := &CommunityMusicInteractionAuthority{Session: session, Store: state, InstallationID: installation, CommunityID: community}
 	binding := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
@@ -154,7 +153,7 @@ func TestCommandCapabilitiesKeepsMusicDiscoverableForCurrentCallDJ(t *testing.T)
 		t.Fatalf("CanUse = %v, %v; want current call member", ok, err)
 	}
 	if ok, err := authority.CanDJ(ctx, InteractionActor{User: actor}, binding); err != nil || !ok {
-		t.Fatalf("CanDJ = %v, %v; want current approved DJ", ok, err)
+		t.Fatalf("CanDJ = %v, %v; want control_music in the voice channel", ok, err)
 	}
 	operations := commandCapabilityOperations(t, CommandCapabilitiesInteractions{
 		Authority: &commandCapabilitiesAuthorityFake{result: resolved, present: true}, CommunityID: community,
@@ -190,4 +189,40 @@ func commandCapabilityOperations(t *testing.T, h CommandCapabilitiesInteractions
 		operations[protocol.Operation(n)] = true
 	}
 	return operations
+}
+
+// Task 10c: with Polls (bit 8) or Reminders (bit 9) off, op 3 no longer offers creating them, so
+// /poll and /remind leave the picker; voting, closing, listing, cancelling, dismissing and the due
+// list stay, so existing polls and reminders keep working.
+func TestCommandCapabilitiesHidesOnlyCreationWhenPollsOrRemindersAreOff(t *testing.T) {
+	community, installation, bot, actor := interactionID(2), interactionID(3), interactionID(4), interactionID(6)
+	supported := []protocol.Operation{protocol.OpCapabilities, protocol.OpPollCreate, protocol.OpPollGet, protocol.OpPollList,
+		protocol.OpPollVote, protocol.OpPollClose, protocol.OpPollVoters, protocol.OpReminderCreate, protocol.OpReminderList,
+		protocol.OpReminderCancel, protocol.OpReminderDismiss, protocol.OpReminderDue}
+	for _, tc := range []struct {
+		name               string
+		caps               uint16
+		wantPoll, wantRemi bool
+	}{
+		{"both on", commandCapPolls | commandCapReminders, true, true},
+		{"polls off", commandCapReminders, false, true},
+		{"reminders off", commandCapPolls, true, false},
+		{"both off (the original byte only)", 0xff, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := commandCapabilityOperations(t, CommandCapabilitiesInteractions{
+				Authority: &commandCapabilitiesAuthorityFake{present: true}, CommunityID: community, InstallationID: installation,
+				BotUserID: bot, Capabilities: tc.caps, Supported: supported,
+			}, actor)
+			if ops[protocol.OpPollCreate] != tc.wantPoll || ops[protocol.OpReminderCreate] != tc.wantRemi {
+				t.Fatalf("create poll=%v reminder=%v, want %v %v", ops[protocol.OpPollCreate], ops[protocol.OpReminderCreate], tc.wantPoll, tc.wantRemi)
+			}
+			for _, kept := range []protocol.Operation{protocol.OpPollGet, protocol.OpPollList, protocol.OpPollVote, protocol.OpPollClose,
+				protocol.OpPollVoters, protocol.OpReminderList, protocol.OpReminderCancel, protocol.OpReminderDismiss, protocol.OpReminderDue} {
+				if !ops[kept] {
+					t.Fatalf("op %d hidden with %s; existing polls and reminders must keep working", kept, tc.name)
+				}
+			}
+		})
+	}
 }

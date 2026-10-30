@@ -735,34 +735,93 @@ export function newChannelButton(page: Page): Locator {
 }
 
 /**
- * Server settings → Invites → "Make link" (web3.8, item 11: the sidebar's "invite link" moved here). Returns the invite
- * dialog, open on its link field; the settings dialog stays open behind it. Desktop: the header's "server settings" button.
+ * Server settings → Invites → "Make invite link" (Signal task 10c: the link shows once in the Invites card, with Copy, and
+ * no dialog opens). Returns the settings dialog, which holds the link field ("Invite link") and Copy. `server` names the
+ * server for the callers; the card does not repeat it.
  */
 export async function openInviteDialog(page: Page, server: string): Promise<Locator> {
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  void server;
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   // Until the permissions are read the dialog shows no tab; the nav fills in when they arrive.
   await expect(nav).toBeVisible({ timeout: WAIT });
   const tab = nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true });
   if ((await tab.getAttribute('aria-current')) !== 'page') await tab.click();
-  await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: copy('invite.title', { server }), exact: true });
-  await expect(dialog.getByRole('textbox', { name: copy('invite.link'), exact: true })).toBeVisible({ timeout: WAIT });
-  return dialog;
+  await settings.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+  await expect(settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true })).toBeVisible({ timeout: WAIT });
+  return settings;
 }
 
-/** Makes an invite link under server settings → Invites, reads it from the dialog's field, and closes both dialogs. */
+/** Makes an invite link under server settings → Invites, reads it from the card's field, and closes settings. */
 export async function makeInviteLink(page: Page, server: string): Promise<string> {
-  const dialog = await openInviteDialog(page, server);
-  const field = dialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  const settings = await openInviteDialog(page, server);
+  const field = settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
   await expect.poll(() => field.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
   const link = await field.inputValue();
   await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
-  await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: copy('admin.title'), exact: true })).toBeHidden();
   return link;
+}
+
+// Signal task 10c: server settings → Roles is an inline editor and Bot is a page of switches.
+/** The role list's button for `name` ("{name}, {count} members"). */
+export function roleButton(settings: Locator, name: string): Locator {
+  return settings.getByRole('list', { name: copy('serverSettings.roles.list'), exact: true })
+    .getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}, \\d+ members?`) });
+}
+/** Picks the role `name` in the editor. */
+export async function selectRole(settings: Locator, name: string): Promise<void> {
+  await roleButton(settings, name).click();
+  await expect(roleButton(settings, name)).toHaveAttribute('aria-current', 'true', { timeout: WAIT });
+}
+/** Sets a role permission switch (perm.<key>), which saves at once, and waits for it to stick. */
+export async function setRolePermission(settings: Locator, key: string, on: boolean): Promise<void> {
+  const toggle = settings.getByRole('switch', { name: copy(`perm.${key}`), exact: true });
+  if ((await toggle.getAttribute('aria-checked')) !== String(on)) await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', String(on), { timeout: WAIT });
+}
+/** "New role", then renames the new role (Enter saves) and sets its permissions and options; leaves it selected. */
+export async function makeRole(page: Page, settings: Locator, name: string,
+  options: { color?: string; perms?: readonly string[]; hoist?: boolean; mentionable?: boolean } = {}): Promise<void> {
+  await settings.getByRole('button', { name: copy('serverSettings.roles.new'), exact: true }).click();
+  const field = settings.getByRole('textbox', { name: copy('roles.editor.name'), exact: true });
+  await expect(field).toHaveValue(copy('serverSettings.roles.newName'), { timeout: WAIT });
+  await field.fill(name);
+  await field.press('Enter');
+  await expect(roleButton(settings, name)).toBeVisible({ timeout: WAIT });
+  if (options.color !== undefined) await settings.getByRole('radio', { name: copy(`roles.color.${options.color}`), exact: true }).click();
+  for (const key of options.perms ?? []) await setRolePermission(settings, key, true);
+  for (const [item, on] of [['serverSettings.roles.menu.hoist', options.hoist], ['serverSettings.roles.menu.mentionable', options.mentionable]] as const) {
+    if (on !== true) continue;
+    await roleButton(settings, name).focus();
+    await page.keyboard.press('Shift+F10');
+    const check = page.getByRole('menuitemcheckbox', { name: copy(item), exact: true });
+    await check.click();
+    await expect(check).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+    await page.keyboard.press('Escape');
+  }
+}
+/** Bot page: switches the capabilities on (bot.cap.<name>), then Enable (step-up follows in the caller). */
+export async function chooseBotCapabilities(settings: Locator, names: readonly string[]): Promise<void> {
+  for (const name of names) {
+    const toggle = settings.getByRole('switch', { name: copy(`serverSettings.bot.cap.${name}`), exact: true });
+    if ((await toggle.getAttribute('aria-checked')) !== 'true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  }
+}
+/** The Bot page's Enable (on Glenn's row). */
+export function enableBotButton(settings: Locator): Locator {
+  return settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true });
+}
+/** Glenn's row menu (Shift+F10 on the row): picks `itemKey` (serverSettings.bot.menu.*; Disable carries the bot's name). */
+export async function botRowMenu(page: Page, settings: Locator, itemKey: string): Promise<void> {
+  const row = settings.locator('[role="group"][aria-keyshortcuts="Shift+F10"]').first();
+  await row.focus();
+  await page.keyboard.press('Shift+F10');
+  const [before, after] = (en as Record<string, string>)[itemKey].split('{bot}');
+  const name = after === undefined ? copy(itemKey) : new RegExp(`^${escapeRegExp(before)}.+${escapeRegExp(after)}$`);
+  await page.getByRole('menuitem', { name }).click();
 }
 
 /** The recovery key as written down: its 13 groups joined by `separator`. */
@@ -811,8 +870,16 @@ export type SettingsSection = 'profile' | 'signin' | 'devices' | 'notifications'
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
 /** The user panel (desktop) or the You tab settings row (phone). */
 export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }
-/** Desktop Settings opener. Phone settings are opened from You → Open settings. */
-export function settingsGear(page: Page): Locator { return userPanel(page).getByRole('button', { name: copy('panel.settings'), exact: true }); }
+/** Desktop Settings opener: the top bar's gear (Signal §5.2; the user panel has none, §5.4). Phone settings are opened from You → Open settings. */
+export function settingsGear(page: Page): Locator { return page.locator('.d-topbar').getByRole('button', { name: copy('workspace.open'), exact: true }); }
+/** Ruling X (Jonas 2026-10-27, pixel parity): the channel header has no "⋯"; a text channel's pins and edit channel are in its
+ *  row's context menu. This right-clicks the row and picks the item by its copy key; focus returns to the row afterwards. */
+export async function channelRowMenuItem(page: Page, channel: string, key: string): Promise<void> {
+  await channelRow(page, channel).click({ button: 'right' });
+  await page.getByRole('menu', { name: copy('nav.channel.menuOf', { name: channel }), exact: true }).getByRole('menuitem', { name: copy(key), exact: true }).click();
+}
+/** The channel header's Members button (named "Members" or "Members, {n}"), on a desktop or a phone. */
+export function membersToggle(page: Page): Locator { return page.locator('.d-channel-header [data-members-toggle], .d-phone-header [data-members-toggle]'); }
 /** Opens the requested section through the visible workspace navigation at the current viewport. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
   const phone = await page.evaluate(() => matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches);
@@ -823,7 +890,8 @@ export async function openSettings(page: Page, section: SettingsSection): Promis
       await you.click();
       await expect(page).toHaveURL(/\/you$/, { timeout: WAIT });
     }
-    const open = page.getByRole('button', { name: copy('workspace.open'), exact: true });
+    // Task 11 (Q3): the You tab's Settings row.
+    const open = page.getByRole('button', { name: copy('you.settings'), exact: true });
     await expect(open).toBeVisible({ timeout: WAIT });
     await open.click();
   } else {
@@ -985,11 +1053,15 @@ export async function clickNotification(page: Page, index: number): Promise<void
 }
 
 export type NotifyDefault = 'dmsMentions' | 'everything' | 'nothing';
-/** Settings → Notifications → the default; waits for the radio to be checked from the settings slice, then closes. */
+/**
+ * Settings → Notifications → the selected server's mode (Signal task 10 fix round 1: the prototype's row replaced the device
+ * default; for the server's channels the two mean the same). Waits for the radio to be checked, then closes.
+ */
 export async function setNotifyDefault(page: Page, mode: NotifyDefault): Promise<void> {
   const dialog = await openSettings(page, 'notifications');
-  const radio = dialog.getByRole('radiogroup', { name: copy('notify.default.label'), exact: true })
-    .getByRole('radio', { name: copy(`notify.default.${mode}`), exact: true });
+  const key = mode === 'everything' ? 'notify.mode.all' : mode === 'nothing' ? 'notify.mode.nothing' : 'notify.mode.mentions';
+  const radio = dialog.getByRole('radiogroup', { name: new RegExp(`^${copy('notify.server.hint')} `) })
+    .getByRole('radio', { name: copy(key), exact: true });
   await radio.click();
   await expect(radio).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
   await closeSettings(page);
@@ -1002,9 +1074,33 @@ export function rowById(page: Page, channel: string, msgId: string): Locator {
 export function rowToolbar(row: Locator): Locator {
   return row.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
 }
-export async function rowAction(row: Locator, action: 'react' | 'reply' | 'edit' | 'pin' | 'unpin' | 'delete'): Promise<void> {
+/** Task 7 (Signal §5.5, Ruling U): edit, pin, unpin, delete and remove-for-everyone sit in the toolbar's "more" menu. */
+export type RowMenuAction = 'edit' | 'pin' | 'unpin' | 'delete' | 'moderateRemove';
+const MENU_ACTIONS: ReadonlySet<string> = new Set<RowMenuAction>(['edit', 'pin', 'unpin', 'delete', 'moderateRemove']);
+export function rowMore(row: Locator): Locator {
+  return rowToolbar(row).getByRole('button', { name: copy('shell.message.more'), exact: true });
+}
+export function rowMenuItem(row: Locator, action: RowMenuAction): Locator {
+  return rowToolbar(row).getByRole('menuitem', { name: copy(`shell.message.${action}`), exact: true });
+}
+export async function rowAction(row: Locator, action: 'react' | 'reply' | RowMenuAction): Promise<void> {
   await row.focus();
-  await rowToolbar(row).getByRole('button', { name: copy(`shell.message.${action}`), exact: true }).click();
+  if (!MENU_ACTIONS.has(action)) {
+    await rowToolbar(row).getByRole('button', { name: copy(`shell.message.${action}`), exact: true }).click();
+    return;
+  }
+  if (await rowMore(row).getAttribute('aria-expanded') !== 'true') await rowMore(row).click();
+  await rowMenuItem(row, action as RowMenuAction).click();
+}
+/** Whether the row's "more" menu offers `action` (retried until `timeout`); the menu is closed again after. */
+export async function expectRowMenuAction(row: Locator, action: RowMenuAction, offered: boolean, timeout = WAIT): Promise<void> {
+  await expect(async () => {
+    await row.focus();
+    if (await rowMore(row).count() === 0) { expect(offered).toBe(false); return; }
+    if (await rowMore(row).getAttribute('aria-expanded') !== 'true') await rowMore(row).click();
+    await expect(rowMenuItem(row, action)).toHaveCount(offered ? 1 : 0, { timeout: 1_000 });
+  }).toPass({ timeout });
+  if (await rowMore(row).count() > 0 && await rowMore(row).getAttribute('aria-expanded') === 'true') await row.page().keyboard.press('Escape');
 }
 export function reactionChip(row: Locator, emojiName: string, count: number): Locator {
   return row.getByRole('button', { name: copy('shell.message.reaction', { name: emojiName, count }), exact: true });

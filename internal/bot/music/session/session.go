@@ -63,6 +63,19 @@ type QueueStarter struct {
 	// advancement cannot clear a disconnected room's terminal state.
 	ResetConnection func() error
 	CloseConnection func() error
+	// LeaveConnection disconnects an idle retained room (Task 10c idle-leave); nil does nothing.
+	LeaveConnection func() error
+	// IdleLeaveAfter is the installation's current "Leave voice when idle" time; the supervisor
+	// that owns this starter leaves the room once nothing has played for that long. Nil disables.
+	IdleLeaveAfter func() time.Duration
+}
+
+// LeaveIdle leaves the retained room when nothing is playing.
+func (s QueueStarter) LeaveIdle() error {
+	if s.LeaveConnection != nil {
+		return s.LeaveConnection()
+	}
+	return nil
 }
 
 func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (music.Playback, error) {

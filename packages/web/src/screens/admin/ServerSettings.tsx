@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { SettingsFrame } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
-import { usePhoneLayout } from '../../layout.ts';
+import { phoneNow } from '../../layout.ts';
+import { useRoute, type SettingsSection } from '../../router.ts';
 import { SettingsEditProvider, useSettingsWorkspace } from '../../settings/edit-state.tsx';
 import { SettingsNavigation } from '../../settings/SettingsNavigation.tsx';
 import { availableSettings, type ServerSettingsSection, type SettingsAccess } from '../../settings/registry.ts';
@@ -38,8 +39,9 @@ export function ServerSettings(props: ServerSettingsProps): React.JSX.Element {
 }
 
 function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, activity, activityVisible, onMessage = () => undefined, onCompare = () => undefined }: ServerSettingsProps): React.JSX.Element {
-  const phone = usePhoneLayout();
-  const phoneIndex = phone && tab === null;
+  // README §5.10 (Signal task 10 fix round 1): no phone index; a server's settings open on its first section everywhere.
+  const [route, navigate] = useRoute();
+  const from = route.name === 'serverSettings' ? route.from : null;
   const communities = useSlice('communities');
   const community = communities?.find(c => c.id === communityId);
   const rawAccess = useSlice(`permissions:${communityId}`);
@@ -47,8 +49,7 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   const account = useSlice('account');
   const removals = useSlice('removals');
   const allowed = useMemo(() => availableSettings('server', access), [access]);
-  const active = phoneIndex ? null
-    : (allowed.find(entry => entry.id === tab)?.id as ServerSettingsSection | undefined)
+  const active = (allowed.find(entry => entry.id === tab)?.id as ServerSettingsSection | undefined)
       ?? (tab === null || access?.loaded === true ? (allowed[0]?.id as ServerSettingsSection | undefined) ?? null : null);
   const [closed, setClosed] = useState(false);
   const [anchor, setAnchor] = useState<string | null>(null);
@@ -137,12 +138,11 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
   const contentRef = useSettingsFocus(active, anchor);
   const entry = allowed.find(item => item.id === active);
   const footer = workspace?.footer ?? null;
-  const sectionTitle = entry ? t(entry.labelKey) : undefined;
   const common = { communityId, serverName: shown?.name ?? '', announce: announceInWorkspace };
   const content = useMemo(() => {
     if (!access?.loaded || active === null || shown === undefined) return null;
     switch (active) {
-      case 'overview': return <OverviewSection {...common} />;
+      case 'overview': return <OverviewSection {...common} owner={access.owner === true} onGone={finish} />;
       case 'channels': return <ChannelsSection {...common} />;
       case 'gifs': return <section className="dw-settings-section"><h2 tabIndex={-1}>{t('workspace.gifs')}</h2><GifsSettings communityId={communityId} announce={announceInWorkspace} /></section>;
       case 'members': return <MembersSection communityId={communityId} selfId={account?.user?.id ?? ''} onMessage={onMessage} onCompare={onCompare} announce={announceInWorkspace} />;
@@ -165,14 +165,13 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
 
   return <>
     <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('settings.close')} onClose={close}
-      identity={shown ? <span>{shown.name}</span> : undefined}
-      nav={phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p>
-        : <SettingsNavigation scope="server" access={access} activeId={active ?? ''} onSelect={(id, target) => select(id as ServerSettingsSection, target ?? null)} />}
-      footer={footer} phonePage={phoneIndex ? 'index' : 'section'} sectionTitle={sectionTitle}
-      backLabel={t('workspace.back')} backText={t('workspace.backShort')} onBack={() => select(null)} contentRef={contentRef} wide={entry?.wide}
-      overlays={<>{workspace?.confirmation}{phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}</>} activity={activity} activityVisible={activityVisible}>
-      {!phoneIndex && !access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
-      {!phoneIndex ? <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p> : null}
+      nav={<SettingsNavigation active={{ scope: 'server', id: active }} communityId={communityId} label={t('admin.nav')}
+        onServer={id => select(id as ServerSettingsSection)}
+        onUser={id => void navigate({ name: 'settings', section: id as SettingsSection, from }, !phoneNow())} />}
+      footer={footer} phonePage="section" contentRef={contentRef} wide={entry?.wide}
+      overlays={workspace?.confirmation} activity={activity} activityVisible={activityVisible}>
+      {!access?.loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
+      <p className="d-sr-only" role="status" aria-live="polite">{announcement}</p>
       {content}
 
     </SettingsFrame>

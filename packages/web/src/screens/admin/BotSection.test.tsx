@@ -16,7 +16,8 @@ import { authorizeSpotify, spotifySession } from './spotify-link.ts';
 
 const SERVER = 'a1'.repeat(16);
 type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 | 5; revision: string;
-  userId: string | null; deviceId: string | null; capabilities: number; updatedAt: string };
+  userId: string | null; deviceId: string | null; capabilities: number; updatedAt: string;
+  restartRequested?: string; restartHandled?: string; version?: string | null; musicVolume?: number; musicIdleMinutes?: number };
 const ROW: Installation = { id: 'b2'.repeat(16), communityId: SERVER, state: 0, revision: '1', userId: null,
   deviceId: null, capabilities: 0, updatedAt: '100' };
 const ACCESS = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
@@ -35,7 +36,6 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
   fake.handler = handler ?? (async command => {
     if (command.m === 'getBotInstallation') return failGet ? Promise.reject(refusal({ code: 'E_NETWORK' })) : initial;
     if (command.m === 'getBotJoinRole') return initial === null ? null : { roleId: null, installationId: initial.id };
-    if (command.m === 'getBotDjRoles') return initial === null ? null : { roleIds: [], installationId: initial.id };
     if (command.m === 'stepUp') return { token: 'short-lived-step-up' };
     if (command.m === 'configureBotInstallation') return { ...ROW, state: 0, revision: '1' };
     if (command.m === 'disableBotInstallation') return { ...ROW, state: 4, revision: '2' };
@@ -50,6 +50,14 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
   return { fake, user, view, announce };
 }
 
+/** Opens Glenn's row menu (Task 10c, Ruling X) with Shift+F10 and picks `item`. */
+async function glennMenu(user: ReturnType<typeof userEvent.setup>, item: string) {
+  const row = await waitFor(() => { const el = document.querySelector<HTMLElement>('[role="group"][aria-keyshortcuts="Shift+F10"]'); if (el === null) throw new Error('no row'); return el; });
+  row.focus();
+  await user.keyboard('{Shift>}{F10}{/Shift}');
+  await user.click(await screen.findByRole('menuitem', { name: item }));
+}
+
 function setupPage(page: BotPageKind, initial: Installation | null = null, failGet = false, phone = false, manageRoles = true,
   fakeTimers = false, handler?: (command: Parameters<FakeClient['call']>[0]) => Promise<unknown>) {
   return setup(initial, failGet, phone, manageRoles, fakeTimers, handler, page);
@@ -61,6 +69,9 @@ describe('the server bot settings', () => {
     const { fake, user, announce } = setup({ ...ROW, state: 3, userId: botId });
     fake.publish(`members:${SERVER}`, [{ userId: botId, username: 'dillabot', display: 'Dilla Bot', kind: 1, roleIds: [] }]);
     fake.handler = command => command.m === 'patchBotProfile' ? Promise.resolve('Music Bot') : Promise.resolve(null);
+    // Task 10c: the name is renamed from Glenn's row menu, in a dialog.
+    await screen.findByText('Dilla Bot');
+    await glennMenu(user, en['serverSettings.bot.menu.rename']);
     const field = await screen.findByRole('textbox', { name: 'Bot display name' });
     await waitFor(() => expect(field).toHaveValue('Dilla Bot'));
     fireEvent.change(field, { target: { value: 'Music Bot' } });
@@ -92,7 +103,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
       if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
       if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: '1', blocked: false, responses: [{
         deliveryId: '1', sourceSeq: '1', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
@@ -116,7 +126,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
       if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
       if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? 'a'.repeat(32) : null, blocked: !prefixOpen, responses: prefixOpen ? [{
         deliveryId: '4', sourceSeq: '8', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
@@ -141,7 +150,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
       if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
       if (command.m === 'humanInteractionRequest') { latest.set(command.operation, command); return Promise.resolve({ requestId: command.requestId, upload: 'accepted' }); }
       if (command.m === 'readBotInteractionResponses') { const last=latest.get(command.operations[0]); return Promise.resolve({ through: '1', blocked: false, responses: last === undefined ? [] : [{
@@ -177,7 +185,6 @@ describe('the server bot settings', () => {
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
       if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='getBotDjRoles')return Promise.resolve({roleIds:[],installationId:ready.id});
       if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
       if(command.m==='humanInteractionRequest'){
         if(command.operation===63)return Promise.reject(refusal({code,status:code==='E_FORBIDDEN'?403:0}));
@@ -206,7 +213,6 @@ describe('the server bot settings', () => {
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
       if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='getBotDjRoles')return Promise.resolve({roleIds:[],installationId:ready.id});
       if(command.m==='humanInteractionRequest')return Promise.resolve({requestId:command.requestId,upload:'accepted'});
       if(command.m==='readBotInteractionResponses')return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',
         requestId:fake.callsOf('humanInteractionRequest').at(-1)?.requestId??'',communityId:SERVER,operation:62,channelId:null,status:0,revision:'7',
@@ -230,7 +236,6 @@ describe('the server bot settings', () => {
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
       if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='getBotDjRoles')return Promise.resolve({roleIds:[],installationId:ready.id});
       if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
       if(command.m==='humanInteractionRequest'){
         latest.set(command.operation,command);
@@ -268,7 +273,6 @@ describe('the server bot settings', () => {
     fake.handler=command=>{
       if(command.m==='getBotInstallation')return Promise.resolve(ready);
       if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='getBotDjRoles')return Promise.resolve({roleIds:[],installationId:ready.id});
       if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
       if(command.m==='humanInteractionRequest'){latest.set(command.operation,command);return Promise.resolve({requestId:command.requestId,upload:'accepted'});}
       if(command.m==='readBotInteractionResponses'){
@@ -304,7 +308,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
       if (command.m === 'humanInteractionRequest') {
         lastInteraction = command;
         return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
@@ -347,7 +350,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
       if (command.m === 'listModerationCases') return Promise.resolve({ requestId: command.requestId, status: 'accepted' });
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [] });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
@@ -388,7 +390,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
       if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
         { deliveryId: '3', requestId, status: 0, hasMore: true, nextCursor: '0102', cases: [{ key: 'a'.repeat(32) + ':1',
@@ -415,7 +416,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
       if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
         { deliveryId: '2', requestId: priorRequestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
@@ -441,7 +441,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
       if (command.m === 'listManualModerationEvidence') return Promise.resolve({ requestId: command.requestId, status: 'accepted' });
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '2', responses: [
         { deliveryId: '2', requestId: '55'.repeat(16), status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
@@ -465,7 +464,6 @@ describe('the server bot settings', () => {
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
       if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
       if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [
         { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
@@ -490,10 +488,11 @@ describe('the server bot settings', () => {
     };
 
     await screen.findByText(en['admin.bot.status.joining']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.status.refresh'] }));
+    await glennMenu(user, en['serverSettings.bot.menu.refresh']);
 
     expect(await screen.findByText(en['admin.bot.status.ready'])).toBeInTheDocument();
-    expect(screen.getByText(/music, welcome messages/)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.music'] })).toBeChecked();
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.welcome'] })).toBeChecked();
     expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
   });
 
@@ -502,15 +501,15 @@ describe('the server bot settings', () => {
     const refreshed = { ...ROW, state: 4 as const, capabilities: 3 };
     const { fake, user } = setup(initial);
     await screen.findByText(en['admin.bot.status.ready']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
+    await user.click(screen.getByRole('switch', { name: en['serverSettings.bot.cap.announcements'] }));
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(refreshed);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
-    await user.click(screen.getByRole('button', { name: en['admin.bot.status.refresh'] }));
+    await glennMenu(user, en['serverSettings.bot.menu.refresh']);
     expect(await screen.findByText(en['admin.bot.status.disabled'])).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.welcome'] })).toBeChecked();
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.welcome'] })).toBeChecked();
   });
 
   it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
@@ -538,11 +537,9 @@ describe('the server bot settings', () => {
     expect(stored).toContain('csrf-only');
     expect(stored).not.toContain('oauth-code');
     expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
-    expect(screen.getByRole('heading', { name: en['workspace.providers.title'] })).toBeInTheDocument();
-    expect(screen.getByText(en['workspace.providers.youtubeSetup'])).toBeInTheDocument();
-    expect(screen.getByText(/Join a voice channel, then type \/play/)).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: en['serverSettings.music.youtube'] })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'getBotDjRoles', 'getBotSpotifyConfig',
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'getBotSpotifyConfig',
       'getBotCommandStatus', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
@@ -565,47 +562,7 @@ describe('the server bot settings', () => {
     expect(announce).toHaveBeenCalledWith(en['admin.bot.joinRole.saved']);
   });
 
-  it('edits DJ role policy only for the current ready installation and below the actor hierarchy', async () => {
-    const initial = { ...ROW, state: 3 as const, capabilities: 1 };
-    const { fake, user, announce } = setupPage('music', initial);
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: initial.id });
-      if (command.m === 'configureBotDjRoles') return Promise.resolve({ acceptedCount: command.roleIds.length });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    act(() => {
-      fake.set(`permissions:${SERVER}`, { ...ACCESS, owner: false, top: 2 });
-      fake.set(`roles:${SERVER}`, [
-        { id: '22'.repeat(16), name: 'Members', position: 1, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
-        { id: '33'.repeat(16), name: 'Higher role', position: 3, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
-      ]);
-    });
-    const checkbox = await screen.findByRole('checkbox', { name: 'Members' });
-    expect(screen.queryByRole('checkbox', { name: 'Higher role' })).not.toBeInTheDocument();
-    expect(screen.getByText(en['admin.bot.music.djRoles.help'])).toBeInTheDocument();
-    await user.click(checkbox);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.music.djRoles.save'] }));
-    await waitFor(() => expect(fake.callsOf('configureBotDjRoles')).toHaveLength(1));
-    expect(fake.callsOf('configureBotDjRoles')[0]).toMatchObject({ communityId: SERVER, installationId: initial.id, roleIds: ['22'.repeat(16)] });
-    expect(fake.callsOf('configureBotDjRoles')[0].requestId).toMatch(/^[0-9a-f]{32}$/);
-    expect(announce).toHaveBeenCalledWith(en['admin.bot.music.djRoles.saved']);
-    expect(screen.getByText(en['admin.bot.music.djRoles.help'])).toHaveTextContent(/does not mean playback is ready/i);
-  });
 
-  it('shows DJ role policy read-only without both current manager permissions', async () => {
-    const initial = { ...ROW, state: 3 as const };
-    const { fake } = setupPage('music', initial, false, false, false);
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
-      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: initial.id });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    expect(await screen.findByText(en['admin.bot.music.djRoles.readOnly'])).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: en['admin.bot.music.djRoles.save'] })).not.toBeInTheDocument();
-  });
 
   it('does not read join-role configuration on the bot page', async () => {
     const initial = { ...ROW, state: 3 as const, revision: '3' };
@@ -637,41 +594,40 @@ describe('the server bot settings', () => {
   it('shows staged status and asks for step-up before enabling through the worker', async () => {
     const { fake, user, announce } = setup();
     expect(await screen.findByText(en['admin.bot.none'])).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    await user.click(screen.getByRole('button', { name: en['serverSettings.bot.enable'] }));
     expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     expect(await screen.findByText(en['admin.bot.status.pending'])).toBeInTheDocument();
-    expect(screen.getByText(en['admin.bot.staged'])).toBeInTheDocument();
     expect(fake.callsOf('configureBotInstallation')).toEqual([expect.objectContaining({ m: 'configureBotInstallation',
-      communityId: SERVER, expectedRevision: null, capabilities: 0, stepUp: 'short-lived-step-up' })]);
+      communityId: SERVER, expectedRevision: null, capabilities: 256 | 512, stepUp: 'short-lived-step-up' })]);
     expect(announce).toHaveBeenCalledWith(en['admin.bot.enabledNotice']);
   });
 
   it('submits explicitly selected capabilities and supports toggling them by keyboard', async () => {
     const { fake, user } = setup();
     await screen.findByText(en['admin.bot.none']);
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).not.toBeChecked();
-    const music = screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] });
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.music'] })).not.toBeChecked();
+    const music = screen.getByRole('switch', { name: en['serverSettings.bot.cap.music'] });
     music.focus();
     await user.keyboard(' ');
     expect(music).toBeChecked();
-    const announcements = screen.getByRole('checkbox', { name: en['admin.bot.capability.announcements'] });
+    const announcements = screen.getByRole('switch', { name: en['serverSettings.bot.cap.announcements'] });
     await user.click(announcements);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    await user.click(screen.getByRole('button', { name: en['serverSettings.bot.enable'] }));
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
-    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ capabilities: 1 | 8 });
+    // A first enable starts with Polls and Reminders on (bits 8 and 9, Task 10c fix round 1, I1).
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ capabilities: 1 | 8 | 256 | 512 });
   });
 
   it('shows the permission ceiling and disables capabilities the current access summary cannot grant', async () => {
     const { user } = setup(null, false, false, false);
     await screen.findByText(en['admin.bot.none']);
-    expect(screen.getByText(en['admin.bot.capabilities.permissionCeiling'])).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.roles'] })).toBeDisabled();
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).toHaveAccessibleDescription(
-      /Requires Connect and Speak/);
+    // Task 10c: a capability the access summary cannot grant says what it needs in its row and cannot be switched on.
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.roles'] })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('group', { name: en['serverSettings.bot.cap.roles'] })).toHaveAccessibleDescription(en['admin.bot.capability.requires.roles']);
     await user.keyboard('{Tab}');
   });
 
@@ -686,8 +642,8 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.disabled']);
-    await user.click(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] }));
-    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    await user.click(screen.getByRole('switch', { name: en['serverSettings.bot.cap.music'] }));
+    await user.click(screen.getByRole('button', { name: en['serverSettings.bot.enable'] }));
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.conflict']);
@@ -705,9 +661,9 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.disabled']);
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.announcements'] })).toBeChecked();
-    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.music'] })).toBeChecked();
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.announcements'] })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: en['serverSettings.bot.enable'] }));
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
@@ -725,10 +681,9 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.announcements'] })).toBeChecked();
-    await user.click(screen.getByRole('checkbox', { name: en['admin.bot.capability.warnings'] }));
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.music'] })).toBeChecked();
+    expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.announcements'] })).toBeChecked();
+    await user.click(screen.getByRole('switch', { name: en['serverSettings.bot.cap.warnings'] }));
     await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
@@ -748,8 +703,7 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
-    await user.click(screen.getByRole('checkbox', { name: en['admin.bot.capability.welcome'] }));
+    await user.click(screen.getByRole('switch', { name: en['serverSettings.bot.cap.welcome'] }));
     await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
@@ -768,13 +722,12 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
-    const roles = screen.getByRole('checkbox', { name: en['admin.bot.capability.roles'] });
+    const roles = screen.getByRole('switch', { name: en['serverSettings.bot.cap.roles'] });
     expect(roles).toBeChecked();
-    expect(roles).toBeEnabled();
+    expect(roles).not.toHaveAttribute('aria-disabled');
     await user.click(roles);
     expect(roles).not.toBeChecked();
-    expect(roles).toBeDisabled();
+    expect(roles).toHaveAttribute('aria-disabled', 'true');
     await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
     await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
@@ -793,8 +746,7 @@ describe('the server bot settings', () => {
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.pending']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
-    const roles = screen.getByRole('checkbox', { name: en['admin.bot.capability.roles'] });
+    const roles = screen.getByRole('switch', { name: en['serverSettings.bot.cap.roles'] });
     expect(roles).toBeChecked();
     await user.click(roles);
     await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
@@ -841,35 +793,6 @@ describe('the server bot settings', () => {
     }
   });
 
-  it('reloads DJ roles when an installation becomes Ready after its initial empty read', async () => {
-    vi.useFakeTimers();
-    try {
-      const pending = { ...ROW, state: 0 as const };
-      const ready = { ...ROW, state: 3 as const, capabilities: 1, revision: '3', userId: '77'.repeat(16) };
-      let installationReads = 0;
-      let djRoleReads = 0;
-      const { fake } = setupPage('music', pending, false, false, true, true, command => {
-        if (command.m === 'getBotInstallation') {
-          installationReads += 1;
-          return Promise.resolve(installationReads === 1 ? pending : ready);
-        }
-        if (command.m === 'getBotDjRoles') {
-          djRoleReads += 1;
-          return Promise.resolve(djRoleReads === 1 ? null : { roleIds: [], installationId: ready.id });
-        }
-        if (command.m === 'getBotJoinRole') return Promise.resolve(null);
-        return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-      });
-      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-      expect(screen.getByText(en['admin.bot.music.djRoles.requiresBot'])).toBeInTheDocument();
-      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
-      expect(screen.getByRole('checkbox', { name: 'Members' })).toBeInTheDocument();
-      expect(fake.callsOf('getBotDjRoles')).toHaveLength(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('starts polling when a newly enabled bot moves from absent to Pending', async () => {
     vi.useFakeTimers();
     try {
@@ -886,7 +809,7 @@ describe('the server bot settings', () => {
         if (command.m === 'configureBotInstallation') return Promise.resolve({ ...ROW, state: 0, revision: '1' });
         return Promise.resolve(null);
       };
-      act(() => { fireEvent.click(screen.getByRole('button', { name: en['admin.bot.enable'] })); });
+      act(() => { fireEvent.click(screen.getByRole('button', { name: en['serverSettings.bot.enable'] })); });
       await act(async () => {
         fireEvent.change(screen.getByLabelText(en['factorSettings.stepUp.password']), { target: { value: 'local-password' } });
         fireEvent.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
@@ -938,7 +861,7 @@ describe('the server bot settings', () => {
   it('disables the bot using the current revision and announces the returned state', async () => {
     const { fake, user, announce } = setup({ ...ROW, state: 3, revision: '8', userId: '77'.repeat(16) });
     expect(await screen.findByText(en['admin.bot.status.ready'])).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
+    await glennMenu(user, en['serverSettings.bot.menu.disable'].replace('{bot}', en['serverSettings.bot.fallbackName']));
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.disabled']));
     expect(fake.callsOf('disableBotInstallation')).toEqual([expect.objectContaining({ m: 'disableBotInstallation',
       communityId: SERVER, expectedRevision: '8' })]);
@@ -950,7 +873,7 @@ describe('the server bot settings', () => {
     fake.handler = command => command.m === 'disableBotInstallation'
       ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null);
     await screen.findByText(en['admin.bot.status.ready']);
-    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
+    await glennMenu(user, en['serverSettings.bot.menu.disable'].replace('{bot}', en['serverSettings.bot.fallbackName']));
     expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.forbidden']);
     expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
   });
@@ -958,7 +881,7 @@ describe('the server bot settings', () => {
   it('keeps the enable control reachable by keyboard', async () => {
     const { user } = setup();
     await screen.findByText(en['admin.bot.none']);
-    const button = screen.getByRole('button', { name: en['admin.bot.enable'] });
+    const button = screen.getByRole('button', { name: en['serverSettings.bot.enable'] });
     button.focus();
     await user.keyboard('{Enter}');
     expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
@@ -967,7 +890,7 @@ describe('the server bot settings', () => {
   it('does not offer a new install when the current installation could not be read', async () => {
     const { fake } = setup(null, true);
     expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.other'].replace('{code}', 'E_NETWORK'));
-    expect(screen.getByRole('button', { name: en['admin.bot.enable'] })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: en['serverSettings.bot.enable'] })).toHaveAttribute('aria-disabled', 'true');
     expect(fake.callsOf('configureBotInstallation')).toHaveLength(0);
   });
 
@@ -975,7 +898,7 @@ describe('the server bot settings', () => {
     setup(null, false, true);
     await screen.findByText(en['admin.bot.none']);
     expect(document.querySelector('.d-settings-frame')).toHaveAttribute('data-layout', 'phone');
-    expect(screen.getByRole('button', { name: en['admin.bot.enable'] })).toBeVisible();
+    expect(screen.getByRole('button', { name: en['serverSettings.bot.enable'] })).toBeVisible();
   });
 
   it('ignores a late A read after an in-place switch to B and only disables B after B loads', async () => {
@@ -1008,16 +931,139 @@ describe('the server bot settings', () => {
     </CoreProvider></div>);
     await waitFor(() => expect(fake.callsOf('getBotInstallation')).toHaveLength(2));
     await act(async () => { resolveA(rowA); await readA; });
-    const staleDisable = screen.queryByRole('button', { name: en['admin.bot.disable'] });
-    if (staleDisable !== null) await user.click(staleDisable);
+    // Task 10c: Disable sits in Glenn's row menu; a stale A row offers none before B's read arrives.
+    expect(document.querySelector('[role="group"][aria-keyshortcuts="Shift+F10"]')).toBeNull();
     expect(fake.callsOf('disableBotInstallation')).toHaveLength(0);
     expect(screen.queryByText(en['admin.bot.status.ready'])).toBeNull();
 
     await act(async () => { resolveB(rowB); await readB; });
     expect(await screen.findByText(en['admin.bot.status.ready'])).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
+    await glennMenu(user, en['serverSettings.bot.menu.disable'].replace('{bot}', en['serverSettings.bot.fallbackName']));
     await waitFor(() => expect(fake.callsOf('disableBotInstallation')).toHaveLength(1));
     expect(fake.callsOf('disableBotInstallation')[0]).toMatchObject({ communityId: communityB, expectedRevision: '9' });
     expect(screen.getByText(en['admin.bot.status.disabled'])).toBeInTheDocument();
+  });
+
+  // Task 10c: Glenn's card, Restart, the ten capability rows and the Music page's defaults.
+  describe('Signal task 10c', () => {
+    const GLENN = '77'.repeat(16);
+    const ready = { ...ROW, state: 3 as const, revision: '5', userId: GLENN, capabilities: 1 | 1 << 8 | 1 << 9,
+      restartRequested: '0', restartHandled: '0', version: '0.4.2', musicVolume: 100, musicIdleMinutes: 30 };
+    const glenn = (fake: FakeClient) => act(() => fake.publish(`members:${SERVER}`, [{ userId: GLENN, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]));
+
+    it('shows Glenn as a managed bot with presence and version, and ten capability rows', async () => {
+      const { fake } = setup(ready);
+      glenn(fake);
+      expect(await screen.findByText('Managed bot · online · v0.4.2')).toBeInTheDocument();
+      expect(screen.getAllByRole('switch').map(sw => sw.getAttribute('aria-label'))).toEqual(['Music', 'Polls', 'Reminders', 'Welcome messages', 'Roles',
+        'Announcements', 'Warnings and timeouts', 'Message removal', 'Kick', 'Ban']);
+      expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.polls'] })).toBeChecked();
+      expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.reminders'] })).toBeChecked();
+    });
+    it('omits the version for a runtime that reports none', async () => {
+      const { fake } = setup({ ...ready, version: null });
+      glenn(fake);
+      expect(await screen.findByText('Managed bot · online')).toBeInTheDocument();
+    });
+    it('switching Polls off saves bit 8 off through the step-up configure', async () => {
+      const { fake, user } = setup(ready);
+      fake.handler = command => {
+        if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+        if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+        if (command.m === 'configureBotInstallation') return Promise.resolve({ ...ready, revision: '6', capabilities: 1 | 1 << 9 });
+        return Promise.resolve(null);
+      };
+      await user.click(await screen.findByRole('switch', { name: en['serverSettings.bot.cap.polls'] }));
+      await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
+      await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+      await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+      await waitFor(() => expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '5', capabilities: 1 | 1 << 9 }));
+    });
+    it('Restart asks once, says Restarting… until the runtime reports it, then announces', async () => {
+      vi.useFakeTimers();
+      try {
+        let handled = '0';
+        const { fake, announce } = setup(ready, false, false, true, true, command => {
+          if (command.m === 'getBotInstallation') return Promise.resolve({ ...ready, restartRequested: '1', restartHandled: handled });
+          if (command.m === 'restartBot') return Promise.resolve({ requested: '1', handled: '0' });
+          return Promise.resolve(null);
+        });
+        glenn(fake);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        act(() => { fireEvent.click(screen.getByRole('button', { name: en['serverSettings.bot.restart'] })); });
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(fake.callsOf('restartBot')).toEqual([{ m: 'restartBot', communityId: SERVER, installationId: ready.id }]);
+        const button = screen.getByRole('button', { name: en['serverSettings.bot.restarting'] });
+        expect(button).toHaveAttribute('aria-disabled', 'true');
+        act(() => { fireEvent.click(button); });
+        expect(fake.callsOf('restartBot')).toHaveLength(1);
+        handled = '1';
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+        expect(announce).toHaveBeenCalledWith(en['serverSettings.bot.restarted'].replace('{bot}', 'Glenn'));
+        expect(screen.getByRole('button', { name: en['serverSettings.bot.restart'] })).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('Restart comes back with a note when the runtime has not picked it up by the end of polling', async () => {
+      vi.useFakeTimers();
+      try {
+        const { fake } = setup(ready, false, false, true, true, command => {
+          if (command.m === 'getBotInstallation') return Promise.resolve({ ...ready, restartRequested: '1', restartHandled: '0' });
+          if (command.m === 'restartBot') return Promise.resolve({ requested: '1', handled: '0' });
+          return Promise.resolve(null);
+        });
+        glenn(fake);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        act(() => { fireEvent.click(screen.getByRole('button', { name: en['serverSettings.bot.restart'] })); });
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(screen.getByRole('button', { name: en['serverSettings.bot.restarting'] })).toHaveAttribute('aria-disabled', 'true');
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000 * 46); });
+        const again = screen.getByRole('button', { name: en['serverSettings.bot.restart'] });
+        expect(again).not.toHaveAttribute('aria-disabled');
+        expect(screen.getByText(en['serverSettings.bot.restartPending'].replace('{bot}', 'Glenn'))).toBeInTheDocument();
+        act(() => { fireEvent.click(again); });
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(fake.callsOf('restartBot')).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('a refused Restart says why', async () => {
+      const { fake, user } = setup(ready);
+      fake.handler = command => command.m === 'restartBot' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }))
+        : Promise.resolve(command.m === 'getBotInstallation' ? ready : null);
+      await user.click(await screen.findByRole('button', { name: en['serverSettings.bot.restart'] }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.forbidden']);
+    });
+    it('the Music page lists the roles with Control music and saves the defaults as they are picked', async () => {
+      const { fake, user, announce } = setupPage('music', ready);
+      act(() => fake.set(`roles:${SERVER}`, [
+        { id: '22'.repeat(16), name: 'Members', position: 1, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
+        { id: '33'.repeat(16), name: 'DJ', position: 2, members: 2, allow: 1 << 25, deny: 0, color: 0, hoist: false, mentionable: false },
+      ]));
+      fake.handler = command => {
+        if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+        if (command.m === 'setBotMusicSettings') return Promise.resolve({ ...ready, musicVolume: command.volume, musicIdleMinutes: command.idleMinutes });
+        return Promise.resolve(null);
+      };
+      expect(await screen.findByText(en['serverSettings.music.djRoles'].replace('{roles}', 'DJ'))).toBeInTheDocument();
+      await user.click(within(screen.getByRole('radiogroup', { name: en['serverSettings.music.volume'] })).getByRole('radio', { name: '50' }));
+      await waitFor(() => expect(fake.callsOf('setBotMusicSettings')).toEqual([{ m: 'setBotMusicSettings', communityId: SERVER,
+        installationId: ready.id, volume: 50, idleMinutes: 30 }]));
+      await user.click(within(screen.getByRole('radiogroup', { name: en['serverSettings.music.idle'] })).getByRole('radio', { name: '15m' }));
+      await waitFor(() => expect(fake.callsOf('setBotMusicSettings').at(-1)).toMatchObject({ volume: 50, idleMinutes: 15 }));
+      expect(announce).toHaveBeenCalledWith(en['serverSettings.music.saved']);
+      expect(screen.getByText(en['serverSettings.music.idleHint'].replace('{bot}', 'Glenn'))).toBeInTheDocument();
+    });
+    it('the Music page says no role has Control music yet, and a member without Manage server cannot change the defaults', async () => {
+      const { fake, user } = setupPage('music', ready);
+      act(() => fake.set(`permissions:${SERVER}`, { ...ACCESS, owner: false, manageCommunity: false }));
+      expect(await screen.findByText(en['serverSettings.music.djNone'])).toBeInTheDocument();
+      const fifty = within(screen.getByRole('radiogroup', { name: en['serverSettings.music.volume'] })).getByRole('radio', { name: '50' });
+      expect(fifty).toHaveAttribute('aria-disabled', 'true');
+      await user.click(fifty);
+      expect(fake.callsOf('setBotMusicSettings')).toHaveLength(0);
+    });
   });
 });

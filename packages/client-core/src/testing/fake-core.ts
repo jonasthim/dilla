@@ -35,6 +35,7 @@ export class FakeCore implements CorePort {
   proposedAdds(): { index: bigint; userId: Id; cachedVersion: bigint }[] { this.enter('proposedAdds'); return []; }
   deviceListIngestAdd(): { version: bigint; changed: boolean; quarantined: number } { this.enter('deviceListIngestAdd'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
   deviceListIngest(): { version: bigint; changed: boolean; quarantined: number } { this.enter('deviceListIngest'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
+  accountKindIngest(): void { this.enter('accountKindIngest'); }
   revalidatePending(): number { this.enter('revalidatePending'); return 0; }
   trustState(): TrustRecord[] { this.enter('trustState'); return []; }
   trustGeneration(): bigint { this.enter('trustGeneration'); return 0n; }

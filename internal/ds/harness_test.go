@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -25,7 +24,7 @@ import (
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitetest"
 )
 
 // dsHarness is a whole delivery service over a real SQLite file, a real wazero runtime and a real
@@ -186,16 +185,10 @@ func (r gatewayScopeResolver) ChannelCommunity(ctx context.Context, channelID id
 
 func openMigratedSQLite(t *testing.T, path string) store.Repository {
 	t.Helper()
+	sqlitetest.MigratedFile(t, path)
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
 		t.Fatalf("sqlite.OpenWrite: %v", err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
-	if err != nil {
-		t.Fatalf("goose provider: %v", err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatalf("goose up: %v", err)
 	}
 	read, err := sqlite.OpenRead(path)
 	if err != nil {

@@ -10,7 +10,24 @@ The instance acts as the MLS Delivery Service (RFC 9750 §5) for every group it 
    `signature_key` is the device's **registered key** (the `dsk_pub` it registered with
    `POST /v1/accounts` or `POST /v1/devices`, the key its sessions are established under); a
    package for another device is `403 E_FORBIDDEN`, any other mismatch `422 E_COMMIT_INVALID`
-   (`rule = "key_package"`), and nothing of the request is stored.
+   (`rule = "key_package"`), and nothing of the request is stored. The credential's `kind` must
+   fit the publishing account (the **credential-kind rule**, below).
+
+   **Credential-kind rule.** A leaf credential's `kind` (`03-identity.md` § Credential) is signed by
+   its own user's SSK, so it is the account's claim, not a fact. The DS binds it to the account
+   (`users.kind`) wherever a new leaf reaches it: a published KeyPackage, a directory package
+   before the DS spends it on its own `Add` (one that fails is deleted, as an unbound one is), every
+   `Add` a commit applies (invariant 4), the leaf an external commit creates (invariant 5's joiner
+   and a resync), the one leaf a group is registered with, every leaf of a reseeded tree and the
+   joiner of a replayed resync (heal). A **human** account (`kind 0`) presents only a human-kind
+   credential; a **Bot** account (`kind 1`) presents exactly the credential its installation
+   verified (`10-community-bot.md`), which enrolment verified as Bot-kind. A credential whose kind
+   does not decode, or that names no account of the instance, fails closed. The refusal is the
+   entry point's own (`422 E_COMMIT_INVALID` with its rule: `key_package`, `add_key_package`,
+   `external_joiner`; `400 E_INVALID_REQUEST` at registration). Clients still never trust a
+   sender's credential `kind` alone: a sender is shown as a Bot only when the server's member row
+   is of account kind 1 as well, and from wire 4 a client's core also judges every leaf's kind
+   against the instance-signed account-kind attestation (`03` § Account kind attestation).
 2. **Sequencer**: accepts exactly one Commit per epoch per group and totally orders handshake and
    application messages per group (`seq`, a per-group unsigned counter starting at 1).
 3. **GroupInfo and tree store**: keeps the latest committer-signed GroupInfo (without the ratchet

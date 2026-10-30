@@ -261,7 +261,7 @@ func (h *moderationRemovalAPI) requireBotRemoval(r *http.Request, repo store.Rep
 		return err
 	}
 	installation, err := repo.GetActiveBotInstallationByCommunity(r.Context(), communityID)
-	if err != nil || installation.Capabilities&uint8(botCapRemoval) == 0 {
+	if err != nil || installation.Capabilities&uint16(botCapRemoval) == 0 {
 		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
 	}
 	return nil

@@ -15,7 +15,8 @@ export default defineConfig({
   // A project's own testIgnore replaces this one, so a project that ignores more repeats these names.
   testIgnore: /(^|\/)(support|core-worker|spike-joinall)\.spec\.ts$/,
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
-  metadata: { dillaHost },
+  // prebuildBotRuntime: the global setup builds dillabot and dilla-bot-core once, so no Bot test pays a cold build.
+  metadata: { dillaHost, prebuildBotRuntime: true },
   fullyParallel: false,
   workers: 1,
   retries: 0,

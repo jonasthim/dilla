@@ -280,7 +280,7 @@ impl Request {
         if let Some(ch) = self.channel_id {
             check_id16(ch.as_bytes())?;
         }
-        let expects_channel = matches!(self.operation, 10..=23);
+        let expects_channel = matches!(self.operation, 10..=23 | 25);
         if expects_channel != self.channel_id.is_some() {
             return Err(CodecError::Value);
         }
@@ -291,10 +291,10 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|3|10..=24|30|31|40|50..=52|60..=64|70..=75|80..=84) {
+        if !matches!(self.operation, 0|1|2|3|10..=25|30|31|40|50..=52|60..=64|70..=75|80..=84) {
             return Err(CodecError::Operation);
         }
-        if matches!(self.operation, 31 | 70 | 80) && self.revision != Some(0) {
+        if matches!(self.operation, 25 | 31 | 70 | 80) && self.revision != Some(0) {
             return Err(CodecError::Value);
         }
         if !args_match(self.operation, &self.args) {
@@ -596,7 +596,7 @@ fn validate_utility_payload(op: u64, bytes: &[u8]) -> Result<(), CodecError> {
 fn is_mutation(op: u64) -> bool {
     matches!(
         op,
-        2 | 12..=23 | 31 | 51 | 52 | 61 | 63 | 70 | 73 | 74 | 80 | 82 | 83
+        2 | 12..=23 | 25 | 31 | 51 | 52 | 61 | 63 | 70 | 73 | 74 | 80 | 82 | 83
     )
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
@@ -609,7 +609,8 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         17 => matches!(a, RequestArgs::Number(_)),
         18 => matches!(a, RequestArgs::Number(0..=100)),
         20 => matches!(a, RequestArgs::Number(0..=2)),
-        21 => matches!(a, RequestArgs::Id(_)),
+        // 25: the music announcement names its text channel (Jonas 2026-10-28).
+        21 | 25 => matches!(a, RequestArgs::Id(_)),
         22 => matches!(a, RequestArgs::Move { .. }),
         30 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,2000,false)),
         31 => matches!(a, RequestArgs::RolePanel { .. }),
@@ -799,7 +800,7 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
             }
             RequestArgs::Cursor(cursor)
         }
-        21 => {
+        21 | 25 => {
             d.array(1)?;
             RequestArgs::Id(read_msg(d)?)
         }
@@ -1803,6 +1804,29 @@ mod tests {
             payload: vec![0x80],
         };
         assert!(unknown.encode().is_err());
+    }
+
+    #[test]
+    fn music_announce_names_a_text_channel_on_the_voice_channel_at_revision_zero() {
+        fn request(revision: u64) -> Vec<u8> {
+            let mut e = Encoder::new();
+            e.array(8)
+                .uint(1)
+                .bytes(&[1; 16])
+                .bytes(&[2; 16])
+                .bytes(&[3; 16])
+                .uint(25)
+                .uint(revision)
+                .uint(130)
+                .array(1)
+                .bytes(&[4; 16]);
+            e.into_vec()
+        }
+        let decoded = Request::decode_cbor(&request(0)).unwrap();
+        assert_eq!(decoded.operation, 25);
+        assert!(matches!(decoded.args, RequestArgs::Id(id) if id.as_bytes() == &[4; 16]));
+        assert_eq!(decoded.encode_cbor().unwrap(), request(0));
+        assert!(Request::decode_cbor(&request(1)).is_err());
     }
 
     #[test]

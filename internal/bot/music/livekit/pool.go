@@ -7,6 +7,7 @@ import (
 	"time"
 
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music/counter"
@@ -99,6 +100,82 @@ type Pool struct {
 	startDone   chan struct{}
 	closeDone   chan struct{}
 	generation  uint64
+
+	// rtt reports the room's RTT for the stage (Signal task 8c: the bot's "63 ms"); nil reports nothing. roomRTT reads it
+	// from a room (lksdkRoomRTT by default; a test's fake), rttEvery is the read cadence.
+	rtt      func(context.Context, id.ID, uint32) error
+	roomRTT  func(poolRoom) (time.Duration, bool)
+	rttEvery time.Duration
+}
+
+// RTTStep is how far the room's RTT must move before it is reported again.
+const RTTStep = 5 * time.Millisecond
+
+// SetRTTReporter makes every room the pool connects report its RTT to the SFU through report (client.Session.ReportCallRTT:
+// dillad writes it as this device's dilla.rtt attribute) every 2 s while it changes by RTTStep or more. A refused report is
+// dropped; the next read tries again.
+func (p *Pool) SetRTTReporter(report func(context.Context, id.ID, uint32) error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rtt = report
+}
+
+// lksdkRoomRTT is the selected ICE candidate pair's current round-trip time on the room's publisher connection (the
+// subscriber's when there is none), as the web reads its own (the transport's selected pair).
+func lksdkRoomRTT(room poolRoom) (time.Duration, bool) {
+	r, ok := room.(*lksdk.Room)
+	if !ok || r.LocalParticipant == nil {
+		return 0, false
+	}
+	pc := r.LocalParticipant.GetPublisherPeerConnection()
+	if pc == nil {
+		pc = r.LocalParticipant.GetSubscriberPeerConnection()
+	}
+	if pc == nil {
+		return 0, false
+	}
+	for _, st := range pc.GetStats() {
+		pair, ok := st.(webrtc.ICECandidatePairStats)
+		if ok && pair.Nominated && pair.State == webrtc.StatsICECandidatePairStateSucceeded && pair.CurrentRoundTripTime > 0 {
+			return time.Duration(pair.CurrentRoundTripTime * float64(time.Second)), true
+		}
+	}
+	return 0, false
+}
+
+// reportRTT reads room's RTT every rttEvery until ctx ends and reports it when it moved by RTTStep or more.
+func (p *Pool) reportRTT(ctx context.Context, callID id.ID, room poolRoom, report func(context.Context, id.ID, uint32) error) {
+	read, every := p.roomRTT, p.rttEvery
+	if read == nil {
+		read = lksdkRoomRTT
+	}
+	if every <= 0 {
+		every = 2 * time.Second
+	}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	sent := time.Duration(-1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		rtt, ok := read(room)
+		if !ok {
+			continue
+		}
+		rtt = min(rtt.Round(time.Millisecond), 5*time.Second)
+		if sent >= 0 && (rtt-sent).Abs() < RTTStep {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, every)
+		err := report(rctx, callID, uint32(rtt/time.Millisecond)) //nolint:gosec // G115: at most 5000
+		cancel()
+		if err == nil {
+			sent = rtt
+		}
+	}
 }
 
 // NewPool creates a publisher room pool whose absolute connection lifetime is
@@ -305,7 +382,11 @@ func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBi
 	p.connection = conn
 	p.connecting = false
 	p.finishConnectLocked(gen, connectDone)
+	report := p.rtt
 	p.mu.Unlock()
+	if report != nil {
+		go p.reportRTT(roomCtx, call.CallID, room, report)
+	}
 	go func() {
 		<-roomCtx.Done()
 		p.markDead(gen, roomCtx.Err())
@@ -340,10 +421,20 @@ func (p *Pool) markDead(generation uint64, cause error) {
 		p.mu.Unlock()
 		return
 	}
+	conn, cancel := p.markDeadLocked(cause)
+	p.mu.Unlock()
+	teardown(conn, cancel)
+}
+
+// markDeadLocked marks the pool dead and hands back what the caller must tear down once it has
+// released p.mu.
+func (p *Pool) markDeadLocked(cause error) (*poolConnection, context.CancelFunc) {
 	p.dead = true
 	p.deadReason = cause
-	conn, cancel := p.connection, p.roomCancel
-	p.mu.Unlock()
+	return p.connection, p.roomCancel
+}
+
+func teardown(conn *poolConnection, cancel context.CancelFunc) {
 	if cancel != nil {
 		cancel()
 	}
@@ -371,6 +462,32 @@ func (p *Pool) lifecycleError(fallback error) error {
 		return ErrPoolDead
 	}
 	return fallback
+}
+
+// ErrPoolIdle is the reason a room was left because nothing played for the idle-leave time.
+var ErrPoolIdle = errors.New("music room left after idle timeout")
+
+// LeaveIdle disconnects a retained room that has no active or starting track (Task 10c: the
+// Music page's "Leave voice when idle"). The next explicit Start connects a fresh room; automatic
+// EOF advancement cannot, exactly as after any other disconnect. A busy, connecting or already
+// empty pool is left alone.
+func (p *Pool) LeaveIdle() error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrPoolClosed
+	}
+	if p.dead || p.connection == nil || p.active != nil || p.connecting || p.connectDone != nil || p.startDone != nil {
+		p.mu.Unlock()
+		return nil
+	}
+	// Fix round 1 (I4): the idle check and the dead mark share one critical section, so a Start
+	// that begins after the check finds the pool dead and waits for Reset rather than racing a
+	// disconnect of the room it just reused. The disconnect itself runs outside the lock.
+	conn, cancel := p.markDeadLocked(ErrPoolIdle)
+	p.mu.Unlock()
+	teardown(conn, cancel)
+	return p.Reset()
 }
 
 // Reset is deliberately a no-op while the room is healthy. A dead or expired

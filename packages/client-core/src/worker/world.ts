@@ -377,6 +377,7 @@ export function world(opts: {
     deviceListIngestAdd: vi.fn(() => ({ version: 1n, changed: false, quarantined: 0 })),
     deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
       ({ version: 1n, changed: true, quarantined: 1 })),
+    accountKindIngest: vi.fn((_user: Uint8Array, _attestation: Uint8Array) => undefined),
     revalidatePending: vi.fn(() => 0),
     trustState: vi.fn((): TrustRecord[] => []),
     trustGeneration: vi.fn(() => 0n),
@@ -513,8 +514,11 @@ export function world(opts: {
       calls.push(`getBackup(${kind})`); return Promise.resolve({ object: kind === 0 ? ROOT : STATE_OBJECT, created: 1n });
     }),
     putBackup: vi.fn((kind: 0 | 1, _object: Uint8Array) => { calls.push(`putBackup(${kind})`); return Promise.resolve({ blobId: new Uint8Array(32), size: 3, created: false }); }),
-    getDeviceList: vi.fn((_user: Uint8Array) => { calls.push('getDeviceList'); return Promise.resolve({ version: 1n, blob: new Uint8Array([9]),
-      raw: toHex(_user) === toHex(STRANGER) ? encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) : LIST_RAW }); }),
+    getDeviceList: vi.fn((_user: Uint8Array) => {
+      calls.push('getDeviceList');
+      const raw = toHex(_user) === toHex(STRANGER) ? encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) : LIST_RAW;
+      return Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw });
+    }),
     getDeviceListHistory: vi.fn((_user: Uint8Array, _after: bigint) => Promise.resolve({
       raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n,
     })),

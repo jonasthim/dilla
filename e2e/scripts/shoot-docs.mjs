@@ -12,7 +12,7 @@
 //      empty shell, then, through the client alone, starts the server "Midgard Crew" (which comes with #general and
 //      a voice general), adds the text channel #loot and the voice channel "harbour", and makes an invite link;
 //      ada's screens are shot on the way, at 1280×800 and at 360×740, and the rail once on its own;
-//   3. signs björn and mira up through that invite link in two more Chromium profiles (Mesh theme,
+//   3. signs björn and mira up through that invite link in two more Chromium profiles (Signal theme,
 //      1280×800), lets the three talk in #general, and shoots mira's screens;
 //   3b. replies, reacts, edits, pins, mentions and shares images and files in #general between the three
 //      of them and shoots mira's view of each (the images are drawn by canvas in the page at run time);
@@ -277,7 +277,8 @@ const byText = (page, role, key, vars) => page.getByRole(role, { name: t(key, va
 /** The `@` tile (web3.9), the rail's first item: it carries the DM counts in `data-unread` and its name once a count shows. */
 const homeTile = (page) => byText(page, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${t('home.tile')}(,|$)`) });
 /** The gear in the user panel at the bottom left (web3.8): the rail has no settings button. */
-const gear = (page) => page.locator('.d-user-panel').getByRole('button', { name: t('panel.settings'), exact: true });
+// Signal: settings opens from the top bar's gear ("Open settings"); the user panel has none.
+const gear = (page) => page.getByRole('button', { name: t('workspace.open'), exact: true }).first();
 const composer = (page, channel) => page.getByRole('textbox', { name: t('shell.composer.label', { channel }), exact: true });
 const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.label', { channel }), exact: true })
   .locator('.d-message-row').filter({ hasText: text });
@@ -389,8 +390,14 @@ async function idOf(page, channel, text) {
 async function toolbarAction(page, msgId, key) {
   await byId(page, msgId).focus();
   await byId(page, msgId).hover();
-  await byId(page, msgId).getByRole('toolbar', { name: t('shell.message.toolbar'), exact: true })
-    .getByRole('button', { name: t(key), exact: true }).click();
+  const toolbar = byId(page, msgId).getByRole('toolbar', { name: t('shell.message.toolbar'), exact: true });
+  // Task 7 (Ruling U): edit, pin, unpin and delete are in the "more" menu; react, reply and thread are icon buttons.
+  if (['shell.message.edit', 'shell.message.pin', 'shell.message.unpin', 'shell.message.delete'].includes(key)) {
+    await toolbar.getByRole('button', { name: t('shell.message.more'), exact: true }).click();
+    await toolbar.getByRole('menuitem', { name: t(key), exact: true }).click();
+    return;
+  }
+  await toolbar.getByRole('button', { name: t(key), exact: true }).click();
 }
 
 async function pickEmoji(page, nameKey) {
@@ -480,10 +487,10 @@ const voiceRow = (page, name) => page.getByRole('button', { name: t('voice.open'
 const stage = (page) => page.locator('.dw-voice-stage');
 const dock = (page) => page.locator('.dw-voice-dock');
 
-/** The call phase is `in` and the dock shows a connected session. */
+/** The call phase is `in` and the dock holds a connected session (Signal: the dock hides while the stage is on screen). */
 async function connected(page) {
   await page.locator('[data-call-phase="in"]').first().waitFor({ timeout: WAIT });
-  await dock(page).locator('.d-voice-dock[data-phase="connected"]').waitFor({ timeout: WAIT });
+  await dock(page).locator('.d-voice-dock[data-phase="connected"]').waitFor({ state: 'attached', timeout: WAIT });
 }
 
 /** Clicks the voice channel `name` of the server `server` (one click joins it) and waits for a connected call. */
@@ -499,7 +506,10 @@ async function joinVoice(page, server, name) {
  * no controls (web3.7), so the button is the stage's; from another channel it is the dock's.
  */
 async function leaveVoice(page) {
-  await page.getByRole('button', { name: t('voice.leave'), exact: true }).locator('visible=true').first().click();
+  // Signal: the stage's leave is its [data-control="leave"] ("Leave"); without the stage, the dock's "leave".
+  const stageLeave = page.locator('.dw-voice-stage [data-control="leave"]');
+  if (await stageLeave.isVisible().catch(() => false)) await stageLeave.click();
+  else await page.locator('.dw-voice-dock').getByRole('button', { name: t('voice.leave'), exact: true }).click();
   await dock(page).waitFor({ state: 'detached', timeout: WAIT });
 }
 
@@ -633,11 +643,11 @@ async function main(argv) {
 
     // web3.9: Server settings → overview holds the inactive timeout of the built-in AFK channel (there is no picker), then
     // channels → new category: "Raids" holds #loot and "Boats" holds the voice channel harbour; Boats is collapsed for the shot.
-    await byText(ada, 'button', 'admin.open').click();
+    await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
     const prepDialog = byText(ada, 'dialog', 'admin.title');
     const prepNav = prepDialog.getByRole('navigation', { name: t('admin.nav'), exact: true });
     await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.overview), exact: true }).click();
-    await prepDialog.getByRole('combobox', { name: t('afk.timeout.label'), exact: true }).and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await prepDialog.getByRole('radiogroup', { name: t('admin.overview.afk'), exact: true }).waitFor({ timeout: WAIT });
     await settle(ada);
     await shootAda('afk-settings-desktop');
     await prepNav.getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.channels), exact: true }).click();
@@ -669,22 +679,20 @@ async function main(argv) {
 
     // Server settings → Invites → "Make link": the dialog makes the link and copies it; the link is read from its field,
     // never the clipboard.
-    await byText(ada, 'button', 'admin.open').click();
+    await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
     const settingsDialog = byText(ada, 'dialog', 'admin.title');
     await settingsDialog.getByRole('navigation', { name: t('admin.nav'), exact: true })
       .getByRole('button', { name: t(WORKSPACE_SERVER_SETTINGS.invites), exact: true }).click();
-    await settingsDialog.getByRole('button', { name: t('admin.invites.create'), exact: true }).click();
-    const inviteDialog = byText(ada, 'dialog', 'invite.title', { server: SERVER });
-    const linkField = inviteDialog.getByRole('textbox', { name: t('invite.link'), exact: true });
+    // Signal task 10c: the link shows once in the Invites card, with Copy (no dialog).
+    await settingsDialog.getByRole('button', { name: t('serverSettings.invites.make'), exact: true }).click();
+    const inviteDialog = settingsDialog;
+    const linkField = inviteDialog.getByRole('textbox', { name: t('serverSettings.invites.link'), exact: true });
     await linkField.waitFor({ timeout: WAIT });
-    await inviteDialog.getByRole('status').filter({ hasText: t('invite.copied') }).waitFor({ timeout: WAIT });
     const inviteLink = await linkField.inputValue();
     const invitePath = new URL(inviteLink).pathname;
     if (!/^\/i\/[^/]+$/.test(invitePath)) throw new Error(`the invite dialog showed ${JSON.stringify(inviteLink)}, not an /i/ link`);
     const invite = decodeURIComponent(invitePath.slice(3));
     await shootBoth('create-invite');
-    await ada.keyboard.press('Escape');
-    await inviteDialog.waitFor({ state: 'hidden', timeout: WAIT });
     await ada.keyboard.press('Escape');
     await settingsDialog.waitFor({ state: 'hidden', timeout: WAIT });
     const missing = CREATE_SHOTS.filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
@@ -800,7 +808,11 @@ async function main(argv) {
 
     await toolbarAction(pages.ada, packId, 'shell.message.pin');
     await byId(mira, packId).and(mira.locator('[data-pinned="true"]')).waitFor({ timeout: WAIT });
-    await mira.getByRole('button', { name: t('shell.pins.open'), exact: true }).click();
+    // Signal (Ruling X): pins are in the channel row's context menu, not a header button.
+    await mira.getByRole('navigation', { name: t('shell.channels.label'), exact: true })
+      .getByRole('button', { name: /^general(,|$)/ }).first().click({ button: 'right' });
+    await mira.getByRole('menu', { name: t('nav.channel.menuOf', { name: 'general' }), exact: true })
+      .getByRole('menuitem', { name: t('shell.pins.open'), exact: true }).click();
     const pins = mira.getByRole('dialog', { name: t('shell.pins.title', { channel: 'general' }), exact: true });
     await pins.getByText(t('shell.pins.by', { name: PEOPLE.ada.display }), { exact: true })
       .waitFor({ timeout: WAIT });
@@ -913,7 +925,8 @@ async function main(argv) {
     await byText(second, 'navigation', 'settings.nav.label').getByRole('button', { name: t(WORKSPACE_SETTINGS.devices), exact: true }).click();
     await byText(second, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await second.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
-    await second.locator('.d-settings-frame__body .d-settings-row__control').getByRole('button', { name: t('devices.signOut'), exact: true }).click();
+    // Signal task 10 fix round 1: Sign out is on this browser's own device row (README §5.9).
+    await second.locator('.d-settings-frame__body .d-device-row__actions').getByRole('button', { name: t('workspace.signOut'), exact: true }).click();
     await byText(second, 'heading', 'devices.signOutTitle').waitFor({ timeout: WAIT });
     await settle(second, { keepFocus: true });
     await shootSecond('settings-devices-signout');
@@ -922,7 +935,7 @@ async function main(argv) {
     await byText(second, 'button', 'settings.close').click();
     await byText(mira, 'button', WORKSPACE_SETTINGS.notifications).click();
     await byText(mira, 'heading', 'notify.title').waitFor({ timeout: WAIT });
-    await byText(mira, 'button', 'notify.permission.ask').waitFor({ timeout: WAIT });
+    await mira.getByRole('switch', { name: t('notify.desktop.label'), exact: true }).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-notifications');
     // web3.6: Settings -> Sign-in lists the factors mira set up at sign-up.
@@ -1012,7 +1025,7 @@ async function main(argv) {
     await revealRow.click({ position: { x: 150, y: 8 } });
     await mira.locator('[data-revealed="true"]').waitFor({ state: 'detached', timeout: WAIT });
     // web3.7.1 (opt in with --ui-out): the tab bar on a channel, hidden while typing, under Settings and under the members
-    // sheet, in the Mesh, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
+    // sheet, in the Signal, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
     if (o.uiOut !== undefined) {
       mkdirSync(o.uiOut, { recursive: true });
       const ui = async (name, theme) => {
@@ -1021,7 +1034,7 @@ async function main(argv) {
         await mira.screenshot({ path: path.join(o.uiOut, `${name}.${theme}.png`) });
       };
       const channelMenu = mira.getByRole('button', { name: t('nav.channel.menu'), exact: true });
-      for (const theme of ['mesh', 'light', 'high-contrast']) {
+      for (const theme of ['signal', 'light', 'high-contrast']) {
         // Right after opening: the tab bar shows, nothing is focused and there is no keyboard.
         await phoneBack.click();
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
@@ -1036,7 +1049,7 @@ async function main(argv) {
         await mira.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
         await phoneTab('nav.tab.you').click();
-        await mira.getByRole('button', { name: t('workspace.open'), exact: true }).click();
+        await mira.getByRole('button', { name: t('you.settings'), exact: true }).click();
         const settings = mira.getByRole('dialog', { name: t('settings.title'), exact: true });
         await settings.waitFor({ timeout: WAIT });
         await phoneTabs.waitFor({ state: 'hidden', timeout: WAIT });
@@ -1045,7 +1058,8 @@ async function main(argv) {
           .getByRole('button', { name: t(WORKSPACE_SETTINGS.privacy), exact: true }).click();
         await mira.waitForURL(/\/settings\/privacy$/);
         await ui('phone-settings-privacy', theme);
-        await settings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
+        // Task 10: a phone section has no Back (README §5.10); the browser's back returns to the index.
+        await mira.goBack();
         await mira.waitForURL(/\/settings$/);
         await settings.getByRole('button', { name: t('settings.close'), exact: true }).click();
         await settings.waitFor({ state: 'hidden', timeout: WAIT });
@@ -1060,7 +1074,7 @@ async function main(argv) {
         await closeMembers.click();
         await closeMembers.waitFor({ state: 'hidden', timeout: WAIT });
       }
-      await mira.evaluate(() => { document.documentElement.dataset.theme = 'mesh'; });
+      await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await settle(mira, { keepFocus: false });
     }
     await phoneBack.click();
@@ -1127,7 +1141,7 @@ async function main(argv) {
       await openSettings('profile');
       const userSettings = mira.getByRole('dialog', { name: t('settings.title'), exact: true });
       await userSettings.waitFor({ timeout: WAIT });
-      await capture(mira, 'profile-desktop-mesh');
+      await capture(mira, 'profile-desktop-signal');
       for (const [section, name] of [
         ['signin', 'signin'], ['devices', 'devices'], ['notifications', 'notifications'],
         ['voice', 'voice'], ['privacy', 'privacy'], ['diagnostics', 'diagnostics'],
@@ -1135,18 +1149,15 @@ async function main(argv) {
         await byText(mira, 'navigation', 'settings.nav.label')
           .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
         await mira.waitForURL(new RegExp(`/settings/${section}$`));
-        await capture(mira, `${name}-desktop-mesh`);
+        await capture(mira, `${name}-desktop-signal`);
       }
-      const search = userSettings.getByRole('searchbox', { name: t('workspace.search'), exact: true });
-      await search.fill('microphone test');
-      await userSettings.getByRole('button', { name: /Voice.*Preferences \/ Voice/u }).waitFor({ timeout: WAIT });
-      await capture(mira, 'search-result');
-      await search.fill('');
+      // Signal task 10 fix round 1: settings search is the ⌘K palette's; the workspace has no search field to shoot.
       await byText(mira, 'navigation', 'settings.nav.label')
         .getByRole('button', { name: t(WORKSPACE_SETTINGS.profile), exact: true }).click();
       await mira.waitForURL(/\/settings\/profile$/);
       const display = userSettings.getByRole('textbox', { name: t('profile.display.label'), exact: true });
-      await display.fill('Unsaved fullscreen settings draft');
+      // Task 11 (Q7): Profile saves as you type; a character it refuses keeps the draft unsaved for this shot.
+      await display.fill(`Unsaved${String.fromCodePoint(0x09)}draft`);
       await byText(mira, 'navigation', 'settings.nav.label')
         .getByRole('button', { name: t(WORKSPACE_SETTINGS.signin), exact: true }).click();
       const discard = mira.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
@@ -1162,28 +1173,26 @@ async function main(argv) {
       await mira.waitForURL(/\/settings\/profile$/);
       for (const [theme, width, height, name] of [
         ['light', 1440, 900, 'profile-desktop-light'], ['high-contrast', 1440, 900, 'profile-desktop-high-contrast'],
-        ['mesh', 1024, 768, 'profile-tablet-mesh'], ['mesh', 390, 844, 'profile-phone-mesh'],
-        ['mesh', 320, 740, 'profile-narrow-mesh'], ['mesh', 844, 390, 'profile-short-wide-mesh'],
-        ['mesh', 720, 450, 'profile-short-viewport-mesh'],
+        ['signal', 1024, 768, 'profile-tablet-signal'], ['signal', 390, 844, 'profile-phone-signal'],
+        ['signal', 320, 740, 'profile-narrow-signal'], ['signal', 844, 390, 'profile-short-wide-signal'],
+        ['signal', 720, 450, 'profile-short-viewport-signal'],
       ]) {
         await mira.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
         await mira.setViewportSize({ width, height });
         await mira.waitForTimeout(250);
         await capture(mira, name);
       }
-      await mira.evaluate(() => { document.documentElement.dataset.theme = 'mesh'; });
+      await mira.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
       await mira.setViewportSize(PHONE_APP);
       await mira.waitForTimeout(250);
-      await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
-      await mira.waitForURL(/\/settings$/);
-      await capture(mira, 'phone-index');
+      // Task 10 fix round 1: a phone has no settings index; Settings opens on Profile with the nav's chips (README §5.10).
+      // Task 11: the shot is named for that, and the sections are reached by their chips (no index to go back to).
+      await capture(mira, 'phone-settings-entry');
       for (const section of ['privacy', 'diagnostics']) {
         await userSettings.getByRole('navigation', { name: t('settings.nav.label'), exact: true })
           .getByRole('button', { name: t(WORKSPACE_SETTINGS[section]), exact: true }).click();
         await mira.waitForURL(new RegExp(`/settings/${section}$`));
         await capture(mira, `${section}-phone`);
-        await userSettings.getByRole('button', { name: t('workspace.back'), exact: true }).click();
-        await mira.waitForURL(/\/settings$/);
       }
       await userSettings.getByRole('button', { name: t('settings.close'), exact: true }).click();
       await userSettings.waitFor({ state: 'hidden', timeout: WAIT });
@@ -1192,7 +1201,7 @@ async function main(argv) {
       const adaPage = pages.ada;
       await adaPage.setViewportSize({ width: 1440, height: 900 });
       await railServer(adaPage, SERVER).click();
-      await byText(adaPage, 'button', 'admin.open').click();
+      await byText(adaPage, 'button', 'admin.open').click().then(() => byText(adaPage, 'menuitem', 'signalSettings.menu.serverSettings').click());
       const serverSettings = adaPage.getByRole('dialog', { name: t('admin.title'), exact: true });
       await serverSettings.waitFor({ timeout: WAIT });
       for (const [section, name] of [
@@ -1203,13 +1212,14 @@ async function main(argv) {
         await adaPage.waitForURL(new RegExp(`/c/[0-9a-f]{32}/settings/${section}$`));
         await serverSettings.locator('.d-settings-frame__body > section').waitFor({ state: 'visible', timeout: WAIT });
         if (name === 'music') {
-          const closeButton = serverSettings.locator('.d-settings-frame__bar').getByRole('button');
+          const closeButton = serverSettings.getByRole('button', { name: t('settings.close'), exact: true });
           await closeButton.waitFor({ state: 'visible', timeout: WAIT });
           const geometry = await serverSettings.evaluate(dialog => {
             const panel = dialog.querySelector('.d-settings-frame__panel');
             const body = dialog.querySelector('.d-settings-frame__body');
-            const bar = dialog.querySelector('.d-settings-frame__bar');
-            const button = bar?.querySelector('button');
+            // Task 10: the close button is the viewport's (README §5.9), not the bar's.
+            const button = dialog.querySelector('.d-settings-frame__close');
+            const bar = button;
             const rect = (element) => {
               if (!(element instanceof HTMLElement)) return null;
               const box = element.getBoundingClientRect();
@@ -1227,7 +1237,7 @@ async function main(argv) {
         }
         await capture(adaPage, `${name}-desktop`);
       }
-      await serverSettings.locator('.d-settings-frame__bar').getByRole('button').click();
+      await serverSettings.getByRole('button', { name: t('settings.close'), exact: true }).click();
       await serverSettings.waitFor({ state: 'hidden', timeout: WAIT });
       await mira.setViewportSize(DESKTOP);
       await mira.emulateMedia({ reducedMotion: 'reduce' });
@@ -1238,7 +1248,9 @@ async function main(argv) {
     await homeTile(pages.ada).click();
     await pages.ada.getByRole('button', { name: new RegExp(`^${PEOPLE.mira.display}`) }).click();
     await pages.ada.getByRole('textbox', { name: t('shell.dm.composer', { name: PEOPLE.mira.display }), exact: true }).waitFor({ timeout: WAIT });
-    await pages.ada.locator('.d-channel-header').getByRole('button', { name: t('call.start'), exact: true }).click();
+    // Signal (Ruling Z): a DM's call starts from the DM row's context menu.
+    await pages.ada.getByRole('navigation', { name: t('shell.dms.label'), exact: true }).locator('.d-chrow[aria-current="page"]').click({ button: 'right' });
+    await pages.ada.getByRole('menuitem', { name: t('call.start'), exact: true }).click();
     await connected(pages.ada);
     const ring = mira.locator('.d-ring-banner__ring');
     await ring.getByRole('button', { name: t('call.ring.answer'), exact: true }).waitFor({ timeout: WAIT });
@@ -1277,9 +1289,12 @@ async function main(argv) {
     // web3.8 (item 14): Ada shares her screen. Mira's stage brings it to the front on its own (R26), which is the focused
     // shot; a click on that tile again returns the grid, with the camera or avatar tile and the screen as separate tiles.
     // Both at 1440×900, the size the stage was designed at.
-    const adaShare = pages.ada.getByRole('toolbar', { name: t('voice.controls.voice'), exact: true })
-      .getByRole('button', { name: t('voice.shareOn'), exact: true });
+    // Task 8c: Share opens the share picker; Go live starts the share, and Share (now Stop sharing) ends it.
+    const adaShare = pages.ada.getByRole('toolbar', { name: t('voice.controls.voice'), exact: true }).locator('[data-control="share"]');
     await adaShare.click();
+    const sharePicker = pages.ada.getByRole('dialog', { name: t('callStage.share.title'), exact: true });
+    await sharePicker.getByRole('button', { name: t('callStage.share.go'), exact: true }).click();
+    await sharePicker.waitFor({ state: 'detached', timeout: WAIT });
     const adaScreen = stage(mira).locator('.d-call-tile[data-source="screen"]:not([data-own])');
     await adaScreen.waitFor({ timeout: WAIT });
     await adaScreen.locator('video').waitFor({ timeout: WAIT });
@@ -1336,7 +1351,7 @@ async function main(argv) {
     const jumpToPresent = mira.getByRole('button', { name: t('layout.log.jump'), exact: true });
     if (await jumpToPresent.isVisible()) await jumpToPresent.click();
     await jumpToPresent.waitFor({ state: 'hidden', timeout: WAIT });
-    const membersButton = mira.locator('.d-channel-header').getByRole('button', { name: t('members.toggle'), exact: true });
+    const membersButton = mira.locator('.d-channel-header [data-members-toggle]');
     const membersWereOpen = await membersButton.getAttribute('aria-pressed') === 'true';
     if (!membersWereOpen) await membersButton.click();
     await mira.locator('.d-member-list').waitFor({ timeout: WAIT });

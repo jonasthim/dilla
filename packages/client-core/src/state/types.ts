@@ -41,6 +41,8 @@ export interface WorkerError { code: string; detail: string; status: number; ret
   reason?: string;
   store?: { found: number; supported: number }; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
+  /** Task 11: the last gateway heartbeat's round trip in ms while online; absent before the first ack or while not online. */
+  pingMs?: number;
   reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
 /** owner: the 32-hex user id of the server's owner (GET /v1/communities element 2). The owner holds every permission; the
  *  instance serves no role bits, so it is the one permission fact a page has (v0.1.0-web3.1: who may add a channel). */
@@ -73,7 +75,12 @@ export interface TimelineItem {
   state: TimelineItemState;
   reason: string;                               // the raw code for 'cannot-read' and 'failed', else ''
   senderUser: string | null; senderDevice: string | null;
-  own: boolean; web: boolean; bot: boolean;
+  own: boolean; web: boolean;
+  /**
+   * The sender credential's kind is Bot. The credential is signed by the sender's own SSK, so this is the sender's claim:
+   * the web shows a sender as a Bot only when the server's member row is of account kind 1 as well (Task S1).
+   */
+  bot: boolean;
   ts: number;                                   // unix seconds
   body: string;
   msgId: string | null;
@@ -198,7 +205,9 @@ export interface RemovalNotice { id: number; communityId: string; name: string }
  *  backup codes travel only in command results. `totp` is null without a confirmed app; a passkey `id` is its credential
  *  id in lower-case hex; times are unix seconds. */
 export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | null;
-  passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean }
+  passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean;
+  /** Task 11 (Q7): when the password was last changed, unix seconds; null when unknown. */
+  passwordChanged?: number | null }
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }

@@ -504,7 +504,7 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
     // web3.8 (R6, R7): the login first, then the recovery key, which adds this browser.
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -527,12 +527,12 @@ describe('App sign-in', () => {
     const fake = new FakeClient();
     startAt(fake);
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
-    await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
+    await user.click(screen.getByRole('button', { name: 'Have an invite? Create an account' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
-    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
-    expect(screen.queryByText('Step 4 of 4')).toBeNull();
+    expect(screen.queryByText('Sign in · step 4 of 4')).toBeNull();
   });
   // web3.8 (C1): the held assertion lives only in the worker, so a reload at the key step before the registration boots
   // to needs-signup. The page starts over at onboarding step 1, and the entry leads to the login, not to the key.
@@ -553,7 +553,7 @@ describe('App sign-in', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Username' })).toHaveValue('');
   });
 });
@@ -633,7 +633,7 @@ describe('App settings and notifications', () => {
     fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }] satisfies DmSummary[]);
     fake.set('settings', {});
   }
-  it('opens settings over the shell and returns focus to the user panel’s gear on Escape', async () => {
+  it('opens settings over the shell and returns focus to the top bar’s gear on Escape (Signal: the user panel has no gear)', async () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     ready(fake);
@@ -641,7 +641,8 @@ describe('App settings and notifications', () => {
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     const rail = screen.getByRole('navigation', { name: 'servers' });
     expect(within(rail).queryByRole('button', { name: 'settings' })).toBeNull();
-    const gear = () => screen.getByRole('button', { name: 'user settings' });
+    expect(screen.queryByRole('button', { name: 'user settings' })).toBeNull();
+    const gear = () => within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: 'Open settings' });
     await user.click(gear());
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'servers' })).toBe(rail);

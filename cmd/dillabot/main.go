@@ -414,9 +414,10 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	autoModerationState := newAutoModerationEventState()
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
 	defer gateways.Close()
+	statuses := newRuntimeStatusTracker(Version)
 	for {
 		started := time.Now()
-		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, logger); err != nil && !errors.Is(err, context.Canceled) {
+		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, statuses, logger); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("bot identity reconciliation degraded", "error", err.Error())
 		} else if err == nil {
 			logger.Info("bot identity reconciliation healthy")
@@ -452,7 +453,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, logger *slog.Logger) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger) error {
 	spotifyGuard, err := service.NewSpotifyAccountGuard(cfg.StateDir)
 	if err != nil {
 		return errors.New("spotify account guard unavailable")
@@ -472,6 +473,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	}
 	autoModerationState.RetainOnly(activeInstallations)
 	gateways.RetainOnly(activeInstallations)
+	statuses.RetainOnly(activeInstallations)
 	var eligible, succeeded int
 	for _, installation := range installations {
 		if err := ctx.Err(); err != nil {
@@ -483,6 +485,19 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		eligible++
+		// Task 10c: a manager's Restart. Tear down everything this process holds for the
+		// installation (native helper, music queues and voice rooms, automatic moderation state,
+		// gateway connection); the rest of this pass starts them again from durable state.
+		if statuses.Observe(installation) {
+			logger.Info("bot installation restarting on a manager's request", "installation_id", installation.ID.String())
+			_ = musicRegistry.Disable(installation.ID)
+			autoModerationState.Disable(installation.ID)
+			gateways.Drop(installation.ID)
+		}
+		musicRegistry.SetMusicDefaults(installation.ID, installation.Widened, installation.MusicVolume, installation.MusicIdleMinutes)
+		if err := statuses.Report(ctx, runtime, installation); err != nil {
+			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
+		}
 		gateways.SetTextPoller(installation.ID, nil)
 		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
 		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
@@ -668,7 +683,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 											return ensureMusicCallGroupJoined(joinCtx, result.Session, nativeClient, installation.ID, installation.CommunityID, channel, communityRow.PolicyVersion)
 										}
-										return newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases, joinCallGroup)
+										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases, joinCallGroup)
+										if starterErr == nil {
+											starter.IdleLeaveAfter = func() time.Duration { return musicRegistry.IdleLeave(installation.ID) }
+										}
+										return starter, starterErr
 									}
 									runtimeOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
@@ -681,6 +700,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger, spotifyCatalogResolver)
 									if musicErr != nil {
 										logger.Warn("bot music interaction handlers unavailable", "installation_id", installation.ID.String(), "error", musicErr.Error())
+									}
+									if musicInteractions != nil {
+										musicInteractions.DefaultVolume = func() uint8 { return musicRegistry.DefaultVolume(installation.ID) }
 									}
 								}
 							}
@@ -698,6 +720,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								if utilitySetupErr != nil {
 									logger.Warn("bot utility handlers unavailable", "installation_id", installation.ID.String(), "error", utilitySetupErr.Error())
 								}
+								utilities.gateCreation(currentInstallationCapabilities(runtime, installation.ID, installation.CommunityID))
 							}
 							if interactionErr == nil {
 								var coordinator *service.SendCoordinator
@@ -738,6 +761,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,
+														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
+														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
+													}) {
+														handlers[operation] = handler
+													}
+													// Jonas 2026-10-28: /play that starts music is announced publicly with the live player card.
+													for operation, handler := range runtimeMusicAnnounceHandlers(musicInteractions, service.MusicAnnouncements{
+														Music: musicInteractions, Authority: result.Session, Channels: result.Session, Limiter: &service.MusicAnnounceLimiter{},
 														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
 													}) {

@@ -53,6 +53,14 @@ async function expectTwoColumns(list: Locator): Promise<void> {
   for (const box of [first, second]) expect(box.height, 'a code on one line').toBeLessThan(40);
 }
 
+/** Task 10 (README §5.9): the onboarding card is the prototype's 400px, so its backup codes stand in one column, one per line. */
+async function expectOneColumn(list: Locator): Promise<void> {
+  const [first, second] = await Promise.all([list.nth(0).boundingBox(), list.nth(1).boundingBox()]);
+  if (first === null || second === null) throw new Error('the backup codes are not on screen');
+  expect(second.y, 'the second code stands under the first').toBeGreaterThanOrEqual(first.y + first.height - 1);
+  for (const box of [first, second]) expect(box.height, 'a code on one line').toBeLessThan(40);
+}
+
 /** A code of a window far from the host's clock: well formed, never accepted, and it spends no counter of the account. */
 async function wrongCode(secret: string, control: string): Promise<string> {
   return totp(secret, (await hostNow(control)) + 3600);
@@ -120,7 +128,7 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
     } else {
       await expect(page.getByText(copy('factor.codes.notKey'), { exact: true })).toBeVisible();
       await expect(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li')).toHaveCount(10);
-      await expectTwoColumns(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li'));
+      await expectOneColumn(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li'));
       await expectAccessible(page, 'second factor: backup codes');
     }
   });

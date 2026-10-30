@@ -125,9 +125,17 @@ func (d *DS) takeBoundKeyPackage(ctx context.Context, inst *mlswasi.Instance, de
 		}
 		if bytes.Equal(info.DeviceID, deviceID[:]) && bytes.Equal(info.UserID, device.UserID[:]) &&
 			leafKeyIsRegistered(device, info.SignatureKey) {
-			return kp, nil
+			// A package stored before the kind binding existed (Task S1) is dropped like an
+			// unbound one: checkAddedMember would refuse the Add that carried it.
+			kindErr := checkCredentialKind(ctx, d.opts.Store, device.UserID, info.Credential)
+			if kindErr == nil {
+				return kp, nil
+			}
+			if !errors.Is(kindErr, errCredentialKind) {
+				return store.KeyPackageRow{}, kindErr
+			}
 		}
-		d.log().Warn("dropping a directory KeyPackage not bound to its device's registered key",
+		d.log().Warn("dropping a directory KeyPackage not bound to its device's registered key or account kind",
 			"device", deviceID.String()[:8], "last_resort", kp.LastResort == 1)
 		if err := d.opts.Store.DeleteKeyPackage(ctx, deviceID, kp.KPRef); err != nil {
 			return store.KeyPackageRow{}, err

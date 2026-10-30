@@ -6,7 +6,6 @@ import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { A, callState, GENV, MEMBERS, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
-import { focusUserSettings } from './Shell.tsx';
 import { pushHistoryState, replaceHistoryState } from '../router.ts';
 
 // web3.8 WS6: the desktop user panel at the bottom left (R23-R25), the call panel above it, settings behind the gear.
@@ -28,7 +27,6 @@ afterEach(() => {
 const main = () => within(screen.getByRole('main'));
 const panel = () => document.querySelector<HTMLElement>('.d-user-panel');
 const inPanel = () => within(panel()!);
-const gear = () => inPanel().getByRole('button', { name: t('panel.settings') });
 const stageBar = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
 
 /** The shell, with the worker's setSetting applied to the settings slice as the real worker publishes it. */
@@ -49,21 +47,23 @@ const writes = (app: ReturnType<typeof shell>) => app.client.callsOf('setSetting
 
 async function joinVoice(app: ReturnType<typeof shell>) {
   act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
 }
 
 describe('the desktop user panel', () => {
-  it('shows the display name and @username', async () => {
+  it('shows the display name and, under it, the presence label (Signal §5.4), not @username', async () => {
     const app = shell();
     await screen.findByRole('main');
-    expect(inPanel().getByText('@ada')).toBeInTheDocument();
+    expect(inPanel().getByText(t('presence.online'))).toBeInTheDocument();
+    expect(inPanel().queryByText('@ada')).toBeNull();
     expect(panel()).toHaveTextContent('ada');
     app.client.publish(`members:${A}`, MEMBERS.map(m => (m.userId === ME.id ? { ...m, display: 'Ada Lovelace' } : m)));
     await waitFor(() => expect(panel()).toHaveTextContent('Ada Lovelace'));
-    expect(inPanel().getByText('@ada')).toBeInTheDocument();
+    act(() => app.client.publish('account', account({ presenceChoice: 'dnd' })));
+    expect(await inPanel().findByText(t('presence.dnd'))).toBeInTheDocument();
   });
 
   it('outside a call, mute writes voice.self muted and shows pressed; deafen then writes deafened, and again muted', async () => {
@@ -115,10 +115,12 @@ describe('the desktop user panel', () => {
     expect(inPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('the gear opens the desktop Settings root', async () => {
+  it('has no settings gear (Signal §5.4: settings is the top bar\'s gear, which opens the Settings root)', async () => {
     const app = shell();
     await screen.findByRole('main');
-    await app.user.click(gear());
+    expect(inPanel().queryByRole('button', { name: t('panel.settings') })).toBeNull();
+    expect(inPanel().getAllByRole('button').map(b => b.getAttribute('aria-label') ?? '')).not.toContain(t('workspace.open'));
+    await app.user.click(within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: t('workspace.open') }));
     expect(window.location.pathname).toBe('/settings');
   });
 
@@ -126,9 +128,9 @@ describe('the desktop user panel', () => {
     const app = shell();
     await screen.findByRole('main');
     const who = inPanel().getByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.online') })}$`) });
-    expect(who).toHaveTextContent('@ada');
-    // WCAG 2.5.3: the name holds the visible name and username.
-    expect(who).toHaveAccessibleName('ada @ada, your status: online');
+    expect(who).toHaveTextContent(t('presence.online'));
+    // WCAG 2.5.3: the name holds the visible name and the status.
+    expect(who).toHaveAccessibleName('ada, your status: online');
     await app.user.click(who);
     const menu = screen.getByRole('menu');
     expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual(
@@ -155,14 +157,7 @@ describe('the desktop user panel', () => {
       app.client.publish('account', account({ user: { ...ME, display: 'Ada Lovelace' } }));
     });
     await waitFor(() => expect(panel()).toHaveTextContent('Ada Lovelace'));
-    expect(inPanel().getByText('@ada')).toBeInTheDocument();
-  });
-
-  it('focusUserSettings focuses the gear, where focus returns when Settings closes', async () => {
-    shell();
-    await screen.findByRole('main');
-    focusUserSettings();
-    expect(gear()).toHaveFocus();
+    expect(inPanel().getByText(t('presence.online'))).toBeInTheDocument();
   });
 
   it('the rail has no settings button on desktop', async () => {
@@ -250,32 +245,31 @@ describe('one set of shortcuts and the call panel (R3)', () => {
     expect(carriers).toHaveLength(1);
     expect(panel()!.contains(carriers[0])).toBe(true);
     expect(document.querySelectorAll('[aria-keyshortcuts*="Shift+D"]')).toHaveLength(1);
-    expect(stageBar().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(stageBar().getByRole('button', { name: t('callStage.bar.mute') })).not.toHaveAttribute('aria-keyshortcuts');
   });
 
-  it('the call panel has camera, share and leave and no mute, and sits above the user panel', async () => {
+  it('the call panel has leave alone (Signal §5.4, Ruling U: camera and share are the stage\'s) and no mute, and sits above the user panel', async () => {
     const app = shell();
     await joinVoice(app);
     const dock = screen.getByRole('toolbar', { name: 'voice controls' });
-    expect(within(dock).getAllByRole('button').map(b => b.getAttribute('aria-label')))
-      .toEqual([t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
+    expect(within(dock).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([t('voice.leave')]);
     const callPanel = document.querySelector('.dw-voice-dock')!;
     expect(callPanel.compareDocumentPosition(panel()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(callPanel.parentElement).toBe(panel()!.parentElement);
   });
 
-  it('web3.9 R26, MP5: the call panel reads the channel over the link stats ("general · Midgard" is its name), opens Diagnostics, and has no meter or level text', async () => {
+  it('web3.9 R26, MP5: the call panel reads the channel ("general · Midgard" read in full) over the link stats, and has no meter or level text', async () => {
     const app = shell();
     await joinVoice(app);
     const callPanel = within(document.querySelector<HTMLElement>('.dw-voice-dock')!);
-    expect(callPanel.getByRole('button', { name: 'general · Midgard' })).toBeInTheDocument();
+    // Ruling U: line 1 is text, not a button (Diagnostics is in Settings).
+    expect(callPanel.queryByRole('button', { name: 'general · Midgard' })).toBeNull();
+    expect(callPanel.getByText('general · Midgard')).toHaveClass('d-sr-only');
     expect(document.querySelector('.dw-voice-dock .d-voice-dock__text')).toHaveTextContent(/^general$/);
     expect(document.querySelector('.dw-voice-dock .d-voice-dock__where')).toHaveTextContent('— ms');
     expect(document.querySelector('.dw-voice-dock')).not.toHaveTextContent(t('settings.voice.level'));
     expect(document.querySelector('.dw-voice-dock [role="meter"], .dw-voice-dock .d-audio-meter')).toBeNull();
-    for (const b of callPanel.getAllByRole('button').filter(x => x.closest('[role="toolbar"]') !== null)) expect(b).toHaveAttribute('data-size', '32');
-    await app.user.click(callPanel.getByRole('button', { name: 'general · Midgard' }));
-    await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
+    for (const b of callPanel.getAllByRole('button').filter(x => x.closest('[role="toolbar"]') !== null)) expect(b).toHaveAttribute('data-size', '28');
   });
 
   it('Ctrl+Shift+M in a call toggles the session, once', async () => {
@@ -293,7 +287,7 @@ describe('fail closed (security round 1)', () => {
     await screen.findByRole('main');
     act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
     const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
     await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
     expect(writes(app)).toEqual(['muted']);
@@ -333,7 +327,7 @@ describe('fail closed (security round 1)', () => {
   async function openVoiceChannel() {
     await screen.findByRole('main');
     act(() => pushHistoryState(null, '', `/c/${A}/${GENV}`));
-    return main().findByRole('button', { name: 'join voice' });
+    return main().findByRole('button', { name: 'Join voice' });
   }
   /** setSetting answers only when its turn is released, one by one, in the order sent. */
   function holdWrites(app: ReturnType<typeof shell>) {

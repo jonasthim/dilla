@@ -37,13 +37,13 @@ takes no visible space; the connection live region remains mounted.
 | Server | Channels | Categories, text/voice channels, ordering, editors and permissions (`admin/ChannelsSection`, `ChannelEditFlow`, `ChannelPermissions`) |
 | Server | GIFs | Provider-key replacement/removal and rating (`admin/GifsSettings`) |
 | People | Members | Browsing and existing role/moderation actions; cards scoped to settings (`admin/MembersSection`, `MemberPane`, `MemberCardHost`) |
-| People | Roles | Create/edit/order/permissions (`admin/RolesSection`, `RoleEditorFlow`) |
+| People | Roles | Create/edit/order/permissions inline (`admin/RolesSection`, `RoleEditor`) |
 | People | Invites | Existing creation and management (`admin/InvitesSection`) |
 | People | Self-assignable roles | Personal selection, authorized configuration and panel publication (`admin/SelfRolesSection`) |
 | Automation | Bot | Installation lifecycle, enable/disable, display name and capabilities |
 | Automation | Welcome messages | Configuration, destination, preview and confirmed save |
 | Automation | Join roles | Automatic role assignment to new members |
-| Automation | Music | DJ roles, Spotify app configuration/linking and runtime provider observations |
+| Automation | Music | Who can DJ (roles with Control music, edited in Roles), default volume, idle leave, Spotify app configuration/linking and runtime provider observations |
 | Moderation | Automoderation | Rules, actions, exemptions and configuration |
 | Moderation | Moderation log | Automatic cases and manual evidence; separate journal |
 | Moderation | Bans | Banned members and unban (`admin/BansSection`) |
@@ -135,8 +135,8 @@ server. They show the Mesh desktop workspace, phone section layout, and guarded
 navigation; the screenshot script also captures light/high-contrast, tablet, narrow,
 short-viewport, Sign-in, Voice, Members, Music, Automoderation and search states.
 
-![Desktop Profile workspace](../../user/screenshots/fullscreen-settings-profile-desktop-mesh.png)
-![Phone Profile section](../../user/screenshots/fullscreen-settings-profile-phone-mesh.png)
+![Desktop Profile workspace](../../user/screenshots/fullscreen-settings-profile-desktop-signal.png)
+![Phone Profile section](../../user/screenshots/fullscreen-settings-profile-phone-signal.png)
 ![Draft confirmation inside settings](../../user/screenshots/fullscreen-settings-dirty-draft-confirmation.png)
 
 The Music/Automoderation captures show the unavailable or missing-installation state;
@@ -145,17 +145,11 @@ runtime protocol tests establish status semantics separately from these UI captu
 
 ### Form layout follow-up
 
-These refreshed Appearance, GIFs and Bot captures render the shipped React
-components with seeded account, provider and installation data. They demonstrate
+The Mesh-era Appearance, GIFs and Bot captures of this follow-up were removed with the Signal redesign; the Signal
+screens are in the captures above. The follow-up's checks stand: they demonstrate
 form layout, rather than provider connectivity. Responsive layout checks cover
 1440, 1024, 390 and 320px widths in Chromium, Firefox and WebKit; real testhost
 checks cover Appearance resizing, phone navigation, search and dirty drafts in
 all three engines. Separate phone landscape checks keep the call controls and
 dirty footer reachable.
 
-![Appearance with balanced control columns](../../user/screenshots/settings-layout-appearance-desktop.png)
-![GIF configuration below its introduction](../../user/screenshots/settings-layout-gifs-desktop.png)
-![Bot identity, name and actions](../../user/screenshots/settings-layout-bot-desktop.png)
-![Phone Appearance with a readable header](../../user/screenshots/settings-layout-appearance-phone.png)
-![Phone GIF configuration](../../user/screenshots/settings-layout-gifs-phone.png)
-![Phone Bot identity and actions](../../user/screenshots/settings-layout-bot-phone.png)

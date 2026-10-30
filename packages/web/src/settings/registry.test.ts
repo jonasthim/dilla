@@ -3,7 +3,7 @@ import { SETTINGS_REGISTRY, availableSettings, searchSettings } from './registry
 
 describe('settings registry', () => {
   it('contains every user section and unified server section exactly once', () => {
-    expect(availableSettings('user').map(s => s.id)).toEqual(['profile', 'signin', 'devices', 'appearance', 'notifications', 'voice', 'keyboard', 'privacy', 'diagnostics']);
+    expect(availableSettings('user').map(s => s.id)).toEqual(['profile', 'signin', 'devices', 'notifications', 'voice', 'keyboard', 'appearance', 'privacy', 'diagnostics']); // Signal task 10: the prototype's order first
     expect(SETTINGS_REGISTRY.filter(s => s.scope === 'server').map(s => s.id)).toEqual(['overview', 'channels', 'gifs', 'members', 'roles', 'invites', 'selfRoles', 'bot', 'welcome', 'joinRoles', 'music', 'automoderation', 'moderationLog', 'bans', 'danger']);
   });
   it('shows nothing while server permissions load and only member pages without management rights', () => {

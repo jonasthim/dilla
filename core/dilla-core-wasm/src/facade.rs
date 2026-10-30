@@ -1225,6 +1225,12 @@ impl CoreHandle {
         })
         .map(Vec::into_boxed_slice)
     }
+    /// Store the instance's account-kind attestation for one user (the fifth element of a wire-4
+    /// device-list head), before that user's history is ingested (Task S1 part 2).
+    pub fn account_kind_ingest(&self, user_id: &[u8], attestation: &[u8]) -> Result<(), JsError> {
+        let user_id = js_fixed_arg::<16>("user_id", user_id)?;
+        self.with_core(|c| c.account_kind_ingest(&user_id, attestation))
+    }
     /// Re-evaluate bounded MLS-authenticated pending rows after list ingestion.
     pub fn revalidate_pending(
         &self,

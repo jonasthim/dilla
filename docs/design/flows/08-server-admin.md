@@ -95,9 +95,15 @@ When the person is removed from a server (kicked, banned or its owner deleted it
 Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte.
 
 *Members:*
-- `members.toggle='members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
+- `members.toggle='Members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
 - `members.groupMembers='members'`, `members.groupOffline='Offline'`
-- `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
+- `members.menu.message='Message'`, `members.menu.compare='compare safety numbers'`
+- Signal (task 9), the row's person menu and the status line: `members.menu.profile='Profile'`, `members.menu.mention='Mention'`, `members.menu.copy='Copy username'`,
+  `members.menu.copied='@{name} copied'`, `members.menu.roles='Edit roles'`, `members.menu.kickName='Kick {name}'`,
+  `members.menu.banName='Ban {name}'`, `members.menu.label='actions for {name}'`, `members.inVoice='in voice'`,
+  `members.inChannel='in {channel}'`
+- Task 11 (Q7), the prototype's Overview card: `admin.overview.afk='Inactive timeout'`, `admin.overview.afkHint='Idle computers in voice move to AFK after'`, `admin.overview.afk.60='1m'`, `admin.overview.afk.300='5m'`, `admin.overview.afk.900='15m'`, `admin.overview.afk.1800='30m'`, `admin.overview.afk.3600='1h'`, `admin.overview.leave='Leave server'`, `admin.overview.leaveHint='You can rejoin with a new invite'`
+- Task 11 (Q5), the Bot's line from its player: `members.playingIn='playing in {room}'`, `members.idleIn='idle in {room}'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`
 
@@ -308,13 +314,6 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.enabledNotice='Bot installation enabled.'`
 - `admin.bot.disabledNotice='Bot installation disabled.'`
 - `admin.bot.music.title='Music services'`
-- `admin.bot.music.djRoles.help='Create a role in Server settings → Roles and assign it to members, then select and save that role here to let them control music. Owners and administrators do not need a DJ role. The server checks your current permissions and role hierarchy when you save. This setting does not mean playback is ready.'`
-- `admin.bot.music.djRoles.requiresBot='A ready bot installation is required to configure DJ roles.'`
-- `admin.bot.music.djRoles.label='DJ roles'`
-- `admin.bot.music.djRoles.noCandidates='There are no roles below your highest role to select.'`
-- `admin.bot.music.djRoles.readOnly='DJ roles are read-only because this account cannot manage both the bot and roles, or the bot installation is not ready.'`
-- `admin.bot.music.djRoles.save='Save DJ roles'`
-- `admin.bot.music.djRoles.saved='DJ roles saved.'`
 - `admin.bot.music.spotify='Spotify'`
 - `admin.bot.music.spotifyClientId='Spotify application client ID'`
 - `admin.bot.music.spotifyClientIdHelp='Create a Spotify application, register the callback URL below, then paste its public client ID here. No client secret is needed.'`
@@ -336,7 +335,6 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.callbackCancelled='Spotify authorization was cancelled.'`
 - `admin.bot.music.callbackCancelError='Could not cancel this Spotify authorization attempt.'`
 - `admin.bot.music.commands='Music commands'`
-- `admin.bot.music.chatHelp='Join a voice channel, then type /play <song or YouTube/Spotify URL> in text chat. Use /pause, /resume, /skip, /queue, and /stop to control music. The bot replies in that text channel. Owners, administrators, and members with a configured DJ role can control playback.'`
 - `admin.bot.moderationLog.title='Moderation log'`
 - `admin.bot.moderationLog.load='Load manual evidence'`
 - `admin.bot.moderationLog.loadAutomatic='Load automatic cases'`

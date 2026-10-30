@@ -62,6 +62,6 @@ describe('the member profile card (EOD E6)', () => {
     open(peer());
     const card = screen.getByRole('dialog', { name: 'Bob' });
     expect(within(card).queryByRole('group', { name: t('profile.card.about') })).toBeNull();
-    expect(card.querySelector('.d-profile-card__status')?.textContent).toBe('offline');
+    expect(card.querySelector('.d-profile-card__status')?.textContent).toBe('@bob · offline');
   });
 });

@@ -72,7 +72,11 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
 }
 /** The pane beside the tab list: "delete server" is both a tab and a button, so a query for the button looks only here. */
 const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame__body')!);
-const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button').map(b => b.textContent);
+// Signal task 10 fix round 1: one workspace nav, "You" then this server; the server's own items are the ones after "You".
+const USER_ITEMS = new Set(['profile', 'signin', 'devices', 'notifications', 'voice', 'keyboard', 'appearance', 'privacy', 'diagnostics']
+  .map(id => (en as Readonly<Record<string, string>>)[`workspace.${id}`]));
+const navNames = () => within(screen.getByRole('navigation', { name: en['admin.nav'] })).queryAllByRole('button')
+  .map(b => b.textContent).filter(name => !USER_ITEMS.has(name ?? ''));
 
 describe('ServerSettings tabs', () => {
   it('keeps loading feedback and the live announcer accessible on the phone index', () => {
@@ -99,8 +103,8 @@ describe('ServerSettings tabs', () => {
     expect(screen.getByRole('heading', { name: 'Members', level: 2 })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Bob B/ }));
     const profile = screen.getByRole('dialog', { name: 'Bob B' });
-    const actions = within(profile).queryAllByRole('button').filter(button => button.classList.contains('d-profile-card__action')).map(button => button.textContent);
-    expect(actions).toEqual(['message', 'compare safety numbers']);
+    const actions = within(profile).queryAllByRole('button').filter(button => button.matches('.d-profile-card__action, .d-profile-card__icon-action')).map(button => button.getAttribute('aria-label') ?? button.textContent);
+    expect(actions).toEqual(['Message', 'compare safety numbers']);
   });
   it('shows moderation log from its own audit permission', () => {
     setup({ ...NONE, viewAuditLog: true });
@@ -349,7 +353,7 @@ describe('the overview section', () => {
       : command.m === 'setAFK' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null);
     const name = screen.getByRole('textbox', { name: en['admin.overview.name'] });
     await user.clear(name); await user.type(name, 'Midgard');
-    await user.selectOptions(screen.getByRole('combobox', { name: en['afk.timeout.label'] }), '900');
+    await user.click(within(screen.getByRole('radiogroup', { name: en['admin.overview.afk'] })).getByRole('radio', { name: en['admin.overview.afk.900'] }));
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(en['workspace.overview.partial'])).toBeInTheDocument();
     expect(fake.callsOf('renameCommunity')).toHaveLength(1);
@@ -364,28 +368,28 @@ describe('the overview section', () => {
     if (to !== '') await user.type(field(), to);
     await user.click(screen.getByRole('button', { name: 'Save' }));
   };
-  it('has one timeout row with the five labels and no separate save button', async () => {
+  // Task 11 (Jonas, Q7): the prototype's segmented 1m / 5m / 15m / 30m / 1h, its label and hint, in the same card as Leave server.
+  it('has one timeout row with the five choices and no separate save button', async () => {
     const { fake } = setup({ ...NONE, manageCommunity: true });
     fake.handler = command => Promise.resolve(command.m === 'getAFKSettings' ? { channelId: 'fe'.repeat(16), timeoutSeconds: 900 } : null);
     fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, pending: false });
-    const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
-    await waitFor(() => expect(timeout).toHaveValue('900'));
-    expect(within(timeout).getAllByRole('option').map(o => o.textContent))
-      .toEqual(['1 minute', '5 minutes', '15 minutes', '30 minutes', '1 hour']);
-    expect(screen.getAllByRole('combobox')).toHaveLength(1);
-    expect(screen.queryByRole('combobox', { name: en['admin.afk.channel'] })).toBeNull();
+    const timeout = screen.getByRole('radiogroup', { name: en['admin.overview.afk'] });
+    await waitFor(() => expect(within(timeout).getByRole('radio', { name: '15m' })).toHaveAttribute('aria-checked', 'true'));
+    expect(within(timeout).getAllByRole('radio').map(o => o.textContent)).toEqual(['1m', '5m', '15m', '30m', '1h']);
+    expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
-    expect(screen.queryByRole('button', { name: en['admin.afk.save'] })).toBeNull();
     expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(0);
-    expect((timeout.closest('.d-settings-row') as HTMLElement).querySelector('.d-settings-row__label')).toHaveTextContent(en['afk.timeout.label']);
+    expect((timeout.closest('.d-settings-row') as HTMLElement).querySelector('.d-settings-row__label')).toHaveTextContent(en['admin.overview.afk']);
+    expect(screen.getByText(en['admin.overview.afkHint'])).toBeInTheDocument();
+    expect(screen.getByText(en['admin.overview.leaveHint'])).toBeInTheDocument();
   });
   it('saves the changed timeout with the name in one press, without a channel', async () => {
     const { fake, user } = setup({ ...NONE, manageCommunity: true });
     fake.handler = command => Promise.resolve(command.m === 'getAFKSettings' ? { channelId: 'fe'.repeat(16), timeoutSeconds: 300 } : null);
     fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 300, pending: false });
-    const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
-    await waitFor(() => expect(timeout).toHaveValue('300'));
-    await user.selectOptions(timeout, '900');
+    const timeout = screen.getByRole('radiogroup', { name: en['admin.overview.afk'] });
+    await waitFor(() => expect(within(timeout).getByRole('radio', { name: '5m' })).toHaveAttribute('aria-checked', 'true'));
+    await user.click(within(timeout).getByRole('radio', { name: '15m' }));
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, timeoutSeconds: 900 }]));
     expect(fake.callsOf('setAFK')[0]).not.toHaveProperty('channelId');
@@ -395,19 +399,18 @@ describe('the overview section', () => {
   });
   it('keeps a clean overview out of the save flow', async () => {
     const { fake } = setup({ ...NONE, manageCommunity: true });
-    const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
-    await waitFor(() => expect(timeout).toBeEnabled());
+    const timeout = screen.getByRole('radiogroup', { name: en['admin.overview.afk'] });
+    await waitFor(() => expect(within(timeout).getAllByRole('radio')[0]).not.toHaveAttribute('aria-disabled'));
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
     expect(fake.callsOf('renameCommunity')).toEqual([]);
     expect(fake.callsOf('setAFK')).toEqual([]);
   });
-  it('says the hint with the AFK channel’s current name', async () => {
-    const { fake } = setup({ ...NONE, manageCommunity: true });
-    const afkId = 'c5'.repeat(16);
-    fake.publish(`channels:${SERVER}`, [{ id: afkId, communityId: SERVER, kind: 1, mode: 0, name: 'AFK', topic: '', parentId: null,
-      position: 1 << 30, slowmode: 0, announcement: false, group: 'unsupported' }]);
-    fake.publish(`afk:${SERVER}`, { channelId: afkId, timeoutSeconds: 300, pending: false });
-    expect(await screen.findByText(en['afk.timeout.hint'].replace('{channel}', 'AFK'))).toBeInTheDocument();
+  it('lets a member leave from the Overview card, and tells an owner to hand the server over first', async () => {
+    const { fake, user } = setup({ ...NONE, manageCommunity: true });
+    await user.click(screen.getByRole('button', { name: en['admin.leave.confirm'] }));
+    const dialog = await screen.findByRole('dialog', { name: /^Leave .*\?$/ });
+    await user.click(within(dialog).getByRole('button', { name: en['admin.leave.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('leaveCommunity')).toEqual([{ m: 'leaveCommunity', communityId: SERVER }]));
   });
   // The shared Save action appears only for a dirty draft and lives in the frame footer.
   it('draws the name as a settings row and saves from the frame footer', async () => {

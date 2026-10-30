@@ -18,6 +18,22 @@ type musicAuthoritySessionFake struct {
 	call               client.ChannelCallState
 	permissions        uint64
 	permissionSequence []uint64
+	// hidden makes the voice channel invisible to the actor (its effective channel bits lack view).
+	hidden bool
+	// channel is the actor's extra effective bits in the voice channel, as the server resolves them
+	// with that channel's overwrites (control_music lives here). Owners and administrators resolve
+	// to every bit on the server, so the fake does the same.
+	channel uint64
+}
+
+func (s *musicAuthoritySessionFake) BotActorChannelAuthority(context.Context, id.ID, id.ID, id.ID) (uint64, bool, error) {
+	if s.hidden {
+		return 0, true, nil
+	}
+	if s.actor.Owner || s.actor.Administrator {
+		return ^uint64(0), true, nil
+	}
+	return musicPermissionView | s.channel, true, nil
 }
 
 func (s *musicAuthoritySessionFake) BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error) {
@@ -37,26 +53,22 @@ func (s *musicAuthoritySessionFake) ChannelPermissions(context.Context, id.ID) (
 
 type musicAuthorityStoreFake struct {
 	installation store.BotInstallationRow
-	policy       []store.DJRolePolicyRow
 }
 
 func (s *musicAuthorityStoreFake) GetActiveBotInstallationByCommunity(context.Context, id.ID) (store.BotInstallationRow, error) {
 	return s.installation, nil
 }
-func (s *musicAuthorityStoreFake) ListDJRolePolicy(context.Context, id.ID) ([]store.DJRolePolicyRow, error) {
-	return s.policy, nil
-}
 
-func TestMusicAuthorityRequiresCurrentChannelMemberAndApprovedRole(t *testing.T) {
-	community, installationID, channel, actorID, callID, djRole := id.New(), id.New(), id.New(), id.New(), id.New(), id.New()
+func TestMusicAuthorityRequiresCurrentChannelMemberAndControlMusic(t *testing.T) {
+	community, installationID, channel, actorID, callID := id.New(), id.New(), id.New(), id.New(), id.New()
 	actor := InteractionActor{User: actorID}
 	installation := store.BotInstallationRow{ID: installationID, CommunityID: community, State: store.BotInstallationReady, Capabilities: musicBotCapability}
 	session := &musicAuthoritySessionFake{
-		actor: client.ActorAuthority{RoleIDs: []id.ID{djRole}}, present: true,
+		actor: client.ActorAuthority{}, present: true, channel: musicPermissionControl,
 		call:        client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actorID}}},
 		permissions: musicPermissionConnect | musicPermissionSpeak,
 	}
-	storeFake := &musicAuthorityStoreFake{installation: installation, policy: []store.DJRolePolicyRow{{InstallationID: installationID, RoleID: djRole}}}
+	storeFake := &musicAuthorityStoreFake{installation: installation}
 	authority := &CommunityMusicInteractionAuthority{Session: session, Store: storeFake, InstallationID: installationID, CommunityID: community}
 	binding := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
 	if ok, err := authority.CanDJ(context.Background(), actor, binding); err != nil || !ok {
@@ -68,18 +80,31 @@ func TestMusicAuthorityRequiresCurrentChannelMemberAndApprovedRole(t *testing.T)
 		t.Fatalf("actor outside target call = %v, %v, want denied", ok, err)
 	}
 	session.call.Participants = []client.CallParticipant{{UserID: actorID}}
-	session.actor.RoleIDs = nil
+	// control_music removed in this voice channel (a role change, or a channel overwrite denying it).
+	session.channel = 0
 	if ok, err := authority.CanDJ(context.Background(), actor, binding); err != nil || ok {
-		t.Fatalf("revoked DJ role = %v, %v, want denied", ok, err)
+		t.Fatalf("without control_music in the channel = %v, %v, want denied", ok, err)
 	}
-	session.actor.RoleIDs = []id.ID{djRole}
+	// Holding control_music without view_channel is no authority: the server resolves a hidden
+	// channel to nothing, and the Bot refuses a partial vector too.
+	session.channel = musicPermissionControl
+	session.hidden = true
+	if ok, err := authority.CanDJ(context.Background(), actor, binding); err != nil || ok {
+		t.Fatalf("hidden voice channel = %v, %v, want denied", ok, err)
+	}
+	session.hidden = false
+	session.present = false
+	if ok, err := authority.CanDJ(context.Background(), actor, binding); err != nil || ok {
+		t.Fatalf("former member = %v, %v, want denied", ok, err)
+	}
+	session.present = true
 	storeFake.installation.ID = id.New()
 	if ok, err := authority.CanDJ(context.Background(), actor, binding); err != nil || ok {
 		t.Fatalf("replaced installation = %v, %v, want denied", ok, err)
 	}
 }
 
-func TestMusicAuthorityManagersDoNotNeedAnApprovedDJRole(t *testing.T) {
+func TestMusicAuthorityManagersHoldControlMusic(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		actor        client.ActorAuthority
@@ -125,7 +150,7 @@ func TestMusicAuthorityManagersDoNotNeedAnApprovedDJRole(t *testing.T) {
 			}
 			binding := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
 			if got, err := authority.CanDJ(context.Background(), InteractionActor{User: actorID}, binding); err != nil || got != tc.want {
-				t.Fatalf("CanDJ = %v, %v; want %v without an approved DJ role", got, err, tc.want)
+				t.Fatalf("CanDJ = %v, %v; want %v without a control_music role", got, err, tc.want)
 			}
 		})
 	}
@@ -215,15 +240,14 @@ func TestMusicAuthorityRequiresBotChannelPermissionsAndPreservesEmergencyStop(t 
 }
 
 func TestMusicAuthorityRejectsMissingCapabilityAndPermissionLostAtFinalDJCheck(t *testing.T) {
-	community, installationID, channel, actorID, callID, djRole := id.New(), id.New(), id.New(), id.New(), id.New(), id.New()
+	community, installationID, channel, actorID, callID := id.New(), id.New(), id.New(), id.New(), id.New()
 	session := &musicAuthoritySessionFake{
-		actor: client.ActorAuthority{RoleIDs: []id.ID{djRole}}, present: true,
+		actor: client.ActorAuthority{}, present: true, channel: musicPermissionControl,
 		call:        client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actorID}}},
 		permissions: musicPermissionConnect | musicPermissionSpeak,
 	}
 	storeFake := &musicAuthorityStoreFake{
 		installation: store.BotInstallationRow{ID: installationID, State: store.BotInstallationReady, Capabilities: musicBotCapability},
-		policy:       []store.DJRolePolicyRow{{InstallationID: installationID, RoleID: djRole}},
 	}
 	authority := &CommunityMusicInteractionAuthority{Session: session, Store: storeFake, InstallationID: installationID, CommunityID: community}
 	actor := InteractionActor{User: actorID}
@@ -246,3 +270,20 @@ func TestMusicAuthorityRejectsMissingCapabilityAndPermissionLostAtFinalDJCheck(t
 }
 
 func ptrID(value id.ID) *id.ID { return &value }
+
+// Security review M2: a member who cannot view the voice channel cannot read its player (op 10) or act on it.
+func TestMusicAuthorityRequiresViewOnTheVoiceChannel(t *testing.T) {
+	community, installationID, channel, actorID, callID := id.New(), id.New(), id.New(), id.New(), id.New()
+	installation := store.BotInstallationRow{ID: installationID, CommunityID: community, State: store.BotInstallationReady, Capabilities: musicBotCapability}
+	session := &musicAuthoritySessionFake{present: true, permissions: musicPermissionConnect | musicPermissionSpeak,
+		call: client.ChannelCallState{CallID: &callID, GroupID: ptrID(id.New()), Participants: []client.CallParticipant{{UserID: actorID}}}}
+	authority := &CommunityMusicInteractionAuthority{Session: session, Store: &musicAuthorityStoreFake{installation: installation}, InstallationID: installationID, CommunityID: community}
+	call := MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}
+	if ok, err := authority.CanUse(context.Background(), InteractionActor{User: actorID}, call); err != nil || !ok {
+		t.Fatalf("a member who sees the channel may read its player: %v %v", ok, err)
+	}
+	session.hidden = true
+	if ok, err := authority.CanUse(context.Background(), InteractionActor{User: actorID}, call); err != nil || ok {
+		t.Fatalf("a member who cannot see the channel must not read its player: %v %v", ok, err)
+	}
+}

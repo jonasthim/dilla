@@ -25,60 +25,25 @@ function setup(path: string, from: string | null, seed?: (fake: FakeClient) => v
   const view = render(<div className="d-root"><CoreProvider client={fake}><Settings /></CoreProvider></div>);
   return { fake, user, view };
 }
-const nav = () => screen.getByRole('navigation', { name: 'settings sections' });
+const nav = () => screen.getByRole('navigation', { name: 'Settings sections' });
 const navButton = (name: string) => within(nav()).getByRole('button', { name: new RegExp(`^${name}$`, 'i') });
 
 describe('Settings', () => {
-  it('uses the shared footer to save Profile edits and removes it after success', async () => {
+  // Task 11 (Jonas, Q7): Profile saves as you type; the shared footer shows only while a change cannot be saved.
+  it('saves Profile edits as you type, with no footer', async () => {
     const { fake, user } = setup('/settings/profile', null);
     const status = screen.getByRole('textbox', { name: /status message/i });
     await user.type(status, 'here');
-    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Save profile' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(fake.callsOf('updateProfile')).toEqual([{ m: 'updateProfile', statusMsg: 'here' }]));
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    await waitFor(() => expect(fake.callsOf('updateProfile')).toEqual([{ m: 'updateProfile', statusMsg: 'here' }]), { timeout: 3000 });
     expect(await screen.findByText('Profile saved')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
   });
-  it('keeps a dirty Profile draft when sign-out is denied, and opens the key ceremony after explicit discard', async () => {
+  it('keeps failed Profile edits available in the footer and resets them to the latest account values', async () => {
     const { fake, user } = setup('/settings/profile', null);
     const status = screen.getByRole('textbox', { name: /status message/i });
-    await user.type(status, 'keep this draft');
-    const signOut = screen.getByRole('button', { name: 'Sign out' });
-    await user.click(signOut);
-    const guard = screen.getByRole('dialog', { name: 'Discard unsaved changes?' });
-    expect(screen.queryByRole('dialog', { name: 'Sign out and remove this browser?' })).toBeNull();
-    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }));
-    expect(status).toHaveValue('keep this draft');
-    expect(fake.callsOf('signOutRevoke')).toEqual([]);
-    await user.click(signOut);
-    await user.click(within(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).getByRole('button', { name: 'Discard changes' }));
-    expect(await screen.findByRole('dialog', { name: 'Sign out and remove this browser?' })).toBeInTheDocument();
-    expect(status).toHaveValue('');
-  });
-  it('keeps a pending forget operation registered while navigation is requested', async () => {
-    const { fake, user } = setup('/settings/devices', null);
-    let finishForget!: () => void;
-    fake.handler = command => command.m === 'forgetBrowser'
-      ? new Promise(resolve => { finishForget = () => resolve(null); }) : Promise.resolve(null);
-    await user.click(screen.getByRole('button', { name: 'forget this browser' }));
-    await user.click(screen.getByRole('button', { name: 'Forget' }));
-    expect(await screen.findByRole('button', { name: 'Working…' })).toBeInTheDocument();
-    await user.click(navButton('Profile'));
-    const guard = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' });
-    expect(guard).toHaveTextContent('A request is already in progress. It will continue if you leave. Unsaved changes will be discarded.');
-    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }));
-    expect(window.location.pathname).toBe('/settings/devices');
-    await act(async () => { finishForget(); await Promise.resolve(); });
-    expect(screen.queryByRole('dialog', { name: 'Forget this browser?' })).toBeNull();
-  });
-  it('keeps failed Profile edits available and resets them to the latest account values', async () => {
-    const { fake, user } = setup('/settings/profile', null);
-    const status = screen.getByRole('textbox', { name: /status message/i });
-    await user.type(status, 'draft');
     fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK', status: 0 }));
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save your profile. Try again.');
+    await user.type(status, 'draft');
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('Could not save your profile. Try again.');
     expect(status).toHaveValue('draft');
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Reset' }));
@@ -92,24 +57,21 @@ describe('Settings', () => {
       expect(screen.getByRole('heading', { name: heading, level: 2 })).toHaveFocus();
     }
   });
-  it('opens the phone settings index first and returns to it from a section', async () => {
+  // Task 10 fix round 1 (README §5.10): a phone has no settings index; /settings opens Profile, as the prototype's You tab
+  // does, with the nav's chips above it; the chips switch sections.
+  it('opens Profile on a phone, and a section keeps the nav as chips', async () => {
     window.matchMedia = ((query: string) => ({ matches: query === PHONE_QUERY, media: query,
       addEventListener: () => undefined, removeEventListener: () => undefined })) as unknown as typeof window.matchMedia;
     try {
       const { user } = setup('/settings', '/you');
       const dialog = screen.getByRole('dialog', { name: 'Settings' });
-      expect(dialog).toHaveAttribute('data-phone-page', 'index');
-      expect(within(dialog).queryByRole('heading', { level: 2, name: 'Profile' })).toBeNull();
-      await user.click(within(dialog).getByRole('button', { name: 'Devices' }));
       expect(dialog).toHaveAttribute('data-phone-page', 'section');
+      expect(within(dialog).getByRole('heading', { level: 2, name: 'Profile' })).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+      await user.click(within(dialog).getByRole('button', { name: 'Devices' }));
       expect(window.location.pathname).toBe('/settings/devices');
-      const sectionEntryIndex = (window.history.state as Record<string, unknown>).dillaHistoryIndex as number;
-      await user.click(within(dialog).getByRole('button', { name: 'Back to settings' }));
-      expect(window.location.pathname).toBe('/settings');
-      expect(dialog).toHaveAttribute('data-phone-page', 'index');
-      const backEntryIndex = (window.history.state as Record<string, unknown>).dillaHistoryIndex;
-      expect(typeof backEntryIndex !== 'number' || backEntryIndex < sectionEntryIndex).toBe(true);
-      expect(within(dialog).queryByRole('heading', { level: 2, name: 'Profile' })).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Back to settings' })).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
     } finally { Reflect.deleteProperty(window, 'matchMedia'); }
   });
   it('does not focus a matching heading outside the settings content after a privacy comparison', async () => {
@@ -200,7 +162,7 @@ describe('Settings', () => {
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     expect(within(dialog).getByRole('heading', { level: 2, name: 'Devices' })).toHaveFocus();
     const items = within(nav()).getAllByRole('button');
-    expect(items).toEqual(['Profile', 'Sign-in', 'Devices', 'Appearance', 'Notifications', 'Voice', 'Keyboard', 'Privacy', 'Diagnostics'].map(name => navButton(name)));
+    expect(items).toEqual(['Profile', 'Sign-in', 'Devices', 'Notifications', 'Voice', 'Keyboard', 'Appearance', 'Privacy', 'Diagnostics'].map(name => navButton(name)));
     expect(navButton('Devices')).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
@@ -260,7 +222,7 @@ describe('Settings', () => {
     const { fake, user, view } = setup('/settings/devices', null, client => {
       client.set('trust', [{ userId, name: 'Ada', shared: true, umk, firstSeen: 1, verified: false, changedUmk: null }]);
     });
-    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['Profile', 'Sign-in', 'Devices', 'Appearance', 'Notifications', 'Voice', 'Keyboard', 'Privacy', 'Diagnostics']);
+    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['Profile', 'Sign-in', 'Devices', 'Notifications', 'Voice', 'Keyboard', 'Appearance', 'Privacy', 'Diagnostics']);
     await user.click(navButton('Privacy'));
     expect(screen.getByRole('heading', { name: 'Privacy' })).toBeInTheDocument();
     expect(screen.getByText('Ada')).toBeInTheDocument();
@@ -349,16 +311,16 @@ describe('Settings', () => {
     const { fake, user } = setup('/settings/devices', `/c/${C}/${CH}`);
     fake.handler = c => (c.m === 'revokeDevice' ? new Promise(() => {}) : Promise.resolve(null));
     act(() => fake.set('devices', devices));
-    await user.click(screen.getByRole('button', { name: 'remove' }));
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('dialog', { name: 'Remove this device?' })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Remove this device?' })).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/settings/devices');
-    await user.click(screen.getByRole('button', { name: 'remove' }));
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
     await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Remove this device?' })).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('button', { name: 'Working…' })).toHaveFocus();
     await user.keyboard('{Escape}');
     expect(fake.callsOf('revokeDevice')).toHaveLength(1);

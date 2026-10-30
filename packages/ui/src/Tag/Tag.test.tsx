@@ -5,7 +5,8 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 
 describe('Tag', () => {
   it('renders text tags', () => {
-    render(<><Tag kind="bot" /><Tag kind="web" /><Tag kind="admin" /><Tag kind="playbackOnly" /></>);
+    render(<><Tag kind="bot" /><Tag kind="web" /><Tag kind="admin" /><Tag kind="playbackOnly" /><Tag kind="live" /></>);
+    expect(screen.getByText('live')).toBeInTheDocument();
     expect(screen.getByText('bot')).toBeInTheDocument();
     expect(screen.getByText('web')).toBeInTheDocument();
     expect(screen.getByText('admin')).toBeInTheDocument();

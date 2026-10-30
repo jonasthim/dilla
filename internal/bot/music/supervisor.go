@@ -48,6 +48,65 @@ type Supervisor struct {
 	afterFunc    func(time.Duration, func()) Timer
 	onEmpty      func()
 	stopLifetime func() bool
+	// Task 10c: leave the voice room after nothing has played for idleFor() (read when the
+	// supervisor goes idle, so a changed setting applies to the next idle period).
+	idleFor   func() time.Duration
+	idleTimer Timer
+	idleGen   uint64
+}
+
+// IdleLeaver is a TrackStarter that can leave its retained voice room while nothing plays.
+type IdleLeaver interface{ LeaveIdle() error }
+
+// WithIdleLeave makes the supervisor leave the voice room once nothing has played for idleFor()
+// (paused, stopped or the queue finished). Playing again cancels the timer; the next explicit
+// play reconnects. A non-positive duration disables it.
+func WithIdleLeave(idleFor func() time.Duration, afterFunc func(time.Duration, func()) Timer) SupervisorOption {
+	return func(s *Supervisor) {
+		s.idleFor = idleFor
+		if afterFunc != nil {
+			s.afterFunc = afterFunc
+		}
+	}
+}
+
+// idleCheckLocked starts the idle-leave timer when nothing plays and stops it when something
+// does. It runs after every state change.
+func (s *Supervisor) idleCheckLocked() {
+	if s.idleFor == nil {
+		return
+	}
+	if s.playback != nil || s.closed {
+		if s.idleTimer != nil {
+			s.idleTimer.Stop()
+			s.idleTimer = nil
+		}
+		return
+	}
+	if s.idleTimer != nil {
+		return
+	}
+	d := s.idleFor()
+	if d <= 0 {
+		return
+	}
+	s.idleGen++
+	gen := s.idleGen
+	s.idleTimer = s.afterFunc(d, func() { s.leaveIdle(gen) })
+}
+
+func (s *Supervisor) leaveIdle(gen uint64) {
+	s.mu.Lock()
+	if s.closed || s.idleTimer == nil || s.idleGen != gen || s.playback != nil {
+		s.mu.Unlock()
+		return
+	}
+	s.idleTimer = nil
+	leaver, ok := s.starter.(IdleLeaver)
+	s.mu.Unlock()
+	if ok {
+		_ = leaver.LeaveIdle()
+	}
 }
 
 type Timer interface{ Stop() bool }
@@ -105,6 +164,9 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 	if expected != s.state.Revision {
 		return cloneState(s.state), ErrRevisionConflict
 	}
+	if op.NowMS == 0 {
+		op.NowMS = time.Now().UnixMilli()
+	}
 	next, err := Apply(s.state, expected, op)
 	if err != nil {
 		return cloneState(s.state), err
@@ -124,6 +186,7 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 			return cloneState(s.state), err
 		}
 	}
+	s.idleCheckLocked()
 	s.signalLocked()
 	return cloneState(s.state), nil
 }
@@ -174,6 +237,7 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 			return s.revision, err
 		}
 	}
+	s.idleCheckLocked()
 	s.signalLocked()
 	return s.revision, nil
 }
@@ -203,6 +267,10 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
 		return errors.New("music track starter returned invalid playback")
 	}
 	s.playback = p
+	// Ruling AI (fix round 2): the provider has just started this track from its beginning, so the playhead is 0 from this
+	// moment (a slow provider start would otherwise run the client's playhead ahead of the audio). Same revision: the
+	// next commit persists it, and snapshots read this live state (MusicInteractions.CurrentState).
+	s.state.PositionMS, s.state.PositionAtMS = 0, time.Now().UnixMilli()
 	go s.monitor(p)
 	return nil
 }
@@ -216,12 +284,13 @@ func (s *Supervisor) monitor(p Playback) {
 		return
 	}
 	s.playback = nil
+	defer s.idleCheckLocked()
 	if err != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
 		return
 	}
-	next, applyErr := Apply(s.state, s.state.Revision, Operation{Kind: OpComplete})
+	next, applyErr := Apply(s.state, s.state.Revision, Operation{Kind: OpComplete, NowMS: time.Now().UnixMilli()})
 	if applyErr != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
@@ -243,7 +312,7 @@ func (s *Supervisor) monitor(p Playback) {
 }
 
 func (s *Supervisor) pauseLocked(ctx context.Context) error {
-	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause})
+	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause, NowMS: time.Now().UnixMilli()})
 	if err != nil {
 		s.state.Paused = true
 		return err
@@ -270,7 +339,7 @@ func (s *Supervisor) EmptyRoom(ctx context.Context) error {
 	if s.closed {
 		return ErrSupervisorClosed
 	}
-	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause})
+	next, err := Apply(s.state, s.state.Revision, Operation{Kind: OpPause, NowMS: time.Now().UnixMilli()})
 	if err != nil {
 		return err
 	}
@@ -286,6 +355,7 @@ func (s *Supervisor) EmptyRoom(ctx context.Context) error {
 	if s.onEmpty != nil {
 		s.emptyTimer = s.afterFunc(s.grace, s.onEmpty)
 	}
+	s.idleCheckLocked()
 	s.signalLocked()
 	return nil
 }
@@ -338,6 +408,10 @@ func (s *Supervisor) Close() error {
 	if s.emptyTimer != nil {
 		s.emptyTimer.Stop()
 		s.emptyTimer = nil
+	}
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
 	}
 	s.closePlaybackLocked()
 	var err error

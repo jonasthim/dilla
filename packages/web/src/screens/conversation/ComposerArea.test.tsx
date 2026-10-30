@@ -126,7 +126,7 @@ describe('replies (L-UI-45)', () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'the question')] });
     await user.click(within(within(rowOf(P1)).getByRole('toolbar')).getByRole('button', { name: 'reply' }));
     expect(box()).toHaveFocus();
-    expect(chip()).toHaveTextContent('replying to bob');
+    expect(chip()).toHaveTextContent(/replying to bob/i);
     expect(chip()).toHaveTextContent('the question');
     await user.keyboard('@b');
     expect(screen.getByRole('listbox', { name: 'people to mention' })).toBeInTheDocument();
@@ -192,7 +192,7 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(input().multiple).toBe(true);
     expect(input()).toHaveAttribute('hidden');
     const click = vi.spyOn(input(), 'click');
-    await user.click(screen.getByRole('button', { name: 'attach files' }));
+    await user.click(screen.getByRole('button', { name: 'Attach files (25 MB each)' }));
     expect(click).toHaveBeenCalledTimes(1);
     const a = new File(['abc'], 'a.txt', { type: 'text/plain' });
     fireEvent.change(input(), { target: { files: [a] } });
@@ -237,6 +237,36 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(within(items[2]).queryByText('Remove it and attach it again.')).toBeNull();
     await user.click(within(items[1]).getByRole('button', { name: 'remove b.bin' }));
     expect(fake.callsOf('discardAttachment')).toEqual([{ m: 'discardAttachment', channelId: GEN, trayId: 't2' }]);
+  });
+  // Task 7 fix round 1 (Signal §6.8): an attached still shows its own preview, keyed to its tray id in the order of the files;
+  // a GIF is the striped tile with its name; the URL goes back when the entry leaves the tray.
+  it('previews an attached image and a GIF, and revokes the image URL when its entry leaves', async () => {
+    const created: string[] = [];
+    const revoked: string[] = [];
+    const urlApi = URL as unknown as { createObjectURL?: (b: Blob) => string; revokeObjectURL?: (u: string) => void };
+    const saved = { create: urlApi.createObjectURL, revoke: urlApi.revokeObjectURL };
+    urlApi.createObjectURL = () => { const u = `blob:http://127.0.0.1/${String(created.length + 1)}`; created.push(u); return u; };
+    urlApi.revokeObjectURL = (u: string) => { revoked.push(u); };
+    try {
+      const { fake } = renderConversation();
+      const files = [new File(['x'], 'map.png', { type: 'image/png' }), new File(['y'], 'victory.gif', { type: 'image/gif' }), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+      act(() => { fireEvent.change(input(), { target: { files } }); });
+      await waitFor(() => expect(fake.callsOf('attachFiles')).toHaveLength(1));
+      act(() => { fake.set(`tray:${GEN}`, [
+        entry('7', 'uploading', { name: 'map.png', mime: 'image/png', image: true }), entry('8', 'reading', { name: 'victory.gif', mime: 'image/gif', image: true }),
+        entry('9', 'reading', { name: 'notes.txt' }),
+      ]); });
+      const cards = () => Array.from(document.querySelectorAll<HTMLElement>('.d-attachment-tray__item'));
+      await waitFor(() => expect(cards().map(c => c.dataset.kind)).toEqual(['image', 'gif', 'file']));
+      expect(cards()[0].querySelector<HTMLElement>('.d-attachment-tray__preview')!.style.backgroundImage).toContain(created[0]);
+      act(() => { fake.set(`tray:${GEN}`, [entry('8', 'ready', { name: 'victory.gif', mime: 'image/gif', image: true }), entry('9', 'ready', { name: 'notes.txt' })]); });
+      await waitFor(() => expect(revoked).toContain(created[0]));
+      // An earlier test's queued previews may go back meanwhile (their tray unmounted); of this test's URLs only the removed still's does.
+      expect(revoked.filter(u => created.includes(u))).toEqual([created[0]]);
+    } finally {
+      urlApi.createObjectURL = saved.create;
+      urlApi.revokeObjectURL = saved.revoke;
+    }
   });
   it('waits for every file, then sends them with the text, or alone', async () => {
     const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('t1', 'ready'), entry('t2', 'uploading')]) });

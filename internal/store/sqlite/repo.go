@@ -720,6 +720,26 @@ func (r *Repo) PutPasswordCredential(ctx context.Context, userID id.ID, phc stri
 	}))
 }
 
+func (r *Repo) ChangePasswordCredential(ctx context.Context, userID id.ID, phc string, at int64) error {
+	return wrap(r.w.ChangePasswordCredential(ctx, sqlitedb.ChangePasswordCredentialParams{
+		UserID:    userID,
+		Phc:       phc,
+		Updated:   at,
+		ChangedAt: sql.NullInt64{Int64: at, Valid: true},
+	}))
+}
+
+func (r *Repo) GetPasswordChangedAt(ctx context.Context, userID id.ID) (*int64, error) {
+	at, err := r.r.GetPasswordChangedAt(ctx, sqlitedb.GetPasswordChangedAtParams{UserID: userID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	if !at.Valid {
+		return nil, nil
+	}
+	return &at.Int64, nil
+}
+
 func (r *Repo) GetPasswordCredential(ctx context.Context, userID id.ID) (string, error) {
 	phc, err := r.r.GetPasswordCredential(ctx, sqlitedb.GetPasswordCredentialParams{UserID: userID})
 	return phc, wrap(err)
@@ -1049,16 +1069,17 @@ func (r *Repo) ClearLoginFailures(ctx context.Context, userID id.ID) error {
 
 func (r *Repo) CreateInvite(ctx context.Context, i store.InviteRow) error {
 	return wrap(r.w.CreateInvite(ctx, sqlitedb.CreateInviteParams{
-		ID:          i.ID,
-		CodeHash:    i.CodeHash,
-		CommunityID: i.CommunityID,
-		CreatedBy:   i.CreatedBy,
-		GrantsAdmin: int64(i.GrantsAdmin),
-		MaxUses:     int64(i.MaxUses),
-		UsedCount:   int64(i.UsedCount),
-		Created:     i.Created,
-		ExpiresAt:   i.ExpiresAt,
-		RevokedAt:   nullInt64(i.RevokedAt),
+		ID:            i.ID,
+		CodeHash:      i.CodeHash,
+		CommunityID:   i.CommunityID,
+		CreatedBy:     i.CreatedBy,
+		GrantsAdmin:   int64(i.GrantsAdmin),
+		MaxUses:       int64(i.MaxUses),
+		UsedCount:     int64(i.UsedCount),
+		Created:       i.Created,
+		ExpiresAt:     i.ExpiresAt,
+		RevokedAt:     nullInt64(i.RevokedAt),
+		UnlimitedUses: int64(i.UnlimitedUses),
 	}))
 }
 
@@ -1135,6 +1156,7 @@ func inviteRow(row sqlitedb.Invites) store.InviteRow {
 		ID: row.ID, CodeHash: row.CodeHash, CommunityID: row.CommunityID, CreatedBy: row.CreatedBy,
 		GrantsAdmin: uint8(row.GrantsAdmin), MaxUses: uint64(row.MaxUses), UsedCount: uint64(row.UsedCount),
 		Created: row.Created, ExpiresAt: row.ExpiresAt, RevokedAt: ptrInt64(row.RevokedAt),
+		UnlimitedUses: uint8(row.UnlimitedUses),
 	}
 }
 

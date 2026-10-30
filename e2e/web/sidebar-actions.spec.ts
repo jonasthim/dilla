@@ -82,7 +82,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await expect(newChannelButton(page2)).toHaveCount(0);
     await expect(button(page2, 'invite.open')).toHaveCount(0);
     await expect(button(page2, 'admin.leave.open')).toHaveCount(0);
-    await button(page2, 'admin.open').click();
+    await button(page2, 'admin.open').click().then(() => page2.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await expect(nav).toBeVisible({ timeout: WAIT });
@@ -94,23 +94,24 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
 
     // He makes a link and copies it; in Chromium the clipboard is read back and compared to the URL the dialog shows.
     if (browserName === 'chromium') await second.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: h.url });
-    await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-    const dialog = page2.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
-    const field = dialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+    // Signal task 10c: the link shows once in the Invites card with Copy; a member without Manage server is offered
+    // no "never" and no "∞".
+    await expect(settings.getByRole('radio', { name: copy('serverSettings.invites.ttl.never'), exact: true })).toHaveCount(0);
+    await expect(settings.getByRole('radio', { name: copy('serverSettings.invites.uses.unlimited'), exact: true })).toHaveCount(0);
+    await settings.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+    const field = settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
     await expect(field).toBeVisible({ timeout: WAIT });
     await expect.poll(() => field.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
     const shown = await field.inputValue();
-    await dialog.getByRole('button', { name: copy('invite.copy'), exact: true }).click();
-    await expect(dialog.getByRole('status')).toHaveText(copy('invite.copied'), { timeout: WAIT });
+    await settings.getByRole('button', { name: copy('serverSettings.invites.copy'), exact: true }).click();
     if (browserName === 'chromium') {
+      await expect(field).toBeHidden({ timeout: WAIT });
       expect(await page2.evaluate(() => navigator.clipboard.readText()), 'the clipboard holds the shown URL').toBe(shown);
     }
     await page2.keyboard.press('Escape');
-    await expect(dialog).toBeHidden();
-    await page2.keyboard.press('Escape');
     await expect(settings).toBeHidden();
 
-    // 3. At 390x844: the header has the gear and search, no menu; the list header has the "+" for Ada only.
+    // 3. At 390x844 (Ruling AB): the head has the ⌄ (server settings) alone, no search, no menu; the list header has the "+" for Ada only.
     await page.setViewportSize({ width: 390, height: 844 });
     await page2.setViewportSize({ width: 390, height: 844 });
     for (const p of [page, page2]) {
@@ -118,12 +119,12 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
       await expect(backButton).toBeVisible({ timeout: WAIT });
       await backButton.click();
       await expect(button(p, 'admin.open')).toBeVisible({ timeout: WAIT });
-      await expect(button(p, 'search.open')).toBeVisible();
+      await expect(p.locator('.d-channel-list__head').getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
       await expect(button(p, 'nav.server.menu')).toHaveCount(0);
       await expect(button(p, 'admin.leave.open')).toHaveCount(0);
     }
     // A member reaches leave through the gear: server settings → leave server.
-    await button(page2, 'admin.open').click();
+    await button(page2, 'admin.open').click().then(() => page2.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const phoneSettings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await expect(phoneSettings.getByRole('button', { name: copy('admin.nav.leave'), exact: true })).toBeVisible({ timeout: WAIT });
     await page2.keyboard.press('Escape');

@@ -648,3 +648,61 @@ func TestPoolReplacementBindingFencesDelayedOldRoomCallback(t *testing.T) {
 		t.Fatalf("connections=%d, want one per binding", connects)
 	}
 }
+
+// Task 8c fix round 2 (Ruling AU): a connected room reports its RTT for the stage, rounded, only when it moved by RTTStep, and
+// stops with the room.
+func TestPoolReportsTheRoomRTTOnChange(t *testing.T) {
+	p, err := NewPool(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.backend = &poolBackendStub{}
+	var mu sync.Mutex
+	rtts := []time.Duration{63 * time.Millisecond, 66 * time.Millisecond, 70400 * time.Microsecond}
+	read := 0
+	p.roomRTT = func(poolRoom) (time.Duration, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		v := rtts[min(read, len(rtts)-1)]
+		read++
+		return v, true
+	}
+	p.rttEvery = 5 * time.Millisecond
+	got := make(chan uint32, 8)
+	var gotCall id.ID
+	p.SetRTTReporter(func(_ context.Context, callID id.ID, ms uint32) error {
+		mu.Lock()
+		gotCall = callID
+		mu.Unlock()
+		got <- ms
+		return nil
+	})
+	call, group := poolCall(1, 2)
+	s, err := p.startSource(context.Background(), call, group, newPoolEpochs(), newPoolSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint32{63, 70} // 66 is within RTTStep of 63
+	for _, w := range want {
+		select {
+		case ms := <-got:
+			if ms != w {
+				t.Fatalf("reported %d, want %d", ms, w)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no report of %d", w)
+		}
+	}
+	mu.Lock()
+	if gotCall != call.CallID {
+		t.Errorf("reported for call %v, want %v", gotCall, call.CallID)
+	}
+	mu.Unlock()
+	_ = s.Close()
+	_ = p.Close()
+	select {
+	case ms := <-got:
+		t.Fatalf("a report after the room closed: %d", ms)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

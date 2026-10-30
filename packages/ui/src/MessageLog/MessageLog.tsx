@@ -1,5 +1,6 @@
 import { Children, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { Icon, type IconName } from '../Icon/Icon.tsx';
 import './MessageLog.css';
 
 export interface MessageLogProps {
@@ -11,9 +12,18 @@ export interface MessageLogProps {
   onKeyDown?(e: KeyboardEvent): void;
   /** Set when the log can be away from the newest messages: `atPresent === false` shows the bar, and Ctrl+End jumps. */
   present?: { atPresent: boolean; olderLabel: string; jumpLabel: string; onJumpToPresent(): void };
+  /**
+   * The start of the conversation (README §5.5): a 40px tile with the channel's glyph, "Welcome to #general" and "This is
+   * the start of #general.", above the first row. Pass it once the history is complete (no `earlier`); `emptyLabel` follows it
+   * while there is no row.
+   */
+  welcome?: { icon: IconName; title: string; body: string };
 }
 
-/** A day divider: a mono hairline row with the day. Pass it as a child of the log. */
+/** The entrance stagger counts the last this many rows of the first paint (top to bottom); rows above them are off screen. */
+export const STAGGER_ROWS = 20;
+
+/** A day divider (README §5.5): "TODAY" in 10px/600 uppercase, then a hairline to the edge. Pass it as a child of the log. */
 export function DateDivider({ label }: { label: string }) {
   return (
     <div className="d-date-divider" role="separator" aria-label={label}>
@@ -35,7 +45,7 @@ export const PIN_SLACK_PX = 24;
  * log's one tab stop and the log itself leaves the tab order (tabIndex -1, still focusable by script); with no
  * such row the log stays a reachable scroll region. Keys reach the caller through `onKeyDown`.
  */
-export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown, present }: MessageLogProps) {
+export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown, present, welcome }: MessageLogProps) {
   // Scrolling must not re-render: all of the pinning state lives in refs.
   const logRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
@@ -48,6 +58,12 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
   };
+
+  // The first paint's rows rise in one after another, 40ms apart (README §5.5); rows that arrive later have no delay.
+  useLayoutEffect(() => {
+    const rows = Array.from(rowsRef.current?.querySelectorAll<HTMLElement>(':scope > .d-message-row') ?? []).slice(-STAGGER_ROWS);
+    rows.forEach((row, i) => row.style.setProperty('--d-enter-i', String(i)));
+  }, []);
 
   // A resize of the log (the shell shrinking under a soft keyboard) keeps the end in view for a reader who is at the end.
   useLayoutEffect(() => {
@@ -91,6 +107,13 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     <div ref={logRef} className="d-message-log" role="log" aria-live="polite" aria-relevant="additions" aria-label={label}
       aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll} onKeyDown={onLogKeyDown}>
       {earlier ? <Button className="d-message-log__earlier" variant="ghost" onClick={earlier.onLoad}>{earlier.label}</Button> : null}
+      {welcome !== undefined ? (
+        <div className="d-message-log__welcome">
+          <span className="d-message-log__welcome-tile" aria-hidden="true"><Icon name={welcome.icon} size={20} /></span>
+          <p className="d-message-log__welcome-title">{welcome.title}</p>
+          <p className="d-message-log__welcome-body">{welcome.body}</p>
+        </div>
+      ) : null}
       {Children.count(children) === 0 ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
       <div ref={rowsRef} className="d-message-log__rows">{children}</div>
     </div>

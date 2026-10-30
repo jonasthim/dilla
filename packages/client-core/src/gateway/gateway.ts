@@ -22,7 +22,9 @@ export type GatewayEvent =
   | { type: 'status'; status: GatewayStatus; closeCode: number | null }
   | { type: 'ready'; info: ReadyInfo }
   | { type: 'frame'; frame: Frame }
-  | { type: 'revoked' };
+  | { type: 'revoked' }
+  /** Task 11 (Jonas, Q3): a heartbeat's round trip, in ms (the phone's You tab: "Connected to {host} · {ping}"). */
+  | { type: 'rtt'; ms: number };
 
 export interface GatewayDeps {
   url: string;
@@ -45,7 +47,7 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-const WIRE_PREFERENCE = [3n, 2n] as const;
+const WIRE_PREFERENCE = [4n, 3n, 2n] as const;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
   versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
@@ -100,6 +102,8 @@ export class Gateway {
   private handshakeTimer: number | null = null;
   private heartbeatTimer: number | null = null;
   private ackTimer: number | null = null;
+  /** When the heartbeat now awaiting its ack was sent (deps.now); null while none is outstanding. */
+  private beatSentAt: number | null = null;
   private readonly lastTyping = new Map<string, number>();
   private accepted: ReadyInfo['versions'] | null = null;
 
@@ -182,6 +186,8 @@ export class Gateway {
     ws.binaryType = 'arraybuffer';
     this.lastN = 0n;
     this.hello = null;
+    // Fix round 2: a beat of an earlier socket (closed by the server or torn down here) is never timed against this one's ack.
+    this.beatSentAt = null;
     this.phase = 'hello';
     ws.addEventListener('message', (event) => { if (id === this.attempt) this.onMessage(event); });
     ws.addEventListener('close', (event) => { if (id === this.attempt) this.onClose(event); });
@@ -244,7 +250,14 @@ export class Gateway {
       return;
     }
     if (this.phase === 'ready') {
-      if (frame.op === Op.heartbeatAck) this.cancel('ackTimer');
+      if (frame.op === Op.heartbeatAck) {
+        this.cancel('ackTimer');
+        if (this.beatSentAt !== null) {
+          const ms = Math.max(0, Math.round(this.deps.now() - this.beatSentAt));
+          this.beatSentAt = null;
+          this.emit({ type: 'rtt', ms });
+        }
+      }
       // The group frames, the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49), and the
       // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33), the structure notice of
       // web-3.1 (op 54), and the away roster notice (op 55, AW4).
@@ -270,6 +283,7 @@ export class Gateway {
     this.arm('heartbeatTimer', interval, () => {
       this.send(encodeFrame(Op.heartbeat, 0, null, [this.lastN, 1]));
       if (this.ackTimer === null) {
+        this.beatSentAt = this.deps.now();
         this.arm('ackTimer', GATEWAY.ackTimeoutMs, () => this.teardown(CLIENT_CLOSE.heartbeatTimeout, true));
       }
       this.scheduleBeat();
@@ -299,6 +313,7 @@ export class Gateway {
 
   private teardown(code: number, reconnect: boolean): void {
     this.accepted = null;
+    this.beatSentAt = null;
     const ws = this.socket;
     this.attempt += 1;
     this.cancel('handshakeTimer');

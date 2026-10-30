@@ -6,7 +6,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   TEST_TIMEOUT, WAIT, makeInviteLink, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
-  signUp, test, channelRow, expectComposerReady,
+  signUp, test, channelRow, expectComposerReady, membersToggle,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -56,7 +56,7 @@ function anyOf(key: string, vars: Record<string, string>, open: string): RegExp 
 
 /** Opens "server settings" in the sidebar and returns the dialog. */
 async function openSettings(page: Page): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog).toBeVisible({ timeout: WAIT });
   // Until the permissions are read the dialog shows no tab; the nav fills in when they arrive.
@@ -71,8 +71,15 @@ async function closeSettings(page: Page): Promise<void> {
   await expect(dialogOf(page, 'admin.title')).toBeHidden();
   await expect(button(page, 'admin.open')).toBeFocused();
 }
-/** Opens the member's profile card from its row and picks the action `item`. */
+/** Picks the action `item` for a member: kick and ban from the row's person menu (a right-click; Signal task 9), the rest from the profile card. */
 async function memberAction(page: Page, server: string, name: string, item: string): Promise<void> {
+  const inMenu = ({ 'members.menu.kick': 'members.menu.kickName', 'members.menu.ban': 'members.menu.banName' } as Record<string, string>)[item];
+  if (inMenu !== undefined) {
+    await memberRow(page, server, name).locator('.d-member-list__open').click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name }), exact: true })
+      .getByRole('menuitem', { name: copy(inMenu, { name }), exact: true }).click();
+    return;
+  }
   await memberRow(page, server, name).locator('.d-member-list__open').click();
   await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
 }
@@ -127,14 +134,16 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(memberRow(page, SERVER, OWNER)).toBeVisible();
     await expectAccessible(page, 'the members pane');
 
-    // 3a. The profile card: a click on a row opens it beside the list (a sheet on a phone), with the owner and "you" words only where they apply.
+    // 3a. The profile card: a click on a row opens it beside the list (a sheet on a phone), the owner's crown (named) after her name;
+    // Signal task 9: the prototype's card draws no "you" mark.
     await memberRow(page, SERVER, OWNER).locator('.d-member-list__open').click();
     const ownerCard = page.getByRole('dialog', { name: OWNER });
     await expect(ownerCard).toBeVisible();
-    await expect(ownerCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
-    await expect(ownerCard.getByText(copy('layout.profile.you'), { exact: true })).toBeVisible();
-    // Her own card: no message, compare, kick or ban, only the roles she may assign.
-    await expect(ownerCard.locator('.d-profile-card__action')).toHaveText([copy('layout.profile.manageRoles')]);
+    await expect(ownerCard.getByRole('img', { name: copy('layout.profile.owner'), exact: true })).toBeVisible();
+    await expect(ownerCard.getByText(copy('layout.profile.you'), { exact: true })).toHaveCount(0);
+    // Her own card: no message, compare, kick or ban, only the roles she may assign (the prototype's edit glyph, named).
+    await expect(ownerCard.locator('.d-profile-card__action')).toHaveCount(0);
+    await expect(ownerCard.locator('.d-profile-card__icon-action')).toHaveAttribute('aria-label', copy('layout.profile.manageRoles'));
     const shots = process.env.DILLA_SHOTS;
     if (shots) {
       await page.setViewportSize({ width: 1440, height: 900 });
@@ -147,8 +156,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     if (shots) {
       const wide = page.viewportSize();
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.getByRole('button', { name: copy('nav.channel.menu'), exact: true }).click();
-      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
+      await membersToggle(page).click();
       await memberRow(page, SERVER, FRIEND).locator('.d-member-list__open').click();
       await expect(page.getByRole('dialog', { name: FRIEND })).toBeVisible();
       await page.screenshot({ path: `${shots}/card-phone-390.png` });
@@ -165,10 +173,12 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
       await expect(region).toBeVisible({ timeout: WAIT });
       const bar = region.getByRole('heading', { level: 2, name: copy('members.toggle'), exact: true });
       await expect(bar).toBeVisible();
-      const barBox = await bar.boundingBox();
+      // Task 9: the heading sits in the list's own 44px head (.d-member-list__bar) beside its close ×; the head is measured.
+      const barBox = await bar.locator('xpath=..').boundingBox();
       const headerBox = await page.locator('.d-channel-header').boundingBox();
       if (barBox === null || headerBox === null) throw new Error(`no members bar or channel header at ${String(width)}`);
-      expect(barBox.height, `members bar height at ${String(width)}`).toBeCloseTo(48, 0);
+      // Signal §5.1: every pane's top bar is --bar-h, 44 (the prototype's members head and channel header).
+      expect(barBox.height, `members bar height at ${String(width)}`).toBeCloseTo(44, 0);
       expect(barBox.y + barBox.height, `members bar bottom at ${String(width)}`).toBeCloseTo(headerBox.y + headerBox.height, 0);
       const close = page.getByRole('button', { name: copy('members.close'), exact: true });
       if (await close.count() > 0) {
@@ -269,13 +279,18 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(membersRegion(page2, RENAMED)).toBeVisible({ timeout: WAIT });
     await memberRow(page2, RENAMED, OWNER).locator('.d-member-list__open').click();
     const seenCard = page2.getByRole('dialog', { name: OWNER });
-    await expect(seenCard.locator('.d-profile-card__action')).toHaveText([copy('members.menu.message'), copy('members.menu.compare')]);
-    await expect(seenCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
+    // Signal task 9: the card's row is Message and the safety-number shield (named); the owner is the crown after the name.
+    await expect(seenCard.locator('.d-profile-card__action')).toHaveText([copy('members.menu.message')]);
+    await expect(seenCard.locator('.d-profile-card__icon-action')).toHaveAttribute('aria-label', copy('members.menu.compare'));
+    await expect(seenCard.getByRole('img', { name: copy('layout.profile.owner'), exact: true })).toBeVisible();
     await expect(seenCard.getByText(copy('layout.profile.you'), { exact: true })).toHaveCount(0);
     await page2.keyboard.press('Escape');
     const mine = await openSettings(page2);
     const nav = mine.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button');
+    // Signal task 10 fix round 1: one settings workspace; "You" comes first, then this server's sections.
     await expect(nav).toHaveText([
+      copy('workspace.profile'), copy('workspace.signin'), copy('workspace.devices'), copy('workspace.notifications'), copy('workspace.voice'),
+      copy('workspace.keyboard'), copy('workspace.appearance'), copy('workspace.privacy'), copy('workspace.diagnostics'),
       copy('workspace.members'), copy('workspace.invites'), copy('workspace.selfRoles'), copy('workspace.danger'),
     ]);
     // WS8: the sidebar has no leave button; leave is a section of server settings.

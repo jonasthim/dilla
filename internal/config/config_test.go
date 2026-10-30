@@ -507,7 +507,7 @@ func TestConfigDoesNotImplementLogValuerByAccident(t *testing.T) {
 // dilla-media task 8: the new [livekit] keys, their defaults and their ranges.
 func TestTheLiveKitMediaKeys(t *testing.T) {
 	d := config.Default().LiveKit
-	if d.WebhookListen != "127.0.0.1:7883" || d.VP9 || d.MaxShareBitrateKbps != 2500 || d.MaxAudioBitrateKbps != 64 ||
+	if d.WebhookListen != "127.0.0.1:7883" || d.VP9 || d.MaxShareBitrateKbps != 8000 || d.MaxAudioBitrateKbps != 64 ||
 		d.LimitNumTracks != 0 || d.LimitBytesPerSec != 0 || len(d.IPsExcludes) != 0 {
 		t.Fatalf("defaults = %+v", d)
 	}

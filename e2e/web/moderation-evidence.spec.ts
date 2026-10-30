@@ -36,12 +36,12 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await openChannel(targetPage, SERVER, 'general');
 
     // Enable the bot through the same server settings flow used by a moderator.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.warnings'), exact: true }).check();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.warnings'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -51,13 +51,13 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
     await expect(settings).toBeHidden();
 
-    // The owner warns Bea through her member card; the reason is the evidence we retrieve below.
+    // The owner warns Bea through her row's person menu (a right-click; Signal task 9); the reason is the evidence we retrieve below.
     const members = page.getByRole('complementary', { name: copy('members.region', { server: SERVER }), exact: true });
     const targetRow = members.getByRole('listitem').filter({ hasText: TARGET });
     await expect(targetRow).toBeVisible();
-    await targetRow.locator('.d-member-list__open').click();
-    const card = page.getByRole('dialog', { name: TARGET, exact: true });
-    await card.getByRole('button', { name: copy('mod.warn.menu'), exact: true }).click();
+    await targetRow.locator('.d-member-list__open').click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name: TARGET }), exact: true })
+      .getByRole('menuitem', { name: copy('mod.warn.menu'), exact: true }).click();
     const warning = page.getByRole('dialog', { name: copy('mod.warn.title', { name: TARGET, server: SERVER }), exact: true });
     await warning.getByRole('textbox', { name: copy('mod.warn.reason'), exact: true }).fill(REASON);
     await warning.getByRole('button', { name: copy('mod.warn.confirm'), exact: true }).click();
@@ -67,7 +67,7 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     await expect(warningNotice).toBeVisible();
 
     // Retrieve through the actual Bot settings panel and assert the returned evidence is rendered.
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();

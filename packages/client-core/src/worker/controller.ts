@@ -26,13 +26,13 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
-  INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
+  INVITE_TTL_MAX_S, INVITE_USES_MAX, BOT_CAPABILITIES_MAX, BOT_MUSIC_VOLUMES, BOT_MUSIC_IDLE_MINUTES, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
   type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { historyFrom, readDeviceListHistory, signedHeadList } from '../state/trust';
+import { chainRow, historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -210,8 +210,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'ackHumanInteractionResponses',
   'getBotJoinRole',
   'configureBotJoinRole',
-  'getBotDjRoles',
-  'configureBotDjRoles',
+  'restartBot',
+  'setBotMusicSettings',
   'listSelfRoles',
   'configureSelfRoles',
   'selectSelfRole',
@@ -295,6 +295,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callJoin',
   'callLeave',
   'callShare',
+  'callRtt',
   'callRefresh',
   'callStats',
   'callNote',
@@ -350,6 +351,9 @@ const botInstallationView = (row: BotInstallationRow) => ({
   revision: row.revision.toString(), userId: row.userId === null ? null : toHex(row.userId),
   deviceId: row.deviceId === null ? null : toHex(row.deviceId), capabilities: row.capabilities,
   updatedAt: row.updatedAt.toString(),
+  // Task 10c: only a widened read carries these; a mutation's answer leaves them out.
+  ...(row.extra === undefined ? {} : { restartRequested: row.extra.restartRequested.toString(), restartHandled: row.extra.restartHandled.toString(),
+    version: row.extra.version, musicVolume: row.extra.musicVolume, musicIdleMinutes: row.extra.musicIdleMinutes }),
 });
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
@@ -400,8 +404,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   ackHumanInteractionResponses: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
-  getBotDjRoles: ['communityId'],
-  configureBotDjRoles: ['communityId', 'requestId', 'installationId'],
+  restartBot: ['communityId', 'installationId'],
+  setBotMusicSettings: ['communityId', 'installationId'],
   listSelfRoles: ['communityId'],
   configureSelfRoles: ['communityId', 'requestId'],
   selectSelfRole: ['communityId', 'roleId', 'requestId'],
@@ -518,8 +522,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'ackHumanInteractionResponses',
     'getBotJoinRole',
     'configureBotJoinRole',
-    'getBotDjRoles',
-    'configureBotDjRoles',
+    'restartBot',
+    'setBotMusicSettings',
     'listSelfRoles',
     'configureSelfRoles',
     'selectSelfRole',
@@ -594,6 +598,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callJoin',
     'callLeave',
     'callShare',
+    'callRtt',
     'callRefresh',
     'callStats',
     'callNote',
@@ -712,11 +717,12 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'createInvite') {
     const { maxUses, ttlSeconds } = command;
-    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 1 || maxUses > INVITE_USES_MAX) {
-      return `maxUses is not an integer 1..${String(INVITE_USES_MAX)}`;
+    // 0 is "∞" uses and "never" expires (Task 10c); the instance asks manage_community for either.
+    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > INVITE_USES_MAX) {
+      return `maxUses is not an integer 0..${String(INVITE_USES_MAX)}`;
     }
-    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > INVITE_TTL_MAX_S) {
-      return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
+    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > INVITE_TTL_MAX_S) {
+      return `ttlSeconds is not an integer 0..${String(INVITE_TTL_MAX_S)}`;
     }
   }
   if (m === 'configureSelfRoles') {
@@ -725,9 +731,8 @@ function invalid(command: Record<string, unknown>): string | null {
       || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
   }
   if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
-  if (m === 'configureBotDjRoles' && (!Array.isArray(command.roleIds) || command.roleIds.length > 250
-    || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
-    || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
+  if (m === 'setBotMusicSettings' && (!(BOT_MUSIC_VOLUMES as readonly unknown[]).includes(command.volume)
+    || !(BOT_MUSIC_IDLE_MINUTES as readonly unknown[]).includes(command.idleMinutes))) return 'volume or idle minutes are not an option';
   if (m === 'registerRolePanel') {
     const seq = command.messageSeq;
     if (typeof seq !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(seq) || BigInt(seq) > 0x7fff_ffff_ffff_ffffn) return 'messageSeq is invalid';
@@ -747,14 +752,14 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 24 || operation === 31
+      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 25 || operation === 31
         || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
         || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
-    const music = operation >= 10 && operation <= 23;
+    const music = operation >= 10 && operation <= 23 || operation === 25;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
     if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
+    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 25, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
       : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
         : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
     if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
@@ -778,8 +783,9 @@ function invalid(command: Record<string, unknown>): string | null {
     if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
       || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
     if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
+    if (operation === 25 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]) || command.revision !== '0')) return 'music announcement is invalid';
     if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
       || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
       || operation === 82 || operation === 83;
     const revision = command.revision;
@@ -788,7 +794,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
     || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 24 || op === 31 || op >= 50 && op <= 52
+    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 25 || op === 31 || op >= 50 && op <= 52
       || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
     || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
   if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined
@@ -806,7 +812,7 @@ function invalid(command: Record<string, unknown>): string | null {
     }
     if (m === 'configureBotInstallation') {
       const caps = command.capabilities;
-      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
+      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > BOT_CAPABILITIES_MAX) return 'capabilities are not 0..1023';
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
@@ -921,6 +927,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callRtt' && command.ms !== null && (typeof command.ms !== 'number' || !Number.isInteger(command.ms) || command.ms < 0 || command.ms > 5000)) return 'ms is not null or 0..5000';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
   if (m === 'callNote' && !CALL_NOTES.has(command.code as string)) return 'not a call note code';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
@@ -1426,8 +1433,8 @@ export class Controller {
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
-      case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
-      case 'configureBotDjRoles': return this.configureBotDjRoles(command);
+      case 'restartBot': return this.restartBot(command);
+      case 'setBotMusicSettings': return this.setBotMusicSettings(command);
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
       case 'configureSelfRoles': return this.configureSelfRoles(command);
       case 'selectSelfRole': return this.selectSelfRole(command);
@@ -1519,6 +1526,7 @@ export class Controller {
       case 'callJoin': return this.calls.join(command.channelId, command.vdec);
       case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
       case 'callShare': return this.calls.share(command.on);
+      case 'callRtt': return this.calls.rtt(command.ms);
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
       case 'callNote': this.recordError(command.code); return Promise.resolve(null);
@@ -1617,11 +1625,11 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
       || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
       || operation === 82 || operation === 83;
     const idArgument = (index: number): boolean =>
-      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
+      ((operation === 21 || operation === 25) && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
         || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
         || operation === 71 && index === 0 || operation === 72 && (index === 0 || index === 1) || operation === 73 && index === 0
         || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);
@@ -1982,17 +1990,18 @@ export class Controller {
     return { installationId: toHex(installationId) };
   }
 
-  private async getBotDjRoles(communityId: string): Promise<{ roleIds: string[]; installationId: string } | null> {
-    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const row = await this.routes.getBotDjRoles(fromHex(communityId));
-    return row === null ? null : { roleIds: row.roleIds.map(toHex), installationId: toHex(row.installationId) };
+  /** Task 10c: Glenn's Restart. Answers the restart counters as decimal strings. */
+  private async restartBot(command: Extract<Command, { m: 'restartBot' }>): Promise<{ requested: string; handled: string }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.restartBot(fromHex(command.communityId), fromHex(command.installationId));
+    return { requested: row.requested.toString(), handled: row.handled.toString() };
   }
 
-  private async configureBotDjRoles(command: Extract<Command, { m: 'configureBotDjRoles' }>): Promise<{ acceptedCount: number }> {
+  /** Task 10c: the Music page's default volume and idle-leave minutes. */
+  private async setBotMusicSettings(command: Extract<Command, { m: 'setBotMusicSettings' }>): Promise<ReturnType<typeof botInstallationView>> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const acceptedCount = await this.routes.configureBotDjRoles(fromHex(command.communityId), fromHex(command.requestId),
-      fromHex(command.installationId), command.roleIds.map(fromHex));
-    return { acceptedCount };
+    return botInstallationView(await this.routes.setBotMusicSettings(fromHex(command.communityId), fromHex(command.installationId),
+      command.volume, command.idleMinutes));
   }
 
   private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {
@@ -2433,6 +2442,7 @@ export class Controller {
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
       onTrustChanged: () => { this.safely(() => this.refreshTrustGeneration()); },
+      onError: (code) => { this.recordError(code); },
       trackJob: (job) => { void this.barrier.track(job).catch(() => undefined); },
       // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
       onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
@@ -2522,6 +2532,12 @@ export class Controller {
         this.clearAFK(community.id);
       }
       this.stopTypingIfUnviewable();
+    } else if (e.type === 'rtt') {
+      // Task 11 (Jonas, Q3): the You tab's "Connected to {host} · {ping}"; published only while online and on a change.
+      if (this.connectionState.status === 'online' && this.connectionState.pingMs !== e.ms) {
+        this.connectionState = { ...this.connectionState, pingMs: e.ms };
+        this.slices.set('connection', this.connectionState);
+      }
     } else if (e.type === 'ready') {
       this.onReady(e.info);
     } else if (e.type === 'frame' && e.frame.op === Op.presence) {
@@ -4131,7 +4147,7 @@ export class Controller {
       if (list === null) throw new Error('E_NO_BACKUP');
       const now = this.nowS();
       const sign = (stateSealed: Uint8Array): SignedLists =>
-        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: list.raw, deviceIds: ids, now });
+        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: chainRow(list.raw), deviceIds: ids, now });
       let signed: SignedLists;
       try {
         try {
@@ -4858,7 +4874,10 @@ export class Controller {
         const { head, history } = signed;
         let verdict: { version: bigint; changed: boolean; quarantined: number };
         const own = this.me !== null && toHex(this.me.userId) === user;
-        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
+        try {
+          ingestAccountKind(core, leaf.userId, head, code => this.recordError(code));
+          verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS());
+        }
         catch (e) {
           // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
           // The refusal writes nothing in the core, so the worker keeps it. An own-user history under another key is an
@@ -5447,7 +5466,7 @@ export class Controller {
     let row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
     if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
     if (row.state === 1) {
-      try { await recoverModerationRemovals(core, this.routes, row.groupId); } catch { /* absence or outage is not proof of rejection */ }
+      try { await recoverModerationRemovals(core, this.routes, row.groupId, code => this.recordError(code)); } catch { /* absence or outage is not proof of rejection */ }
       row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
       if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
     }
@@ -5498,7 +5517,7 @@ export class Controller {
       if (saved.state === 1) {
         // Feed ingestion promotes only an authenticated proof matching this exact actor, device,
         // group, community and sequence. A failed lookup leaves the outcome unknown.
-        try { await recoverModerationRemovals(core, this.routes, saved.groupId); } catch { /* retry next ready */ }
+        try { await recoverModerationRemovals(core, this.routes, saved.groupId, code => this.recordError(code)); } catch { /* retry next ready */ }
       }
       let current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
       if (current === undefined) continue;

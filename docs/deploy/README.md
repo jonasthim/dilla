@@ -10,6 +10,27 @@ writes, and the Proxmox LXC helper. There is no container image.
 
 ### Open tabs during an upgrade
 
+Music player (task 8b): upgrade `dillad` with its web client first and reload open tabs, then `dillabot`. An older
+web client cannot read the newer Bot's music snapshot; an older Bot simply does not post the "started music" message.
+
+Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload open tabs. Until then:
+
+- A tab opened before the upgrade still shows the old DJ roles card on the Music page. The upgrade removes that setting:
+  every DJ role becomes a role with the **Control music (DJ)** permission, so that card can no longer be saved. Reload
+  the tab.
+- A tab opened before the upgrade can still save the Bot's capabilities. Its request does not mention Polls and
+  Reminders, so the server keeps them as they are.
+- A tab opened before the upgrade drops **Control music** (bit 25) from any role or channel permissions it saves, because its permission mask is the old one. Reload before editing roles or channel permissions.
+- An older `dillabot` reports no version, so Glenn's card shows none. A Restart stays "not picked up yet" until the newer
+  `dillabot` runs. The Music page's default volume and idle-leave time take effect only with the newer `dillabot`, and
+  the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
+  Upgrade both together.
+
+Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it
+negotiates wire 4 and starts checking each person's signed account kind. `dillabot` stays on wire 3 next to wire-4
+people, so the order above still holds. Once browsers run wire 4, do not roll `dillad` back below it (see
+[Client data version per release](#client-data-version-per-release)).
+
 For upgrades already running the media sidecar, the normal path is:
 
 ```mermaid
@@ -245,7 +266,18 @@ What it fixes, and the keys that change it:
   are LiveKit's node-wide join gates, unset by default. They refuse new joins once reached, so size
   them generously: one 25-person voice call is about 600 forwarded tracks.
 - **Publish caps.** `livekit.max_audio_bitrate_kbps` (64) and `livekit.max_share_bitrate_kbps`
-  (2500) are handed to clients with every call token.
+  (8000) are handed to clients with every call token. A screen share encodes at the bitrate its
+  picker's choice asks for (720p 2.5, 1080p 4.5, 1440p 8, source 12 Mb/s at 30 fps; ×0.6 at 15,
+  ×1.6 at 60), never above the share cap, and the picker's "≈ … Mb/s up" shows that capped value.
+  The estimate is the top layer's bitrate; a simulcast share also sends a small lower layer on top
+  of it. Lower the cap on a host with little upload to spare (each sharer's stream is forwarded to
+  every viewer); the range is 100..20000. The cap is advisory: the server cannot enforce a bitrate,
+  so a hostile client can send more. `livekit.limit_bytes_per_sec` is the SFU's own hard limit.
+- **Participant attributes.** No call token may update its own LiveKit name, metadata or attributes.
+  A person's (or the bot's) round-trip time to the SFU reaches the others' tiles as their ping
+  through dillad (`POST /v1/calls/{call_id}/rtt`), which writes it as the participant's `dilla.rtt`
+  attribute at most every 1.5 s per device. The generated LiveKit config also caps a name at 32
+  bytes, metadata at 1 byte and one attribute update at 64 bytes (`limit.*`), as defence in depth.
 - **Which addresses LiveKit offers, and `ips_excludes`.** LiveKit opens its media socket
   (`udp_port`) on each address of the host's up interfaces (loopback only when `node_ip` is
   loopback, and never `::1`), skipping those inside `livekit.ips_excludes`, and builds its host
@@ -941,6 +973,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 | web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
 | bot1 (`v0.1.0-bot1`) | **12** | **47** | Dilla Bot and its server/browser support. A rollback to web3.12.4 needs a server down migration to 23 with the new binary first; the older browser cannot read a schema-12 store. See the [bot1 release notes](releases/v0.1.0-bot1.md). |
+| Signal wave A (wire 4) | **13** | **52** | Server settings (task 10c): `00048_control_music` turns every DJ role into a role with the **Control music** permission and drops the DJ roles table (its down migration recreates the table empty, so a rollback loses the DJ list; the permission bits stay on the roles), `00049_unlimited_invites` and `00050_bot_installation_settings` (Polls and Reminders on for every existing Bot, default music volume and idle time, restart and version). The instance-signed account kind (task S1, protocol/03 § Account kind attestation): `00051_session_wire4` lets a session record wire 4. `00052_password_changed` (Task 11) adds `password_credentials.changed_at`, set by a password change, so Settings → Sign-in can say "Changed {when}"; existing passwords read as unknown (its down migration drops the column). **Do not roll `dillad` back below a wire-4 build**: a browser that has stored an attestation leaves every person without one pending, so after a rollback it stops showing other people's messages. One-way for the browser too: an older bundle refuses the schema-13 store ("too old" screen); redeploy the wire-4 build, or clear site data and sign in again with the recovery key. |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is

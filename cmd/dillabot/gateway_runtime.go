@@ -126,6 +126,17 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 }
 func (r *botGatewayRuntime) Close() { r.RetainOnly(nil) }
 
+// Drop closes one installation's gateway connection; the next Ensure opens a fresh one (Task 10c
+// restart).
+func (r *botGatewayRuntime) Drop(installation id.ID) {
+	if e, ok := r.entries[installation]; ok {
+		e.cancel()
+		<-e.done
+		delete(r.entries, installation)
+		delete(r.pollers, installation)
+	}
+}
+
 func (r *botGatewayRuntime) SubscribeGroups(ctx context.Context, installation id.ID, groups []id.ID) {
 	if e := r.entries[installation]; e != nil && len(groups) > 0 {
 		// The initial Ready may precede MLS membership reconciliation. Subscribe the

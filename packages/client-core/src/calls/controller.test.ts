@@ -35,7 +35,7 @@ const LISTED = { value: true };
 const LABELS: Record<string, string> = {
   getChannelCall: 'GET channel call', getCommunityCalls: 'GET community calls', postGroup: 'POST group', getGroupInfo: 'GET group info',
   getGroupTree: 'GET group tree', postResync: 'POST resync', startCall: 'POST calls', postProposal: 'POST proposal', postCommit: 'POST commit',
-  declineCall: 'POST decline', getDeviceList: 'GET device list', shareCall: 'POST share', unshareCall: 'DELETE share', postCallStats: 'POST stats',
+  declineCall: 'POST decline', getDeviceList: 'GET device list', shareCall: 'POST share', unshareCall: 'DELETE share', postCallStats: 'POST stats', postCallRtt: 'POST rtt',
   endCallIfAlone: 'DELETE call', listMembers: 'GET members',
 };
 
@@ -1018,6 +1018,18 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     for (const command of [{ m: 'callShare', on: true }, { m: 'callRefresh' }, { m: 'callStats', report: [0, null, 0, 0, 0, 0] }]) {
       expect(await codeOf(w.call(command))).toBe('E_NO_CALL');
     }
+  });
+
+  // Task 11 (8c minor): a refused RTT report says so, so the page does not count it as sent.
+  it('callRtt answers true once stored and false on a 429 or a 404, never throwing for those', async () => {
+    const w = await joined();
+    expect(await w.call({ m: 'callRtt', ms: 24 })).toBe(true);
+    w.server.answer('POST rtt', 429, 'E_RATE_LIMITED', 4000);
+    expect(await w.call({ m: 'callRtt', ms: 31 })).toBe(false);
+    w.server.answer('POST rtt', 404, 'E_NOT_FOUND', 0);
+    expect(await w.call({ m: 'callRtt', ms: null })).toBe(false);
+    expect(await w.call({ m: 'callRtt', ms: null })).toBe(true);
+    expect(w.server.routes().filter((r) => r === 'POST rtt')).toHaveLength(4);
   });
 
   it('resign leaves the call and clears rings before it releases the store', async () => {

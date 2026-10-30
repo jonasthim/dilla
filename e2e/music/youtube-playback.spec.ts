@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '../voice/support/peer-browser';
 import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, voiceRow, WAIT } from '../voice/support/voice';
-import { addServerVia, channelRow, completeSignUp, composerBox, copy, makeInviteLink, newAccount, openChannel, railItem, signUp } from '../web/support/app';
+import { addServerVia, botRowMenu, channelRow, completeSignUp, composerBox, copy, makeInviteLink, makeRole, newAccount, openChannel, railItem, signUp } from '../web/support/app';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const SERVER = 'Music acceptance A';
@@ -42,15 +42,13 @@ const dialog = (page: import('@playwright/test').Page, name: string, vars?: Reco
 const settingsNav = (settings: import('@playwright/test').Locator, key: string) =>
   settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
     .getByRole('button', { name: copy(key), exact: true });
+// Signal task 10c: the Music page's YouTube row (its status line and READY tag) and the Spotify account row.
 const expectProviderRuntimeEvidence = async (settings: import('@playwright/test').Locator): Promise<void> => {
-  const providers = settings.locator('[data-setting="music-providers"]');
-  const status = providers.getByRole('status');
-  await expect(status).toHaveText(copy('workspace.providers.linkedHelp'), { timeout: 35_000 });
+  const youtube = settings.locator('[data-setting="music-providers"]');
+  await expect(youtube.getByRole('status')).toHaveText(copy('serverSettings.music.youtubeReady'), { timeout: 35_000 });
   // The fresh fixture has no Spotify account state, and the pinned provider tools above are present.
-  await expect(providers.getByText(copy('workspace.providers.spotifyAccount'), { exact: true }).locator('xpath=following-sibling::dd[1]'))
-    .toHaveText(copy('workspace.providers.notLinked'));
-  await expect(providers.getByText(copy('workspace.providers.youtubeSetup'), { exact: true }).locator('xpath=following-sibling::dd[1]'))
-    .toHaveText(copy('workspace.providers.configured'));
+  await expect(settings.getByRole('group', { name: copy('workspace.providers.spotifyAccount'), exact: true }))
+    .toContainText(copy('workspace.providers.notLinked'));
 };
 const memberRow = (page: import('@playwright/test').Page, server: string, name: string) =>
   page.getByRole('complementary', { name: copy('members.region', { server }), exact: true })
@@ -102,18 +100,15 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   await channelRow(page, 'general').click();
 
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   let settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'roles.tab').click();
-  await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
-  const roleEditor = dialog(page, 'roles.editor.titleNew', { server: SERVER });
-  await roleEditor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(DJ_ROLE);
-  await roleEditor.getByRole('button', { name: copy('roles.editor.create'), exact: true }).click();
-  await expect(roleEditor).toBeHidden({ timeout: WAIT });
+  // Signal task 10c: DJ is the role's Control music (DJ) permission, set in the inline role editor.
+  await makeRole(page, settings, DJ_ROLE, { perms: ['music'] });
 
   await settingsNav(settings, 'admin.nav.bot').click();
-  await settings.getByRole('checkbox', { name: copy('admin.bot.capability.music'), exact: true }).check();
-  await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+  await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.music'), exact: true }).click();
+  await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
   const stepUp = dialog(page, 'factorSettings.stepUp.title');
   await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
   await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -122,12 +117,8 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   await settingsNav(settings, 'workspace.music').click();
   await expectProviderRuntimeEvidence(settings);
-  await expect(settings.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeVisible({ timeout: WAIT });
-  const djPolicy = settings.getByRole('group', { name: copy('admin.bot.music.djRoles.label'), exact: true });
-  await djPolicy.getByRole('checkbox', { name: DJ_ROLE, exact: true }).check();
-  await settings.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.music.djRoles.saved') }))
-    .toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
+  await expect(settings.getByRole('group', { name: copy('serverSettings.music.dj'), exact: true }))
+    .toContainText(copy('serverSettings.music.djRoles', { roles: DJ_ROLE }), { timeout: WAIT });
   await page.keyboard.press('Escape');
 
   const inviteLink = await makeInviteLink(page, SERVER);
@@ -145,17 +136,14 @@ test('two communities run isolated YouTube playback with independent Bot identit
   await page.keyboard.press('Enter');
   await expect(createServerTwo).toBeHidden({ timeout: WAIT });
   await expect(page.getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true })).toBeVisible({ timeout: WAIT });
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'roles.tab').click();
-  await settings.getByRole('button', { name: copy('roles.new'), exact: true }).click();
-  const roleEditorTwo = dialog(page, 'roles.editor.titleNew', { server: SERVER_TWO });
-  await roleEditorTwo.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(DJ_ROLE);
-  await roleEditorTwo.getByRole('button', { name: copy('roles.editor.create'), exact: true }).click();
-  await expect(roleEditorTwo).toBeHidden({ timeout: WAIT });
+  // Signal task 10c: DJ is the role's Control music (DJ) permission, set in the inline role editor.
+  await makeRole(page, settings, DJ_ROLE, { perms: ['music'] });
   await settingsNav(settings, 'admin.nav.bot').click();
-  await settings.getByRole('checkbox', { name: copy('admin.bot.capability.music'), exact: true }).check();
-  await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+  await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.music'), exact: true }).click();
+  await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
   const stepUpTwo = dialog(page, 'factorSettings.stepUp.title');
   await stepUpTwo.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ownerAccount.password);
   await stepUpTwo.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
@@ -163,12 +151,8 @@ test('two communities run isolated YouTube playback with independent Bot identit
     .toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
   await settingsNav(settings, 'workspace.music').click();
   await expectProviderRuntimeEvidence(settings);
-  await expect(settings.getByRole('checkbox', { name: DJ_ROLE, exact: true })).toBeVisible({ timeout: WAIT });
-  const djPolicyTwo = settings.getByRole('group', { name: copy('admin.bot.music.djRoles.label'), exact: true });
-  await djPolicyTwo.getByRole('checkbox', { name: DJ_ROLE, exact: true }).check();
-  await settings.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.music.djRoles.saved') }))
-    .toHaveText(copy('admin.bot.music.djRoles.saved'), { timeout: WAIT });
+  await expect(settings.getByRole('group', { name: copy('serverSettings.music.dj'), exact: true }))
+    .toContainText(copy('serverSettings.music.djRoles', { roles: DJ_ROLE }), { timeout: WAIT });
   await page.keyboard.press('Escape');
 
   const inviteLinkTwo = await makeInviteLink(page, SERVER_TWO);
@@ -196,7 +180,9 @@ test('two communities run isolated YouTube playback with independent Bot identit
 
   await joinVoice(djPage, SERVER, 'general');
   await joinVoice(djTwoPage, SERVER_TWO, 'general');
-  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp) => {
+  // Jonas 2026-10-28: results stay private; only a /play that starts the music adds Glenn's one public "started music" message
+  // (with the live player card) in the channel where it ran.
+  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp, announces = 0) => {
     await openChannel(musicPage, server, 'general');
     const commandId = commandText.slice(1).split(/\s/u, 1)[0] ?? '';
     const argument = commandText.slice(commandId.length + 2).trim();
@@ -215,19 +201,26 @@ test('two communities run isolated YouTube playback with independent Bot identit
       await expect(query).toHaveValue(argument);
     }
     const log = musicPage.getByRole('log', { name: 'messages in #general', exact: true });
-    const publicBotMessages = log.locator('[data-kind="bot"]');
+    // A bot-authored row, grouped or not: MessageRow marks its author `data-bot` (the sr-only author of a grouped row too),
+    // which also counts the grouped bot rows the old `[data-kind="bot"]` locator missed.
+    const publicBotMessages = log.locator('.d-message-row:has(.d-message-row__author[data-bot])');
     const publicCount = await publicBotMessages.count();
     await region.getByRole('button', { name: 'Run command', exact: true }).click();
     const status = region.getByRole('status');
     await expect(status).toContainText(expected, { timeout: 90_000 });
     const result = await status.innerText();
-    await expect(publicBotMessages).toHaveCount(publicCount);
+    await expect(publicBotMessages).toHaveCount(publicCount + announces, { timeout: 30_000 });
+    if (announces > 0) {
+      const announcement = publicBotMessages.last();
+      await expect(announcement).toContainText('started music in general');
+      await expect(announcement.getByRole('group', { name: 'Music player', exact: true })).toBeVisible();
+    }
     await region.getByRole('button', { name: 'Cancel', exact: true }).click();
     await voiceRow(musicPage, 'general').click();
     return result;
   };
-  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Track added to the music queue\./);
-  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
+  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Track added to the music queue\./, 1);
+  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./, 1);
   await command(djPage, SERVER, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
   const queueA = await command(djPage, SERVER, '/queue', /Now playing:/);
   expect(queueA).toContain('Deep Learning State of the Art (2020)');
@@ -341,10 +334,10 @@ test('two communities run isolated YouTube playback with independent Bot identit
   // Disable only community A's Bot through its owner controls. Community B must keep its
   // authenticated Bot stream and audible output while A's stream disappears.
   await railItem(page, SERVER).click();
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   settings = dialog(page, 'admin.title');
   await settingsNav(settings, 'admin.nav.bot').click();
-  await settings.getByRole('button', { name: copy('admin.bot.disable'), exact: true }).click();
+  await botRowMenu(page, settings, 'serverSettings.bot.menu.disable');
   await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.disabled') }))
     .toHaveText(copy('admin.bot.status.disabled'), { timeout: WAIT });
   await expect(settings.getByRole('status').filter({ hasText: copy('admin.bot.disabledNotice') }))

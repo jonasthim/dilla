@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"sync"
 	"time"
 
@@ -116,6 +117,11 @@ type musicCallStarter interface {
 	StartCall(context.Context, id.ID) (client.Call, error)
 }
 
+// callRTTReporter is what reports the bot's RTT to the SFU for its call (client.Session.ReportCallRTT).
+type callRTTReporter interface {
+	ReportCallRTT(context.Context, id.ID, uint32) error
+}
+
 type installationMusicNative interface {
 	Binding() native.Binding
 	livekit.EpochSource
@@ -167,14 +173,18 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
 	publisher := deps.Publisher
-	var resetConnection, closeConnection func() error
+	var resetConnection, closeConnection, leaveConnection func() error
 	if publisher == nil {
 		pool, err := livekit.NewPool(deps.Lifetime)
 		if err != nil {
 			return session.QueueStarter{}, err
 		}
+		// Signal task 8c (Ruling AU): the bot's ping on the stage, reported through dillad like a person's.
+		if r, ok := deps.Calls.(callRTTReporter); ok {
+			pool.SetRTTReporter(r.ReportCallRTT)
+		}
 		publisher = session.RetainedLiveKitPublisher{Pool: pool}
-		resetConnection, closeConnection = pool.Reset, pool.Close
+		resetConnection, closeConnection, leaveConnection = pool.Reset, pool.Close, pool.LeaveIdle
 	}
 	options := func(ctx context.Context, track music.Track) (session.Options, error) {
 		if ctx == nil || track.CanonicalID == "" {
@@ -219,7 +229,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 			Encoder: deps.Encoder, Publisher: publisher, Epochs: deps.Epochs,
 		}, nil
 	}
-	return session.QueueStarter{OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection}, nil
+	return session.QueueStarter{OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection, LeaveConnection: leaveConnection}, nil
 }
 
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
@@ -354,28 +364,10 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 	if found == nil {
 		return store.BotInstallationRow{}, store.ErrNotFound
 	}
-	if found.ID != s.installation || found.State > 255 || found.Capabilities > 255 {
+	if found.ID != s.installation || found.State > 255 || found.Capabilities > uint64(store.BotKnownCapabilities) {
 		return store.BotInstallationRow{}, store.ErrNotFound
 	}
-	return store.BotInstallationRow{ID: found.ID, CommunityID: found.CommunityID, State: uint8(found.State), Capabilities: uint8(found.Capabilities)}, nil
-}
-
-func (s runtimeMusicAuthorityStore) ListDJRolePolicy(ctx context.Context, installation id.ID) ([]store.DJRolePolicyRow, error) {
-	if s.session == nil || installation.IsZero() || installation != s.installation {
-		return nil, errors.New("music DJ policy session unavailable")
-	}
-	policy, err := s.session.MusicDJRolePolicy(ctx, installation)
-	if err != nil {
-		return nil, err
-	}
-	if policy.CommunityID != s.community || policy.InstallationID != s.installation || policy.Capabilities&botMusicCapability == 0 {
-		return nil, errors.New("music DJ policy binding changed")
-	}
-	rows := make([]store.DJRolePolicyRow, len(policy.RoleIDs))
-	for i, role := range policy.RoleIDs {
-		rows[i] = store.DJRolePolicyRow{InstallationID: installation, RoleID: role}
-	}
-	return rows, nil
+	return store.BotInstallationRow{ID: found.ID, CommunityID: found.CommunityID, State: uint8(found.State), Capabilities: uint16(found.Capabilities)}, nil
 }
 
 // newMusicSupervisor is the per-channel persistence integration point.
@@ -383,7 +375,11 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if store == nil || starter.OptionsFor == nil {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
-	return music.NewSupervisor(ctx, channel, persistedMusicQueue{store: store}, starter)
+	var options []music.SupervisorOption
+	if starter.IdleLeaveAfter != nil {
+		options = append(options, music.WithIdleLeave(starter.IdleLeaveAfter, nil))
+	}
+	return music.NewSupervisor(ctx, channel, persistedMusicQueue{store: store}, starter, options...)
 }
 
 // restoreMusicSupervisors binds one paused queue supervisor to each voice
@@ -453,10 +449,71 @@ type retainedMusicRuntime struct {
 type musicQueueRegistry struct {
 	mu       sync.Mutex
 	runtimes map[id.ID]*retainedMusicRuntime
+	// defaults are the Music page's settings per installation (Task 10c). They have their own
+	// lock: supervisors read them while holding their own lock, which r.mu holders also take.
+	defaultsMu sync.Mutex
+	defaults   map[id.ID]musicDefaults
 }
 
+// musicDefaults is one installation's default volume and idle-leave time, already checked.
+type musicDefaults struct {
+	volume uint8
+	idle   time.Duration
+}
+
+// Today's behaviour, used until the server reports settings or when it reports a value outside
+// the Music page's options.
+const (
+	defaultMusicVolume uint8 = 100
+	defaultMusicIdle         = 30 * time.Minute
+)
+
 func newMusicQueueRegistry() *musicQueueRegistry {
-	return &musicQueueRegistry{runtimes: make(map[id.ID]*retainedMusicRuntime)}
+	return &musicQueueRegistry{runtimes: make(map[id.ID]*retainedMusicRuntime), defaults: make(map[id.ID]musicDefaults)}
+}
+
+// SetMusicDefaults records an installation's Music page settings as the server reported them.
+// The Bot enforces the options itself: anything outside 25/50/75/100 or 5/15/30 minutes falls
+// back to today's behaviour (100, 30 minutes), as does a server that does not report them.
+func (r *musicQueueRegistry) SetMusicDefaults(installation id.ID, reported bool, volume, idleMinutes uint64) {
+	if r == nil || installation.IsZero() {
+		return
+	}
+	d := musicDefaults{volume: defaultMusicVolume, idle: defaultMusicIdle}
+	if reported {
+		if volume <= 255 && slices.Contains(store.BotMusicVolumes, uint8(volume)) {
+			d.volume = uint8(volume)
+		}
+		if idleMinutes <= 255 && slices.Contains(store.BotMusicIdleMinutes, uint8(idleMinutes)) {
+			d.idle = time.Duration(idleMinutes) * time.Minute
+		}
+	}
+	r.defaultsMu.Lock()
+	r.defaults[installation] = d
+	r.defaultsMu.Unlock()
+}
+
+func (r *musicQueueRegistry) musicDefaults(installation id.ID) musicDefaults {
+	if r == nil {
+		return musicDefaults{volume: defaultMusicVolume, idle: defaultMusicIdle}
+	}
+	r.defaultsMu.Lock()
+	defer r.defaultsMu.Unlock()
+	d, ok := r.defaults[installation]
+	if !ok {
+		return musicDefaults{volume: defaultMusicVolume, idle: defaultMusicIdle}
+	}
+	return d
+}
+
+// DefaultVolume is the volume a new music session in this installation starts at.
+func (r *musicQueueRegistry) DefaultVolume(installation id.ID) uint8 {
+	return r.musicDefaults(installation).volume
+}
+
+// IdleLeave is how long Glenn stays in a voice room with nothing playing.
+func (r *musicQueueRegistry) IdleLeave(installation id.ID) time.Duration {
+	return r.musicDefaults(installation).idle
 }
 
 func (r *musicQueueRegistry) Native(installation, community id.ID) musicRuntimeNative {
