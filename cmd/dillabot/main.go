@@ -423,33 +423,13 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 			logger.Info("bot identity reconciliation healthy")
 		}
 
-		timer := time.NewTimer(cfg.ReconcileInterval)
-		waiting := true
-		for waiting {
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil
-			case <-gateways.Wake():
-				// A gateway notification refreshes text sources only. Full reconciliation
-				// includes proof POSTs for every private group and stays on its own interval.
-				if delay := 5*time.Second - time.Since(started); delay > 0 {
-					throttle := time.NewTimer(delay)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						throttle.Stop()
-						return nil
-					case <-throttle.C:
-					}
-				}
-				gateways.PollText(ctx)
-				started = time.Now()
-			case <-timer.C:
-				waiting = false
-			}
+		// A gateway notification refreshes text sources only. Full reconciliation includes proof
+		// POSTs for every private group and stays on its own interval.
+		wait := reconcileWait{interval: cfg.ReconcileInterval, wake: gateways.Wake(), interaction: gateways.Interaction(),
+			poll: gateways.PollText, now: time.Now, after: time.After}
+		if !wait.wait(ctx, started) {
+			return nil
 		}
-
 	}
 }
 

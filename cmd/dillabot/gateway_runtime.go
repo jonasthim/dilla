@@ -22,6 +22,23 @@ type botGatewayEntry struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	client       *gatewayclient.Client
+	// private is the installation's current private interaction groups (guarded by mu).
+	private map[id.ID]bool
+}
+
+func (e *botGatewayEntry) setPrivate(groups map[id.ID]bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.private = groups
+}
+
+func (e *botGatewayEntry) isPrivate(group *id.ID) bool {
+	if group == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.private[*group]
 }
 type botGatewayRuntime struct {
 	ctx       context.Context
@@ -30,17 +47,27 @@ type botGatewayRuntime struct {
 	log       *slog.Logger
 	entries   map[id.ID]*botGatewayEntry
 	wake      chan struct{}
-	pollers   map[id.ID]func(context.Context) error
-	startedAt uint64
+	// interaction carries a participant's message in a private interaction group: a command
+	// waiting for an answer, which reconcileWait polls without the general throttle.
+	interaction chan struct{}
+	pollers     map[id.ID]func(context.Context) error
+	startedAt   uint64
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
+	return &botGatewayRuntime{startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
 }
-func (r *botGatewayRuntime) Wake() <-chan struct{} { return r.wake }
+func (r *botGatewayRuntime) Wake() <-chan struct{}        { return r.wake }
+func (r *botGatewayRuntime) Interaction() <-chan struct{} { return r.interaction }
 func (r *botGatewayRuntime) notify() {
 	select {
 	case r.wake <- struct{}{}:
+	default:
+	}
+}
+func (r *botGatewayRuntime) notifyInteraction() {
+	select {
+	case r.interaction <- struct{}{}:
 	default:
 	}
 }
@@ -92,7 +119,13 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 				// Outgoing ciphertext is already processed by the native sender.
 				// Its gateway echo must not start another full intake sweep.
 				if message := delivery.Frame.MessageCT; message == nil || message.UploaderDevice != device {
-					r.notify()
+					// A participant's message in a private interaction group is a command
+					// waiting for an answer; it skips the general throttle.
+					if e.isPrivate(delivery.Frame.GroupID) {
+						r.notifyInteraction()
+					} else {
+						r.notify()
+					}
 				}
 			case gatewayclient.OpMessagePlain, gatewayclient.OpWelcome, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpCommunityChanged, gatewayclient.OpVoiceState:
 				r.notify()
@@ -167,10 +200,15 @@ func (r *botGatewayRuntime) SubscribeNativeGroups(ctx context.Context, installat
 	}
 	// Generic Groups deliberately excludes kind 3; discover private interaction
 	// groups through the native API that authenticates their installation binding.
+	active := make(map[id.ID]bool, len(private))
 	for _, group := range private {
 		if group.State == 2 {
 			ids = append(ids, group.Group)
+			active[group.Group] = true
 		}
+	}
+	if e := r.entries[installation]; e != nil {
+		e.setPrivate(active)
 	}
 	r.SubscribeGroups(ctx, installation, ids)
 	return nil

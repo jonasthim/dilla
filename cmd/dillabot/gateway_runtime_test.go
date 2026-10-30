@@ -149,6 +149,8 @@ ownEcho:
 		select {
 		case <-runtime.Wake():
 			t.Fatal("own ciphertext echo woke command intake")
+		case <-runtime.Interaction():
+			t.Fatal("own ciphertext echo woke interaction intake")
 		case <-ownDeadline.C:
 			break ownEcho
 		case <-ownTicker.C:
@@ -166,8 +168,17 @@ ownEcho:
 	for {
 		gw.DeliverGroup(group, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: payload, Replay: true})
 		select {
-		case <-runtime.Wake():
+		case <-runtime.Interaction():
+			// A participant's message in a private interaction group is a command: it takes
+			// the unthrottled interaction wake, not the general 5 s throttled one.
+			select {
+			case <-runtime.Wake():
+				t.Fatal("an interaction-group message also took the throttled general wake")
+			default:
+			}
 			return
+		case <-runtime.Wake():
+			t.Fatal("an interaction-group message took the throttled general wake")
 		case <-ticker.C:
 		case <-timeout.C:
 			t.Fatal("new private group did not wake command intake")
