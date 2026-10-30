@@ -291,7 +291,11 @@ async function reminderReceipt(page: Page, requestId: string): Promise<{ communi
     if (request?.id === undefined) throw new Error(`worker trace has no reminder request ${id}`);
     const requestReturn = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; value?: { requestId?: string; upload?: string } })
       .find(value => value.t === 'ret' && value.id === request.id);
-    if (requestReturn?.ok !== true || requestReturn.value?.requestId !== id || requestReturn.value.upload !== 'accepted') {
+    // Still in flight: null keeps expect.poll polling. A throw would end the poll at once, which is how a slow Firefox
+    // runner failed this test 16 s after the Bot was ready (PR #123 CI); only an answered upload that was not
+    // accepted is an error.
+    if (requestReturn === undefined) return null;
+    if (requestReturn.ok !== true || requestReturn.value?.requestId !== id || requestReturn.value.upload !== 'accepted') {
       throw new Error(`worker did not confirm reminder upload ${id}`);
     }
     const reads = calls.filter(value => value.t === 'call' && value.command?.m === 'readBotInteractionResponses'
