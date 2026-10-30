@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -12,9 +13,38 @@ import (
 // durableGroupEventQueue models the native helper's event journal: the ack cursor
 // survives a process restart, and every read starts after it (ReadGroupEvents(0, 100)).
 type durableGroupEventQueue struct {
-	binding native.Binding
-	events  []native.GroupEvent
-	acked   uint64
+	binding  native.Binding
+	events   []native.GroupEvent
+	acked    uint64
+	ackFails int // the next ackFails acknowledgements fail
+	state    map[string]native.StateValue
+	stateErr error
+}
+
+// The helper state store, durable like the ack cursor.
+func (q *durableGroupEventQueue) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+	if q.stateErr != nil {
+		return native.StateValue{}, q.stateErr
+	}
+	return q.state[fmt.Sprintf("%d/%s", area, key)], nil
+}
+func (q *durableGroupEventQueue) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	if q.stateErr != nil {
+		return nil, q.stateErr
+	}
+	if q.state == nil {
+		q.state = map[string]native.StateValue{}
+	}
+	revs := make([]uint64, 0, len(changes))
+	for _, ch := range changes {
+		k := fmt.Sprintf("%d/%s", ch.Area, ch.Key)
+		if q.state[k].Revision != ch.ExpectedRevision {
+			return nil, errors.New("state revision conflict")
+		}
+		q.state[k] = native.StateValue{Revision: ch.ExpectedRevision + 1, Value: append([]byte(nil), ch.Value...)}
+		revs = append(revs, ch.ExpectedRevision+1)
+	}
+	return revs, nil
 }
 
 func (q *durableGroupEventQueue) Binding() native.Binding { return q.binding }
@@ -32,6 +62,10 @@ func (q *durableGroupEventQueue) ReadGroupEvents(_ context.Context, _, limit uin
 	return page, nil
 }
 func (q *durableGroupEventQueue) AcknowledgeGroupEvents(_ context.Context, through uint64) error {
+	if q.ackFails > 0 {
+		q.ackFails--
+		return errors.New("helper acknowledgement unavailable")
+	}
 	if through > q.acked {
 		q.acked = through
 	}
