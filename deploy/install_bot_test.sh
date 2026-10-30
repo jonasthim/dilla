@@ -247,6 +247,17 @@ if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOU
 [ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v3 ] || fail "keep-backups upgrade did not install v3"
 pass "--keep-backups 1 keeps only the new copy"
 
+# The copy this run made is never pruned, even when another copy's name sorts after it
+# (two copies in one UTC second order by their random suffix).
+mkdir -m 0700 "$BP/20991231T235959Z-zzzzzzzz"
+sleep 1
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --keep-backups 1 --release-url="file://$REL2" >"$TMP/out" 2>"$TMP/err"; then :; else fail "later-sorting copy upgrade failed: $(cat "$TMP/err")"; fi
+NEW_COPY="$(sed -n 's|.*cold pre-upgrade copy retained at \([^ ]*\) .*|\1|p' "$TMP/err")"
+[ -n "$NEW_COPY" ] && [ -d "$NEW_COPY" ] || fail "the new copy was pruned behind a later-sorting name"
+[ ! -e "$BP/20991231T235959Z-zzzzzzzz" ] || fail "the later-sorting old copy was kept over the new one"
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 1 ] || fail "--keep-backups 1 left more than the new copy"
+pass "the new copy survives a later-sorting name"
+
 : >"$LOG"
 reject_args "--keep-backups 0" --upgrade --keep-backups 0
 reject_args "a negative --keep-backups" --upgrade --keep-backups=-1

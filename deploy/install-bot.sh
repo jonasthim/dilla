@@ -275,14 +275,16 @@ rollback_upgrade() { # BACKUP WAS_ACTIVE
 # Keep the newest KEEP pre-upgrade copies. Only plain directories whose names
 # match the installer's own pattern are touched, ordered by that name (the UTC
 # timestamp prefix sorts chronologically); symlinks and other files are skipped.
-prune_backups() { # PARENT KEEP
-	parent="$1"; keep="$2"
+# NEW, the copy this run made, is never a candidate: it counts as one of the KEEP
+# whatever its random suffix sorts to within its second.
+prune_backups() { # PARENT KEEP NEW
+	parent="$1"; keep=$(($2 - 1)); new="$3"
 	set --
 	for dir in "$parent"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-????????; do
 		case "${dir##*/}" in
 		*[!0-9A-Za-z-]*) continue ;;
 		esac
-		if [ -L "$dir" ] || [ ! -d "$dir" ]; then continue; fi
+		if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$dir" = "$new" ]; then continue; fi
 		set -- "$@" "$dir"
 	done
 	[ "$#" -gt "$keep" ] || return 0
@@ -327,7 +329,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 	fi
 	log "Bot binaries upgraded; preserved config, runtime credential and state"
 	log "cold pre-upgrade copy retained at $BACKUP (root-only; includes the database key)"
-	prune_backups "$BACKUP_PARENT" "$KEEP_BACKUPS"
+	prune_backups "$BACKUP_PARENT" "$KEEP_BACKUPS" "$BACKUP"
 else
 	if id dillabot >/dev/null 2>&1; then die "the dillabot account already exists; inspect it and any Bot files before installing"; fi
 	useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot
