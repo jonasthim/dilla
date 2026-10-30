@@ -17,6 +17,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-profile-form textarea.d-text-field__input { height: auto; padding: 10px 12px; line-height: 1.5; }
 .dw-profile-form__note { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
 .dw-profile-form__saved { margin: 0; min-height: 1lh; font-size: var(--text-xs); color: var(--fg-3); }
+/* Wave B (gap 102): while it says nothing the live region takes no row, so the hint sits the prototype's 24px over the preview card. */
+.dw-profile-form__saved:empty { min-height: 0; height: 0; margin-top: -14px; }
 .dw-profile-preview { overflow: hidden; background: var(--bg-3); border: 1px solid var(--control-edge-field); border-radius: 10px; }
 .dw-profile-preview__band { height: 52px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 32%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 18%)); }
 .dw-profile-preview__body { padding: 0 14px 14px; margin-top: -24px; }

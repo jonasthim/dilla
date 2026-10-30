@@ -8,6 +8,7 @@ import { FakeClient } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { Shell } from './Shell.tsx';
 import { replaceHistoryState } from '../router.ts';
+import { clickNewChannel, hasNewChannel } from '../test/new-channel.ts';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -59,13 +60,13 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByRole('complementary')).toBeNull();
   });
 
-  it('new channel follows manageChannels once the slice is loaded, ownership before', () => {
-    const { fake } = setup(ME.id);
-    expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
+  it('new channel follows manageChannels once the slice is loaded, ownership before', async () => {
+    const { fake, user } = setup(ME.id);
+    expect(await hasNewChannel(user)).toBe(true);
     act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: false, loaded: true })); });
-    expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
+    expect(await hasNewChannel(user)).toBe(false);
     act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: true })); });
-    expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
+    expect(await hasNewChannel(user)).toBe(true);
   });
 
   // Final fix B1/M2: "edit channel" left the sidebar; Ruling X: it is in the channel row's context menu, for that channel.
@@ -199,7 +200,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
 
   it('a removal closes the new channel flow of that server', async () => {
     const { fake, user } = setup(ME.id);
-    await user.click(screen.getByRole('button', { name: 'new channel' }));
+    await clickNewChannel(user);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     act(() => { fake.publish('removals', [{ id: 4, communityId: A, name: 'Midgard' }]); });
     expect(screen.queryByRole('dialog')).toBeNull();

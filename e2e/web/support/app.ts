@@ -729,9 +729,24 @@ export function namedRow(scope: Locator, name: string): Locator {
 export function railItem(page: Page, community: string): Locator { return namedRow(railNav(page), community); }
 export function channelRow(page: Page, channel: string): Locator { return namedRow(channelsNav(page), channel); }
 
-/** The "+" at the right of the channel list's own header (web3.8, item 11): "new channel" for a person who manages channels. */
-export function newChannelButton(page: Page): Locator {
-  return channelsNav(page).getByRole('button', { name: copy('create.channel.open'), exact: true });
+/**
+ * Wave B (the prototype's sidebar head has no "+"): "new channel" is an item of the server's ⌄ menu (admin.open) for a person who
+ * manages channels, while the server has no categories. `openNewChannel` opens the menu and picks it; `canMakeChannel` opens the
+ * menu, says whether the item is there, and closes it again.
+ */
+export function newChannelItem(page: Page): Locator {
+  return page.getByRole('menuitem', { name: copy('create.channel.open'), exact: true });
+}
+export async function openNewChannel(page: Page): Promise<void> {
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await newChannelItem(page).click();
+}
+export async function canMakeChannel(page: Page): Promise<boolean> {
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true })).toBeVisible();
+  const has = (await newChannelItem(page).count()) > 0;
+  await page.keyboard.press('Escape');
+  return has;
 }
 
 /**

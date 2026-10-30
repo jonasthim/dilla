@@ -347,7 +347,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // dialog (the server it is open for, and its tab).
   // The phone keyboard is up over a focused field (AppShell says so): the call bar steps aside for a dot in the header (H3).
   const [keyTyping, setTyping] = useState(false);
-  const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
+  const [membersOpen, setMembersOpen] = useState(() => phone || (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches));
+  // Gap 87 (the prototype): on a phone the Members sheet opens with the channel (its aside starts as 'members'); closing it keeps it closed.
   // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
   // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
   const openedNarrow = useRef(false);
@@ -425,6 +426,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const ordered = useMemo(() => orderChannels(channels ?? [], afkChannels), [channels, afkChannels]);
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = ordered.find(c => c.id === channelId) ?? null;
+  // Wave B (the prototype's phone list marks the open channel): the channel last opened in each server stays selected on the list.
+  const lastOpened = useRef(new Map<string, string>());
+  if (communityId !== null && channelId !== null) lastOpened.current.set(communityId, channelId);
   const dm = dmId === null ? null : dms?.find(d => d.id === dmId) ?? null;
   // A voice channel shows the voice view (web-3): no timeline, no composer.
   const voiceChannel = channel !== null && isVoice(channel) ? channel : null;
@@ -1265,10 +1269,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const serverMenu = (
       <ActionMenu label={t('admin.open')} focusKey="admin-open" open={headMenu === 'server'} onOpenChange={open => setHeadMenu(open ? 'server' : null)}
         triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
-        items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') }, { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
+        items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') },
+          // Wave B (the prototype's head has no "+"): the new-channel action is the ⌄ menu's, while the server has no categories.
+          ...(canManageChannels && categoryRows.length === 0 && voiceHere ? [{ id: 'newChannel', label: t('create.channel.open') }] : []),
+          { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
           ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: serverMode === m.value, group: t('notify.title') }))]}
         onSelect={item => {
           if (item === 'settings') { openAdmin(null); return; }
+          if (item === 'newChannel') { setChannelParent(null); setChannelOpen(true); return; }
           if (serverHex === null) return;
           if (item === 'mute') { client.call({ m: 'setSetting', key: SETTINGS.muteCommunity(serverHex), value: serverMuted ? null : '1' }).catch(report); return; }
           const value = item.slice(5);
@@ -1289,9 +1297,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       </>
     ) : !voiceHere ? undefined : (
       <>
-        {canManageChannels && categoryRows.length === 0 ? (
-          <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
-        ) : null}
         {serverMenu}
       </>
     );
@@ -1311,17 +1316,19 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join'), joined: t('voice.row.joined') }, rooms: voiceRooms,
-          onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); },
+          // Wave B (the prototype's phone rows have no join icon): a phone's tap joins as a desktop click does.
+          ...(phone ? {} : { onJoin: (id: string) => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }),
           // Fix round 1 (Jonas): an occupant's person menu (right-click, long press, Shift+F10); the AFK roster is nobody in voice.
           personMenu: (roomId, person) => afkChannels.has(roomId) ? undefined : personMenu(voiceCtx, voiceRows.find(r => r.id === roomId)?.name ?? '',
             { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id, roomId,
               ...(person.userId === self?.id ? { title: t('callStage.tile.you', { name: person.name }) } : {}) }) }}
-        activeId={onDms ? dmId : channelId}
+        activeId={onDms ? (dmId ?? (phone ? dmRows[0]?.id ?? null : null))
+          : channelId ?? (phone && communityId !== null ? (lastOpened.current.get(communityId) ?? defaultChannel(ordered)?.id ?? null) : null)}
         onSelect={id => {
           void navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
-          // R24: on a desktop a click on a voice row opens it and joins; a phone's tap only opens it (the 44px icon joins).
+          // R24, wave B: a click or tap on a voice row opens it and joins (the prototype's phone row has no join icon).
           const room = voiceRooms[id];
-          if (!onDms && !phone && room !== undefined && !room.joined && !room.held) voiceCtx.onJoinVoice?.(id);
+          if (!onDms && room !== undefined && !room.joined && !room.held) voiceCtx.onJoinVoice?.(id);
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
@@ -1421,6 +1428,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const memberSheet = usePhoneSheet('members', phone && membersShown, () => setMembersOpen(false));
   // A thread (or the list of threads) is a sheet of its own on a phone, with the same history rules.
   const threadSheet = usePhoneSheet('thread', phone && sideNow !== null, () => setSide(null));
+  // The prototype's one aside: a thread takes the Members sheet's place on a phone and closing it does not bring Members back.
+  useEffect(() => { if (phone && sideNow !== null) setMembersOpen(false); }, [phone, sideNow]);
   const closeSide = phone ? threadSheet.close : () => setSide(null);
   // Task 9 fix rounds 1-2 (Jonas): the member menu's Mention puts "@username " at the end of the open text channel's draft and
   // focuses the composer. Only while that composer can send (no timeout, block or failed open). An aside drawn over the

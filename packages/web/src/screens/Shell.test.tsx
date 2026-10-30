@@ -1540,16 +1540,16 @@ describe('sidebar actions and pane widths (web3.8)', () => {
   beforeEach(clean);
   afterEach(clean);
 
-  it('the owner sees "+" on each category header when the server has categories, and in the sidebar head when it has none', () => {
+  it('the owner sees "+" on each category header when the server has categories, and "new channel" in the server menu when it has none', async () => {
     const { view } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const header = document.querySelector('.d-channel-list__head') as HTMLElement;
     expect(within(header).queryByRole('button', { name: en['invite.open'] })).toBeNull();
     expect(within(header).queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
     expect(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: 'new channel in more' })).toBeInTheDocument();
     view.unmount();
-    setup(`/c/${A}/${GEN}`, { communities: OWNED, before: fake => fake.set(`channels:${A}`, CHANNELS.filter(c => c.parentId === null && c.kind !== 2)) });
-    const plus = within(document.querySelector('.d-channel-list__head') as HTMLElement).getByRole('button', { name: en['create.channel.open'] });
-    expect(plus).toBeInTheDocument();
+    const { user } = setup(`/c/${A}/${GEN}`, { communities: OWNED, before: fake => fake.set(`channels:${A}`, CHANNELS.filter(c => c.parentId === null && c.kind !== 2)) });
+    await user.click(screen.getByRole('button', { name: en['admin.open'] }));
+    expect(screen.getByRole('menuitem', { name: en['create.channel.open'] })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: en['invite.open'] })).toBeNull();
   });
 

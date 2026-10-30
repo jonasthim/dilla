@@ -6,7 +6,7 @@
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, signIn, type Account, membersToggle,
 } from './support/app';
@@ -372,7 +372,6 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.getByRole('button', { name: copy('nav.server.menu'), exact: true })).toHaveCount(0);
       await expect(page.getByRole('menuitem')).toHaveCount(0);
       await expectPrototypeSize(menu, 'the server ⌄', { w: 26, h: 26 });
-      await expect(newChannelButton(page)).toBeVisible();
     });
 
     // Walk 1: a phone has no Control+K, so search opens from a conversation's phone header (Ruling AB: the list head has none),

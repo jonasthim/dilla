@@ -4,6 +4,7 @@ import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesSt
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
 import { channelBitsOf, PERM, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
+import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
 import { t } from '../../strings/index.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
@@ -564,7 +565,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   };
   const closeInbox = () => setInboxOpen(false);
   const remindersPanel = (layout: 'popover' | 'sheet', anchor?: () => HTMLElement | null) => !inboxOpen ? null : (
-    <ReminderPanel client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={loading} error={loadError}
+    <ReminderPanel client={client} ownerKey={ownerKey} communityId={communityId} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={loading} error={loadError}
       layout={layout} tab={inboxTab ?? (dueCount > 0 ? 'due' : 'upcoming')} onTab={setInboxTab} onClose={closeInbox} returnFocus={() => inboxOpener.current} anchor={anchor}
       onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />
   );
@@ -603,7 +604,7 @@ export function reminderWhen(unixSeconds: number, now: Date = new Date()): strin
  * scheduled ones with Cancel (the prototype's two actions, both the bot's own operations). A reminder's text opens the message it
  * was set from when that is still reachable. There is no Snooze: the bot has no snooze operation (see the task 6b report).
  */
-function ReminderPanel(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
+function ReminderPanel(props: { client: CoreClient; ownerKey: string; communityId: string | null; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
   layout: 'popover' | 'sheet'; tab: 'due' | 'upcoming'; onTab(tab: 'due' | 'upcoming'): void; onClose(): void; returnFocus(): HTMLElement | null;
   anchor?: () => HTMLElement | null; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState('');
@@ -681,7 +682,10 @@ function ReminderPanel(props: { client: CoreClient; ownerKey: string; rows: Remi
     due: row.reminder.state === 'due', busy: busy !== null, canOpen: row.reminder.sourceChannelId !== null && sourceAvailable(row),
   }));
   const status = props.loading ? copy('reminder.loading') : props.error ? copy('reminder.loadError') : error !== '' ? error : undefined;
-  return <RemindersPopover items={items} tab={props.tab} onTab={tab => props.onTab(tab)} layout={props.layout} status={status}
+  // The prototype's header tile ("GL"): the initials of the server's Bot, the account that keeps the reminders.
+  const botMember = (props.client.get(`members:${props.communityId ?? props.rows[0]?.communityId ?? ''}`) ?? []).find(m => m.kind === BOT_ACCOUNT_KIND);
+  const botName = botMember === undefined ? '' : (botMember.display || botMember.username).trim();
+  return <RemindersPopover items={items} {...(botName === '' ? {} : { botInitials: botName.slice(0, 2).toUpperCase() })} tab={props.tab} onTab={tab => props.onTab(tab)} layout={props.layout} status={status} loading={props.loading}
     onAction={(id, action) => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) void mutate(row, action); }}
     onOpen={id => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) { props.onClose(); jump(row); } }}
     onClose={() => props.onClose()} returnFocus={() => props.returnFocus()} anchor={props.anchor}

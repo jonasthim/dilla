@@ -8,7 +8,7 @@
 // lying sender), which the host cannot see and the receiver's core drops.
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
-  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, escapeRegExp, expectAccessible, expectComposerReady, newAccount, openChannel,
+  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, openNewChannel, completeSignUp, copy, escapeRegExp, expectAccessible, expectComposerReady, newAccount, openChannel,
   railItem, railNav, channelRow, composerBox, messageRow, logRegion, reactionChip, rowAction, sendText, signUp, test, channelRowMenuItem,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -149,7 +149,7 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     await expect(messageRow(page2, 'general', 'ada two')).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     // 6. Ada starts the announcement channel "news" with no role ticked; Björn reads it, cannot post, and can react.
-    await newChannelButton(page).click();
+    await openNewChannel(page);
     const create = dialogOf(page, 'create.channel.title', { server: SERVER });
     await create.getByRole('radiogroup', { name: copy('create.channel.kind'), exact: true })
       .getByRole('radio', { name: copy('announce.kind'), exact: true }).click();

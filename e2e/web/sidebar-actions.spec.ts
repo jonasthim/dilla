@@ -4,7 +4,7 @@
 // and the gear (no menu), a member reaches leave under settings, and the list header has the "+" for Ada only.
 import { expect, type Page } from '@playwright/test';
 import { addServerVia,
-  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, expectAccessible, expectComposerReady, makeInviteLink, newAccount, newChannelButton,
+  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, expectAccessible, expectComposerReady, makeInviteLink, newAccount, openNewChannel, canMakeChannel,
   railItem, railNav, signUp, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -52,9 +52,8 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
   await expectComposerReady(page, 'general');
   await expect(button(page, 'invite.open')).toHaveCount(0);
   await expect(page.getByRole('group', { name: copy('create.actions'), exact: true }).getByRole('button', { name: copy('create.channel.open'), exact: true })).toHaveCount(0);
-  const plus = newChannelButton(page);
-  await expect(plus).toBeVisible({ timeout: WAIT });
-  await plus.click();
+  expect(await canMakeChannel(page)).toBe(true);
+  await openNewChannel(page);
   const made = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
   await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('plans');
   await page.keyboard.press('Enter');
@@ -79,7 +78,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     // Björn has no "+", and the sidebar has no invite link. Settings opens the first permitted section;
     // the grouped navigation keeps Invites available to a member with create-invite permission.
     await expect(button(page2, 'admin.open')).toBeVisible({ timeout: WAIT });
-    await expect(newChannelButton(page2)).toHaveCount(0);
+    expect(await canMakeChannel(page2)).toBe(false);
     await expect(button(page2, 'invite.open')).toHaveCount(0);
     await expect(button(page2, 'admin.leave.open')).toHaveCount(0);
     await button(page2, 'admin.open').click().then(() => page2.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
@@ -130,8 +129,8 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await page2.keyboard.press('Escape');
     await expect(phoneSettings).toBeHidden();
     await expect(button(page2, 'admin.open')).toBeFocused();
-    await expect(newChannelButton(page)).toBeVisible();
-    await expect(newChannelButton(page2)).toHaveCount(0);
+    expect(await canMakeChannel(page)).toBe(true);
+    expect(await canMakeChannel(page2)).toBe(false);
 
     // 4. Accessible: the owner's phone list with its "+".
     await expectAccessible(page, 'the phone servers list with the new channel "+"');

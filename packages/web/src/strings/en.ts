@@ -347,6 +347,8 @@ export const en = {
   'devices.subOther': 'active {when} · {id}',
   'devices.unlisted': 'not yet in the device list',
   'devices.revoked': 'removed',
+  'devices.removed': '{device} removed',
+  'devices.unnamed': 'Unnamed device',
   'devices.cap.one': 'One device',
   'devices.cap.other': '{n} devices',
   'devices.keyLabel': 'Recovery key',

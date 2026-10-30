@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import { addServerVia,
-  TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, copy, expectAccessible, expectComposerReady, newChannelButton, openSettings, railNav,
+  TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, copy, expectAccessible, expectComposerReady, openNewChannel, openSettings, railNav,
   signUp, test, type SettingsSection,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -38,7 +38,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => { await host?.stop(); });
 
 async function makeChannel(page: Page, kind: 'text' | 'voice', name: string): Promise<void> {
-  await newChannelButton(page).click();
+  await openNewChannel(page);
   const dialog = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
   await dialog.getByRole('radio', { name: copy(`create.channel.${kind}`), exact: true }).click();
   await dialog.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill(name);

@@ -234,6 +234,12 @@ describe('a profile card from a thread row (MP7, N1)', () => {
 describe('threads on a phone (a sheet)', () => {
   it('opens full screen as a history entry, closes on the system back, keeps the tab bar and returns focus to the root row', async () => {
     const { fake, user } = setup({ phone: true });
+    // Gap 87: Members opens with the channel; close it as a person reading the thread would.
+    await user.click(within(await screen.findByRole('complementary', { name: 'members of Midgard' })).getByRole('button', { name: t('members.close') }));
+    await waitFor(() => expect(members()).toBeNull());
+    await waitFor(() => expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Members/ })).toHaveFocus()); // the sheet hands focus back to its button
+    act(() => (document.activeElement as HTMLElement).blur()); // the chip press below starts from a settled page, as in the unchanged flow
     await user.click(await screen.findByRole('button', { name: '2 replies' }));
     const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
@@ -379,8 +385,7 @@ describe('where focus lands (fix round 2)', () => {
 describe('phone: a thread from a search hit, a pin and a quote', () => {
   it('opens from a search hit, replacing an open members sheet so it does not come back', async () => {
     const { fake, user } = setup({ phone: true });
-    await user.click(await screen.findByRole('button', { name: /^Members/ }));
-    await screen.findByRole('complementary', { name: 'members of Midgard' });
+    await screen.findByRole('complementary', { name: 'members of Midgard' }); // opens with the channel (gap 87)
     await searchThread(fake, user);
     expect(members()).toBeNull();
     act(() => { window.history.back(); });

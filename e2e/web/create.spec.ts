@@ -8,7 +8,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, expectAccessible, expectComposerReady, channelRow, homeTile,
-  messageRow, newAccount, newChannelButton, openChannel, openInviteDialog, railItem, railNav, sendText, signUp, tag, test,
+  messageRow, newAccount, openNewChannel, canMakeChannel, openChannel, openInviteDialog, railItem, railNav, sendText, signUp, tag, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -191,7 +191,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await railItem(page2, SERVER).click();
     await expect(channelRow(page2, 'general')).toBeVisible({ timeout: WAIT });
     await railItem(page, SERVER).click();
-    await newChannelButton(page).click();
+    await openNewChannel(page);
     const newChannel = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
     await expect(newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true })).toBeFocused();
     const kind = newChannel.getByRole('radiogroup', { name: copy('create.channel.kind'), exact: true });
@@ -218,7 +218,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     // 8. The second person is a member, not the owner: "server settings" yes (it opens on Invites), the list's "+" and the
     // sidebar's old "invite link" no.
     await expect(button(page2, 'admin.open')).toBeVisible();
-    await expect(newChannelButton(page2)).toHaveCount(0);
+    expect(await canMakeChannel(page2)).toBe(false);
     await expect(button(page2, 'invite.open')).toHaveCount(0);
 
     // 9. The whole-branch walk. The owner's actions (server settings in the header, the "+" in the channel list; web3.8) are
@@ -230,7 +230,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await expect(page.getByRole('group', { name: copy('create.actions'), exact: true })).toHaveCount(0);
     const gear = button(page, 'admin.open');
     await expect(gear).toBeVisible();
-    await expect(newChannelButton(page)).toBeVisible();
+    expect(await canMakeChannel(page)).toBe(true);
     const gearFit = await gear.evaluate(b => {
       const r = b.getBoundingClientRect();
       const sidebar = b.closest('.d-app-shell__sidebar')?.getBoundingClientRect();
@@ -243,25 +243,13 @@ test('from an empty instance: start a server, invite a friend through a link, re
     expect(gearFit.right).toBeLessThanOrEqual((gearFit.sidebar?.right ?? 0) + 0.5);
     expect(gearFit.width).toBeGreaterThanOrEqual(24);
     expect(gearFit.clipped, 'the gear shows its whole icon').toBe(false);
-    // The list's "+" fits inside the sidebar too, unclipped (it replaced the old header buttons).
-    const plusFit = await newChannelButton(page).evaluate(b => {
-      const r = b.getBoundingClientRect();
-      const sidebar = b.closest('.d-app-shell__sidebar')?.getBoundingClientRect();
-      return { left: r.left, right: r.right, width: r.width, clipped: b.scrollWidth > b.clientWidth + 1,
-        sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right } };
-    });
-    expect(plusFit.sidebar, 'the "+" is inside the sidebar').not.toBeNull();
-    expect(plusFit.left).toBeGreaterThanOrEqual((plusFit.sidebar?.left ?? 0) - 0.5);
-    expect(plusFit.right).toBeLessThanOrEqual((plusFit.sidebar?.right ?? 0) + 0.5);
-    expect(plusFit.width).toBeGreaterThanOrEqual(24);
-    expect(plusFit.clipped, 'the "+" shows its whole icon').toBe(false);
     const nameField = newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true });
-    await newChannelButton(page).click();
+    await openNewChannel(page);
     await nameField.fill(SECOND_CHANNEL);
     await nameField.press('Enter');
     await expect(newChannel.getByRole('alert')).toHaveText(copy('create.channel.error.takenText', { name: SECOND_CHANNEL }));
     for (const [typed, slug] of [[LONG_TYPED, LONG_SLUG], [HUNDRED_BYTES, HUNDRED_BYTES]] as const) {
-      if (!(await newChannel.isVisible())) await newChannelButton(page).click();
+      if (!(await newChannel.isVisible())) await openNewChannel(page);
       await nameField.fill(typed);
       await nameField.press('Enter');
       await expect(newChannel).toBeHidden({ timeout: WAIT });
