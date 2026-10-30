@@ -9,7 +9,7 @@ const encoder = new TextEncoder();
 const whiteSpaceOnly = /^\p{White_Space}*$/u;
 const ID_HEX = /^[0-9a-f]{32}$/u;
 const POLL_DURATIONS = new Set([3600n, 14_400n, 28_800n, 86_400n, 259_200n, 604_800n]);
-const KNOWN_OPERATIONS = new Set([0, 1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+const KNOWN_OPERATIONS = new Set([0, 1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
   30, 31, 40, 50, 51, 52, 60, 61, 62, 63, 64, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84]);
 const POLL_OPERATIONS = new Set([70, 71, 72, 73, 74, 75]);
 const REMINDER_OPERATIONS = new Set([80, 81, 82, 83, 84]);
@@ -231,13 +231,11 @@ export function decodeBotUtilityCapabilities(data: Uint8Array, expected?: Partia
     const installationId = readId(installation);
     const botUserId = readId(bot);
     if (uint(generation) !== 1n) fail('invalid-response');
-    const operations = list(rawOps, 0, KNOWN_OPERATIONS.size).map(value => {
-      const operation = uint(value, 0n, 255n);
-      const n = Number(operation);
-      if (!KNOWN_OPERATIONS.has(n)) fail('invalid-response');
-      return n;
-    });
-    for (let index = 1; index < operations.length; index++) if (operations[index] <= operations[index - 1]) fail('invalid-response');
+    // Structure and types stay strict (at most 32 strictly ascending uint8 codes); a code this client does not
+    // know is a newer Bot's operation, so it is dropped rather than rejecting the whole report.
+    const reported = list(rawOps, 0, 32).map(value => Number(uint(value, 0n, 255n)));
+    for (let index = 1; index < reported.length; index++) if (reported[index] <= reported[index - 1]) fail('invalid-response');
+    const operations = reported.filter(n => KNOWN_OPERATIONS.has(n));
     if (expected?.installationId !== undefined && installationId !== idText(expected.installationId)) fail('binding-mismatch');
     if (expected?.botUserId !== undefined && botUserId !== idText(expected.botUserId)) fail('binding-mismatch');
     return { version: Number(uint(version)) as 1, installationId, botUserId, supportedOperations: operations };
