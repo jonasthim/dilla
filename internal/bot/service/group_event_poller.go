@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jonasthim/dilla/internal/bot/native"
 )
@@ -22,8 +23,35 @@ type GroupEventHandler interface {
 
 var ErrGroupEventHandler = errors.New("group event handler failed")
 
+// GroupEventHandlerError keeps the failed delivery and its cause. It still matches
+// ErrGroupEventHandler, so the event stays pending exactly as before.
+type GroupEventHandlerError struct {
+	DeliveryID uint64
+	Err        error
+}
+
+func (e *GroupEventHandlerError) Error() string {
+	return fmt.Sprintf("%s at delivery %d: %v", ErrGroupEventHandler.Error(), e.DeliveryID, e.Err)
+}
+func (e *GroupEventHandlerError) Unwrap() []error { return []error{ErrGroupEventHandler, e.Err} }
+
+// UndeliverableGroupEvent is implemented by a handler error that proves the event can never be
+// handled (for example, its group has left the native store). The poller acknowledges such an
+// event instead of retrying it forever, because the queue is shared by every group and user:
+// an unacknowledged head blocks all later events durably, across restarts.
+type UndeliverableGroupEvent interface {
+	error
+	Undeliverable() bool
+}
+
+func isUndeliverableGroupEvent(err error) bool {
+	var u UndeliverableGroupEvent
+	return errors.As(err, &u) && u.Undeliverable()
+}
+
 type GroupEventPollResult struct {
 	Handled             uint64
+	Skipped             uint64 // undeliverable events acknowledged without handling
 	AcknowledgedThrough uint64
 	More                bool
 }
@@ -72,13 +100,21 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 		if event.Community != p.binding.Community || event.DeliveryID <= result.AcknowledgedThrough || event.DeliveryID > page.Next {
 			return result, errors.New("invalid group event binding or order")
 		}
+		handled := true
 		if err := handler.HandleGroupEvent(ctx, event); err != nil {
-			return result, ErrGroupEventHandler
+			if ctx.Err() != nil || !isUndeliverableGroupEvent(err) {
+				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}
+			}
+			handled = false
 		}
 		if err := p.native.AcknowledgeGroupEvents(ctx, event.DeliveryID); err != nil {
 			return result, err
 		}
-		result.Handled++
+		if handled {
+			result.Handled++
+		} else {
+			result.Skipped++
+		}
 		result.AcknowledgedThrough = event.DeliveryID
 	}
 	if page.Next > result.AcknowledgedThrough {
