@@ -53,7 +53,10 @@ func (r *Repo) CompactExpiredBotInteractionAdmissionReceipts(ctx context.Context
 	if r.tx == nil {
 		return sql.ErrTxDone
 	}
-	_, err := r.tx.ExecContext(ctx, `UPDATE bot_interaction_admission_receipts SET payload=x'',signature=x'' WHERE installation_id=? AND not_after<=? AND length(payload)>0`, installation, now)
+	// The partial index (migration 00053) holds only receipts that still carry a payload. Without
+	// statistics the planner prefers the full expiry index, whose range is every tombstone of the
+	// last 30 days, so the index is named rather than left to the planner.
+	_, err := r.tx.ExecContext(ctx, `UPDATE bot_interaction_admission_receipts INDEXED BY bot_interaction_admission_receipts_live SET payload=x'',signature=x'' WHERE installation_id=? AND not_after<=? AND length(payload)>0`, installation, now)
 	if err != nil {
 		return wrap(err)
 	}
