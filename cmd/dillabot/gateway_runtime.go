@@ -297,6 +297,26 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.interactionPollers, installation)
 		}
 	}
+	// The removed installations' gateway goroutines have ended (<-e.done above), so nothing adds
+	// to their interaction state any more: forget their pending groups and budgets. Drop (a
+	// restart) deliberately keeps the budget, so a restart cannot reset a flood's bound.
+	r.pendingMu.Lock()
+	for installation := range r.pending {
+		if !keep[installation] {
+			delete(r.pending, installation)
+		}
+	}
+	for installation := range r.budgets {
+		if !keep[installation] {
+			delete(r.budgets, installation)
+		}
+	}
+	r.pendingMu.Unlock()
+	for installation := range r.interactionPollers {
+		if !keep[installation] {
+			delete(r.interactionPollers, installation)
+		}
+	}
 }
 func (r *botGatewayRuntime) Close() { r.RetainOnly(nil) }
 

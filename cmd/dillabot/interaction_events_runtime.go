@@ -171,17 +171,24 @@ func newInteractionEventRuntime(poller interactionEventPoller, handler service.G
 }
 
 func (r *interactionEventRuntime) Drain(ctx context.Context) (service.GroupEventPollResult, error) {
+	return r.DrainHolding(ctx, nil)
+}
+
+// DrainHolding is Drain with the events of unrefreshed senders held (service.HoldUnrefreshedSenders):
+// they are neither dispatched nor acknowledged and stay at the head of the queue.
+func (r *interactionEventRuntime) DrainHolding(ctx context.Context, unrefreshed map[id.ID]bool) (service.GroupEventPollResult, error) {
 	var total service.GroupEventPollResult
 	if r == nil || ctx == nil || r.poller == nil || r.handler == nil {
 		return total, errors.New("missing interaction event runtime dependency")
 	}
+	handler := service.HoldUnrefreshedSenders(r.handler, unrefreshed)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for pass := 0; pass < maxInteractionEventPollPasses; pass++ {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		result, err := r.poller.PollOnce(ctx, r.handler)
+		result, err := r.poller.PollOnce(ctx, handler)
 		total.Handled += result.Handled
 		total.Skipped = append(total.Skipped, result.Skipped...)
 		if result.AcknowledgedThrough > total.AcknowledgedThrough {

@@ -94,6 +94,19 @@ func TestBotInteractionAdmissionTombstoneDeletionIsBounded(t *testing.T) {
 			if got := countRows(); got != extra+1 {
 				t.Fatalf("after one compaction %d receipts remain, want %d (one batch of %d deleted)", got, extra+1, store.BotInteractionAdmissionTombstoneBatch)
 			}
+			// Oldest first: the batch took the 512 oldest tombstones, so the oldest left past the
+			// window is the 513th (a newest-first batch would leave the very oldest behind).
+			q := `SELECT min(not_after) FROM bot_interaction_admission_receipts WHERE installation_id=?`
+			if engine == "postgres" {
+				q = `SELECT min(not_after) FROM bot_interaction_admission_receipts WHERE installation_id=$1`
+			}
+			var oldestLeft int64
+			if err := rawWriteDB(t, repo).QueryRowContext(ctx, q, f.installation.ID).Scan(&oldestLeft); err != nil {
+				t.Fatalf("oldest left: %v", err)
+			}
+			if want := oldest + store.BotInteractionAdmissionTombstoneBatch; oldestLeft != want {
+				t.Fatalf("oldest receipt left after one batch has not_after %d, want %d (the batch must delete oldest first)", oldestLeft, want)
+			}
 			compact()
 			if got := countRows(); got != 1 {
 				t.Fatalf("after two compactions %d receipts remain, want only the one inside 30 days", got)

@@ -38,7 +38,7 @@ func TestInteractionFastPathSyncsOnlyTheMessagedGroupBeforeDispatch(t *testing.T
 		poll := newInteractionIntakePoller(sync, readinessTrust{steps: &steps}, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
 			steps = append(steps, "dispatch")
 			return service.GroupEventPollResult{}, nil
-		}))
+		}), noUnrefreshed(t))
 		err := poll(t.Context(), group)
 		want := []string{"interaction_sync:" + group.String(), "trust", "dispatch"}
 		if denied {
@@ -55,31 +55,34 @@ func TestInteractionFastPathSyncsOnlyTheMessagedGroupBeforeDispatch(t *testing.T
 	}
 }
 
-// pendingLeafCore models the native core: a message from a leaf whose signed list changed is held
-// (app_pending_history) until the trust pass revalidates the leaf; dispatch only sees released events.
+// pendingLeafCore models the native core: a message from a leaf whose signed device list is not
+// yet validated (E_DEVICE_LIST_STALE) is held in app_pending_history until the trust pass
+// revalidates the leaf; Drain dispatches only released events.
 type pendingLeafCore struct{ held, released bool }
 
 func (c *pendingLeafCore) ReconcileInteractionGroupOnce(context.Context, *client.Session, id.ID) (service.MembershipResult, error) {
-	c.held = true // the participant's device list changed: the command arrives held for the list
+	c.held = true // the command arrives held for its sender's device list
 	return service.MembershipResult{GroupsSynced: 1}, nil
 }
-func (c *pendingLeafCore) TrustPendingLeaves(context.Context, *client.Session) (uint32, error) {
+func (c *pendingLeafCore) RefreshPendingLeaves(context.Context, *client.Session) (service.TrustRefresh, error) {
 	if !c.held {
-		return 0, nil
+		return service.TrustRefresh{}, nil
 	}
 	c.held, c.released = false, true
-	return 1, nil
+	return service.TrustRefresh{Recovered: 1}, nil
 }
 
-// A command whose sender's device list changed reaches dispatch on the fast path: the trust pass
-// runs between the group sync and Drain, as on the full path.
+// A command held for its sender's device list reaches dispatch on the fast path: the fast path
+// runs the trust pass after its group sync and before Drain, so the leaf that sync held is
+// revalidated in the same poll. (The full path runs trust before its interaction sweep; a leaf
+// that sweep holds waits for the next pass.)
 func TestInteractionFastPathReleasesAPendingLeafBeforeDispatch(t *testing.T) {
 	core := &pendingLeafCore{}
 	dispatched := false
 	poll := newInteractionIntakePoller(core, core, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
 		dispatched = core.released
 		return service.GroupEventPollResult{}, nil
-	}))
+	}), noUnrefreshed(t))
 	if err := poll(t.Context(), id.New()); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +95,158 @@ type commandDrainFunc func(context.Context) (service.GroupEventPollResult, error
 
 func (f commandDrainFunc) Drain(ctx context.Context) (service.GroupEventPollResult, error) {
 	return f(ctx)
+}
+
+// DrainHolding refuses to drain while any sender is unrefreshed: a test that reaches it with a
+// hold set must use queueDrain, which honours the hold.
+func (f commandDrainFunc) DrainHolding(ctx context.Context, unrefreshed map[id.ID]bool) (service.GroupEventPollResult, error) {
+	if len(unrefreshed) != 0 {
+		return service.GroupEventPollResult{}, errors.New("commandDrainFunc cannot hold senders")
+	}
+	return f(ctx)
+}
+
+func (t readinessTrust) RefreshPendingLeaves(context.Context, *client.Session) (service.TrustRefresh, error) {
+	*t.steps = append(*t.steps, "trust")
+	return service.TrustRefresh{}, nil
+}
+
+func noUnrefreshed(t *testing.T) func(service.TrustRefresh) {
+	return func(r service.TrustRefresh) {
+		if len(r.Unrefreshed) != 0 {
+			t.Fatalf("unexpected unrefreshed senders %v", r.Unrefreshed)
+		}
+	}
+}
+
+// queuedCommand is one command in the durable event queue, by sender.
+type queuedCommand struct {
+	delivery uint64
+	sender   id.ID
+}
+
+// queueDrain models the ordered event queue under the production hold: a command from an
+// unrefreshed sender is held (not dispatched, not acknowledged) and stops the pass there.
+type queueDrain struct {
+	queue      []queuedCommand
+	dispatched []uint64
+	calls      int
+	held       map[id.ID]bool
+}
+
+func (q *queueDrain) DrainHolding(ctx context.Context, unrefreshed map[id.ID]bool) (service.GroupEventPollResult, error) {
+	q.calls++
+	q.held = unrefreshed
+	for len(q.queue) > 0 {
+		head := q.queue[0]
+		if unrefreshed[head.sender] {
+			return service.GroupEventPollResult{}, service.ErrGroupEventHeld
+		}
+		q.dispatched = append(q.dispatched, head.delivery)
+		q.queue = q.queue[1:]
+	}
+	return service.GroupEventPollResult{}, nil
+}
+func (q *queueDrain) Drain(ctx context.Context) (service.GroupEventPollResult, error) {
+	return q.DrainHolding(ctx, nil)
+}
+
+// trustOutcome is a trust pass with a fixed result.
+type trustOutcome struct {
+	steps   *[]string
+	refresh service.TrustRefresh
+	err     error
+}
+
+func (o trustOutcome) RefreshPendingLeaves(context.Context, *client.Session) (service.TrustRefresh, error) {
+	*o.steps = append(*o.steps, "trust")
+	return o.refresh, o.err
+}
+
+func (o trustOutcome) TrustPendingLeaves(context.Context, *client.Session) (uint32, error) {
+	return 0, errors.New("command intake must use the isolating trust pass")
+}
+
+// User B's stale sender history does not block user A's command: the pass reports B unrefreshed,
+// A's command is dispatched, and the unrefreshed sender is reported.
+func TestFastPathDispatchesAnotherUsersCommandWhenOneUsersHistoryIsStale(t *testing.T) {
+	a, b := id.New(), id.New()
+	var steps []string
+	drain := &queueDrain{queue: []queuedCommand{{1, a}}}
+	var reported service.TrustRefresh
+	poll := newInteractionIntakePoller(namedGroupSync{steps: &steps}, trustOutcome{steps: &steps, refresh: service.TrustRefresh{Unrefreshed: map[id.ID]bool{b: true}}},
+		nil, drain, func(r service.TrustRefresh) { reported = r })
+	if err := poll(t.Context(), id.New()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if !reflect.DeepEqual(drain.dispatched, []uint64{1}) {
+		t.Fatalf("dispatched %v, want A's command", drain.dispatched)
+	}
+	if !drain.held[b] || !reported.Unrefreshed[b] {
+		t.Fatalf("B was not held (%v) or not reported (%v)", drain.held, reported.Unrefreshed)
+	}
+}
+
+// B's own command stays held: not dispatched, still queued.
+func TestFastPathHoldsTheUnrefreshedUsersCommand(t *testing.T) {
+	b := id.New()
+	var steps []string
+	drain := &queueDrain{queue: []queuedCommand{{4, b}}}
+	poll := newInteractionIntakePoller(namedGroupSync{steps: &steps}, trustOutcome{steps: &steps, refresh: service.TrustRefresh{Unrefreshed: map[id.ID]bool{b: true}}},
+		nil, drain, func(service.TrustRefresh) {})
+	if err := poll(t.Context(), id.New()); !errors.Is(err, service.ErrGroupEventHeld) {
+		t.Fatalf("poll error %v, want the held command reported", err)
+	}
+	if len(drain.dispatched) != 0 || len(drain.queue) != 1 {
+		t.Fatalf("B's command dispatched=%v queued=%v, want held", drain.dispatched, drain.queue)
+	}
+}
+
+// A failure that is not scoped to one sender (a general API failure, the pending-leaf read, a core
+// limit) stops the poll before Drain: nothing is dispatched.
+func TestIntakeStopsWithoutDispatchOnAGeneralTrustFailure(t *testing.T) {
+	unavailable := errors.New("server unavailable")
+	t.Run("fast path", func(t *testing.T) {
+		var steps []string
+		drain := &queueDrain{queue: []queuedCommand{{1, id.New()}}}
+		poll := newInteractionIntakePoller(namedGroupSync{steps: &steps}, trustOutcome{steps: &steps, err: unavailable}, nil, drain, func(service.TrustRefresh) {})
+		if err := poll(t.Context(), id.New()); !errors.Is(err, unavailable) {
+			t.Fatalf("poll error %v, want the trust failure", err)
+		}
+		if drain.calls != 0 || len(drain.dispatched) != 0 {
+			t.Fatal("drained after a general trust failure")
+		}
+	})
+	t.Run("full path", func(t *testing.T) {
+		var steps []string
+		drain := &queueDrain{queue: []queuedCommand{{1, id.New()}}}
+		membership := readinessMembership{steps: &steps, sync: func(context.Context, *client.Session) error { return nil }}
+		poll := newCommandIntakePoller(membership, trustOutcome{steps: &steps, err: unavailable}, nil,
+			func(context.Context) error { steps = append(steps, "subscribe"); return nil }, drain, func(service.TrustRefresh) {})
+		if err := poll(t.Context()); !errors.Is(err, unavailable) {
+			t.Fatalf("poll error %v, want the trust failure", err)
+		}
+		if drain.calls != 0 || !reflect.DeepEqual(steps, []string{"membership", "trust"}) {
+			t.Fatalf("steps %v, drain calls %d: want the poll stopped at trust", steps, drain.calls)
+		}
+	})
+}
+
+// The full text path applies the same rule as the fast path: one stale sender is held, the rest
+// is dispatched.
+func TestFullPathHoldsOnlyTheUnrefreshedSender(t *testing.T) {
+	a, b := id.New(), id.New()
+	var steps []string
+	drain := &queueDrain{queue: []queuedCommand{{1, a}, {2, b}}}
+	membership := readinessMembership{steps: &steps, sync: func(context.Context, *client.Session) error { return nil }}
+	poll := newCommandIntakePoller(membership, trustOutcome{steps: &steps, refresh: service.TrustRefresh{Unrefreshed: map[id.ID]bool{b: true}}}, nil,
+		func(context.Context) error { steps = append(steps, "subscribe"); return nil }, drain, func(service.TrustRefresh) {})
+	if err := poll(t.Context()); !errors.Is(err, service.ErrGroupEventHeld) {
+		t.Fatalf("poll error %v, want B's command held", err)
+	}
+	if !reflect.DeepEqual(drain.dispatched, []uint64{1}) || len(drain.queue) != 1 {
+		t.Fatalf("dispatched %v, queued %v: want A's command dispatched and B's held", drain.dispatched, drain.queue)
+	}
 }
 
 func TestGatewayCommandIntakeReadsPrivateSourcesBeforeDispatch(t *testing.T) {
@@ -119,7 +274,7 @@ func TestGatewayCommandIntakeReadsPrivateSourcesBeforeDispatch(t *testing.T) {
 					}
 					steps = append(steps, "dispatch")
 					return service.GroupEventPollResult{}, nil
-				}))
+				}), noUnrefreshed(t))
 			err := poll(t.Context())
 			want := []string{"membership", "trust", "interaction_sync", "subscribe", "dispatch"}
 			if denied {

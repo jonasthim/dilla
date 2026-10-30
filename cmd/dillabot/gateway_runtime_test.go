@@ -222,6 +222,37 @@ func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
 	}
 }
 
+// A removed installation leaves no fast-path state behind: RetainOnly forgets its pending groups and
+// its budget. Drop (a manager's Restart) keeps the budget, so a restart cannot reset a flood's bound.
+func TestRetainOnlyForgetsRemovedInstallationsInteractionState(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	kept, removed := id.New(), id.New()
+	t0 := time.Unix(1_800_000_000, 0)
+	for _, installation := range []id.ID{kept, removed} {
+		runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
+		runtime.notifyInteraction(installation, id.New())
+	}
+	runtime.PollInteractions(t.Context(), t0) // creates both budgets
+	runtime.notifyInteraction(removed, id.New())
+	runtime.notifyInteraction(kept, id.New())
+	state := func(installation id.ID) (budget, pending bool) {
+		runtime.pendingMu.Lock()
+		defer runtime.pendingMu.Unlock()
+		return runtime.budgets[installation] != nil, len(runtime.pending[installation]) > 0
+	}
+	runtime.RetainOnly([]id.ID{kept})
+	if budget, pending := state(removed); budget || pending {
+		t.Fatalf("removed installation kept budget=%v pending=%v", budget, pending)
+	}
+	if budget, pending := state(kept); !budget || !pending {
+		t.Fatalf("retained installation lost budget=%v pending=%v", budget, pending)
+	}
+	runtime.Drop(kept)
+	if budget, _ := state(kept); !budget {
+		t.Fatal("Drop (restart) reset the installation's budget")
+	}
+}
+
 func drainSignal(ch <-chan struct{}) bool {
 	select {
 	case <-ch:

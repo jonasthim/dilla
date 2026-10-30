@@ -293,3 +293,38 @@ func (p *GroupEventPoller) maxPendingAge(ctx context.Context, event native.Group
 }
 
 var _ groupEventKindSource = (*native.Client)(nil)
+
+// ErrGroupEventHeld marks an event from a sender whose trust could not be refreshed in this pass
+// (TrustRefresh.Unrefreshed). It is an ordinary handler failure: the event is neither dispatched
+// nor acknowledged, stays at the head of the queue and is retried on every pass, and is dispatched
+// once the sender's trust is current. It is never undeliverable, so only the queue's own age limit
+// can acknowledge it, and then without dispatch.
+var ErrGroupEventHeld = errors.New("group event held: its sender's trust is not current")
+
+type holdUnrefreshedSenders struct {
+	next GroupEventHandler
+	hold map[id.ID]bool
+}
+
+// HoldUnrefreshedSenders wraps handler so that an event from any user in unrefreshed is held
+// (ErrGroupEventHeld) instead of dispatched. With no unrefreshed users it is transparent. The
+// check is by user, not device, so a revoked device whose revocation was not processed is held too.
+func HoldUnrefreshedSenders(handler GroupEventHandler, unrefreshed map[id.ID]bool) GroupEventHandler {
+	if len(unrefreshed) == 0 {
+		return handler
+	}
+	hold := make(map[id.ID]bool, len(unrefreshed))
+	for user, held := range unrefreshed {
+		if held {
+			hold[user] = true
+		}
+	}
+	return holdUnrefreshedSenders{next: handler, hold: hold}
+}
+
+func (h holdUnrefreshedSenders) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
+	if h.hold[event.SenderUser] {
+		return ErrGroupEventHeld
+	}
+	return h.next.HandleGroupEvent(ctx, event)
+}

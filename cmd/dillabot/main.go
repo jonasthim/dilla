@@ -784,11 +784,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if interactionErr = musicRegistry.RetainInteractions(installation.ID, installation.CommunityID, nativeClient); interactionErr == nil {
 													runtimeOwnedNative = true
+													reportUnrefreshed := unrefreshedSendersLogger(logger, installation.ID)
 													gateways.SetTextPoller(installation.ID, newCommandIntakePoller(membership, trust, result.Session,
 														func(pollCtx context.Context) error {
 															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
-														}, eventRuntime))
-													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, eventRuntime))
+														}, eventRuntime, reportUnrefreshed))
+													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, eventRuntime, reportUnrefreshed))
 												}
 
 												var eventResult service.GroupEventPollResult
@@ -969,4 +970,14 @@ func safeTrustErrorAttrs(err error) []any {
 		return []any{"trust_failure", "api", "api_status", apiErr.Status, "api_code", code}
 	}
 	return []any{"trust_failure", "other"}
+}
+
+// unrefreshedSendersLogger reports senders whose signed device-list history was stale in a
+// command-intake trust pass. Their commands stay held (not dispatched) until a later pass makes
+// their trust current; only the count is logged, never the user identities.
+func unrefreshedSendersLogger(logger *slog.Logger, installation id.ID) func(service.TrustRefresh) {
+	return func(refresh service.TrustRefresh) {
+		logger.Warn("bot commands from senders with stale device-list history held",
+			"installation_id", installation.String(), "trust_failure", "sender_history_stale", "senders", len(refresh.Unrefreshed))
+	}
 }
