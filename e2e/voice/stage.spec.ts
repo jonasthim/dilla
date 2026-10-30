@@ -111,9 +111,12 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       // Task 8c: the focused share's stats as bob receives it ("720p · 15 fps" at most), and alice's own tile's sent codec.
       const stat = itemOf(shared).locator('.d-call-tile__stat');
       await expect(stat).toHaveText(/^\d+p · \d+ fps$/, { timeout: WAIT });
-      const [height, fps] = ((await stat.textContent()) ?? '').match(/\d+/g)!.map(Number);
-      expect(height, 'the received screen’s height').toBeLessThanOrEqual(720);
-      expect(fps, 'the received screen’s frame rate').toBeLessThanOrEqual(16);
+      // inbound-rtp framesPerSecond counts the frames decoded in the last second, so the jitter buffer's catch-up after a
+      // stall on a loaded runner reads above the sender's 15 (PR #121 CI read 19 once). The capture's own rate is pinned in
+      // step 1; here the received rate must settle at the cap, which an uncapped share would never do.
+      const statNumbers = async () => ((await stat.textContent()) ?? '').match(/\d+/g)!.map(Number);
+      await expect.poll(async () => (await statNumbers())[0], { timeout: WAIT, message: 'the received screen’s height' }).toBeLessThanOrEqual(720);
+      await expect.poll(async () => (await statNumbers())[1], { timeout: WAIT, message: 'the received screen’s frame rate' }).toBeLessThanOrEqual(16);
       await expect(alice.page.locator('.d-call-tile[data-own]:not([data-source="screen"])').locator('xpath=ancestor::li[1]').locator('.d-call-tile__stat'))
         .toHaveText('opus 48k', { timeout: WAIT });
       // Fix round 1: alice's ping on bob's view of her person tile is the RTT her own page publishes (dilla.rtt, through the
