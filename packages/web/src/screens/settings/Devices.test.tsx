@@ -290,13 +290,17 @@ describe('naming a device', () => {
       expect(field()).toHaveValue('');
     } finally { spy.mockRestore(); }
   });
-  it('stores this browser\u2019s own suggestion as its name once, so other browsers read it', () => {
+  it('shows this browser\u2019s user agent as its title locally and never sends a name on its own', async () => {
     const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
     const spy = vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua);
     try {
-      const { fake } = setup(undefined, list());
+      const { fake, user } = setup(undefined, list());
       expect(within(rowNamed(OWN.slice(0, 8))).getByText('Chrome on macOS')).toBeInTheDocument();
-      expect(fake.callsOf('renameDevice')).toEqual([{ m: 'renameDevice', deviceId: OWN, label: 'Chrome on macOS' }]);
+      // Another device is never named from this browser's user agent.
+      expect(within(rowNamed(PHONE.slice(0, 8))).getByText('Unnamed device')).toBeInTheDocument();
+      act(() => fake.set('devices', [dev(OWN, { own: true, label: null }), dev(PHONE, { tier: 0, signerTier: 0 })]));
+      await user.keyboard('{Escape}');
+      expect(fake.callsOf('renameDevice')).toEqual([]);
     } finally { spy.mockRestore(); }
   });
   it('shows a refusal by its code and keeps the dialog and the text', async () => {

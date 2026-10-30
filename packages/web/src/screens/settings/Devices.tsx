@@ -100,19 +100,9 @@ export function Devices(): React.JSX.Element {
   const now = Date.now();
 
   // Wave B (Jonas): a device is titled by what the client knows, "Chrome on macOS", never by an opaque id. This browser reads its own
-  // user agent when it has no label; any other device shows the label it stored, and a nameless one "Unnamed device".
+  // user agent when it has no label, for display only: nothing here sends it, a name reaches the server only through an explicit
+  // Rename. Any other device shows the label it stored, and a nameless one "Unnamed device" (never a guess from a user agent).
   const titleOf = (d: DeviceSummary): string => d.label ?? (d.own && suggestedName() !== '' ? suggestedName() : t('devices.unnamed'));
-  // The first visit of a nameless browser stores its own suggestion, so every other browser of the account reads it too. Best effort.
-  const named = useRef(false);
-  const ownNameless = devices?.some(d => d.own && d.revokedAt === null && d.label === null) === true;
-  useEffect(() => {
-    if (!ownNameless || named.current) return;
-    const own = devices?.find(d => d.own);
-    const suggestion = suggestedName();
-    if (own === undefined || suggestion === '') return;
-    named.current = true;
-    client.call({ m: 'renameDevice', deviceId: own.id, label: suggestion }).catch(() => undefined);
-  }, [ownNameless, devices, client]);
   const [toastHost] = useState(newToastHostId);
 
   // The name dialog starts on the current name; this browser without one starts on "Firefox on Linux" and the like.
