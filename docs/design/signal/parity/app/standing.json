@@ -27,6 +27,16 @@
     "name": "standing-phone-conversation",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }] }
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }] },
+    "judge": { "elements": [
+      {"id":"header","name":"the channel header at the top of the screen, with a back arrow","edge":"top"},
+      {"id":"header_topic","name":"the grey channel topic next to the channel name in the header","compare":["presence"]},
+      {"id":"members_button","name":"the members button with a number near the right end of the header","compare":["presence"]},
+      {"id":"code_block","name":"the code block with line numbers in the conversation","data":true},
+      {"id":"composer","name":"the message composer above the bottom tab bar","edge":"bottom"},
+      {"id":"send_button","name":"the send button at the right end of the message composer","compare":["presence","size"],"state":{"active":{"phrase":"drawn as ready to send","true":"the button has a filled blue background","false":"the button has a dark background like the composer around it"}}},
+      {"id":"tab_bar","name":"the bottom tab bar with Home, Activity and You tabs","edge":"bottom"},
+      {"id":"home_tab","name":"the Home tab of the bottom tab bar","compare":["presence"],"state":{"selected":{"phrase":"drawn as the selected tab","true":"a blue line above the tab and brighter text than the other tabs","false":"no line above the tab and the same grey text as the other tabs"}}}
+    ] }
   }
 ]

@@ -109,11 +109,11 @@ copy, not names. Other known capture differences: the prototype draws a phone fr
 the app finish instantly (the prototype's progress bar is mid-way at capture), Giphy is unreachable from the world (the
 picker shows its error state), and reduced motion (both sides) replaces animations such as the reply-jump flash.
 
-## Judge a pair (TypeSafe, advisory)
+## Judge a pair (TypeSafe, advisory only)
 
 `judge.mjs` asks TypeSafe's Jev (`jev-1.14.0`, pinned) the same questions about the prototype frame and the app (or story)
-frame of a pair and decides **match / differs / not-judged** per element in code. It is advisory: it sits next to pixel
-diff and the reviewer's eye and never replaces them.
+frame of a pair. **It is advisory only**: it points a reviewer at what to look at, next to pixel diff and the reviewer's
+eye, and never gates a merge.
 
 ```
 node docs/design/signal/parity/judge.mjs <spec.json> <shotDir> [--out dir] [--only a,b] [--budget 0.50] [--dry-run] [--reuse]
@@ -121,27 +121,53 @@ node docs/design/signal/parity/judge.mjs --replay <outDir>/<name>.request.<side>
 node docs/design/signal/parity/shoot.mjs <spec.json> <outDir> --app --judge            # shoot, then judge the pairs that shot ok
 ```
 
-- **Key**: read at run time from `~/.config/typesafe/api-key` (or `TYPESAFE_API_KEY_FILE`, else `TYPESAFE_API_KEY`). It is
-  sent only in the `Authorization` header; request logs carry `Bearer [REDACTED]`.
-- **What is judged**: a pair's `judge.elements` (see `app/wave-a-gaps.json` gap16, gap24, gap52, gap71, gap89, gap97,
-  gap102 and `app/task-2.json` cmd-list-open). Each element gets a presence Noul and a Box on both images, plus optional
-  `state` Nouls, a fixed-UI `copy` Noul and a `tone` Choice. `expect: "absent"` asks for something that must not be there;
-  `anchor` aligns position on another element; `region` (CSS px) sends a close-up for small targets; `accepted` marks a
-  decided deviation. Names describe UI roles, never sample data (no Mira, no Midgard Crew).
+### Reading the summary
+
+`judge-summary.md` has one row per pair. The **judge** column is the one to read:
+
+| judge | Meaning | What to do |
+|---|---|---|
+| `ok` | Every element's yes/no answers agree on both frames | Nothing from the judge; still glance at the pair |
+| `CHECK a, b` | Elements `a`, `b` differ: missing, extra, lost or gained state (selected, focused), different fixed copy | Open the pair and confirm; the `reasons` column says which |
+| `unsure c` | The answers for `c` were between 0.3 and 0.7 on one side | Look at `c` yourself |
+| `leads: d` | `d`'s box moved or resized by more than twice the tolerance | Look at `d`, measure with pixel diff |
+| `skip (secret)`, `no list`, `ERROR` | Not sent (it types a secret), no `judge` block, or a failed call (exit code non-zero) | - |
+
+**Verdicts come only from yes/no and choice answers** (presence, state, copy, tone). **Geometry is a lead, never a
+verdict.** Box answers come back in steps of 0.01 of the sent image (12.8 x 8 CSS px on a desktop frame, 3.9 x 8.4 on a
+phone frame), move by a step between identical requests and sometimes land on the wrong element. The `leads` column gives
+each delta in px and in Box steps: `strong` is more than twice the tolerance (two steps), `weak` between one and two.
+A strong lead of a few steps on a plausible element is worth measuring; a lead of dozens of steps on an element whose
+answers agree is usually a Box on the wrong element. Shifts under about 16-26 px are below what the judge can see.
+
+### Writing a `judge` block
+
+A pair's `judge.elements` (see `app/wave-a-gaps.json`, `app/standing.json` and `app/task-2.json`) lists what to ask about.
+Each element gets a presence Noul and a Box on both images, plus optional `state` Nouls, a fixed-UI `copy` Noul and a
+`tone` Choice. Rules (checked by `validateJudge`; details in `judge-questions.mjs`):
+
+- **Names** describe UI roles, never sample data (no Mira, no Midgard Crew), and pick out one thing on both frames. Name a
+  text line by what it says ("a line of text saying that nobody is in the channel yet"), not by its colour or place ("the
+  grey line under ..." stayed unsettled). When the app may show the thing twice (a second code block), say which one.
+- **`data: true`** for elements whose size or place follows sample data (code blocks, message lists): presence-only.
+- **Phone pairs**: every positioned element has an `anchor` or an `edge` (`top` or `bottom`). The prototype's phone bezel
+  insets the top and the bottom differently, so the two groups are aligned separately.
+- **`small: true`** for icons, dots and badges under about 16 CSS px, with a `region` (CSS px) for a close-up crop.
+- `expect: "absent"` asks for something that must not be there; `anchor` aligns position on another element; `accepted`
+  marks a decided deviation (reported as accepted, not as a difference).
+
+### Data, key, files, cost
+
 - **Never sent**: any pair that types a password, recovery key or code, fills a TOTP, or waits for the recovery-key screen
-  (`secretReason`, a rule in code). Mark those pairs `"judge": { "exclude": "secret" }` too.
-- **Decisions** live in code: the truth table (presence P1-P9, geometry G1-G4, state S1-S5, copy, tone) is in
-  `judge.mjs`; wording, thresholds, model and price in `judge-questions.mjs`. Noul bands are 0.7 / 0.3. Box answers come
-  in steps of 0.01 of the sent image (12.8 x 8 CSS px on a desktop frame), so position and size tolerances are two steps of
-  the axis; geometry under about 16-26 px is below what the judge can see. Use pixel diff for that.
+  (`secretReason`, a rule in code).
+- **Key**: read at run time from `~/.config/typesafe/api-key` (or `TYPESAFE_API_KEY_FILE`, else `TYPESAFE_API_KEY`), sent
+  only in the `Authorization` header; request logs carry `Bearer [REDACTED]`.
 - **Output** (in `--out`, default `shotDir`; keep it outside the repo): `<name>.<side>.judge.png` (the bytes sent),
-  `<name>.request.<side>.json` (redacted), `<name>.response.<side>.json`, `<name>.verdict.json`, `judge-summary.md|json`
-  and `judge-ledger.json` (spend from the API's own `usage`). `--budget` (default $0.50) stops before the next request once
-  the run has spent it. `--dry-run` prepares and logs without sending; `--reuse` decides again from stored answers to
-  byte-identical requests. A failed call is an `error`, never a "no", and the exit code is non-zero.
-- **Cost** (measured 2026-10-30): a 1568x980 desktop image is about 4,200 input tokens, a 725x1568 phone image about
-  3,200, so a pair is about 7,000-9,500 tokens, $0.0003-0.0004.
-- **Known limits**: data-dependent sizes (a code block with more lines) and the prototype's phone bezel (top and bottom
-  both inset) show up as geometry differences; compare such elements on presence only, or anchor them. Boxes sometimes
-  land on the wrong element; read the geometry facet as a lead, not a verdict.
+  `<name>.request.<side>.json`, `<name>.response.<side>.json`, `<name>.verdict.json`, `judge-summary.md|json` and
+  `judge-ledger.json` (spend from the API's own `usage`). `--budget` (default $0.50) stops before the next request once the
+  run has spent it; `--dry-run` prepares and logs without sending; `--reuse` decides again from stored answers to
+  byte-identical requests.
+- **Cost** (measured 2026-10-30, $0.042 per million input tokens): a desktop image is about 4,200 tokens, a phone image
+  about 3,200, a close-up crop about 1,100. **A pair costs about $0.0003-0.0005** (7,000-12,000 tokens); a run over the 12
+  judged pairs costs about $0.0045, and every app pair in the specs would be about $0.02-0.03.
 - Tests: `node --test docs/design/signal/parity/judge.test.mjs` (pure; no network).

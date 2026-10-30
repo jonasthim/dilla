@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // TypeSafe parity judge: asks Jev the same element questions about the prototype frame and the app (or story) frame of a
-// pair, one request per image, and decides match / differs / not-judged in code (the truth table below). Advisory: it sits
-// next to pixel diff and the human reviewer, never in place of them. Usage and the rules: README.md, "Judge a pair".
+// pair, one request per image, and decides match / differs / not-judged in code from the Noul and Choice answers only (the
+// truth table below). Box geometry is reported as a lead, never as a difference. Advisory: it sits next to pixel diff and
+// the human reviewer, never in place of them. Usage and the rules: README.md, "Judge a pair".
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -11,8 +12,12 @@ import * as Q from './judge-questions.mjs';
 
 export const DEFAULT_KEY_FILE = path.join(process.env.HOME ?? '', '.config/typesafe/api-key');
 const isObject = v => typeof v === 'object' && v !== null && !Array.isArray(v);
-const ELEMENT_KEYS = new Set(['id', 'name', 'expect', 'criteria', 'compare', 'anchor', 'region', 'state', 'copy', 'tone', 'accepted']);
+const ELEMENT_KEYS = new Set(['id', 'name', 'expect', 'criteria', 'compare', 'anchor', 'region', 'state', 'copy', 'tone', 'accepted', 'data', 'edge', 'small']);
+/** The facets an element is compared on: a data-dependent element (`data: true`) is presence-only. Pure. */
+export const compareOf = el => (el.data === true ? ['presence'] : el.compare ?? COMPARE);
 const COMPARE = ['presence', 'position', 'size'];
+/** A phone pair: the prototype draws a phone frame whose bezel insets the top and the bottom. Pure. */
+export const isPhone = pair => pair.viewport.width < Q.PHONE_MAX_WIDTH;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Data rules: which pairs are never sent, and the shape of a `judge` block.
@@ -61,6 +66,13 @@ export function validateJudge(pair) {
     if (e.criteria !== undefined && !(isObject(e.criteria) && typeof e.criteria.true === 'string' && typeof e.criteria.false === 'string')) throw new Error(`${w} (${e.id}): criteria is {true, false} strings`);
     if (e.compare !== undefined && !(Array.isArray(e.compare) && e.compare.length > 0 && e.compare.every(c => COMPARE.includes(c)))) throw new Error(`${w} (${e.id}): compare is a non-empty list of ${COMPARE.join(', ')}`);
     if (e.anchor !== undefined && (e.anchor === e.id || !ids.has(e.anchor))) throw new Error(`${w} (${e.id}): anchor must name another element of the pair`);
+    // Element-list rules (judge-questions.mjs, the comment above PHONE_MAX_WIDTH).
+    if (e.data !== undefined && typeof e.data !== 'boolean') throw new Error(`${w} (${e.id}): data is true or false`);
+    if (e.data === true && e.compare !== undefined && e.compare.some(c => c !== 'presence')) throw new Error(`${w} (${e.id}): a data-dependent element is presence-only (drop compare or use ["presence"])`);
+    if (e.small !== undefined && typeof e.small !== 'boolean') throw new Error(`${w} (${e.id}): small is true or false`);
+    if (e.small === true && e.region === undefined) throw new Error(`${w} (${e.id}): a small element needs a region (close-up crop)`);
+    if (e.edge !== undefined && !['top', 'bottom'].includes(e.edge)) throw new Error(`${w} (${e.id}): edge is top or bottom`);
+    if (pair.viewport && isPhone(pair) && (e.expect ?? 'present') === 'present' && compareOf(e).includes('position') && e.anchor === undefined && e.edge === undefined) throw new Error(`${w} (${e.id}): on a phone pair a positioned element needs an anchor or an edge (top or bottom)`);
     if (e.region !== undefined && !(isObject(e.region) && ['x', 'y', 'width', 'height'].every(k => Number.isFinite(e.region[k])) && e.region.width > 0 && e.region.height > 0)) throw new Error(`${w} (${e.id}): region is {x, y, width, height} in CSS px`);
     if (e.state !== undefined) {
       if (!isObject(e.state)) throw new Error(`${w} (${e.id}): state is {facet: {phrase, true, false}}`);
@@ -185,7 +197,7 @@ export function buildQuestions(elements) {
   for (const el of elements) {
     qs[qid.present(el.id)] = Q.presentQuestion(el);
     if ((el.expect ?? 'present') === 'absent') continue;
-    const compare = el.compare ?? COMPARE;
+    const compare = compareOf(el);
     if (compare.includes('position') || compare.includes('size')) qs[qid.box(el.id)] = Q.boxQuestion(el);
     for (const [f, s] of Object.entries(el.state ?? {})) qs[qid.state(el.id, f)] = Q.stateQuestion(el, s);
     if (el.copy !== undefined) qs[qid.copy(el.id)] = Q.copyQuestion(el);
@@ -212,7 +224,7 @@ export function viewPhrase(pair, region) {
   if (region) return Q.VIEW.region;
   const other = pair.app ?? pair.story ?? {};
   if (pair.prototype?.clip || other.clip) return Q.VIEW.clip;
-  return pair.viewport.width < 600 ? Q.VIEW.phone : Q.VIEW.desktop;
+  return isPhone(pair) ? Q.VIEW.phone : Q.VIEW.desktop;
 }
 
 /** The JSON request (the multipart `request` part). The image reference is derived from its bytes, so reruns are identical. Pure. */
@@ -315,56 +327,65 @@ const median = xs => { const s = [...xs].sort((a, b) => a - b); const m = s.leng
 const centre = b => ({ x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 });
 const round1 = v => Math.round(v * 10) / 10;
 
-/** Classifies deltas against their tolerances: G1 all within, G2 any over twice, G3 otherwise. */
+/**
+ * Classifies Box deltas against their tolerances into a lead level (never a verdict): G1 `none` (all within), G2 `strong`
+ * (any over twice the tolerance), G3 `weak` (otherwise). Each delta also reports its size in Box steps.
+ */
 export function classifyDeltas(deltas) {
-  if (deltas.some(d => Math.abs(d.value) > 2 * d.tol)) {
-    const over = deltas.filter(d => Math.abs(d.value) > 2 * d.tol);
-    return { facet: 'differs', reason: over.map(d => `${d.kind} ${d.axis}${Math.round(d.value)}`).join(', '), row: 'G2' };
-  }
-  if (deltas.every(d => Math.abs(d.value) <= d.tol)) return { facet: 'match', reason: null, row: 'G1' };
-  return { facet: 'not-judged', reason: 'geometry_unsettled', row: 'G3' };
+  const fmt = d => `${d.kind === 'moved' ? 'moved' : 'resized'} ${d.axis}${d.value > 0 ? '+' : ''}${Math.round(d.value)}px (${(Math.abs(d.value) / (d.step || 1)).toFixed(1)} steps)`;
+  const over2 = deltas.filter(d => Math.abs(d.value) > 2 * d.tol);
+  if (over2.length) return { level: 'strong', lead: over2.map(fmt).join(', '), row: 'G2' };
+  const over = deltas.filter(d => Math.abs(d.value) > d.tol);
+  if (over.length === 0) return { level: 'none', lead: null, row: 'G1' };
+  return { level: 'weak', lead: over.map(fmt).join(', '), row: 'G3' };
 }
 
 /**
- * Geometry (§1.2) for the elements that passed P1. `css` maps element id -> { prototype: box, app: box } in CSS px.
- * Offset: the anchor's centre shift, else the median shift over every P1 element compared on position (needs 2). Pure.
+ * Geometry leads (§1.2, adjusted 2026-10-30: Box geometry is reported, never decided) for the elements that passed P1.
+ * `css` maps element id -> { prototype, app, quantum } in CSS px. Offset: the anchor's centre shift, else the median shift
+ * over the P1 elements compared on position in the same `edge` group (phone pairs: the prototype's bezel insets the top
+ * and the bottom differently, so `top` and `bottom` elements are aligned separately); a group needs 2. Pure.
  */
 export function decideGeometry(elements, p1Ids, css) {
   const shift = id => { const p = centre(css[id].prototype), a = centre(css[id].app); return { x: a.x - p.x, y: a.y - p.y }; };
-  const positioned = elements.filter(e => p1Ids.has(e.id) && css[e.id] && (e.compare ?? COMPARE).includes('position'));
-  const med = positioned.length >= 2 ? { x: median(positioned.map(e => shift(e.id).x)), y: median(positioned.map(e => shift(e.id).y)) } : null;
+  const positioned = elements.filter(e => p1Ids.has(e.id) && css[e.id] && compareOf(e).includes('position') && !e.anchor);
+  const groupOf = e => e.edge ?? 'all';
+  const med = {};
+  for (const g of new Set(positioned.map(groupOf))) {
+    const members = positioned.filter(e => groupOf(e) === g);
+    med[g] = members.length >= 2 ? { x: median(members.map(e => shift(e.id).x)), y: median(members.map(e => shift(e.id).y)) } : null;
+  }
   const out = {};
   for (const el of elements) {
     if (!p1Ids.has(el.id) || !css[el.id]) continue;
-    const compare = el.compare ?? COMPARE;
+    const compare = compareOf(el);
     if (!compare.includes('position') && !compare.includes('size')) continue;
     const { prototype: p, app: a } = css[el.id];
     const qx = css[el.id].quantum?.x ?? 0, qy = css[el.id].quantum?.y ?? 0;
-    const g = { prototype_css: roundBox(p), app_css: roundBox(a), pos_tol_css: { x: round1(Q.posTol(qx)), y: round1(Q.posTol(qy)) } };
+    const g = { prototype_css: roundBox(p), app_css: roundBox(a), step_css: { x: round1(qx), y: round1(qy) }, pos_tol_css: { x: round1(Q.posTol(qx)), y: round1(Q.posTol(qy)) } };
     const deltas = [];
     let noAlign = false;
     if (compare.includes('position')) {
       let off = null;
       if (el.anchor) { if (p1Ids.has(el.anchor) && css[el.anchor]) off = shift(el.anchor); }
-      else off = med;
+      else off = med[groupOf(el)] ?? null;
       if (off === null) noAlign = true;
       else {
         const pc = centre(p), ac = centre(a);
-        g.offset_css = { x: round1(off.x), y: round1(off.y), from: el.anchor ?? 'median' };
+        g.offset_css = { x: round1(off.x), y: round1(off.y), from: el.anchor ?? `median:${groupOf(el)}` };
         g.dx_css = round1(ac.x - (pc.x + off.x));
         g.dy_css = round1(ac.y - (pc.y + off.y));
-        deltas.push({ kind: 'moved', axis: 'x', value: g.dx_css, tol: Q.posTol(qx) }, { kind: 'moved', axis: 'y', value: g.dy_css, tol: Q.posTol(qy) });
+        deltas.push({ kind: 'moved', axis: 'x', value: g.dx_css, tol: Q.posTol(qx), step: qx }, { kind: 'moved', axis: 'y', value: g.dy_css, tol: Q.posTol(qy), step: qy });
       }
     }
     if (compare.includes('size')) {
       const pw = p.x1 - p.x0, ph = p.y1 - p.y0;
       g.dw_css = round1((a.x1 - a.x0) - pw);
       g.dh_css = round1((a.y1 - a.y0) - ph);
-      deltas.push({ kind: 'resized', axis: 'w', value: g.dw_css, tol: Q.sizeTol(pw, qx) }, { kind: 'resized', axis: 'h', value: g.dh_css, tol: Q.sizeTol(ph, qy) });
+      deltas.push({ kind: 'resized', axis: 'w', value: g.dw_css, tol: Q.sizeTol(pw, qx), step: qx }, { kind: 'resized', axis: 'h', value: g.dh_css, tol: Q.sizeTol(ph, qy), step: qy });
     }
-    const c = deltas.length ? classifyDeltas(deltas) : { facet: 'match', reason: null };
-    if (noAlign && c.facet !== 'differs') Object.assign(g, { facet: 'not-judged', reason: 'no_alignment', row: 'G4' });
-    else Object.assign(g, c, noAlign ? { note: 'position not aligned (G4)' } : {});
+    Object.assign(g, deltas.length ? classifyDeltas(deltas) : { level: 'none', lead: null, row: 'G1' });
+    if (noAlign) g.note = 'position not aligned (G4: no anchor and fewer than 2 elements in its edge group)';
     out[el.id] = g;
   }
   return out;
@@ -401,9 +422,13 @@ export function decide(judge, answers, css) {
     const r = results[i];
     const facets = [['presence', r.presence]];
     if (p1.has(el.id)) {
-      if (geo[el.id]) { r.geometry = geo[el.id]; facets.push(['geometry', r.geometry]); }
-      const box = id => ({ prototype: ans('prototype', qid.box(id))?.confidence ?? null, app: ans('app', qid.box(id))?.confidence ?? null });
-      if (r.geometry) r.geometry.box_confidence = box(el.id);
+      // Box geometry is a lead for a person or for pixel diff, never a facet of the verdict (probe 2026-10-30: Boxes are
+      // quantised to 0.01 of the image, move a step between identical requests and sometimes land on the wrong element).
+      if (geo[el.id]) {
+        r.geometry = geo[el.id];
+        r.geometry.box_confidence = { prototype: ans('prototype', qid.box(el.id))?.confidence ?? null, app: ans('app', qid.box(el.id))?.confidence ?? null };
+        if (r.geometry.lead) r.lead = `${r.geometry.level}: ${r.geometry.lead}`;
+      }
       r.state = {};
       for (const f of Object.keys(el.state ?? {})) {
         const [sP, sA] = nouls(qid.state(el.id, f));
@@ -424,7 +449,7 @@ export function decide(judge, answers, css) {
     const reasons = [];
     for (const [name, f0] of facets) {
       const f = applyAccepted(el, name, f0);
-      if (f !== f0) { if (name === 'presence') r.presence = f; else if (name === 'geometry') r.geometry = f; else if (name === 'copy') r.copy = f; else if (name === 'tone') r.tone = f; else r.state[name.slice(6)] = f; }
+      if (f !== f0) { if (name === 'presence') r.presence = f; else if (name === 'copy') r.copy = f; else if (name === 'tone') r.tone = f; else r.state[name.slice(6)] = f; }
       if (RANK[f.facet] > RANK[worst]) worst = f.facet;
       if (f.facet !== 'match' && f.reason) reasons.push(f.facet === 'accepted' ? `accepted:${f.reason}` : f.reason);
     }
@@ -546,11 +571,32 @@ async function judgePair(pair, { shotDir, outDir, key, ledger, dry, reuse }) {
 
 const fmt$ = v => `$${v.toFixed(6)}`;
 
+/**
+ * The reviewer's short column: `ok`, `CHECK a, b` (elements that differ), `unsure c` (not judged), plus `leads: d` for
+ * strong geometry leads (look, then decide with pixel diff). `skip`, `no list` and `ERROR` for the other pair verdicts. Pure.
+ */
+export function reviewerLine(v) {
+  if (v.verdict === 'error') return 'ERROR';
+  if (v.verdict === 'not-judged:excluded') return 'skip (secret)';
+  if (v.verdict === 'not-judged:no-elements') return 'no list';
+  if (v.verdict.startsWith('not-judged:')) return v.verdict.slice(11);
+  const els = v.elements ?? [];
+  const ids = verdict => els.filter(e => e.verdict === verdict).map(e => e.id);
+  const parts = [];
+  if (ids('differs').length) parts.push(`CHECK ${ids('differs').join(', ')}`);
+  if (ids('not-judged').length) parts.push(`unsure ${ids('not-judged').join(', ')}`);
+  if (parts.length === 0) parts.push(ids('accepted').length ? `ok (accepted ${ids('accepted').join(', ')})` : 'ok');
+  const leads = els.filter(e => e.geometry?.level === 'strong').map(e => e.id);
+  if (leads.length) parts.push(`leads: ${leads.join(', ')}`);
+  return parts.join('; ');
+}
+
 export function summaryRows(verdicts) {
   return verdicts.map(v => {
     const c = v.counts;
     const reasons = (v.elements ?? []).filter(e => e.verdict !== 'match').map(e => `${e.id} ${e.reasons.join('; ')}`).join(' · ') || v.reason || '';
-    return { pair: v.pair, verdict: v.verdict, emdn: c ? `${c.match}/${c.differs}/${c['not-judged']}${c.accepted ? `/a${c.accepted}` : ''}` : '–', reasons, tokens: v.usage?.input_tokens ?? 0, usd: v.usage?.usd ?? 0 };
+    const leads = (v.elements ?? []).filter(e => e.lead).map(e => `${e.id} ${e.lead}`).join(' · ');
+    return { pair: v.pair, judge: reviewerLine(v), verdict: v.verdict, emdn: c ? `${c.match}/${c.differs}/${c['not-judged']}${c.accepted ? `/a${c.accepted}` : ''}` : '–', reasons, leads, tokens: v.usage?.input_tokens ?? 0, usd: v.usage?.usd ?? 0 };
   });
 }
 
@@ -583,8 +629,10 @@ export async function judgeSpec(spec, shotDir, opts = {}) {
   verdicts.sort((a, b) => pairs.findIndex(p => p.name === a.pair) - pairs.findIndex(p => p.name === b.pair));
   const rows = summaryRows(verdicts);
   const uncovered = spec.filter(p => !(p.judge?.elements ?? []).length && !secretReason(p) && !p.judge?.exclude).map(p => p.name);
-  const md = ['| pair | verdict | elements m/d/n | reasons | tokens | $ |', '|---|---|---|---|---|---|',
-    ...rows.map(r => `| ${r.pair} | ${r.verdict} | ${r.emdn} | ${r.reasons.replace(/\|/g, '\\|')} | ${r.tokens} | ${fmt$(r.usd)} |`),
+  const esc = s => s.replace(/\|/g, '\\|');
+  const md = ['Advisory only (Nouls decide; geometry is a lead). judge: ok / CHECK (differs) / unsure (not judged) / leads (look with pixel diff).', '',
+    '| pair | judge | verdict | elements m/d/n | reasons | leads | tokens | $ |', '|---|---|---|---|---|---|---|---|',
+    ...rows.map(r => `| ${r.pair} | ${esc(r.judge)} | ${r.verdict} | ${r.emdn} | ${esc(r.reasons)} | ${esc(r.leads)} | ${r.tokens} | ${fmt$(r.usd)} |`),
     '', `Run spend: ${ledger.run.input_tokens} input tokens, ${fmt$(ledger.run.usd)} (ledger total ${fmt$(ledger.total.usd ?? 0)}). Model ${Q.MODEL}, ${Q.QUESTIONS_VERSION}.`,
     '', `States with no judge block (${uncovered.length}): ${uncovered.join(', ') || 'none'}`].join('\n');
   fs.writeFileSync(path.join(outDir, 'judge-summary.md'), `${md}\n`);

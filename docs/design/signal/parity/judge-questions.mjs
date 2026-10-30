@@ -3,7 +3,7 @@
 // is always `screen`, and "prototype", "app" or "story" never appear in what the model reads.
 
 /** Bump when a template, a view phrase, a tone option or a threshold changes; it is written into every verdict. */
-export const QUESTIONS_VERSION = 'judge-questions@2';
+export const QUESTIONS_VERSION = 'judge-questions@3';
 
 /** Pinned, not jev-latest: aliases move, and images and Box are "Dreamer-ready" (format and accuracy can change). */
 export const MODEL = 'jev-1.14.0';
@@ -34,6 +34,22 @@ export const SIZE_TOL_MIN = 6;
 export const SIZE_TOL_FRAC = 0.08;
 export const posTol = (quantum = 0) => Math.max(POS_TOL, BOX_TOL_STEPS * quantum);
 export const sizeTol = (protoDim, quantum = 0) => Math.max(SIZE_TOL_MIN, BOX_TOL_STEPS * quantum, SIZE_TOL_FRAC * protoDim);
+
+/** Pairs narrower than this are phone pairs (390 px); the prototype draws a phone frame around them. */
+export const PHONE_MAX_WIDTH = 600;
+
+/**
+ * Element-list rules (checked by validateJudge; probe of 2026-10-30):
+ * - `data: true` for an element whose size or place follows sample data (a code block with more lines, a message list):
+ *   presence-only, no Box comparison.
+ * - Phone pairs: every positioned element has an `anchor` or an `edge` ("top" or "bottom"). The prototype's bezel insets the
+ *   top and the bottom by different amounts, so top and bottom elements are aligned separately.
+ * - `small: true` for icons, dots and badges under about 16 CSS px: they need a `region` (a close-up crop). At 0.6 sent px per
+ *   CSS px a small check mark was reported missing; with a crop the 22 px avatar badge was found.
+ * - Names describe UI roles, never sample data. Name a text line by what it says ("the line saying that nobody is in the
+ *   channel"), not by its colour or rank ("the grey line under ...": unsettled in the probe's wording round).
+ *   When the app can show the thing more than once (a second code block), say which one: a hold-out false alarm.
+ */
 
 /** One short sentence of context the model may lack, the same on both sides. No sample data, no task wording. */
 export const VIEW = {

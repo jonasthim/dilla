@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   secretReason, validateJudge, planPrepare, withinLimits, boxToCss, regionCrop, buildQuestions, requestGroups, buildBody,
   decidePresence, decideState, decideCopy, decideTone, decideGeometry, classifyDeltas, decide, pairVerdict, parseJudgeArgs,
-  pngSize, send, REDACTED_HEADERS, qid, boxQuantum,
+  pngSize, send, REDACTED_HEADERS, qid, boxQuantum, reviewerLine, compareOf,
 } from './judge.mjs';
 import { POS_TOL, MODEL, posTol, sizeTol } from './judge-questions.mjs';
 import { parseArgs } from './shoot.mjs';
@@ -49,30 +49,77 @@ test('tone: both sure and equal match, both sure and different differ, else not 
   assert.equal(decideTone(t('muted_grey_text', 0.9), t('bright_white_text', 0.6)).facet, 'not-judged');
 });
 
-test('geometry rows G1-G4 with the median offset and an anchor', () => {
-  assert.equal(classifyDeltas([{ kind: 'moved', axis: 'y', value: POS_TOL, tol: POS_TOL }]).row, 'G1');
-  assert.equal(classifyDeltas([{ kind: 'moved', axis: 'y', value: POS_TOL + 1, tol: POS_TOL }]).row, 'G3');
-  assert.equal(classifyDeltas([{ kind: 'moved', axis: 'y', value: -(2 * POS_TOL + 1), tol: POS_TOL }]).row, 'G2');
+test('geometry is a lead (G1 none, G2 strong, G3 weak, G4 no alignment), in Box steps, aligned per edge group', () => {
+  assert.equal(classifyDeltas([{ kind: 'moved', axis: 'y', value: POS_TOL, tol: POS_TOL, step: 3 }]).level, 'none');
+  assert.equal(classifyDeltas([{ kind: 'moved', axis: 'y', value: POS_TOL + 1, tol: POS_TOL, step: 3 }]).level, 'weak');
+  const strong = classifyDeltas([{ kind: 'moved', axis: 'y', value: -(2 * POS_TOL + 1), tol: POS_TOL, step: 8 }]);
+  assert.equal(strong.level, 'strong');
+  assert.equal(strong.lead, 'moved y-13px (1.6 steps)');
   const b = (x, y, w, h) => ({ x0: x, y0: y, x1: x + w, y1: y + h });
-  const els = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd', anchor: 'c' }, { id: 'e', compare: ['presence', 'size'] }];
-  // App frame is shifted 17 px down (a phone bezel): a, b, c follow it, d moved 30 px further but its anchor c did not.
+  const els = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd', anchor: 'c' }, { id: 'e', compare: ['presence', 'size'] }, { id: 'f', data: true }];
+  // App frame is shifted 17 px down: a, b, c follow it, d moved 30 px further but its anchor c did not.
   const css = {
     a: { prototype: b(10, 10, 100, 20), app: b(10, 27, 100, 20) },
     b: { prototype: b(10, 50, 100, 20), app: b(10, 67, 100, 20) },
     c: { prototype: b(10, 90, 100, 20), app: b(10, 107, 100, 20) },
     d: { prototype: b(10, 130, 100, 20), app: b(10, 177, 100, 20) },
     e: { prototype: b(10, 200, 100, 20), app: b(300, 400, 100, 60) },
+    f: { prototype: b(10, 300, 100, 20), app: b(10, 500, 100, 200) },
   };
-  const g = decideGeometry(els, new Set(['a', 'b', 'c', 'd', 'e']), css);
+  const g = decideGeometry(els, new Set(['a', 'b', 'c', 'd', 'e', 'f']), css);
   assert.equal(g.a.row, 'G1');
   assert.equal(g.a.offset_css.y, 17);
-  assert.equal(g.d.facet, 'differs');
+  assert.equal(g.d.level, 'strong');
   assert.equal(g.d.dy_css, 30);
-  assert.equal(g.e.facet, 'differs'); // size only: 40 px taller; its position is not compared
+  assert.equal(g.e.level, 'strong'); // size only: 40 px taller; its position is not compared
   assert.equal(g.e.dx_css, undefined);
+  assert.equal(g.f, undefined); // data-dependent: presence-only, no lead
   const lone = decideGeometry([{ id: 'a' }], new Set(['a']), { a: css.a });
-  assert.equal(lone.a.row, 'G4');
-  assert.equal(lone.a.reason, 'no_alignment');
+  assert.match(lone.a.note, /G4/);
+  // Phone bezel: the top group moved down 17, the bottom group up 17; aligned separately, all four are G1.
+  const phone = [{ id: 't1', edge: 'top' }, { id: 't2', edge: 'top' }, { id: 'b1', edge: 'bottom' }, { id: 'b2', edge: 'bottom' }];
+  const pcss = { t1: { prototype: b(0, 0, 50, 20), app: b(0, 17, 50, 20) }, t2: { prototype: b(0, 40, 50, 20), app: b(0, 57, 50, 20) },
+    b1: { prototype: b(0, 700, 50, 20), app: b(0, 683, 50, 20) }, b2: { prototype: b(0, 760, 50, 20), app: b(0, 743, 50, 20) } };
+  const pg = decideGeometry(phone, new Set(['t1', 't2', 'b1', 'b2']), pcss);
+  assert.deepEqual(['t1', 't2', 'b1', 'b2'].map(id => pg[id].row), ['G1', 'G1', 'G1', 'G1']);
+  assert.equal(pg.b1.offset_css.from, 'median:bottom');
+});
+
+test('geometry never decides: a strong lead leaves the element verdict to its Nouls', () => {
+  const judge = { elements: [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }, { id: 'c', name: 'c' }] };
+  const n = v => ({ type: 'noul', noul: v });
+  const answers = { prototype: { a__present: n(0.9), b__present: n(0.9), c__present: n(0.9) }, app: { a__present: n(0.9), b__present: n(0.9), c__present: n(0.9) } };
+  const b = (x, y, w, h) => ({ x0: x, y0: y, x1: x + w, y1: y + h });
+  const css = { a: { prototype: b(0, 0, 50, 20), app: b(0, 0, 50, 20) }, b: { prototype: b(0, 100, 50, 20), app: b(0, 100, 50, 20) }, c: { prototype: b(0, 200, 50, 20), app: b(0, 400, 300, 20) } };
+  const v = decide(judge, answers, css);
+  const c = v.elements.find(e => e.id === 'c');
+  assert.equal(c.verdict, 'match');
+  assert.match(c.lead, /^strong: moved x\+125px .*moved y\+200px/);
+  assert.equal(v.verdict, 'match');
+  assert.equal(reviewerLine({ ...v, pair: 'p' }), 'ok; leads: c');
+});
+
+test('reviewerLine: the short judge column', () => {
+  const e = (id, verdict) => ({ id, verdict, reasons: [] });
+  assert.equal(reviewerLine({ verdict: 'differs', elements: [e('a', 'differs'), e('b', 'not-judged'), e('c', 'match')] }), 'CHECK a; unsure b');
+  assert.equal(reviewerLine({ verdict: 'match (accepted: 1)', elements: [e('a', 'accepted')] }), 'ok (accepted a)');
+  assert.equal(reviewerLine({ verdict: 'not-judged:excluded' }), 'skip (secret)');
+  assert.equal(reviewerLine({ verdict: 'not-judged:no-elements' }), 'no list');
+  assert.equal(reviewerLine({ verdict: 'error' }), 'ERROR');
+});
+
+test('element-list rules: data is presence-only, small needs a region, phone positions need an anchor or an edge', () => {
+  const desk = els => ({ name: 'p', viewport: { width: 1280, height: 800 }, judge: { elements: els } });
+  const phone = els => ({ name: 'p', viewport: { width: 390, height: 844 }, judge: { elements: els } });
+  validateJudge(desk([{ id: 'a', name: 'x', data: true }]));
+  assert.throws(() => validateJudge(desk([{ id: 'a', name: 'x', data: true, compare: ['presence', 'size'] }])), /presence-only/);
+  assert.throws(() => validateJudge(desk([{ id: 'a', name: 'x', small: true }])), /region/);
+  validateJudge(desk([{ id: 'a', name: 'x', small: true, compare: ['presence'], region: { x: 0, y: 0, width: 200, height: 200 } }]));
+  assert.throws(() => validateJudge(phone([{ id: 'a', name: 'x' }])), /anchor or an edge/);
+  validateJudge(phone([{ id: 'a', name: 'x', edge: 'top' }, { id: 'b', name: 'y', anchor: 'a' }, { id: 'c', name: 'z', compare: ['presence', 'size'] }, { id: 'd', name: 'w', expect: 'absent' }]));
+  assert.throws(() => validateJudge(phone([{ id: 'a', name: 'x', edge: 'middle' }])), /edge/);
+  assert.deepEqual(compareOf({ data: true, compare: ['presence'] }), ['presence']);
+  assert.deepEqual(Object.keys(buildQuestions([{ id: 'a', name: 'x', data: true }])), ['a__present']);
 });
 
 test('decide: element and pair verdicts, speculative answers ignored, accepted deviations', () => {
@@ -229,7 +276,7 @@ test('shoot.mjs --judge: parseArgs strips the flag and reports it', () => {
 
 test('the probe judge blocks in the committed specs are valid', async () => {
   const fs = await import('node:fs');
-  for (const f of ['./app/wave-a-gaps.json', './app/task-2.json']) {
+  for (const f of ['./app/wave-a-gaps.json', './app/task-2.json', './app/standing.json']) {
     const spec = JSON.parse(fs.readFileSync(new URL(f, import.meta.url), 'utf8'));
     spec.forEach(validateJudge);
     assert.ok(spec.some(p => p.judge?.elements?.length > 0), f);
