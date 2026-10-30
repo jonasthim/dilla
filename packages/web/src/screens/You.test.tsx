@@ -66,8 +66,8 @@ describe('You', () => {
   // Wave B (Jonas): the prototype's You has no status row; the status menu is the sidebar user panel's.
   it('has no status row and no status choices', () => {
     setup();
-    expect(screen.queryByRole('button', { name: new RegExp(t('you.statusRow')) })).toBeNull();
-    expect(screen.queryByRole('group', { name: t('presence.label') })).toBeNull();
+    expect(screen.queryByRole('button', { name: /status/i })).toBeNull();
+    expect(screen.queryByRole('group', { name: /status/i })).toBeNull();
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([t('you.settings'), t('workspace.signOut')]);
   });
 

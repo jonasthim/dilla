@@ -35,7 +35,13 @@
      "click": "role=button[name=\"Reminders\"s]"
     },
     {
-     "wait": 2500
+     "waitFor": ".d-reminders__empty"
+    },
+    {
+     "click": "role=tab[name=/^Due/]"
+    },
+    {
+     "wait": 600
     }
    ]
   }
@@ -88,13 +94,13 @@
      "click": "role=button[name=\"Reminders\"s]"
     },
     {
-     "wait": 400
+     "waitFor": ".d-reminders__empty"
     },
     {
      "click": "role=tab[name=/Upcoming/]"
     },
     {
-     "wait": 2500
+     "wait": 600
     }
    ]
   }

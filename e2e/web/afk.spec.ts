@@ -586,7 +586,7 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
     return r.method() === 'POST' && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity`
       && body !== null && body.length === 19 && body[0] === 0x82 && body[18] === 0x01;
   } });
-  // On a phone a voice row opens the stage (no one-click join, R24): join from the stage.
+  // Visiting the voice channel's address opens the stage without joining (only a tap on its list row joins, as the prototype's phone does): join from the stage.
   await button(stage(ph.page), 'callStage.preview.join').click();
   expect((await (await exempt).response())?.status(), 'the exempt report').toBe(204);
   // A phone has no dock (flow 12): the stage's phase says it is in.

@@ -6,7 +6,7 @@
 // Every dialog's focus return is asserted with toBeFocused(), which jsdom cannot prove through portals and the inert drawer.
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
-  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, openNewChannel, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
+  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox, channelRowMenuItem,
  makeRole as makeRoleInline,
 } from './support/app';
@@ -150,7 +150,8 @@ test('private channels run from an empty instance: create, gain, lose, make priv
 
     // 2. Ada makes the text channel "staff-room", private, opened to Staff. Björn's list lacks it (a public "lounge" made
     //    after it shows that his list had caught up). Ada posts "before".
-    await openNewChannel(page);
+    const newChannel = newChannelButton(page);
+    await newChannel.click();
     const made = dialogOf(page, 'create.channel.title', { server: SERVER });
     await expect(made).toBeVisible({ timeout: WAIT });
     await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill(ROOM);
@@ -159,10 +160,11 @@ test('private channels run from an empty instance: create, gain, lose, make priv
     await staffBox.click();
     await expect(staffBox).toBeChecked();
     await expectAccessible(page, 'the private channel create');
-    // Escape closes the dialog and the dialog then starts over.
+    // Escape closes the dialog and focus goes back to "new channel"; the dialog then starts over.
     await page.keyboard.press('Escape');
     await expect(made).toBeHidden();
-    await openNewChannel(page);
+    await expect(newChannel).toBeFocused();
+    await newChannel.click();
     await expect(made).toBeVisible({ timeout: WAIT });
     await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill(ROOM);
     await setSwitch(switchOf(made, 'chperm.create.private'), true);
@@ -170,7 +172,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
     await page.keyboard.press('Enter');
     await expect(made).toBeHidden({ timeout: WAIT });
     await expect(channelRow(page, ROOM)).toBeVisible({ timeout: WAIT });
-    await openNewChannel(page);
+    await newChannel.click();
     await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('lounge');
     await page.keyboard.press('Enter');
     await expect(made).toBeHidden({ timeout: WAIT });

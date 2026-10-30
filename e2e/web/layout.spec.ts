@@ -674,8 +674,9 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
     expectAt(`R22 rail tile "${tile.t}" is 38 wide at ${tag}`, tile.w, 38, 0.5);
     expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
-  // The controller addition (UI-2 review): in the real app the voice join button and the category "+" are 44 on a phone.
-  for (const [selector, what] of [['.d-voice-row__join button', 'the voice join button'], ['.d-channel-list__cat-add button', 'the category "+"']] as const) {
+  // The controller addition (UI-2 review): in the real app the category "+" is 44 on a phone. (A phone's voice rows have no join
+  // button since wave B: a tap joins.)
+  for (const [selector, what] of [['.d-channel-list__cat-add button', 'the category "+"']] as const) {
     const found = await boxes(page, selector);
     expect.soft(found.length, `R9 ${what} is on the home tab at ${tag}`).toBeGreaterThan(0);
     for (const b of found) {
@@ -1034,14 +1035,11 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     }
     // AW5: the AFK channel hosts no call, so D4 measures the call stage of voice general, joined with a microphone. Cy's browser
     // has the fake one (Firefox's default page has none and would hold the join at the permission prompt): the phone's
-    // server list, a tap on its row (a phone's tap only opens the stage, R24), then its join.
+    // server list, then a tap on its row, which joins (Jonas, wave B: the prototype's phone tap joins).
     await cy.setViewportSize({ width: 390, height: 844 });
     await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
     await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
     await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
-    const phoneJoin = cy.locator('.d-call-stage__join');
-    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
-    await phoneJoin.click();
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
     await expectNoPhoneReminders(cy, 'joined voice at 390x844');
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];

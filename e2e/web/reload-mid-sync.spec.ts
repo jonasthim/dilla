@@ -6,7 +6,7 @@
 import { expect, type Page, type Request } from '@playwright/test';
 import {
   TEST_TIMEOUT, WAIT, addServerVia, channelRow, composerBox, copy, expectComposerReady, expectShell, instanceInvite,
-  messageRow, openNewChannel, railItem, signIn, signUp, tag,
+  messageRow, newChannelButton, railItem, signIn, signUp, tag,
 } from './support/app';
 import { test } from './support/second';
 
@@ -20,7 +20,7 @@ const RESYNC = /\/v1\/groups\/([0-9a-f]{32})\/resync$/;
 const SLOW_HISTORY_MS = 8000;
 
 async function makeChannel(page: Page, name: string): Promise<void> {
-  await openNewChannel(page);
+  await newChannelButton(page).click();
   const dialog = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
   await dialog.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill(name);
   await dialog.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).press('Enter');

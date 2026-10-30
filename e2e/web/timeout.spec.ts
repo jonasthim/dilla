@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   addServerVia, TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmComposer, dmLog, makeInviteLink,
-  messageRow, newAccount, openNewChannel, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test, expectRowMenuAction,
+  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test, expectRowMenuAction,
  makeRole,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -53,7 +53,7 @@ const roleRow = (settings: Locator, name: string) => settings.getByRole('list', 
 const announce = (page: Page) => page.getByTestId('shell-announcer');
 
 async function makeVoiceChannel(page: Page): Promise<void> {
-  await openNewChannel(page);
+  await newChannelButton(page).click();
   const create = dialog(page, 'create.channel.title', { server: SERVER });
   await create.getByRole('radio', { name: copy('create.channel.voice'), exact: true }).click();
   await create.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('lounge');

@@ -27,13 +27,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Wave B (gap 87, the prototype): a phone opens the Members sheet with the channel. A test about something else closes it first.
-async function closeSheet(user: { click(el: Element): Promise<void> }): Promise<void> {
-  const sheet = await screen.findByRole('complementary', { name: 'members of Midgard' });
-  await user.click(within(sheet).getByRole('button', { name: t('members.close') }));
-  await waitFor(() => expect(screen.queryByRole('complementary')).toBeNull());
-}
-
 function phone(o: VoiceHarnessOptions = {}) {
   media(true);
   return renderVoiceShell(o);
@@ -62,7 +55,7 @@ describe('the phone shell: the servers list', () => {
 
   // Ruling AB: the server head is the prototype's: the name and the ⌄ (server settings); the "+" only while there are no categories
   // and for a person who may. No search, no reminders, no menu in it.
-  it('has only the ⌄ beside the server name; "new channel" is in its menu only for a person who may', async () => {
+  it('has only the ⌄ beside the server name; the list header has the "+" only for a person who may', async () => {
     const { user, client } = phone({ path: `/c/${A}` });
     const menu = await screen.findByRole('button', { name: t('admin.open') });
     const head = menu.closest('.d-channel-list__head') as HTMLElement;
@@ -72,13 +65,11 @@ describe('the phone shell: the servers list', () => {
     expect(screen.queryByRole('button', { name: 'Reminders' })).toBeNull();
     expect(screen.queryByRole('button', { name: t('nav.server.menu') })).toBeNull();
     expect(screen.queryByRole('button', { name: t('admin.leave.open') })).toBeNull();
-    // Wave B: no "+" in the head, for anyone; a person who may make channels finds "new channel" in the ⌄ menu.
     expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
     manage(client);
-    expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
+    expect(screen.getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
     // Signal task 10 fix round 2: the ⌄ is the server's menu; its first item opens the server's settings.
     await user.click(menu);
-    expect(await screen.findByRole('menuitem', { name: t('create.channel.open') })).toBeInTheDocument();
     await user.click(await screen.findByRole('menuitem', { name: t('signalSettings.menu.serverSettings') }));
     const dialog = await screen.findByRole('dialog', { name: t('admin.title') });
     expect(within(dialog).getByRole('button', { name: t('workspace.danger') })).toBeInTheDocument();
@@ -95,14 +86,31 @@ describe('the phone shell: the servers list', () => {
     expect(within(dialog).getByRole('button', { name: t('layout.add.create') })).toBeInTheDocument();
   });
 
-  // Wave B (the prototype's phone rows draw no join icon): a tap opens the voice row and joins, as a desktop click does.
-  it('a tap on a voice row opens it and joins; there is no join icon', async () => {
+  // Jonas, wave B: a phone's tap on a voice row joins the call, as the prototype and a desktop click do (the old R24 rule is gone).
+  it('a tap on a voice row opens it and joins; the row has no join icon', async () => {
     const app = phone({ path: `/c/${A}` });
-    const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
-    expect(within(row).queryByRole('button', { name: t('voice.join') })).toBeNull();
+    const music = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+    expect(within(music).queryByRole('button', { name: t('voice.join') })).toBeNull();
     await app.user.click(await screen.findByRole('button', { name: 'voice general' }));
     await waitFor(() => expect(here()).toBe(`/c/${A}/${GENV}`));
     await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
+  });
+
+  it('a tap that joins keeps the saved mute state, as a desktop join does', async () => {
+    const app = phone({ path: `/c/${A}`, settings: { 'voice.self': 'muted' } });
+    await app.user.click(await screen.findByRole('button', { name: 'voice general' }));
+    await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    // The same option a desktop join passes (Shell.panel.test: "the next join starts muted").
+    expect(app.module.startPageCall).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].self).toBe('muted');
+  });
+
+  it('marks the channel last opened on the list without making it the open page', async () => {
+    phone({ path: `/c/${A}` });
+    const row = await screen.findByRole('button', { name: 'lobby' });
+    expect(row).toHaveAttribute('data-selected', 'true');
+    expect(row).not.toHaveAttribute('aria-current');
   });
 
   it('has no axe violations', async () => {
@@ -220,7 +228,6 @@ describe('the phone shell: pushed views', () => {
 describe('the phone shell: the members sheet', () => {
   it('opens as a history entry, closes on the system back and returns focus to the Members button', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await closeSheet(user);
     const trigger = await screen.findByRole('button', { name: /^Members/ });
     await user.click(trigger);
     expect(await screen.findByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
@@ -230,21 +237,8 @@ describe('the phone shell: the members sheet', () => {
     expect(trigger).toHaveFocus();
   });
 
-  // Wave B, gap 87 (the prototype opens Members with a channel and keeps it closed once closed).
-  it('opens with the channel, and stays closed after it is closed', async () => {
-    const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await screen.findByRole('complementary', { name: 'members of Midgard' });
-    await closeSheet(user);
-    goto(`/c/${A}`, { phoneBack: true });
-    await screen.findByRole('navigation', { name: t('shell.channels.label') });
-    goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
-    await screen.findByRole('textbox', { name: 'message #lobby' });
-    expect(screen.queryByRole('complementary')).toBeNull();
-  });
-
   it('closes through its own back control by popping its entry', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await closeSheet(user);
     const trigger = await screen.findByRole('button', { name: /^Members/ });
     const index = () => (window.history.state as { dillaHistoryIndex?: number } | null)?.dillaHistoryIndex;
     const before = index();
@@ -341,7 +335,8 @@ describe('the phone shell: tabs', () => {
 
   it('an open members sheet closes when a tab is tapped: its entry is popped once and the new tab shows', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
-    await screen.findByRole('complementary', { name: 'members of Midgard' }); // opens with the channel
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
+    await screen.findByRole('complementary', { name: 'members of Midgard' });
     expect(tabs()).not.toBeNull();
     const length = window.history.length;
     const back = vi.spyOn(window.history, 'back');
@@ -364,7 +359,9 @@ describe('the phone shell: tabs', () => {
 
   it('two quick taps on a tab with a sheet open pop the sheet entry once', async () => {
     phone({ path: `/c/${A}/${TEXT}` });
-    await screen.findByRole('complementary', { name: 'members of Midgard' }); // opens with the channel
+    const { user } = { user: (await import('@testing-library/user-event')).default.setup() };
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
+    await screen.findByRole('complementary', { name: 'members of Midgard' });
     const back = vi.spyOn(window.history, 'back');
     const link = tab('Activity');
     act(() => { link.click(); link.click(); });
@@ -385,7 +382,6 @@ describe('the phone shell: tabs', () => {
     await screen.findByRole('heading', { name: t('activity.title') });
     goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: '/activity' });
     await screen.findByRole('textbox', { name: 'message #lobby' });
-    await closeSheet(user);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     await user.click(tab('Home'));
     expect(back).not.toHaveBeenCalled();
@@ -398,7 +394,6 @@ describe('the phone shell: tabs', () => {
       await screen.findByRole('navigation', { name: t('shell.dms.label') });
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
-      await closeSheet(user);
       const originalBack = window.history.back.bind(window.history);
       const back = vi.spyOn(window.history, 'back').mockImplementation(() => originalBack());
       await user.click(tab('Home'));
@@ -411,7 +406,6 @@ describe('the phone shell: tabs', () => {
       await screen.findByRole('navigation', { name: t('shell.channels.label') });
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
-      await closeSheet(user);
       const originalBack = window.history.back.bind(window.history);
       const back = vi.spyOn(window.history, 'back').mockImplementation(() => originalBack());
       await user.click(tab('Home'));
@@ -424,7 +418,6 @@ describe('the phone shell: tabs', () => {
       await screen.findByRole('navigation', { name: t('shell.dms.label') });
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
-      await closeSheet(user);
       await user.click(tab('Home'));
       await user.click(tab('Home'));
       await waitFor(() => expect(here()).toBe(`/c/${A}`));
@@ -617,13 +610,13 @@ describe('the phone shell: settings', () => {
 });
 
 describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
-  it('Home on a server: the server name in the 48 head with the ⌄ alone', async () => {
+  it('Home on a server: the server name in the 48 head, with search, settings and, for a manager, the "+"', async () => {
     const { client } = phone({ path: `/c/${A}` });
     const gear = await screen.findByRole('button', { name: t('admin.open') });
     const head = gear.closest('.d-channel-list__head') as HTMLElement;
     expect(within(head).getByRole('heading', { level: 1 })).toHaveTextContent('Midgard');
     manage(client);
-    expect(within(head).queryByRole('button', { name: t('create.channel.open') })).toBeNull();
+    expect(within(head).getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
   });
 
   it('Home on @: "direct messages" in the head with the new-message action, and no footer', async () => {
@@ -879,6 +872,7 @@ describe('the phone shell: Mention', () => {
   it('closes the members sheet and focuses the channel composer with "@username " at the end', async () => {
     const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
     act(() => { client.set(`presence:${A}`, { [ME.id]: 'online', [BOB]: 'online', [CAROL]: 'online' }); });
+    await user.click(await screen.findByRole('button', { name: /^Members/ }));
     const sheet = await screen.findByRole('complementary', { name: 'members of Midgard' });
     fireEvent.contextMenu(within(sheet).getByRole('button', { name: /\bbob\b/ }), { clientX: 10, clientY: 10 });
     await user.click(within(screen.getByRole('menu', { name: 'actions for bob' })).getByRole('menuitem', { name: 'Mention' }));

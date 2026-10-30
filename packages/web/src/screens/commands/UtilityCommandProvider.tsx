@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Button, Dialog, RemindersPopover, type ReminderItem } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
@@ -683,7 +683,10 @@ function ReminderPanel(props: { client: CoreClient; ownerKey: string; communityI
   }));
   const status = props.loading ? copy('reminder.loading') : props.error ? copy('reminder.loadError') : error !== '' ? error : undefined;
   // The prototype's header tile ("GL"): the initials of the server's Bot, the account that keeps the reminders.
-  const botMember = (props.client.get(`members:${props.communityId ?? props.rows[0]?.communityId ?? ''}`) ?? []).find(m => m.kind === BOT_ACCOUNT_KIND);
+  const membersName = `members:${props.communityId ?? props.rows[0]?.communityId ?? ''}` as const;
+  const members = useSyncExternalStore(useCallback((listener: () => void) => props.client.subscribe(membersName, listener), [props.client, membersName]),
+    () => props.client.get(membersName));
+  const botMember = (members ?? []).find(m => m.kind === BOT_ACCOUNT_KIND);
   const botName = botMember === undefined ? '' : (botMember.display || botMember.username).trim();
   return <RemindersPopover items={items} {...(botName === '' ? {} : { botInitials: botName.slice(0, 2).toUpperCase() })} tab={props.tab} onTab={tab => props.onTab(tab)} layout={props.layout} status={status} loading={props.loading}
     onAction={(id, action) => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) void mutate(row, action); }}

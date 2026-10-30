@@ -6,7 +6,7 @@
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, signIn, type Account, membersToggle,
 } from './support/app';
@@ -372,6 +372,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.getByRole('button', { name: copy('nav.server.menu'), exact: true })).toHaveCount(0);
       await expect(page.getByRole('menuitem')).toHaveCount(0);
       await expectPrototypeSize(menu, 'the server ⌄', { w: 26, h: 26 });
+      await expect(newChannelButton(page)).toBeVisible();
     });
 
     // Walk 1: a phone has no Control+K, so search opens from a conversation's phone header (Ruling AB: the list head has none),
@@ -457,7 +458,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await tab(page, 'nav.tab.you').tap();
       await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('heading', { level: 2, name: copy('you.title'), exact: true })).toBeFocused();
-      // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings, Status and Sign out
+      // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings and Sign out (Jonas, wave B: Status is the sidebar user panel's)
       // (48px each, no native select); Diagnostics keeps the node, link, generation and devices.
       await expect(page.locator('.dw-you select')).toHaveCount(0);
       // The box's first line in full: "Connected to {host} · {ms} ms" (or without the ms before the first heartbeat's ack).
@@ -467,7 +468,6 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       for (const name of [copy('you.settings'), copy('workspace.signOut')]) {
         expect((await page.getByRole('button', { name, exact: true }).boundingBox())!.height, `${name} is a 48px row`).toBeGreaterThanOrEqual(47);
       }
-      await expectTapTargets(page.getByRole('button', { name: new RegExp(`^${copy('you.statusRow')}`) }), 'the status row');
       await expectAccessible(page, 'You');
     });
 

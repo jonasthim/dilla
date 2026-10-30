@@ -3,7 +3,6 @@ import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import type { ChannelSummary } from '@dilla/client-core';
 import { A, BOB, BOB_DEV, callState, OWN_DEV, refusal, renderVoiceShell } from '../test/fake-client.ts';
 import { ME } from '../test/fixtures.ts';
-import { hasNewChannel } from '../test/new-channel.ts';
 
 // Web3.8 (WS5, item 12): one channel list. The voice channels stand in position among the text channels, with their people
 // nested under them; there is no "active voice" and no "voice" heading.
@@ -180,15 +179,14 @@ describe('categories (web3.9)', () => {
     expect(screen.getByRole('dialog', { name: /New channel/ })).toBeInTheDocument();
   });
 
-  it('the new-channel action is in the server menu with no categories, and moves to the category headers with them', async () => {
+  it('the new-channel "+" sits in the sidebar head with no categories, and moves to the category headers with them', async () => {
     const app = mount();
     manage(app);
     const heads = () => document.querySelector('.d-channel-list__head') as HTMLElement;
     await within(list()).findByRole('button', { name: 'voice lounge' });
-    expect(await hasNewChannel(app.user)).toBe(true);
-    expect(within(heads()).queryByRole('button', { name: 'new channel' })).toBeNull();
+    expect(within(heads()).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
     act(() => app.client.publish(`channels:${A}`, CATEGORISED));
-    expect(await hasNewChannel(app.user)).toBe(false);
+    expect(within(heads()).queryByRole('button', { name: 'new channel' })).toBeNull();
     expect(screen.getByRole('button', { name: 'new channel in lounge' })).toBeInTheDocument();
   });
 });

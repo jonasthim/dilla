@@ -6,7 +6,7 @@
 // Every dialog's focus return is asserted with toBeFocused(), which jsdom cannot prove through portals and the inert drawer.
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
-  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, openNewChannel, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
+  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, channelRowMenuItem, expectRowMenuAction,
  makeRole, roleButton, selectRole, setRolePermission,
 } from './support/app';
@@ -100,7 +100,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
   await expectComposerReady(page, 'general');
 
   // A second text channel, so that Björn can stand outside #general while Ada writes there (its row then badges).
-  await openNewChannel(page);
+  await newChannelButton(page).click();
   const made = dialogOf(page, 'create.channel.title', { server: SERVER });
   await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('side');
   await page.keyboard.press('Enter');

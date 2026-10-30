@@ -347,8 +347,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // dialog (the server it is open for, and its tab).
   // The phone keyboard is up over a focused field (AppShell says so): the call bar steps aside for a dot in the header (H3).
   const [keyTyping, setTyping] = useState(false);
-  const [membersOpen, setMembersOpen] = useState(() => phone || (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches));
-  // Gap 87 (the prototype): on a phone the Members sheet opens with the channel (its aside starts as 'members'); closing it keeps it closed.
+  const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
   // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
   // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
   const openedNarrow = useRef(false);
@@ -426,9 +425,15 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const ordered = useMemo(() => orderChannels(channels ?? [], afkChannels), [channels, afkChannels]);
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = ordered.find(c => c.id === channelId) ?? null;
-  // Wave B (the prototype's phone list marks the open channel): the channel last opened in each server stays selected on the list.
-  const lastOpened = useRef(new Map<string, string>());
-  if (communityId !== null && channelId !== null) lastOpened.current.set(communityId, channelId);
+  // Wave B (the prototype's phone list marks the open channel): the channel last opened in each server, and the DM last opened, stay
+  // marked on the list (not as the open page). State, so the mark is not read from a ref during render.
+  const [lastOpened, setLastOpened] = useState<{ channels: Record<string, string>; dm: string | null }>({ channels: {}, dm: null });
+  useEffect(() => {
+    if (communityId !== null && channelId !== null) setLastOpened(prev => prev.channels[communityId] === channelId ? prev : { ...prev, channels: { ...prev.channels, [communityId]: channelId } });
+  }, [communityId, channelId]);
+  useEffect(() => {
+    if (dmId !== null) setLastOpened(prev => prev.dm === dmId ? prev : { ...prev, dm: dmId });
+  }, [dmId]);
   const dm = dmId === null ? null : dms?.find(d => d.id === dmId) ?? null;
   // A voice channel shows the voice view (web-3): no timeline, no composer.
   const voiceChannel = channel !== null && isVoice(channel) ? channel : null;
@@ -1270,13 +1275,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       <ActionMenu label={t('admin.open')} focusKey="admin-open" open={headMenu === 'server'} onOpenChange={open => setHeadMenu(open ? 'server' : null)}
         triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
         items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') },
-          // Wave B (the prototype's head has no "+"): the new-channel action is the ⌄ menu's, while the server has no categories.
-          ...(canManageChannels && categoryRows.length === 0 && voiceHere ? [{ id: 'newChannel', label: t('create.channel.open') }] : []),
           { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
           ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: serverMode === m.value, group: t('notify.title') }))]}
         onSelect={item => {
           if (item === 'settings') { openAdmin(null); return; }
-          if (item === 'newChannel') { setChannelParent(null); setChannelOpen(true); return; }
           if (serverHex === null) return;
           if (item === 'mute') { client.call({ m: 'setSetting', key: SETTINGS.muteCommunity(serverHex), value: serverMuted ? null : '1' }).catch(report); return; }
           const value = item.slice(5);
@@ -1297,6 +1299,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       </>
     ) : !voiceHere ? undefined : (
       <>
+        {canManageChannels && categoryRows.length === 0 ? (
+          <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
+        ) : null}
         {serverMenu}
       </>
     );
@@ -1322,8 +1327,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           personMenu: (roomId, person) => afkChannels.has(roomId) ? undefined : personMenu(voiceCtx, voiceRows.find(r => r.id === roomId)?.name ?? '',
             { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id, roomId,
               ...(person.userId === self?.id ? { title: t('callStage.tile.you', { name: person.name }) } : {}) }) }}
-        activeId={onDms ? (dmId ?? (phone ? dmRows[0]?.id ?? null : null))
-          : channelId ?? (phone && communityId !== null ? (lastOpened.current.get(communityId) ?? defaultChannel(ordered)?.id ?? null) : null)}
+        activeId={onDms ? dmId : channelId}
+        {...(phone ? { selectedId: onDms ? lastOpened.dm ?? dmRows[0]?.id ?? null
+          : communityId === null ? null : lastOpened.channels[communityId] ?? defaultChannel(ordered)?.id ?? null } : {})}
         onSelect={id => {
           void navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
           // R24, wave B: a click or tap on a voice row opens it and joins (the prototype's phone row has no join icon).
@@ -1428,8 +1434,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const memberSheet = usePhoneSheet('members', phone && membersShown, () => setMembersOpen(false));
   // A thread (or the list of threads) is a sheet of its own on a phone, with the same history rules.
   const threadSheet = usePhoneSheet('thread', phone && sideNow !== null, () => setSide(null));
-  // The prototype's one aside: a thread takes the Members sheet's place on a phone and closing it does not bring Members back.
-  useEffect(() => { if (phone && sideNow !== null) setMembersOpen(false); }, [phone, sideNow]);
+
   const closeSide = phone ? threadSheet.close : () => setSide(null);
   // Task 9 fix rounds 1-2 (Jonas): the member menu's Mention puts "@username " at the end of the open text channel's draft and
   // focuses the composer. Only while that composer can send (no timeout, block or failed open). An aside drawn over the

@@ -10,15 +10,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
    person's colour, the 48px avatar 24px up with a 4px ring, the name 14px/700, "@handle · status" 11px --fg-2, the bio 11.5px. */
 .dw-profile { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
 [data-layout="phone"] .dw-profile, .d-settings-frame[data-layout="phone"] .dw-profile { grid-template-columns: minmax(0, 1fr); }
-.dw-profile-form { display: grid; gap: 14px; }
+.dw-profile-form { position: relative; display: grid; gap: 14px; }
 /* Fix round 2: the prototype's profile fields are 36px of content inside a 1px edge (38), and the bio's three rows sit in 10px
    12px of padding; the preview's bio keeps its 8px top margin over the section's paragraph reset. */
 .dw-profile-form .d-text-field__input { height: 2.375rem; }
 .dw-profile-form textarea.d-text-field__input { height: auto; padding: 10px 12px; line-height: 1.5; }
 .dw-profile-form__note { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
-.dw-profile-form__saved { margin: 0; min-height: 1lh; font-size: var(--text-xs); color: var(--fg-3); }
-/* Wave B (gap 102): while it says nothing the live region takes no row, so the hint sits the prototype's 24px over the preview card. */
-.dw-profile-form__saved:empty { min-height: 0; height: 0; margin-top: -14px; }
+.dw-profile-form__saved { position: absolute; top: 100%; inset-inline: 0; margin: 0; padding-top: 4px; font-size: var(--text-xs); color: var(--fg-3); }
+/* Wave B (gap 102): the "Saved" live region hangs in the 24px gap under the form, so the hint sits the prototype's 24px over the card
+   and nothing moves when it says something. */
 .dw-profile-preview { overflow: hidden; background: var(--bg-3); border: 1px solid var(--control-edge-field); border-radius: 10px; }
 .dw-profile-preview__band { height: 52px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 32%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 18%)); }
 .dw-profile-preview__body { padding: 0 14px 14px; margin-top: -24px; }
@@ -282,11 +282,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-you__row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .dw-you__row[data-danger="true"] { color: var(--danger); }
 .dw-you__row[data-danger="true"]:hover { background: var(--danger-faint); }
-.dw-you__choice { padding-left: 30px; background: var(--surface-2); }
 .dw-you__label { flex: 1; min-width: 0; }
-.dw-you__value { font-size: var(--text-btn); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-you__dot { display: inline-flex; margin: 0 4px; }
-.dw-you__error { margin: 0; font-size: var(--text-xs); color: var(--danger); }
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {

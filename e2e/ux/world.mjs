@@ -204,8 +204,7 @@ const closeSettings = async () => {
 
 
 const addChannel = async (kind, name) => {
-  // Wave B: "new channel" is an item of the server's ⌄ menu (the prototype's head has no "+").
-  await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'create.channel.open').click());
+  await ada.getByRole('navigation', { name: t('shell.channels.label'), exact: true }).getByRole('button', { name: t('create.channel.open'), exact: true }).click();
   const dialog = byText(ada, 'dialog', 'create.channel.title', { server: SERVER });
   const field = dialog.getByRole('textbox', { name: t('create.channel.name'), exact: true });
   await field.waitFor({ timeout: WAIT });

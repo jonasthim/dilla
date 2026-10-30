@@ -12,7 +12,6 @@ import { Shell } from './Shell.tsx';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { replaceHistoryState } from '../router.ts';
-import { clickNewChannel, hasNewChannel } from '../test/new-channel.ts';
 
 const A = 'a1'.repeat(16);
 const NEW = '5b'.repeat(16);
@@ -166,20 +165,19 @@ describe('a fresh instance (flow 07)', () => {
       const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
       const tile = within(rail()).getByRole('button', { name: 'add a server' });
       // The add dialog's choice closes it (focus back on the "+" tile) and opens the flow, so the tile is the flow's opener too.
-      tile.focus();
-      await user.keyboard('{Enter}');
-      await user.click(within(screen.getByRole('dialog', { name: 'add a server' })).getByRole('button', { name: 'new server' }));
-      expect(screen.getByRole('dialog', { name: 'Start a server' })).toBeInTheDocument();
-      expect(screen.getByRole('textbox', { name: 'Server name' })).toHaveFocus();
-      await user.keyboard('{Escape}');
-      expect(screen.queryByRole('dialog')).toBeNull();
-      expect(tile).toHaveFocus();
-      // Wave B: the new-channel action is an item of the server's ⌄ menu, not a button of its own.
-      await clickNewChannel(user);
-      expect(screen.getByRole('dialog', { name: 'New channel in Midgard' })).toBeInTheDocument();
-      expect(screen.getByRole('textbox', { name: 'Channel name' })).toHaveFocus();
-      await user.keyboard('{Escape}');
-      expect(screen.queryByRole('dialog')).toBeNull();
+      for (const [opener, title, field] of [
+        [tile, 'Start a server', 'Server name'],
+        [screen.getByRole('button', { name: 'new channel' }), 'New channel in Midgard', 'Channel name'],
+      ] as const) {
+        opener.focus();
+        await user.keyboard('{Enter}');
+        if (opener === tile) await user.click(within(screen.getByRole('dialog', { name: 'add a server' })).getByRole('button', { name: 'new server' }));
+        expect(screen.getByRole('dialog', { name: title })).toBeInTheDocument();
+        expect(screen.getByRole('textbox', { name: field })).toHaveFocus();
+        await user.keyboard('{Escape}');
+        expect(screen.queryByRole('dialog')).toBeNull();
+        expect(opener).toHaveFocus();
+      }
     } finally {
       show.mockRestore();
       close.mockRestore();
@@ -198,23 +196,24 @@ describe('a fresh instance (flow 07)', () => {
 });
 
 describe('a server’s actions (flow 07)', () => {
-  it('the header holds the server settings gear alone (leave lives in settings); the owner has "new channel" in its menu, a member none', async () => {
-    const { view, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
+  it('the header holds the server settings gear alone (leave lives in settings); the owner has the "+" in the list header, a member none', () => {
+    const { view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     const head = document.querySelector('.d-channel-list__head')!;
-    expect(within(head as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
-    expect(await hasNewChannel(user)).toBe(true);
+    expect(within(head as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['new channel', 'server settings']);
+    const panel = screen.getByRole('navigation', { name: 'channels' });
+    expect(within(panel).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
     view.unmount();
-    const member = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
+    setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
     expect(within(document.querySelector('.d-channel-list__head') as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
     expect(screen.queryByRole('button', { name: 'leave server' })).toBeNull();
-    expect(await hasNewChannel(member.user)).toBe(false);
+    expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
   });
 
-  it('"new channel" is not on the direct messages list behind the @ tile', async () => {
+  it('the "+" is not on the direct messages list behind the @ tile', async () => {
     const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
-    expect(await hasNewChannel(user)).toBe(true);
+    expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
     await user.click(within(rail()).getByRole('button', { name: 'direct messages' }));
     expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
   });
@@ -225,7 +224,7 @@ describe('a server’s actions (flow 07)', () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', items: [], hasEarlier: false }));
     expect(screen.getByText('nothing here yet. Messages sent before this browser joined are not shown.')).toBeInTheDocument();
-    await clickNewChannel(user);
+    await user.click(screen.getByRole('button', { name: 'new channel' }));
     await user.type(screen.getByRole('textbox', { name: 'Channel name' }), 'Random{Enter}');
     await waitFor(() => expect(path()).toBe(`/c/${A}/${RAND}`));
     act(() => fake.set(`timeline:${RAND}`, { channelId: RAND, group: 'active', items: [], hasEarlier: false }));
@@ -235,7 +234,7 @@ describe('a server’s actions (flow 07)', () => {
 
   it('adds a channel and opens it', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
-    await clickNewChannel(user);
+    await user.click(screen.getByRole('button', { name: 'new channel' }));
     expect(screen.getByRole('dialog', { name: 'New channel in Midgard' })).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Channel name' }), 'Random{Enter}');
     await waitFor(() => expect(path()).toBe(`/c/${A}/${RAND}`));
@@ -252,7 +251,7 @@ describe('a server’s actions (flow 07)', () => {
     const answer = worker(fake);
     // The instance makes the channel, but the list that holds it has not arrived yet.
     fake.handler = c => (c.m === 'createChannel' ? Promise.resolve({ channelId: RAND }) : answer(c));
-    await clickNewChannel(user);
+    await user.click(screen.getByRole('button', { name: 'new channel' }));
     await user.type(screen.getByRole('textbox', { name: 'Channel name' }), 'Random{Enter}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await user.click(screen.getByRole('button', { name: /lobby/ }));
