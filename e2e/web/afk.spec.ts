@@ -552,9 +552,10 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   await expect(roomPeople(b.page, 'general').filter({ hasText: OWNER })).toHaveCount(0, { timeout: WAIT });
   await expect(stage(a.page)).not.toContainText(copy('voice.removed'));
   expect(a.afkPosts - posts, 'Ada’s client asks for no call or token in the AFK channel').toBe(0);
-  // The AFK page (Jonas, concern 2): it lists the roster with her in it, and, away, the line in place of go AFK.
-  await expect(stage(a.page).locator('.dw-afk-roster .d-voice-row__person').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
-  await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible();
+  // The AFK page (wave B task 4): away, the title says so and Come back stands in place of Go AFK; the roster is the row's, not the page's.
+  await expect(stage(a.page).getByText(copy('afk.title.you'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(button(stage(a.page), 'afk.comeBack')).toBeVisible();
+  await expect(stage(a.page).locator('.d-voice-row__person')).toHaveCount(0);
   await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
   await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK channel with its away roster');
@@ -625,7 +626,7 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0);
   await expect(stage(b.page).locator('.d-call-stage__notice')).toHaveAttribute('data-kind', 'info');
   for (const r of [copy('voice.removed'), copy('voice.removedNotMember')]) await expect(b.page.getByText(r)).toHaveCount(0);
-  await expect(stage(ph.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(stage(ph.page).getByText(copy('afk.title.you'), { exact: true })).toBeVisible({ timeout: WAIT });
   await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toHaveCount(0, { timeout: WAIT });
   await sweepRan(b);
@@ -757,13 +758,13 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   await expectAccessible(b.page, 'the channel list with the AFK channel');
   // The AFK page opened by its path (no click on the row): nobody is away yet, and go AFK stands in place of join voice.
   await a.page.goto(`/c/${communityId}/${afkId}`);
-  await expect(stage(a.page).getByText(copy('afk.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(stage(a.page).getByText(copy('afk.title.nobody'), { exact: true })).toBeVisible({ timeout: WAIT });
   await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK page with nobody away');
   const posts = a.afkPosts;
   await button(stage(a.page), 'afk.go').click();
   for (const p of [a, b]) await expect(awayPeople(p.page, 'AFK').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
-  await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeFocused({ timeout: WAIT });
+  await expect(button(stage(a.page), 'afk.comeBack')).toBeFocused({ timeout: WAIT });
   await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0);
   expect(a.afkPosts - posts, 'go AFK asks for no call or token').toBe(0);

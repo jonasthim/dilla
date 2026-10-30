@@ -556,6 +556,7 @@ export const en = {
   'voice.open': 'voice {name}',
   'voice.count': '{n} in voice',
   'voice.header.idle': 'voice channel',
+  'voice.header.afk': 'away list',
   'voice.join': 'join voice',
   'voice.row.joined': 'connected',
   'voice.afk.count': '{n} in AFK',

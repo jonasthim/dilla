@@ -407,3 +407,30 @@ describe('CallStage', () => {
     });
   });
 });
+
+describe('CallStage: the AFK page (wave B task 4)', () => {
+  const afk = { title: 'Nobody is away', text: 'After 15 minutes idle in voice, a computer is moved here. Phones are never moved.', action: { label: 'Go AFK', onAction: vi.fn() } };
+  const page = (more: Partial<CallStageProps> = {}) => (
+    <CallStage title="voice AFK" tiles={[]} code={null} notice={null} controls={null} outgoing={null} labels={labels} afk={afk} {...more} />
+  );
+  it('draws the moon tile, the title, the explainer and one button; no tiles, no call bar, no list', () => {
+    const { container } = render(page());
+    expect(container.querySelector('.d-call-stage__afk-tile [data-icon="moon"]')).not.toBeNull();
+    expect(screen.getByText('Nobody is away')).toBeInTheDocument();
+    expect(screen.getByText(afk.text)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Go AFK' })).toBeInTheDocument();
+    expect(container.querySelector('.d-call-stage__controls, .d-call-stage__tiles, .d-call-stage__empty')).toBeNull();
+    expect(screen.queryByRole('list')).toBeNull();
+  });
+  it('the button runs its action; the title is a status so a change is announced', () => {
+    const onAction = vi.fn();
+    render(page({ afk: { ...afk, action: { label: 'Come back', onAction } } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Come back' }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Nobody is away')).toHaveAttribute('role', 'status');
+  });
+  it('passes axe', async () => {
+    const { container } = render(page());
+    expect((await axe(container, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })).violations).toEqual([]);
+  });
+});

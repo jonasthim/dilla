@@ -132,7 +132,7 @@ export type { VoiceDockProps } from './VoiceDock/VoiceDock.tsx';
 export { CallControls, VOICE_ICONS, VOICE_SHORTCUTS, voiceWhy } from './CallControls/CallControls.tsx';
 export type { CallControlsProps, VoiceWhyLabels } from './CallControls/CallControls.tsx';
 export { CallStage } from './CallStage/CallStage.tsx';
-export type { CallStageProps, CallStageNotice, CallStagePreview } from './CallStage/CallStage.tsx';
+export type { CallStageProps, CallStageNotice, CallStagePreview, CallStageAfk } from './CallStage/CallStage.tsx';
 export { AudioMeter } from './AudioMeter/AudioMeter.tsx';
 export type { AudioMeterProps } from './AudioMeter/AudioMeter.tsx';
 export { VoiceSettings } from './VoiceSettings/VoiceSettings.tsx';

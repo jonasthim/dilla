@@ -33,3 +33,10 @@
 @media (prefers-reduced-motion: reduce) { .d-action-menu__popup { animation: none; } }
 /* Signal task 10: a labelled group of items (a notify mode's radios) keeps the popup's one column. */
 .d-action-menu__group { display: grid; }
+/* Wave B task 4 (the prototype's person menu): a trailing hint (10px --fg-faint), the "Move to" heading (10px 600, 0.12em, uppercase,
+   --fg-3) and its room rows (30px, 12px in on the left, the glyph at 13px, 12px --fg-chip; the count is the hint at 10.5px). */
+.d-action-menu__hint { font-size: var(--text-micro); color: var(--fg-faint); }
+.d-action-menu__heading { padding: 6px 8px 2px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-action-menu__item[data-room="true"] { height: 30px; padding: 0 8px 0 12px; color: var(--fg-chip); }
+.d-action-menu__item[data-room="true"] .d-action-menu__icon { opacity: 1; }
+.d-action-menu__item[data-room="true"] .d-action-menu__hint { font-size: var(--text-meta); }

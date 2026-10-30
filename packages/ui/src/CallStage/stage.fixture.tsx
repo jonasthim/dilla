@@ -71,14 +71,32 @@ const view = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePart
 });
 const labels = (name: string): CallTileProps['labels'] => ({ state: STAGE_STATE, volume: `volume for ${name}`, volumeValue: '{n} %' });
 
-/** The person menu VoiceView gives a tile (fix round 1): the volume (not your own), Mute for me, Copy username. */
-export function tileMenu(name: string, o: { own?: boolean; bot?: boolean; screen?: boolean; silent?: boolean; volume?: number; muted?: boolean; title?: string } = {}): TileMenu {
+/**
+ * The person menu VoiceView gives a tile (wave B task 4). Yourself: Mute and Deafen with their keys, Profile, Move to the other
+ * voice channels, Leave voice. Another person: the volume, Profile, Message, Mute for me, Copy username (no Mention in the voice
+ * view, which has no composer; `roles` adds Edit roles for a viewer with Manage roles). A bot or a shared screen keeps the volume,
+ * Mute for me and Copy username.
+ */
+export function tileMenu(name: string, o: { own?: boolean; bot?: boolean; screen?: boolean; silent?: boolean; volume?: number; muted?: boolean; title?: string; mention?: boolean; roles?: boolean } = {}): TileMenu {
   const volume = o.volume ?? 100;
+  const head = { person: { name: o.title ?? name, avatarName: name, where: 'in harbour', ...(o.bot === true ? { bot: true } : {}) }, label: `actions for ${name}`, onSelect: noop };
+  if (o.own === true) {
+    return { ...head, items: [
+      { id: 'mute', label: 'Mute', icon: 'mic-off' as const, hint: 'Ctrl+Shift+M' }, { id: 'deafen', label: 'Deafen', icon: 'headphone-off' as const, hint: 'Ctrl+Shift+D' },
+      { id: 'profile', label: 'Profile', icon: 'user' as const }, { id: 'leave', label: 'Leave voice', icon: 'phone-off' as const, danger: true, sep: true }],
+    move: { label: 'Move to', rooms: [{ id: 'lounge', name: 'lounge', count: 2 }, { id: 'raid', name: 'raid', count: 0 }], onMove: noop } };
+  }
+  const person = o.bot !== true && o.screen !== true && o.silent !== true;
   return {
-    person: { name: o.title ?? name, avatarName: name, where: 'in harbour', ...(o.bot === true ? { bot: true } : {}) }, label: `actions for ${name}`, onSelect: noop,
-    ...(o.own === true || o.silent === true ? {} : { volume: { label: o.screen === true ? 'Stream volume' : 'User volume', value: volume, valueText: `${String(volume)}%`, onChange: noop } }),
-    items: [...(o.own === true || o.silent === true ? [] : [{ id: 'mute', label: 'Mute for me', icon: 'volume-x' as const, check: o.muted === true }]),
-      { id: 'copy', label: 'Copy username', icon: 'copy' as const }],
+    ...head,
+    ...(o.silent === true ? {} : { volume: { label: o.screen === true ? 'Stream volume' : 'User volume', value: volume, valueText: `${String(volume)}%`, onChange: noop } }),
+    items: [
+      ...(person ? [{ id: 'profile', label: 'Profile', icon: 'user' as const }, { id: 'message', label: 'Message', icon: 'message-square' as const }] : []),
+      ...(person && o.mention === true ? [{ id: 'mention', label: 'Mention', icon: 'at-sign' as const }] : []),
+      ...(o.silent === true ? [] : [{ id: 'mute', label: 'Mute for me', icon: 'volume-x' as const, check: o.muted === true }]),
+      { id: 'copy', label: 'Copy username', icon: 'copy' as const },
+      ...(person && o.roles === true ? [{ id: 'roles', label: 'Edit roles', icon: 'shield' as const }] : []),
+    ],
   };
 }
 

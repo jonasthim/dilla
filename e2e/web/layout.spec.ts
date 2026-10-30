@@ -277,7 +277,7 @@ async function expectBar(page: Page, tag: string, name: string, bar: string, wan
 
 const nav = (page: Page) => channelsNav(page);
 /** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
-const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
+const AFK_ACTION = '.dw-voice-stage .d-call-stage__afk-action';
 async function makeCategory(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
@@ -1006,7 +1006,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     // AW5: the AFK channel hosts no call, so its preview has no tiles.
     await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
     const join = (await boxes(page, AFK_ACTION))[0];
-    const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
+    const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title, .d-call-stage__afk-title, .d-call-stage__afk-text');
     expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
     if (join !== undefined && texts.length > 0) {
       const lowest = Math.max(...texts.map(b => b.b));
@@ -1028,7 +1028,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     const afkAction = page.locator(AFK_ACTION);
     await expect(afkAction).toBeVisible({ timeout: WAIT });
     const pjoin = (await boxes(page, AFK_ACTION))[0];
-    const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty');
+    const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__afk-title, .d-call-stage__afk-text');
     if (pjoin !== undefined && ptexts.length > 0) {
       expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
     }

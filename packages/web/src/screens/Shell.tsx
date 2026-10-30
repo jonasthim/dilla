@@ -257,6 +257,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const members = useSlice(`members:${communityId ?? ''}`);
   // Signal §5.4: the sidebar's stat line counts the server's members who are not offline (the members aside's own presence slice).
   const presence = useSlice(`presence:${communityId ?? ''}`);
+  // Wave B task 4: the composer's mention insert, kept for the voice person menu (set once its binding exists, further down).
+  const mentionRef = useRef<((username: string) => void) | undefined>(undefined);
   const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
   // AW5: every listed server's built-in AFK channel. Nobody joins a call there (R-AW1): a press on it chooses AFK, which
@@ -1078,7 +1080,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onCompare: userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => void navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
-    afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway } : null),
+    afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway, timeoutSeconds: afkHere.timeoutSeconds } : null),
+    // Wave B task 4 (Jonas, Q3): "Come back" leaves the AFK channel for the server's first text channel; typing or posting there
+    // clears the away mark, as it always has.
+    onLeaveAfk: () => { if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: defaultChannel(ordered)?.id ?? null }); },
+    // Wave B task 4: the person menu's Profile, Message, Mention, Edit roles and Move to. These read later bindings (the voice rows,
+    // the composer's mention) only when the menu is built, long after this render's body ran.
+    people: {
+      onProfile: (userId, name, anchor) => { if (anchor !== null) openProfile(userId, anchor, 'mention', name); },
+      onMessage: startDm,
+      get onMention() { return mentionRef.current; },
+      ...(communityId !== null && access?.loaded === true && access.manageRoles
+        ? { onEditRoles: () => void navigate({ name: 'serverSettings', communityId, section: 'roles', from: null }) } : {}),
+      rooms: excludeId => voiceRows.filter(r => !afkChannels.has(r.id) && r.id !== excludeId)
+        .map(r => ({ id: r.id, name: r.name, count: new Set((r.room?.participants ?? []).map(x => x.userId)).size })),
+      onMove: id => call.join(id),
+    },
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -1292,7 +1309,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); },
           // Fix round 1 (Jonas): an occupant's person menu (right-click, long press, Shift+F10); the AFK roster is nobody in voice.
           personMenu: (roomId, person) => afkChannels.has(roomId) ? undefined : personMenu(voiceCtx, voiceRows.find(r => r.id === roomId)?.name ?? '',
-            { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id,
+            { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id, roomId,
               ...(person.userId === self?.id ? { title: t('callStage.tile.you', { name: person.name }) } : {}) }) }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => {
@@ -1415,6 +1432,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     else if (document.querySelector('.d-app-shell__backdrop') !== null) setMembersOpen(false);
     setMentionTick(n => n + 1);
   } : undefined;
+  mentionRef.current = mentionFromMembers;
   // Where focus goes when the sheet or drawer closes: the control that opened it (kept from the first open, not from a list row),
   // else the root's message row, else the header's button.
   const sideOpener = useRef<Element | null>(null);

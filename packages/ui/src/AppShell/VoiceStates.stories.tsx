@@ -125,9 +125,9 @@ const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgo
         text: p.empty === true ? t('callStage.preview.nobody') : t('callStage.preview.many', { names: ['ada', 'bo', 'helper'].join(t('callStage.preview.and')) }),
         people: p.empty === true ? [] : [ADA, BO, HELPER].map(v => ({ id: v.deviceId, name: v.name, speaking: v.speaking })) } } : {})}
       {...(p.joined !== false && p.dm !== true ? { bar: { name: 'harbour', stats: '24 ms · ↑ 38 ↓ 71 kb/s' } } : {})}
-      controls={p.afk === true ? <div className="dw-afk-page"><Button variant="accent" className="dw-voice-join">{t('afk.go')}</Button></div>
-        : p.joined === false ? null : controls({ paused: p.paused, dm: p.dm })}
-      labels={p.afk === true ? { ...STAGE_LABELS, empty: t('afk.empty') } : STAGE_LABELS} />
+      {...(p.afk === true ? { afk: { title: t('afk.title.nobody'), text: t('afk.explain', { minutes: 15 }), action: { label: t('afk.go'), onAction: noop } } } : {})}
+      controls={p.afk === true || p.joined === false ? null : controls({ paused: p.paused, dm: p.dm })}
+      labels={STAGE_LABELS} />
   </div>
 );
 
@@ -228,16 +228,18 @@ function contentBox(el: HTMLElement, top?: number): DOMRect {
 }
 async function expectEmptyCentred(root: HTMLElement, story: string, phone: boolean) {
   await nextFrame(); await nextFrame();
+  // The AFK page's d-up entrance (8px) must have ended before anything is measured.
+  await Promise.all(root.getAnimations({ subtree: true }).filter(an => an.effect?.getComputedTiming().iterations !== Infinity).map(an => an.finished.catch(() => undefined)));
   const stageEl = root.querySelector<HTMLElement>('.d-call-stage');
-  const text = root.querySelector<HTMLElement>('.d-call-stage__preview-text, .d-call-stage__empty');
-  const join = root.querySelector<HTMLElement>('.d-call-stage__join, .d-call-stage__controls .d-btn');
+  const text = root.querySelector<HTMLElement>('.d-call-stage__preview-text, .d-call-stage__empty, .d-call-stage__afk-text');
+  const join = root.querySelector<HTMLElement>('.d-call-stage__join, .d-call-stage__controls .d-btn, .d-call-stage__afk-action');
   if (!stageEl || !text || !join) throw new Error(`${story}: the stage, the empty text or the join button is missing`);
   const preview = text.closest<HTMLElement>('.d-call-stage__preview');
   const under = root.querySelector<HTMLElement>('.d-call-stage__bar')?.getBoundingClientRect().bottom;
   const m = centreOf(preview !== null ? contentBox(preview) : contentBox(stageEl, under));
   const tr = text.getBoundingClientRect(); const jr = join.getBoundingClientRect();
   // An outgoing line, when a stage has one, leads the group, above the message.
-  const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing')?.getBoundingClientRect();
+  const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing, .d-call-stage__afk-tile')?.getBoundingClientRect();
   if (lead && Math.abs(centreOf(lead).x - m.x) > 2) throw new Error(`${story}: the lead line is not centred across (main ${String(m.x)}, line ${String(centreOf(lead).x)})`);
   const top = lead?.top ?? tr.top;
   const group = centreOf(new DOMRect(Math.min(tr.left, jr.left), top, Math.max(tr.right, jr.right) - Math.min(tr.left, jr.left), jr.bottom - top));
@@ -256,7 +258,7 @@ export const EmptyNotJoined: Story = {
 };
 /** The AFK page with nobody away (web3.11: it hosts no call): 'Nobody is away.' and go AFK are one centred group. */
 export const EmptyNotJoinedAfk: Story = {
-  render: () => <Screen header={null} main={stage({ joined: false, empty: true, afk: true, header: <ChannelHeader kind="voice" name="AFK" /> })} />,
+  render: () => <Screen header={null} main={stage({ joined: false, empty: true, afk: true, header: <ChannelHeader kind="afk" name="AFK" topic="away list" /> })} />,
   play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoinedAfk', false); },
 };
 /** The same on a phone, the pushed view (the test runner visits it at 360 x 740). */
