@@ -82,7 +82,7 @@ func runInteractionRecovery(ctx context.Context, cfg config, stdout io.Writer, r
 		return fmt.Errorf("runtime credential unavailable")
 	}
 	defer clear(credential)
-	api, err := client.New(client.Config{BaseURL: cfg.BaseURL, InstanceID: cfg.InstanceID, AllowLoopbackHTTP: cfg.AllowLoopbackHTTP, Timeout: 30 * time.Second})
+	api, err := client.New(client.Config{BaseURL: cfg.BaseURL, InstanceID: cfg.InstanceID, AllowLoopbackHTTP: cfg.AllowLoopbackHTTP, Timeout: 30 * time.Second, RateLimits: cfg.RateLimits})
 	if err != nil {
 		return fmt.Errorf("bot HTTP client configuration is invalid")
 	}
@@ -125,7 +125,11 @@ func runInteractionRecovery(ctx context.Context, cfg config, stdout io.Writer, r
 			_ = nativeClient.Close()
 			continue
 		}
-		session, err := api.Session(stored.Token())
+		if identity.Device == nil {
+			_ = nativeClient.Close()
+			continue
+		}
+		session, err := api.SessionForDevice(stored.Token(), *identity.Device)
 		if err != nil {
 			_ = nativeClient.Close()
 			return fmt.Errorf("installation %s device session is invalid", installation.ID)

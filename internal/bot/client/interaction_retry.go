@@ -2,38 +2,72 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"math/big"
 	"net/http"
 	"time"
 )
 
-// Proof refreshes can exceed the shared session write burst when an installation
-// has many private groups. Only retry an explicit, definitive rate-limit refusal:
-// the middleware has not executed the handler. Preserve the exact request binding
-// and never retry an ambiguous outcome or an authorization refusal.
+// RateLimitError recognizes only definitive middleware refusals. Retrying them
+// preserves the exact request binding; ambiguous outcomes keep their old behavior.
+func RateLimitError(err error) *APIError {
+	var refusal *APIError
+	var transient func(error) bool
+	transient = func(err error) bool {
+		if err == nil {
+			return true
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, cause := range joined.Unwrap() {
+				if !transient(cause) {
+					return false
+				}
+			}
+			return true
+		}
+		if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+			return transient(wrapped.Unwrap())
+		}
+		var api *APIError
+		if errors.As(err, &api) && api.Status == http.StatusTooManyRequests && api.Code == "E_RATE_LIMITED" && api.Outcome == OutcomeDefinitive {
+			refusal = api
+			return true
+		}
+		return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	}
+	if transient(err) {
+		return refusal
+	}
+	return nil
+}
+
+func retryDelay(refusal *APIError, attempt int) time.Duration {
+	if refusal.RetryAfterMS != nil {
+		// Clamp before converting untrusted uint64 milliseconds to a signed duration.
+		const maxMS = uint64((1<<63 - 1) / int64(time.Millisecond))
+		return time.Duration(min(*refusal.RetryAfterMS, maxMS)) * time.Millisecond
+	}
+	base := min(250*time.Millisecond*time.Duration(1<<min(attempt, 6)), 10*time.Second)
+	jitter, _ := rand.Int(rand.Reader, big.NewInt(int64(base/4)+1))
+	if jitter != nil {
+		base += time.Duration(jitter.Int64())
+	}
+	return min(base, 10*time.Second)
+}
+
+func waitRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(max(delay, time.Millisecond))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (s *Session) interactionProofRequest(ctx context.Context, path string, request []byte, maxBytes int64, mutation bool) ([]byte, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, s.c.timeout)
-	defer cancel()
-	for attempt := 0; ; attempt++ {
-		raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, request, maxBytes, mutation)
-		var refusal *APIError
-		if attempt >= 3 || !errors.As(err, &refusal) || refusal.Status != http.StatusTooManyRequests ||
-			refusal.Code != "E_RATE_LIMITED" || refusal.Outcome != OutcomeDefinitive || refusal.RetryAfterMS == nil || *refusal.RetryAfterMS > 5000 {
-			return raw, err
-		}
-		wait := time.Duration(*refusal.RetryAfterMS) * time.Millisecond
-		if wait < 100*time.Millisecond {
-			wait = 100 * time.Millisecond
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, request, maxBytes, mutation)
+	return raw, err
 }

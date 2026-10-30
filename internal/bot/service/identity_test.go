@@ -247,7 +247,7 @@ func (h *fakeIdentityHTTP) Challenge(context.Context, id.ID) (client.SessionChal
 func (h *fakeIdentityHTTP) EstablishSession(_ context.Context, device id.ID, nonce []byte, purpose uint64, _ []byte, _ any, _ []byte) (client.DeviceSession, error) {
 	return client.DeviceSession{Token: "secret-bearer", Scope: 0, UserID: h.user, DeviceID: device, Expires: 1_800_001_000, IdleExpires: 1_800_001_000, Generation: 1}, nil
 }
-func (h *fakeIdentityHTTP) NewSession(string) (lifecycleSession, error) { return h.session, nil }
+func (h *fakeIdentityHTTP) NewSession(string, id.ID) (lifecycleSession, error) { return h.session, nil }
 
 type fakeIdentitySession struct {
 	installation        client.Installation

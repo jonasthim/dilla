@@ -75,7 +75,10 @@ func newCommandIntakePoller(membership installationMembership, trust intakeTrust
 		if err := subscribe(ctx); err != nil {
 			return err
 		}
-		_, err = events.DrainHolding(ctx, unrefreshed)
+		result, err := events.DrainHolding(ctx, unrefreshed)
+		if err == nil && result.RateLimited != nil {
+			return result.RateLimited
+		}
 		return err
 	}
 }
@@ -101,7 +104,10 @@ func newInteractionIntakePoller(sync interactionGroupSync, trust intakeTrust, se
 		if err != nil {
 			return err
 		}
-		_, err = events.DrainHolding(ctx, unrefreshed)
+		result, err := events.DrainHolding(ctx, unrefreshed)
+		if err == nil && result.RateLimited != nil {
+			return result.RateLimited
+		}
 		return err
 	}
 }

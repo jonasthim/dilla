@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -85,7 +86,8 @@ type GroupEventHandlerError struct {
 func (e *GroupEventHandlerError) Error() string {
 	return fmt.Sprintf("%s at delivery %d: %v", ErrGroupEventHandler.Error(), e.DeliveryID, e.Err)
 }
-func (e *GroupEventHandlerError) Unwrap() []error { return []error{ErrGroupEventHandler, e.Err} }
+func (e *GroupEventHandlerError) Unwrap() error        { return e.Err }
+func (e *GroupEventHandlerError) Is(target error) bool { return target == ErrGroupEventHandler }
 
 // UndeliverableGroupEvent is implemented by a handler error that proves the event can never be
 // handled (for example, its group is gone or outside interaction scope, or its saved read was
@@ -124,6 +126,7 @@ type GroupEventPollResult struct {
 	Skipped             []SkippedGroupEvent // undeliverable events acknowledged without handling
 	AcknowledgedThrough uint64
 	More                bool
+	RateLimited         *client.APIError // pending work deferred without a failed handling pass
 }
 
 // GroupEventPoller drains one bounded page of the helper's durable event queue.
@@ -172,7 +175,15 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			return result, errors.New("invalid group event binding or order")
 		}
 		var skipped *SkippedGroupEvent
-		if err := handler.HandleGroupEvent(ctx, event); err != nil {
+		handlingErr := handler.HandleGroupEvent(ctx, event)
+		if refusal := client.RateLimitError(handlingErr); refusal != nil {
+			// A middleware refusal did not execute the operation. Leave the queue and
+			// its durable failure/hold history untouched, even at the age limit.
+			result.More = true
+			result.RateLimited = refusal
+			return result, nil //nolint:nilerr // The refusal is reported as pending work in result.RateLimited, not a failed pass.
+		}
+		if err := handlingErr; err != nil {
 			if ctx.Err() != nil {
 				// Never skip, and never start an event's age, on a cancelled pass.
 				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}

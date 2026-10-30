@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
@@ -195,6 +196,15 @@ func (r *interactionEventRuntime) DrainHolding(ctx context.Context, unrefreshed 
 			total.AcknowledgedThrough = result.AcknowledgedThrough
 		}
 		total.More = result.More
+		refusal := result.RateLimited
+		if refusal == nil {
+			refusal = client.RateLimitError(err)
+		}
+		if refusal != nil {
+			total.More = true
+			total.RateLimited = refusal
+			return total, nil
+		}
 		if err != nil {
 			return total, err
 		}

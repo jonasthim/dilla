@@ -124,6 +124,7 @@ type membershipFakeSession struct {
 	interactionBinding     native.InteractionGroupBinding
 	interactionBotDevice   id.ID
 	interactionGroup       id.ID
+	interactionInfoCalls   int
 	interactionInfo        client.GroupInfo
 	interactionPages       map[sourcePageKey]client.Page
 	interactionPageErr     error
@@ -175,6 +176,7 @@ func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupI
 	return client.GroupInfo{NextSequence: 1}, nil
 }
 func (s *membershipFakeSession) BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error) {
+	s.interactionInfoCalls++
 	if s.interactionInfo.NextSequence != 0 {
 		return s.interactionInfo, nil
 	}
@@ -709,5 +711,46 @@ func TestMembershipSyncsOnlyTheNamedInteractionGroup(t *testing.T) {
 	// The full sweep would also sync the other group, which this fake session refuses.
 	if _, err := r.reconcileInteractionGroupsOnce(context.Background(), s); err == nil {
 		t.Fatal("the full sweep did not reach the other group; the test no longer proves the narrowing")
+	}
+}
+
+func TestInteractionIdlePollingBacksOffButGatewayBypasses(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	now := time.Unix(1800000000, 0)
+	r.source.options.now = func() time.Time { return now }
+	group, participant := membershipID(21), membershipID(22)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community, BotUser: membershipID(23), ParticipantUser: participant, ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	schedule := r.idlePolls
+	for range 10 {
+		if _, err := r.reconcileInteractionGroupsOnce(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(100 * time.Millisecond)
+		r2, err := newMembershipReconciler(n, sourceSyncOptions{now: func() time.Time { return now }}, membershipOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r2.UseInteractionPollSchedule(schedule)
+		r = r2
+	}
+	if s.interactionInfoCalls != 1 {
+		t.Fatalf("idle info polls=%d; want 1", s.interactionInfoCalls)
+	}
+	if _, err := r.reconcileInteractionGroupOnce(t.Context(), s, group); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionInfoCalls != 2 {
+		t.Fatal("gateway command was delayed by idle backoff")
+	}
+	now = now.Add(30 * time.Second)
+	if _, err := r.reconcileInteractionGroupsOnce(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionInfoCalls != 3 {
+		t.Fatal("background safety poll did not resume")
 	}
 }

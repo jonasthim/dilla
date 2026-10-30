@@ -12,6 +12,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/gatewayclient"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -42,6 +43,7 @@ func (e *botGatewayEntry) isPrivate(group *id.ID) bool {
 }
 
 type botGatewayRuntime struct {
+	now      func() time.Time
 	ctx      context.Context
 	api      *client.Client
 	loopback bool
@@ -58,13 +60,27 @@ type botGatewayRuntime struct {
 	// (guarded by pendingMu: the per-installation gateway goroutines write it).
 	pendingMu          sync.Mutex
 	pending            map[id.ID]map[id.ID]bool
+	deferred           map[id.ID]time.Time
+	idlePolls          map[id.ID]*service.InteractionPollSchedule
 	budgets            map[id.ID]*interactionBudget // per installation, outliving reconcile passes
 	interactionPollers map[id.ID]func(context.Context, id.ID) error
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
+	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
 }
+
+// InteractionPollSchedule survives the short-lived reconciler built each tick.
+func (r *botGatewayRuntime) InteractionPollSchedule(installation id.ID) *service.InteractionPollSchedule {
+	if r.idlePolls == nil {
+		r.idlePolls = map[id.ID]*service.InteractionPollSchedule{}
+	}
+	if r.idlePolls[installation] == nil {
+		r.idlePolls[installation] = &service.InteractionPollSchedule{}
+	}
+	return r.idlePolls[installation]
+}
+
 func (r *botGatewayRuntime) Wake() <-chan struct{}        { return r.wake }
 func (r *botGatewayRuntime) Interaction() <-chan struct{} { return r.interaction }
 func (r *botGatewayRuntime) notify() {
@@ -136,7 +152,7 @@ func (r *botGatewayRuntime) NextInteraction(now time.Time) (time.Duration, bool)
 		if len(groups) == 0 {
 			continue
 		}
-		if d := r.budgetLocked(installation).delay(now); !found || d < next {
+		if d := max(r.budgetLocked(installation).delay(now), r.deferred[installation].Sub(now)); !found || d < next {
 			next, found = d, true
 		}
 	}
@@ -163,7 +179,7 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 		if len(batch) == interactionGroupCap {
 			break
 		}
-		if r.budgetLocked(installation).delay(now) > 0 {
+		if r.budgetLocked(installation).delay(now) > 0 || now.Before(r.deferred[installation]) {
 			continue
 		}
 		for group := range groups {
@@ -189,7 +205,12 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 		}
 	}
 	synced := map[id.ID]int{}
+	blocked := map[id.ID]bool{}
 	for _, w := range batch {
+		if blocked[w.installation] {
+			r.notifyInteraction(w.installation, w.group)
+			continue
+		}
 		poll := r.interactionPollers[w.installation]
 		if poll == nil {
 			r.notify()
@@ -197,8 +218,28 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 		}
 		synced[w.installation]++
 		if err := poll(ctx, w.group); err != nil && ctx.Err() == nil {
-			r.log.Warn("bot interaction command intake deferred", "installation_id", w.installation.String())
-			r.notify()
+			if refusal := client.RateLimitError(err); refusal != nil {
+				logBotRateLimit(r.log, w.installation, refusal)
+				blocked[w.installation] = true
+				completed := now
+				if r.now != nil {
+					completed = r.now()
+				}
+				r.pendingMu.Lock()
+				if r.deferred == nil {
+					r.deferred = map[id.ID]time.Time{}
+				}
+				delay := time.Second
+				if refusal.RetryAfterMS != nil {
+					delay = time.Duration(min(*refusal.RetryAfterMS, uint64((1<<63-1)/int64(time.Millisecond)))) * time.Millisecond
+				}
+				r.deferred[w.installation] = completed.Add(max(delay, interactionSpacing))
+				r.pendingMu.Unlock()
+				r.notifyInteraction(w.installation, w.group)
+			} else {
+				r.log.Warn("bot interaction command intake deferred", "installation_id", w.installation.String())
+				r.notify()
+			}
 		}
 	}
 	total := 0
@@ -309,12 +350,18 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 	for installation := range r.budgets {
 		if !keep[installation] {
 			delete(r.budgets, installation)
+			delete(r.deferred, installation)
 		}
 	}
 	r.pendingMu.Unlock()
 	for installation := range r.interactionPollers {
 		if !keep[installation] {
 			delete(r.interactionPollers, installation)
+		}
+	}
+	for installation := range r.idlePolls {
+		if !keep[installation] {
+			delete(r.idlePolls, installation)
 		}
 	}
 }
@@ -393,7 +440,11 @@ func (r *botGatewayRuntime) SetTextPoller(installation id.ID, poll func(context.
 func (r *botGatewayRuntime) PollText(ctx context.Context) {
 	for installation, poll := range r.pollers {
 		if err := poll(ctx); err != nil && ctx.Err() == nil {
-			r.log.Warn("bot text command intake deferred", "installation_id", installation.String())
+			if refusal := client.RateLimitError(err); refusal != nil {
+				logBotRateLimit(r.log, installation, refusal)
+			} else {
+				r.log.Warn("bot text command intake deferred", "installation_id", installation.String())
+			}
 		}
 	}
 }

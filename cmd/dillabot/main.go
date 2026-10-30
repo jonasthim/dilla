@@ -45,19 +45,20 @@ const maxCredentialBytes = 4096
 var Version = "0.0.0-dev"
 
 type config struct {
-	BaseURL                 string        `toml:"base_url"`
-	InstanceIDText          string        `toml:"instance_id"`
-	RuntimeCredentialFile   string        `toml:"runtime_credential_file"`
-	HelperExecutable        string        `toml:"helper_executable"`
-	WASIModule              string        `toml:"wasi_module"`
-	StateDir                string        `toml:"state_dir"`
-	ReconcileIntervalText   string        `toml:"reconcile_interval"`
-	AllowLoopbackHTTP       bool          `toml:"allow_loopback_http"`
-	SpotifyClientID         string        `toml:"spotify_client_id"`
-	SpotifyRedirectURL      string        `toml:"spotify_redirect_url"`
-	SpotifyHelperExecutable string        `toml:"spotify_helper_executable"`
-	InstanceID              id.ID         `toml:"-"`
-	ReconcileInterval       time.Duration `toml:"-"`
+	RateLimits              client.RateLimits `toml:"rate_limits"`
+	BaseURL                 string            `toml:"base_url"`
+	InstanceIDText          string            `toml:"instance_id"`
+	RuntimeCredentialFile   string            `toml:"runtime_credential_file"`
+	HelperExecutable        string            `toml:"helper_executable"`
+	WASIModule              string            `toml:"wasi_module"`
+	StateDir                string            `toml:"state_dir"`
+	ReconcileIntervalText   string            `toml:"reconcile_interval"`
+	AllowLoopbackHTTP       bool              `toml:"allow_loopback_http"`
+	SpotifyClientID         string            `toml:"spotify_client_id"`
+	SpotifyRedirectURL      string            `toml:"spotify_redirect_url"`
+	SpotifyHelperExecutable string            `toml:"spotify_helper_executable"`
+	InstanceID              id.ID             `toml:"-"`
+	ReconcileInterval       time.Duration     `toml:"-"`
 }
 
 // defaultConfigPath is where install-bot.sh writes the config and where the
@@ -405,6 +406,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		BaseURL: cfg.BaseURL, InstanceID: cfg.InstanceID,
 		AllowLoopbackHTTP: cfg.AllowLoopbackHTTP,
 		Timeout:           30 * time.Second,
+		RateLimits:        cfg.RateLimits,
 		HTTPClient:        &http.Client{Timeout: 30 * time.Second},
 	})
 	if err != nil {
@@ -454,6 +456,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	}
 	installations, err := runtime.ListInstallations(ctx)
 	if err != nil {
+		if refusal := reconciliationRateLimit(err); refusal != nil {
+			logBotRateLimit(logger, id.ID{}, refusal)
+			return nil
+		}
 		return errors.New("installation discovery failed")
 	}
 	activeInstallations := make([]id.ID, 0, len(installations))
@@ -490,16 +496,28 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		musicRegistry.SetMusicDefaults(installation.ID, installation.Widened, installation.MusicVolume, installation.MusicIdleMinutes)
 		if err := statuses.Report(ctx, runtime, installation); err != nil {
+			if refusal := reconciliationRateLimit(err); refusal != nil {
+				logBotRateLimit(logger, installation.ID, refusal)
+				succeeded++
+				continue
+			}
 			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
 		}
-		gateways.SetTextPoller(installation.ID, nil)
-		gateways.SetInteractionPoller(installation.ID, nil)
 		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
 		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
 			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
 		} else {
+			if refusal := reconciliationRateLimit(configErr); refusal != nil {
+				logBotRateLimit(logger, installation.ID, refusal)
+				succeeded++
+				continue
+			}
 			logger.Warn("bot Spotify application setting unavailable", "installation_id", installation.ID.String())
 		}
+		oldTextPoller := gateways.pollers[installation.ID]
+		oldInteractionPoller := gateways.interactionPollers[installation.ID]
+		gateways.SetTextPoller(installation.ID, nil)
+		gateways.SetInteractionPoller(installation.ID, nil)
 		nativeClient, retainedNative := musicRegistry.Native(installation.ID, installation.CommunityID).(*native.Client)
 		if !retainedNative {
 			key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
@@ -538,6 +556,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			reconcileStage = "membership_source_sync"
 			var membership *service.MembershipReconciler
 			membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
+			if ensureErr == nil {
+				membership.UseInteractionPollSchedule(gateways.InteractionPollSchedule(installation.ID))
+			}
 			if ensureErr == nil {
 				var trust *service.SourceTrust
 				trust, ensureErr = service.NewSourceTrust(nativeClient)
@@ -603,7 +624,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 										}
 										if pollErr != nil {
-											logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
+											if reconciliationRateLimit(pollErr) == nil {
+												logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
+											}
 											ensureErr = pollErr
 										} else if pollResult.More {
 											logger.Info("bot structural event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", pollResult.AcknowledgedThrough)
@@ -800,6 +823,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												var eventResult service.GroupEventPollResult
 												if interactionErr == nil {
 													eventResult, interactionErr = eventRuntime.DrainHolding(ctx, unrefreshed)
+													if eventResult.RateLimited != nil {
+														logBotRateLimit(logger, installation.ID, eventResult.RateLimited)
+													}
 												}
 												for _, skip := range eventResult.Skipped {
 													attrs := []any{"installation_id", installation.ID.String(), "delivery_id", skip.DeliveryID, "error", skip.Cause.Error()}
@@ -808,13 +834,17 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													}
 													logger.Warn("bot interaction event skipped as undeliverable", attrs...)
 												}
-												if interactionErr == nil && eventResult.More {
+												if interactionErr == nil && eventResult.More && eventResult.RateLimited == nil {
 													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)
 												}
 											}
 										}
 									}
 								}
+							}
+							if refusal := reconciliationRateLimit(interactionErr); refusal != nil {
+								logBotRateLimit(logger, installation.ID, refusal)
+								interactionErr = nil
 							}
 							if interactionErr != nil {
 								reconcileStage = "interaction_events"
@@ -843,7 +873,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							if utilities != nil {
 								reconcileStage = "utility_services"
 								utilityErr = utilities.maintain(ctx)
-								if utilityErr != nil {
+								if utilityErr != nil && reconciliationRateLimit(utilityErr) == nil {
 									logger.Error("bot utility maintenance paused", "installation_id", installation.ID.String(), "error", utilityErr.Error())
 								}
 							}
@@ -857,10 +887,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				}
 			}
 		}
-		if !membershipReady {
-			_ = musicRegistry.Disable(installation.ID)
-			autoModerationState.Disable(installation.ID)
-		}
+		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry, autoModerationState)
 		if membershipReady && spotifyClientID != "" {
 			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
 			if linkErr == nil {
@@ -876,6 +903,17 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
 			closeErr = nativeClient.Close()
+		}
+		if refusal := reconciliationRateLimit(ensureErr); refusal != nil && closeErr == nil {
+			if gateways.pollers[installation.ID] == nil {
+				gateways.SetTextPoller(installation.ID, oldTextPoller)
+			}
+			if gateways.interactionPollers[installation.ID] == nil {
+				gateways.SetInteractionPoller(installation.ID, oldInteractionPoller)
+			}
+			logBotRateLimit(logger, installation.ID, refusal)
+			succeeded++
+			continue
 		}
 		if ensureErr != nil || closeErr != nil {
 			attrs := []any{"installation_id", installation.ID.String(), "stage", reconcileStage}

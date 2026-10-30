@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,6 +50,7 @@ type Config struct {
 	InstanceID        id.ID
 	AllowLoopbackHTTP bool
 	Timeout           time.Duration
+	RateLimits        RateLimits
 }
 
 type Client struct {
@@ -58,6 +60,10 @@ type Client struct {
 	timeout       time.Duration
 	allowLoopback bool
 	discovered    atomic.Bool
+	rateMu        sync.Mutex
+	rates         RateLimits
+	buckets       map[string]*deviceLimiter
+	devices       map[string]string
 }
 
 type Runtime struct {
@@ -111,8 +117,12 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	rates, err := cfg.RateLimits.defaults()
+	if err != nil {
+		return nil, err
+	}
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
-	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP}, nil
+	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string)}, nil
 }
 
 func (c *Client) Runtime(token string) (*Runtime, error) {
@@ -212,6 +222,32 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 }
 
 func (c *Client) doObserved(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	var last error
+	for attempt := 0; ; attempt++ {
+		if err := c.waitRate(ctx, token, method, path); err != nil {
+			if last != nil {
+				return nil, http.StatusTooManyRequests, ResponseObservation{}, errors.Join(last, err)
+			}
+			return nil, 0, ResponseObservation{}, err
+		}
+		raw, status, observation, err := c.doObservedOnce(ctx, token, method, path, query, body, maxBytes, mutation)
+		refusal := RateLimitError(err)
+		if refusal == nil {
+			return raw, status, observation, err
+		}
+		last = err
+		if waitErr := waitRetry(ctx, retryDelay(refusal, attempt)); waitErr != nil {
+			return raw, status, observation, errors.Join(err, waitErr)
+		}
+	}
+}
+
+func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
 	var observation ResponseObservation
 	if path != "instance" && !c.discovered.Load() {
 		return nil, 0, observation, errors.New("bot client: discovery required before API use")
@@ -300,7 +336,17 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 		} else {
 			return nil, resp.StatusCode, observation, ErrProtocol
 		}
-		return nil, resp.StatusCode, observation, parseAPIError(resp.StatusCode, code, a)
+		apiErr := parseAPIError(resp.StatusCode, code, a)
+		if apiErr.Code == "E_RATE_LIMITED" && apiErr.RetryAfterMS == nil {
+			if seconds, err := strconv.ParseUint(resp.Header.Get("Retry-After"), 10, 32); err == nil {
+				ms := seconds * 1000
+				apiErr.RetryAfterMS = &ms
+			} else if at, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
+				ms := uint64(max(int64(0), time.Until(at).Milliseconds()))
+				apiErr.RetryAfterMS = &ms
+			}
+		}
+		return nil, resp.StatusCode, observation, apiErr
 	}
 	if maxBytes <= 0 || maxBytes > MaxBody {
 		maxBytes = MaxBody
@@ -425,7 +471,7 @@ func errorShape(a []any) bool {
 		if len(a) != 3 {
 			return false
 		}
-		if (a[0] == "E_RATE_LIMITED" || a[0] == "E_UNAVAILABLE") && retry == nil {
+		if a[0] == "E_UNAVAILABLE" && retry == nil {
 			return false
 		}
 		if retry != nil && a[0] != "E_RATE_LIMITED" && a[0] != "E_COMMIT_REQUIRED" && a[0] != "E_UNAVAILABLE" {
