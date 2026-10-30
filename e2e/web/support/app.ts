@@ -629,8 +629,8 @@ export async function completeFactorStep(page: Page, account: Account, onStep?: 
   await expect(key).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   await onStep?.('totp');
   account.totpSecret = await key.inputValue();
+  // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await page.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-  await page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }).click();
   await expectHeading(page, 'factor.codes.title');
   await onStep?.('codes');
   account.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())
@@ -846,8 +846,8 @@ export async function signInToKeyStep(page: Page, account: Account, instanceName
   await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
   await expect(heading(page, 'signin.totp.title').or(heading(page, SIGNIN.keyTitle))).toBeVisible({ timeout: WAIT });
   if (await heading(page, 'signin.totp.title').isVisible()) {
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
   }
   await expectHeading(page, SIGNIN.keyTitle);
 }

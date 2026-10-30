@@ -445,7 +445,20 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       }
       // Ruling AK (Jonas, task 9 fix round 1): the search palette's textbox draws no ring either (the caret shows focus).
       const palette = el.matches('.d-search-palette input') ? s.outlineColor : null;
-      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette };
+      // Wave B task 3: the code boxes' input is transparent; the box at the caret shows focus with the accent edge and ring.
+      let codeBox: { border: string; shadow: string; accent: string } | null = null;
+      if (el.matches('.d-code-boxes__input')) {
+        const caret = el.closest('.d-code-boxes')?.querySelector<HTMLElement>('.d-code-boxes__box[data-caret]') ?? null;
+        if (caret) for (const a of caret.getAnimations()) a.finish();
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        el.parentElement?.appendChild(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        const c = caret ? getComputedStyle(caret) : null;
+        codeBox = { border: c?.borderTopColor ?? 'none', shadow: c?.boxShadow ?? 'none', accent };
+      }
+      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette, codeBox };
     });
     if (focused?.composer) {
       const { composer } = focused;
@@ -472,6 +485,11 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
           `${context.title} / ${context.name}: the focused composer textarea should show focus through its box, ` +
           `with only a transparent ring (${bad.join('; ')})`,
         );
+      }
+    } else if (focused?.codeBox) {
+      const { codeBox } = focused;
+      if (codeBox.border !== codeBox.accent || codeBox.shadow === 'none') {
+        throw new Error(`${context.title} / ${context.name}: the focused code boxes show no caret box in the accent (border ${codeBox.border}, ring ${codeBox.shadow}; expected --accent ${codeBox.accent})`);
       }
     } else if (focused?.palette != null) {
       if (focused.palette !== 'rgba(0, 0, 0, 0)') throw new Error(`${context.title} / ${context.name}: the palette textbox draws a ring (${focused.palette}); Ruling AK wants none`);

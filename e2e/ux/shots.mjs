@@ -352,8 +352,8 @@ async function authScreens() {
     await page.waitForFunction(() => /^[A-Z2-7]{16,}$/.test(document.querySelector('#factor-totp-key')?.value ?? ''), null, { timeout: 60_000 });
     await shotAll(page, 'signup-6-factor-app');
     const a = { totpSecret: await page.getByLabel(t('factor.totp.key'), { exact: true }).inputValue(), lastCounter: -1 };
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(state.controlUrl, a));
-    await by('button', 'factor.totp.submit').click();
     await by('heading', 'factor.codes.title').waitFor({ timeout: 60_000 });
     await shotAll(page, 'signup-7-factor-codes');
     await by('checkbox', 'factor.codes.ack').check();
@@ -379,7 +379,6 @@ async function authScreens() {
     await by2('heading', 'signin.totp.title').waitFor({ timeout: 60_000 });
     await pg.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(state.controlUrl, bj.totp));
     await shotAll(pg, 'signin-2-code');
-    await by2('button', 'signin.login.submit').click();
     await by2('heading', 'signin.key.title').waitFor({ timeout: 60_000 });
     await pg.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(bj.recoveryKey);
     await shotAll(pg, 'signin-3-recovery-key');

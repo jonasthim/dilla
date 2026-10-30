@@ -35,4 +35,16 @@
 .d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }
 /* min-height: the prototype's 40px on a phone too (rule 0), over Button.css's 44px phone tier. */
 .d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; min-height: 2.5rem; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }
+/* Wave B task 3, the prototype's code step: its links row ("Use a passkey", "Use a backup code") is 11.5px --fg-link text 14px
+   apart, 6px over the button; the code's error sits under the boxes. A primary action that is not ready yet (a short code, a
+   short key, a step at work) is the prototype's #1A1E25 bar with --fg-3 text, not a faded accent. */
+.d-onboarding-frame__links { display: flex; flex-wrap: wrap; gap: 0 14px; margin: -1.5px 0 -11.5px /* the 24px link boxes, centred on the prototype's 17px line */; }
+/* The step's status region stays in place (A11Y-DESIGN-04) but adds no gap while it is empty. */
+.d-onboarding-frame__links + [role="status"]:empty { height: 0; margin-top: -14px; }
+/* The prototype puts the button 6px under the links' line. */
+.d-onboarding-frame__body:has(> .d-onboarding-frame__links) { margin-bottom: -14px; }
+.d-onboarding-frame__links > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; padding: 0; font-size: var(--text-btn); font-weight: inherit; color: var(--fg-link); background: transparent; }
+.d-onboarding-frame__links > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
+.d-onboarding-frame__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
+.d-onboarding-frame__footer .d-btn[data-variant="accent"][aria-disabled="true"] { opacity: 1; background: var(--hover-hi); border-color: var(--hover-hi); color: var(--fg-3); }
 @media print { .d-onboarding-frame__bar, .d-onboarding-frame__head, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } }

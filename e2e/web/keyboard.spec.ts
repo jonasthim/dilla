@@ -48,9 +48,8 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await expect(setupKey).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   account.totpSecret = await setupKey.inputValue();
   await tabTo(page, page.getByLabel(copy('factor.totp.code'), { exact: true }));
+  // Wave B task 3: the sixth digit typed into the code boxes sends the code; there is no button to press.
   await page.keyboard.type(await nextCode(account.control, account));
-  await tabTo(page, page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }));
-  await press('Enter');
   await expect(heading(page, 'factor.codes.title')).toBeFocused({ timeout: WAIT });
   const ackCodes = page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true });
   await tabTo(page, ackCodes);

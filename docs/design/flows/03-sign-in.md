@@ -78,7 +78,7 @@ by the page.
 | n | name | heading (`<h1>`) | parts |
 |---|---|---|---|
 | 1 | login | `signin.login.title` | `OnboardingFrame`, one paragraph, `TextField` username and password, ghost `Button` `signin.login.createInstead` and `Button` Continue (`signin.login.submit`) |
-| 2 | second factor | `signin.totp.title` | one paragraph, `TextField` code, `Button` Cancel and Continue |
+| 2 | second factor | `signin.totp.title` | one paragraph, `CodeBoxes` (six boxes over one input; the sixth digit sends the code), the links `factorSignin.code.usePasskey` and `factorSignin.useBackup`, `Button` Cancel and `signin.totp.submit` |
 | 3 | recovery key | `signin.key.title` | one paragraph, `RecoveryKeyField`, `Button` Cancel and `signin.key.submit`; step 2 when no factor step was shown (R7) |
 | 4 | done | `signin.done.title` | one paragraph, `Button` `signin.done.next` |
 
@@ -91,7 +91,7 @@ one up after the enrolment goes 1 → 2 (key) → 3 (set-up) → 4 (`signin.step
 The step line of the forced screen, which belongs to no ceremony, is empty.
 
 Step 2, by account state. The code form (an app, `signin.totp.title`) also holds the ghost button
-`factorSignin.useBackup`, which switches to the backup-code form, and the line `factorSignin.lost`; after a
+`factorSignin.useBackup`, which switches to the backup-code form (wave B task 3: a link under the code boxes); after a
 passkey that did not check the person it holds `factorSignin.passkey.needsCode` above the code field. The passkey
 screen (`factorSignin.passkey.title`, no code field) holds `factorSignin.passkey.submit` and the same
 `factorSignin.useBackup`: an account that owes only a passkey is never asked for an app code and sees only the
@@ -859,7 +859,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | not offered | why |
 |---|---|
 | signing in with a single sign-on provider | this version offers password (+ second factor) and passkeys only (Q03); the entry is hidden on instances without password logins |
-| messages from before this browser joined | a browser-only account has no archive writer; `signin.done.body` and `onboarding.browser.oneBrowser` say so |
+| messages from before this browser joined | a browser-only account has no archive writer; `onboarding.browser.oneBrowser` says so (wave B task 3: `signin.done.body` is the prototype's line) |
 | a copy button for the recovery key, anywhere | `protocol/03-identity.md` "Recovery" (F2); paste into the key field is allowed |
 | removing a listed device without the recovery key | a new device list must be signed with the account's signing key, which only the recovery key opens in a browser; a device that is not yet in the device list is removed without the key, because no list changes (ruling 30) |
 | naming a device, or a "verified" mark | devices have no names in this version, and the browser's lower trust is stated by its tier tag (F9) |
@@ -879,17 +879,18 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.login.submit` | `Continue` | button, forward on steps 1 (login) and 2 (second factor) |
 | `signin.login.working` | `Checking…` | the forward button of steps 1 and 2 while their command runs |
 | `signin.login.createInstead` | `Have an invite? Create an account` | ghost button, first in the footer of step 1; sends `signInCancel` |
-| `signin.totp.title` | `Your second factor` | step heading, step 2 |
-| `signin.totp.body` | `Enter the six-digit code from your authenticator app.` | paragraph, step 2 |
-| `signin.totp.code` | `Code` | field label, step 2 |
-| `signin.key.title` | `Your recovery key` | step heading, step 3 (2 when no factor step was shown) |
-| `signin.key.body` | `Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.` | paragraph, step 3 (2 when no factor step was shown) (or step 2 when no factor) |
+| `signin.totp.title` | `Enter your code` | step heading, step 2 |
+| `signin.totp.body` | `Six digits from your authenticator app.` | paragraph, step 2; the code's description |
+| `signin.totp.code` | `Code` | the code input's label (not drawn), step 2 |
+| `signin.totp.submit` | `Verify` | button, forward on step 2 |
+| `signin.key.title` | `Add this browser` | step heading, step 3 (2 when no factor step was shown) |
+| `signin.key.body` | `This browser is new. Paste your recovery key to read your conversations here.` | paragraph, step 3 (2 when no factor step was shown) (or step 2 when no factor) |
 | `signin.key.label` | `Recovery key` | field label, step 3 (2 when no factor step was shown) |
 | `signin.key.hint` | `{n} of 52 characters` | hint under the key field (its description, not live), step 3 (2 when no factor step was shown) and the two key dialogs |
-| `signin.key.submit` | `Add this browser` | button, forward on the key step (3, or 2 when no factor step was shown): it registers this browser, then enrols |
+| `signin.key.submit` | `Add browser` | button, forward on the key step (3, or 2 when no factor step was shown): it registers this browser, then enrols |
 | `signin.key.working` | `Adding this browser to your account…` | status line, steps 1–3, while the enrolment runs |
 | `signin.done.title` | `You’re in` | step heading, step 4 |
-| `signin.done.body` | `This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.` | paragraph, step 4 |
+| `signin.done.body` | `This browser is now one of your devices.` | paragraph, step 4 |
 | `signin.done.next` | `Open dilla` | button, step 4 |
 | `signin.cancel` | `Cancel` | button, first in the footer of steps 2 and 3 (the second factor and the recovery key); sends `signInCancel` |
 | `signin.error.loginFailed` | `That username and password did not work.` | field error, password, step 1 |

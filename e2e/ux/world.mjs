@@ -109,8 +109,8 @@ async function onboard(page, person, invite) {
   await page.waitForFunction(() => /^[A-Z2-7]{16,}$/.test(document.querySelector('#factor-totp-key')?.value ?? ''), null, { timeout: WAIT });
   const a = { totpSecret: await page.getByLabel(t('factor.totp.key'), { exact: true }).inputValue(), lastCounter: -1 };
   authenticators[person.username] = a;
+  // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlUrl, a));
-  await byText(page, 'button', 'factor.totp.submit').click();
   await byText(page, 'heading', 'factor.codes.title').waitFor({ timeout: WAIT });
   await byText(page, 'checkbox', 'factor.codes.ack').check();
   await byText(page, 'button', 'factor.codes.next').click();
@@ -358,7 +358,6 @@ try {
   await byText(page, 'heading', 'signin.totp.title').waitFor({ timeout: WAIT });
   await page.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, ada1.totp));
   await shot('p390-signal-signin-2-code');
-  await byText(page, 'button', 'signin.login.submit').click();
   await byText(page, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
   await page.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(ada1.recoveryKey);
   await shot('p390-signal-signin-3-recovery-key');

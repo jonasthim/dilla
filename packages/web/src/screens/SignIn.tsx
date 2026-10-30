@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { BACKUP_CODE, normaliseBackupCode, normaliseRecoveryKey } from '@dilla/client-core';
-import { Banner, Button, OnboardingFrame, RecoveryKeyField, Splash, TextField } from '@dilla/ui';
+import { Banner, Button, CodeBoxes, OnboardingFrame, RecoveryKeyField, Splash, TextField } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice } from '../core/use-slice.ts';
@@ -22,6 +22,9 @@ const FIELD_ID: Readonly<Record<Field, string>> = {
 };
 const FIELD_ORDER: readonly Field[] = ['username', 'password', 'code', 'backup', 'key'];
 const LENGTH_ID = 'signin-key-length';
+const CODE_BODY_ID = 'signin-code-body';
+const CODE_ERROR_ID = 'signin-code-error';
+const SIX_DIGITS = /^\d{6}$/;
 const BACKUP_ID = 'signin-key-backup';
 /** How long the key field rests before a backup code is named (R44): a key being typed passes 26 characters on the way. */
 const BACKUP_NOTE_MS = 600;
@@ -171,6 +174,11 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // The typed key belongs to one person's attempt: back at the login, whoever signs in next starts with an empty field.
   // A refusal at the key step itself (a wrong key) keeps the text for the same person's retry.
   useEffect(() => { if (phase === 'signin-login') setKey(''); }, [phase]);
+  // Wave B task 3: the typed code lives only while its step shows; any other phase drops it (it is never stored).
+  useEffect(() => { if (phase !== 'signin-totp' && phase !== 'enrolling') setCode(''); }, [phase]);
+  // The prototype's code step opens on its boxes (its focusRef), so a one-time-code autofill offers itself at once; the
+  // step's instruction is the field's description.
+  useEffect(() => { if (shown === 'totp') setFocusRequest(f => ({ target: 'code', n: f.n + 1 })); }, [shown]);
 
   // OnboardingFrame focuses its heading when the title changes; this effect runs after the frame's (child effects
   // first), so a field request after a step change lands on the field.
@@ -236,10 +244,12 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       setPassword('');
     });
   };
-  const submitTotp = () => {
+  /** Wave B task 3: the code boxes keep digits only, and the sixth digit sends the code (onComplete) with no press. A
+   *  code that is not six digits is never sent: a refused code spends the assertion and the person logs in again. */
+  const submitTotp = (value: string = code) => {
     // A11Y-DESIGN-06: an authenticator may copy the code grouped ("123 456"); the spaces are not part of it.
-    const trimmed = code.replace(/\s/g, '');
-    if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : {})) return;
+    const trimmed = value.replace(/\s/g, '');
+    if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : SIX_DIGITS.test(trimmed) ? {} : { code: 'factor.error.codeFormat' })) return;
     begin('totp', 'totp');
     run('totp', client.call({ m: 'signInTotp', code: trimmed }), () => setCode(''));
   };
@@ -304,6 +314,13 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     return client.call({ m: 'factorSetupDone', invite: null }).then(
       () => { setFactorDone({ busy: false, problem: null }); },
       (e: unknown) => { setFactorDone({ busy: false, problem: doneProblem(errorOf(e)) }); throw e; });
+  };
+  /** The sixth digit landed: the same path as Verify, so a running command (or the press that follows) sends nothing twice. */
+  const completeCode = (value: string) => {
+    if (blocked || shown !== 'totp') return;
+    setBanner(null);
+    setErrors({});
+    submitTotp(value);
   };
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -408,16 +425,31 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       </OnboardingFrame>
     );
   } else if (shown === 'totp') {
+    // Wave B task 3, the prototype's code step: six boxes over one input, then "Use a passkey" (only for an account that
+    // just used one, in a browser that can run one: the login does not say whether an app account also holds a passkey)
+    // and "Use a backup code", which open today's passkey ceremony and backup-code step.
+    const passkeyLink = account.signIn?.factor === 'passkey' && passkeysUsable(instance);
+    const codeError = errorText('code');
     content = form(t('signin.totp.title'), 2, <>
       {cancelButton('signin.cancel')}
-      <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'totp' ? 'signin.login.working' : 'signin.login.submit')}</Button>
+      <Button variant="accent" type="submit" {...(blocked || !SIX_DIGITS.test(code) ? { 'aria-disabled': true } : {})}>
+        {t(busy === 'totp' ? 'signin.login.working' : 'signin.totp.submit')}
+      </Button>
     </>, <>
       {account.signIn?.factor === 'passkey' ? <p>{t('factorSignin.passkey.needsCode', { instance: name })}</p> : null}
-      <p>{t('signin.totp.body')}</p>
-      <TextField id={FIELD_ID.code} label={t('signin.totp.code')} value={code} onChange={change('code', setCode)}
-        error={errorText('code')} required inputMode="numeric" autoComplete="one-time-code" spellCheck={false} />
-      <Button variant="ghost" type="button" onClick={openBackup} {...blockedProps}>{t('factorSignin.useBackup')}</Button>
-      <p>{t('factorSignin.lost', { instance: name })}</p>
+      <p id={CODE_BODY_ID}>{t('signin.totp.body')}</p>
+      <CodeBoxes id={FIELD_ID.code} label={t('signin.totp.code')} value={code} onChange={change('code', setCode)}
+        onComplete={completeCode} invalid={codeError !== undefined}
+        describedBy={codeError === undefined ? CODE_BODY_ID : `${CODE_BODY_ID} ${CODE_ERROR_ID}`} />
+      {codeError === undefined ? null : <p id={CODE_ERROR_ID} className="d-onboarding-frame__error" role="alert">{codeError}</p>}
+      <div className="d-onboarding-frame__links">
+        {passkeyLink ? (
+          <Button id={FIELD_ID.passkey} variant="ghost" type="button" onClick={() => { submitPasskey('totp'); }} {...blockedProps}>
+            {t(busy === 'passkey' ? 'factorSignin.passkey.working' : 'factorSignin.code.usePasskey')}
+          </Button>
+        ) : null}
+        <Button variant="ghost" type="button" onClick={openBackup} {...blockedProps}>{t('factorSignin.useBackup')}</Button>
+      </div>
       <p role="status">{enrolling ? t('signin.key.working') : null}</p>
     </>);
   } else if (shown === 'key') {

@@ -1,10 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { OnboardingFrame } from './OnboardingFrame.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { RecoveryKeyField } from '../RecoveryKeyField/RecoveryKeyField.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { Button } from '../Button/Button.tsx';
+import { CodeBoxes } from '../CodeBoxes/CodeBoxes.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t } from '../../../web/src/strings/index.ts';
 
@@ -15,7 +16,6 @@ type Story = StoryObj<typeof meta>;
 // Task 11: the prototype's sample instance and the sign-in it starts with (fUser mira, a typed password).
 const instance = 'midgard.gg';
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
-const noop = () => {};
 const blocked = { 'aria-disabled': true } as const;
 
 function Step({ n, title, footer, children }: { n: number; title: string; footer: ReactNode; children: ReactNode }) {
@@ -56,15 +56,30 @@ function Key({ value, error, working }: { value: string; error?: string; working
 
 export const Login_: Story = { name: 'Login', render: () => <Login /> };
 export const LoginRefused: Story = { render: () => <Login refused /> };
-export const SecondFactor: Story = {
-  render: () => (
+// Wave B task 3: the code step exactly as packages/web/src/screens/SignIn.tsx composes it (shown === 'totp'): the body as the
+// code's description, the six boxes with focus (SignIn's focus request), the links row, the empty status region, and
+// Cancel and Verify (blocked until six digits). "Use a passkey" shows only after a passkey that needs the code as well.
+function Code({ initial, afterPasskey }: { initial?: string; afterPasskey?: boolean }) {
+  const [code, setCode] = useState(initial ?? '');
+  useEffect(() => { document.getElementById('s-code')?.focus(); }, []);
+  return (
     <Step n={2} title={t('signin.totp.title')}
-      footer={<><Button variant="ghost" type="button">{t('signin.cancel')}</Button><Button variant="accent" type="submit">{t('signin.login.submit')}</Button></>}>
-      <p>{t('signin.totp.body')}</p>
-      <TextField id="s-code" label={t('signin.totp.code')} value="" onChange={noop} inputMode="numeric" autoComplete="one-time-code" maxLength={6} />
+      footer={<><Button variant="ghost" type="button">{t('signin.cancel')}</Button>
+        <Button variant="accent" type="submit" {...(/^\d{6}$/.test(code) ? {} : blocked)}>{t('signin.totp.submit')}</Button></>}>
+      {afterPasskey ? <p>{t('factorSignin.passkey.needsCode', { instance })}</p> : null}
+      <p id="s-code-body">{t('signin.totp.body')}</p>
+      <CodeBoxes id="s-code" label={t('signin.totp.code')} value={code} onChange={setCode} describedBy="s-code-body" />
+      <div className="d-onboarding-frame__links">
+        {afterPasskey ? <Button variant="ghost" type="button">{t('factorSignin.code.usePasskey')}</Button> : null}
+        <Button variant="ghost" type="button">{t('factorSignin.useBackup')}</Button>
+      </div>
+      <p role="status" />
     </Step>
-  ),
-};
+  );
+}
+export const SecondFactor: Story = { render: () => <Code /> };
+export const SecondFactorTyped: Story = { render: () => <Code initial="482" /> };
+export const SecondFactorAfterPasskey: Story = { render: () => <Code afterPasskey /> };
 export const RecoveryKey: Story = { render: () => <Key value={GROUPED.slice(0, 29)} /> };
 export const RecoveryKeyWrong: Story = { render: () => <Key value={GROUPED.replace('7K2M', '7K2N')} error={t('signin.error.wrongKey')} /> };
 export const NoBackup: Story = {

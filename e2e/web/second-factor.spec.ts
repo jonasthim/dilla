@@ -122,7 +122,7 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
       const code = page.getByLabel(copy('factor.totp.code'), { exact: true });
       await expectAccessible(page, 'second factor: authenticator app');
       await code.fill(await wrongCode(await page.getByLabel(copy('factor.totp.key'), { exact: true }).inputValue(), h.control));
-      await page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }).click();
+      // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
       await expect(page.getByText(copy('factor.error.code'), { exact: true })).toBeVisible({ timeout: WAIT });
       await expect(code).toBeFocused();
     } else {
@@ -189,7 +189,7 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
   await another(async (p) => {
     await toLogin(p, ada);
     await p.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await wrongCode(secret(ada), h.control));
-    await p.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await expect(p.getByText(copy('signin.error.totpFailed'), { exact: true })).toBeVisible({ timeout: WAIT });
     await expectHeading(p, SIGNIN.loginTitle, { instance });
   });

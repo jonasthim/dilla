@@ -21,7 +21,7 @@ Every human account on an instance has a second factor, and the server enforces 
 | 13. Forced done | The last step of the forced set-up, after the backup codes. The announcement is spoken when the factor is in place. | `factor.done.title`, `factor.done.totp`, `factor.done.passkey`, `factor.done.next`, `factor.added` |
 | 14. Sign-in with a passkey | A link under the password field on step 2 of sign-in, then step 3 as a passkey screen. The browser asks for the passkey on Use passkey. A failure and an unknown passkey are banners. | `factorSignin.usePasskey`, `factorSignin.passkey.title`, `factorSignin.passkey.body`, `factorSignin.passkey.submit`, `factorSignin.passkey.working`, `factorSignin.passkey.failed`, `factorSignin.passkey.unknown`, `factorSignin.passkey.unusable` |
 | 15. Sign-in needs a code after a passkey | The passkey did not check the person, so step 3 turns into the code form with a note above it. | `factorSignin.passkey.needsCode` |
-| 16. Backup-code sign-in, a failure, codes left | A link on the code form leads to a backup-code field. A refused code is a banner. After signing in with a backup code the shell says how many remain. The lost-phone line sits under the form. | `factorSignin.useBackup`, `factorSignin.lost`, `factorSignin.backup.title`, `factorSignin.backup.body`, `factorSignin.backup.label`, `factorSignin.backup.failed`, `factorSignin.backup.format`, `factorSignin.left.one`, `factorSignin.left.other` |
+| 16. Backup-code sign-in, a failure, codes left | A link under the code boxes (wave B task 3: "Use a backup code", beside "Use a passkey" for an account that just used one) leads to a backup-code field. A refused code is a banner. After signing in with a backup code the shell says how many remain. | `factorSignin.useBackup`, `factorSignin.code.usePasskey`, `factorSignin.backup.title`, `factorSignin.backup.body`, `factorSignin.backup.label`, `factorSignin.backup.failed`, `factorSignin.backup.format`, `factorSignin.left.one`, `factorSignin.left.other` |
 | 17. Settings loading and error | Settings → Sign-in while the factors load, then on a failed load a message and a Try again button. | `factorSettings.loading`, `factorSettings.error.load`, `factorSettings.retry` |
 | 18. Settings with the app only | `SettingsFrame` section with grouped `FactorRow`s: password, authenticator app, passkeys (none), backup codes. Remove is disabled while it is the only factor, with the reason beside it. (Task 11: no closing paragraph; the prototype's copy.) | `factorSettings.nav`, `factorSettings.title`, `factorSettings.body`, `factorSettings.password`, `factorSettings.password.changed`, `factorSettings.password.none`, `factorSettings.totp`, `factorSettings.totp.on`, `factorSettings.totp.off`, `factorSettings.totp.add`, `factorSettings.totp.remove`, `factorSettings.totp.removeLabel`, `factorSettings.only`, `factorSettings.codes`, `factorSettings.codes.one`, `factorSettings.codes.other`, `factorSettings.codes.none`, `factorSettings.codes.make` |
 | 19. Settings with the app and passkeys | The passkeys are one group under a `factorSettings.passkeys` heading: one row per passkey, "Passkey" over its name (Task 11), each with its own remove button, then add passkey after the rows. The group sits between the app and the backup codes. | `factorSettings.passkeys`, `factorSettings.passkeys.none`, `factorSettings.passkey`, `factorSettings.passkeys.add`, `factorSettings.passkeys.remove`, `factorSettings.passkeys.removeLabel` |
@@ -130,13 +130,13 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factorSignin.passkey.unusable='This browser cannot use passkeys here. Use a backup code instead, or sign in from a browser that can.'`
 - `factorSignin.passkey.unknown='{instance} does not know this passkey. It may belong to another account or another server.'`
 - `factorSignin.passkey.needsCode='This passkey did not check that it is you, so {instance} also asks for your code.'`
-- `factorSignin.useBackup='Use a backup code instead'`
+- `factorSignin.useBackup='Use a backup code'`
+- `factorSignin.code.usePasskey='Use a passkey'`
 - `factorSignin.backup.title='Use a backup code'`
 - `factorSignin.backup.body='Type one of the backup codes you saved when you added your second factor. Each code works once.'`
 - `factorSignin.backup.label='Backup code'`
 - `factorSignin.backup.failed='That backup code did not work. Sign in again and try another one.'`
 - `factorSignin.backup.format='A backup code has 26 letters and digits. Hyphens and spaces do not matter.'`
-- `factorSignin.lost='Lost your phone? Use a backup code, or ask the operator of {instance} to reset your second factor.'`
 - `factorSignin.left.one='You have 1 backup code left. Make new ones in Settings, under sign-in.'`
 - `factorSignin.left.other='You have {count} backup codes left. Make new ones in Settings, under sign-in.'`
 - `factorSettings.nav='Sign-in'`

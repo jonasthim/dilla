@@ -63,11 +63,27 @@ async function toFactor(user: UserEvent, invite = 'ABCD-EFGH') {
 async function throughApp(user: UserEvent) {
   await user.click(button('Continue'));
   await screen.findByRole('img', { name: /QR code/ });
-  await user.type(screen.getByRole('textbox', { name: en['factor.totp.code'] }), '123456{Enter}');
+  await user.type(screen.getByRole('textbox', { name: en['factor.totp.code'] }), '123456');
   await user.click(await screen.findByRole('checkbox', { name: en['factor.codes.ack'] }));
 }
 
 describe('step 5: the second factor', () => {
+  it('wave B task 3: the app step asks for its code in six boxes over one input, and the sixth digit sends it', async () => {
+    const { user, view, fake } = setup();
+    await toFactor(user);
+    await user.click(button('Continue'));
+    await screen.findByRole('img', { name: /QR code/ });
+    const code = screen.getByRole('textbox', { name: en['factor.totp.code'] });
+    expect(code).toHaveAttribute('autocomplete', 'one-time-code');
+    expect(code).toHaveAttribute('inputmode', 'numeric');
+    expect(code.closest('.d-code-boxes')).not.toBeNull();
+    expect(view.container.querySelectorAll('.d-code-boxes__box')).toHaveLength(6);
+    expect(view.container.querySelector('.d-code-boxes__row')).toHaveAttribute('aria-hidden', 'true');
+    await user.type(code, '12a3456');
+    expect(fake.callsOf('factorTotpConfirm')).toEqual([{ m: 'factorTotpConfirm', code: '123456' }]);
+    await screen.findByRole('checkbox', { name: en['factor.codes.ack'] });
+  });
+
   it('follows the account step with the choice, counted as step 5 of 6, with no way to skip', async () => {
     const { user, view, onFinish } = setup();
     await toFactor(user);

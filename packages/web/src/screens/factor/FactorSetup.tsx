@@ -7,7 +7,7 @@
 // app or the passkey step, has no choice and no Back, and sends the step-up token its host holds as `stepup`.
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Banner, Button, ChoiceCards, CodeList, Dialog, OnboardingFrame, QrCode, TextField } from '@dilla/ui';
+import { Banner, Button, ChoiceCards, CodeBoxes, CodeList, Dialog, OnboardingFrame, QrCode, TextField } from '@dilla/ui';
 import { browser } from '../../browser.ts';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -44,6 +44,8 @@ interface Problem { key: StringKey; vars: Record<string, string | number>; n: nu
 const SIX_DIGITS = /^\d{6}$/;
 const NAME_MAX = 64;
 const FIELD_CODE = 'factor-totp-code';
+const CODE_HINT = 'factor-totp-code-hint';
+const CODE_ERROR = 'factor-totp-code-error';
 const FIELD_NAME = 'factor-passkey-name';
 const BUTTON_PASSKEY = 'factor-passkey-submit';
 const KIND_GROUP = 'factor-kind';
@@ -259,9 +261,10 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     });
   };
 
-  const submitTotp = () => {
+  /** Wave B task 3: the sixth digit in the code boxes sends the code with no press (`value`); Continue sends the same. */
+  const submitTotp = (value: string = code) => {
     if (busy || key === null) return;
-    const digits = code.replace(/\s/g, '');
+    const digits = value.replace(/\s/g, '');
     if (digits === '') { setCodeError('factor.error.required'); requestFocus(FIELD_CODE); return; }
     if (!SIX_DIGITS.test(digits)) { setCodeError('factor.error.codeFormat'); requestFocus(FIELD_CODE); return; }
     setCodeError(null);
@@ -386,7 +389,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     content = frame(t('factor.totp.title'),
       <>
         {back}
-        <Button variant="accent" type="submit" {...(busy || key === null ? { 'aria-disabled': true } : {})}>
+        <Button variant="accent" type="submit" {...(busy || key === null || !SIX_DIGITS.test(code) ? { 'aria-disabled': true } : {})}>
           {t(busy && key !== null ? 'factor.totp.working' : 'factor.totp.submit')}
         </Button>
       </>,
@@ -403,9 +406,12 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
             </div>
           </div>
         </div>
-        <TextField id={FIELD_CODE} label={t('factor.totp.code')} hint={t('factor.totp.codeHint')} value={code}
-          onChange={(v) => { setCode(v); setCodeError(null); }} {...(codeError === null ? {} : { error: t(codeError) })}
-          autoComplete="one-time-code" inputMode="numeric" spellCheck={false} required />
+        {/* Wave B task 3: the prototype's six code boxes over one input that takes paste and one-time-code autofill. */}
+        <CodeBoxes id={FIELD_CODE} label={t('factor.totp.code')} value={code}
+          onChange={(v) => { setCode(v); setCodeError(null); }} onComplete={(v) => { submitTotp(v); }}
+          invalid={codeError !== null} describedBy={codeError === null ? CODE_HINT : `${CODE_HINT} ${CODE_ERROR}`} />
+        <p id={CODE_HINT} className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>
+        {codeError === null ? null : <p id={CODE_ERROR} className="d-onboarding-frame__error" role="alert">{t(codeError)}</p>}
       </>);
   } else if (step === 'passkey') {
     content = frame(t('factor.passkey.title'),

@@ -622,8 +622,8 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
     await expectHeading(page, 'signin.totp.title');
     await expectFieldSizes(page, 'sign-in code');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy('signin.totp.code'), { exact: true }), 'the code');
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
     await expectHeading(page, SIGNIN.keyTitle);
     await expectFieldSizes(page, 'sign-in key');
     await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');

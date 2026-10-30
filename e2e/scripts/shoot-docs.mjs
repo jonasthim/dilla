@@ -333,8 +333,8 @@ async function onboard(page, person, invite, shots) {
   const authenticator = { totpSecret: await keyField.inputValue(), lastCounter: -1 };
   authenticators.set(person.username, authenticator);
   await shot('onboarding-5-factor-app');
+  // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlBase, authenticator));
-  await byText(page, 'button', 'factor.totp.submit').click();
   await byText(page, 'heading', 'factor.codes.title').waitFor({ timeout: WAIT });
   await shot('onboarding-5-factor-codes');
   await byText(page, 'checkbox', 'factor.codes.ack').check();
@@ -900,7 +900,6 @@ async function main(argv) {
     await second.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, authenticators.get(PEOPLE.mira.username)));
     await settle(second);
     await shootSecond('signin-2-code');
-    await byText(second, 'button', 'signin.login.submit').click();
     await byText(second, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
     if (miraKey === null) throw new Error('mira recovery key was not captured');
     await second.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(miraKey);

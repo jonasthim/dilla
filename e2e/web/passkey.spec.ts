@@ -146,8 +146,8 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const key = adding.getByLabel(copy('factor.totp.key'), { exact: true });
   await expect(key).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   bjorn.totpSecret = await key.inputValue();
+  // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await adding.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(bjorn.control, bjorn));
-  await button(adding, 'factor.totp.submit').click();
   // The account already holds backup codes, so the add ends here with no list of new ones.
   await expect(adding).toBeHidden({ timeout: WAIT });
   await expect(page.getByText(copy('factorSettings.added.totp'), { exact: true })).toBeAttached();

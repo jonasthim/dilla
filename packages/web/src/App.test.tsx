@@ -89,7 +89,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
+    await user.click(screen.getByRole('button', { name: 'Add browser' }));
     await user.click(screen.getByRole('button', { name: 'Open dilla' }));
     await waitFor(() => expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`));
     expect(screen.queryByText('Linked')).not.toBeInTheDocument();
@@ -509,10 +509,10 @@ describe('App sign-in', () => {
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse' }]);
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your recovery key');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Add this browser');
     await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
+    await user.click(screen.getByRole('button', { name: 'Add browser' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('You’re in');
     replaceHistoryState(null, '', '/welcome');
     const depth = window.history.length;
@@ -531,7 +531,7 @@ describe('App sign-in', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
     expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
-    expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
+    expect(screen.queryByText(/This browser is now one of your devices/)).toBeNull();
     expect(screen.queryByText('Sign in · step 4 of 4')).toBeNull();
   });
   // web3.8 (C1): the held assertion lives only in the worker, so a reload at the key step before the registration boots
@@ -544,7 +544,7 @@ describe('App sign-in', () => {
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your recovery key');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Add this browser');
     // The reload: the boot runs again and finds no enrolment.
     act(() => fake.set('account', account({ phase: 'loading', user: null, instance: null })));
     act(() => fake.set('account', account({ phase: 'needs-signup', user: null, instance: { ...account().instance!, passwordSignup: true } })));
@@ -615,8 +615,8 @@ describe('App cleared', () => {
     render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
     await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
-    expect(screen.queryByRole('heading', { name: 'Your recovery key' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Add browser' }));
+    expect(screen.queryByRole('heading', { name: 'Add this browser' })).toBeNull();
     expect(screen.getByRole('status')).toHaveTextContent('Starting dilla');
     expect(reload.mock.calls).toEqual([['/welcome?signin=race']]);
   });

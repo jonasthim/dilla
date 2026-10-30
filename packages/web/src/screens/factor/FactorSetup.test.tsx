@@ -185,15 +185,28 @@ describe('authenticator app', () => {
     const { fake, user } = setup();
     await toTotp(user);
     await user.type(codeField(), '123 456');
-    await user.click(button('Continue'));
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
     expect(fake.callsOf('factorTotpConfirm')).toEqual([{ m: 'factorTotpConfirm', code: '123456' }]);
+  });
+  it('wave B task 3: the sixth digit sends the code once, however often Enter and Continue follow, as six code boxes', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    const { fake, user, view } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? new Promise(r => { release = r; }) : happy(c, new FakeClient()) });
+    await toTotp(user);
+    expect(view.container.querySelectorAll('.d-code-boxes__box')).toHaveLength(6);
+    expect(button('Continue')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(codeField());
+    await user.paste('123 456\n');
+    await user.keyboard('{Enter}');
+    await user.click(button(en['factor.totp.working']));
+    expect(fake.callsOf('factorTotpConfirm')).toEqual([{ m: 'factorTotpConfirm', code: '123456' }]);
+    release({ backupCodes: CODES });
+    await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
+    expect(fake.callsOf('factorTotpConfirm')).toHaveLength(1);
   });
   it('shows a wrong code on the field, clears it and focuses it', async () => {
     const { user } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 })) : happy(c, new FakeClient()) });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     expect(await screen.findByText(en['factor.error.code'])).toBeInTheDocument();
     expect(codeField()).toHaveValue('');
     expect(codeField()).toHaveFocus();
@@ -203,7 +216,6 @@ describe('authenticator app', () => {
     const { user } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? new Promise(r => { release = r; }) : happy(c, new FakeClient()) });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     expect(button(en['factor.totp.working'])).toHaveAttribute('aria-disabled', 'true');
     release({ backupCodes: CODES });
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
@@ -219,7 +231,6 @@ describe('authenticator app', () => {
       const { user } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? Promise.reject(refusal(init)) : happy(c, new FakeClient()) });
       await toTotp(user);
       await user.type(codeField(), '123456');
-      await user.click(button('Continue'));
       expect(await screen.findByRole('alert')).toHaveTextContent(text);
       expect(codeField()).not.toHaveAttribute('aria-invalid');
     });
@@ -229,7 +240,6 @@ describe('authenticator app', () => {
       ? Promise.reject(refusal({ code: 'E_INTERNAL', status: 500, detail: 'invalid code' })) : happy(c, new FakeClient()) });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_INTERNAL). Try again.');
   });
   it('shows a refused begin as a banner and leaves Back', async () => {
@@ -256,7 +266,6 @@ describe('authenticator app', () => {
     expect(setItem).not.toHaveBeenCalled();
     expect(consoles.map(c => c.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
     expect(document.body.textContent).toContain('AAAAA-BBBBB');
     expect(window.location.href).not.toContain('AAAAA');
@@ -402,7 +411,6 @@ describe('backup codes', () => {
   async function toCodes(user: ReturnType<typeof userEvent.setup>) {
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
   }
   it('lists the codes in an ordered list, says they are not the recovery key and gates Continue on the tick', async () => {
@@ -452,7 +460,6 @@ describe('backup codes', () => {
     const { user, onDone } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? Promise.resolve({ backupCodes: [] }) : happy(c, new FakeClient()) });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await waitFor(() => expect(onDone).toHaveBeenCalledWith({ kind: 'totp' }));
     expect(screen.queryByRole('heading', { name: en['factor.codes.title'] })).toBeNull();
   });
@@ -468,7 +475,6 @@ describe('forced set-up ends with a done step', () => {
     const { user, onDone, announce } = setup({ origin: 'required', stepLabel: '' });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
     await user.click(screen.getByRole('checkbox', { name: en['factor.codes.ack'] }));
     await user.click(button('Continue'));
@@ -491,7 +497,6 @@ describe('forced set-up ends with a done step', () => {
     const { user, announce } = setup({ origin: 'signup' });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
     expect(announce).not.toHaveBeenCalledWith(en['factor.added']);
   });
@@ -524,7 +529,6 @@ describe('what the page sends', () => {
     const { user, onDone, view } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? new Promise(r => { release = r; }) : happy(c, new FakeClient()) });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     view.unmount();
     release({ backupCodes: [] });
     await Promise.resolve();
@@ -599,7 +603,6 @@ describe('a reload after the factor was confirmed', () => {
     expect(onDone).toHaveBeenCalledTimes(1);
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await user.click(await screen.findByRole('checkbox', { name: en['factor.codes.ack'] }));
     await user.click(button('Continue'));
     await user.click(await screen.findByRole('button', { name: en['factor.done.next'] }));
@@ -711,7 +714,6 @@ describe('finishing', () => {
     const { user, onDone } = setup({ origin: 'required', stepLabel: '' }, { handler: (c) => c.m === 'factorTotpConfirm' ? Promise.resolve({ backupCodes: [] }) : happy(c, new FakeClient()) });
     await toTotp(user);
     await user.type(codeField(), '123456');
-    await user.click(button('Continue'));
     await user.dblClick(await screen.findByRole('button', { name: en['factor.done.next'] }));
     expect(onDone).toHaveBeenCalledTimes(1);
   });

@@ -118,8 +118,8 @@ test('sign-in order: the password, then the factor, then the recovery key; a bac
     await expectHeading(p, 'signin.totp.title');
     await expect(stepLine(p, 2)).toBeVisible();
     await expectAccessible(p, 'sign-in order: code');
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await p.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(ada.control, ada));
-    await button(p, SIGNIN.loginSubmit).click();
 
     await expectHeading(p, SIGNIN.keyTitle);
     await expect(stepLine(p, 3)).toBeVisible();

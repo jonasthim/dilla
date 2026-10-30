@@ -188,3 +188,6 @@ export { PhoneLayoutProvider } from './internal/phoneLayout.ts';
 // Wave B Task 2
 export { CommandList, CommandChips, CommandField, CommandSuggestions, CommandBar, commandOptionId } from './CommandPicker/CommandPicker.tsx';
 export type { CommandListItem, CommandListProps, CommandChipsProps, CommandFieldProps, CommandSuggestion, CommandSuggestionsProps, CommandBarProps } from './CommandPicker/CommandPicker.tsx';
+// Wave B Task 3
+export { CodeBoxes } from './CodeBoxes/CodeBoxes.tsx';
+export type { CodeBoxesProps } from './CodeBoxes/CodeBoxes.tsx';
