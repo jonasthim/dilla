@@ -639,6 +639,13 @@ restarts the service if it was active before. If installation, doctor or restart
 the previous assets and state. The retained copy contains `database.key` and must be protected as a
 secret. The upgrade path has not yet been exercised against a prior released Bot database schema.
 
+Each upgrade run writes one such copy, as a new directory `/var/backups/dillabot/<UTC timestamp>-<suffix>`, root-only,
+holding the whole state directory (with the database key) plus the three Bot binaries and the unit. After a successful
+upgrade the installer keeps the 3 newest copies, the new one included, and removes the older ones; it logs each path
+it removes and never prunes after a failed or rolled-back upgrade. `--keep-backups N` (N of at least 1) keeps N
+instead. Only directories named like the installer's own copies are touched. This pruning starts with the release after
+`v0.1.0-signal1`: on `v0.1.0-signal1` and earlier, remove old copies by hand, keeping the newest.
+
 For a cold operator backup of the complete Bot files, including its config and runtime credential:
 
 ```sh

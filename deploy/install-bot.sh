@@ -28,6 +28,8 @@ options:
   --module FILE           local dilla_core_wasi.wasm module
   --sums FILE             checksums for supplied local assets
   --upgrade               replace Bot binaries and unit; preserve config, credential and state
+  --keep-backups N        after a successful upgrade keep the N newest pre-upgrade copies
+                          under /var/backups/dillabot, the new one included (N >= 1, default 3)
   --insecure-skip-verify  allow supplied local assets without --sums
   --check-args            validate options without changing anything
   -h, --help              show this help
@@ -48,13 +50,14 @@ MODULE=""
 SUMS=""
 INSECURE=0
 UPGRADE=0
+KEEP_BACKUPS=3
 CHECK_ARGS=0
 while [ "$#" -gt 0 ]; do
 	flag="$1"; value=""
 	case "$flag" in
 	--*=*) value="${flag#*=}"; flag="${flag%%=*}"; shift ;;
 	--check-args | --insecure-skip-verify | --upgrade | -h | --help) shift ;;
-	--base-url | --instance-id | --dillad-config | --version | --release-url | --binary | --helper | --module | --sums)
+	--base-url | --instance-id | --dillad-config | --version | --release-url | --binary | --helper | --module | --sums | --keep-backups)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"; shift 2 ;;
 	-*) usage; die "unknown option $flag" ;;
@@ -70,6 +73,7 @@ while [ "$#" -gt 0 ]; do
 	--helper) HELPER="$value" ;;
 	--module) MODULE="$value" ;;
 	--sums) SUMS="$value" ;;
+	--keep-backups) KEEP_BACKUPS="$value" ;;
 	--insecure-skip-verify) INSECURE=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--upgrade) UPGRADE=1 ;;
@@ -77,6 +81,11 @@ while [ "$#" -gt 0 ]; do
 	*) usage; die "unknown option $flag" ;;
 	esac
 done
+
+case "$KEEP_BACKUPS" in
+'' | *[!0-9]*) die "--keep-backups must be a whole number of at least 1" ;;
+esac
+[ "${#KEEP_BACKUPS}" -le 6 ] && [ "$KEEP_BACKUPS" -ge 1 ] || die "--keep-backups must be a whole number of at least 1"
 
 if [ "$UPGRADE" -eq 0 ]; then
 	[ -n "$BASE_URL" ] || die "--base-url is required"
@@ -263,6 +272,30 @@ rollback_upgrade() { # BACKUP WAS_ACTIVE
 	if [ "$was_active" -eq 1 ]; then systemctl start dillabot || log "previous Bot service did not restart; use systemctl status dillabot"; fi
 }
 
+# Keep the newest KEEP pre-upgrade copies. Only plain directories whose names
+# match the installer's own pattern are touched, ordered by that name (the UTC
+# timestamp prefix sorts chronologically); symlinks and other files are skipped.
+# NEW, the copy this run made, is never a candidate: it counts as one of the KEEP
+# whatever its random suffix sorts to within its second.
+prune_backups() { # PARENT KEEP NEW
+	parent="$1"; keep=$(($2 - 1)); new="$3"
+	set --
+	for dir in "$parent"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-????????; do
+		case "${dir##*/}" in
+		*[!0-9A-Za-z-]*) continue ;;
+		esac
+		if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$dir" = "$new" ]; then continue; fi
+		set -- "$@" "$dir"
+	done
+	[ "$#" -gt "$keep" ] || return 0
+	remove=$(($# - keep))
+	for dir in "$@"; do
+		[ "$remove" -gt 0 ] || break
+		remove=$((remove - 1))
+		if rm -rf "$dir"; then log "removed old pre-upgrade copy $dir"; else log "warning: could not remove old pre-upgrade copy $dir"; fi
+	done
+}
+
 if [ "$UPGRADE" -eq 1 ]; then
 	log "checking current Bot files before upgrade"
 	run_bot_doctor >&2 || die "the existing Bot files fail doctor; repair them before upgrading"
@@ -296,6 +329,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 	fi
 	log "Bot binaries upgraded; preserved config, runtime credential and state"
 	log "cold pre-upgrade copy retained at $BACKUP (root-only; includes the database key)"
+	prune_backups "$BACKUP_PARENT" "$KEEP_BACKUPS" "$BACKUP"
 else
 	if id dillabot >/dev/null 2>&1; then die "the dillabot account already exists; inspect it and any Bot files before installing"; fi
 	useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot
