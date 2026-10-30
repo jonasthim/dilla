@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Design parity: shoots the Signal prototype and a Storybook story at the same viewport and writes the two frames
-// and a side-by-side pair. Usage and the matching rule: see README.md.
+// Design parity: shoots the Signal prototype and either a Storybook story or the running web app (the ux world over CDP, or a
+// signed-out browser) at the same viewport and writes the two frames and a side-by-side pair. Usage and the rule: see README.md.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,6 +11,9 @@ export const PROTOTYPE = path.resolve(HERE, '../prototype/Dilla Signal Prototype
 export const DEFAULT_GLOBALS = 'theme:signal;motion:reduced';
 const SETTLE_MS = 600;
 export const CLIP_PAD = 8;
+export const APP_WHO = ['ada', 'bjorn', 'mira', 'phone', 'fresh', 'freshPhone'];
+export const PEOPLE = ['ada', 'bjorn', 'mira', 'liv'];
+export const DEFAULT_STATE = 'target/ui-screens/signal-b/state.json';
 export const SCALE = 2;
 const REPO = path.resolve(HERE, '../../../..');
 
@@ -52,22 +55,71 @@ export function validateSpec(spec) {
     names.add(pair.name);
     const v = pair.viewport;
     if (!isObject(v) || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width <= 0 || v.height <= 0) throw new Error(`${at} (${pair.name}): viewport needs integer width and height`);
-    if (!isObject(pair.story) || typeof pair.story.id !== 'string' || pair.story.id === '') throw new Error(`${at} (${pair.name}): story.id is required`);
+    if ((pair.story === undefined) === (pair.app === undefined)) throw new Error(`${at} (${pair.name}): exactly one of story or app is required`);
+    if (pair.story !== undefined && (!isObject(pair.story) || typeof pair.story.id !== 'string' || pair.story.id === '')) throw new Error(`${at} (${pair.name}): story.id is required`);
     if (!isObject(pair.prototype)) throw new Error(`${at} (${pair.name}): prototype is required (use {} for the defaults)`);
     const { props, steps } = pair.prototype;
     if (props !== undefined && !isObject(props)) throw new Error(`${at} (${pair.name}): prototype.props must be an object`);
     if (steps !== undefined && !Array.isArray(steps)) throw new Error(`${at} (${pair.name}): prototype.steps must be an array`);
-    // Task 8b: a story may take the same steps (a press that shows a toast), run after it settles.
-    if (pair.story.steps !== undefined && !Array.isArray(pair.story.steps)) throw new Error(`${at} (${pair.name}): story.steps must be an array`);
-    [...(steps ?? []), ...(pair.story.steps ?? [])].forEach((s, j) => {
+    const other = pair.story ?? pair.app;
+    if (pair.app !== undefined) {
+      const a = pair.app;
+      if (!isObject(a) || !APP_WHO.includes(a.who)) throw new Error(`${at} (${pair.name}): app.who must be one of ${APP_WHO.join(', ')}`);
+      for (const k of ['path', 'clip', 'reset']) if (a[k] !== undefined && typeof a[k] !== 'string') throw new Error(`${at} (${pair.name}): app.${k} must be a string`);
+    }
+    // Task 8b: a story may take the same steps (a press that shows a toast), run after it settles. An app side takes them too.
+    if (other.steps !== undefined && !Array.isArray(other.steps)) throw new Error(`${at} (${pair.name}): ${pair.story ? 'story' : 'app'}.steps must be an array`);
+    [...(steps ?? []), ...(other.steps ?? [])].forEach((s, j) => {
       const keys = Object.keys(s ?? {});
-      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor'].includes(keys[0]);
-      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor`);
+      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor', 'goto', 'totp', 'upload', 'dispatch'].includes(keys[0]);
+      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor, goto, totp, upload, dispatch`);
       if (keys[0] === 'type' && !(Array.isArray(s.type) && s.type.length === 2 && s.type.every(x => typeof x === 'string'))) throw new Error(`${at} (${pair.name}): step ${j} type is [selector, text]`);
       if (keys[0] === 'wait' && typeof s.wait !== 'number') throw new Error(`${at} (${pair.name}): step ${j} wait is milliseconds`);
+      if (keys[0] === 'goto' && typeof s.goto !== 'string') throw new Error(`${at} (${pair.name}): step ${j} goto is a path`);
+      if (keys[0] === 'totp' && !(Array.isArray(s.totp) && s.totp.length === 2 && typeof s.totp[0] === 'string' && PEOPLE.includes(s.totp[1]))) throw new Error(`${at} (${pair.name}): step ${j} totp is [selector, who] with who one of ${PEOPLE.join(', ')}`);
+      if (keys[0] === 'upload' && !(Array.isArray(s.upload) && s.upload.length >= 2 && s.upload.every(x => typeof x === 'string'))) throw new Error(`${at} (${pair.name}): step ${j} upload is [selector, file, ...] (files relative to the repo)`);
     });
   });
   return spec;
+}
+
+/** The URL a path has in the running app; `{invite}` expands to state.invitePath (the world's invite link path) and `{server}` to state.serverPath (#general of the world's server), `{community}` to the server's own path (the phone's server list). Pure. */
+export function appUrl(state, p) {
+  if (p.includes('{invite}') && typeof state.invitePath !== 'string') throw new Error('state has no invitePath for {invite}');
+  const root = state.publicUrl.replace(/\/+$/, '');
+  if (p.includes('{server}') && typeof state.serverPath !== 'string') throw new Error('state has no serverPath for {server}');
+  const rel = p.replace(/\{invite\}/g, state.invitePath ?? '').replace(/\{server\}/g, state.serverPath ?? '').replace(/\{community\}/g, (state.serverPath ?? '').split('/').slice(0, 3).join('/'));
+  return root + (rel.startsWith('/') ? rel : `/${rel}`);
+}
+
+/** Typed text in an app step: `{password:who}` and `{recoveryKey:who}` expand from state.people. Pure. */
+export function expandText(state, text) {
+  return text.replace(/\{(password|recoveryKey):(\w+)\}/g, (_, k, who) => {
+    const v = state.people?.[who]?.[k];
+    if (typeof v !== 'string') throw new Error(`state has no ${k} for ${who}`);
+    return v;
+  });
+}
+
+/** Which second side a pair has: its output stem is `<name>.app.png` or `<name>.story.png`. */
+export const sideOf = pair => (pair.app !== undefined ? 'app' : 'story');
+/** Output path of one frame of a pair: kind is prototype, app, story or pair. */
+export const pairFile = (outDir, pair, kind) => path.join(outDir, `${pair.name}.${kind}.png`);
+
+/** Command line: `<spec> <outDir> [--storybook url] [--app [state.json]]`. `app` is the state file path, or null without --app. */
+export function parseArgs(argv) {
+  const args = [...argv];
+  let storybook = 'http://127.0.0.1:6006';
+  let app = null;
+  const i = args.indexOf('--storybook');
+  if (i >= 0) { storybook = args[i + 1]; args.splice(i, 2); }
+  const j = args.indexOf('--app');
+  if (j >= 0) {
+    const next = args[j + 1];
+    if (next !== undefined && !next.startsWith('--')) { app = next; args.splice(j, 2); } else { app = DEFAULT_STATE; args.splice(j, 1); }
+  }
+  const [specFile, outDir] = args;
+  return { specFile, outDir, storybook, app };
 }
 
 /** The iframe URL of a story; globals use Storybook's `key:value;key:value` form and are URL-encoded. */
@@ -111,30 +163,45 @@ async function settle(page) {
   await page.waitForTimeout(SETTLE_MS);
 }
 
-async function runSteps(page, steps) {
+async function runSteps(page, steps, ctx = {}) {
   for (const s of steps ?? []) {
-    if (s.click) await page.click(s.click);
+    if (s.goto !== undefined) { await page.goto(appUrl(ctx.state, s.goto), { waitUntil: 'load' }); await page.waitForTimeout(300); }
+    else if (s.totp) {
+      const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
+      await page.fill(s.totp[0], await nextCode(ctx.state.controlUrl, ctx.state.people[s.totp[1]].totp));
+    }
+    else if (s.upload) await page.setInputFiles(s.upload[0], s.upload.slice(1).map(f => path.resolve(REPO, f)));
+    else if (s.dispatch) await page.locator(s.dispatch).first().dispatchEvent('click');
+    else if (s.click) await page.click(s.click);
     else if (s.rightClick) await page.click(s.rightClick, { button: 'right' });
     else if (s.waitFor) await page.waitForSelector(s.waitFor, { timeout: 30_000 });
     else if (s.hover) await page.hover(s.hover);
     else if (s.press) await page.keyboard.press(s.press);
-    else if (s.type) await page.fill(s.type[0], s.type[1]);
+    else if (s.type) await page.fill(s.type[0], ctx.state ? expandText(ctx.state, s.type[1]) : s.type[1]);
     else if (typeof s.wait === 'number') await page.waitForTimeout(s.wait);
   }
   if ((steps ?? []).length > 0) await settle(page);
 }
 
-async function capture(page, out, clip) {
+async function capture(page, out, clip, cdp) {
+  // With `cdp` (a world browser, emulated at scale 2 through CDP) the frame comes from Page.captureScreenshot: Playwright's own
+  // screenshot would ignore an emulation it did not set.
+  const grab = async region => {
+    if (cdp === undefined) { await page.screenshot({ path: out, ...(region ? { clip: region, fullPage: true } : {}) }); return; }
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', ...(region ? { clip: { ...region, scale: 1 } } : {}) });
+    fs.writeFileSync(out, Buffer.from(data, 'base64'));
+  };
   if (clip) {
     const loc = page.locator(clip).first();
     await loc.scrollIntoViewIfNeeded();
     const box = await loc.boundingBox();
     if (!box) throw new Error(`clip ${clip}: no box`);
-    await page.screenshot({ path: out, clip: padClip(box), fullPage: true });
-  } else await page.screenshot({ path: out });
+    const at = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    await grab(padClip(cdp === undefined ? box : { ...box, x: box.x + at.x, y: box.y + at.y }));
+  } else await grab(null);
 }
 
-async function shootPrototype(browser, pair, out) {
+export async function shootPrototype(browser, pair, out) {
   const context = await browser.newContext({ viewport: pair.viewport, reducedMotion: 'reduce', deviceScaleFactor: SCALE });
   try {
     const page = await context.newPage();
@@ -160,6 +227,56 @@ async function shootStory(browser, pair, base, out) {
   } finally { await context.close(); }
 }
 
+/** The page of one of the world's browsers (CDP), or a new signed-out context. Returns { page, done } */
+async function openAppPage(browser, state, pair) {
+  const { who } = pair.app;
+  const mobile = who === 'phone' || who === 'freshPhone';
+  if (who === 'fresh' || who === 'freshPhone') {
+    const context = await browser.newContext({
+      viewport: pair.viewport, reducedMotion: 'reduce', deviceScaleFactor: SCALE, colorScheme: 'dark', locale: 'en-GB', timezoneId: 'Europe/Stockholm',
+      ...(mobile ? { isMobile: true, hasTouch: true } : {}),
+    });
+    const page = await context.newPage();
+    await routeFonts(page);
+    return { page, mobile, cdp: undefined, restore: async () => {}, done: () => context.close() };
+  }
+  const port = state.cdp?.[who];
+  if (port === undefined) throw new Error(`state has no browser "${who}": is the world up (npm run ux:world -w @dilla/e2e)?`);
+  const remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  const ctx = remote.contexts()[0];
+  const page = ctx.pages().find(p => p.url().startsWith('http')) ?? ctx.pages()[0];
+  const orig = page.viewportSize();
+  // The world's windows are 1x; the prototype is shot at 2x, so the app is emulated at the pair's viewport and scale 2.
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+  const cdp = await ctx.newCDPSession(page);
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: pair.viewport.width, height: pair.viewport.height, deviceScaleFactor: SCALE, mobile });
+  const restore = async () => { await cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {}); if (orig) await page.setViewportSize(orig).catch(() => {}); };
+  return { page, mobile, cdp, restore, done: async () => { await restore(); await remote.close().catch(() => {}); } };
+}
+
+async function shootApp(browser, state, pair, out) {
+  const a = pair.app;
+  const { page, cdp, done } = await openAppPage(browser, state, pair);
+  const fresh = a.who === 'fresh' || a.who === 'freshPhone';
+  let back = a.reset ?? a.path;
+  try {
+    if (!fresh) back = back ?? new URL(page.url()).pathname + new URL(page.url()).search;
+    if (a.path !== undefined) await page.goto(appUrl(state, a.path), { waitUntil: 'load' });
+    else if (fresh) await page.goto(appUrl(state, '/'), { waitUntil: 'load' });
+    await page.mouse.move(-10, -10).catch(() => {});
+    await settle(page);
+    await runSteps(page, a.steps, { state });
+    await capture(page, out, a.clip, cdp);
+  } finally {
+    if (!fresh) {
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.keyboard.press('Escape').catch(() => {});
+      if (back !== undefined) await page.goto(appUrl(state, back), { waitUntil: 'load' }).catch(() => {});
+    }
+    await done();
+  }
+}
+
 async function composePair(browser, left, right, out) {
   const b64 = f => `data:image/png;base64,${fs.readFileSync(f).toString('base64')}`;
   const page = await browser.newPage();
@@ -171,23 +288,23 @@ async function composePair(browser, left, right, out) {
 }
 
 export async function main(argv) {
-  const args = argv.slice(2);
-  let storybook = 'http://127.0.0.1:6006';
-  const i = args.indexOf('--storybook');
-  if (i >= 0) { storybook = args[i + 1]; args.splice(i, 2); }
-  const [specFile, outDir] = args;
-  if (!specFile || !outDir || !storybook) { console.error('usage: shoot.mjs <spec.json> <outDir> [--storybook http://127.0.0.1:6006]'); return 2; }
+  const { specFile, outDir, storybook, app } = parseArgs(argv.slice(2));
+  if (!specFile || !outDir || !storybook) { console.error(`usage: shoot.mjs <spec.json> <outDir> [--storybook http://127.0.0.1:6006] [--app [${DEFAULT_STATE}]]`); return 2; }
   const spec = validateSpec(JSON.parse(fs.readFileSync(specFile, 'utf8')));
+  const state = app !== null && spec.some(p => p.app !== undefined) ? JSON.parse(fs.readFileSync(app ?? DEFAULT_STATE, 'utf8')) : null;
+  if (spec.some(p => p.app !== undefined) && state === null) { console.error('the spec has app pairs: pass --app [state.json]'); return 2; }
   fs.mkdirSync(outDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
   let failed = 0;
   try {
     for (const pair of spec) {
-      const p = n => path.join(outDir, `${pair.name}.${n}.png`);
+      const p = kind => pairFile(outDir, pair, kind);
+      const side = sideOf(pair);
       try {
         await shootPrototype(browser, pair, p('prototype'));
-        await shootStory(browser, pair, storybook, p('story'));
-        await composePair(browser, p('prototype'), p('story'), p('pair'));
+        if (side === 'app') await shootApp(browser, state, pair, p('app'));
+        else await shootStory(browser, pair, storybook, p('story'));
+        await composePair(browser, p('prototype'), p(side), p('pair'));
         console.log(`ok   ${pair.name}  ${p('pair')}`);
       } catch (e) {
         failed += 1;

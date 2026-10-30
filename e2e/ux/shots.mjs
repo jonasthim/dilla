@@ -3,7 +3,7 @@
 //   node e2e/ux/shots.mjs --list                   the steps
 //   node e2e/ux/shots.mjs shell dm --size 1440     named steps, one width
 //   node e2e/ux/shots.mjs phone-servers --theme light
-// Files are target/ui-screens/web3.9/<d|p><width>-<theme>-<step>.png. A step that cannot run says so and the rest go on.
+// Files are target/ui-screens/signal-b/<d|p><width>-<theme>-<step>.png. A step that cannot run says so and the rest go on.
 // Desktop steps run in Ada's browser at 1440x900 and 1024x768 (signal, light and high-contrast); phone steps run in her phone
 // (390x844 and 360x740; signal and light); `auth` runs in browsers of its own (the invite page, a sign-up, a sign-in).
 import path from 'node:path';

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "standing-desktop-chat",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "main header >> text=6" }, { "wait": 900 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=/^Members/]" }, { "wait": 900 }] }
+  },
+  {
+    "name": "standing-desktop-members-open",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 1200 }] },
+    "app": { "who": "ada", "path": "{server}" }
+  },
+  {
+    "name": "standing-voice-focus",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=harbour >> nth=0" }, { "wait": 1200 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 2500 }] }
+  },
+  {
+    "name": "standing-phone-list",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" } },
+    "app": { "who": "phone", "path": "{community}" }
+  },
+  {
+    "name": "standing-phone-conversation",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }] }
+  }
+]

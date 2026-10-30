@@ -1,0 +1,203 @@
+[
+  {
+    "name": "gap03-signin-recover-desktop",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "signin" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 500 }, { "type": ["input[inputmode=numeric]", "123456"] }, { "wait": 900 }] },
+    "app": { "who": "fresh", "path": "/welcome", "steps": [
+      { "click": "role=button[name=\"Use an existing account\"s]" }, { "type": ["#signin-username", "mira"] }, { "type": ["#signin-password", "{password:mira}"] },
+      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "input[autocomplete=one-time-code]" }, { "totp": ["input[autocomplete=one-time-code]", "mira"] },
+      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "text=Your recovery key" }, { "wait": 600 }] }
+  },
+  {
+    "name": "gap04-signin-done-desktop",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "signin" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 500 }, { "type": ["input[inputmode=numeric]", "123456"] }, { "wait": 900 }, { "click": "text=Add browser" }, { "wait": 900 }] },
+    "app": { "who": "fresh", "path": "/welcome", "steps": [
+      { "click": "role=button[name=\"Use an existing account\"s]" }, { "type": ["#signin-username", "bjorn"] }, { "type": ["#signin-password", "{password:bjorn}"] },
+      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "input[autocomplete=one-time-code]" }, { "totp": ["input[autocomplete=one-time-code]", "bjorn"] },
+      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "text=Your recovery key" }, { "type": ["input[autocomplete=off], input[name=key], textarea", "{recoveryKey:bjorn}"] },
+      { "click": "role=button[name=\"Add this browser\"s]" }, { "waitFor": "text=You’re in" }, { "wait": 900 }] }
+  },
+  {
+    "name": "gap11-auth-phone-creds",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "signin", "device": "phone" }, "steps": [{ "wait": 900 }] },
+    "app": { "who": "freshPhone", "path": "/welcome", "steps": [{ "click": "role=button[name=\"Use an existing account\"s]" }, { "wait": 600 }] }
+  },
+  {
+    "name": "gap11-auth-phone-code",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "signin", "device": "phone" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 900 }] },
+    "app": { "who": "freshPhone", "path": "/welcome", "steps": [
+      { "click": "role=button[name=\"Use an existing account\"s]" }, { "type": ["#signin-username", "mira"] }, { "type": ["#signin-password", "{password:mira}"] },
+      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "input[autocomplete=one-time-code]" }, { "wait": 600 }] }
+  },
+  {
+    "name": "gap16-reminders-empty-due",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 300 }, { "click": "div[data-rem='1'] > div >> nth=0" }, { "wait": 500 }, { "click": "div[data-rem='1'] >> text=Dismiss" }, { "wait": 3600 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }, { "wait": 2500 }] }
+  },
+  {
+    "name": "gap16-reminders-empty-upcoming",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 300 }, { "click": "div[data-rem='1'] > div >> nth=0" }, { "wait": 500 }, { "click": "div[data-rem='1'] >> text=Dismiss" }, { "wait": 400 }, { "click": "div[data-rem='1'] >> text=Upcoming" }, { "wait": 400 }, { "click": "div[data-rem='1'] >> text=Cancel" }, { "wait": 3600 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }, { "wait": 400 }, { "click": "role=tab[name=/Upcoming/]" }, { "wait": 2500 }] }
+  },
+  {
+    "name": "gap24-status-menu-desktop",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside > div:last-child > div:nth-child(1)" }, { "wait": 600 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=/your status/]" }, { "wait": 600 }] }
+  },
+  {
+    "name": "gap96-status-menu-phone",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 700 }, { "click": "text=Status" }, { "wait": 700 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/status/i] >> nth=0" }, { "wait": 700 }] }
+  },
+  {
+    "name": "gap44-reply-jump-flash",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "hover": "article >> nth=0" }, { "wait": 300 }, { "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1" }, { "type": ["main textarea", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 900 }, { "click": "text=raid tonight at 20:00" }, { "wait": 200 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "hover": "role=article >> nth=1" }, { "wait": 300 }, { "click": "role=button[name=/^reply/i] >> nth=0" }, { "type": ["role=textbox[name=/^message/i]", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 1500 }, { "click": "role=button[name=/^Björn.*in\\./]" }, { "wait": 200 }] }
+  },
+  {
+    "name": "gap47-gif-picker",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "click": "main span:text-is('GIF')" }, { "wait": 700 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"add a gif\"s]" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap49-tray-images-and-files",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/lantern.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 200 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/lantern.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 200 }] }
+  },
+  {
+    "name": "gap52-sent-image-and-file",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "main textarea" }, { "press": "Enter" }, { "wait": 1500 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "role=textbox[name=/^message/i]" }, { "press": "Enter" }, { "wait": 3000 }] }
+  },
+  {
+    "name": "gap53-code-block-copied",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "click": "main >> text=Copy >> nth=0" }, { "wait": 400 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=textbox[name=/^message/i]" }, { "type": ["role=textbox[name=/^message/i]", "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"] }, { "press": "Enter" }, { "wait": 2500 }, { "dispatch": ".d-code-block__copy >> nth=-1" }, { "wait": 400 }] }
+  },
+  {
+    "name": "gap71-voice-preview-nobody-desktop",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=1" }, { "wait": 1200 }, { "click": "main >> text=Leave" }, { "wait": 1200 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice general\"s]" }, { "wait": 2500 }, { "click": "role=button[name=\"leave\"i]" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap99-voice-preview-nobody-phone",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=general >> nth=1" }, { "wait": 1200 }, { "click": "main d-icon[name='phone-off'] >> nth=0" }, { "wait": 1200 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"voice general\"s]" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap75-focused-tile-fullscreen",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=harbour >> nth=0" }, { "wait": 1500 }, { "hover": "main d-icon[name='maximize'] >> nth=0" }, { "wait": 500 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 3000 }, { "click": "role=button[name=/\\(you\\)/]" }, { "wait": 800 }, { "hover": "role=button[name=/full screen/i] >> nth=0" }, { "wait": 500 }] }
+  },
+  {
+    "name": "gap79-voice-ptt-listening",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "div:has(> d-icon[name='settings']) >> nth=0" }, { "wait": 600 }, { "click": "nav >> text='Voice'" }, { "wait": 900 }, { "click": "text='Push to talk'" }, { "wait": 600 }, { "click": "text=Change" }, { "wait": 600 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Voice\"s]" }, { "wait": 900 }, { "click": "role=radio[name=/push to talk/i]" }, { "wait": 600 }, { "click": "role=button[name=/^change/i]" }, { "wait": 600 }] }
+  },
+  {
+    "name": "gap80-voice-mic-test-running",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "div:has(> d-icon[name='settings']) >> nth=0" }, { "wait": 600 }, { "click": "nav >> text='Voice'" }, { "wait": 900 }, { "click": "text=/Let.s check/" }, { "wait": 900 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Voice\"s]" }, { "wait": 900 }, { "click": "role=button[name=/check|test/i]" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap83-roles-new-role",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "div:has(> d-icon[name='settings']) >> nth=0" }, { "wait": 600 }, { "click": "nav >> text='Roles'" }, { "wait": 900 }, { "click": "text=New role" }, { "wait": 800 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Roles\"s]" }, { "wait": 900 }, { "click": "role=button[name=/new role/i]" }, { "wait": 1200 }] }
+  },
+  {
+    "name": "gap85-devices-remove-other-browser",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "div:has(> d-icon[name='settings']) >> nth=0" }, { "wait": 600 }, { "click": "nav >> text='Devices'" }, { "wait": 900 }, { "click": "text=Remove >> nth=0" }, { "wait": 800 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Devices\"s]" }, { "wait": 1200 }, { "click": "role=button[name=/^remove/i] >> nth=0" }, { "wait": 1000 }] }
+  },
+  {
+    "name": "gap87-phone-members-sheet",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 1200 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap89-phone-message-toolbar",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }, { "click": "article >> nth=2" }, { "wait": 700 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }, { "click": "role=article >> nth=2" }, { "wait": 700 }] }
+  },
+  {
+    "name": "gap90-phone-emoji-picker",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }, { "click": "span[title='Emoji']" }, { "wait": 700 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }, { "click": "role=button[name=\"Emoji\"s]" }, { "wait": 700 }] }
+  },
+  {
+    "name": "gap90-phone-gif-picker",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }, { "click": "main span:text-is('GIF')" }, { "wait": 700 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }, { "click": "role=button[name=\"add a gif\"s]" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap90-phone-tray",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 200 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 200 }] }
+  },
+  {
+    "name": "gap97-phone-dm-list",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "d-icon[name='at-sign'] >> nth=0" }, { "wait": 1200 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=/^direct messages/]" }, { "wait": 1200 }] }
+  },
+  {
+    "name": "gap97-phone-dm-conversation",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "d-icon[name='at-sign'] >> nth=0" }, { "wait": 900 }, { "click": "text=Ada >> nth=0" }, { "wait": 1200 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=/^direct messages/]" }, { "wait": 1200 }, { "click": "role=button[name=/^Mira/] >> nth=0" }, { "wait": 1500 }] }
+  },
+  {
+    "name": "gap102-phone-settings-profile",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 600 }, { "click": "div:has(> d-icon[name='settings']):visible >> nth=0" }, { "wait": 900 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }] }
+  },
+  {
+    "name": "gap102-phone-settings-signin",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 600 }, { "click": "div:has(> d-icon[name='settings']):visible >> nth=0" }, { "wait": 700 }, { "click": "nav >> text='Sign-in'" }, { "wait": 900 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }, { "click": "role=dialog >> role=button[name=\"Sign-in\"s]" }, { "wait": 1000 }] }
+  },
+  {
+    "name": "gap102-phone-settings-devices",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 600 }, { "click": "div:has(> d-icon[name='settings']):visible >> nth=0" }, { "wait": 700 }, { "click": "nav >> text='Devices'" }, { "wait": 900 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }, { "click": "role=dialog >> role=button[name=\"Devices\"s]" }, { "wait": 1000 }] }
+  },
+  {
+    "name": "gap102-phone-settings-keyboard",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 600 }, { "click": "div:has(> d-icon[name='settings']):visible >> nth=0" }, { "wait": 700 }, { "click": "nav >> text='Keyboard'" }, { "wait": 900 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }, { "click": "role=dialog >> role=button[name=\"Keyboard\"s]" }, { "wait": 1000 }] }
+  },
+  {
+    "name": "gap102-phone-settings-overview",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 600 }, { "click": "div:has(> d-icon[name='settings']):visible >> nth=0" }, { "wait": 700 }, { "click": "nav >> text='Overview'" }, { "wait": 900 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/settings/i] >> nth=0" }, { "wait": 1200 }, { "click": "role=dialog >> role=button[name=\"Overview\"s]" }, { "wait": 1000 }] }
+  }
+]

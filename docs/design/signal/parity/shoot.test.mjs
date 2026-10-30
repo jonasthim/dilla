@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateSpec, storyUrl, patchDataProps, DEFAULT_GLOBALS, padClip, localFontCss } from './shoot.mjs';
+import { validateSpec, storyUrl, patchDataProps, DEFAULT_GLOBALS, padClip, localFontCss, appUrl, sideOf, pairFile, parseArgs } from './shoot.mjs';
 
 const good = { name: 'a', viewport: { width: 1280, height: 800 }, prototype: {}, story: { id: 'x--y' } };
 
@@ -62,4 +62,60 @@ test('localFontCss declares JetBrains Mono 400-700 and DM Serif Display italic f
   assert.match(css, /font-family:'DM Serif Display';font-style:italic;font-weight:400/);
   assert.ok(seen.some(f => f.includes('jetbrains-mono')) && seen.some(f => f.includes('dm-serif-display')));
   assert.doesNotMatch(css, /https?:/);
+});
+
+const app = { name: 'b', viewport: { width: 1280, height: 800 }, prototype: {}, app: { who: 'ada' } };
+
+test('validateSpec accepts a pair with app and no story, and rejects both or neither', () => {
+  assert.equal(validateSpec([app]).length, 1);
+  assert.equal(validateSpec([app, good.name === 'a' ? { ...good, name: 'c' } : good]).length, 2);
+  assert.throws(() => validateSpec([{ ...app, story: { id: 'x--y' } }]), /exactly one of story or app/);
+  const { story, ...neither } = good;
+  assert.throws(() => validateSpec([neither]), /exactly one of story or app/);
+});
+
+test('validateSpec rejects an unknown who and accepts every known one', () => {
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'liv' } }]), /who must be one of/);
+  assert.throws(() => validateSpec([{ ...app, app: {} }]), /who must be one of/);
+  for (const who of ['ada', 'bjorn', 'mira', 'phone', 'fresh', 'freshPhone']) assert.equal(validateSpec([{ ...app, app: { who } }]).length, 1);
+});
+
+test('validateSpec accepts goto and totp steps and rejects a malformed totp or goto', () => {
+  const steps = [{ goto: '/welcome' }, { totp: ['input', 'ada'] }, { click: 'button' }];
+  assert.equal(validateSpec([{ ...app, app: { who: 'fresh', path: '/x', steps, clip: '.a', reset: '/y' } }]).length, 1);
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'fresh', steps: [{ totp: ['input'] }] } }]), /totp is \[selector, who\]/);
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'fresh', steps: [{ totp: ['input', 'zed'] }] } }]), /totp is \[selector, who\]/);
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'fresh', steps: [{ goto: 3 }] } }]), /goto is a path/);
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'ada', path: 3 } }]), /app\.path/);
+});
+
+test('appUrl joins the public URL and expands {invite} from state.invitePath', () => {
+  const state = { publicUrl: 'http://127.0.0.1:8611', invitePath: '/i/abc%20d' };
+  assert.equal(appUrl(state, '/c/x?i={invite}'), 'http://127.0.0.1:8611/c/x?i=/i/abc%20d');
+  assert.equal(appUrl(state, '{invite}'), 'http://127.0.0.1:8611/i/abc%20d');
+  assert.equal(appUrl(state, '/'), 'http://127.0.0.1:8611/');
+  assert.throws(() => appUrl({ publicUrl: 'http://x' }, '{invite}'), /invitePath/);
+  assert.equal(appUrl({ ...state, serverPath: '/c/a/b' }, '{server}'), 'http://127.0.0.1:8611/c/a/b');
+  assert.throws(() => appUrl(state, '{server}'), /serverPath/);
+  assert.equal(appUrl({ ...state, serverPath: '/c/a/b' }, '{community}'), 'http://127.0.0.1:8611/c/a');
+});
+
+test('output file stems are .app.png for app pairs and .story.png for story pairs', () => {
+  assert.equal(sideOf(app), 'app');
+  assert.equal(sideOf(good), 'story');
+  assert.equal(pairFile('out', app, sideOf(app)), 'out/b.app.png');
+  assert.equal(pairFile('out', good, 'prototype'), 'out/a.prototype.png');
+  assert.equal(pairFile('out', good, 'pair'), 'out/a.pair.png');
+});
+
+test('parseArgs reads --storybook and --app with an optional state file', () => {
+  assert.deepEqual(parseArgs(['s.json', 'out']), { specFile: 's.json', outDir: 'out', storybook: 'http://127.0.0.1:6006', app: null });
+  assert.equal(parseArgs(['s.json', 'out', '--app']).app, 'target/ui-screens/signal-b/state.json');
+  assert.equal(parseArgs(['s.json', 'out', '--app', 'x/state.json']).app, 'x/state.json');
+  assert.equal(parseArgs(['s.json', 'out', '--storybook', 'http://h:1']).storybook, 'http://h:1');
+});
+
+test('validateSpec accepts an upload step with files and rejects one without', () => {
+  assert.equal(validateSpec([{ ...app, app: { who: 'ada', steps: [{ upload: ['input[type=file]', 'a.png', 'b.txt'] }] } }]).length, 1);
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'ada', steps: [{ upload: ['input[type=file]'] }] } }]), /upload is \[selector, file/);
 });

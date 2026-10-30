@@ -1,46 +1,56 @@
-// The UX audit world: an empty test host, then a realistic server built through the client only. It keeps every browser open
-// (each with a CDP port) so ux:shots and the step runner can attach, writes state.json when ready, then holds until it is stopped.
-//   npm run ux:world -w @dilla/e2e        (needs packages/web/dist, target/dilla-testhost and the core wasm built)
-// Ports: host 8611/8612, SFU 7988/7990, browsers' CDP from 9611, Ada's phone 9620. Output: target/ui-screens/web3.9/.
-import { spawn } from 'node:child_process';
+// The UX audit world: an empty test host with the Bot runtime, then a realistic server built through the client only. It keeps
+// every browser open (each with a CDP port) so ux:shots, the parity shooter and the step runner can attach, writes state.json when
+// ready, then holds until it is stopped.
+//   npm run ux:world -w @dilla/e2e -- [--base <n>] [--out <dir>]
+// (needs packages/web/dist, target/dilla-testhost and target/dillabot, and the core wasm built).
+// Ports from --base n (default 8611): host n, control n+1, SFU n+2 (UDP n+4), browsers' CDP from n+10, Ada's phone n+19.
+// Output: --out (default target/ui-screens/signal-b), state.json inside it.
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const OUT = path.join(REPO, 'target', 'ui-screens', 'web3.9');
+const argv = process.argv.slice(2);
+const flag = (name, dflt) => { const i = argv.indexOf(name); return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : dflt; };
+const BASE = Number(flag('--base', '8611'));
+const OUT = path.resolve(flag('--out', path.join(REPO, 'target', 'ui-screens', 'signal-b')));
 const require = createRequire(path.join(REPO, 'e2e', 'package.json'));
 const { chromium } = require('@playwright/test');
+const { build } = require('esbuild');
 const { t } = await import(path.join(REPO, 'packages/web/src/strings/index.ts'));
 const { chromiumMediaArgs, writeFixtures } = await import(path.join(REPO, 'e2e/media/support/fixtures.ts'));
 const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
 
-const PORT = 8611, CONTROL = 8612, SFU = 7988, SFU_UDP = 7990;
+// host.ts (startTestHost: the host, its fake-clock ticker and the Bot runtime) is TypeScript with extensionless imports, which
+// plain node cannot load: bundle it once into target/ and import that. import.meta.url is pinned so REPO_ROOT stays right.
+const hostSrc = path.join(REPO, 'e2e/web/support/host.ts');
+const hostBundle = path.join(REPO, 'target', 'tmp', 'ux-host.bundle.mjs');
+await build({ entryPoints: [hostSrc], outfile: hostBundle, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'error',
+  define: { 'import.meta.url': JSON.stringify(pathToFileURL(hostSrc).href) } });
+const { startTestHost } = await import(pathToFileURL(hostBundle).href);
+
+const PORT = BASE, CONTROL = BASE + 1, SFU = BASE + 2, SFU_UDP = BASE + 4;
 const publicUrl = `http://127.0.0.1:${PORT}`;
 const controlUrl = `http://127.0.0.1:${CONTROL}`;
 const WAIT = 60_000;
+mkdirSync(OUT, { recursive: true });
 const DATA = path.join(OUT, 'world');
 rmSync(DATA, { recursive: true, force: true });
 mkdirSync(DATA, { recursive: true });
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
-const host = spawn(path.join(REPO, 'target/dilla-testhost'), [
-  '-listen', `127.0.0.1:${PORT}`, '-control', `127.0.0.1:${CONTROL}`, '-core', path.join(REPO, 'internal/mlswasi/testdata/dilla_core_wasi.wasm'),
-  '-log-level', 'warn', '-data-dir', path.join(DATA, 'host'), '-production-acl', '-web-root', path.join(REPO, 'packages/web/dist'),
-  '-sfu', '-sfu-port', String(SFU), '-sfu-udp-port', String(SFU_UDP),
-], { stdio: ['ignore', 'pipe', 'pipe'] });
-const invite0 = await new Promise((res, rej) => {
-  let seen = '';
-  host.stdout.on('data', (b) => { seen += b; const m = /DILLA_TESTKIT_INVITE=(\S+)/.exec(seen); if (m) res(m[1].split(',')[0]); });
-  host.stderr.on('data', (b) => { seen += b; });
-  host.once('exit', (c) => rej(new Error('host exited ' + c + seen)));
-});
+const host = await startTestHost({ port: PORT, control: CONTROL, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
+  sfu: { port: SFU, udpPort: SFU_UDP } });
+const invite0 = host.invite.split(',')[0];
 log('host up');
+const crash = (e) => { console.error(e); host.stop().finally(() => process.exit(1)); };
+process.on('uncaughtException', crash);
+process.on('unhandledRejection', crash);
 const fixtures = writeFixtures(path.join(DATA, 'media'));
 const state = { publicUrl, controlUrl, people: {}, cdp: {} };
 const authenticators = {};
-let cdpPort = 9611;
+let cdpPort = BASE + 10;
 const save = () => writeFileSync(path.join(OUT, 'state.json'), JSON.stringify(state, null, 2));
 
 async function open(who, extra = {}) {
@@ -136,6 +146,50 @@ await sd.waitFor({ state: 'hidden', timeout: WAIT });
 await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
 log('server made');
 
+const closeSettings = async () => {
+  for (let i = 0; i < 6; i++) {
+    if (!(await byText(ada, 'dialog', 'admin.title').isVisible().catch(() => false))) return;
+    await ada.keyboard.press('Escape');
+    await ada.waitForTimeout(500);
+  }
+};
+// The Bot: installed through Server settings -> Bot with Polls and Reminders on, as e2e/web/bot-runtime.spec.ts does. Its display
+// name goes to state.botName.
+{
+  await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
+  const bs = byText(ada, 'dialog', 'admin.title');
+  await bs.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.bot'), exact: true }).click();
+  for (const cap of ['polls', 'reminders']) {
+    const sw = bs.getByRole('switch', { name: t(`serverSettings.bot.cap.${cap}`), exact: true });
+    await sw.waitFor({ timeout: WAIT });
+    if ((await sw.getAttribute('aria-checked')) !== 'true') await sw.click();
+  }
+  await bs.getByRole('button', { name: t('serverSettings.bot.enable'), exact: true }).click();
+  const stepUp = byText(ada, 'dialog', 'factorSettings.stepUp.title');
+  await stepUp.getByLabel(t('factorSettings.stepUp.password'), { exact: true }).fill(state.people.ada.password);
+  await stepUp.getByRole('button', { name: t('factorSettings.stepUp.confirm'), exact: true }).click();
+  await ada.waitForTimeout(2500); await ada.screenshot({ path: path.join(OUT, 'bot-after-enable.png') });
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    await closeSettings();
+    await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
+    const again = byText(ada, 'dialog', 'admin.title');
+    await again.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.bot'), exact: true }).click();
+    try { const tok = (await import('node:fs')).readFileSync(host.runtimeCredentialFile, 'utf8').trim(); const r = await fetch(host.url + '/v1/bot-runtime/installations', { headers: { authorization: 'Bearer ' + tok, accept: 'application/cbor' } }); log('installations', r.status, Buffer.from(await r.arrayBuffer()).toString('hex').slice(0, 80)); } catch (e) { log('inst probe', String(e).slice(0, 100)); }
+    await ada.waitForTimeout(5000);
+    const status = await again.locator('.dw-bot-settings').innerText({ timeout: 4000 }).catch(() => ''); log('bot card', JSON.stringify(status.split('\n').slice(0, 6).join(' | ')));
+    if (status.includes(t('serverSettings.bot.card', { presence: t('serverSettings.bot.online') }).replace(/ · v.*/, ''))) {
+      const lines = status.split('\n').map((l) => l.trim()).filter(Boolean); const tag = lines.findIndex((l) => l.toLowerCase() === t('serverSettings.bot.tag')); state.botName = tag > 0 ? lines[tag - 1] : t('serverSettings.bot.fallbackName');
+      break;
+    }
+    if (Date.now() > deadline) throw new Error('the Bot did not reach ready: ' + status);
+    await ada.waitForTimeout(2000);
+  }
+  await closeSettings();
+  log('bot ready', state.botName);
+  save();
+}
+
 const addChannel = async (kind, name) => {
   await ada.getByRole('navigation', { name: t('shell.channels.label'), exact: true }).getByRole('button', { name: t('create.channel.open'), exact: true }).click();
   const dialog = byText(ada, 'dialog', 'create.channel.title', { server: SERVER });
@@ -158,7 +212,7 @@ for (const n of ['harbour', 'Late night lounge for people who never sleep']) awa
 await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
 const settings = byText(ada, 'dialog', 'admin.title');
 await settings.waitFor({ timeout: WAIT });
-await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('admin.nav.invites'), exact: true }).click();
+await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.invites'), exact: true }).click();
 // Signal task 10c: the link shows once in the Invites card (no dialog).
 await settings.getByRole('button', { name: t('serverSettings.invites.make'), exact: true }).click();
 const inv = settings;
@@ -260,7 +314,7 @@ try {
     headless: true, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true,
     userAgent: USER_AGENT,
     colorScheme: 'dark', reducedMotion: 'reduce', locale: 'en-GB', timezoneId: 'Europe/Stockholm', baseURL: publicUrl,
-    args: [...chromiumMediaArgs(fixtures), '--remote-debugging-port=9620'], permissions: ['microphone', 'camera'],
+    args: [...chromiumMediaArgs(fixtures), `--remote-debugging-port=${BASE + 19}`], permissions: ['microphone', 'camera'],
   });
   const page = ctx.pages()[0] ?? await ctx.newPage();
   const shot = async (n) => { await page.waitForTimeout(300); await page.screenshot({ path: path.join(OUT, `${n}.png`) }); log('shot', n); };
@@ -289,7 +343,7 @@ try {
   await shot('p390-signal-signin-4-done');
   await byText(page, 'button', 'signin.done.next').click();
   await page.waitForTimeout(3000);
-  state.cdp.phone = 9620;
+  state.cdp.phone = BASE + 19;
   log('phone ready');
 } catch (e) { log('phone failed', String(e).slice(0, 300)); }
 state.ready = true;
@@ -297,5 +351,6 @@ save();
 log('READY');
 // Keep the voice participants alive.
 setInterval(() => {}, 1 << 30);
-process.on('SIGTERM', () => { host.kill('SIGTERM'); process.exit(0); });
-process.on('SIGINT', () => { host.kill('SIGTERM'); process.exit(0); });
+const stopAll = () => { host.stop().finally(() => process.exit(0)); };
+process.on('SIGTERM', stopAll);
+process.on('SIGINT', stopAll);

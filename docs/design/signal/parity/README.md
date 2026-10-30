@@ -59,3 +59,41 @@ A pair matches when **colour, size, spacing, radius, type and copy** agree. The 
 Constraints (for example `--edge` instead of the prototype's `#2A303A` on controls whose border is their only boundary,
 and `fg-3` text never on `surfaceHi`) are the only accepted deviations. Anything else that differs is a bug in the
 story or component, not in the prototype.
+
+## Shoot the running app instead of a story (`--app`)
+
+A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix both. An `app` side is the real web client:
+
+```json
+{ "name": "gap16-reminders-empty-due", "viewport": { "width": 1280, "height": 800 },
+  "prototype": { "props": { "startAt": "app" }, "steps": [...] },
+  "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }], "clip": "...", "reset": "..." } }
+```
+
+- `who`: `ada`, `bjorn`, `mira`, `phone` are the world's browsers, attached over CDP (their window is emulated at the
+  pair's viewport and scale 2 and restored afterwards); `fresh` and `freshPhone` are new signed-out contexts at
+  `state.publicUrl` (1280x800 and 390x844 touch).
+- `path` is opened before the steps. `{invite}` expands to `state.invitePath`, `{server}` to `#general` of the world's
+  server, `{community}` to the server's own path (the phone's server list). Without a `path` the page stays where it is.
+  After the capture the tool presses Escape twice and reloads `reset` (default: `path`, else the URL before the steps).
+- Extra step kinds on top of the prototype ones: `{ "goto": "/path" }`, `{ "totp": [selector, who] }` (fills the next
+  authenticator code of `state.people[who]`), `{ "upload": [selector, file...] }` (files relative to the repo, see
+  `app/fixtures/`), `{ "dispatch": selector }` (a click event without hit testing). Typed text expands
+  `{password:who}` and `{recoveryKey:who}` from `state.people`.
+- Selectors on the app side can use Playwright roles: `role=button[name="Reminders"s]` (`s` = exact, `i` = case-insensitive).
+- Output: `<name>.prototype.png`, `<name>.app.png`, `<name>.pair.png` (app on the right).
+
+```
+npm run ux:world -w @dilla/e2e -- --base 8611 --out target/ui-screens/signal-b   # waits for READY, keeps running
+node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json <outDir> --app [target/ui-screens/signal-b/state.json]
+```
+
+The world, its builds and ports are in `e2e/ux/README.md`. `app/standing.json` is the five standing whole screens (desktop
+chat, members open, voice focus, phone list, phone conversation); `app/wave-a-gaps.json` is the wave A states that were
+never compared with the shipped client.
+
+**What is not judged.** The app's sample data (server Midgard Crew; Ada, Björn, Mira, Liv; timestamps, device names,
+counts) differs from the prototype's (Mira, Ada, Björn, Kari, Ole, Glenn playing music). Compare styling, structure and
+copy, not names. Other known capture differences: the prototype draws a phone frame around its 390px shots, uploads in
+the app finish instantly (the prototype's progress bar is mid-way at capture), Giphy is unreachable from the world (the
+picker shows its error state), and reduced motion (both sides) replaces animations such as the reply-jump flash.
