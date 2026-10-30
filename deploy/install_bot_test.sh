@@ -211,6 +211,48 @@ grep -q 'upgraded Bot service did not remain active' "$TMP/err" || fail "start f
 [ "$(cat "$TMP/start-count")" = 2 ] || fail "old service was not started after rollback"
 pass "service start failure rolls back Bot files and state"
 
+# Pre-upgrade copies are pruned only after a successful upgrade: the 3 newest
+# stay (the new one included) and only the installer's own plain directories go.
+BP="$ROOT/var/backups/dillabot"
+rm -rf "$BP"
+mkdir -m 0700 "$BP"
+for n in 1 2 3 4 5; do mkdir -m 0700 "$BP/2020010${n}T000000Z-aaaaaaa$n"; done
+mkdir -m 0700 "$BP/notes-from-operator"
+mkdir -m 0700 "$TMP/link-target"
+ln -s "$TMP/link-target" "$BP/20200101T000000Z-linkaaaa"
+printf 'x\n' >"$BP/20200101T000000Z-fileaaaa"
+sleep 1
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL2" >"$TMP/out" 2>"$TMP/err"; then :; else fail "pruning upgrade failed: $(cat "$TMP/err")"; fi
+for n in 1 2 3; do [ ! -e "$BP/2020010${n}T000000Z-aaaaaaa$n" ] || fail "old copy $n was not pruned"; done
+for n in 4 5; do [ -d "$BP/2020010${n}T000000Z-aaaaaaa$n" ] || fail "newest old copy $n was pruned"; done
+grep -q "removed old pre-upgrade copy $BP/20200101T000000Z-aaaaaaa1" "$TMP/err" || fail "pruned path was not logged"
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 3 ] || fail "upgrade did not leave exactly 3 copies"
+[ -d "$BP/notes-from-operator" ] || fail "non-matching directory was pruned"
+[ -L "$BP/20200101T000000Z-linkaaaa" ] && [ -d "$TMP/link-target" ] || fail "symlink or its target was pruned"
+[ -f "$BP/20200101T000000Z-fileaaaa" ] || fail "plain file was pruned"
+pass "upgrade keeps the 3 newest copies and leaves foreign entries alone"
+
+# A failed upgrade prunes nothing, however many copies exist.
+BEFORE_COUNT="$(find "$BP" -mindepth 1 -maxdepth 1 | wc -l)"
+rm -f "$TMP/doctor-count"
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_COUNT="$TMP/doctor-count" BOT_TEST_DOCTOR_FAIL_AFTER_FIRST=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --keep-backups 1 --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed doctor succeeded"; fi
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 | wc -l)" -eq $((BEFORE_COUNT + 1)) ] || fail "failed upgrade pruned copies"
+if grep -q 'removed old pre-upgrade copy' "$TMP/err"; then fail "failed upgrade logged a prune"; fi
+pass "failed upgrade prunes nothing"
+
+# --keep-backups 1 keeps only the new copy.
+sleep 1
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --keep-backups 1 --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then :; else fail "keep-backups 1 upgrade failed: $(cat "$TMP/err")"; fi
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 1 ] || fail "--keep-backups 1 did not keep only the new copy"
+[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v3 ] || fail "keep-backups upgrade did not install v3"
+pass "--keep-backups 1 keeps only the new copy"
+
+: >"$LOG"
+reject_args "--keep-backups 0" --upgrade --keep-backups 0
+reject_args "a negative --keep-backups" --upgrade --keep-backups=-1
+reject_args "a nonnumeric --keep-backups" --upgrade --keep-backups many
+reject_args "an empty --keep-backups" --upgrade --keep-backups=
+
 # A second guided first-install run must preserve the existing secret/state and refuse.
 BEFORE="$(sha256sum "$ROOT/etc/dillabot/runtime.token")"
 # shellcheck disable=SC2086
