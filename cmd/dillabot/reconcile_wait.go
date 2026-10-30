@@ -21,7 +21,8 @@ const (
 	interactionBurst   = 3
 )
 
-// interactionBudget is a token bucket for interaction fast-path polls. It outlives one wait, so
+// interactionBudget is a token bucket for interaction fast-path work, charged per group synced
+// (see botGatewayRuntime.PollInteractions for the per-poll cap). It outlives one wait, so
 // a flood cannot reset it by spanning a reconciliation pass.
 type interactionBudget struct {
 	tokens   float64
@@ -54,9 +55,11 @@ func (b *interactionBudget) delay(now time.Time) time.Duration {
 	return d
 }
 
-func (b *interactionBudget) spend(now time.Time) {
+// spend charges one token per group a poll that began at now synced. The balance may go below
+// zero; the next poll then waits until it has refilled to one.
+func (b *interactionBudget) spend(now time.Time, groups int) {
 	b.refill(now)
-	b.tokens--
+	b.tokens -= float64(groups)
 	b.last = now
 }
 
@@ -74,7 +77,7 @@ type reconcileWait struct {
 	wake            <-chan struct{}
 	interaction     <-chan struct{}
 	poll            func(context.Context)
-	pollInteraction func(context.Context)
+	pollInteraction func(context.Context) int // reports the groups synced
 	budget          *interactionBudget
 	now             func() time.Time
 	after           func(time.Duration) <-chan time.Time
@@ -110,8 +113,12 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 				fast = w.after(d)
 				continue
 			}
-			w.budget.spend(w.now())
-			w.pollInteraction(ctx)
+			// A poll starts only with a token in hand and is then charged one token per group it
+			// synced (at most interactionGroupCap), so a flood across many groups refills no
+			// faster than one group per gatewayWakeThrottle.
+			start := w.now()
+			synced := w.pollInteraction(ctx)
+			w.budget.spend(start, synced)
 		}
 	}
 }

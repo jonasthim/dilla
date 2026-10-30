@@ -209,9 +209,8 @@ func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
 	if !inOrder && !reversed {
 		t.Fatalf("polled %v, want each messaged group once", polled)
 	}
-	runtime.PollInteractions(t.Context())
-	if len(polled) != 2 {
-		t.Fatalf("a drained signal polled again: %v", polled)
+	if n := runtime.PollInteractions(t.Context()); n != 0 || len(polled) != 2 {
+		t.Fatalf("a drained signal polled again: %v (%d synced)", polled, n)
 	}
 	runtime.notifyInteraction(unpolled, a)
 	runtime.PollInteractions(t.Context())
@@ -219,5 +218,67 @@ func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
 	case <-runtime.Wake():
 	default:
 		t.Fatal("an installation without a fast-path poller did not fall back to the general wake")
+	}
+}
+
+func drainSignal(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// One fast poll syncs at most interactionGroupCap groups; the rest stay pending, re-signalled for
+// the next allowed poll, so a member writing into many groups cannot make one poll do O(N) syncs.
+func TestInteractionPollSyncsAtMostTheCapAndRequeuesTheRest(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation := id.New()
+	seen := map[id.ID]int{}
+	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error { seen[group]++; return nil })
+	const groups = interactionGroupCap + 2 // above the cap, at or below the fallback
+	for range groups {
+		runtime.notifyInteraction(installation, id.New())
+	}
+	drainSignal(runtime.Interaction())
+	if n := runtime.PollInteractions(t.Context()); n != interactionGroupCap || len(seen) != interactionGroupCap {
+		t.Fatalf("first poll synced %d groups (%d distinct), want the cap %d", n, len(seen), interactionGroupCap)
+	}
+	if !drainSignal(runtime.Interaction()) {
+		t.Fatal("the requeued groups were not re-signalled for the next poll")
+	}
+	if n := runtime.PollInteractions(t.Context()); n != groups-interactionGroupCap || len(seen) != groups {
+		t.Fatalf("second poll synced %d, %d distinct in all; want the remaining %d", n, len(seen), groups-interactionGroupCap)
+	}
+	for group, n := range seen {
+		if n != 1 {
+			t.Fatalf("group %s synced %d times", group, n)
+		}
+	}
+	if drainSignal(runtime.Interaction()) || drainSignal(runtime.Wake()) {
+		t.Fatal("nothing should be left pending")
+	}
+}
+
+// Past interactionGroupFallback pending groups, the fast path does no single-group syncs at all:
+// it hands the work to the throttled general wake, whose one full sweep covers every group.
+func TestManyPendingInteractionGroupsFallBackToOneThrottledSweep(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation := id.New()
+	synced := 0
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error { synced++; return nil })
+	for range 20 {
+		runtime.notifyInteraction(installation, id.New())
+	}
+	drainSignal(runtime.Interaction())
+	if n := runtime.PollInteractions(t.Context()); n != 0 || synced != 0 {
+		t.Fatalf("20 pending groups caused %d single-group syncs, want 0 (fallback)", synced)
+	}
+	if !drainSignal(runtime.Wake()) {
+		t.Fatal("20 pending groups did not fall back to the general wake")
+	}
+	if drainSignal(runtime.Interaction()) || runtime.PollInteractions(t.Context()) != 0 {
+		t.Fatal("the fallback left groups pending on the fast path")
 	}
 }

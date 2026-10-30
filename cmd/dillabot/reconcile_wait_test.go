@@ -53,13 +53,16 @@ type waitHarness struct {
 	done        chan bool
 }
 
-func startWait(t *testing.T) *waitHarness {
+func startWait(t *testing.T) *waitHarness { t.Helper(); return startWaitSyncing(t, 1) }
+
+// startWaitSyncing reports groupsPerPoll groups synced by every fast poll.
+func startWaitSyncing(t *testing.T, groupsPerPoll int) *waitHarness {
 	t.Helper()
 	h := &waitHarness{clock: &fakeWaitClock{now: time.Unix(1_800_000_000, 0)}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1),
 		full: make(chan struct{}, 64), fast: make(chan struct{}, 64), done: make(chan bool, 1)}
 	w := reconcileWait{interval: 30 * time.Second, wake: h.wake, interaction: h.interaction,
 		poll:            func(context.Context) { h.full <- struct{}{} },
-		pollInteraction: func(context.Context) { h.fast <- struct{}{} },
+		pollInteraction: func(context.Context) int { h.fast <- struct{}{}; return groupsPerPoll },
 		budget:          &interactionBudget{}, now: h.clock.Now, after: h.clock.After}
 	// The reconciliation pass that just ended started 1 s ago.
 	started := h.clock.Now().Add(-time.Second)
@@ -143,6 +146,23 @@ func TestInteractionFloodIsLimitedToTheThrottleRate(t *testing.T) {
 	limit := interactionBurst + int(flood/gatewayWakeThrottle) + 1
 	if got := count(h.fast); got > limit || got < int(flood/gatewayWakeThrottle) {
 		t.Fatalf("fast polls under a %v flood = %d, want between %d and %d", flood, got, int(flood/gatewayWakeThrottle), limit)
+	}
+}
+
+// The budget is charged per group synced, not per poll: a flood across many groups, where every
+// poll syncs the cap, still syncs groups no faster than the throttle rate after the burst.
+func TestInteractionFloodAcrossManyGroupsIsChargedPerGroup(t *testing.T) {
+	h := startWaitSyncing(t, interactionGroupCap)
+	const flood = 20 * time.Second
+	for elapsed := time.Duration(0); elapsed < flood; elapsed += interactionSpacing {
+		h.signal(h.interaction)
+		h.step(interactionSpacing)
+	}
+	synced := count(h.fast) * interactionGroupCap
+	// The first poll may overdraw the burst by at most one cap; after that, one group per refill.
+	limit := interactionBurst + interactionGroupCap + int(flood/gatewayWakeThrottle)
+	if synced > limit {
+		t.Fatalf("groups synced under a %v many-group flood = %d, want at most %d", flood, synced, limit)
 	}
 }
 

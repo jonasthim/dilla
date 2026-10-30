@@ -101,26 +101,66 @@ func (r *botGatewayRuntime) SetInteractionPoller(installation id.ID, poll func(c
 	}
 }
 
-// PollInteractions reads each messaged interaction group once and dispatches its events. An
+// interactionGroupCap is the most interaction groups one fast poll syncs; the rest stay pending
+// for the next poll the budget allows. Past interactionGroupFallback pending groups, the fast path
+// syncs none and hands the work to the throttled general wake, whose one full sweep covers every
+// group: a member writing into many groups cannot turn the fast path into N single-group syncs.
+const (
+	interactionGroupCap      = 4
+	interactionGroupFallback = 2 * interactionGroupCap
+)
+
+// PollInteractions syncs up to interactionGroupCap messaged interaction groups and dispatches
+// their events, and reports how many it synced so the caller charges its budget per group. An
 // installation with no fast path registered falls back to the general wake and its full sweep.
-func (r *botGatewayRuntime) PollInteractions(ctx context.Context) {
+func (r *botGatewayRuntime) PollInteractions(ctx context.Context) int {
+	type work struct{ installation, group id.ID }
+	var batch []work
 	r.pendingMu.Lock()
-	pending := r.pending
-	r.pending = nil
+	total := 0
+	for _, groups := range r.pending {
+		total += len(groups)
+	}
+	if total > interactionGroupFallback {
+		r.pending = nil
+		r.pendingMu.Unlock()
+		r.notify()
+		return 0
+	}
+	for installation, groups := range r.pending {
+		for group := range groups {
+			if len(batch) == interactionGroupCap {
+				break
+			}
+			batch = append(batch, work{installation, group})
+			delete(groups, group)
+		}
+		if len(groups) == 0 {
+			delete(r.pending, installation)
+		}
+	}
+	more := len(r.pending) > 0
 	r.pendingMu.Unlock()
-	for installation, groups := range pending {
-		poll := r.interactionPollers[installation]
+	if more {
+		select {
+		case r.interaction <- struct{}{}:
+		default:
+		}
+	}
+	synced := 0
+	for _, w := range batch {
+		poll := r.interactionPollers[w.installation]
 		if poll == nil {
 			r.notify()
 			continue
 		}
-		for group := range groups {
-			if err := poll(ctx, group); err != nil && ctx.Err() == nil {
-				r.log.Warn("bot interaction command intake deferred", "installation_id", installation.String())
-				r.notify()
-			}
+		synced++
+		if err := poll(ctx, w.group); err != nil && ctx.Err() == nil {
+			r.log.Warn("bot interaction command intake deferred", "installation_id", w.installation.String())
+			r.notify()
 		}
 	}
+	return synced
 }
 func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token string) error {
 	if e := r.entries[installation]; e != nil {
