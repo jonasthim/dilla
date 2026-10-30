@@ -99,16 +99,27 @@ describe('MessageLog', () => {
       install();
       const { rerender } = render(log(['a']));
       const el = screen.getByRole('log');
-      const rows = el.querySelector('.d-message-log__rows');
-      expect(observed).toContain(rows);
       const m = { scrollHeight: 1000, clientHeight: 400 };
       metrics(el, m);
+      // A browser clamps scrollTop to scrollHeight - clientHeight, so the pin lands at the end (600), not at 1000.
+      let top = 0;
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top,
+        set: (v: number) => { top = Math.max(0, Math.min(v, m.scrollHeight - m.clientHeight)); } });
       rerender(log(['a', 'b']));
-      expect(el.scrollTop).toBe(1000);
+      expect(el.scrollTop).toBe(600);
+      // The row grows by 29 px with no render of the log; the pin's own scroll event comes after, still at 600, and sees
+      // the log 29 px (more than PIN_SLACK_PX) short of the end. It is the log's own move, so it must not unpin.
       m.scrollHeight = 1029;
+      expect(m.scrollHeight - el.scrollTop - m.clientHeight).toBeGreaterThan(24);
       fireEvent.scroll(el);
       callbacks.forEach(cb => cb());
-      expect(el.scrollTop).toBe(1029);
+      expect(el.scrollTop).toBe(629);
+      // Still pinned: the next row that arrives is followed to the end too.
+      m.scrollHeight = 1100;
+      rerender(log(['a', 'b', 'c']));
+      expect(el.scrollTop).toBe(700);
+      // In a browser only an observed element calls back: the rows themselves must be observed, not only the log.
+      expect(observed).toContain(el.querySelector('.d-message-log__rows'));
       vi.unstubAllGlobals();
     });
 
