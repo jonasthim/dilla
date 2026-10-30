@@ -12,12 +12,27 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-// GroupEventMaxPendingAge bounds how long one event may fail at the head of the shared queue.
-// After this long since its first failed handling attempt (Jonas 2026-10-30: one hour), the
-// poller acknowledges it as undeliverable, whatever the cause, so a cause no handler classifies
-// (a terminal send after restore, a resync that never finishes, a future bug) cannot stall every
-// Bot reply indefinitely. The first-failure time is durable in the helper's state store.
-const GroupEventMaxPendingAge = time.Hour
+// The age limits bound how long one event may fail at the head of the shared queue. After this
+// long since its first failed handling attempt, the poller acknowledges it as undeliverable,
+// whatever the cause, so a cause no handler classifies (a terminal send after restore, a resync
+// that never finishes, a future bug) cannot stall every Bot reply indefinitely. The first-failure
+// time is durable in the helper's state store. Jonas 2026-10-30:
+//
+//   - InteractionEventMaxPendingAge (one hour) for an event from a private interaction group: a command
+//     whose reply is an hour late is worthless, and it blocks every other user's commands.
+//   - TextEventMaxPendingAge (24 hours) for every other event, in particular text-channel
+//     messages awaiting automatic moderation, which keep their value much longer. An event whose
+//     group cannot be positively identified as an interaction group also gets the longer limit.
+const (
+	InteractionEventMaxPendingAge = time.Hour
+	TextEventMaxPendingAge        = 24 * time.Hour
+)
+
+// groupEventKindSource identifies interaction groups; *native.Client implements it. The generic
+// InspectGroup refuses kind-3 groups, so the authenticated descriptor list is the positive proof.
+type groupEventKindSource interface {
+	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
+}
 
 const (
 	groupEventFailureArea    = uint64(8)
@@ -79,7 +94,7 @@ func isUndeliverableGroupEvent(err error) bool {
 }
 
 // SkippedGroupEvent records one undeliverable event the poller acknowledged, for the caller's log.
-// FirstFailure is set when the event was skipped by GroupEventMaxPendingAge; Cause is then the
+// FirstFailure is set when the event was skipped by its age limit; Cause is then the
 // last handler error.
 type SkippedGroupEvent struct {
 	DeliveryID   uint64
@@ -87,8 +102,8 @@ type SkippedGroupEvent struct {
 	Cause        error
 }
 
-// ErrGroupEventPendingTooLong marks an event acknowledged because it stayed pending for
-// GroupEventMaxPendingAge.
+// ErrGroupEventPendingTooLong marks an event acknowledged because it stayed pending past its age
+// limit (InteractionEventMaxPendingAge or TextEventMaxPendingAge).
 var ErrGroupEventPendingTooLong = errors.New("group event stayed pending past the age limit")
 
 type GroupEventPollResult struct {
@@ -152,7 +167,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			if isUndeliverableGroupEvent(err) {
 				skipped = &SkippedGroupEvent{DeliveryID: event.DeliveryID, Cause: err}
 			} else {
-				first, aged, ageErr := p.failureAge(ctx, event.DeliveryID)
+				first, aged, ageErr := p.failureAge(ctx, event)
 				if ageErr != nil || !aged || ctx.Err() != nil {
 					return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: errors.Join(err, ageErr)}
 				}
@@ -182,8 +197,9 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 
 // failureAge records the first failed handling time of delivery durably (only the queue head can
 // fail, so one record per installation suffices) and reports whether it is older than
-// GroupEventMaxPendingAge. Any state error keeps the event pending.
-func (p *GroupEventPoller) failureAge(ctx context.Context, delivery uint64) (time.Time, bool, error) {
+// its limit (maxPendingAge). Any state error keeps the event pending.
+func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEvent) (time.Time, bool, error) {
+	delivery := event.DeliveryID
 	state, ok := p.native.(groupEventFailureState)
 	if !ok {
 		return time.Time{}, false, nil
@@ -204,7 +220,11 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, delivery uint64) (tim
 		}
 		if record[1] == delivery {
 			first := time.Unix(int64(record[2]), 0)
-			return first, now.Sub(first) >= GroupEventMaxPendingAge, nil
+			age := now.Sub(first)
+			if age < InteractionEventMaxPendingAge {
+				return first, false, nil
+			}
+			return first, age >= p.maxPendingAge(ctx, event), nil
 		}
 	}
 	value, err := cborx.Marshal([]uint64{groupEventFailureVersion, delivery, uint64(now.Unix())})
@@ -218,3 +238,24 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, delivery uint64) (tim
 }
 
 var _ groupEventFailureState = (*native.Client)(nil)
+
+// maxPendingAge picks the age limit by the event's group kind: one hour only for an event whose
+// group the native descriptor list proves is a private interaction group, else 24 hours.
+func (p *GroupEventPoller) maxPendingAge(ctx context.Context, event native.GroupEvent) time.Duration {
+	source, ok := p.native.(groupEventKindSource)
+	if !ok {
+		return TextEventMaxPendingAge
+	}
+	descriptors, err := source.InteractionGroups(ctx)
+	if err != nil {
+		return TextEventMaxPendingAge
+	}
+	for _, descriptor := range descriptors {
+		if descriptor.Group == event.Group {
+			return InteractionEventMaxPendingAge
+		}
+	}
+	return TextEventMaxPendingAge
+}
+
+var _ groupEventKindSource = (*native.Client)(nil)

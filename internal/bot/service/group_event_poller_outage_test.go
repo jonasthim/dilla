@@ -19,6 +19,16 @@ type durableGroupEventQueue struct {
 	ackFails int // the next ackFails acknowledgements fail
 	state    map[string]native.StateValue
 	stateErr error
+	// interaction lists the groups the native descriptors prove are private interaction groups.
+	interaction []id.ID
+}
+
+func (q *durableGroupEventQueue) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	out := make([]native.InteractionGroupDescriptor, 0, len(q.interaction))
+	for _, g := range q.interaction {
+		out = append(out, native.InteractionGroupDescriptor{Group: g, State: 2})
+	}
+	return out, nil
 }
 
 // The helper state store, durable like the ack cursor.

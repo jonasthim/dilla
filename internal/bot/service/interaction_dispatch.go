@@ -40,7 +40,7 @@ var ErrInteractionReadReplayNotAuthorized = errors.New("interaction read replay 
 // ErrInteractionReadReplayPending is a refusal that may clear on retry: 4 conflict,
 // 5 unavailable, 6 busy, 9 internal (including a handler error, which Dispatch answers as
 // internal), or a response that does not match the request. The event stays pending; the
-// poller's GroupEventMaxPendingAge still bounds how long.
+// poller's age limit (InteractionEventMaxPendingAge for interaction groups) still bounds how long.
 var ErrInteractionReadReplayPending = errors.New("interaction read replay is not currently confirmed")
 
 // InteractionNative is the authenticated native event and group-inspection
