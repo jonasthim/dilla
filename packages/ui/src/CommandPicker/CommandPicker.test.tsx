@@ -67,6 +67,21 @@ describe('CommandField', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('a free-text chip is a one-row textarea that grows a row per line and takes its width from the longest line', () => {
+    const onChange = vi.fn();
+    const { rerender, container } = render(<CommandField label="text" optional={false} value="one" placeholder="packs the rope" active invalid={false} multiline onChange={onChange} onFocus={() => {}} onKeyDown={() => {}} />);
+    const text = screen.getByRole('textbox', { name: 'text' });
+    expect(text.tagName).toBe('TEXTAREA');
+    expect(text).toHaveAttribute('rows', '1');
+    expect(container.querySelector('.d-cmd-field')).not.toHaveAttribute('data-multiline');
+    fireEvent.change(text, { target: { value: 'one\ntwo' } });
+    expect(onChange).toHaveBeenCalledWith('one\ntwo');
+    rerender(<CommandField label="text" optional={false} value={'one\na much longer second line'} placeholder="packs the rope" active invalid={false} multiline onChange={onChange} onFocus={() => {}} onKeyDown={() => {}} />);
+    expect(text).toHaveAttribute('rows', '2');
+    expect(text.style.width).toBe('calc(25ch + 1rem)');
+    expect(container.querySelector('.d-cmd-field')).toHaveAttribute('data-multiline', 'true');
+  });
+
   it('points at its suggestions while they show', () => {
     render(<CommandField label="user" optional={false} value="" placeholder="" active invalid={false} listId="sugs" activeOptionId="sugs-ada" onChange={() => {}} onFocus={() => {}} onKeyDown={() => {}} />);
     const user = screen.getByRole('combobox', { name: 'user' });

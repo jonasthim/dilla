@@ -7,7 +7,7 @@ import * as ClientCore from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import type { CommandExecutionContext } from './command-types.ts';
 import { finalPollMarker, PollCard } from './PollCard.tsx';
-import { notifyReminder, useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
+import { notifyReminder, reminderFromArgs, useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
 
 const COMMUNITY = '11'.repeat(16); const CHANNEL = '22'.repeat(16); const USER = '33'.repeat(16);
 const INSTALLATION = '44'.repeat(16); const BOT = '55'.repeat(16); const POLL = '77'.repeat(16);
@@ -796,4 +796,12 @@ it('keeps the reminders popover open, once, when its trigger moves between actio
   act(() => { screen.getByRole('dialog', { name: 'Reminders' }).querySelector<HTMLElement>('[role="tab"]')?.focus(); });
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
+});
+
+// Wave B Task 2 fix round 1: a reminder's text over 1500 bytes has its own message.
+it('says a reminder text over 1500 bytes is too long', () => {
+  const now = new Date('2026-10-30T17:00:00Z');
+  expect(reminderFromArgs({ when: '1h', text: 'x'.repeat(1501), timezone: 'Europe/Stockholm' }, now)).toEqual({ error: 'A reminder is at most 1500 bytes. Shorten the text.' });
+  expect(reminderFromArgs({ when: 'soon', text: 'ok', timezone: 'Europe/Stockholm' }, now)).toEqual({ error: 'Choose a valid time from 1 minute to 365 days away and enter reminder text.' });
+  expect(reminderFromArgs({ when: '1h', text: 'ok', timezone: 'Europe/Stockholm' }, now)).toMatchObject({ value: { text: 'ok', timezone: 'Europe/Stockholm' } });
 });

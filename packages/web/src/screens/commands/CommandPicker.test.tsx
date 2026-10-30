@@ -93,7 +93,7 @@ describe('CommandPicker: the / list', () => {
     const { props } = renderPicker();
     await user.type(draftField(), 'me waves hello');
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('combobox', { name: 'text' })).toHaveValue('waves hello');
+    expect(await screen.findByRole('textbox', { name: 'text' })).toHaveValue('waves hello');
     await user.keyboard('{Enter}');
     await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'me', args: { text: 'waves hello' } }));
     expect(props.onCancel).toHaveBeenCalledWith('');
@@ -129,7 +129,7 @@ describe('CommandPicker: chips', () => {
     renderPicker({ initialText: '/ban' });
     expect(screen.getByRole('combobox', { name: 'user' })).toHaveFocus();
     expect(screen.getByText('duration?')).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'reason' })).toHaveAttribute('placeholder', 'optional');
+    expect(screen.getByRole('textbox', { name: 'reason' })).toHaveAttribute('placeholder', 'optional');
     expect(screen.getByText('Ban for a while, or for good · checked against your roles')).toBeInTheDocument();
     expect(screen.getByText('tab next field · ↵ run · esc leave')).toBeInTheDocument();
   });
@@ -177,8 +177,8 @@ describe('CommandPicker: chips', () => {
     expect(screen.getByText('Try “in 1 hour” or “tomorrow 09:00”')).toBeInTheDocument();
     await user.keyboard('{Tab}');
     expect(screen.getByRole('combobox', { name: 'when' })).toHaveValue('tonight 20:00');
-    expect(screen.getByRole('combobox', { name: 'text' })).toHaveFocus();
-    await user.type(screen.getByRole('combobox', { name: 'text' }), 'bring two ropes');
+    expect(screen.getByRole('textbox', { name: 'text' })).toHaveFocus();
+    await user.type(screen.getByRole('textbox', { name: 'text' }), 'bring two ropes');
     await user.click(screen.getByRole('combobox', { name: 'when' }));
     expect(screen.getByText('Reminds you Fri 30 Oct, 20:00 CET')).toBeInTheDocument();
     await user.click(send());
@@ -191,7 +191,7 @@ describe('CommandPicker: chips', () => {
     await user.type(screen.getByRole('combobox', { name: 'when' }), 'in 400 days');
     expect(screen.getByText('Between 1 minute and 365 days from now')).toBeInTheDocument();
     await user.keyboard('{Tab}');
-    await user.type(screen.getByRole('combobox', { name: 'text' }), 'x{Enter}');
+    await user.type(screen.getByRole('textbox', { name: 'text' }), 'x{Enter}');
     expect(screen.getByRole('alert')).toHaveTextContent('Between 1 minute and 365 days from now');
   });
 
@@ -206,7 +206,7 @@ describe('CommandPicker: chips', () => {
       'Later · UTC+01:00 · Sun 25 Oct, 02:30 CET',
     ]);
     await user.keyboard('{ArrowDown}{Enter}');
-    await user.type(screen.getByRole('combobox', { name: 'text' }), 'call home{Enter}');
+    await user.type(screen.getByRole('textbox', { name: 'text' }), 'call home{Enter}');
     await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'remind',
       args: { when: '2026-10-25T02:30', text: 'call home', timezone: 'Europe/Stockholm', chosen: String(Date.UTC(2026, 9, 25, 1, 30) / 1000) } }));
   });
@@ -216,7 +216,7 @@ describe('CommandPicker: chips', () => {
     const { props } = renderPicker({ initialText: '/remind' });
     await user.type(screen.getByRole('combobox', { name: 'when' }), 'in 1 hour');
     await user.keyboard('{Tab}');
-    await user.type(screen.getByRole('combobox', { name: 'text' }), 'bring two ropes');
+    await user.type(screen.getByRole('textbox', { name: 'text' }), 'bring two ropes');
     await user.keyboard('{Escape}');
     expect(props.onCancel).toHaveBeenCalledWith('/remind in 1 hour bring two ropes');
   });
@@ -224,7 +224,7 @@ describe('CommandPicker: chips', () => {
   it('backspace leaves from first chip', async () => {
     const user = userEvent.setup();
     renderPicker({ initialText: '/remind' });
-    await user.click(screen.getByRole('combobox', { name: 'text' }));
+    await user.click(screen.getByRole('textbox', { name: 'text' }));
     await user.keyboard('{Backspace}');
     expect(screen.getByRole('combobox', { name: 'when' })).toHaveFocus();
     await user.keyboard('{Backspace}');
@@ -236,7 +236,7 @@ describe('CommandPicker: chips', () => {
   it('a typed /remind splits its time from its text', () => {
     renderPicker({ initialText: '/remind in 1 hour bring two ropes' });
     expect(screen.getByRole('combobox', { name: 'when' })).toHaveValue('in 1 hour');
-    expect(screen.getByRole('combobox', { name: 'text' })).toHaveValue('bring two ropes');
+    expect(screen.getByRole('textbox', { name: 'text' })).toHaveValue('bring two ropes');
   });
 
   it('tab accepts suggestion: a member by name, then runs with the stable id', async () => {
@@ -329,7 +329,7 @@ describe('CommandPicker: chips', () => {
   it('keeps positional free text separate from later named options', async () => {
     const user = userEvent.setup();
     const { props } = renderPicker({ initialText: '/search hello scope:all' });
-    expect(screen.getByRole('combobox', { name: 'query' })).toHaveValue('hello');
+    expect(screen.getByRole('textbox', { name: 'query' })).toHaveValue('hello');
     expect(screen.getByRole('combobox', { name: 'scope' })).toHaveValue('all');
     await user.click(send());
     await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'search', args: { query: 'hello', scope: 'all' } }));
@@ -383,6 +383,78 @@ describe('CommandPicker: chips', () => {
     list.unmount();
     const chips = renderPicker({ initialText: '/remind' });
     await expectNoAxeViolations(chips.container);
+  });
+});
+
+describe('CommandPicker: fix round 1', () => {
+  const fill = (name: string, value: string, role: 'combobox' | 'textbox' = 'combobox') => fireEvent.change(screen.getByRole(role, { name }), { target: { value } });
+  const escape = (name: string, role: 'combobox' | 'textbox' = 'combobox') => fireEvent.keyDown(screen.getByRole(role, { name }), { key: 'Escape' });
+
+  it.each([
+    ['timeout', [['user', 'Bea Smith'], ['duration', '10 minutes']]],
+    ['ban', [['user', 'Björn Ek'], ['duration', '7 days'], ['reason', 'spam and more']]],
+    ['ban', [['user', 'Bea'], ['duration', '7 days'], ['reason', 'spam']]],
+    ['warn', [['user', 'Ada "the map" Lind'], ['reason', 'bridge troll']]],
+  ] as const)('Esc on filled /%s chips round-trips into the same chips', (command, values) => {
+    const first = renderPicker({ initialText: `/${command}` });
+    for (const [name, value] of values) fill(name, value, name === 'reason' ? 'textbox' : 'combobox');
+    escape('user');
+    const text = vi.mocked(first.props.onCancel).mock.calls.at(-1)![0];
+    first.unmount();
+    renderPicker({ initialText: text });
+    for (const [name, value] of values) expect(screen.getByRole(name === 'reason' ? 'textbox' : 'combobox', { name })).toHaveValue(value);
+  });
+
+  it('a typed /poll create opens its form', () => {
+    const onRunDetached = vi.fn();
+    renderPicker({ initialText: '/poll create', onRunDetached });
+    expect(onRunDetached).toHaveBeenCalledWith({ commandId: 'poll create', args: {} });
+  });
+
+  it('a multi-line /code value grows its chip, survives edits and runs with its newlines', async () => {
+    const user = userEvent.setup();
+    const { props } = renderPicker({ initialText: '/code yaml' });
+    const text = screen.getByRole('textbox', { name: 'text' });
+    expect(text.tagName).toBe('TEXTAREA');
+    expect(text).toHaveAttribute('rows', '1');
+    await user.click(text);
+    await user.keyboard('name: harbour{Shift>}{Enter}{/Shift}size: 6');
+    expect(text).toHaveValue('name: harbour\nsize: 6');
+    expect(text).toHaveAttribute('rows', '2');
+    await user.keyboard('{Shift>}{Enter}{/Shift}crew: 4');
+    expect(text).toHaveValue('name: harbour\nsize: 6\ncrew: 4');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'code', args: { language: 'yaml', text: 'name: harbour\nsize: 6\ncrew: 4' } }));
+  });
+
+  it('a failed run reddens no chip, and the ghost chip is never invalid', async () => {
+    const onExecute = vi.fn(() => Promise.resolve({ status: 'failure' as const, private: true, message: 'Join a voice channel first.' }));
+    const play = renderPicker({ initialText: '/play song', onExecute });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'query-or-url' }), { key: 'Enter' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Join a voice channel first.');
+    expect(screen.getByRole('combobox', { name: 'query-or-url' })).not.toHaveAttribute('aria-invalid');
+    play.unmount();
+    renderPicker({ initialText: '/pause', onExecute });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'press ↵ to run' }), { key: 'Enter' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Join a voice channel first.');
+    expect(screen.getByRole('textbox', { name: 'press ↵ to run' })).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('Enter on an unknown command says it is not a command here', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    await user.type(draftField(), 'xyz{Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent('/xyz isn’t a command here. To post it as text, start with //.');
+    await user.type(draftField(), 'a');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('Enter on a typed command its Bot does not offer opens no chips', async () => {
+    const user = userEvent.setup();
+    renderPicker({ listed: new Set(definitions.filter(command => command.id !== 'play').map(command => command.id)) });
+    await user.type(draftField(), 'play song{Enter}');
+    expect(screen.queryByRole('combobox', { name: 'query-or-url' })).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('/play isn’t a command here.');
   });
 });
 

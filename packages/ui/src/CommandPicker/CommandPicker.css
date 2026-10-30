@@ -40,6 +40,10 @@
 /* The box's accent border shows focus (as for the textarea); a transparent outline survives forced colours. */
 .d-cmd-field .d-cmd-field__input:focus-visible { outline: 2px solid transparent; }
 .d-cmd-field[data-ghost="true"] { cursor: default; }
+/* A free-text chip (fix round 1): a one-row textarea the same 26px as the input (4px + 18px + 4px), a line taller per
+   Shift+Enter; the chip's fixed height gives way while it holds more than one line. */
+textarea.d-cmd-field__input { display: block; height: auto; padding: 0.25rem 0.4375rem; line-height: 1.125rem; resize: none; overflow: hidden; white-space: pre; }
+.d-cmd-field[data-multiline="true"] { height: auto; }
 
 /* The suggestions above the active chip: the mention popover's look, 34px rows (sModal 160ms). */
 .d-cmd-sugs { overflow: hidden; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); animation: d-modal var(--duration-tab) var(--ease-out) both; }

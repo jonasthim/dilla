@@ -64,6 +64,8 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const emojiButton = useRef<HTMLButtonElement>(null);
   const insertEmoji = (emoji: string) => {
+    // In command mode the draft is hidden behind the chips: a picked emoji must not land there (fix round 1).
+    if (commandMode) return;
     const el = textareaRef.current;
     const from = el?.selectionStart ?? p.draft.length;
     const to = el?.selectionEnd ?? p.draft.length;

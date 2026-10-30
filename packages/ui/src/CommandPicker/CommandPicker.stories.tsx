@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CommandBar, CommandChips, CommandField, CommandList, CommandSuggestions, commandOptionId, type CommandListItem, type CommandSuggestion } from './CommandPicker.tsx';
 import { SignalComposer } from '../MessageRow/conversation.fixture.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
+import { CONVERSATION_CONTRAST_NOT } from '../../scripts/prototype-contrast.ts';
 
 /*
  * Wave B Task 2: the command picker as packages/web's CommandPicker hands it to ComposerArea's Composer (`top` holds the
@@ -63,7 +64,7 @@ const chipsStory = (o: { icon: CommandListItem['icon']; name: string; chips: Chi
       <CommandBar icon={o.bar.icon} text={o.bar.text} tone={o.bar.tone} hint={HINT} />
     </>} input={<CommandChips icon={o.icon} name={o.name}>
       {o.chips.map((chip, index) => <CommandField key={chip.label || chip.placeholder} label={chip.label} optional={chip.optional === true} value={chip.value} placeholder={chip.placeholder}
-        active={index === o.active} invalid={chip.invalid === true} ghost={chip.ghost}
+        active={index === o.active} invalid={chip.invalid === true} ghost={chip.ghost} multiline={chip.label === 'text' || chip.label === 'reason'}
         {...(index === o.active && o.sugs !== undefined ? { listId: 'cmd-sugs', activeOptionId: commandOptionId('cmd-sugs', o.sugs.items[0]?.id ?? '') } : {})}
         onChange={noop} onFocus={noop} onKeyDown={noop} />)}
     </CommandChips>} />
@@ -73,7 +74,9 @@ const chipsStory = (o: { icon: CommandListItem['icon']; name: string; chips: Chi
 const meta = {
   title: 'Conversation/CommandPicker', component: CommandList,
   args: { id: 'cmd-list', items: ALL, activeId: 'help', showHint: true, labels: { ...LABELS, noMatch: '' }, query: '/', onActive: noop, onPick: noop, onSendAsText: noop },
-  parameters: { layout: 'fullscreen' },
+  // Fix round 1: the list's scroll area is out of the tab order on purpose (the field keeps focus; ↑↓ scroll the active row
+  // into view), so axe's scrollable-region-focusable is off for it here; the conversation's Ruling Y selectors stay.
+  parameters: { layout: 'fullscreen', a11y: { config: { rules: [{ id: 'color-contrast', selector: `*${CONVERSATION_CONTRAST_NOT}` }, { id: 'scrollable-region-focusable', selector: '*:not(.d-cmd-list__scroll)' }] } } },
 } satisfies Meta<typeof CommandList>;
 export default meta;
 type Story = StoryObj<typeof meta>;

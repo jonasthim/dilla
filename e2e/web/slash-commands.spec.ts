@@ -433,7 +433,7 @@ test('composer keeps private results private, publishes only explicit text, and 
 
     await box.fill('/shrug text:"main draft stays here"');
     const mainDraft = page.getByRole('main').getByRole('region', { name: 'Command composer', exact: true })
-      .getByRole('combobox', { name: 'text', exact: true });
+      .getByRole('textbox', { name: 'text', exact: true });
     await expect(mainDraft).toHaveValue('main draft stays here');
     const threadButton = rowToolbar(root).getByRole('button', { name: copy('thread.open'), exact: true });
     await root.focus();
@@ -443,7 +443,7 @@ test('composer keeps private results private, publishes only explicit text, and 
     const threadBox = thread.getByRole('textbox', { name: copy('thread.composer'), exact: true });
     await threadBox.fill('/shrug text:"thread draft stays here"');
     const threadDraft = thread.getByRole('region', { name: 'Command composer', exact: true })
-      .getByRole('combobox', { name: 'text', exact: true });
+      .getByRole('textbox', { name: 'text', exact: true });
     await expect(threadDraft).toHaveValue('thread draft stays here');
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await expect(mainDraft).toHaveValue('main draft stays here');
@@ -883,7 +883,7 @@ test('a reminder set from the picker chips appears under Upcoming', async ({ pag
     await when.fill('in 1 hour');
     await expect(region.getByText(/^Reminds you /u)).toBeVisible();
     await when.press('Tab');
-    const text = region.getByRole('combobox', { name: 'text', exact: true });
+    const text = region.getByRole('textbox', { name: 'text', exact: true });
     await text.fill(reminderText);
     await text.press('Enter');
     await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });

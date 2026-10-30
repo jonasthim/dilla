@@ -67,12 +67,12 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     const v = render(
       <Host fake={new FakeClient()} draft="/me private-token" />,
     );
-    expect(screen.getByRole("combobox", { name: "text" })).toHaveValue(
+    expect(screen.getByRole("textbox", { name: "text" })).toHaveValue(
       "private-token",
     );
     v.unmount();
     render(<Host fake={new FakeClient()} self={BOB} />);
-    expect(screen.queryByRole("combobox", { name: "text" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "text" })).toBeNull();
   });
   it("invalidates a live execution when the client or self changes at the same conversation", async () => {
     let captured: CommandExecutionContext | undefined;
@@ -97,7 +97,7 @@ describe("Task4 fix1 focused lifecycle probes", () => {
   it("clears active command text when the signed-in member changes on the same client", () => {
     const fake = new FakeClient();
     const v = render(<Host fake={fake} draft="/me private-token" />);
-    expect(screen.getByRole("combobox", { name: "text" })).toHaveValue(
+    expect(screen.getByRole("textbox", { name: "text" })).toHaveValue(
       "private-token",
     );
     v.rerender(<Host fake={fake} self={BOB} />);
@@ -368,7 +368,7 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     await user.click(await screen.findByRole("option", { name: /^bob/ }));
     await user.click(screen.getByRole("button", { name: "send" }));
     v.rerender(<H channel={OTHER} draft="/me new" />);
-    await screen.findByRole("combobox", { name: "text" });
+    await screen.findByRole("textbox", { name: "text" });
     act(() => resolveLoad(null));
     expect(screen.queryByRole("dialog", { name: "Unban bob?" })).toBeNull();
   });

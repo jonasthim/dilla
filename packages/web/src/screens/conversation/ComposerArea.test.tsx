@@ -47,10 +47,10 @@ describe('mentions in the composer (L-TS-37)', () => {
   it('reopens command mode after a canceled slash draft is edited to a new slash command', async () => {
     const { user } = renderConversation();
     fireEvent.change(box(), { target: { value: '/me first' } });
-    await screen.findByRole('combobox', { name: 'text' });
+    await screen.findByRole('textbox', { name: 'text' });
     await user.keyboard('{Escape}');
     fireEvent.change(box(), { target: { value: '/search second' } });
-    expect(await screen.findByRole('combobox', { name: 'query' })).toHaveValue('second');
+    expect(await screen.findByRole('textbox', { name: 'query' })).toHaveValue('second');
   });
   it('opens a fresh @ query at the same position after Escape and deletion', async () => {
     const { user } = renderConversation();

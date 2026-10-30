@@ -198,7 +198,12 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
         if (row?.requestId === attempt) remember(memory, key, { ...row, requestId: requestId(), invocationKey: '', mode: 'canceled' });
       }
       // The picker leaves on success; its result is spoken here (Task 6 draws it in the feed).
-      if (response.status === 'success' && isCurrent()) setAnnouncement(response.message ?? '');
+      // Cleared first, then set on the next task: the same text twice in a row is spoken twice.
+      if (response.status === 'success' && isCurrent()) {
+        setAnnouncement('');
+        const text = response.message ?? '';
+        window.setTimeout(() => { if (mounted.current) setAnnouncement(text); }, 50);
+      }
       return response;
     });
   }, [handlers, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif]);

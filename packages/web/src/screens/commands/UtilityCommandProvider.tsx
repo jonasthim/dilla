@@ -96,7 +96,8 @@ export function reminderFromArgs(args: Readonly<Record<string, string>>, now: Da
   const chosen = args.chosen === undefined ? null : Number(args.chosen);
   const result = parsed.kind === 'ambiguous' && chosen !== null ? resolveReminderTimeCandidate(parsed, chosen, now) : parsed;
   if (result.kind === 'ambiguous') return { error: copy('reminder.ambiguous') };
-  if (result.kind !== 'valid' || text === '' || new TextEncoder().encode(text).length > 1500) return { error: copy('reminder.invalid') };
+  if (new TextEncoder().encode(text).length > 1500) return { error: copy('reminder.textTooLong') };
+  if (result.kind !== 'valid' || text === '') return { error: copy('reminder.invalid') };
   return { value: { when: args.when ?? '', text, timezone, result } };
 }
 

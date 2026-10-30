@@ -48,8 +48,8 @@ export function CommandList({ id, items, activeId, showHint, labels, query, onAc
         {labels.title}<span className="d-cmd-list__spacer" />
         {showHint ? <span className="d-cmd-list__hint">{labels.hint}</span> : null}
       </div>
-      {/* A tab stop of its own so a keyboard can scroll it (WCAG 2.1.1); ↑↓ in the field move the selection. */}
-      <div className="d-cmd-list__scroll" tabIndex={0}>
+      {/* Out of the tab order: the draft field keeps focus and ↑↓ move the selection, which scrolls into view (the effect above). */}
+      <div className="d-cmd-list__scroll" tabIndex={-1}>
         <div role="listbox" id={id} aria-label={labels.title} aria-activedescendant={items.length > 0 ? active : undefined} className="d-cmd-list__list">
           {items.map(item => (
             <div key={item.id} role="option" id={commandOptionId(id, item.id)} aria-selected={item.id === activeId}
@@ -98,33 +98,49 @@ export interface CommandFieldProps {
   invalid: boolean;
   /** A command without arguments: one label-less chip that says "press ↵ to run" and takes no text. */
   ghost?: boolean;
+  /**
+   * A free-text argument (Jonas, fix round 1): a textarea that looks exactly like the input chip while it holds one line
+   * and grows a line at a time (Shift+Enter breaks the line; Enter keeps the picker's accept/run rules).
+   */
+  multiline?: boolean;
   /** The suggestions listbox this chip drives, while it shows. */
   listId?: string;
   activeOptionId?: string;
-  inputRef?: Ref<HTMLInputElement>;
+  inputRef?: Ref<HTMLInputElement | HTMLTextAreaElement>;
   onChange(value: string): void;
   onFocus(): void;
-  onKeyDown(e: KeyboardEvent<HTMLInputElement>): void;
-  onBlur?(e: React.FocusEvent<HTMLInputElement>): void;
+  onKeyDown(e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>): void;
+  onBlur?(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>): void;
 }
 
 /**
  * One argument chip: the label tile (accent while active, danger while invalid; optional labels end in "?") and an input
- * as wide as its value or placeholder (`max(len, 4)ch + 16px`). The input keeps the field's own name.
+ * as wide as its value or placeholder (`max(len, 4)ch + 16px`, the longest line for a free-text chip). The input keeps the
+ * field's own name.
  */
-export function CommandField({ label, optional, value, placeholder, active, invalid, ghost, listId, activeOptionId, inputRef, onChange, onFocus, onKeyDown, onBlur }: CommandFieldProps) {
-  const width = `calc(${String(Math.max(value.length, placeholder.length, 4))}ch + 1rem)`;
+export function CommandField({ label, optional, value, placeholder, active, invalid, ghost, multiline, listId, activeOptionId, inputRef, onChange, onFocus, onKeyDown, onBlur }: CommandFieldProps) {
+  const lines = value.split('\n');
+  const longest = Math.max(...lines.map(line => line.length));
+  const width = `calc(${String(Math.max(longest, placeholder.length, 4))}ch + 1rem)`;
   const expanded = listId !== undefined;
+  const name = ghost || label === '' ? placeholder : label;
+  const common = {
+    className: 'd-cmd-field__input', style: { width }, value, placeholder, 'aria-label': name,
+    'aria-invalid': invalid ? true : undefined, spellCheck: false, autoComplete: 'off',
+    onFocus: () => onFocus(), onKeyDown, onBlur,
+  } as const;
   return (
-    <label className="d-cmd-field" data-active={active ? 'true' : undefined} data-invalid={invalid ? 'true' : undefined} data-ghost={ghost ? 'true' : undefined}>
+    <label className="d-cmd-field" data-active={active ? 'true' : undefined} data-invalid={invalid ? 'true' : undefined} data-ghost={ghost ? 'true' : undefined}
+      data-multiline={multiline === true && lines.length > 1 ? 'true' : undefined}>
       {ghost || label === '' ? null : <span className="d-cmd-field__label" aria-hidden="true">{label}{optional ? '?' : ''}</span>}
-      <input ref={inputRef} className="d-cmd-field__input" style={{ width }} value={value} placeholder={placeholder}
-        aria-label={ghost || label === '' ? placeholder : label} aria-invalid={invalid ? true : undefined}
-        readOnly={ghost === true} spellCheck={false} autoComplete="off"
-        {...(ghost ? {} : { role: 'combobox', 'aria-autocomplete': 'list' as const, 'aria-expanded': expanded })}
-        {...(expanded ? { 'aria-controls': listId } : {})}
-        {...(expanded && activeOptionId !== undefined ? { 'aria-activedescendant': activeOptionId } : {})}
-        onChange={e => { if (!ghost) onChange(e.currentTarget.value); }} onFocus={() => onFocus()} onKeyDown={onKeyDown} onBlur={onBlur} />
+      {multiline === true && !ghost
+        ? <textarea ref={inputRef as Ref<HTMLTextAreaElement>} {...common} rows={lines.length} data-multiline=""
+          onChange={e => onChange(e.currentTarget.value)} />
+        : <input ref={inputRef as Ref<HTMLInputElement>} {...common} readOnly={ghost === true}
+          {...(ghost ? {} : { role: 'combobox', 'aria-autocomplete': 'list' as const, 'aria-expanded': expanded })}
+          {...(expanded ? { 'aria-controls': listId } : {})}
+          {...(expanded && activeOptionId !== undefined ? { 'aria-activedescendant': activeOptionId } : {})}
+          onChange={e => { if (!ghost) onChange(e.currentTarget.value); }} />}
     </label>
   );
 }

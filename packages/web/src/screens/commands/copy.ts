@@ -7,6 +7,7 @@ export const commandPickerCopy = {
   fieldHint: 'tab next field · ↵ run · esc leave',
   noMatch: (draft: string) => `No command matches ${draft}`,
   sendAsText: 'Send as text',
+  notACommand: (name: string) => `/${name} isn’t a command here. To post it as text, start with //.`,
   pressToRun: 'press ↵ to run',
   bot: 'Bot',
   joinVoiceFirst: 'join voice first',

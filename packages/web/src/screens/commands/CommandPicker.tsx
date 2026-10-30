@@ -73,6 +73,37 @@ function remindValues(args: Readonly<Record<string, string>>, timeZone: string, 
   return { ...args };
 }
 
+/** The chips' values a typed draft would open (the remind split included), for comparing a round trip. */
+function reopened(text: string, command: CommandDefinition, timeZone: string, now: Date): Record<string, string> | null {
+  const parsed = parseCommand(text);
+  const id = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' ? parsed.commandId : '';
+  if (id !== command.id) return null;
+  const args = parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {};
+  return command.id === 'remind' ? remindValues(args, timeZone, now) : { ...args };
+}
+
+/**
+ * Esc on filled chips: the prototype's `/name value value…` (Review Focus 3), as long as typing it back opens the same
+ * chips; otherwise every value with a space or a quote is quoted (`/ban "Bea Smith" "7 days" spam`), so a multi-word
+ * duration or a spaced name never shifts into the next chip.
+ */
+export function leaveText(command: CommandDefinition, values: Readonly<Record<string, string>>, timeZone: string, now: Date): string {
+  const filled = command.options.filter(option => (values[option.name] ?? '') !== '');
+  const want = Object.fromEntries(filled.map(option => [option.name, values[option.name]]));
+  const same = (got: Record<string, string> | null) => got !== null && Object.keys(got).length === filled.length
+    && filled.every(option => got[option.name] === want[option.name]);
+  const plain = `/${command.id} ${filled.map(option => values[option.name]).join(' ')}`.trimEnd();
+  if (same(reopened(plain, command, timeZone, now))) return plain;
+  const positional = filled.every((option, index) => option === command.options[index]);
+  const quoted = `/${command.id} ${filled.map((option, index) => {
+    const value = values[option.name];
+    const body = /[\s"'\\]/u.test(value) ? quote(value) : value;
+    return positional && index === filled.length - 1 && option.freeText === true && !/["'\\]/u.test(value) && !/\n/u.test(value) ? value : (positional ? body : `${option.name}:${quote(value)}`);
+  }).join(' ')}`.trimEnd();
+  if (same(reopened(quoted, command, timeZone, now))) return quoted;
+  return `/${command.id} ${filled.map(option => `${option.name}:${quote(values[option.name])}`).join(' ')}`.trimEnd();
+}
+
 export function CommandPicker(props: CommandComposerProps): React.JSX.Element | null {
   const { initialText, onCancel, onSendLiteral, onDraftChange, definitions } = props;
   const timeZone = props.timeZone ?? browserTimeZone();
@@ -88,7 +119,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const submitGeneration = useRef(0);
   const inFlight = useRef(false);
   const draftRef = useRef<HTMLTextAreaElement>(null);
-  const fieldRefs = useRef(new Map<number, HTMLInputElement>());
+  const fieldRefs = useRef(new Map<number, HTMLInputElement | HTMLTextAreaElement>());
 
   // The first render reads the draft the host hands over: a typed command opens its chips, anything else the list.
   const [initial] = useState(() => {
@@ -110,6 +141,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const [cmdSel, setCmdSel] = useState(0);
   const [sugSel, setSugSel] = useState(0);
   const [error, setError] = useState<FieldError | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [status, setStatus] = useState('');
   const [pending, setPending] = useState(false);
   const [focused, setFocused] = useState(true);
@@ -122,6 +154,8 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const listedCommands = useMemo(() => definitions.filter(command => props.listed === undefined || props.listed.has(command.id)), [definitions, props.listed]);
   const entry: PickerEntry | null = selected === null ? null : entries.get(selected.id) ?? pickerEntry(selected, botName);
 
+  // The draft memory keeps what the chips show (an entity chip's label, not its id): a remount re-resolves the label
+  // against the provider's suggestions, so a member renamed meanwhile asks to be chosen again rather than hitting a stale id.
   const buildDraft = useCallback((command: CommandDefinition | null, list: string, values: Record<string, FieldState>): string => {
     if (!dirty.current) return original.current;
     if (command === null) return list;
@@ -142,7 +176,14 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    if (initial.literal) onCancel(initialText);
+    if (initial.literal) { onCancel(initialText); return; }
+    // A typed `/poll create` submitted from the textarea opens its form, as picking it from the list does.
+    if (initial.command !== null && props.onRunDetached !== undefined && pickerEntry(initial.command, botName).opensForm) {
+      dirty.current = true;
+      props.onRunDetached({ commandId: initial.command.id, args: { ...initial.values } });
+    }
+    // The start runs once; later prop changes are not a new start.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initial.literal, initialText, onCancel]);
 
   // A command the context no longer allows (a permission changed) hands its draft back. A Bot operation switched off only
@@ -203,7 +244,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     const parsed = parseCommand(draft);
     const id = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' && parsed.subcommands === undefined ? parsed.commandId : '';
     const command = definitionsById.get(id);
-    if (command === undefined) return false;
+    if (command === undefined || (props.listed !== undefined && !props.listed.has(id))) return false;
     enterCommand(command, parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {});
     return true;
   };
@@ -227,7 +268,10 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
       event.preventDefault();
       if (event.repeat) return;
       if (draft.startsWith('//')) { sendLiteralOnce(draft.slice(1)); return; }
-      enterTyped();
+      if (enterTyped()) return;
+      // The prototype's send(): an unknown name says so (Task 6 turns this into a failed private result).
+      const name = draft.slice(1).trim().split(/\s+/u)[0] ?? '';
+      if (name !== '') setListError(copy.notACommand(name.toLowerCase()));
       return;
     }
     if (event.key === 'Escape') {
@@ -249,7 +293,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const draftChange = (value: string) => {
     dirty.current = true;
     if (!value.startsWith('/')) { onCancel(value); return; }
-    setDraft(value); setCmdSel(0);
+    setDraft(value); setCmdSel(0); setListError(null);
   };
 
   // ---- The chips ----
@@ -364,8 +408,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
       setDraft(`/${selected.id}`); setSelected(null); setFields({}); setError(null); setCmdSel(0);
       return;
     }
-    const values = selected.options.map(option => fields[option.name]?.text ?? '').filter(Boolean);
-    onCancel(`/${selected.id} ${values.join(' ')}`.trimEnd());
+    onCancel(leaveText(selected, Object.fromEntries(selected.options.map(option => [option.name, fields[option.name]?.text ?? ''])), timeZone, nowOf()));
   };
 
   const fail = (field: number | null, message: string) => {
@@ -451,7 +494,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     }
   };
 
-  const chipKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const chipKeyDown = (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (selected === null || event.nativeEvent.isComposing || event.keyCode === 229) return;
     const count = Math.max(options.length, 1);
     const canAccept = sg.length > 0 && !exact && activeText.length > 0;
@@ -506,8 +549,9 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     } else if (notice !== undefined) bar = { icon: entry.icon, text: notice, tone: 'info' };
     else if (MUSIC_COMMANDS.has(selected.id)) bar = { ...bar, text: entry.description + copy.separator + (props.room ?? copy.joinVoiceFirst) };
     else if (MODERATION_COMMANDS.has(selected.id)) bar = { ...bar, text: entry.description + copy.separator + copy.checkedAgainstRoles };
-  }
-  const invalidField = error === null ? null : error.field ?? active;
+  } else if (listError !== null) bar = { icon: 'triangle-alert', text: listError, tone: 'danger' };
+  // A field error reddens its chip; a run that failed (no field) leaves the chips as they are.
+  const invalidField = error?.field ?? null;
 
   const listItemsUi: CommandListItem[] = listItems.map(command => {
     const e = entries.get(command.id)!;
@@ -535,14 +579,14 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
       onChange={event => draftChange(event.currentTarget.value)} onKeyDown={draftKeyDown} />
     : <CommandChips icon={entry.icon} name={selected.id}>
       {options.length === 0
-        ? <CommandField label="" optional={false} value="" placeholder={copy.pressToRun} active invalid={error !== null} ghost
+        ? <CommandField label="" optional={false} value="" placeholder={copy.pressToRun} active invalid={false} ghost
           inputRef={node => { if (node) fieldRefs.current.set(0, node); else fieldRefs.current.delete(0); }}
           onChange={() => {}} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} onKeyDown={chipKeyDown} />
         : options.map((option, index) => {
           const meta = entry.fields[option.name];
           const isActive = index === active;
           return <CommandField key={option.name} label={meta.label} optional={!option.required} value={fields[option.name]?.text ?? ''} placeholder={meta.placeholder}
-            active={isActive} invalid={invalidField === index}
+            active={isActive} invalid={invalidField === index} multiline={option.freeText === true && meta.suggest === 'none'}
             {...(isActive && sugOpen ? { listId: sugsId, activeOptionId: commandOptionId(sugsId, sg[sugIndex]?.id ?? '') } : {})}
             inputRef={node => { if (node) fieldRefs.current.set(index, node); else fieldRefs.current.delete(index); }}
             onChange={value => setField(index, value)}

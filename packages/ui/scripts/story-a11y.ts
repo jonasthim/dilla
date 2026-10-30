@@ -368,10 +368,14 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     const signal = await page.evaluate(() => document.documentElement.getAttribute('data-theme') === 'signal');
     const excepted = signal ? PROTOTYPE_CONTRAST.filter(e => e.story(context.id)).map(e => e.selector) : [];
     const present = excepted.length === 0 ? [] : await page.evaluate(sels => sels.filter(s => document.querySelector(`#storybook-root ${s}`) !== null), excepted);
-    const rules = { ...(strict ? { 'target-size': { enabled: true } } : {}) };
+    // Wave B Task 2 (fix round 1): the command list's scroll area is out of the tab order on purpose: the draft field keeps
+    // focus and ↑↓ move the selection, which scrolls the active row into view (CommandList). A tab stop there would take
+    // focus from the field the list belongs to. Scoped to the command picker's stories.
+    const pickerScroll = context.id.startsWith('conversation-commandpicker--');
+    const rules = { ...(strict ? { 'target-size': { enabled: true } } : {}), ...(pickerScroll ? { 'scrollable-region-focusable': { enabled: false } } : {}) };
     await checkA11y(page, present.length === 0 ? '#storybook-root' : { include: [['#storybook-root']], exclude: present.map(s => [`#storybook-root ${s}`]) }, {
       detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
-      ...(strict ? { axeOptions: { rules } } : {}),
+      ...(strict || pickerScroll ? { axeOptions: { rules } } : {}),
     });
     // The excepted elements still pass every other rule.
     if (present.length > 0) {

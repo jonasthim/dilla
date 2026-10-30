@@ -59,7 +59,7 @@ describe('CommandHost', () => {
     const { user, fake, channelId } = hostHarness();
     fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/me' } });
     expect(screen.getByText('command mode')).toBeInTheDocument();
-    const field = screen.getByRole('combobox', { name: 'text' });
+    const field = screen.getByRole('textbox', { name: 'text' });
     await user.type(field, 'waves');
     await user.click(screen.getByRole('button', { name: 'send' }));
     await screen.findByText('Sent.');
@@ -72,7 +72,7 @@ describe('CommandHost', () => {
     const picker = await screen.findByRole('textbox', { name: 'Command' });
     await user.type(picker, 'me waves hello');
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('combobox', { name: 'text' })).toHaveValue('waves hello');
+    expect(await screen.findByRole('textbox', { name: 'text' })).toHaveValue('waves hello');
     await user.click(screen.getByRole('button', { name: 'send' }));
     await screen.findByText('Sent.');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves hello_' }]);
