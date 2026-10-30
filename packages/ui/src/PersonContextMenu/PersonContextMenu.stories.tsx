@@ -24,6 +24,14 @@ export const MutedForMe: Story = { args: { ...tileMenu('Ole', { muted: true, vol
 export const You: Story = {
   render: () => <PersonContextMenu {...tileMenu('Mira', { own: true, title: 'Mira (you)' })} open at={{ x: 40, y: 40 }} onOpenChange={() => {}} returnFocus={() => null} />,
 };
+/** Yourself with a long room name: it ends in an ellipsis inside the 236px menu, and the keycaps and head counts stay in view. */
+export const YouLongRoomName: Story = {
+  render: () => {
+    const menu = tileMenu('Mira', { own: true, title: 'Mira (you)' });
+    const long = { ...menu, move: { ...menu.move!, rooms: [{ id: 'general', name: 'general', count: 0 }, { id: 'late', name: 'Late night lounge for people', count: 3 }] } };
+    return <PersonContextMenu {...long} open at={{ x: 40, y: 40 }} onOpenChange={() => {}} returnFocus={() => null} />;
+  },
+};
 /** A bot (Glenn): the rounded-square avatar; the volume, Mute for me and Copy username only. */
 export const Bot: Story = { args: { ...tileMenu('Glenn', { bot: true }) } };
 /** A shared screen: its own stream's volume. */

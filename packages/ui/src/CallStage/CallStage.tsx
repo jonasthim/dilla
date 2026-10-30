@@ -171,15 +171,15 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
   } else if (preview !== undefined) {
     body = (
       <div className="d-call-stage__preview">
-        {preview.people.length > 0 ? (
-          <span className="d-call-stage__faces" aria-hidden="true">
-            {preview.people.map(p => (
-              <span key={p.id} className="d-call-stage__face" data-speaking={p.speaking ? 'true' : 'false'}>
-                <Avatar name={p.name} size="lg" {...(p.bot === true ? { shape: 'bot' as const } : {})} />
-              </span>
-            ))}
-          </span>
-        ) : null}
+        {/* The faces row is always drawn, empty with nobody there: the prototype's empty row is a flex item too, so its 16px gap
+            still stands above the room name and the block sits 8px below the centre of the stage (gap71, gap99). */}
+        <span className="d-call-stage__faces" aria-hidden="true">
+          {preview.people.map(p => (
+            <span key={p.id} className="d-call-stage__face" data-speaking={p.speaking ? 'true' : 'false'}>
+              <Avatar name={p.name} size="lg" {...(p.bot === true ? { shape: 'bot' as const } : {})} />
+            </span>
+          ))}
+        </span>
         <span className="d-call-stage__preview-text">
           <span className="d-call-stage__preview-name">{preview.name}</span>
           <span className="d-call-stage__preview-who">{preview.text}</span>

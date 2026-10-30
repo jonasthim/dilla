@@ -16,6 +16,11 @@ function mutationError(error: unknown): CommandResult {
     return failure(code ? `Command was refused (${code}).` : 'Command was refused.');
   return result('uncertain', code ? `The command result is uncertain (${code}). Check the current server state before retrying.` : 'The command result is uncertain. Check the current server state before retrying.');
 }
+function selfDisplayName(context: CommandExecutionContext): string {
+  const self = context.client.get('account')?.user;
+  const member = context.binding.communityId === null ? undefined : context.client.get(`members:${context.binding.communityId}`)?.find(row => row.userId === context.selfId);
+  return member?.display || self?.display || self?.username || member?.username || '';
+}
 const targetThread = (binding: Readonly<Binding>) => binding.threadId === undefined ? {} : { threadId: binding.threadId };
 const encodedSize = (value: string) => new TextEncoder().encode(value).length;
 const uncertainPublications = new Set<string>();
@@ -68,7 +73,9 @@ const entries: Record<string, CommandHandler> = {
     }
     return success(COMMANDS_HELP);
   }),
-  me: handler((invocation, context) => publish(context, `_${invocation.args.text}_`)),
+  // The action line carries the author's name in its body ("_Mira packs the rope_"), as an IRC /me does: every client
+  // renders the body as Markdown italics and none of them has to know who sent it.
+  me: handler((invocation, context) => publish(context, `_${selfDisplayName(context)} ${invocation.args.text}_`.replace(/^_ /, '_'))),
   shrug: handler((invocation, context) => publish(context, formatClassicCommandMessage('shrug', invocation.args.text))),
   tableflip: handler((invocation, context) => publish(context, formatClassicCommandMessage('tableflip', invocation.args.text))),
   unflip: handler((invocation, context) => publish(context, formatClassicCommandMessage('unflip', invocation.args.text))),

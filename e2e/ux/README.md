@@ -16,7 +16,7 @@ screens) hold throwaway secrets; the default `target/ui-screens/signal-b` is git
 1. `npm run ux:world -w @dilla/e2e -- [--base <n>] [--out <dir>]` starts an empty test host with the Bot runtime
    (`startTestHost` from `e2e/web/support/host.ts`, bundled with esbuild so plain node can load it) and builds the server through
    the client: Ada, Björn, Mira and Liv (offline), text, announcement and voice channels (the AFK channel is the built-in
-   one), the Bot installed through Server settings -> Bot with Polls and Reminders on, a conversation, unread counts, a DM
+   one), the Bot installed through Server settings -> Bot with Polls, Reminders and Music on, a conversation, unread counts, a DM
    from Mira, Björn and Mira in `harbour`, and Ada's phone as a second device. Ports from `--base n` (default 8611): host
    `n`/`n+1`, SFU `n+2`/`n+4`, browsers' CDP from `n+10`, Ada's phone `n+19`. `state.json` (in `--out`) is written when it
    prints `READY`; it holds the people with their TOTP secrets, recovery keys and passwords, `invitePath`, `serverPath`,

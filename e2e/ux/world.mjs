@@ -164,13 +164,13 @@ const closeSettings = async () => {
     await ada.waitForTimeout(500);
   }
 };
-// The Bot: installed through Server settings -> Bot with Polls and Reminders on, as e2e/web/bot-runtime.spec.ts does. Its display
+// The Bot: installed through Server settings -> Bot with Polls, Reminders and Music on, as e2e/web/bot-runtime.spec.ts does. Its display
 // name goes to state.botName.
 {
   await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
   const bs = byText(ada, 'dialog', 'admin.title');
   await bs.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.bot'), exact: true }).click();
-  for (const cap of ['polls', 'reminders']) {
+  for (const cap of ['polls', 'reminders', 'music']) {
     const sw = bs.getByRole('switch', { name: t(`serverSettings.bot.cap.${cap}`), exact: true });
     await sw.waitFor({ timeout: WAIT });
     if ((await sw.getAttribute('aria-checked')) !== 'true') await sw.click();

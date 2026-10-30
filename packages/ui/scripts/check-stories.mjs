@@ -102,6 +102,24 @@ try {
           if (got.phone && got.hints.some(display => display !== 'none')) throw new Error('CommandPicker: a keyboard hint shows on a phone');
           if (!got.phone && got.hints.some(display => display === 'none')) throw new Error('CommandPicker: a keyboard hint is hidden on a desktop');
         }
+        // Wave B parity fix: a long room name ends in an ellipsis inside the person menu's 236px; the menu does not scroll sideways
+        // and every keycap and head count lies inside it.
+        if (story.id === 'voice-personcontextmenu--you-long-room-name' || story.id === 'voice-personcontextmenu--you') {
+          const got = await page.evaluate(() => {
+            const popup = document.querySelector('.d-person-menu');
+            if (popup === null) return null;
+            const box = popup.getBoundingClientRect();
+            return {
+              width: box.width, scrolls: popup.scrollWidth > popup.clientWidth,
+              hints: [...popup.querySelectorAll('.d-action-menu__hint')].map(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.right <= box.right; }),
+              truncated: [...popup.querySelectorAll('[data-room="true"] .d-action-menu__label')].some(el => el.scrollWidth > el.clientWidth),
+            };
+          });
+          if (got === null) throw new Error('PersonContextMenu: no menu is open');
+          if (got.scrolls || got.width !== 236) throw new Error(`PersonContextMenu: the menu is ${got.width}px wide and ${got.scrolls ? 'scrolls sideways' : 'fits'}, want 236px without scrolling`);
+          if (got.hints.length < 4 || got.hints.some(ok => !ok)) throw new Error(`PersonContextMenu: a keycap or head count is out of view (${got.hints.join(', ')})`);
+          if (story.id.endsWith('long-room-name') && !got.truncated) throw new Error('PersonContextMenu: the long room name is not truncated');
+        }
         process.stdout.write(`PASS ${story.id}\n`);
       } catch (error) {
         failures += 1;

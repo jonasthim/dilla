@@ -244,7 +244,11 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
   const top = lead?.top ?? tr.top;
   const group = centreOf(new DOMRect(Math.min(tr.left, jr.left), top, Math.max(tr.right, jr.right) - Math.min(tr.left, jr.left), jr.bottom - top));
   if (Math.abs(centreOf(tr).x - m.x) > 2 || Math.abs(centreOf(jr).x - m.x) > 2) throw new Error(`${story}: not centred across (main ${String(m.x)}, text ${String(centreOf(tr).x)}, button ${String(centreOf(jr).x)})`);
-  if (Math.abs(group.y - m.y) > 2) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)})`);
+  // The prototype's empty faces row is a flex item whose 16px gap still stands above the room name (gap71, gap99), so with nobody
+  // there the name and the button sit 8px below the centre of the stage.
+  const faces = preview?.querySelector('.d-call-stage__faces');
+  const shift = faces !== null && faces !== undefined && faces.children.length === 0 ? 8 : 0;
+  if (Math.abs(group.y - (m.y + shift)) > 2) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)}, expected shift ${String(shift)})`);
   if (tr.bottom > jr.top) throw new Error(`${story}: the text is not above the button`);
   const label = document.createRange(); label.selectNodeContents(join);
   if (Math.abs(centreOf(label.getBoundingClientRect()).x - m.x) > 2) throw new Error(`${story}: the join label is not centred (main ${String(m.x)}, label ${String(centreOf(label.getBoundingClientRect()).x)})`);

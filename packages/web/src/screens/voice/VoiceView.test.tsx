@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dmMenuItems, startDmCall } from '../../test/row-menu.ts';
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { PERM } from '@dilla/client-core';
+import { PersonContextMenu } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 import {
   A, BOB, BOB_DEV, CAROL, CAROL_DEV, CHANNELS, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
@@ -629,7 +630,7 @@ describe('review round 1', () => {
 describe('AW5: the AFK channel in the shell never hosts a call', () => {
   const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [], ...over });
   const order = (app: ReturnType<typeof renderVoiceShell>) => app.client.calls.map(c => c.m).filter(m => m === 'callLeave' || m === 'afkAway' || m === 'callJoin');
-  it('the AFK row is a voice row with no join icon; its desktop click starts no call and marks the person away', async () => {
+  it('the AFK row is a voice row with no join icon; its click opens the page and nothing else; only Go AFK marks the person away', async () => {
     const app = renderVoiceShell();
     app.client.publish(`afk:${A}`, afkSlice());
     const rowButton = await screen.findByRole('button', { name: 'voice music' });
@@ -637,9 +638,12 @@ describe('AW5: the AFK channel in the shell never hosts a call', () => {
     // Signal §5.4: the AFK row's glyph is the moon.
     expect(row.querySelector('svg[data-icon="moon"]')).not.toBeNull();
     expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
-    // Final review M4: no "join voice" icon on the AFK row; the page offers go AFK, and a desktop click goes AFK.
+    // Final review M4: no "join voice" icon on the AFK row; the page offers go AFK; the row's click only opens it (the prototype's open()).
     expect(within(row).queryByRole('button', { name: /join/i })).toBeNull();
     await app.user.click(rowButton);
+    await main().findByRole('button', { name: 'Go AFK' });
+    expect(app.client.callsOf('afkAway')).toEqual([]);
+    await app.user.click(await main().findByRole('button', { name: 'Go AFK' }));
     await waitFor(() => expect(app.client.callsOf('afkAway')).toEqual([{ m: 'afkAway', communityId: A }]));
     expect(app.module.startPageCall).not.toHaveBeenCalled();
     expect(order(app)).toEqual(['afkAway']);
@@ -1661,6 +1665,19 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     const there = personMenu(v, 'music', { userId: 'u', name: 'me', bot: false, own: true, roomId: MUSIC });
     expect(there.items.map(i => i.label)).toEqual(['Profile']);
     expect(personMenu(v, 'general', { userId: 'u', name: 'me', bot: false, own: true, roomId: GENV }).items.map(i => i.id)).toEqual(['mute', 'deafen', 'profile', 'leave']);
+  });
+
+  it('your own menu in a call carries the platform keycaps on Mute and Deafen and the head counts on the Move to rooms', () => {
+    const v = { call: { channelId: GENV, selfMuted: false, selfDeafened: false, toggleMute: () => {}, toggleDeafen: () => {}, leave: () => {} }, settings: {}, members: [],
+      people: { onProfile: () => {}, onMessage: () => {}, onMove: () => {}, rooms: () => [{ id: 'r1', name: 'Late night lounge for people', count: 3 }, { id: 'r2', name: 'general', count: 0 }] } } as unknown as Parameters<typeof personMenu>[0];
+    const menu = personMenu(v, 'harbour', { userId: 'u', name: 'me', bot: false, own: true, roomId: GENV });
+    const keys = voiceKeycapText();
+    expect(menu.items.filter(i => i.id === 'mute' || i.id === 'deafen').map(i => i.hint)).toEqual([keys.mute, keys.deafen]);
+    expect(keys.mute).toMatch(/^(Ctrl|⌘)⇧M$/);
+    expect(menu.move?.rooms.map(r => [r.name, r.count])).toEqual([['Late night lounge for people', 3], ['general', 0]]);
+    render(<PersonContextMenu {...menu} open at={{ x: 10, y: 10 }} onOpenChange={() => {}} returnFocus={() => null} />);
+    expect([...document.querySelectorAll('.d-action-menu__hint')].map(h => h.textContent)).toEqual([keys.mute, keys.deafen, '3', '0']);
+    expect(document.querySelector('[data-id="move:r1"] .d-action-menu__label')).toHaveAttribute('title', 'Late night lounge for people');
   });
 
   it('a bot has the volume, Profile, Mention, Mute for me and Copy username; no Message', async () => {

@@ -390,6 +390,14 @@ describe('CallStage', () => {
       expect(preview.join.onJoin).toHaveBeenCalledTimes(1);
     });
 
+    it('with nobody there the faces row is still drawn, empty, so the prototype gap above the room stands (gap71, gap99)', () => {
+      const { container } = render(<CallStage {...base} preview={{ ...preview, people: [] }} />);
+      const faces = container.querySelector('.d-call-stage__preview > .d-call-stage__faces');
+      expect(faces).not.toBeNull();
+      expect(faces?.children).toHaveLength(0);
+      expect(container.querySelector('.d-call-stage__preview')?.firstElementChild).toBe(faces);
+    });
+
     it('a held join shows no Join voice', () => {
       render(<CallStage {...base} preview={{ ...preview, join: null }} />);
       expect(screen.queryByRole('button', { name: 'Join voice' })).toBeNull();

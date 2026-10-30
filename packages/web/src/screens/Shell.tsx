@@ -1333,8 +1333,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         onSelect={id => {
           void navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
           // R24, wave B: a click or tap on a voice row opens it and joins (the prototype's phone row has no join icon).
+          // The AFK channel is the exception, on desktop and phone alike (the prototype's open() only shows its page): the row
+          // opens "Nobody is away", and only its Go AFK button joins.
           const room = voiceRooms[id];
-          if (!onDms && room !== undefined && !room.joined && !room.held) voiceCtx.onJoinVoice?.(id);
+          if (!onDms && room !== undefined && !room.joined && !room.held && !afkChannels.has(id)) voiceCtx.onJoinVoice?.(id);
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
