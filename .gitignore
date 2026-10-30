@@ -40,3 +40,4 @@ packages/client-core/harness-dist/
 
 # go build output when run from the repository root (CI builds it in a runner)
 /dillad
+/dillabot

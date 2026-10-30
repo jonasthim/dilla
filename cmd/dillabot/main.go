@@ -60,24 +60,38 @@ type config struct {
 	ReconcileInterval       time.Duration `toml:"-"`
 }
 
+// defaultConfigPath is where install-bot.sh writes the config and where the
+// systemd unit reads it.
+const defaultConfigPath = "/etc/dillabot/bot.toml"
+
+var (
+	errConfigMissing    = errors.New("config file does not exist")
+	errConfigUnreadable = errors.New("config file is unavailable")
+	errConfigInvalid    = errors.New("config file is invalid")
+	errCredentialBad    = errors.New("runtime credential file is unavailable or unsafe")
+)
+
 func loadConfig(path string) (config, error) {
 	var c config
 	if !filepath.IsAbs(path) {
 		return c, errors.New("config path must be absolute")
 	}
 	raw, err := os.ReadFile(path) // #nosec G304 -- path is the explicit absolute --config operator argument.
+	if errors.Is(err, os.ErrNotExist) {
+		return c, errConfigMissing
+	}
 	if err != nil {
-		return c, errors.New("config file is unavailable")
+		return c, errConfigUnreadable
 	}
 	if len(raw) > maxConfigBytes {
-		return c, errors.New("config file exceeds size limit")
+		return c, fmt.Errorf("%w: exceeds size limit", errConfigInvalid)
 	}
 	decoder := toml.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	err = decoder.Decode(&c)
 	clear(raw)
 	if err != nil {
-		return c, errors.New("config file is invalid")
+		return c, errConfigInvalid
 	}
 	var errs []error
 	if c.BaseURL == "" {
@@ -114,11 +128,11 @@ func loadConfig(path string) (config, error) {
 		errs = append(errs, errors.New("reconcile_interval must be between 1s and 24h"))
 	}
 	if len(errs) != 0 {
-		return config{}, errors.Join(errs...)
+		return config{}, fmt.Errorf("%w: %w", errConfigInvalid, errors.Join(errs...))
 	}
 	credential, err := readCredential(c.RuntimeCredentialFile)
 	if err != nil {
-		return config{}, errors.New("runtime credential file is unavailable or unsafe")
+		return config{}, errCredentialBad
 	}
 	clear(credential)
 	return c, nil
@@ -324,7 +338,7 @@ func main() {
 		os.Exit(runInteractionRecoveryCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
 	fs := flag.NewFlagSet("dillabot", flag.ExitOnError)
-	configPath := fs.String("config", "/etc/dilla/bot.toml", "path to the bot service TOML config")
+	configPath := fs.String("config", defaultConfigPath, "path to the bot service TOML config")
 	_ = fs.Parse(os.Args[1:])
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	cfg, err := loadConfig(*configPath)
