@@ -21,15 +21,32 @@ type intakeTrust interface {
 	RefreshPendingLeaves(context.Context, *client.Session) (service.TrustRefresh, error)
 }
 
+// countSkipped reports how many events a drain acknowledged as undeliverable, as a count only, so
+// the intake paths log skips without any event's delivery ID, sender or cause.
+type countSkipped struct {
+	holdingEventDrainer
+	report func(int)
+}
+
+func (c countSkipped) DrainHolding(ctx context.Context, unrefreshed map[id.ID]bool) (service.GroupEventPollResult, error) {
+	result, err := c.holdingEventDrainer.DrainHolding(ctx, unrefreshed)
+	if n := len(result.Skipped); n > 0 {
+		c.report(n)
+	}
+	return result, err
+}
+
 // refreshTrust runs the trust pass before Drain and fails closed. The trust pass is where a
 // published revocation or key change is applied, so:
 //   - a failure that is not scoped to one sender (reading the pending leaves, a server or API
-//     failure, a native-core refusal or limit, group revalidation) ends the poll before Drain,
-//     exactly as before: nothing is dispatched;
+//     failure, a native-core refusal or limit, group revalidation, the clock) ends the poll before
+//     Drain, exactly as before: nothing is dispatched;
 //   - a sender whose signed device-list history is stale is reported in Unrefreshed. Its new
 //     messages stay held by the native core as pending leaves, and the caller holds its
-//     already-queued events (DrainHolding), so nothing it sent is dispatched until its trust is
-//     current; every other sender's commands are still dispatched.
+//     already-queued events (DrainHolding). The queue is ordered: other senders' events ahead of
+//     the held event are dispatched; the held event blocks the queue until its sender is
+//     refreshed or the held-event age limit (service.HeldEventMaxPendingAge) drops it, never
+//     dispatched.
 func refreshTrust(ctx context.Context, trust intakeTrust, session *client.Session, report func(service.TrustRefresh)) (map[id.ID]bool, error) {
 	refresh, err := trust.RefreshPendingLeaves(ctx, session)
 	if err != nil {

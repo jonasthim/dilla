@@ -543,7 +543,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				trust, ensureErr = service.NewSourceTrust(nativeClient)
 				if ensureErr == nil {
 					var healed int
-					ready, healed, reconcileStage, ensureErr = reconcileMembershipReadiness(ctx, result.Installation, nativeClient, result.Session, membership, trust)
+					// Senders whose signed device-list history is stale: held in this pass's drain.
+					var unrefreshed map[id.ID]bool
+					ready, healed, reconcileStage, unrefreshed, ensureErr = reconcileMembershipReadiness(ctx, result.Installation, nativeClient, result.Session, membership, trust, unrefreshedSendersLogger(logger, installation.ID))
 					if ensureErr == nil && healed > 0 {
 						logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
 					}
@@ -785,16 +787,19 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												if interactionErr = musicRegistry.RetainInteractions(installation.ID, installation.CommunityID, nativeClient); interactionErr == nil {
 													runtimeOwnedNative = true
 													reportUnrefreshed := unrefreshedSendersLogger(logger, installation.ID)
+													intakeEvents := countSkipped{holdingEventDrainer: eventRuntime, report: func(n int) {
+														logger.Warn("bot interaction events skipped as undeliverable during command intake", "installation_id", installation.ID.String(), "events", n)
+													}}
 													gateways.SetTextPoller(installation.ID, newCommandIntakePoller(membership, trust, result.Session,
 														func(pollCtx context.Context) error {
 															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
-														}, eventRuntime, reportUnrefreshed))
-													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, eventRuntime, reportUnrefreshed))
+														}, intakeEvents, reportUnrefreshed))
+													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, intakeEvents, reportUnrefreshed))
 												}
 
 												var eventResult service.GroupEventPollResult
 												if interactionErr == nil {
-													eventResult, interactionErr = eventRuntime.Drain(ctx)
+													eventResult, interactionErr = eventRuntime.DrainHolding(ctx, unrefreshed)
 												}
 												for _, skip := range eventResult.Skipped {
 													attrs := []any{"installation_id", installation.ID.String(), "delivery_id", skip.DeliveryID, "error", skip.Cause.Error()}

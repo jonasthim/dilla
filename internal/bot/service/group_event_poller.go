@@ -24,9 +24,13 @@ import (
 //   - TextEventMaxPendingAge (24 hours) for every other event, in particular text-channel
 //     messages awaiting automatic moderation, which keep their value much longer. An event whose
 //     group cannot be positively identified as an interaction group also gets the longer limit.
+//   - HeldEventMaxPendingAge (one hour) for an event HELD because its sender's trust could not be
+//     refreshed (ErrGroupEventHeld), whatever its group: it is never dispatched while held, and an
+//     unverifiable sender must not block every later event for a day.
 const (
 	InteractionEventMaxPendingAge = time.Hour
 	TextEventMaxPendingAge        = 24 * time.Hour
+	HeldEventMaxPendingAge        = time.Hour
 )
 
 // groupEventKindSource identifies interaction groups; *native.Client implements it. The generic
@@ -174,7 +178,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			if isUndeliverableGroupEvent(err) {
 				skipped = &SkippedGroupEvent{DeliveryID: event.DeliveryID, Cause: err}
 			} else {
-				first, aged, ageErr := p.failureAge(ctx, event)
+				first, aged, ageErr := p.failureAge(ctx, event, errors.Is(err, ErrGroupEventHeld))
 				if ageErr != nil || !aged || ctx.Err() != nil {
 					return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: errors.Join(err, ageErr)}
 				}
@@ -225,8 +229,9 @@ func (r groupEventFailureRecord) matches(event native.GroupEvent) bool {
 // while real downtime still counts towards the age. A first-failure time more than
 // groupEventClockTolerance in the future (the clock went backwards) restarts the record at now.
 // A record that does not decode, or has an unknown version, is replaced by a fresh one. Every
-// write carries a revision check; any state error keeps the event pending.
-func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEvent) (time.Time, bool, error) {
+// write carries a revision check; any state error keeps the event pending. A held event (its
+// sender's trust could not be refreshed) uses HeldEventMaxPendingAge whatever its group.
+func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEvent, held bool) (time.Time, bool, error) {
 	state, ok := p.native.(groupEventFailureState)
 	if !ok {
 		return time.Time{}, false, nil
@@ -267,6 +272,9 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 	age := now.Sub(first)
 	if next.Attempts < groupEventMinFailedPasses || age < InteractionEventMaxPendingAge {
 		return first, false, nil
+	}
+	if held {
+		return first, age >= HeldEventMaxPendingAge, nil
 	}
 	return first, age >= p.maxPendingAge(ctx, event), nil
 }

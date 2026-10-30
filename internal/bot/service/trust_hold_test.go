@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
@@ -29,6 +30,7 @@ type isolatingTrustNative struct {
 	binding     native.Binding
 	leaves      []native.GroupPendingLeaf
 	leavesErr   error
+	trustErr    error
 	trusted     []id.ID
 	revalidated []id.ID
 }
@@ -42,7 +44,7 @@ func (*isolatingTrustNative) ProposedAdds(context.Context, id.ID, []byte) ([]nat
 }
 func (n *isolatingTrustNative) TrustSender(_ context.Context, _ id.ID, _ uint64, user id.ID, _, _ []byte, _ uint64) (native.GroupTrustVerdict, error) {
 	n.trusted = append(n.trusted, user)
-	return native.GroupTrustVerdict{}, nil
+	return native.GroupTrustVerdict{}, n.trustErr
 }
 func (*isolatingTrustNative) TrustProposedAdd(context.Context, id.ID, []byte, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error) {
 	return native.GroupTrustVerdict{}, nil
@@ -110,6 +112,29 @@ func TestRefreshPendingLeavesKeepsGeneralFailuresFatal(t *testing.T) {
 	if _, err := trust.refreshPendingLeaves(context.Background(), session); err == nil {
 		t.Fatal("a PendingLeaves failure was not fatal")
 	}
+}
+
+// Only a stale history READ for one sender is sender-scoped. The same ErrSenderHistoryStale from
+// the clock check (no trust phase) or from the native core's verdict (sender-trust phase) is not
+// about one sender's published data and stays fatal.
+func TestRefreshPendingLeavesKeepsClockAndCoreStalenessFatal(t *testing.T) {
+	t.Run("clock", func(t *testing.T) {
+		trust, n, session, _, _ := isolationFixture(t)
+		// Only A's leaf, whose history reads fine: the failure can only come from the clock.
+		n.leaves = n.leaves[1:2]
+		trust.now = func() time.Time { return time.Unix(0, 0) }
+		if _, err := trust.refreshPendingLeaves(context.Background(), session); !errors.Is(err, ErrSenderHistoryStale) {
+			t.Fatalf("a clock failure returned %v, want it fatal", err)
+		}
+	})
+	t.Run("native core", func(t *testing.T) {
+		trust, n, session, _, _ := isolationFixture(t)
+		n.leaves = n.leaves[1:2]
+		n.trustErr = ErrSenderHistoryStale // the core refuses the verdict
+		if _, err := trust.refreshPendingLeaves(context.Background(), session); !errors.Is(err, ErrSenderHistoryStale) {
+			t.Fatalf("a core-side staleness returned %v, want it fatal", err)
+		}
+	})
 }
 
 // Drain dispatches only events from senders whose trust is current. An event from an unrefreshed

@@ -91,6 +91,31 @@ func TestInteractionFastPathReleasesAPendingLeafBeforeDispatch(t *testing.T) {
 	}
 }
 
+// The intake paths report how many events the queue skipped as undeliverable, as a count only:
+// nothing about the events (delivery IDs, senders, causes) reaches that log.
+func TestIntakeReportsSkippedEventsAsACountOnly(t *testing.T) {
+	inner := skippedDrain{result: service.GroupEventPollResult{Skipped: []service.SkippedGroupEvent{{DeliveryID: 4}, {DeliveryID: 9}}}}
+	var counts []int
+	drain := countSkipped{holdingEventDrainer: inner, report: func(n int) { counts = append(counts, n) }}
+	if _, err := drain.DrainHolding(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(counts, []int{2}) {
+		t.Fatalf("reported %v, want one count of 2", counts)
+	}
+	inner.result.Skipped = nil
+	drain.holdingEventDrainer = inner
+	if _, err := drain.DrainHolding(t.Context(), nil); err != nil || len(counts) != 1 {
+		t.Fatalf("a pass without skips reported %v (err %v)", counts, err)
+	}
+}
+
+type skippedDrain struct{ result service.GroupEventPollResult }
+
+func (s skippedDrain) DrainHolding(context.Context, map[id.ID]bool) (service.GroupEventPollResult, error) {
+	return s.result, nil
+}
+
 type commandDrainFunc func(context.Context) (service.GroupEventPollResult, error)
 
 func (f commandDrainFunc) Drain(ctx context.Context) (service.GroupEventPollResult, error) {

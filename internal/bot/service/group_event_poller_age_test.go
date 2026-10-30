@@ -46,6 +46,64 @@ func TestGroupEventPollerGivesTextEventsTwentyFourHours(t *testing.T) {
 	}
 }
 
+// Jonas 2026-10-30: an event HELD because its sender's trust cannot be refreshed is dropped after
+// one hour (with the same three failed passes), whether it is a command or a text-channel event;
+// it is never dispatched. A text event failing for any other reason keeps its 24 hours.
+func TestGroupEventPollerDropsAHeldEventAfterAnHourWhateverItsGroup(t *testing.T) {
+	for _, kind := range []string{"text", "interaction"} {
+		t.Run(kind, func(t *testing.T) {
+			q := ageTestQueue()
+			if kind == "text" {
+				q.interaction = q.interaction[1:] // event 1 is from a text group
+			}
+			stale := id.New()
+			q.events[0].SenderUser = stale
+			dispatched := 0
+			handler := HoldUnrefreshedSenders(groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
+				if e.DeliveryID == 1 {
+					dispatched++
+				}
+				return nil
+			}), map[id.ID]bool{stale: true})
+			start := time.Unix(1_800_000_000, 0)
+			for _, at := range []time.Time{start, start.Add(10 * time.Minute), start.Add(InteractionEventMaxPendingAge - time.Second)} {
+				result, err := pollAt(t, context.Background(), q, at, handler)
+				if !errors.Is(err, ErrGroupEventHeld) || q.acked != 0 || len(result.Skipped) != 0 {
+					t.Fatalf("at +%s: err=%v acked=%d skipped=%v; a held event younger than an hour stays pending", at.Sub(start), err, q.acked, result.Skipped)
+				}
+			}
+			result, err := pollAt(t, context.Background(), q, start.Add(HeldEventMaxPendingAge), handler)
+			if err != nil || len(result.Skipped) != 1 || result.Skipped[0].DeliveryID != 1 || !errors.Is(result.Skipped[0].Cause, ErrGroupEventHeld) {
+				t.Fatalf("at one hour: err=%v skipped=%+v; the held event must be dropped", err, result.Skipped)
+			}
+			if dispatched != 0 {
+				t.Fatalf("the held event was dispatched %d times", dispatched)
+			}
+		})
+	}
+}
+
+// A text event that fails for a reason other than a held sender still keeps 24 hours, even after
+// held events got the shorter limit.
+func TestGroupEventPollerKeepsTwentyFourHoursForAFailingTextEventThatIsNotHeld(t *testing.T) {
+	q := ageTestQueue()
+	q.interaction = q.interaction[1:]
+	fail := errors.New("moderation action endpoint unavailable")
+	handler := HoldUnrefreshedSenders(groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
+		if e.DeliveryID == 1 {
+			return fail
+		}
+		return nil
+	}), map[id.ID]bool{id.New(): true}) // someone else is held; event 1's sender is not
+	start := time.Unix(1_800_000_000, 0)
+	for _, at := range []time.Time{start, start.Add(time.Hour), start.Add(2 * time.Hour)} {
+		result, err := pollAt(t, context.Background(), q, at, handler)
+		if !errors.Is(err, fail) || q.acked != 0 || len(result.Skipped) != 0 {
+			t.Fatalf("at +%s: err=%v acked=%d skipped=%v; a failing text event keeps 24 h", at.Sub(start), err, q.acked, result.Skipped)
+		}
+	}
+}
+
 // pollAt builds a fresh poller per call, as every reconcile pass and every restart does.
 func pollAt(t *testing.T, ctx context.Context, q *durableGroupEventQueue, at time.Time, handler GroupEventHandler) (GroupEventPollResult, error) {
 	t.Helper()
