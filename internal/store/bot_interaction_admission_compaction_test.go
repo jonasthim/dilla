@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 )
@@ -23,26 +24,31 @@ func TestBotInteractionAdmissionCompactionSearchesByExpiry(t *testing.T) {
 		"payload compaction": {`UPDATE bot_interaction_admission_receipts INDEXED BY bot_interaction_admission_receipts_live SET payload=x'',signature=x'' WHERE installation_id=? AND not_after<=? AND length(payload)>0`, "bot_interaction_admission_receipts_live"},
 		"tombstone deletion": {`DELETE FROM bot_interaction_admission_receipts WHERE installation_id=? AND not_after<=?`, "bot_interaction_admission_receipts_expiry"},
 	} {
-		statement := c.statement
-		rows, err := db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+statement, make([]byte, 16), int64(1))
-		if err != nil {
-			t.Fatalf("%s: explain: %v", name, err)
-		}
-		var plan []string
-		for rows.Next() {
-			var id, parent, unused int
-			var detail string
-			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-				t.Fatalf("%s: scan plan: %v", name, err)
-			}
-			plan = append(plan, detail)
-		}
-		if err := rows.Close(); err != nil {
-			t.Fatalf("%s: plan rows: %v", name, err)
-		}
-		joined := strings.Join(plan, "; ")
+		joined := strings.Join(explainPlan(ctx, t, db, name, c.statement), "; ")
 		if !strings.Contains(joined, "INDEX "+c.index+" (installation_id=? AND not_after<?)") {
 			t.Errorf("%s plan = %q, want a range on %s (installation_id, not_after)", name, joined, c.index)
 		}
 	}
+}
+
+func explainPlan(ctx context.Context, t *testing.T, db *sql.DB, name, statement string) []string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+statement, make([]byte, 16), int64(1))
+	if err != nil {
+		t.Fatalf("%s: explain: %v", name, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatalf("%s: scan plan: %v", name, err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: plan rows: %v", name, err)
+	}
+	return plan
 }
