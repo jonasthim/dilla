@@ -21,8 +21,9 @@ const (
 	interactionBurst   = 3
 )
 
-// interactionBudget is a token bucket for interaction fast-path work, charged per group synced
-// (see botGatewayRuntime.PollInteractions for the per-poll cap). It outlives one wait, so
+// interactionBudget is one installation's token bucket for interaction fast-path work, charged per
+// group synced (see botGatewayRuntime.PollInteractions for the per-poll cap). The runtime holds
+// one per installation, so one community's flood does not slow another's. It outlives one wait, so
 // a flood cannot reset it by spanning a reconciliation pass.
 type interactionBudget struct {
 	tokens   float64
@@ -69,16 +70,16 @@ func (b *interactionBudget) spend(now time.Time, groups int) {
 //
 // A participant's message in a private interaction group (interaction) is a command waiting for
 // an answer. It takes the fast path, pollInteraction, which reads only the messaged groups and
-// dispatches their events; the bound in interactionBudget keeps a flood of messages from turning
-// it into back-to-back work. Every other hint (wake) takes the full text sweep, poll, at most once
-// per gatewayWakeThrottle.
+// dispatches their events; nextInteraction says when the installations' own interactionBudgets
+// next allow it, which keeps a flood of messages from turning it into back-to-back work. Every
+// other hint (wake) takes the full text sweep, poll, at most once per gatewayWakeThrottle.
 type reconcileWait struct {
 	interval        time.Duration
 	wake            <-chan struct{}
 	interaction     <-chan struct{}
 	poll            func(context.Context)
-	pollInteraction func(context.Context) int // reports the groups synced
-	budget          *interactionBudget
+	nextInteraction func(time.Time) (time.Duration, bool)
+	pollInteraction func(context.Context, time.Time) int
 	now             func() time.Time
 	after           func(time.Duration) <-chan time.Time
 }
@@ -88,6 +89,15 @@ type reconcileWait struct {
 func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 	next := w.after(w.interval)
 	var general, fast <-chan time.Time
+	// arm (re)times the fast poll for the earliest installation its budget allows; a new signal can
+	// bring it forward (another community's command must not wait behind a flooded one).
+	arm := func() {
+		if d, ok := w.nextInteraction(w.now()); ok {
+			fast = w.after(d)
+		} else {
+			fast = nil
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -99,26 +109,19 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 				general = w.after(gatewayWakeThrottle - w.now().Sub(started))
 			}
 		case <-w.interaction:
-			if fast == nil {
-				fast = w.after(w.budget.delay(w.now()))
-			}
+			arm()
 		case <-general:
 			general = nil
 			w.poll(ctx)
 			started = w.now()
 		case <-fast:
-			fast = nil
-			// The allowance may have been read before a refill was due; re-check it.
-			if d := w.budget.delay(w.now()); d > 0 {
-				fast = w.after(d)
-				continue
+			// An installation polls only with a token in hand and is then charged one token per
+			// group it synced (at most interactionGroupCap per poll), so a flood across many groups
+			// refills no faster than one group per gatewayWakeThrottle.
+			if d, ok := w.nextInteraction(w.now()); ok && d <= 0 {
+				w.pollInteraction(ctx, w.now())
 			}
-			// A poll starts only with a token in hand and is then charged one token per group it
-			// synced (at most interactionGroupCap), so a flood across many groups refills no
-			// faster than one group per gatewayWakeThrottle.
-			start := w.now()
-			synced := w.pollInteraction(ctx)
-			w.budget.spend(start, synced)
+			arm()
 		}
 	}
 }

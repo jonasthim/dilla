@@ -23,9 +23,9 @@ func (s namedGroupSync) ReconcileInteractionGroupOnce(_ context.Context, _ *clie
 	return service.MembershipResult{GroupsSynced: 1}, s.err
 }
 
-// The gateway fast path for a participant's message reads that one interaction group and then
-// dispatches; it never runs the text-channel membership sweep, the trust pass or the sweep of
-// every interaction group, which stay on the throttled general wake and on reconciliation.
+// The gateway fast path for a participant's message reads that one interaction group, refreshes
+// trust, then dispatches; it never runs the text-channel membership sweep or the sweep of every
+// interaction group, which stay on the throttled general wake and on reconciliation.
 func TestInteractionFastPathSyncsOnlyTheMessagedGroupBeforeDispatch(t *testing.T) {
 	group := id.New()
 	for _, denied := range []bool{false, true} {
@@ -35,12 +35,12 @@ func TestInteractionFastPathSyncsOnlyTheMessagedGroupBeforeDispatch(t *testing.T
 		if denied {
 			sync.err = refusal
 		}
-		poll := newInteractionIntakePoller(sync, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
+		poll := newInteractionIntakePoller(sync, readinessTrust{steps: &steps}, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
 			steps = append(steps, "dispatch")
 			return service.GroupEventPollResult{}, nil
 		}))
 		err := poll(t.Context(), group)
-		want := []string{"interaction_sync:" + group.String(), "dispatch"}
+		want := []string{"interaction_sync:" + group.String(), "trust", "dispatch"}
 		if denied {
 			want = want[:1]
 			if !errors.Is(err, refusal) {
@@ -52,6 +52,39 @@ func TestInteractionFastPathSyncsOnlyTheMessagedGroupBeforeDispatch(t *testing.T
 		if !reflect.DeepEqual(steps, want) {
 			t.Fatalf("steps=%v, want %v", steps, want)
 		}
+	}
+}
+
+// pendingLeafCore models the native core: a message from a leaf whose signed list changed is held
+// (app_pending_history) until the trust pass revalidates the leaf; dispatch only sees released events.
+type pendingLeafCore struct{ held, released bool }
+
+func (c *pendingLeafCore) ReconcileInteractionGroupOnce(context.Context, *client.Session, id.ID) (service.MembershipResult, error) {
+	c.held = true // the participant's device list changed: the command arrives held for the list
+	return service.MembershipResult{GroupsSynced: 1}, nil
+}
+func (c *pendingLeafCore) TrustPendingLeaves(context.Context, *client.Session) (uint32, error) {
+	if !c.held {
+		return 0, nil
+	}
+	c.held, c.released = false, true
+	return 1, nil
+}
+
+// A command whose sender's device list changed reaches dispatch on the fast path: the trust pass
+// runs between the group sync and Drain, as on the full path.
+func TestInteractionFastPathReleasesAPendingLeafBeforeDispatch(t *testing.T) {
+	core := &pendingLeafCore{}
+	dispatched := false
+	poll := newInteractionIntakePoller(core, core, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
+		dispatched = core.released
+		return service.GroupEventPollResult{}, nil
+	}))
+	if err := poll(t.Context(), id.New()); err != nil {
+		t.Fatal(err)
+	}
+	if !dispatched {
+		t.Fatal("the command from a pending leaf was still held when the fast path dispatched")
 	}
 }
 

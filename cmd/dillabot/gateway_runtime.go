@@ -58,6 +58,7 @@ type botGatewayRuntime struct {
 	// (guarded by pendingMu: the per-installation gateway goroutines write it).
 	pendingMu          sync.Mutex
 	pending            map[id.ID]map[id.ID]bool
+	budgets            map[id.ID]*interactionBudget // per installation, outliving reconcile passes
 	interactionPollers map[id.ID]func(context.Context, id.ID) error
 }
 
@@ -110,24 +111,61 @@ const (
 	interactionGroupFallback = 2 * interactionGroupCap
 )
 
-// PollInteractions syncs up to interactionGroupCap messaged interaction groups and dispatches
-// their events, and reports how many it synced so the caller charges its budget per group. An
-// installation with no fast path registered falls back to the general wake and its full sweep.
-func (r *botGatewayRuntime) PollInteractions(ctx context.Context) int {
+// budgetLocked is the installation's token bucket; pendingMu must be held. Each installation has
+// its own, so a flood in one community does not slow another community's commands.
+func (r *botGatewayRuntime) budgetLocked(installation id.ID) *interactionBudget {
+	if r.budgets == nil {
+		r.budgets = map[id.ID]*interactionBudget{}
+	}
+	b := r.budgets[installation]
+	if b == nil {
+		b = &interactionBudget{}
+		r.budgets[installation] = b
+	}
+	return b
+}
+
+// NextInteraction reports how long until the next fast poll may run for some installation with
+// messaged groups, and false when no group is pending.
+func (r *botGatewayRuntime) NextInteraction(now time.Time) (time.Duration, bool) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	var next time.Duration
+	found := false
+	for installation, groups := range r.pending {
+		if len(groups) == 0 {
+			continue
+		}
+		if d := r.budgetLocked(installation).delay(now); !found || d < next {
+			next, found = d, true
+		}
+	}
+	return next, found
+}
+
+// PollInteractions syncs up to interactionGroupCap messaged interaction groups, taken only from
+// installations whose own budget allows a poll at now, and dispatches their events; each
+// installation is charged one token per group it synced. An installation with more than
+// interactionGroupFallback groups pending, or with no fast path registered, falls back to the
+// general wake and its full sweep. Groups left over stay pending and are re-signalled.
+func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time) int {
 	type work struct{ installation, group id.ID }
 	var batch []work
+	fallback := false
 	r.pendingMu.Lock()
-	total := 0
-	for _, groups := range r.pending {
-		total += len(groups)
-	}
-	if total > interactionGroupFallback {
-		r.pending = nil
-		r.pendingMu.Unlock()
-		r.notify()
-		return 0
+	for installation, groups := range r.pending {
+		if len(groups) > interactionGroupFallback {
+			delete(r.pending, installation)
+			fallback = true
+		}
 	}
 	for installation, groups := range r.pending {
+		if len(batch) == interactionGroupCap {
+			break
+		}
+		if r.budgetLocked(installation).delay(now) > 0 {
+			continue
+		}
 		for group := range groups {
 			if len(batch) == interactionGroupCap {
 				break
@@ -141,26 +179,36 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context) int {
 	}
 	more := len(r.pending) > 0
 	r.pendingMu.Unlock()
+	if fallback {
+		r.notify()
+	}
 	if more {
 		select {
 		case r.interaction <- struct{}{}:
 		default:
 		}
 	}
-	synced := 0
+	synced := map[id.ID]int{}
 	for _, w := range batch {
 		poll := r.interactionPollers[w.installation]
 		if poll == nil {
 			r.notify()
 			continue
 		}
-		synced++
+		synced[w.installation]++
 		if err := poll(ctx, w.group); err != nil && ctx.Err() == nil {
 			r.log.Warn("bot interaction command intake deferred", "installation_id", w.installation.String())
 			r.notify()
 		}
 	}
-	return synced
+	total := 0
+	r.pendingMu.Lock()
+	for installation, n := range synced {
+		r.budgetLocked(installation).spend(now, n)
+		total += n
+	}
+	r.pendingMu.Unlock()
+	return total
 }
 func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token string) error {
 	if e := r.entries[installation]; e != nil {

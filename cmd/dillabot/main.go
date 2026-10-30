@@ -415,7 +415,6 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
 	defer gateways.Close()
 	statuses := newRuntimeStatusTracker(Version)
-	interactionBudget := &interactionBudget{}
 	for {
 		started := time.Now()
 		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, statuses, logger); err != nil && !errors.Is(err, context.Canceled) {
@@ -427,7 +426,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		// A gateway notification refreshes text sources only. Full reconciliation includes proof
 		// POSTs for every private group and stays on its own interval.
 		wait := reconcileWait{interval: cfg.ReconcileInterval, wake: gateways.Wake(), interaction: gateways.Interaction(),
-			poll: gateways.PollText, pollInteraction: gateways.PollInteractions, budget: interactionBudget, now: time.Now, after: time.After}
+			poll: gateways.PollText, nextInteraction: gateways.NextInteraction, pollInteraction: gateways.PollInteractions, now: time.Now, after: time.After}
 		if !wait.wait(ctx, started) {
 			return nil
 		}
@@ -775,7 +774,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														func(pollCtx context.Context) error {
 															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
 														}, eventRuntime))
-													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, result.Session, eventRuntime))
+													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, eventRuntime))
 												}
 
 												var eventResult service.GroupEventPollResult

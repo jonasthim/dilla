@@ -203,17 +203,18 @@ func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
 	default:
 		t.Fatal("no interaction signal")
 	}
-	runtime.PollInteractions(t.Context())
+	t0 := time.Unix(1_800_000_000, 0)
+	runtime.PollInteractions(t.Context(), t0)
 	inOrder := len(polled) == 2 && polled[0] == a && polled[1] == b
 	reversed := len(polled) == 2 && polled[0] == b && polled[1] == a
 	if !inOrder && !reversed {
 		t.Fatalf("polled %v, want each messaged group once", polled)
 	}
-	if n := runtime.PollInteractions(t.Context()); n != 0 || len(polled) != 2 {
+	if n := runtime.PollInteractions(t.Context(), t0.Add(time.Minute)); n != 0 || len(polled) != 2 {
 		t.Fatalf("a drained signal polled again: %v (%d synced)", polled, n)
 	}
 	runtime.notifyInteraction(unpolled, a)
-	runtime.PollInteractions(t.Context())
+	runtime.PollInteractions(t.Context(), t0)
 	select {
 	case <-runtime.Wake():
 	default:
@@ -242,13 +243,20 @@ func TestInteractionPollSyncsAtMostTheCapAndRequeuesTheRest(t *testing.T) {
 		runtime.notifyInteraction(installation, id.New())
 	}
 	drainSignal(runtime.Interaction())
-	if n := runtime.PollInteractions(t.Context()); n != interactionGroupCap || len(seen) != interactionGroupCap {
+	t0 := time.Unix(1_800_000_000, 0)
+	if n := runtime.PollInteractions(t.Context(), t0); n != interactionGroupCap || len(seen) != interactionGroupCap {
 		t.Fatalf("first poll synced %d groups (%d distinct), want the cap %d", n, len(seen), interactionGroupCap)
 	}
 	if !drainSignal(runtime.Interaction()) {
 		t.Fatal("the requeued groups were not re-signalled for the next poll")
 	}
-	if n := runtime.PollInteractions(t.Context()); n != groups-interactionGroupCap || len(seen) != groups {
+	// The first poll was charged four groups against a burst of three: the installation's next
+	// poll waits for its budget, then takes the rest.
+	if n := runtime.PollInteractions(t.Context(), t0.Add(interactionSpacing)); n != 0 {
+		t.Fatalf("the installation polled again with a spent budget (%d groups)", n)
+	}
+	drainSignal(runtime.Interaction())
+	if n := runtime.PollInteractions(t.Context(), t0.Add(2*gatewayWakeThrottle)); n != groups-interactionGroupCap || len(seen) != groups {
 		t.Fatalf("second poll synced %d, %d distinct in all; want the remaining %d", n, len(seen), groups-interactionGroupCap)
 	}
 	for group, n := range seen {
@@ -272,13 +280,14 @@ func TestManyPendingInteractionGroupsFallBackToOneThrottledSweep(t *testing.T) {
 		runtime.notifyInteraction(installation, id.New())
 	}
 	drainSignal(runtime.Interaction())
-	if n := runtime.PollInteractions(t.Context()); n != 0 || synced != 0 {
+	t0 := time.Unix(1_800_000_000, 0)
+	if n := runtime.PollInteractions(t.Context(), t0); n != 0 || synced != 0 {
 		t.Fatalf("20 pending groups caused %d single-group syncs, want 0 (fallback)", synced)
 	}
 	if !drainSignal(runtime.Wake()) {
 		t.Fatal("20 pending groups did not fall back to the general wake")
 	}
-	if drainSignal(runtime.Interaction()) || runtime.PollInteractions(t.Context()) != 0 {
+	if drainSignal(runtime.Interaction()) || runtime.PollInteractions(t.Context(), t0) != 0 {
 		t.Fatal("the fallback left groups pending on the fast path")
 	}
 }
