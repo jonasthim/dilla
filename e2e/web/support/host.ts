@@ -12,7 +12,7 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
@@ -121,7 +121,9 @@ export interface StartedHost { url: string; control: string; invite: string; run
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   // Browser CI uses the web-build and rust-wasi artifacts from this commit.
   // Local runs rebuild both so acceptance cannot pass on stale UI or core code.
-  if (c.botRuntime === true && c.webRoot !== null) {
+  // `prebuilt` (the ux world): the caller built the web client and the core already, so nothing here rebuilds them and two starts
+  // in one tree cannot race on packages/web/dist or the wasm core.
+  if (c.botRuntime === true && c.webRoot !== null && c.prebuilt !== true) {
     ensureShippingCoreWasm();
     if (process.env.CI !== 'true') {
       rebuildShippingWasiCore();

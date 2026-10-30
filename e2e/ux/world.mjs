@@ -22,10 +22,21 @@ const { t } = await import(path.join(REPO, 'packages/web/src/strings/index.ts'))
 const { chromiumMediaArgs, writeFixtures } = await import(path.join(REPO, 'e2e/media/support/fixtures.ts'));
 const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
 
+// The world never builds: it needs the web client, the testhost and bot binaries and the core wasm already built (see README).
+import { existsSync } from 'node:fs';
+{
+  const need = [
+    ['packages/web/dist/index.html', 'npm run build -w @dilla/web'],
+    ['target/dilla-testhost', 'go build -o target/dilla-testhost ./cmd/dilla-testhost'],
+    ['target/dillabot', 'go build -o target/dillabot ./cmd/dillabot'],
+    ['internal/mlswasi/testdata/dilla_core_wasi.wasm', 'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked (then copy to internal/mlswasi/testdata)'],
+  ].filter(([f]) => !existsSync(path.join(REPO, f)));
+  if (need.length > 0) { console.error('ux:world needs built artifacts:\n' + need.map(([f, c]) => `  ${f}: ${c}`).join('\n')); process.exit(2); }
+}
 // host.ts (startTestHost: the host, its fake-clock ticker and the Bot runtime) is TypeScript with extensionless imports, which
 // plain node cannot load: bundle it once into target/ and import that. import.meta.url is pinned so REPO_ROOT stays right.
 const hostSrc = path.join(REPO, 'e2e/web/support/host.ts');
-const hostBundle = path.join(REPO, 'target', 'tmp', 'ux-host.bundle.mjs');
+const hostBundle = path.join(REPO, 'target', 'tmp', `ux-host-${BASE}.bundle.mjs`);
 await build({ entryPoints: [hostSrc], outfile: hostBundle, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'error',
   define: { 'import.meta.url': JSON.stringify(pathToFileURL(hostSrc).href) } });
 const { startTestHost } = await import(pathToFileURL(hostBundle).href);
@@ -40,7 +51,7 @@ rmSync(DATA, { recursive: true, force: true });
 mkdirSync(DATA, { recursive: true });
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
-const host = await startTestHost({ port: PORT, control: CONTROL, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
+const host = await startTestHost({ port: PORT, control: CONTROL, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true, prebuilt: true,
   sfu: { port: SFU, udpPort: SFU_UDP } });
 const invite0 = host.invite.split(',')[0];
 log('host up');
@@ -190,6 +201,8 @@ const closeSettings = async () => {
   save();
 }
 
+
+
 const addChannel = async (kind, name) => {
   await ada.getByRole('navigation', { name: t('shell.channels.label'), exact: true }).getByRole('button', { name: t('create.channel.open'), exact: true }).click();
   const dialog = byText(ada, 'dialog', 'create.channel.title', { server: SERVER });
@@ -289,6 +302,17 @@ const joinVoice = async (page, name) => {
 for (const who of ['bjorn', 'mira']) {
   try { await joinVoice(pages[who], 'harbour'); log(who, 'in voice'); } catch (e) { log(who, 'voice failed', String(e).slice(0, 300)); }
 }
+// Mira shares her screen (the fake UI picks the screen), so the stage opens in the share focus layout, as in the prototype.
+try {
+  const controls = pages.mira.getByRole('toolbar', { name: t('voice.controls.voice'), exact: true });
+  await controls.locator('[data-control="share"]').click();
+  const picker = byText(pages.mira, 'dialog', 'callStage.share.title');
+  await picker.waitFor({ timeout: WAIT });
+  await picker.getByRole('button', { name: t('callStage.share.go'), exact: true }).click();
+  await picker.waitFor({ state: 'hidden', timeout: WAIT });
+  state.miraShares = true;
+  log('mira shares her screen');
+} catch (e) { log('mira share failed', String(e).slice(0, 300)); }
 // The voice view's path, so the shots can open it without a click that joins.
 state.voicePath = new URL(pages.bjorn.url()).pathname;
 for (const who of ['bjorn', 'mira']) { try { await openChannel(pages[who], 'general'); } catch { /* the voice view stays */ } }
@@ -345,7 +369,22 @@ try {
   await page.waitForTimeout(3000);
   state.cdp.phone = BASE + 19;
   log('phone ready');
-} catch (e) { log('phone failed', String(e).slice(0, 300)); }
+} catch (e) {
+  state.ready = false; state.notReady = 'phone: ' + String(e).slice(0, 300); save();
+  throw new Error('the phone browser did not sign in: ' + String(e).slice(0, 300));
+}
+// A dummy Giphy key (8 to 64 letters and digits) so the composer's GIF button shows. The pickers then sit in their "searching"
+// state: the world cannot reach Giphy. Nothing else reads the key. Set last: setting it earlier stalled the first message send.
+{
+  await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
+  const gs = byText(ada, 'dialog', 'admin.title');
+  await gs.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.gifs'), exact: true }).click();
+  await gs.getByLabel(t('gif.settings.key'), { exact: true }).fill('abcdEFGH12345678');
+  await gs.getByRole('button', { name: t('gif.settings.save'), exact: true }).click();
+  await gs.getByText(t('gif.settings.maskedLabel'), { exact: true }).waitFor({ timeout: WAIT });
+  await closeSettings();
+  log('dummy giphy key set');
+}
 state.ready = true;
 save();
 log('READY');

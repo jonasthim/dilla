@@ -15,7 +15,7 @@
     "name": "standing-voice-focus",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=harbour >> nth=0" }, { "wait": 1200 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 2500 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 7000 }] }
   },
   {
     "name": "standing-phone-list",

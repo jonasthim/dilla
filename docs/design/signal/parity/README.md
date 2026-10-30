@@ -92,6 +92,17 @@ The world, its builds and ports are in `e2e/ux/README.md`. `app/standing.json` i
 chat, members open, voice focus, phone list, phone conversation); `app/wave-a-gaps.json` is the wave A states that were
 never compared with the shipped client.
 
+**Pairs that change the world.** A pair marked `"mutates": true` sends messages, adds a device or role or switches a setting
+(gap04, gap44, gap52, gap53, gap79, gap83). The tool runs those after all other pairs of a spec, and says so at the end. The
+world cannot be rewound under live browsers (restoring the server would leave the browsers' own state ahead of it), so
+**restart the world before shooting again**, and shoot `standing.json` before a spec with mutating pairs or on a fresh world.
+Never point `--out` (the world's or the shooter's) into a tracked path: `state.json` and some PNGs hold throwaway passwords and
+recovery keys.
+
+The GIF pairs depend on the world's dummy Giphy key (set by `ux:world` through Server settings -> GIFs; without a key the GIF
+button does not show). Giphy is unreachable, so only the picker frame is comparable. The standing voice-focus pair needs the
+world's screen share (Mira shares in `harbour`, `state.miraShares`).
+
 **What is not judged.** The app's sample data (server Midgard Crew; Ada, Björn, Mira, Liv; timestamps, device names,
 counts) differs from the prototype's (Mira, Ada, Björn, Kari, Ole, Glenn playing music). Compare styling, structure and
 copy, not names. Other known capture differences: the prototype draws a phone frame around its 390px shots, uploads in

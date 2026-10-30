@@ -51,6 +51,7 @@ export function validateSpec(spec) {
     const at = `pair ${i}`;
     if (!isObject(pair)) throw new Error(`${at}: must be an object`);
     if (typeof pair.name !== 'string' || !/^[A-Za-z0-9][\w.-]*$/.test(pair.name)) throw new Error(`${at}: name is required and must be a file stem (letters, digits, - _ .)`);
+    if (pair.mutates !== undefined && typeof pair.mutates !== 'boolean') throw new Error(`${at} (${pair.name}): mutates must be true or false`);
     if (names.has(pair.name)) throw new Error(`${at}: duplicate name ${pair.name}`);
     names.add(pair.name);
     const v = pair.viewport;
@@ -82,6 +83,12 @@ export function validateSpec(spec) {
   });
   return spec;
 }
+
+/**
+ * Pairs that change the world (send messages, add a device or role, switch a setting) are marked `mutates: true`. They run after every
+ * other pair, in spec order, so the read-only pairs always see the world as it was built. Pure; does not reorder otherwise.
+ */
+export const orderPairs = spec => [...spec.filter(p => p.mutates !== true), ...spec.filter(p => p.mutates === true)];
 
 /** The URL a path has in the running app; `{invite}` expands to state.invitePath (the world's invite link path) and `{server}` to state.serverPath (#general of the world's server), `{community}` to the server's own path (the phone's server list). Pure. */
 export function appUrl(state, p) {
@@ -243,13 +250,17 @@ async function openAppPage(browser, state, pair) {
   const port = state.cdp?.[who];
   if (port === undefined) throw new Error(`state has no browser "${who}": is the world up (npm run ux:world -w @dilla/e2e)?`);
   const remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-  const ctx = remote.contexts()[0];
-  const page = ctx.pages().find(p => p.url().startsWith('http')) ?? ctx.pages()[0];
-  const orig = page.viewportSize();
-  // The world's windows are 1x; the prototype is shot at 2x, so the app is emulated at the pair's viewport and scale 2.
-  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
-  const cdp = await ctx.newCDPSession(page);
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: pair.viewport.width, height: pair.viewport.height, deviceScaleFactor: SCALE, mobile });
+  let page, cdp, orig;
+  try {
+    const ctx = remote.contexts()[0];
+    page = ctx.pages().find(p => p.url().startsWith('http')) ?? ctx.pages()[0];
+    if (page === undefined) throw new Error(`browser "${who}" has no page`);
+    orig = page.viewportSize();
+    // The world's windows are 1x; the prototype is shot at 2x, so the app is emulated at the pair's viewport and scale 2.
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    cdp = await ctx.newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: pair.viewport.width, height: pair.viewport.height, deviceScaleFactor: SCALE, mobile });
+  } catch (e) { await remote.close().catch(() => {}); throw e; }
   const restore = async () => { await cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {}); if (orig) await page.setViewportSize(orig).catch(() => {}); };
   return { page, mobile, cdp, restore, done: async () => { await restore(); await remote.close().catch(() => {}); } };
 }
@@ -297,7 +308,7 @@ export async function main(argv) {
   const browser = await chromium.launch({ headless: true });
   let failed = 0;
   try {
-    for (const pair of spec) {
+    for (const pair of orderPairs(spec)) {
       const p = kind => pairFile(outDir, pair, kind);
       const side = sideOf(pair);
       try {
@@ -312,6 +323,7 @@ export async function main(argv) {
       }
     }
   } finally { await browser.close(); }
+  if (state !== null && spec.some(p => p.mutates === true)) console.log('note: pairs marked mutates changed the world; restart it before shooting again');
   return failed > 0 ? 1 : 0;
 }
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateSpec, storyUrl, patchDataProps, DEFAULT_GLOBALS, padClip, localFontCss, appUrl, sideOf, pairFile, parseArgs } from './shoot.mjs';
+import { validateSpec, storyUrl, patchDataProps, DEFAULT_GLOBALS, padClip, localFontCss, appUrl, sideOf, pairFile, parseArgs, expandText, orderPairs } from './shoot.mjs';
 
 const good = { name: 'a', viewport: { width: 1280, height: 800 }, prototype: {}, story: { id: 'x--y' } };
 
@@ -113,6 +113,32 @@ test('parseArgs reads --storybook and --app with an optional state file', () => 
   assert.equal(parseArgs(['s.json', 'out', '--app']).app, 'target/ui-screens/signal-b/state.json');
   assert.equal(parseArgs(['s.json', 'out', '--app', 'x/state.json']).app, 'x/state.json');
   assert.equal(parseArgs(['s.json', 'out', '--storybook', 'http://h:1']).storybook, 'http://h:1');
+});
+
+test('expandText fills {password:who} and {recoveryKey:who} and leaves other text alone', () => {
+  const state = { people: { mira: { password: 'pw-mira', recoveryKey: 'AAAA BBBB' } } };
+  assert.equal(expandText(state, 'x {password:mira} y'), 'x pw-mira y');
+  assert.equal(expandText(state, '{recoveryKey:mira}'), 'AAAA BBBB');
+  assert.equal(expandText(state, 'plain {other}'), 'plain {other}');
+});
+
+test('expandText throws on a missing key and does not echo any value', () => {
+  const state = { people: { mira: { password: 'pw-mira-secret' } } };
+  assert.throws(() => expandText(state, '{recoveryKey:mira}'), err => /recoveryKey for mira/.test(err.message) && !/pw-mira-secret/.test(err.message));
+  assert.throws(() => expandText(state, '{password:bjorn}'), /password for bjorn/);
+  assert.throws(() => expandText({}, '{password:mira}'), /password for mira/);
+});
+
+test('validateSpec accepts a dispatch step and a mutates flag, and rejects a non-boolean mutates', () => {
+  assert.equal(validateSpec([{ ...app, mutates: true, app: { who: 'ada', steps: [{ dispatch: '.d-code-block__copy' }] } }]).length, 1);
+  assert.throws(() => validateSpec([{ ...app, mutates: 'yes' }]), /mutates must be true or false/);
+  assert.throws(() => validateSpec([{ ...app, app: { who: 'ada', steps: [{ dispatch: '.a', click: '.b' }] } }]), /exactly one/);
+});
+
+test('orderPairs runs mutating pairs last and keeps the order inside each group', () => {
+  const p = (name, mutates) => ({ name, ...(mutates ? { mutates } : {}) });
+  assert.deepEqual(orderPairs([p('a', true), p('b'), p('c', true), p('d')]).map(x => x.name), ['b', 'd', 'a', 'c']);
+  assert.deepEqual(orderPairs([p('a'), p('b')]).map(x => x.name), ['a', 'b']);
 });
 
 test('validateSpec accepts an upload step with files and rejects one without', () => {

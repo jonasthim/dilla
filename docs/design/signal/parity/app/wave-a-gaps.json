@@ -9,7 +9,7 @@
       { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "text=Your recovery key" }, { "wait": 600 }] }
   },
   {
-    "name": "gap04-signin-done-desktop",
+    "name": "gap04-signin-done-desktop", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "signin" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 500 }, { "type": ["input[inputmode=numeric]", "123456"] }, { "wait": 900 }, { "click": "text=Add browser" }, { "wait": 900 }] },
     "app": { "who": "fresh", "path": "/welcome", "steps": [
@@ -57,7 +57,7 @@
     "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/status/i] >> nth=0" }, { "wait": 700 }] }
   },
   {
-    "name": "gap44-reply-jump-flash",
+    "name": "gap44-reply-jump-flash", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "hover": "article >> nth=0" }, { "wait": 300 }, { "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1" }, { "type": ["main textarea", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 900 }, { "click": "text=raid tonight at 20:00" }, { "wait": 200 }] },
     "app": { "who": "ada", "path": "{server}", "steps": [{ "hover": "role=article >> nth=1" }, { "wait": 300 }, { "click": "role=button[name=/^reply/i] >> nth=0" }, { "type": ["role=textbox[name=/^message/i]", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 1500 }, { "click": "role=button[name=/^Björn.*in\\./]" }, { "wait": 200 }] }
@@ -75,13 +75,13 @@
     "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/lantern.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 200 }] }
   },
   {
-    "name": "gap52-sent-image-and-file",
+    "name": "gap52-sent-image-and-file", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "main textarea" }, { "press": "Enter" }, { "wait": 1500 }] },
     "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "role=textbox[name=/^message/i]" }, { "press": "Enter" }, { "wait": 3000 }] }
   },
   {
-    "name": "gap53-code-block-copied",
+    "name": "gap53-code-block-copied", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "click": "main >> text=Copy >> nth=0" }, { "wait": 400 }] },
     "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=textbox[name=/^message/i]" }, { "type": ["role=textbox[name=/^message/i]", "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"] }, { "press": "Enter" }, { "wait": 2500 }, { "dispatch": ".d-code-block__copy >> nth=-1" }, { "wait": 400 }] }
@@ -105,7 +105,7 @@
     "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 3000 }, { "click": "role=button[name=/\\(you\\)/]" }, { "wait": 800 }, { "hover": "role=button[name=/full screen/i] >> nth=0" }, { "wait": 500 }] }
   },
   {
-    "name": "gap79-voice-ptt-listening",
+    "name": "gap79-voice-ptt-listening", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "div:has(> d-icon[name='settings']) >> nth=0" }, { "wait": 600 }, { "click": "nav >> text='Voice'" }, { "wait": 900 }, { "click": "text='Push to talk'" }, { "wait": 600 }, { "click": "text=Change" }, { "wait": 600 }] },
     "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Voice\"s]" }, { "wait": 900 }, { "click": "role=radio[name=/push to talk/i]" }, { "wait": 600 }, { "click": "role=button[name=/^change/i]" }, { "wait": 600 }] }
@@ -117,7 +117,7 @@
     "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Voice\"s]" }, { "wait": 900 }, { "click": "role=button[name=/check|test/i]" }, { "wait": 1500 }] }
   },
   {
-    "name": "gap83-roles-new-role",
+    "name": "gap83-roles-new-role", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "div:has(> d-icon[name='settings']) >> nth=0" }, { "wait": 600 }, { "click": "nav >> text='Roles'" }, { "wait": 900 }, { "click": "text=New role" }, { "wait": 800 }] },
     "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Open settings\"s]" }, { "wait": 600 }, { "click": "role=dialog >> role=button[name=\"Roles\"s]" }, { "wait": 900 }, { "click": "role=button[name=/new role/i]" }, { "wait": 1200 }] }
