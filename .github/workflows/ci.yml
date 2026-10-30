@@ -891,9 +891,9 @@ jobs:
     # deadline with TestRegisterRefusesADuplicateGroupID in SQLite setup for 1s, so this was suite
     # time, not a stuck migration (the job ended at 22m24s, with no assertion failure). Keep the
     # race detector and shuffle, but give the package 30m and the job 10m for setup, reporting and
-    # cleanup. Signal wave A's account-kind tests (credential_kind_test.go) pushed the suite past 30m
-    # (run 40963932794: the running test was 3s old, no assertion failed); main's job already took
-    # 26m32s, so the package now gets 45m.
+    # cleanup. Run 40963932794 passed 30m with the running test 3s old: migrations 00050/00051 doubled
+    # the per-database migration cost every test paid, fixed by migrating once per binary
+    # (internal/store/sqlite/sqlitetest, ~10m locally under -race); the package keeps 45m of margin.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

@@ -18,7 +18,6 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/livekit/protocol/livekit"
-	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
@@ -30,7 +29,7 @@ import (
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitetest"
 )
 
 // env is the shared internal/api harness Plan 2's handler tests build on: a
@@ -58,16 +57,10 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "dilla.db")
+	sqlitetest.MigratedFile(t, path)
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
 		t.Fatalf("OpenWrite: %v", err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
-	if err != nil {
-		t.Fatalf("goose provider: %v", err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
 	}
 	read, err := sqlite.OpenRead(path)
 	if err != nil {
