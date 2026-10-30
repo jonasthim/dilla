@@ -1,4 +1,4 @@
-import type { KeyboardEvent, MouseEvent, ReactNode, Ref } from 'react';
+import { useEffect, type KeyboardEvent, type MouseEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Icon, type IconName } from '../Icon/Icon.tsx';
 import './CommandPicker.css';
@@ -36,13 +36,20 @@ export const commandOptionId = (listId: string, itemId: string): string => `${li
  */
 export function CommandList({ id, items, activeId, showHint, labels, query, onActive, onPick, onSendAsText }: CommandListProps) {
   const active = activeId === null ? undefined : commandOptionId(id, activeId);
+  // The field keeps focus while ↑↓ move the selection, so the list scrolls the active row into view itself.
+  useEffect(() => {
+    if (active === undefined) return;
+    const row = document.getElementById(active);
+    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+  }, [active]);
   return (
     <div className="d-cmd-list" data-query={query}>
       <div className="d-cmd-list__head" aria-hidden="true">
         {labels.title}<span className="d-cmd-list__spacer" />
         {showHint ? <span className="d-cmd-list__hint">{labels.hint}</span> : null}
       </div>
-      <div className="d-cmd-list__scroll">
+      {/* A tab stop of its own so a keyboard can scroll it (WCAG 2.1.1); ↑↓ in the field move the selection. */}
+      <div className="d-cmd-list__scroll" tabIndex={0}>
         <div role="listbox" id={id} aria-label={labels.title} aria-activedescendant={items.length > 0 ? active : undefined} className="d-cmd-list__list">
           {items.map(item => (
             <div key={item.id} role="option" id={commandOptionId(id, item.id)} aria-selected={item.id === activeId}
@@ -75,7 +82,8 @@ export interface CommandChipsProps { icon: IconName; name: string; children: Rea
 export function CommandChips({ icon, name, children }: CommandChipsProps) {
   return (
     <div className="d-cmd-chips">
-      <span className="d-cmd-chips__name"><Icon name={icon} size={12} />/{name}</span>
+      {/* The prototype writes `<icon>/{name}` in a flex row: the slash and the name are two flex items, 6px apart. */}
+      <span className="d-cmd-chips__name"><Icon name={icon} size={12} /><span>/</span><span>{name}</span></span>
       {children}
     </div>
   );
@@ -134,6 +142,12 @@ export interface CommandSuggestionsProps {
 
 /** The suggestions for the active chip: Members, Durations, When, Suggestions or Commands; picked with a pointer down. */
 export function CommandSuggestions({ id, title, items, activeId, onActive, onPick }: CommandSuggestionsProps) {
+  const active = activeId === null ? undefined : commandOptionId(id, activeId);
+  useEffect(() => {
+    if (active === undefined) return;
+    const row = document.getElementById(active);
+    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+  }, [active]);
   return (
     <div className="d-cmd-sugs">
       <div className="d-cmd-sugs__title" aria-hidden="true">{title}</div>

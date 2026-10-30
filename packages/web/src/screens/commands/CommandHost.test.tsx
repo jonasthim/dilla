@@ -69,7 +69,7 @@ describe('CommandHost', () => {
   it('executes a complete command typed after the first slash opens the picker', async () => {
     const { user, fake, channelId } = hostHarness();
     fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
-    const picker = await screen.findByRole('combobox', { name: 'Command' });
+    const picker = await screen.findByRole('textbox', { name: 'Command' });
     await user.type(picker, 'me waves hello');
     await user.keyboard('{Enter}');
     expect(await screen.findByRole('combobox', { name: 'text' })).toHaveValue('waves hello');
@@ -81,7 +81,7 @@ describe('CommandHost', () => {
   it('keeps keyboard focus in the command picker after the first slash', async () => {
     const { user } = hostHarness();
     fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
-    const picker = await screen.findByRole('combobox', { name: 'Command' });
+    const picker = await screen.findByRole('textbox', { name: 'Command' });
     expect(picker).toHaveFocus();
     await user.type(picker, 'me');
     expect(screen.getByRole('option', { name: /\/me/ })).toBeInTheDocument();
@@ -93,7 +93,7 @@ describe('CommandHost', () => {
     render(<CoreProvider client={core}><CommandHost communityId={'33'.repeat(16)} channelId={'44'.repeat(16)} bits={0x1ffffff}
       items={[]} selfId={'22'.repeat(16)} draft="/" onDraft={() => undefined} onSendLiteral={() => undefined}
       encodeMessage={text => text} openGif={() => undefined} gifsEnabled onModeChange={() => undefined} /></CoreProvider>);
-    const picker = await screen.findByRole('combobox', { name: 'Command' });
+    const picker = await screen.findByRole('textbox', { name: 'Command' });
     await user.type(picker, 'kick');
     expect(screen.getByRole('option', { name: /\/kick/ })).toBeInTheDocument();
   });
@@ -274,11 +274,11 @@ it('reopens autocomplete after canceling and clearing the slash draft', async ()
   const { user } = hostHarness();
   const message = screen.getByRole('textbox', { name: 'message' });
   fireEvent.change(message, { target: { value: '/' } });
-  const picker = await screen.findByRole('combobox', { name: 'Command' });
+  const picker = await screen.findByRole('textbox', { name: 'Command' });
   picker.focus();
   await user.keyboard('{Escape}{Escape}');
-  expect(screen.queryByRole('combobox', { name: 'Command' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Command' })).not.toBeInTheDocument();
   fireEvent.change(message, { target: { value: '' } });
   fireEvent.change(message, { target: { value: '/' } });
-  await screen.findByRole('combobox', { name: 'Command' });
+  await screen.findByRole('textbox', { name: 'Command' });
 });

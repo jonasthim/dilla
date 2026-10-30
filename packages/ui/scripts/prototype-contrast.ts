@@ -35,6 +35,10 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   { selector: '.d-sens__tick', simple: '.d-sens__tick', why: 'the sensitivity meter scale in #636A75 on bg (3.65:1)' },
   // Not listed because axe cannot see it: a code block's line numbers, the prototype's #4A5059 on bg-2 (2.4:1), are CSS-generated
   // (`::before` counters) and decorative (never part of the code's text). Light and high-contrast draw them in fg-3 / #C8C8C8.
+  // Wave B Task 2 (README §6.1): the command picker's selected row keeps the prototype's #767D89 args and handle on #171B22
+  // (4.16:1). Both are aria-hidden: the row's name ("/remind, A private one-time reminder") and the suggestion's name carry them.
+  { selector: '.d-cmd-row[aria-selected="true"] .d-cmd-row__args', simple: '.d-cmd-row__args', why: 'the selected command row\'s args in #767D89 on #171B22 (4.16:1)' },
+  { selector: '.d-cmd-sug[aria-selected="true"] .d-cmd-sug__sub', simple: '.d-cmd-sug__sub', why: 'the selected suggestion\'s handle or preview in #767D89 on #171B22 (4.16:1)' },
 ];
 
 /** The `:not()` chain Storybook's a11y config appends to its color-contrast selector. */

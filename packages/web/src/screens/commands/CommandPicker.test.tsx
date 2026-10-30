@@ -32,7 +32,7 @@ function renderPicker(over: Partial<CommandComposerProps> = {}) {
   };
   return { ...render(<div className="d-root"><CommandPicker {...props} /></div>), props };
 }
-const draftField = () => screen.getByRole('combobox', { name: 'Command' });
+const draftField = () => screen.getByRole('textbox', { name: 'Command' });
 const send = () => screen.getByRole('button', { name: 'send' });
 
 beforeEach(() => { vi.clearAllMocks(); clearCommandDraftMemory(); });

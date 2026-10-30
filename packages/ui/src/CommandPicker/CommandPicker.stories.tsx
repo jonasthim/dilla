@@ -36,7 +36,7 @@ const FILTERED = ALL.filter(item => item.id.includes('re'));
 
 /** The `/` draft in the composer row while the list is open: the textarea ComposerArea's picker draws. */
 function Draft({ value }: { value: string }) {
-  return <textarea className="d-composer__input" rows={1} value={value} readOnly aria-label="Command" role="combobox" aria-expanded aria-controls="cmd-list" />;
+  return <textarea className="d-composer__input" rows={1} value={value} readOnly aria-label="Command" aria-autocomplete="list" aria-controls="cmd-list" />;
 }
 
 function Stage({ children, phone = false }: { children: ReactNode; phone?: boolean }) {

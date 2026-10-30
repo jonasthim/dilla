@@ -122,7 +122,7 @@ function commandResult(page: Page): Locator {
 async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, command: string): Promise<Locator> {
   await box.fill('/');
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
-  const picker = region.getByRole('combobox', { name: 'Command', exact: true });
+  const picker = region.getByRole('textbox', { name: 'Command', exact: true });
   await picker.fill(command);
   await expect(region.getByRole('option', { name: new RegExp(`^/${command},`) })).toBeVisible({ timeout: WAIT });
   await picker.press('Enter');
@@ -410,7 +410,7 @@ test('composer keeps private results private, publishes only explicit text, and 
     // `//` at the start posts the rest with one leading slash (the prototype's send()).
     const escaped = `//exact slash ${Date.now()}`;
     await box.fill(escaped);
-    await page.getByRole('combobox', { name: 'Command', exact: true }).press('Enter');
+    await page.getByRole('textbox', { name: 'Command', exact: true }).press('Enter');
     await expect(messageRow(page, GENERAL, '/exact slash ' + escaped.split(' ').at(-1))).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     await rowAction(root, 'reply');

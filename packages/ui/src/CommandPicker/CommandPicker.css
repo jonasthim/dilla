@@ -1,5 +1,9 @@
 /* Signal wave B Task 2: the prototype's command picker (README §6.1). Every value is the prototype's inline style. */
 
+/* The prototype sets no box-sizing: its heights and max-heights are content-box (a 40px row with 4px padding is 48px tall,
+   the 260px list 268px, a 26px chip with its 1px border 28px). */
+.d-cmd-list__scroll, .d-cmd-row, .d-cmd-sugs__list, .d-cmd-sug, .d-cmd-field, .d-cmd-list__send, .d-cmd-chips__name, .d-cmd-field__input { box-sizing: content-box; }
+
 /* The `/` list: surface-2 on the #2A303A line, radius 10px, the 0 20px 50px shadow; sModal over 180ms. */
 .d-cmd-list { overflow: hidden; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); animation: d-modal var(--duration-spin) var(--ease-out) both; }
 .d-cmd-list__head { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--hairline); font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }

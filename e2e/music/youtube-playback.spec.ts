@@ -189,7 +189,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
     const composer = composerBox(musicPage, 'general');
     await composer.fill('/');
     const region = musicPage.getByRole('region', { name: 'Command composer', exact: true });
-    const picker = region.getByRole('combobox', { name: 'Command', exact: true });
+    const picker = region.getByRole('textbox', { name: 'Command', exact: true });
     await picker.fill(commandId);
     const option = region.getByRole('option').filter({ has: musicPage.getByText(`/${commandId}`, { exact: true }) });
     await expect(option).toBeVisible({ timeout: WAIT });

@@ -528,8 +528,9 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   </>;
 
   const input = selected === null || entry === null
-    ? <textarea ref={draftRef} className="d-composer__input" rows={1} value={draft} role="combobox" aria-label={copy.command}
-      aria-autocomplete="list" aria-expanded={listOpen && listItemsUi.length > 0} aria-controls={listId}
+    // The draft field keeps the composer textarea's textbox role (pre-flight ruling F10) and points at the list while it shows.
+    ? <textarea ref={draftRef} className="d-composer__input" rows={1} value={draft} aria-label={copy.command}
+      {...(listOpen && listItemsUi.length > 0 ? { 'aria-autocomplete': 'list' as const, 'aria-controls': listId } : {})}
       {...(listOpen && activeListId !== null ? { 'aria-activedescendant': commandOptionId(listId, activeListId) } : {})}
       onChange={event => draftChange(event.currentTarget.value)} onKeyDown={draftKeyDown} />
     : <CommandChips icon={entry.icon} name={selected.id}>
