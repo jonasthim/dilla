@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -242,24 +243,35 @@ func TestInteractionEventHandlerResumesCommittedResponseBeforeDispatch(t *testin
 
 func TestInteractionEventHandlerMarksRevokedPendingReadResponseUndeliverable(t *testing.T) {
 	// Jonas 2026-10-30: a read revoked before its saved response was accepted is acknowledged as
-	// undeliverable; left pending, it blocked every later event in the shared queue. Any other
-	// preflight failure (for example a transient lookup error) still stays pending.
+	// undeliverable; left pending, it blocked every later event in the shared queue. Only the
+	// definitive denial (status 2) qualifies: a transient status, a lookup error, or a cancelled
+	// context stays pending.
 	for _, tc := range []struct {
 		name          string
 		denied        error
+		cancel        bool
 		undeliverable bool
 	}{
-		{"revoked read", service.ErrInteractionReadReplayNotAuthorized, true},
-		{"transient preflight failure", errors.New("authority lookup unavailable"), false},
+		{"revoked read", service.ErrInteractionReadReplayNotAuthorized, false, true},
+		{"transient status", fmt.Errorf("%w: status 5", service.ErrInteractionReadReplayPending), false, false},
+		{"transient preflight failure", errors.New("authority lookup unavailable"), false, false},
+		{"denial under cancellation", service.ErrInteractionReadReplayNotAuthorized, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			event := native.GroupEvent{DeliveryID: 6, Group: id.New()}
 			dispatches := 0
 			sender := &interactionPreflightResumingSender{}
 			guarded := readReplayGuardDispatcher{interactionDispatcherFunc: interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
 				dispatches++
 				return "response", nil
-			}), authorize: func(context.Context, native.GroupEvent) error { return tc.denied }}
+			}), authorize: func(context.Context, native.GroupEvent) error {
+				if tc.cancel {
+					cancel()
+				}
+				return tc.denied
+			}}
 			handler := newInteractionEventHandler(
 				interactionGroupInspectorFunc(func(_ context.Context, group id.ID) (native.GroupInfo, error) {
 					return native.GroupInfo{ID: group, Kind: 3}, nil
@@ -268,7 +280,7 @@ func TestInteractionEventHandlerMarksRevokedPendingReadResponseUndeliverable(t *
 				sender,
 			)
 			// Either way the saved response must not fall through to a fresh dispatch or send.
-			err := handler.HandleGroupEvent(context.Background(), event)
+			err := handler.HandleGroupEvent(ctx, event)
 			var undeliverable service.UndeliverableGroupEvent
 			marked := errors.As(err, &undeliverable) && undeliverable.Undeliverable()
 			if !errors.Is(err, tc.denied) || marked != tc.undeliverable || sender.calls != 1 || dispatches != 0 {

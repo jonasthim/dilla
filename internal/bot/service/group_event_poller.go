@@ -49,9 +49,15 @@ func isUndeliverableGroupEvent(err error) bool {
 	return errors.As(err, &u) && u.Undeliverable()
 }
 
+// SkippedGroupEvent records one undeliverable event the poller acknowledged, for the caller's log.
+type SkippedGroupEvent struct {
+	DeliveryID uint64
+	Cause      error
+}
+
 type GroupEventPollResult struct {
 	Handled             uint64
-	Skipped             uint64 // undeliverable events acknowledged without handling
+	Skipped             []SkippedGroupEvent // undeliverable events acknowledged without handling
 	AcknowledgedThrough uint64
 	More                bool
 }
@@ -100,20 +106,20 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 		if event.Community != p.binding.Community || event.DeliveryID <= result.AcknowledgedThrough || event.DeliveryID > page.Next {
 			return result, errors.New("invalid group event binding or order")
 		}
-		handled := true
+		var skipped error
 		if err := handler.HandleGroupEvent(ctx, event); err != nil {
 			if ctx.Err() != nil || !isUndeliverableGroupEvent(err) {
 				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}
 			}
-			handled = false
+			skipped = err
 		}
 		if err := p.native.AcknowledgeGroupEvents(ctx, event.DeliveryID); err != nil {
 			return result, err
 		}
-		if handled {
+		if skipped == nil {
 			result.Handled++
 		} else {
-			result.Skipped++
+			result.Skipped = append(result.Skipped, SkippedGroupEvent{DeliveryID: event.DeliveryID, Cause: skipped})
 		}
 		result.AcknowledgedThrough = event.DeliveryID
 	}

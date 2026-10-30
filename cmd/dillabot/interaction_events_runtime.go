@@ -68,7 +68,7 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	resumed, err := h.sender.ResumeInteractionResponse(ctx, event, func(preflightCtx context.Context) error {
 		return h.dispatcher.ReauthorizeReadReplay(preflightCtx, event)
 	})
-	if errors.Is(err, service.ErrInteractionReadReplayNotAuthorized) {
+	if errors.Is(err, service.ErrInteractionReadReplayNotAuthorized) && ctx.Err() == nil {
 		// The saved read response may no longer be shown and the event can never be answered
 		// otherwise: acknowledge it as undeliverable instead of blocking every later event.
 		return undeliverableGroupEventError{err}
@@ -179,7 +179,7 @@ func (r *interactionEventRuntime) Drain(ctx context.Context) (service.GroupEvent
 		}
 		result, err := r.poller.PollOnce(ctx, r.handler)
 		total.Handled += result.Handled
-		total.Skipped += result.Skipped
+		total.Skipped = append(total.Skipped, result.Skipped...)
 		if result.AcknowledgedThrough > total.AcknowledgedThrough {
 			total.AcknowledgedThrough = result.AcknowledgedThrough
 		}

@@ -799,8 +799,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												if interactionErr == nil {
 													eventResult, interactionErr = eventRuntime.Drain(ctx)
 												}
-												if eventResult.Skipped > 0 {
-													logger.Warn("bot interaction events skipped as undeliverable", "installation_id", installation.ID.String(), "skipped", eventResult.Skipped, "acknowledged_through", eventResult.AcknowledgedThrough)
+												for _, skip := range eventResult.Skipped {
+													logger.Warn("bot interaction event skipped as undeliverable", "installation_id", installation.ID.String(), "delivery_id", skip.DeliveryID, "error", skip.Cause.Error())
 												}
 												if interactionErr == nil && eventResult.More {
 													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)

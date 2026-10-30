@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 
@@ -26,7 +27,16 @@ const (
 
 var ErrInteractionRequestIDConflict = errors.New("bot interaction request id reused with different input")
 var ErrInteractionDispatcherBusy = errors.New("bot interaction dispatcher replay cache is full")
+
+// ErrInteractionReadReplayNotAuthorized is a definitive denial: the recomputed read answered
+// status 2 (forbidden), which handlers use for an actor who lacks the permission or is no longer
+// a member. The event handler acknowledges such an event as undeliverable.
 var ErrInteractionReadReplayNotAuthorized = errors.New("interaction read replay is no longer authorized")
+
+// ErrInteractionReadReplayPending is any other refusal: invalid, expired, conflict, unavailable,
+// busy, not_found, upgrade_required, internal, or a response that does not match the request.
+// None of these proves the actor lost access, so the event stays pending and is retried.
+var ErrInteractionReadReplayPending = errors.New("interaction read replay is not currently confirmed")
 
 // InteractionNative is the authenticated native event and group-inspection
 // boundary used by the dispatcher.
@@ -340,18 +350,33 @@ func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event
 	if !ok || !handler.RecomputeOnReplay {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	body, err := d.Dispatch(ctx, event)
 	if err != nil {
+		return err
+	}
+	// A handler that observed cancellation may have answered with any status; never let that
+	// answer become a definitive denial.
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	response, err := protocol.DecodeResponse(body)
 	if err != nil {
 		return err
 	}
-	if response.RequestID != request.RequestID || response.CommunityID != d.binding.Community || response.Status != 0 {
-		return ErrInteractionReadReplayNotAuthorized
+	if response.RequestID != request.RequestID || response.CommunityID != d.binding.Community {
+		return fmt.Errorf("%w: response does not match the request", ErrInteractionReadReplayPending)
 	}
-	return nil
+	switch response.Status {
+	case 0:
+		return nil
+	case interactionStatusForbidden:
+		return ErrInteractionReadReplayNotAuthorized
+	default:
+		return fmt.Errorf("%w: status %d", ErrInteractionReadReplayPending, response.Status)
+	}
 }
 
 func (d *InteractionDispatcher) begin(ctx context.Context, key interactionReplayKey, fingerprint [32]byte) (*interactionReplay, bool, error) {

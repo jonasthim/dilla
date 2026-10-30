@@ -68,7 +68,15 @@ func TestGroupEventPollerUndeliverableHeadDoesNotBlockLaterEventsAcrossRestarts(
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, lastErr = p.PollOnce(context.Background(), handler)
+		var result GroupEventPollResult
+		result, lastErr = p.PollOnce(context.Background(), handler)
+		if pass == 0 && lastErr == nil {
+			// The skip carries what the operator's log line needs: the delivery and its cause.
+			var gone goneGroupError
+			if len(result.Skipped) != 1 || result.Skipped[0].DeliveryID != 1 || !errors.As(result.Skipped[0].Cause, &gone) || result.Handled != 1 {
+				t.Fatalf("skip record = %+v handled=%d; want delivery 1 with its cause", result.Skipped, result.Handled)
+			}
+		}
 	}
 	if len(handled) != 1 || handled[0] != 2 || q.acked != 2 {
 		t.Fatalf("later event never dispatched behind an undeliverable head: handled=%v acked=%d lastErr=%v", handled, q.acked, lastErr)
