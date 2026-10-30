@@ -76,7 +76,7 @@ func Default() *Config {
 		TOTP: TOTP{Period: 30, Skew: 1, Digits: 6, Algorithm: "SHA1", SecretSize: 20, RecoveryCodes: 10},
 		// "required" (web3.6 D2): a passkey counts as the account's whole second factor only when
 		// its assertion verified the user, so the default asks every authenticator for it.
-		WebAuthn: WebAuthn{UserVerification: "required"},
+		WebAuthn: WebAuthn{UserVerification: "required", MaxOpenLogins: 10000},
 		OIDC:     OIDC{Scopes: []string{"openid", "profile", "email"}},
 		Session: Session{
 			NativeLifetime: "720h", BrowserLifetime: "168h", BrowserIdle: "12h",

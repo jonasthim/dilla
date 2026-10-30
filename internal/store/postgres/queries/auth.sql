@@ -78,6 +78,9 @@ DELETE FROM webauthn_ceremonies WHERE id = $1;
 -- name: PruneCeremonies :execrows
 DELETE FROM webauthn_ceremonies WHERE expires <= $1;
 
+-- name: CountOpenCeremonies :one
+SELECT COUNT(*) FROM webauthn_ceremonies WHERE kind = $1 AND expires > $2;
+
 -- name: PutOIDCIdentity :exec
 INSERT INTO oidc_identities (issuer, subject, user_id, created) VALUES ($1, $2, $3, $4)
 ON CONFLICT (issuer, subject) DO NOTHING;

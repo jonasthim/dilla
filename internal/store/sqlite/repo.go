@@ -1019,6 +1019,11 @@ func (r *Repo) PruneCeremonies(ctx context.Context, now int64) (int64, error) {
 	return n, wrap(err)
 }
 
+func (r *Repo) CountOpenCeremonies(ctx context.Context, kind uint8, now int64) (int64, error) {
+	n, err := r.w.CountOpenCeremonies(ctx, sqlitedb.CountOpenCeremoniesParams{Kind: int64(kind), Expires: now})
+	return n, wrap(err)
+}
+
 func (r *Repo) PutOIDCIdentity(ctx context.Context, issuer, subject string, userID id.ID, created int64) error {
 	return wrap(r.w.PutOIDCIdentity(ctx, sqlitedb.PutOIDCIdentityParams{
 		Issuer:  issuer,

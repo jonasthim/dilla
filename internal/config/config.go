@@ -308,6 +308,9 @@ type WebAuthn struct {
 	RPDisplayName    string   `toml:"rp_display_name"`
 	RPOrigins        []string `toml:"rp_origins"`
 	UserVerification string   `toml:"user_verification"`
+	// MaxOpenLogins caps the unexpired passkey login ceremonies the instance holds at once (wave B task 3 security
+	// review): past it a begin answers 429, so begins spread over many addresses cannot fill webauthn_ceremonies.
+	MaxOpenLogins int `toml:"max_open_logins"`
 }
 
 type OIDC struct {

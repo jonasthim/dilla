@@ -100,6 +100,22 @@ func (q *Queries) CountLoginFailures(ctx context.Context, arg CountLoginFailures
 	return count, err
 }
 
+const countOpenCeremonies = `-- name: CountOpenCeremonies :one
+SELECT COUNT(*) FROM webauthn_ceremonies WHERE kind = ? AND expires > ?
+`
+
+type CountOpenCeremoniesParams struct {
+	Kind    int64
+	Expires int64
+}
+
+func (q *Queries) CountOpenCeremonies(ctx context.Context, arg CountOpenCeremoniesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOpenCeremonies, arg.Kind, arg.Expires)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRecoveryCodes = `-- name: CountRecoveryCodes :one
 SELECT count(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL
 `

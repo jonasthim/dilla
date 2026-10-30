@@ -459,7 +459,7 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 | `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 or 2 |
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]` (§ Second factors) |
-| `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]`; metered per address on its own `passkey_begin` bucket (`limits.rate.passkey_begin_per_second` / `_burst`, default 0.2 / 10), never on `login`: a begin spends no password attempt. `429 E_RATE_LIMITED` past it |
+| `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]`; metered per address on its own `passkey_begin` bucket (`limits.rate.passkey_begin_per_second` / `_burst`, default 0.2 / 10), never on `login`: a begin spends no password attempt. `429 E_RATE_LIMITED` past it, and while the instance holds `auth.webauthn.max_open_logins` (default 10000) unexpired login ceremonies; expired ceremonies are pruned on the maintenance tick |
 | `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr), needs(uint 0\|1)]` (§ Second factors) |
 | `GET /v1/auth/oidc/start` | — | — | `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-oidc` scoped to this route only |
 | `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |

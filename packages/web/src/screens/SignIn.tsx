@@ -181,9 +181,10 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
   const [firstChannels] = useSlices(firstServer === null ? [] : [`channels:${firstServer.id}` as const]);
   // The login step's conditional passkey request, aborted when the password is sent (fix round 1).
   const conditionalAbort = useRef<AbortController | null>(null);
-  // Commit review fix: the autofill request starts only when the username field gains focus. Each start costs a
-  // passkey-login begin, which the instance meters on the address's login bucket (the password login's), so nothing starts
-  // on its own: not on showing the step, not after a refused password or passkey, until the field is focused again.
+  // Commit review fix: the autofill request starts only when the username field gains focus. Each start is a passkey
+  // login begin, which costs the instance a stored ceremony (metered on its own passkey_begin bucket and an instance-wide
+  // cap), so nothing starts on its own: not on showing the step, not after a refused password or passkey, until the field
+  // is focused again.
   const [autofillArmed, setAutofillArmed] = useState(false);
   // Back is on its way to the worker; a second press sends nothing (fix round 1).
   const [goingBack, setGoingBack] = useState(false);

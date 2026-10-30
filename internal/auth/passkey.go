@@ -470,6 +470,12 @@ func (p *Passkeys) PruneCeremonies(ctx context.Context) (int64, error) {
 	return p.repo.PruneCeremonies(ctx, p.clk.Now().Unix())
 }
 
+// OpenLogins counts the unexpired login ceremonies (discoverable logins and passkey step-ups), for the cap
+// BeginPasskeyLogin applies before it opens another.
+func (p *Passkeys) OpenLogins(ctx context.Context) (int64, error) {
+	return p.repo.CountOpenCeremonies(ctx, ceremonyLogin, p.clk.Now().Unix())
+}
+
 // CredentialsForTest exposes the stored-to-library conversion so a test can
 // assert the round trip. It reads nothing the ceremony paths do not already
 // read, and it is the only exported seam in this file.

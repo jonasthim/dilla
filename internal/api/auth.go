@@ -144,6 +144,10 @@ const classLoginFailed = "login_failed"
 // throttle.
 const classPasskeyBegin = "passkey_begin"
 
+// openLoginsWait is the retry_after a begin refused for the open-ceremony cap answers: the sweep that frees rows
+// runs on the maintenance tick, and a ceremony lives 5 minutes.
+const openLoginsWait = 30 * time.Second
+
 func secondFactorKey(addr string) string { return "2fa\x00" + addr }
 
 // passwordLoginRequest is [username(tstr), password(tstr)].
@@ -1064,8 +1068,11 @@ func validPasskeyName(name string) bool {
 // [] → [ceremony_id(bstr16), options(tstr)].
 //
 // It is unauthenticated and discoverable — no username is presented and none is
-// revealed — so it meters itself on the `login` bucket by address, exactly as
-// the password and second-factor ceremonies above do.
+// revealed. It meters itself per address on its own `passkey_begin` bucket, not on
+// `login` (wave B task 3): a begin guesses nothing, and the web sign-in opens one when
+// the username field gains focus. The finish spends `login`. Past the bucket, and
+// past auth.webauthn.max_open_logins unexpired login ceremonies instance-wide, it
+// answers 429, so the ceremonies table cannot be filled from many addresses.
 func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	if d.Throttle == nil || d.Config == nil {
 		d.logf(r, "api: the passkey login route is not wired")
@@ -1080,6 +1087,16 @@ func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
 	if ok, wait := d.Throttle.Allow(classPasskeyBegin, addrKey); !ok {
 		server.WriteError(w, server.RateLimitedAfter(wait))
+		return
+	}
+	// The instance-wide cap on open login ceremonies (security review I1); the maintenance tick prunes expired ones.
+	open, err := p.OpenLogins(r.Context())
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	if limit := d.Config.Auth.WebAuthn.MaxOpenLogins; limit > 0 && open >= int64(limit) {
+		server.WriteError(w, server.RateLimitedAfter(openLoginsWait))
 		return
 	}
 	ceremonyID, options, err := p.BeginLogin(r.Context())
