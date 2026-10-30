@@ -191,3 +191,4 @@ export type { CommandListItem, CommandListProps, CommandChipsProps, CommandField
 // Wave B Task 3
 export { CodeBoxes } from './CodeBoxes/CodeBoxes.tsx';
 export type { CodeBoxesProps } from './CodeBoxes/CodeBoxes.tsx';
+export { COMPLETE_DELAY_MS } from './CodeBoxes/CodeBoxes.tsx';

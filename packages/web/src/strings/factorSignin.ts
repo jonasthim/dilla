@@ -1,6 +1,5 @@
 // Flow 10 (docs/design/flows/10-second-factor.md): second factor copy. Keys: factorSignin.*
 export const factorSignin = {
-  'factorSignin.usePasskey': 'Sign in with a passkey',
   'factorSignin.passkey.title': 'Use your passkey',
   'factorSignin.passkey.body': 'This account signs in with a passkey. Your browser asks for it when you continue.',
   'factorSignin.passkey.submit': 'Use passkey',

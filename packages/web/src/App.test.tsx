@@ -497,6 +497,29 @@ describe('App sign-in', () => {
     replaceHistoryState(null, '', '/');
     return render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
   };
+  it('wave B task 3 fix round 1: Open dilla lands on the server and channel the done panel names', async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient();
+    startAt(fake);
+    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
+    await user.type(screen.getByLabelText('Password'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
+    await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
+    await user.click(screen.getByRole('button', { name: 'Add browser' }));
+    const cid = 'c1'.repeat(16);
+    const chid = 'e1'.repeat(16);
+    act(() => {
+      fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      fake.set(`channels:${cid}`, [{ id: chid, communityId: cid, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }]);
+    });
+    expect(screen.getByText('Midgard Crew is waiting in #lobby.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open dilla' }));
+    expect(window.location.pathname).toBe(`/c/${cid}/${chid}`);
+  });
+
   it('enters the ceremony from onboarding and lands at / after done', async () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
@@ -514,6 +537,8 @@ describe('App sign-in', () => {
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
     await user.click(screen.getByRole('button', { name: 'Add browser' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('You’re in');
+    // Wave B task 3 fix round 1: no server yet, so no panel, and Open dilla lands on the default route.
+    expect(screen.queryByText(/is waiting in #/)).toBeNull();
     replaceHistoryState(null, '', '/welcome');
     const depth = window.history.length;
     await user.click(screen.getByRole('button', { name: 'Open dilla' }));

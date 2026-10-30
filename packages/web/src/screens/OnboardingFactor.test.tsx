@@ -10,6 +10,10 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/index.ts';
 import { liveRegions, watchRegion } from '../test/live-regions.ts';
 import { Onboarding } from './Onboarding.tsx';
+import { COMPLETE_DELAY_MS } from '@dilla/ui';
+// Wave B task 3 fix round 1: the code boxes send the sixth digit after the prototype's 350 ms.
+const settleCode = () => act(async () => { await new Promise<void>((resolve) => { setTimeout(resolve, COMPLETE_DELAY_MS + 20); }); });
+
 
 const KEY = ['7K2M', 'QX9D', 'H4TB', 'R8NW', 'C3VF', 'J6PZ', 'A1GE', 'Y5KS', 'M0QT', 'B7XH', 'W2DN', 'F9RC', 'P4ZA'];
 const ACK = 'I have written down or printed my recovery key';
@@ -64,6 +68,7 @@ async function throughApp(user: UserEvent) {
   await user.click(button('Continue'));
   await screen.findByRole('img', { name: /QR code/ });
   await user.type(screen.getByRole('textbox', { name: en['factor.totp.code'] }), '123456');
+  await settleCode();
   await user.click(await screen.findByRole('checkbox', { name: en['factor.codes.ack'] }));
 }
 
@@ -80,6 +85,7 @@ describe('step 5: the second factor', () => {
     expect(view.container.querySelectorAll('.d-code-boxes__box')).toHaveLength(6);
     expect(view.container.querySelector('.d-code-boxes__row')).toHaveAttribute('aria-hidden', 'true');
     await user.type(code, '12a3456');
+    await settleCode();
     expect(fake.callsOf('factorTotpConfirm')).toEqual([{ m: 'factorTotpConfirm', code: '123456' }]);
     await screen.findByRole('checkbox', { name: en['factor.codes.ack'] });
   });

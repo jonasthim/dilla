@@ -20,6 +20,8 @@
 .d-onboarding-frame__step { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-onboarding-frame__body { display: grid; gap: 14px; margin-top: -14px; font-size: var(--text-sm); color: var(--fg-2); min-width: 0; animation: d-up var(--duration-step) var(--ease-out) both; }
 .d-onboarding-frame__body p { margin: 0; }
+/* Fix round 1: the prototype's subtitle wraps with text-wrap: pretty. */
+.d-onboarding-frame__body > p:first-child { text-wrap: pretty; }
 /* Fix round 2 (the prototype's auth card): 20px under the subtitle (the grid's 14 + 6), 14px from the last field to the
    button (the card's 20 - 6), and the links 16px under the button (8 + 8, the link's 24px target reaching 3.5px into the
    padding so the card keeps the prototype's height). */
@@ -39,10 +41,8 @@
    apart, 6px over the button; the code's error sits under the boxes. A primary action that is not ready yet (a short code, a
    short key, a step at work) is the prototype's #1A1E25 bar with --fg-3 text, not a faded accent. */
 .d-onboarding-frame__links { display: flex; flex-wrap: wrap; gap: 0 14px; margin: -1.5px 0 -11.5px /* the 24px link boxes, centred on the prototype's 17px line */; }
-/* The step's status region stays in place (A11Y-DESIGN-04) but adds no gap while it is empty. */
-.d-onboarding-frame__links + [role="status"]:empty { height: 0; margin-top: -14px; }
-/* The prototype puts the button 6px under the links' line. */
-.d-onboarding-frame__body:has(> .d-onboarding-frame__links) { margin-bottom: -14px; }
+/* The step's status region stays in place (A11Y-DESIGN-04) but, while empty, out of the flow: no gap (fix round 1). */
+.d-onboarding-frame__body > [role="status"]:empty { position: absolute; }
 .d-onboarding-frame__links > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; padding: 0; font-size: var(--text-btn); font-weight: inherit; color: var(--fg-link); background: transparent; }
 .d-onboarding-frame__links > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
 .d-onboarding-frame__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
@@ -56,6 +56,10 @@
 /* The key step's length line (an accepted deviation): the prototype's quiet 11.5px --fg-3 meta text. */
 .d-onboarding-frame__note { font-size: var(--text-btn); color: var(--fg-3); }
 .d-onboarding-frame .d-recovery-key-field__hint { font-size: var(--text-btn); }
+/* Fix round 1 (gap03): in the auth card the key field is the prototype's auth input: typed text and placeholder 13px
+   (font: inherit, no tracking), the placeholder --fg-3. */
+.d-onboarding-frame .d-recovery-key-field__input { font-size: var(--text-input); letter-spacing: normal; }
+.d-onboarding-frame .d-recovery-key-field__input::placeholder { color: var(--fg-3); opacity: 1; }
 /* The done step's panel: 14px padding, the 0.06 --ok fill in a 0.25 --ok edge, radius 9, a 30px --ok disc with the
    16px check in --ok-ink, then 12px --ok-panel-text. */
 .d-onboarding-frame__ready { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--ok-panel); border: 1px solid var(--ok-border); border-radius: var(--r-menu); margin-bottom: -2px /* 12px over the button */; font-size: var(--text-ui); color: var(--ok-panel-text); animation: d-up var(--duration-step) var(--ease-out) both; }

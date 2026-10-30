@@ -8,6 +8,10 @@ import { account, INSTANCE } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/en.ts';
 import { SignIn } from './SignIn.tsx';
+import { COMPLETE_DELAY_MS } from '@dilla/ui';
+// Wave B task 3 fix round 1: the code boxes send the sixth digit after the prototype's 350 ms.
+const settleCode = () => act(async () => { await new Promise<void>((resolve) => { setTimeout(resolve, COMPLETE_DELAY_MS + 20); }); });
+
 
 const KEY = '7K2MQX9DH4TBR8NWC3VFJ6PZA1GEY5KSM0QTB7XHW2DNF9RCP4ZA';
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
@@ -128,6 +132,7 @@ describe('the ceremony', () => {
     expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
     await expectNoAxeViolations(view.container);
     await user.type(field('Code'), '123456');
+    await settleCode();
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
     expect(h1()).toHaveTextContent('Add this browser');
     expect(document.activeElement).toBe(h1());
@@ -186,6 +191,7 @@ describe('the ceremony', () => {
     await user.click(field('Code'));
     // Wave B task 3 (Review Focus 1): the boxes keep the digits, all six fill, and the code goes once with no press.
     await user.paste('123 456');
+    await settleCode();
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
     await user.keyboard('{Enter}');
     expect(fake.callsOf('signInTotp')).toHaveLength(1);
@@ -387,6 +393,22 @@ describe('the ceremony', () => {
     expect(screen.getByText('Midgard Crew is waiting in #general.')).toBeInTheDocument();
   });
 
+  it('fix round 1: "Open dilla" lands on the server and channel the panel names; without a panel, on the default', async () => {
+    const named = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    const cid = 'c1'.repeat(16);
+    act(() => {
+      named.fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      named.fake.set(`channels:${cid}`, [{ id: 't1'.repeat(16), communityId: cid, kind: 0, mode: 0, name: 'general', topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' as const }]);
+    });
+    await named.user.click(button('Open dilla'));
+    expect(named.onFinish).toHaveBeenCalledWith({ communityId: cid, channelId: 't1'.repeat(16) });
+    named.view.unmount();
+    const plain = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    await plain.user.click(button('Open dilla'));
+    expect(plain.onFinish).toHaveBeenCalledWith(undefined);
+  });
+
   it('wave B task 3: no panel when the first server has no text channel', () => {
     const { fake, view } = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
     const cid = 'c1'.repeat(16);
@@ -397,6 +419,33 @@ describe('the ceremony', () => {
     });
     expect(view.container.querySelector('.d-onboarding-frame__ready')).toBeNull();
     expect(h1()).toHaveTextContent('You’re in');
+  });
+
+  it('fix round 1: the typed code is dropped by "Use a backup code" and stays dropped after Back', async () => {
+    const { user } = setup('signin-login', worker({ totp: true }));
+    await login(user);
+    await user.type(field('Code'), '123');
+    await user.click(button('Use a backup code'));
+    expect(h1()).toHaveTextContent('Use a backup code');
+    await user.click(button('Back'));
+    expect(h1()).toHaveTextContent('Enter your code');
+    expect(field('Code')).toHaveValue('');
+  });
+
+  it('fix round 1: a second Back while the first is on its way sends nothing', async () => {
+    let release!: () => void;
+    const { fake, user } = setup('signin-login', (c, f) => {
+      if (c.m === 'signInBack') return new Promise(resolve => { release = () => { void worker()(c, f); resolve(null); }; });
+      return worker({ totp: true })(c, f);
+    });
+    await login(user);
+    await user.click(button('Back'));
+    expect(button('Back')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Back'));
+    await user.click(button('Have an invite? Create an account'));
+    expect(fake.callsOf('signInBack')).toHaveLength(1);
+    expect(fake.callsOf('signInCancel')).toEqual([]);
+    await act(async () => { release(); await Promise.resolve(); });
   });
 
   it('shows the loading splash without an instance', () => {
@@ -450,6 +499,7 @@ describe('refusals', () => {
     await login(user);
     expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     await user.type(field('Code'), '000000');
+    await settleCode();
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '000000' }]);
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
@@ -494,6 +544,7 @@ describe('refusals', () => {
     });
     await login(user);
     await user.type(field('Code'), '123456');
+    await settleCode();
     await pasteKey(user);
     await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);

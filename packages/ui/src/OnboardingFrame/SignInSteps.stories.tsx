@@ -57,9 +57,12 @@ function Key({ value, error, working }: { value: string; error?: string; working
       footer={<><Nav working={working} />
         <Button variant="accent" type="submit" {...(short || working ? blocked : {})} aria-describedby={short ? 's-key-length' : undefined}>{t('signin.key.submit')}</Button></>}>
       <p>{t('signin.key.body')}</p>
-      <RecoveryKeyField id="s-key" label={t('signin.key.label')} value={text} onChange={setText} hint={t('signin.key.hint', { n })} error={error} />
+      <RecoveryKeyField id="s-key" label={t('signin.key.label')} value={text} onChange={setText} hint={t('signin.key.hint', { n })} error={error}
+        placeholder={t('signin.key.placeholder')} />
       {short ? <p id="s-key-length" className="d-onboarding-frame__note">{t('signin.error.keyLength')}</p> : null}
-      {working ? <p role="status">{t('signin.key.working')}</p> : null}
+      {/* As SignIn.tsx: the status region is always there, and the page's announcer after it. */}
+      <p role="status">{working ? t('signin.key.working') : null}</p>
+      <p className="d-sr-only" aria-live="polite" />
     </Step>
   );
 }
@@ -67,9 +70,10 @@ function Key({ value, error, working }: { value: string; error?: string; working
 export const Login_: Story = { name: 'Login', render: () => <Login /> };
 export const LoginRefused: Story = { render: () => <Login refused /> };
 // Wave B task 3: the code step exactly as packages/web/src/screens/SignIn.tsx composes it (shown === 'totp'): the body as the
-// code's description, the six boxes with focus (SignIn's focus request), the links row, the empty status region, and
-// Cancel and Verify (blocked until six digits). "Use a passkey" shows only after a passkey that needs the code as well.
-function Code({ initial, afterPasskey }: { initial?: string; afterPasskey?: boolean }) {
+// code's description, the six boxes with focus (SignIn's focus request), the links row, the empty status region, Verify
+// (blocked until six digits) and the Back / new-account row. "Use a passkey" shows after a passkey that needs the code
+// as well (with its note) and after a password login that said the account holds a passkey (`withPasskey`, no note).
+function Code({ initial, afterPasskey, withPasskey }: { initial?: string; afterPasskey?: boolean; withPasskey?: boolean }) {
   const [code, setCode] = useState(initial ?? '');
   useEffect(() => { document.getElementById('s-code')?.focus(); }, []);
   return (
@@ -80,7 +84,7 @@ function Code({ initial, afterPasskey }: { initial?: string; afterPasskey?: bool
       <p id="s-code-body">{t('signin.totp.body')}</p>
       <CodeBoxes id="s-code" label={t('signin.totp.code')} value={code} onChange={setCode} describedBy="s-code-body" />
       <div className="d-onboarding-frame__links">
-        {afterPasskey ? <Button variant="ghost" type="button">{t('factorSignin.code.usePasskey')}</Button> : null}
+        {afterPasskey || withPasskey ? <Button variant="ghost" type="button">{t('factorSignin.code.usePasskey')}</Button> : null}
         <Button variant="ghost" type="button">{t('factorSignin.useBackup')}</Button>
       </div>
       <p role="status" />
@@ -90,7 +94,10 @@ function Code({ initial, afterPasskey }: { initial?: string; afterPasskey?: bool
 export const SecondFactor: Story = { render: () => <Code /> };
 export const SecondFactorTyped: Story = { render: () => <Code initial="482" /> };
 export const SecondFactorAfterPasskey: Story = { render: () => <Code afterPasskey /> };
+export const SecondFactorWithPasskey: Story = { render: () => <Code withPasskey /> };
+export const SecondFactorWithPasskeyTyped: Story = { render: () => <Code withPasskey initial="482" /> };
 export const RecoveryKey: Story = { render: () => <Key value={GROUPED.slice(0, 29)} /> };
+export const RecoveryKeyEmpty: Story = { render: () => <Key value="" /> };
 export const RecoveryKeyWrong: Story = { render: () => <Key value={GROUPED.replace('7K2M', '7K2N')} error={t('signin.error.wrongKey')} /> };
 export const NoBackup: Story = {
   render: () => (

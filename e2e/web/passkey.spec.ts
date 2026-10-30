@@ -122,7 +122,11 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
     await page2.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
     await expectHeading(page2, SIGNIN.loginTitle, { instance });
     await expect(page2.getByLabel(copy(SIGNIN.password), { exact: true })).toHaveValue('');
-    await button(page2, 'factorSignin.usePasskey').click();
+    // Wave B task 3 fix round 1 (Jonas): no passkey button; the username field's autofill offers the passkey (WebAuthn
+    // conditional mediation). The virtual authenticator answers the open conditional request once the field has focus.
+    const username2 = page2.getByLabel(copy(SIGNIN.username), { exact: true });
+    await expect(username2).toHaveAttribute('autocomplete', 'username webauthn');
+    await username2.focus();
     // web3.8 (R7): the passkey was used on the login step, so the key is step 2.
     await expectHeading(page2, SIGNIN.keyTitle);
     await expect(page2.getByText(copy(SIGNIN.step, { n: 2, total: 3 }), { exact: true })).toBeVisible();

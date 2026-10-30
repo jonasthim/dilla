@@ -207,6 +207,7 @@ export const en = {
   'signin.key.title': 'Add this browser',
   'signin.key.body': 'This browser is new. Paste your recovery key to read your conversations here.',
   'signin.key.label': 'Recovery key',
+  'signin.key.placeholder': 'XXXX-XXXX-XXXX-XXXX-…',
   'signin.key.hint': '{n} of 52 characters',
   'signin.key.submit': 'Add browser',
   'signin.key.working': 'Adding this browser to your account…',
