@@ -132,7 +132,10 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(HOST_DATA_ROOT, { recursive: true });
   mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
-  const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`));
+  // Appended, not truncated: tests in one file share a port, so a truncating open let the next test erase the log of the
+  // one that failed (PR #121, bot-runtime.spec.ts device 2). Each start writes a header to tell the runs apart.
+  const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`), { flags: 'a' });
+  log.write(`=== testhost start ${new Date().toISOString()} ===\n`);
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
   let bot: ChildProcess | null = null;
   let clockTicker: NodeJS.Timeout | null = null;
@@ -299,7 +302,9 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
   ].join('\n');
   writeFileSync(configPath, config, { mode: 0o600, flag: 'wx' });
   chmodSync(runtimeToken, 0o600);
-  const log = createWriteStream(runtimeLogPath);
+  // Appended like the host's log: a test that restarts the Bot, and the next test on this port, keep the earlier runs.
+  const log = createWriteStream(runtimeLogPath, { flags: 'a' });
+  log.write(`=== dillabot start ${new Date().toISOString()} ===\n`);
   const child = spawn(DILLABOT_BIN, ['-config', configPath], {
     stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DILLA_BOT_PRIVATE_DIAGNOSTICS: '1' },
   });
