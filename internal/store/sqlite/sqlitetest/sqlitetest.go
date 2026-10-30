@@ -48,7 +48,7 @@ func build() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }() // a leftover temp dir is the OS's to clean
 	path := filepath.Join(dir, "template.db")
 	db, err := sqlite.OpenWrite(path)
 	if err != nil {
