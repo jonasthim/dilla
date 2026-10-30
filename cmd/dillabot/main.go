@@ -437,33 +437,13 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 			logger.Info("bot identity reconciliation healthy")
 		}
 
-		timer := time.NewTimer(cfg.ReconcileInterval)
-		waiting := true
-		for waiting {
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil
-			case <-gateways.Wake():
-				// A gateway notification refreshes text sources only. Full reconciliation
-				// includes proof POSTs for every private group and stays on its own interval.
-				if delay := 5*time.Second - time.Since(started); delay > 0 {
-					throttle := time.NewTimer(delay)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						throttle.Stop()
-						return nil
-					case <-throttle.C:
-					}
-				}
-				gateways.PollText(ctx)
-				started = time.Now()
-			case <-timer.C:
-				waiting = false
-			}
+		// A gateway notification refreshes text sources only. Full reconciliation includes proof
+		// POSTs for every private group and stays on its own interval.
+		wait := reconcileWait{interval: cfg.ReconcileInterval, wake: gateways.Wake(), interaction: gateways.Interaction(),
+			poll: gateways.PollText, nextInteraction: gateways.NextInteraction, pollInteraction: gateways.PollInteractions, now: time.Now, after: time.After}
+		if !wait.wait(ctx, started) {
+			return nil
 		}
-
 	}
 }
 
@@ -513,6 +493,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
 		}
 		gateways.SetTextPoller(installation.ID, nil)
+		gateways.SetInteractionPoller(installation.ID, nil)
 		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
 		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
 			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
@@ -807,6 +788,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														func(pollCtx context.Context) error {
 															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
 														}, eventRuntime))
+													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, eventRuntime))
 												}
 
 												var eventResult service.GroupEventPollResult

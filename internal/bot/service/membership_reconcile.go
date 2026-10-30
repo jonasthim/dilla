@@ -329,7 +329,28 @@ func (r *MembershipReconciler) ReconcileInteractionGroupsOnce(ctx context.Contex
 	return r.reconcileInteractionGroupsOnce(ctx, session)
 }
 
+// ReconcileInteractionGroupOnce catches up one active kind-3 interaction source: the gateway
+// fast path for a participant's message reads that group alone. Every descriptor is still
+// validated as in ReconcileInteractionGroupsOnce; an unknown or inactive group syncs nothing.
+func (r *MembershipReconciler) ReconcileInteractionGroupOnce(ctx context.Context, session *client.Session, group id.ID) (MembershipResult, error) {
+	if session == nil {
+		return MembershipResult{}, errors.New("missing device session")
+	}
+	return r.reconcileInteractionGroupOnce(ctx, session, group)
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroupOnce(ctx context.Context, session membershipSession, group id.ID) (MembershipResult, error) {
+	if group.IsZero() {
+		return MembershipResult{}, errors.New("invalid interaction group")
+	}
+	return r.reconcileInteractionGroups(ctx, session, &group)
+}
+
 func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Context, session membershipSession) (MembershipResult, error) {
+	return r.reconcileInteractionGroups(ctx, session, nil)
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, session membershipSession, only *id.ID) (MembershipResult, error) {
 	var out MembershipResult
 	if r == nil || session == nil {
 		return out, errors.New("invalid interaction membership reconciliation")
@@ -377,7 +398,7 @@ func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Contex
 			b.E2EEVersion != 1 || b.MediaVersion != 0 {
 			return out, client.ErrProtocol
 		}
-		if g.State != 2 {
+		if g.State != 2 || only != nil && g.Group != *only {
 			continue
 		}
 		res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
