@@ -392,6 +392,10 @@ export default async function globalSetup(config: FullConfig): Promise<() => Pro
     throw new Error(`${join(REPO_ROOT, c.webRoot)} has no index.html: build it first (npm run build:harness -w @dilla/client-core, or npm run build -w @dilla/web)`);
   }
   execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
+  // The Bot binaries are built here, before any test, not by the first Bot test: a cold release build of dilla-bot-core
+  // took 2m52s on a CI runner, inside that test's 180 s timeout (PR #121, moderation-evidence.spec.ts in a web shard).
+  // Each later startBotRuntime rebuild is a no-op.
+  if (config.metadata.prebuildBotRuntime === true) await prepareBotRuntimeBinaries();
   const host = await startTestHost(c);
   process.env.DILLA_TESTKIT_INVITE = host.invite;
   process.env.DILLA_TESTKIT_CONTROL = host.control;
