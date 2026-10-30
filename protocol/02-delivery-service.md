@@ -718,7 +718,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    connection's writer is not an acknowledgement. The acknowledgement is the `commit_ack` frame
    (opcode 12), group-scoped, whose payload echoes the `round` of the `mls.commit_needed` it
    answers. Three acknowledged-and-lost rounds remove the device; unacknowledged rounds only
-   advance the election. A device that an outstanding non-void DS `Remove` is removing is never
+   advance the election. The exception is the group's last member that could commit: when no
+   other current member exists that an outstanding non-void DS `Remove` is not already removing,
+   the device is kept, its lost rounds are reset, and it is elected again. Removing it would leave
+   nobody able to commit, and the group would stay frozen until its proposals expire. A device that an outstanding non-void DS `Remove` is removing is never
    elected — it cannot commit its own removal — and when it is the only candidate online nobody is
    elected.
 
