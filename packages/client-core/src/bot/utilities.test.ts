@@ -108,6 +108,16 @@ describe('utility response decoders', () => {
     expect(() => decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n]]), { installationId: hex(9) })).toThrow(BotUtilitiesError);
   });
 
+  it('decodes the report of a Bot with Music on, which includes the music announce operation (25)', () => {
+    // internal/bot/protocol/codec.go OpMusicState..OpMusicAnnounce (10..25): the Bot reports these to each member when
+    // Music is on (internal/bot/service/command_capabilities.go). Rejecting 25 hid every Bot command from the picker.
+    const music = [10n, 11n, 12n, 13n, 14n, 15n, 16n, 17n, 18n, 19n, 20n, 21n, 22n, 23n, 25n];
+    const caps = decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n, ...music, 70n, 71n, 72n, 73n, 74n, 75n, 80n, 81n, 82n, 83n, 84n]]));
+    expect(caps.supportedOperations).toContain(25);
+    expect(caps.supportedOperations).toContain(70);
+    expect(caps.supportedOperations).toContain(80);
+  });
+
   it('rejects unsupported, duplicate, unsorted, or malformed capability entries', () => {
     for (const value of [
       [1n, id(7), id(8), 1n, [70n, 70n]],
