@@ -30,6 +30,9 @@ type election struct {
 	// acknowledgement (protocol/02 invariant 7 as amended).
 	lost  map[id.ID]int
 	tried map[id.ID]struct{}
+	// keptBackoff survives lost-count resets until the epoch advances or a commit clears the election.
+	keptBackoff map[id.ID]time.Duration
+	retryAt     time.Time
 }
 
 type elections struct {
@@ -87,6 +90,9 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 	// RunWatchdogOnce, which reads exactly those fields under the mutex from its own goroutine —
 	// a map write against a map read, which `go test -race ./internal/ds/` reports.
 	chosen, round := d.beginRound(groupID, candidates, d.opts.Clock.Now(), row.Epoch)
+	if chosen == (id.ID{}) {
+		return nil
+	}
 
 	payload, err := gateway.CommitNeededPayload(
 		row.Epoch, refs, uint64(d.opts.Policy.CommitDeadline/time.Millisecond), round) //nolint:gosec // G115: a non-negative duration in milliseconds
@@ -143,7 +149,7 @@ func (d *DS) AckCommitNeeded(_ context.Context, groupID, deviceID id.ID, round u
 	d.elections.mu.Lock()
 	defer d.elections.mu.Unlock()
 	e, ok := d.elections.m[groupID]
-	if !ok || e.round != round || e.candidate != deviceID {
+	if !ok || e.round != round || e.candidate != deviceID || !e.retryAt.IsZero() {
 		return nil // a stale ack is ignored, never an error
 	}
 	e.acked = true
@@ -156,10 +162,14 @@ func (d *DS) beginRound(groupID id.ID, candidates []gateway.OnlineDevice, now ti
 	d.elections.mu.Lock()
 	defer d.elections.mu.Unlock()
 	e, ok := d.elections.m[groupID]
-	if !ok {
-		e = &election{lost: map[id.ID]int{}, tried: map[id.ID]struct{}{}}
+	if !ok || e.epoch != epoch {
+		e = &election{lost: map[id.ID]int{}, tried: map[id.ID]struct{}{}, keptBackoff: map[id.ID]time.Duration{}}
 		d.elections.m[groupID] = e
 	}
+	if now.Before(e.retryAt) {
+		return id.ID{}, e.round
+	}
+	e.retryAt = time.Time{}
 	e.round++
 	for _, c := range candidates {
 		if _, tried := e.tried[c.DeviceID]; tried {

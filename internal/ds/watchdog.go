@@ -43,17 +43,18 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 		acked     bool
 		round     uint64
 		epoch     uint64
+		retryAt   time.Time
 	}
 	var due []overdue
 
 	d.elections.mu.Lock()
 	for groupID, e := range d.elections.m {
-		if e.candidate == (id.ID{}) || now.Sub(e.sentAt) < d.watchdogInterval() {
+		if e.candidate == (id.ID{}) || (e.retryAt.IsZero() && now.Sub(e.sentAt) < d.watchdogInterval()) {
 			continue
 		}
 		due = append(due, overdue{
 			groupID: groupID, candidate: e.candidate, acked: e.acked,
-			round: e.round, epoch: e.epoch,
+			round: e.round, epoch: e.epoch, retryAt: e.retryAt,
 		})
 	}
 	d.elections.mu.Unlock()
@@ -85,15 +86,24 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 			}
 			continue
 		}
+		if !o.retryAt.IsZero() {
+			if !now.Before(o.retryAt) {
+				if err := d.RequestCommit(ctx, o.groupID); err != nil {
+					d.log().Error("watchdog re-election failed",
+						"group", o.groupID.String()[:8], "err", err)
+				}
+			}
+			continue
+		}
 		lost := 0
 		if o.acked {
 			lost = d.chargeLostRound(o.groupID, o.candidate, o.round)
 		}
 		if o.acked && lost >= d.opts.Policy.MaxLostRounds {
 			// The Remove exists so that ANOTHER member commits what this device did not. When no
-			// other member could — the device is the group's last member that no instance Remove is
-			// already taking out, like the creator of a channel group whose first Adds are the work
-			// outstanding — nobody could ever commit the Remove (a device never commits its own
+			// other member could — the device is the group's last unbarred member that no instance
+			// Remove is already taking out, like the creator of a channel group whose first Adds are
+			// the work outstanding — nobody could ever commit the Remove (a device never commits its own
 			// removal, and the election never asks it to), and the group would stay frozen with
 			// every joiner refused 425 E_COMMIT_REQUIRED. The device is kept and asked again.
 			last, err := d.isLastCommitter(ctx, o.groupID, o.candidate, row.Epoch)
@@ -103,13 +113,8 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 				continue
 			}
 			if last {
-				d.resetLost(o.groupID, o.candidate)
-				if d.opts.Metrics != nil {
-					d.opts.Metrics.ElectionRounds.WithLabelValues("lost").Inc()
-				}
-				if err := d.RequestCommit(ctx, o.groupID); err != nil {
-					d.log().Error("watchdog re-election failed",
-						"group", o.groupID.String()[:8], "err", err)
+				if d.keepCommitter(o.groupID, o.candidate, o.round, now) && d.opts.Metrics != nil {
+					d.opts.Metrics.ElectionRounds.WithLabelValues("kept").Inc()
 				}
 				continue
 			}
@@ -157,12 +162,9 @@ func (d *DS) chargeLostRound(groupID, deviceID id.ID, round uint64) int {
 	return e.lost[deviceID]
 }
 
-// isLastCommitter reports whether deviceID is the only current member of the group that could
-// commit at epoch: every other member's leaf is the target of an outstanding non-void instance
-// Remove (which RequestCommit never elects), or there is no other member at all. It reads the
-// same member table and the same leaving set the election does, so "nobody else could commit" is
-// the election's own verdict, whatever the members' online state: an offline member commits when
-// it comes back.
+// isLastCommitter reports whether deviceID is the only current member that could commit:
+// every other member is barred or targeted by an outstanding non-void instance Remove.
+// Online state is irrelevant: an offline member can commit when it comes back.
 func (d *DS) isLastCommitter(ctx context.Context, groupID, deviceID id.ID, epoch uint64) (bool, error) {
 	members, err := d.opts.Store.ListMembers(ctx, groupID)
 	if err != nil {
@@ -172,7 +174,14 @@ func (d *DS) isLastCommitter(ctx context.Context, groupID, deviceID id.ID, epoch
 	if err != nil {
 		return false, err
 	}
+	barred, err := d.opts.Store.ListBarredMembers(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
 	leavingDevice, leavingLeaf := leaving(rows)
+	for _, m := range barred {
+		leavingDevice[m.DeviceID] = true
+	}
 	for _, m := range members {
 		if m.RemovedEpoch != nil || m.DeviceID == deviceID {
 			continue
@@ -182,6 +191,28 @@ func (d *DS) isLastCommitter(ctx context.Context, groupID, deviceID id.ID, epoch
 		}
 	}
 	return true, nil
+}
+
+// keepCommitter delays the next election instead of asking the last committer immediately again.
+func (d *DS) keepCommitter(groupID, deviceID id.ID, round uint64, now time.Time) bool {
+	d.elections.mu.Lock()
+	defer d.elections.mu.Unlock()
+	e, ok := d.elections.m[groupID]
+	if !ok || e.round != round || e.candidate != deviceID || !e.retryAt.IsZero() {
+		return false
+	}
+	delay := e.keptBackoff[deviceID]
+	if delay == 0 {
+		delay = d.watchdogInterval()
+	} else {
+		delay *= 2
+	}
+	delay = min(delay, time.Minute)
+	e.keptBackoff[deviceID] = delay
+	e.retryAt = now.Add(delay)
+	e.acked = false
+	delete(e.lost, deviceID)
+	return true
 }
 
 func (d *DS) lostRounds(groupID, deviceID id.ID) int {

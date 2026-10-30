@@ -718,12 +718,15 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    connection's writer is not an acknowledgement. The acknowledgement is the `commit_ack` frame
    (opcode 12), group-scoped, whose payload echoes the `round` of the `mls.commit_needed` it
    answers. Three acknowledged-and-lost rounds remove the device; unacknowledged rounds only
-   advance the election. The exception is the group's last member that could commit: when no
-   other current member exists that an outstanding non-void DS `Remove` is not already removing,
-   the device is kept, its lost rounds are reset, and it is elected again. Removing it would leave
-   nobody able to commit, and the group would stay frozen until its proposals expire. A device that an outstanding non-void DS `Remove` is removing is never
-   elected — it cannot commit its own removal — and when it is the only candidate online nobody is
-   elected.
+   advance the election. For a kept device, the delay before re-election doubles on each kept
+   cycle: 2 s, 4 s, 8 s, up to 60 s. It resets when the group's epoch advances or the device
+   acknowledges and commits. The exception to removal is the group's last member that could
+   commit: when every other current member is barred (quarantined or revoked) or already targeted
+   by an outstanding non-void DS `Remove`, the device is kept and its lost rounds are reset. It is
+   elected again when it is online and work remains, with the backoff above. Removing it would
+   leave nobody able to commit, and the group would stay frozen until its proposals expire. A
+   device that an outstanding non-void DS `Remove` is removing is never elected — it cannot commit
+   its own removal — and when it is the only candidate online nobody is elected.
 
    The member list an election walks is also the list every group-scoped frame (`message.ct`,
    `message.deleted`, `mls.handshake`) fans out to. The instance holds it, with each device's leaf

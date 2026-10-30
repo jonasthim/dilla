@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -223,7 +225,7 @@ func TestTheWatchdogNeverRemovesTheGroupsLastMember(t *testing.T) {
 		t.Fatalf("RequestCommit: %v", err)
 	}
 
-	h.failRounds(t, g, g.members[0], 2*h.policy().MaxLostRounds)
+	h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
 
 	if n := h.removedLeaves(t, g); n != 0 {
 		t.Fatalf("the watchdog proposed removing the group's only member (%d Removes)", n)
@@ -243,10 +245,138 @@ func TestTheWatchdogNeverRemovesTheLastMemberThatCouldCommit(t *testing.T) {
 	h.online(g.members[0], g.members[1])
 	h.proposeRemoveOf(t, g, g.leafOf(1)) // members[1] is leaving; members[0] is elected
 
-	h.failRounds(t, g, g.members[0], 2*h.policy().MaxLostRounds)
+	h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
 
 	if n := h.removedLeaves(t, g); n != 1 {
 		t.Fatalf("%d Removes of the group's members, want 1 (members[1]'s own)", n)
+	}
+}
+
+func TestTheWatchdogRemovesAFailingDeviceWithAnOfflineMember(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.keepOnlyMembers(t, g, 0, 1)
+	h.online(g.members[0])
+	if err := h.ds.RequestCommit(context.Background(), g.id); err != nil {
+		t.Fatal(err)
+	}
+	h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
+	if n := h.removedLeaves(t, g); n != 1 {
+		t.Fatalf("%d Removes, want the failing device removed while the other member is offline", n)
+	}
+}
+
+func TestTheWatchdogKeepsTheLastUnbarredMember(t *testing.T) {
+	for _, reason := range []string{"quarantined", "revoked"} {
+		t.Run(reason, func(t *testing.T) {
+			h := newDSHarness(t)
+			g := h.groupWithMembers(t, 2)
+			h.keepOnlyMembers(t, g, 0, 1)
+			ctx := context.Background()
+			h.account(t, h.sessions[g.members[1]].UserID, g.members[1])
+			var err error
+			if reason == "quarantined" {
+				err = h.repo.QuarantineDevice(ctx, g.members[1], h.clk.Now().Unix(), "fork quorum")
+			} else {
+				err = h.repo.RevokeDevice(ctx, g.members[1], h.clk.Now().Unix())
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.online(g.members[0])
+			if err := h.ds.RequestCommit(ctx, g.id); err != nil {
+				t.Fatal(err)
+			}
+			h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
+			if n := h.removedLeaves(t, g); n != 0 {
+				t.Fatalf("the watchdog removed the last unbarred member (%d Removes)", n)
+			}
+		})
+	}
+}
+
+func TestKeptCommitterBackoffDoublesAndCaps(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 1)
+	h.keepOnlyMembers(t, g, 0)
+	h.online(g.members[0])
+	ctx := context.Background()
+	if err := h.ds.RequestCommit(ctx, g.id); err != nil {
+		t.Fatal(err)
+	}
+	for i, delay := range []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, 60 * time.Second, 60 * time.Second} {
+		h.offline(g.members[0])
+		h.online(g.members[0])
+		h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds-1)
+		round := h.ds.CurrentRound(g.id)
+		if err := h.ds.AckCommitNeeded(ctx, g.id, g.members[0], round); err != nil {
+			t.Fatal(err)
+		}
+		h.clk.Advance(h.policy().WatchdogInterval)
+		h.ds.RunWatchdogOnce(ctx)
+		if got := h.ds.CurrentRound(g.id); got != round {
+			t.Fatalf("kept cycle %d re-elected immediately: round %d, want %d", i, got, round)
+		}
+		var metric dto.Metric
+		if err := h.metrics.ElectionRounds.WithLabelValues("kept").Write(&metric); err != nil {
+			t.Fatal(err)
+		}
+		if got := metric.GetCounter().GetValue(); got != float64(i+1) {
+			t.Fatalf("kept rounds = %v, want %d", got, i+1)
+		}
+		h.clk.Advance(delay - time.Nanosecond)
+		h.ds.RunWatchdogOnce(ctx)
+		// A new proposal or ready must not bypass the backoff either.
+		if err := h.ds.RequestCommit(ctx, g.id); err != nil {
+			t.Fatal(err)
+		}
+		if got := h.ds.CurrentRound(g.id); got != round {
+			t.Fatalf("cycle %d re-elected before %v: round %d, want %d", i, delay, got, round)
+		}
+		h.clk.Advance(time.Nanosecond)
+		h.ds.RunWatchdogOnce(ctx)
+		if got := h.ds.CurrentRound(g.id); got != round+1 {
+			t.Fatalf("cycle %d did not re-elect after %v: round %d, want %d", i, delay, got, round+1)
+		}
+	}
+}
+
+func TestKeptCommitterBackoffResetsOnEpochAdvance(t *testing.T) {
+	for _, trigger := range []string{"watchdog", "proposal"} {
+		t.Run(trigger, func(t *testing.T) {
+			h := newDSHarness(t)
+			g := h.groupWithMembers(t, 1)
+			h.keepOnlyMembers(t, g, 0)
+			h.online(g.members[0])
+			ctx := context.Background()
+			if err := h.ds.RequestCommit(ctx, g.id); err != nil {
+				t.Fatal(err)
+			}
+			h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
+			h.clk.Advance(2 * time.Second)
+			h.ds.RunWatchdogOnce(ctx)
+			h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
+			epoch := h.advanceGroupEpoch(t, g.id)
+			h.putDSProposal(t, g.id, epoch, false)
+			if trigger == "watchdog" {
+				h.ds.RunWatchdogOnce(ctx)
+			} else if err := h.ds.RequestCommit(ctx, g.id); err != nil {
+				t.Fatal(err)
+			}
+			round := h.ds.CurrentRound(g.id)
+			h.clk.Advance(h.policy().WatchdogInterval)
+			h.ds.RunWatchdogOnce(ctx)
+			if got := h.ds.CurrentRound(g.id); got != round+1 {
+				t.Fatalf("epoch advance kept the old backoff: round %d, want %d", got, round+1)
+			}
+			h.failRounds(t, g, g.members[0], h.policy().MaxLostRounds)
+			round = h.ds.CurrentRound(g.id)
+			h.clk.Advance(2 * time.Second)
+			h.ds.RunWatchdogOnce(ctx)
+			if got := h.ds.CurrentRound(g.id); got != round+1 {
+				t.Fatalf("first kept delay after epoch advance did not reset to 2s: round %d, want %d", got, round+1)
+			}
+		})
 	}
 }
 
