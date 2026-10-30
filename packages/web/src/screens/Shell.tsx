@@ -1083,7 +1083,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway, timeoutSeconds: afkHere.timeoutSeconds } : null),
     // Wave B task 4 (Jonas, Q3): "Come back" leaves the AFK channel for the server's first text channel; typing or posting there
     // clears the away mark, as it always has.
-    onLeaveAfk: () => { if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: defaultChannel(ordered)?.id ?? null }); },
+    onLeaveAfk: () => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, null); },
     // Wave B task 4: the person menu's Profile, Message, Mention, Edit roles and Move to. These read later bindings (the voice rows,
     // the composer's mention) only when the menu is built, long after this render's body ran.
     people: {
@@ -1094,7 +1094,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         ? { onEditRoles: () => void navigate({ name: 'serverSettings', communityId, section: 'roles', from: null }) } : {}),
       rooms: excludeId => voiceRows.filter(r => !afkChannels.has(r.id) && r.id !== excludeId)
         .map(r => ({ id: r.id, name: r.name, count: new Set((r.room?.participants ?? []).map(x => x.userId)).size })),
-      onMove: id => call.join(id),
+      onMove: id => {
+        call.join(id);
+        openVoice(id);
+        announce(t('callStage.menu.moved', { room: voiceRows.find(r => r.id === id)?.name ?? '' }));
+      },
     },
   };
 
@@ -1432,7 +1436,29 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     else if (document.querySelector('.d-app-shell__backdrop') !== null) setMembersOpen(false);
     setMentionTick(n => n + 1);
   } : undefined;
-  mentionRef.current = mentionFromMembers;
+  // Wave B task 4 fix round 1 (Jonas): Mention on a community route without a composer (the voice view, the AFK page, settings)
+  // goes to the server's last open text channel (else its first), puts "@username " in that channel's draft and focuses its
+  // composer there. `lastText` is kept per community, whenever a text channel route is open.
+  const lastText = useRef(new Map<string, string>());
+  if (communityId !== null && channel !== null && channel.kind === 0 && voiceChannel === null) lastText.current.set(communityId, channel.id);
+  const textChannelHere = (): ChannelSummary | null => {
+    const last = communityId === null ? undefined : lastText.current.get(communityId);
+    return ordered.find(c => c.id === last && c.kind === 0) ?? defaultChannel(ordered);
+  };
+  const openComposerIn = (id: string, username: string | null) => {
+    if (username !== null) {
+      const base = draft.channelId === id ? draft.text : ordinaryDrafts.current.get(id) ?? '';
+      const text = `${base}${base === '' || /\s$/.test(base) ? '' : ' '}@${username} `;
+      rememberDraft(ordinaryDrafts.current, id, text);
+      setDraft({ channelId: id, text, typed: true });
+    }
+    mentionFocus.current = true;
+    setMentionTick(n => n + 1);
+    if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: id });
+  };
+  const mentionAnywhere = mentionFromMembers ?? (communityId !== null && textChannelHere() !== null
+    ? (username: string) => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, username); } : undefined);
+  mentionRef.current = mentionAnywhere;
   // Where focus goes when the sheet or drawer closes: the control that opened it (kept from the first open, not from a list row),
   // else the root's message row, else the header's button.
   const sideOpener = useRef<Element | null>(null);
@@ -1549,9 +1575,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // a chat (a text channel or a DM) adds Threads (labelled on a desktop) when it has threads, Members with the count on a server,
   // and Search on a phone. A voice channel has no controls. The DM call and pins are in the DM row's context menu (and the call
   // under Control/⌘+Shift+Enter), search is the top bar's and Control/⌘+K, the reminders the bell and the Activity tab.
-  const voiceTopic = voiceChannel === null ? undefined : call.channelId === voiceChannel.id
+  const voiceIsAfk = voiceChannel !== null && afkChannels.has(voiceChannel.id);
+  const voiceTopic = voiceChannel === null ? undefined : voiceIsAfk ? t('voice.header.afk') : call.channelId === voiceChannel.id
     ? t('voice.count', { n: voiceCtx.voice?.[voiceChannel.id]?.participants.length ?? 0 }) : t('voice.header.idle');
-  const header = voiceChannel !== null ? (phone ? <ChannelHeader kind="voice" name={voiceChannel.name} topic={voiceTopic}
+  const header = voiceChannel !== null ? (phone ? <ChannelHeader kind={voiceIsAfk ? 'afk' : 'voice'} name={voiceChannel.name} topic={voiceTopic}
     phone={{ backLabel: t('nav.back'), onBack, ...dotProp }} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}

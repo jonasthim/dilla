@@ -26,7 +26,7 @@ export interface PersonContextMenuProps {
    * head count in each, under a heading, after the items and before a danger item (Leave voice). Choosing one calls
    * `onMove(id)` and closes the menu.
    */
-  move?: { label: string; rooms: readonly { id: string; name: string; count: number }[]; onMove(id: string): void };
+  move?: { label: string; rooms: readonly { id: string; name: string; count: number }[]; /** A room's accessible name: 'lounge, 2 in voice'. */ roomLabel(room: { name: string; count: number }): string; onMove(id: string): void };
 }
 
 /**
@@ -58,7 +58,7 @@ export function PersonContextMenu({ person, label, open, at, onOpenChange, retur
   );
   // The Move to rooms sit after the plain items and before the danger ones (Leave voice), the rule above the block.
   const rooms: ActionMenuItem[] = move === undefined || move.rooms.length === 0 ? [] : move.rooms.map((r, i) => ({
-    id: `${MOVE}${r.id}`, label: r.name, icon: 'volume-2' as const, room: true, hint: String(r.count), group: move.label,
+    id: `${MOVE}${r.id}`, label: r.name, icon: 'volume-2' as const, room: true, hint: String(r.count), ariaLabel: move.roomLabel(r), group: move.label,
     ...(i === 0 ? { sep: true, heading: move.label } : {}),
   }));
   const danger = items.findIndex(i => i.danger === true);

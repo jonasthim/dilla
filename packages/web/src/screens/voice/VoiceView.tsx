@@ -18,7 +18,7 @@ import { MusicPlayer, type MusicPlayerView } from './music.tsx';
 import { codecStat, frameStat, useTileStats } from './tile-stats.ts';
 import type { TileStats } from '../../call/session.ts';
 import { usePhoneLayout } from '../../layout.ts';
-import { voiceShortcutText } from './shortcuts.ts';
+import { voiceKeycapText, voiceShortcutText } from './shortcuts.ts';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
@@ -110,18 +110,26 @@ export function personMenu(v: Pick<VoiceContext, 'call' | 'settings' | 'members'
   // The element the menu gave focus back to (the row or the tile) is what a card opens beside.
   const opener = () => (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null);
   if (p.own) {
-    const keys = voiceShortcutText();
+    // Only while this device is in that room's call (a row of yourself from another device has Profile alone).
+    const inCall = p.roomId === undefined || v.call.channelId === p.roomId;
+    if (!inCall) {
+      return { ...head, items: [people !== undefined ? { id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }
+        : { id: 'copy', label: t('callStage.menu.copy'), icon: 'copy' as const }],
+        onSelect: id => { if (id === 'profile') people?.onProfile(p.userId, p.name, opener()); } };
+    }
+    const keys = voiceKeycapText();
     const { selfMuted: muted, selfDeafened: deafened } = v.call;
     const rooms = people?.rooms(p.roomId ?? null) ?? [];
     return {
       ...head,
       items: [
-        { id: 'mute', label: t(muted ? 'callStage.bar.unmute' : 'callStage.bar.mute'), icon: muted ? 'mic' as const : 'mic-off' as const, hint: keys.mute },
-        { id: 'deafen', label: t(deafened ? 'callStage.bar.undeafen' : 'callStage.bar.deafen'), icon: deafened ? 'headphones' as const : 'headphone-off' as const, hint: keys.deafen },
+        { id: 'mute', label: t(muted ? 'callStage.bar.unmute' : 'callStage.bar.mute'), icon: muted ? 'mic' as const : 'mic-off' as const, hint: keys.mute, keys: keys.ariaMute },
+        { id: 'deafen', label: t(deafened ? 'callStage.bar.undeafen' : 'callStage.bar.deafen'), icon: deafened ? 'headphones' as const : 'headphone-off' as const, hint: keys.deafen, keys: keys.ariaDeafen },
         ...(people !== undefined ? [{ id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }] : []),
         { id: 'leave', label: t('callStage.menu.leave'), icon: 'phone-off' as const, danger: true, sep: true },
       ],
-      ...(people !== undefined && rooms.length > 0 ? { move: { label: t('callStage.menu.moveTo'), rooms, onMove: id => people.onMove(id) } } : {}),
+      ...(people !== undefined && rooms.length > 0 ? { move: { label: t('callStage.menu.moveTo'), rooms,
+        roomLabel: (r: { name: string; count: number }) => `${r.name}, ${t('voice.count', { n: r.count })}`, onMove: (id: string) => people.onMove(id) } } : {}),
       onSelect: id => {
         if (id === 'mute') v.call.toggleMute();
         else if (id === 'deafen') v.call.toggleDeafen();
@@ -130,14 +138,16 @@ export function personMenu(v: Pick<VoiceContext, 'call' | 'settings' | 'members'
       },
     };
   }
-  const person = !p.bot && !stream && people !== undefined;
+  const person = !stream && people !== undefined;
+  const human = person && !p.bot;
   return {
     ...head,
     ...(tunable ? { volume: { label: t(stream ? 'callStage.menu.streamVolume' : 'callStage.menu.volume'), value: level,
       valueText: t('callStage.menu.value', { n: level }), onChange: set } } : {}),
     items: [
-      ...(person ? [{ id: 'profile', label: t('members.menu.profile'), icon: 'user' as const },
-        { id: 'message', label: t('members.menu.message'), icon: 'message-square' as const }] : []),
+      ...(person ? [{ id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }] : []),
+      // A bot has no keys to message with: the prototype's Glenn menu has Profile, Mention and Edit roles, no Message here.
+      ...(human ? [{ id: 'message', label: t('members.menu.message'), icon: 'message-square' as const }] : []),
       ...(person && people.onMention !== undefined ? [{ id: 'mention', label: t('members.menu.mention'), icon: 'at-sign' as const }] : []),
       ...(tunable ? [{ id: 'mute', label: t('callStage.menu.muteForMe'), icon: 'volume-x' as const, check: level === 0 }] : []),
       { id: 'copy', label: t('callStage.menu.copy'), icon: 'copy' as const },
@@ -388,6 +398,7 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
 
 /** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
 const VOICE_SHORTCUT_TEXT = voiceShortcutText();
+const VOICE_KEYCAPS = voiceKeycapText();
 
 /** Why an inert camera or share is inert, the same for the stage and the dock (founder, 2026-10-15). */
 const VOICE_WHY = () => ({ paused: t('voice.why.paused'), joining: t('voice.why.joining'), noShare: t('voice.why.noShare') });
@@ -496,7 +507,7 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
       canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null}
-      paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
+      paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keycaps={VOICE_KEYCAPS} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY(),
         // Signal §5.6: a channel's call bar shows the prototype's words (the DM call box keeps the icon toolbar).
@@ -691,7 +702,14 @@ export function dmCallStart(v: VoiceContext, channelId: string): { label: string
   return { label: t(live ? 'call.join' : 'call.start'), onStart: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } };
 }
 
-export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
+/** A DM call has no server: its menus carry no Profile, Message, Mention, Edit roles or Move to. */
+function withoutPeople(v: VoiceContext): VoiceContext {
+  const { people, ...rest } = v;
+  return people === undefined ? v : rest;
+}
+
+export function DmCall({ v: voice, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
+  const v = withoutPeople(voice);
   const outgoing = v.slice?.channelId === channelId ? v.slice.outgoing : null;
   // A ring lasts 30 s (R5, useCall's clock): once that long has passed with nobody answering, the strip says so.
   const inThisCall = v.call.channelId === channelId;

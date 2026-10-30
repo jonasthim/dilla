@@ -14,10 +14,10 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-/** Another person in voice, as the voice view opens it: the header, "User volume", Profile, Message, Mute for me, Copy username. */
+/** Another person in voice, as the voice view opens it: the header, "User volume", Profile, Message, Mention, Mute for me, Copy username, Edit roles. */
 export const Person: Story = {};
-/** The same from a sidebar occupant while a text channel is open (Mention), for a viewer with Manage roles (Edit roles). */
-export const PersonWithMentionAndRoles: Story = { args: { ...tileMenu('Ole', { mention: true, roles: true }) } };
+/** The same with every item the prototype draws (Mention, and Edit roles for a viewer with Manage roles). */
+export const PersonWithMentionAndRoles: Story = { args: { ...tileMenu('Ole') } };
 /** Muted for me: the item's box is checked (the menu stays open on it). */
 export const MutedForMe: Story = { args: { ...tileMenu('Ole', { muted: true, volume: 70 }) } };
 /** Yourself in a call: Mute and Deafen with their keys, Profile, Move to the other voice channels (with the head count), Leave voice. */

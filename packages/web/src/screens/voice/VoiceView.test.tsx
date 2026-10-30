@@ -9,7 +9,8 @@ import { ME } from '../../test/fixtures.ts';
 import { REMOVED_HOLD_MS } from './useCall.tsx';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { PHONE_QUERY } from '../../layout.ts';
-import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
+import { isApplePlatform, voiceKeycapText, voiceShortcutText } from './shortcuts.ts';
+import { personMenu } from './VoiceView.tsx';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -754,6 +755,7 @@ describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
     await waitFor(() => expect(window.location.pathname).not.toBe(`/c/${A}/${MUSIC}`));
     expect(window.location.pathname.startsWith(`/c/${A}/`)).toBe(true);
     expect(main().queryByText(t('afk.title.you'))).toBeNull();
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /message/i })).toHaveFocus());
   });
 
   it('M2: a call cut because AFK was chosen on another device says so as a calm notice on its stage', async () => {
@@ -1531,10 +1533,13 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
 
   it('yourself: Mute and Deafen with their keys, Profile, Move to the other voice channels, Leave voice; no Copy username', async () => {
     const app = await inVoice({ voice: room() });
-    const keys = voiceShortcutText();
+    const keys = voiceKeycapText();
     fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
     const menu = await screen.findByRole('menu');
     expect(names(menu)).toEqual([`Mute${keys.mute}`, `Deafen${keys.deafen}`, 'Profile', 'music0', 'Leave voice']);
+    // The hint is decoration; the shortcut is aria-keyshortcuts and a room reads like the row's count.
+    expect(within(menu).getByRole('menuitem', { name: 'Mute' })).toHaveAttribute('aria-keyshortcuts', keys.ariaMute);
+    expect(within(menu).getByRole('menuitem', { name: 'music, 0 in voice' })).toBeInTheDocument();
     expect(within(menu).queryByRole('menuitem', { name: t('callStage.menu.copy') })).toBeNull();
     expect(within(menu).queryByRole('slider')).toBeNull();
     expect(within(menu).getByRole('group', { name: 'Move to' })).toBeInTheDocument();
@@ -1543,6 +1548,13 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     await waitFor(() => expect(app.session.log).toContain('muted:true'));
     fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
     expect(names(await screen.findByRole('menu'))[0]).toBe(`Unmute${keys.mute}`);
+  });
+
+  it('the call bar draws the keycaps of this platform, not plain Ctrl+Shift+M', async () => {
+    await inVoice({ voice: room() });
+    const keys = voiceKeycapText();
+    const caps = [...document.querySelectorAll('.d-call-stage__controls .d-voice-toolbar__keycap')].map(c => c.textContent);
+    expect(caps).toEqual([keys.mute, keys.deafen]);
   });
 
   it('yourself: Deafen, and Leave voice leaves the call', async () => {
@@ -1560,6 +1572,9 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
     await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: /^music/ }));
     await waitFor(() => expect(app.session.log).toContain('leave:switch'));
+    // It opens that room's view and says so.
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`));
+    await waitFor(() => expect(document.querySelector('[role="status"]:not(:empty)')?.textContent ?? '').toContain('You moved to music'));
   });
 
   it('the sidebar row of yourself has the same menu', async () => {
@@ -1571,14 +1586,14 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     expect(names(menu)).toContain('music0');
   });
 
-  it('another person: volume, Profile, Message, Mute for me, Copy username (no Mention in a voice view without a composer)', async () => {
+  it('another person: volume, Profile, Message, Mention, Mute for me, Copy username', async () => {
     const app = await inVoice({ voice: room() });
     act(() => app.session.update({ tiles: [bobTile] }));
     await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
     fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
     const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
     expect(screen.getByRole('slider', { name: t('callStage.menu.volume') })).toBeInTheDocument();
-    expect(names(menu)).toEqual(['Profile', 'Message', 'Mute for me', 'Copy username']);
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username']);
     await app.user.click(within(menu).getByRole('menuitem', { name: 'Message' }));
     await waitFor(() => expect(app.client.callsOf('openDm')).toContainEqual({ m: 'openDm', userId: BOB }));
   });
@@ -1600,7 +1615,7 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
     fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
     const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
-    expect(names(menu)).toEqual(['Profile', 'Message', 'Mute for me', 'Copy username', 'Edit roles']);
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username', 'Edit roles']);
     await app.user.click(within(menu).getByRole('menuitem', { name: 'Edit roles' }));
     await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/settings/roles`));
   });
@@ -1616,12 +1631,43 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: /message/i }).value).toMatch(/@bob $/));
   });
 
-  it('a bot keeps the volume, Mute for me and Copy username only', async () => {
+  it('Mention in the voice view opens the server\'s last text channel with @username in its composer', async () => {
+    const app = await inVoice({ voice: room() });
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${TEXT}`));
+    const box = await screen.findByRole<HTMLTextAreaElement>('textbox', { name: /message/i });
+    await waitFor(() => expect(box.value).toMatch(/@bob $/));
+    await waitFor(() => expect(box).toHaveFocus());
+  });
+
+  it('a DM call\'s own menu has Mute, Deafen and Leave voice only: no server items', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await startDmCall(app.user, 'bob');
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM }));
+    await waitFor(() => expect(li(`${OWN_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu');
+    expect(names(menu).map(n => n?.replace(/(Ctrl⇧|⌘⇧)[MD]$/, ''))).toEqual(['Mute', 'Deafen', 'Leave voice']);
+  });
+
+  it('your own row from a call you are not in has Profile alone', () => {
+    const v = { call: { channelId: GENV, selfMuted: false, selfDeafened: false, toggleMute: () => {}, toggleDeafen: () => {}, leave: () => {} }, settings: {}, members: [],
+      people: { onProfile: () => {}, onMessage: () => {}, rooms: () => [], onMove: () => {} } } as unknown as Parameters<typeof personMenu>[0];
+    const there = personMenu(v, 'music', { userId: 'u', name: 'me', bot: false, own: true, roomId: MUSIC });
+    expect(there.items.map(i => i.label)).toEqual(['Profile']);
+    expect(personMenu(v, 'general', { userId: 'u', name: 'me', bot: false, own: true, roomId: GENV }).items.map(i => i.id)).toEqual(['mute', 'deafen', 'profile', 'leave']);
+  });
+
+  it('a bot has the volume, Profile, Mention, Mute for me and Copy username; no Message', async () => {
     const app = await inVoice({ voice: room([{ userId: CAROL, deviceId: CAROL_DEV, name: 'glenn', flags: 0, own: false, web: false, bot: true }]) });
     act(() => app.session.update({ tiles: [{ ...bobTile, deviceId: CAROL_DEV, userId: CAROL }] }));
     await waitFor(() => expect(li(`${CAROL_DEV}:person`)).not.toBeNull());
     fireEvent.contextMenu(li(`${CAROL_DEV}:person`), { clientX: 20, clientY: 20 });
     const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'glenn' }) });
-    expect(names(menu)).toEqual(['Mute for me', 'Copy username']);
+    expect(names(menu)).toEqual(['Profile', 'Mention', 'Mute for me', 'Copy username']);
   });
 });
