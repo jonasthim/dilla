@@ -813,6 +813,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												if interactionErr == nil {
 													eventResult, interactionErr = eventRuntime.Drain(ctx)
 												}
+												for _, skip := range eventResult.Skipped {
+													attrs := []any{"installation_id", installation.ID.String(), "delivery_id", skip.DeliveryID, "error", skip.Cause.Error()}
+													if !skip.FirstFailure.IsZero() {
+														attrs = append(attrs, "first_failure", skip.FirstFailure.UTC().Format(time.RFC3339))
+													}
+													logger.Warn("bot interaction event skipped as undeliverable", attrs...)
+												}
 												if interactionErr == nil && eventResult.More {
 													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)
 												}
