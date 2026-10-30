@@ -56,7 +56,7 @@ async function upToKey(a: ReturnType<typeof account>): Promise<EnrolFetched> {
 describe('Enrol', () => {
   it('adds this browser: login, a pending registration, the sealed objects, the key, list v2, an enrolled session, the state object', async () => {
     const { server, core, routes, enrol, userId, U, listPath } = account();
-    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 0 });
+    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 0, passkey: false });
     expect(await enrol.register(INSTANCE)).toEqual({ userId });
     expect(core.identity()).toMatchObject({ phase: 3, userId, deviceId: DEVICE_B });
     const fetched = await enrol.fetch(userId);
@@ -137,12 +137,12 @@ describe('Enrol', () => {
 
   it('verifies the second factor before registering; a wrong code spends the assertion', async () => {
     const { server, core, enrol } = account({ totp: '123456' });
-    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 1 });
+    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 1, passkey: false });
     await expect(enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
     const wrong = await httpError(enrol.totp('000000'));
     expect([wrong.status, wrong.code]).toEqual([401, 'E_UNAUTHENTICATED']);
     await expect(enrol.totp('123456')).rejects.toThrow('E_NO_ASSERTION');
-    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 1 });
+    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 1, passkey: false });
     await enrol.totp('123456');
     await enrol.register(INSTANCE);
     expect(server.paths()).toEqual([
@@ -408,7 +408,7 @@ describe('Enrol second factors', () => {
   it('a passkey-only account owes needs 2: no app code is taken for it', async () => {
     const a = account();
     a.server.addPasskey('ada', 'Laptop');
-    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2 });
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2, passkey: true });
     await expect(a.enrol.totp('123456')).rejects.toThrow('E_NO_ASSERTION');
     expect(a.server.paths()).toEqual(['POST /v1/auth/password/login']);
   });
@@ -417,9 +417,9 @@ describe('Enrol second factors', () => {
     const a = account();
     a.server.addPasskey('ada', 'Laptop');
     a.server.factorsOf('ada').codes = ['A'.repeat(26), 'B'.repeat(26)];
-    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2 });
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2, passkey: true });
     await expect(a.enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
-    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2 });
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2, passkey: true });
     await a.enrol.backupCode('A'.repeat(26));
     await a.enrol.register(INSTANCE);
     expect(a.server.paths().slice(0, 3)).toEqual(['POST /v1/auth/password/login', 'POST /v1/auth/password/login', 'POST /v1/auth/recovery/verify']);
@@ -429,7 +429,7 @@ describe('Enrol second factors', () => {
 
     const b = account({ totp: '123456' });
     b.server.factorsOf('ada').codes = ['C'.repeat(26)];
-    expect(await b.enrol.login('ada', PASSWORD)).toEqual({ needs: 1 });
+    expect(await b.enrol.login('ada', PASSWORD)).toEqual({ needs: 1, passkey: false });
     await b.enrol.backupCode('C'.repeat(26));
     expect((await b.enrol.register(INSTANCE)).userId).toEqual(b.userId);
   });
@@ -443,7 +443,7 @@ describe('Enrol second factors', () => {
     expect([wrong.status, wrong.code]).toEqual([401, 'E_UNAUTHENTICATED']);
     await expect(a.enrol.backupCode('A'.repeat(26))).rejects.toThrow('E_NO_ASSERTION');
     const free = account();
-    expect(await free.enrol.login('ada', PASSWORD)).toEqual({ needs: 0 });
+    expect(await free.enrol.login('ada', PASSWORD)).toEqual({ needs: 0, passkey: false });
     await expect(free.enrol.backupCode('A'.repeat(26))).rejects.toThrow('E_NO_ASSERTION');
     expect(free.server.paths()).toEqual(['POST /v1/auth/password/login']);
   });

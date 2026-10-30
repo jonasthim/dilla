@@ -32,12 +32,13 @@ export class Enrol {
     this.assertionOwes = owes;
   }
 
-  async login(username: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
+  async login(username: string, password: string): Promise<{ needs: 0 | 1 | 2; passkey?: boolean }> {
     this.assertion = null;
     this.assertionOwes = 0;
     const answer = await this.deps.routes.passwordLogin(username, password);
     this.hold(answer.assertion, answer.needs);
-    return { needs: answer.needs };
+    // Wave B task 3: whether a passkey would work on the code step (only said on a login owing a factor).
+    return { needs: answer.needs, passkey: answer.passkey };
   }
 
   /** A discoverable passkey login (web3.6): needs 0 when the authenticator verified the user, else 1 (a code follows).

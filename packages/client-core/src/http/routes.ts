@@ -29,8 +29,10 @@ export interface EstablishedSession { token: string; scope: 0 | 1 | 2; userId: U
  *  element: state/trust.ts `chainRow` is the four-element list body the core decodes). */
 export interface DeviceListRecord { version: bigint; blob: Uint8Array; raw: Uint8Array; }
 /** What a login assertion still owes (protocol/09 § Second factors): 0 nothing, 1 a TOTP code or a backup code, 2 a passkey
- *  login or a backup code (the account has passkeys and no app). */
-export interface PasswordLogin { assertion: string; needs: 0 | 1 | 2; }
+ *  login or a backup code (the account has passkeys and no app). `passkey` (wave B task 3): the answer's optional third
+ *  element, sent only when a factor is owed: the account holds a passkey for this instance. Absent (an older server, or
+ *  nothing owed) reads as false. */
+export interface PasswordLogin { assertion: string; needs: 0 | 1 | 2; passkey: boolean; }
 export interface BackupItem { kind: 0 | 1; chunkSeq: number; size: number; created: bigint; }
 export interface BackupObject { object: Uint8Array; created: bigint; }
 export interface BackupStored { blobId: Uint8Array; size: number; created: boolean; }
@@ -1052,7 +1054,9 @@ export class Routes {
   async passwordLogin(username: string, password: string): Promise<PasswordLogin> {
     const a = atLeast(decode(await this.body('POST', '/v1/auth/password/login', 'none', false,
       { body: encode([username, password]), auth: false, retry429: false })), 2);
-    return { assertion: str(a[0]), needs: oneOf(a[1], [0, 1, 2]) };
+    const needs = oneOf(a[1], [0, 1, 2]);
+    // Wave B task 3: the third element only means something on a login that owes a factor.
+    return { assertion: str(a[0]), needs, passkey: needs !== 0 && a.length > 2 ? flag(a[2]) : false };
   }
   /** A 429 (the account's lockout) has spent the assertion, so it is not waited out: the person logs in again later. */
   async totpVerify(assertion: string, code: string): Promise<{ assertion: string }> {

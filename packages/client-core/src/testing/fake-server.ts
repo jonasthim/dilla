@@ -432,7 +432,9 @@ export class FakeServer {
       if (stored === undefined || stored.password !== password) return this.loginFailure(username);
       const needs = this.needsOf(username);
       if (needs === 0) this.loginFailures.delete(username);
-      return reply(200, [this.assertion(username, needs), needs]);
+      // Wave B task 3 (protocol/09): a login owing a factor says whether the account holds a passkey.
+      if (needs === 0) return reply(200, [this.assertion(username, needs), needs]);
+      return reply(200, [this.assertion(username, needs), needs, this.factorsOf(username).passkeys.length > 0 ? 1 : 0]);
     }
     if (line === 'POST /v1/auth/totp/verify') {
       const body = arr(decode(r.body), 2);

@@ -155,7 +155,11 @@ type assertionRequest struct {
 }
 
 // PasswordLogin is POST /v1/auth/password/login →
-// [assertion(tstr), needs(uint)]: what the login still owes (loginNeeds).
+// [assertion(tstr), needs(uint)] or [assertion(tstr), needs(uint), passkey(uint)]: what the login
+// still owes (loginNeeds) and, only when it owes a factor, whether the account holds a passkey for
+// this rp_id (1) or not (0), so the code step can offer a passkey that would work. The third element
+// is written only after the password verified and only on an answer that already says a factor is
+// owed: it is never an oracle on the account to anyone who has not passed the password.
 //
 // An unknown handle, a handle that fails normalisation, an account with no
 // password credential and a wrong password are four different server-side facts
@@ -282,7 +286,29 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 			d.logf(r, "api: ClearLoginFailures", "err", cerr)
 		}
 	}
-	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, needs), uint64(needs)})
+	answer := []any{d.Assertions.Issue(user.ID, needs), uint64(needs)}
+	if needs != needsNothing {
+		passkey, perr := d.holdsPasskey(ctx, user.ID)
+		if perr != nil {
+			server.WriteError(w, d.storeError(r, perr))
+			return
+		}
+		answer = append(answer, passkey)
+	}
+	d.write(w, r, http.StatusOK, answer)
+}
+
+// holdsPasskey is the password login's third element: 1 when the account has at least one passkey
+// registered for this rp_id (a passkey login would find one), else 0.
+func (d Deps) holdsPasskey(ctx context.Context, userID id.ID) (uint64, error) {
+	creds, err := d.Repo.ListWebauthnCredentials(ctx, userID, d.rpID())
+	if err != nil {
+		return 0, err
+	}
+	if len(creds) > 0 {
+		return 1, nil
+	}
+	return 0, nil
 }
 
 // rpID is the instance's relying party, auth.webauthn.rp_id: a passkey counts as a factor only
