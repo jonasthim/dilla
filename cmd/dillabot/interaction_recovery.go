@@ -25,7 +25,7 @@ var interactionRecoveryCommandRunner = runInteractionRecovery
 func runInteractionRecoveryCommand(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("dillabot interaction-recovery", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", "/etc/dilla/bot.toml", "path to the bot service TOML config")
+	configPath := flags.String("config", defaultConfigPath, "path to the bot service TOML config")
 	recoverText := flags.String("recover", "", "resolve one group by ID after its exact server receipt is confirmed")
 	readmitText := flags.String("readmit", "", "submit an exact staged group again with fresh admission after a lost registration response")
 	installationText := flags.String("installation", "", "installation ID that owns the group selected with --recover or --readmit")

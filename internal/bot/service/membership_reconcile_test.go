@@ -673,3 +673,41 @@ func TestMembershipReconcilerRejectsMismatchedBoundCommunityResponse(t *testing.
 		t.Fatal("mismatched community caused a mutation")
 	}
 }
+
+// A participant's message in one private interaction group is read by syncing that group alone:
+// the gateway fast path must not sweep every interaction group (or every text channel) per message.
+func TestMembershipSyncsOnlyTheNamedInteractionGroup(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	now := time.Unix(100, 0)
+	var err error
+	r.source, err = newSourceSync(n, sourceSyncOptions{now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, other := membershipID(21), membershipID(31)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community,
+		BotUser: membershipID(23), ParticipantUser: membershipID(22), ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	otherBinding := binding
+	otherBinding.ParticipantUser, otherBinding.ParticipantDevice = membershipID(32), membershipID(34)
+	botDevice := membershipID(25)
+	n.interactionGroups = []native.InteractionGroupDescriptor{
+		{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2},
+		{Group: other, Binding: otherBinding, BotDevice: botDevice, Epoch: 1, State: 2},
+	}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	result, err := r.reconcileInteractionGroupOnce(context.Background(), s, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GroupsSynced != 1 || s.interactionAdmissions != 1 {
+		t.Fatalf("named group sync result=%+v admissions=%d, want exactly the named group", result, s.interactionAdmissions)
+	}
+	if result, err = r.reconcileInteractionGroupOnce(context.Background(), s, membershipID(40)); err != nil || result.GroupsSynced != 0 {
+		t.Fatalf("unknown group sync=%+v, %v; want nothing synced", result, err)
+	}
+	// The full sweep would also sync the other group, which this fake session refuses.
+	if _, err := r.reconcileInteractionGroupsOnce(context.Background(), s); err == nil {
+		t.Fatal("the full sweep did not reach the other group; the test no longer proves the narrowing")
+	}
+}

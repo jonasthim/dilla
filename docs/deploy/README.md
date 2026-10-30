@@ -675,6 +675,16 @@ This is an operator procedure, not a coordinated Bot/dillad backup and restore a
 `dillad backup` does not include Bot config, credential or state, so a server restore alone is not a
 complete Bot restore. Keep the Bot archive protected: it includes the credential and database key.
 
+`dillabot doctor` reads `/etc/dillabot/bot.toml` by default, the file the installer writes and the
+unit passes to the service; it prints which config path it read. It reports a missing file
+(`no such file at PATH`), an invalid config and an unusable runtime credential as three different
+failures, and never prints the credential. Its YouTube tool check prints the `PATH` it searched.
+The installer runs the doctor with the service's `PATH` (an `Environment=PATH=` in the unit, else
+systemd's default from `systemctl show-environment`, else `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`),
+so `pct exec`, whose `PATH` lacks `/usr/local/bin`, does not report installed tools as unavailable.
+Run by hand, `dillabot doctor` uses your shell's `PATH`; under `pct exec` run it as
+`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin dillabot doctor`.
+
 `dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
 native identity helper, compiled WASI identity module, optional Spotify PCM helper and private
 state directory. The installer runs it as `dillabot` before enabling the unit. It does not contact

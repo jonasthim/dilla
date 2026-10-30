@@ -120,8 +120,14 @@ type BotInteractionAdmissionReceipts interface {
 	UpdateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
 	// Compaction removes expired payloads immediately and forgets request hashes after
 	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
+	// One call forgets at most BotInteractionAdmissionTombstoneBatch hashes, oldest first, so a
+	// backlog (after an upgrade or a long Bot outage) drains over later admissions instead of
+	// holding the single writer; a hash may therefore outlive its 30 days, never fall short of them.
 	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
 }
+
+// BotInteractionAdmissionTombstoneBatch bounds the tombstones one compaction deletes.
+const BotInteractionAdmissionTombstoneBatch = 512
 
 // BotGroupRegistrationAdmissionReceipts atomically records the accepted
 // registration consumed by one kind-3 admission request. The bool is true for

@@ -114,15 +114,56 @@ func (t *SourceTrust) TrustPendingLeaves(ctx context.Context, session *client.Se
 }
 
 func (t *SourceTrust) trustPendingLeaves(ctx context.Context, session senderHistorySession) (uint32, error) {
+	refresh, err := t.pendingLeaves(ctx, session, false)
+	return refresh.Recovered, err
+}
+
+// TrustRefresh is the outcome of a trust pass that isolates per-sender failures. Unrefreshed
+// holds the users whose signed device-list history could not be brought current: nothing was
+// applied for them, so a revocation or key change they published may not be processed yet. Their
+// new messages stay held by the native core as pending leaves; a caller that drains events must
+// also hold their already-queued events (HoldUnrefreshedSenders).
+type TrustRefresh struct {
+	Recovered   uint32
+	Unrefreshed map[id.ID]bool
+}
+
+// RefreshPendingLeaves is TrustPendingLeaves for command intake: a failure scoped to one sender
+// (its signed device-list history is stale) leaves that sender unrefreshed and the pass continues
+// with the others. Every other failure (reading the pending leaves, a server or API failure, a
+// native-core refusal or limit, group revalidation, the clock) stays fatal to the pass.
+func (t *SourceTrust) RefreshPendingLeaves(ctx context.Context, session *client.Session) (TrustRefresh, error) {
+	if session == nil {
+		return TrustRefresh{}, errors.New("missing device session")
+	}
+	return t.pendingLeaves(ctx, session, true)
+}
+
+func (t *SourceTrust) refreshPendingLeaves(ctx context.Context, session senderHistorySession) (TrustRefresh, error) {
+	return t.pendingLeaves(ctx, session, true)
+}
+
+// senderScopedTrustFailure is true only for a stale signed device-list history read for one
+// sender: the sender's own published data, not the server, the core or the clock.
+func senderScopedTrustFailure(err error) bool {
+	var phase *TrustPhaseError
+	return errors.As(err, &phase) && phase.Phase == TrustPhaseSenderHistory && errors.Is(err, ErrSenderHistoryStale)
+}
+
+func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySession, isolate bool) (TrustRefresh, error) {
+	var out TrustRefresh
 	leaves, err := t.native.PendingLeaves(ctx)
 	if err != nil {
-		return 0, trustPhaseError(TrustPhasePendingLeaves, err)
+		return out, trustPhaseError(TrustPhasePendingLeaves, err)
 	}
 	var recovered uint64
 	refreshedUsers := make(map[id.ID]bool, len(leaves))
 	for _, leaf := range leaves {
 		if err = ctx.Err(); err != nil {
-			return 0, err
+			return TrustRefresh{}, err
+		}
+		if out.Unrefreshed[leaf.User] {
+			continue // this sender's history is stale; its leaves stay pending (held by the core)
 		}
 		// TrustSender validates the signed list against every current leaf for this user and
 		// updates the shared cached list. A second pending row from this snapshot would still
@@ -131,25 +172,33 @@ func (t *SourceTrust) trustPendingLeaves(ctx context.Context, session senderHist
 		if refreshedUsers[leaf.User] {
 			n, e := t.native.RevalidateGroup(ctx, leaf.Group, uint64(leaf.Leaf), 256)
 			if e != nil {
-				return 0, trustPhaseError(TrustPhaseGroupRevalidation, e)
+				return TrustRefresh{}, trustPhaseError(TrustPhaseGroupRevalidation, e)
 			}
 			recovered += uint64(n)
 			if recovered > math.MaxUint32 {
-				return 0, errors.New("sender revalidation count overflow")
+				return TrustRefresh{}, errors.New("sender revalidation count overflow")
 			}
 			continue
 		}
 		n, e := t.trustSender(ctx, session, leaf.Group, uint64(leaf.Leaf), leaf.User, leaf.CachedVersion)
 		if e != nil {
-			return 0, e
+			if !isolate || ctx.Err() != nil || !senderScopedTrustFailure(e) {
+				return TrustRefresh{}, e
+			}
+			if out.Unrefreshed == nil {
+				out.Unrefreshed = map[id.ID]bool{}
+			}
+			out.Unrefreshed[leaf.User] = true
+			continue
 		}
 		refreshedUsers[leaf.User] = true
 		recovered += uint64(n)
 		if recovered > math.MaxUint32 {
-			return 0, errors.New("sender revalidation count overflow")
+			return TrustRefresh{}, errors.New("sender revalidation count overflow")
 		}
 	}
-	return uint32(recovered), nil
+	out.Recovered = uint32(recovered)
+	return out, nil
 }
 
 // TrustSender refreshes one current leaf against a re-read current server head, then revalidates
