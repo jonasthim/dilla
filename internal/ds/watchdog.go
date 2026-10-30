@@ -90,6 +90,29 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 			lost = d.chargeLostRound(o.groupID, o.candidate, o.round)
 		}
 		if o.acked && lost >= d.opts.Policy.MaxLostRounds {
+			// The Remove exists so that ANOTHER member commits what this device did not. When no
+			// other member could — the device is the group's last member that no instance Remove is
+			// already taking out, like the creator of a channel group whose first Adds are the work
+			// outstanding — nobody could ever commit the Remove (a device never commits its own
+			// removal, and the election never asks it to), and the group would stay frozen with
+			// every joiner refused 425 E_COMMIT_REQUIRED. The device is kept and asked again.
+			last, err := d.isLastCommitter(ctx, o.groupID, o.candidate, row.Epoch)
+			if err != nil {
+				d.log().Error("reading the members of an overdue election failed",
+					"group", o.groupID.String()[:8], "err", err)
+				continue
+			}
+			if last {
+				d.resetLost(o.groupID, o.candidate)
+				if d.opts.Metrics != nil {
+					d.opts.Metrics.ElectionRounds.WithLabelValues("lost").Inc()
+				}
+				if err := d.RequestCommit(ctx, o.groupID); err != nil {
+					d.log().Error("watchdog re-election failed",
+						"group", o.groupID.String()[:8], "err", err)
+				}
+				continue
+			}
 			// Three acknowledged-and-lost rounds: the device is removed by an instance Remove.
 			// By DEVICE, through the locking form (the watchdog runs on its own goroutine and holds
 			// no group lock): the leaf is resolved under the lock and the Remove is built only for
@@ -132,6 +155,33 @@ func (d *DS) chargeLostRound(groupID, deviceID id.ID, round uint64) int {
 	}
 	e.lost[deviceID]++
 	return e.lost[deviceID]
+}
+
+// isLastCommitter reports whether deviceID is the only current member of the group that could
+// commit at epoch: every other member's leaf is the target of an outstanding non-void instance
+// Remove (which RequestCommit never elects), or there is no other member at all. It reads the
+// same member table and the same leaving set the election does, so "nobody else could commit" is
+// the election's own verdict, whatever the members' online state: an offline member commits when
+// it comes back.
+func (d *DS) isLastCommitter(ctx context.Context, groupID, deviceID id.ID, epoch uint64) (bool, error) {
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return false, err
+	}
+	leavingDevice, leavingLeaf := leaving(rows)
+	for _, m := range members {
+		if m.RemovedEpoch != nil || m.DeviceID == deviceID {
+			continue
+		}
+		if !leavingDevice[m.DeviceID] && !leavingLeaf[m.LeafIndex] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (d *DS) lostRounds(groupID, deviceID id.ID) int {

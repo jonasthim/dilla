@@ -8,6 +8,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // election is one group's in-flight committer round. It lives in memory: an election that was
@@ -55,23 +56,10 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 		return err
 	}
 	refs := make([][]byte, 0, len(rows))
-	// The devices (and, for a Remove that recorded none, the leaves) an outstanding instance Remove
-	// is taking out. Such a device can never commit its own removal — OpenMLS refuses a commit that
-	// removes the committer — so electing it only wastes a round, and charges it a lost one if it
-	// acks (DS-5 of the server-half review).
-	leavingDevice := map[id.ID]bool{}
-	leavingLeaf := map[uint32]bool{}
 	for _, r := range rows {
 		refs = append(refs, r.Ref)
-		if r.TargetLeaf == nil || !isInstanceRemoveOf(r, *r.TargetLeaf) {
-			continue
-		}
-		if r.TargetDevice != nil {
-			leavingDevice[*r.TargetDevice] = true
-		} else {
-			leavingLeaf[*r.TargetLeaf] = true
-		}
 	}
+	leavingDevice, leavingLeaf := leaving(rows)
 	if len(refs) == 0 {
 		d.clearElection(groupID)
 		return nil
@@ -113,6 +101,26 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 		d.opts.Metrics.ElectionRounds.WithLabelValues("sent").Inc()
 	}
 	return nil
+}
+
+// leaving is the devices (and, for a Remove that recorded none, the leaves) an outstanding
+// instance Remove among rows is taking out. Such a device can never commit its own removal —
+// OpenMLS refuses a commit that removes the committer — so electing it only wastes a round, and
+// charges it a lost one if it acks (DS-5 of the server-half review); and it is no member the
+// watchdog can hand the group to (isLastCommitter).
+func leaving(rows []store.ProposalRow) (devices map[id.ID]bool, leaves map[uint32]bool) {
+	devices, leaves = map[id.ID]bool{}, map[uint32]bool{}
+	for _, r := range rows {
+		if r.TargetLeaf == nil || !isInstanceRemoveOf(r, *r.TargetLeaf) {
+			continue
+		}
+		if r.TargetDevice != nil {
+			devices[*r.TargetDevice] = true
+		} else {
+			leaves[*r.TargetLeaf] = true
+		}
+	}
+	return devices, leaves
 }
 
 // CurrentRound reports the live round of a group's election, or 0 when none is armed. The

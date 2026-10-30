@@ -162,6 +162,94 @@ func TestOnlyAcknowledgedRoundsCountAgainstADevice(t *testing.T) {
 	}
 }
 
+// failRounds acknowledges the live round as device and lets it lose, n times.
+func (h *dsHarness) failRounds(t *testing.T, g *dsGroup, device id.ID, n int) {
+	t.Helper()
+	for range n {
+		round := h.ds.CurrentRound(g.id)
+		if round == 0 {
+			t.Fatal("no election is armed; the group has nobody left to elect")
+		}
+		if err := h.ds.AckCommitNeeded(context.Background(), g.id, device, round); err != nil {
+			t.Fatalf("AckCommitNeeded: %v", err)
+		}
+		h.clk.Advance(h.policy().WatchdogInterval + time.Second)
+		h.ds.RunWatchdogOnce(context.Background())
+	}
+}
+
+// keepOnlyMembers rewrites mls_members to the exposed members named, which is the member set the
+// delivery service reads: a channel group its creator registered alone, before anybody else's Add
+// was committed.
+func (h *dsHarness) keepOnlyMembers(t *testing.T, g *dsGroup, keep ...int) {
+	t.Helper()
+	ctx := context.Background()
+	row, err := h.repo.GetGroup(ctx, g.id)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	members, err := h.repo.ListMembers(ctx, g.id)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	var out []store.MemberRow
+	for _, m := range members {
+		for _, i := range keep {
+			if m.DeviceID == g.members[i] {
+				out = append(out, m)
+			}
+		}
+	}
+	if len(out) != len(keep) {
+		t.Fatalf("kept %d members, want %d", len(out), len(keep))
+	}
+	if err := h.repo.ReplaceMembers(ctx, g.id, row.Epoch, out); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
+}
+
+// The watchdog's Remove exists so that ANOTHER member can commit what the failing device did not.
+// When the failing device is the group's only member — a channel its creator just registered, whose
+// Adds (the community Bot's, say) are the work outstanding — no other member exists: the Remove
+// could only be committed by the device it removes, which OpenMLS refuses and the election never
+// asks for, so it froze the group for good and every later joiner got 425 E_COMMIT_REQUIRED. The
+// sole member is kept and asked again.
+func TestTheWatchdogNeverRemovesTheGroupsLastMember(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 1)
+	h.keepOnlyMembers(t, g, 0)
+	h.online(g.members[0])
+	if err := h.ds.RequestCommit(context.Background(), g.id); err != nil {
+		t.Fatalf("RequestCommit: %v", err)
+	}
+
+	h.failRounds(t, g, g.members[0], 2*h.policy().MaxLostRounds)
+
+	if n := h.removedLeaves(t, g); n != 0 {
+		t.Fatalf("the watchdog proposed removing the group's only member (%d Removes)", n)
+	}
+	if h.ds.CurrentRound(g.id) == 0 {
+		t.Fatal("the only member must stay elected while work is outstanding")
+	}
+}
+
+// The same holds when the other members are all leaving: a device an outstanding instance Remove
+// is taking out can commit nothing (it is never elected), so removing the last member that is NOT
+// leaving would again leave nobody who can commit either Remove.
+func TestTheWatchdogNeverRemovesTheLastMemberThatCouldCommit(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.keepOnlyMembers(t, g, 0, 1)
+	h.online(g.members[0], g.members[1])
+	h.proposeRemoveOf(t, g, g.leafOf(1)) // members[1] is leaving; members[0] is elected
+
+	h.failRounds(t, g, g.members[0], 2*h.policy().MaxLostRounds)
+
+	if n := h.removedLeaves(t, g); n != 1 {
+		t.Fatalf("%d Removes of the group's members, want 1 (members[1]'s own)", n)
+	}
+}
+
 // The watchdog nudges the next candidate after 2 s; the others back off 300 ms + rand(0..300 ms).
 func TestTheWatchdogNudgesTheNextCandidate(t *testing.T) {
 	h := newDSHarness(t)
