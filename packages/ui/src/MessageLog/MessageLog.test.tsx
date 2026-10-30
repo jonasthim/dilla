@@ -93,6 +93,40 @@ describe('MessageLog', () => {
       vi.unstubAllGlobals();
     });
 
+    it('re-pins when a row grows without a render of the log, though the pin\'s own scroll event already saw the growth', () => {
+      // 2026-10-30 CI (Firefox): two rows arrived and were pinned; an image card then grew as its thumbnail decoded,
+      // before the browser sent the pin's scroll event. That event saw the log 29 px short of the end and unpinned it.
+      install();
+      const { rerender } = render(log(['a']));
+      const el = screen.getByRole('log');
+      const rows = el.querySelector('.d-message-log__rows');
+      expect(observed).toContain(rows);
+      const m = { scrollHeight: 1000, clientHeight: 400 };
+      metrics(el, m);
+      rerender(log(['a', 'b']));
+      expect(el.scrollTop).toBe(1000);
+      m.scrollHeight = 1029;
+      fireEvent.scroll(el);
+      callbacks.forEach(cb => cb());
+      expect(el.scrollTop).toBe(1029);
+      vi.unstubAllGlobals();
+    });
+
+    it('a reader who scrolls up after a pin is not pulled back by a row that grows', () => {
+      install();
+      const { rerender } = render(log(['a']));
+      const el = screen.getByRole('log');
+      const m = { scrollHeight: 1000, clientHeight: 400 };
+      metrics(el, m);
+      rerender(log(['a', 'b']));
+      el.scrollTop = 300;
+      fireEvent.scroll(el);
+      m.scrollHeight = 1029;
+      callbacks.forEach(cb => cb());
+      expect(el.scrollTop).toBe(300);
+      vi.unstubAllGlobals();
+    });
+
     it('leaves the scroll position alone when the reader had scrolled up', () => {
       install();
       render(log(['a', 'b']));
@@ -131,6 +165,24 @@ describe('MessageLog', () => {
     fireEvent.scroll(el);
     m.scrollHeight = 1100;
     rerender(log(['a', 'b', 'c']));
+    expect(el.scrollTop).toBe(1100);
+  });
+
+  it('a render that adds no height leaves a reader near the end where they are, so a press is not moved under the pointer', () => {
+    // 2026-10-30 CI (Firefox): "save data.bin" was pressed with the log 20 px short of the end; the row taking focus
+    // re-rendered the log, which jumped to the end between press and release, and no click reached the button.
+    const { rerender } = render(log(['a', 'b']));
+    const el = screen.getByRole('log');
+    const m = { scrollHeight: 1000, clientHeight: 200 };
+    metrics(el, m);
+    rerender(log(['a', 'b', 'c']));
+    expect(el.scrollTop).toBe(1000);
+    el.scrollTop = 780;
+    fireEvent.scroll(el);
+    rerender(log(['a', 'b', 'c']));
+    expect(el.scrollTop).toBe(780);
+    m.scrollHeight = 1100;
+    rerender(log(['a', 'b', 'c', 'd']));
     expect(el.scrollTop).toBe(1100);
   });
 
