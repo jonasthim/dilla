@@ -122,6 +122,14 @@ ORDER BY issued_at, ref;
 SELECT * FROM mls_pending_proposals WHERE group_id = ? AND epoch = ?
 ORDER BY issued_at, ref;
 
+-- name: ListClosedGroupLiveProposals :many
+-- The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+-- no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+SELECT p.* FROM mls_pending_proposals p
+JOIN mls_groups g ON g.group_id = p.group_id
+WHERE g.closed_at IS NOT NULL AND p.void_at IS NULL
+ORDER BY p.group_id, p.ref LIMIT sqlc.arg(max_rows);
+
 -- name: VoidProposal :exec
 UPDATE mls_pending_proposals SET void_at = ? WHERE group_id = ? AND ref = ?;
 

@@ -594,6 +594,55 @@ func (q *Queries) ListBarredMembers(ctx context.Context, arg ListBarredMembersPa
 	return items, nil
 }
 
+const listClosedGroupLiveProposals = `-- name: ListClosedGroupLiveProposals :many
+SELECT p.group_id, p.ref, p.epoch, p.kind, p.target_leaf, p.target_device, p.key_package, p.origin, p.action_id, p.issued_at, p.ttl, p.void_at FROM mls_pending_proposals p
+JOIN mls_groups g ON g.group_id = p.group_id
+WHERE g.closed_at IS NOT NULL AND p.void_at IS NULL
+ORDER BY p.group_id, p.ref LIMIT ?1
+`
+
+type ListClosedGroupLiveProposalsParams struct {
+	MaxRows int64
+}
+
+// The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+// no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+func (q *Queries) ListClosedGroupLiveProposals(ctx context.Context, arg ListClosedGroupLiveProposalsParams) ([]MlsPendingProposals, error) {
+	rows, err := q.db.QueryContext(ctx, listClosedGroupLiveProposals, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsPendingProposals{}
+	for rows.Next() {
+		var i MlsPendingProposals
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Ref,
+			&i.Epoch,
+			&i.Kind,
+			&i.TargetLeaf,
+			&i.TargetDevice,
+			&i.KeyPackage,
+			&i.Origin,
+			&i.ActionID,
+			&i.IssuedAt,
+			&i.Ttl,
+			&i.VoidAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGroupsForRetention = `-- name: ListGroupsForRetention :many
 SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups WHERE group_id > ?
 ORDER BY group_id LIMIT ?2

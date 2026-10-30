@@ -53,7 +53,12 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 	if err != nil {
 		return report, err
 	}
-	report.ProposalsVoided = voided
+	// A closed group's proposals are past every walk above, which reads open groups only.
+	closedVoided, err := d.voidClosedGroupProposals(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.ProposalsVoided = voided + closedVoided
 
 	// After the void, which frees the room a voided Add held: a join storm no commit re-drives —
 	// its Adds voided by invariant 6's TTL, or its tail carried across a restart — takes its next

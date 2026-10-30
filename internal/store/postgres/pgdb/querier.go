@@ -216,6 +216,9 @@ type Querier interface {
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
 	// participant of, newest first, ties broken by id.
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
+	// The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+	// no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+	ListClosedGroupLiveProposals(ctx context.Context, arg ListClosedGroupLiveProposalsParams) ([]MlsPendingProposals, error)
 	// dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
 	ListCommunities(ctx context.Context, arg ListCommunitiesParams) ([]Communities, error)

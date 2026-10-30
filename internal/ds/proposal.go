@@ -1250,3 +1250,33 @@ func (d *DS) voidExpired(ctx context.Context, groupID id.ID, epoch uint64) (int,
 	}
 	return n, nil
 }
+
+// voidClosedGroupProposals voids every live proposal, of any epoch, of a closed group. No commit
+// lands in a closed group and none is reopened, so such a proposal is owed to nobody — but the TTL
+// sweeps (sweepProposals, sweepCallGroup) read open groups only, so without this pass it stays
+// non-void forever and keeps dilla_ds_proposals raised. The common case is a call group: the last
+// device's leave issues the instance Remove of its leaf, and the call's end closes the group in
+// the same second. A void, not a delete, as everywhere else the TTL ends a proposal. Each void
+// leaves the result set, so the loop re-reads from the start until a short page; the first sweep
+// after an upgrade voids the backlog the same way.
+func (d *DS) voidClosedGroupProposals(ctx context.Context) (int, error) {
+	n := 0
+	for {
+		rows, err := d.opts.Store.ListClosedGroupLiveProposals(ctx, sweepPage)
+		if err != nil {
+			return n, err
+		}
+		for _, r := range rows {
+			if err := d.opts.Store.VoidProposal(ctx, r.GroupID, r.Ref, d.now()); err != nil {
+				return n, err
+			}
+			if r.Origin == 0 && d.opts.Metrics != nil { // the gauge counts instance proposals
+				d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+			}
+			n++
+		}
+		if len(rows) < sweepPage {
+			return n, nil
+		}
+	}
+}
