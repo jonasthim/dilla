@@ -322,8 +322,10 @@ func (d *InteractionDispatcher) inspectInteractionEventGroup(ctx context.Context
 
 // ReauthorizeReadReplay reruns a registered read handler and discards its
 // response. It is used before resuming a durable response whose send has not
-// yet been accepted, so revoked or expired reads remain pending without
-// changing the response already bound to that event.
+// yet been accepted. A revoked or expired read returns
+// ErrInteractionReadReplayNotAuthorized without changing the response already
+// bound to that event; the event handler then acknowledges the event as
+// undeliverable rather than leaving it at the head of the shared queue.
 func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event native.GroupEvent) error {
 	if d == nil || event.Body == nil {
 		return protocol.ErrInvalid

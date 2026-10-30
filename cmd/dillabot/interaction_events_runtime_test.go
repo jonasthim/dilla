@@ -240,35 +240,41 @@ func TestInteractionEventHandlerResumesCommittedResponseBeforeDispatch(t *testin
 	}
 }
 
-func TestInteractionEventHandlerKeepsRevokedPendingReadResponseUnacknowledged(t *testing.T) {
-	event := native.GroupEvent{DeliveryID: 6, Group: id.New()}
-	denied := errors.New("read permission revoked")
-	dispatches := 0
-	sender := &interactionPreflightResumingSender{}
-	guarded := readReplayGuardDispatcher{interactionDispatcherFunc: interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
-		dispatches++
-		return "response", nil
-	}), authorize: func(context.Context, native.GroupEvent) error { return denied }}
-	handler := newInteractionEventHandler(
-		interactionGroupInspectorFunc(func(_ context.Context, group id.ID) (native.GroupInfo, error) {
-			return native.GroupInfo{ID: group, Kind: 3}, nil
-		}),
-		guarded,
-		sender,
-	).(interactionEventHandler)
-	// The saved outbox response must remain pending and must not fall through
-	// to dispatch after the fresh authorization check denies it.
-	acked := false
-	poller := interactionPollerFunc(func(ctx context.Context, h service.GroupEventHandler) (service.GroupEventPollResult, error) {
-		if err := h.HandleGroupEvent(ctx, event); err != nil {
-			return service.GroupEventPollResult{}, err
-		}
-		acked = true
-		return service.GroupEventPollResult{Handled: 1, AcknowledgedThrough: event.DeliveryID}, nil
-	})
-	_, err := newInteractionEventRuntime(poller, handler).Drain(context.Background())
-	if !errors.Is(err, denied) || acked || sender.calls != 1 || dispatches != 0 {
-		t.Fatalf("Drain err=%v acked=%v resume checks=%d dispatches=%d", err, acked, sender.calls, dispatches)
+func TestInteractionEventHandlerMarksRevokedPendingReadResponseUndeliverable(t *testing.T) {
+	// Jonas 2026-10-30: a read revoked before its saved response was accepted is acknowledged as
+	// undeliverable; left pending, it blocked every later event in the shared queue. Any other
+	// preflight failure (for example a transient lookup error) still stays pending.
+	for _, tc := range []struct {
+		name          string
+		denied        error
+		undeliverable bool
+	}{
+		{"revoked read", service.ErrInteractionReadReplayNotAuthorized, true},
+		{"transient preflight failure", errors.New("authority lookup unavailable"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := native.GroupEvent{DeliveryID: 6, Group: id.New()}
+			dispatches := 0
+			sender := &interactionPreflightResumingSender{}
+			guarded := readReplayGuardDispatcher{interactionDispatcherFunc: interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
+				dispatches++
+				return "response", nil
+			}), authorize: func(context.Context, native.GroupEvent) error { return tc.denied }}
+			handler := newInteractionEventHandler(
+				interactionGroupInspectorFunc(func(_ context.Context, group id.ID) (native.GroupInfo, error) {
+					return native.GroupInfo{ID: group, Kind: 3}, nil
+				}),
+				guarded,
+				sender,
+			)
+			// Either way the saved response must not fall through to a fresh dispatch or send.
+			err := handler.HandleGroupEvent(context.Background(), event)
+			var undeliverable service.UndeliverableGroupEvent
+			marked := errors.As(err, &undeliverable) && undeliverable.Undeliverable()
+			if !errors.Is(err, tc.denied) || marked != tc.undeliverable || sender.calls != 1 || dispatches != 0 {
+				t.Fatalf("err=%v undeliverable=%v resume checks=%d dispatches=%d", err, marked, sender.calls, dispatches)
+			}
+		})
 	}
 }
 
@@ -311,4 +317,19 @@ type groupEventHandlerFuncForTest func(context.Context, native.GroupEvent) error
 
 func (f groupEventHandlerFuncForTest) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
 	return f(ctx, event)
+}
+
+func TestInteractionEventForGroupMissingFromNativeStoreIsUndeliverable(t *testing.T) {
+	event := native.GroupEvent{DeliveryID: 3, Group: id.New(), Community: id.New()}
+	inspector := &interactionEventDescriptorInspector{err: &helper.StatusError{Status: 2}}
+	router := newGroupEventRouter(inspector, newInteractionEventHandler(inspector,
+		interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
+			t.Fatal("missing group reached dispatcher")
+			return "", nil
+		}), &interactionResumingSender{}), nil, 0, 0)
+	err := router.HandleGroupEvent(context.Background(), event)
+	var undeliverable service.UndeliverableGroupEvent
+	if !errors.As(err, &undeliverable) || !undeliverable.Undeliverable() {
+		t.Fatalf("HandleGroupEvent = %v; an event whose group left the native store must be undeliverable, not pending forever", err)
+	}
 }
