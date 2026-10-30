@@ -386,6 +386,25 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', factor: 'totp' } });
   });
 
+  it('wave B task 3 fix round 1: "Use a passkey" from signin-totp after a password login owing the code (needs 1)', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1, passkey: true }));
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await answered(w, 3);
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { factor: 'totp', passkey: true } });
+    w.call(4, { m: 'signInPasskeyBegin' });
+    await answered(w, 4);
+    w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}' });
+    expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 0 } });
+    // The passkey's own assertion replaces the password's: no code is asked, and the key step follows.
+    expect(w.enrol.totp).not.toHaveBeenCalled();
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(6, KEY);
+    expect(await answered(w, 6)).toEqual({ t: 'ret', id: 6, ok: true, value: null });
+    expect(w.account()?.phase).toBe('ready');
+  });
+
   it('a passkey on its own signs in from the login step', async () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);

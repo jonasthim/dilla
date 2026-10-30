@@ -839,7 +839,8 @@ fn decode_password_login(bytes: &[u8]) -> Result<PasswordLogin, CborError> {
             n @ 0..=2 => n as u8,
             _ => return Err(CborError::IntegerOverflow),
         };
-        if len == 3 && d.uint()? > 1 {
+        // The flag is sent only on a login that owes a factor (protocol/09).
+        if len == 3 && (needs == 0 || d.uint()? > 1) {
             return Err(CborError::IntegerOverflow);
         }
         Ok(PasswordLogin { assertion, needs })
@@ -4125,6 +4126,11 @@ mod tests {
             e.array(3).text("asrt").uint(1).uint(1);
         });
         assert_eq!(decode_password_login(&login).unwrap().needs, 1);
+        // A login owing nothing carries no flag; one that does is refused.
+        let login = cbor(|e| {
+            e.array(3).text("asrt").uint(0).uint(0);
+        });
+        assert!(decode_password_login(&login).is_err());
         // `needs` is 0, 1 or 2 (protocol/09); anything else is a protocol error.
         for (wire, want) in [(0, Some(0)), (1, Some(1)), (2, Some(2)), (3, None)] {
             let login = cbor(|e| {

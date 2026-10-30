@@ -3125,12 +3125,12 @@ export class Controller {
     }
   }
 
-  /** Requirement 9; Enrol.reset also drops a held assertion, so it runs in every sign-in phase (it resets
-   *  the core's enrolment only in phase 3). The pending session is left to expire. */
   /** Wave B task 3, the code and key steps' Back: the held assertion (and anything registered with it) is dropped exactly
    *  as by signInCancel, so no half-signed-in state survives, and the ceremony returns to the login with the username
-   *  kept; the password is asked again. */
+   *  kept; the password is asked again. Refused while a sign-in step runs (fix round 1, security review): that step's
+   *  own ending would otherwise land after the Back and undo it. */
   private signInBack(): Promise<null> {
+    if (this.signInRunning) return Promise.reject(new Refusal('E_NOT_READY', 'a sign-in step is running'));
     const username = this.slices.get('account')?.signIn?.username ?? null;
     this.requireEnrol().reset();
     this.fetched = null;
@@ -3138,7 +3138,11 @@ export class Controller {
     return Promise.resolve(null);
   }
 
+  /** Requirement 9; Enrol.reset also drops a held assertion, so it runs in every sign-in phase (it resets
+   *  the core's enrolment only in phase 3). The pending session is left to expire. Refused while a sign-in step runs
+   *  (wave B task 3 fix round 1), as signInBack is. */
   private signInCancel(): Promise<null> {
+    if (this.signInRunning) return Promise.reject(new Refusal('E_NOT_READY', 'a sign-in step is running'));
     this.requireEnrol().reset();
     this.fetched = null;
     this.setAccount({ phase: 'needs-signup', signIn: null, error: null });

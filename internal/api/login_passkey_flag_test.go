@@ -94,3 +94,27 @@ func TestAWrongPasswordNeverSaysWhetherTheAccountHasAPasskey(t *testing.T) {
 			withKey.Body.Bytes(), without.Body.Bytes(), unknown.Body.Bytes())
 	}
 }
+
+// Wave B task 3 fix round 1 (security review item 8): "Use a passkey" on the code step. An account that owes the app
+// code after its password (needs 1, passkey 1) signs in with a user-verified passkey instead: the passkey login is a
+// login of its own and its assertion owes nothing, which is what the worker accepts in signin-totp.
+func TestAPasskeyStandsInForTheCodeAfterAPasswordLoginOwingIt(t *testing.T) {
+	h, deps, _ := newPasskeyAPITuned(t, "", false, func(c *config.Config) { c.Limits.Rate.LoginBurst = 100 })
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	enrolTOTP(t, h, deps, token)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	enrolPasskeyWith(t, h, token, device, stepUp(t, h, token, stepUpPassword, pw))
+
+	status, out := login(t, h, u.Username, pw)
+	if status != http.StatusOK || len(out) != 3 || out[1] != uint64(1) || out[2] != uint64(1) {
+		t.Fatalf("the password login = %d %#v, want [assertion, 1, 1]", status, out)
+	}
+	assertion, needs := passkeyLoginNeeds(t, h, device)
+	if needs != 0 {
+		t.Fatalf("a user-verified passkey after the password: needs = %d, want 0", needs)
+	}
+	if got, owes := spendAssertion(t, deps, assertion); got != u.ID || owes {
+		t.Fatalf("the passkey's assertion = %s owing %v, want %s owing nothing", got, owes, u.ID)
+	}
+}

@@ -4350,6 +4350,27 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.account()?.signIn).toEqual({ username: 'web', factor: 'totp' });
   });
 
+  it('wave B task 3 fix round 1: Back and Cancel are refused while a sign-in step runs, and change nothing', async () => {
+    const w = world({ phase: 0 });
+    let release!: () => void;
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1 as const }));
+    w.enrol.totp.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    await toKeyStep(w);
+    expect(w.account()?.phase).toBe('signin-totp');
+    w.call(4, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.enrol.totp).toHaveBeenCalledTimes(1));
+    w.call(5, { m: 'signInBack' });
+    w.call(6, { m: 'signInCancel' });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    expect(w.enrol.reset).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toMatchObject({ ok: true });
+    expect(w.account()?.phase).toBe('signin-key');
+  });
+
   it('signInCancel resets the enrolment and returns to needs-signup', async () => {
     const w = world({ phase: 0 });
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });

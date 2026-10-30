@@ -271,7 +271,9 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 
 	d.recordAttempt(r, user, true, addrKey, methodPassword, true)
 
-	needs, terr := d.loginNeeds(ctx, user.ID)
+	// Wave B task 3 fix round 1: the passkey flag comes from the same read of the credentials as `needs`, before the
+	// assertion is issued, so the two cannot disagree.
+	needs, passkey, terr := d.loginState(ctx, user.ID)
 	if terr != nil {
 		server.WriteError(w, d.storeError(r, terr))
 		return
@@ -288,27 +290,13 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := []any{d.Assertions.Issue(user.ID, needs), uint64(needs)}
 	if needs != needsNothing {
-		passkey, perr := d.holdsPasskey(ctx, user.ID)
-		if perr != nil {
-			server.WriteError(w, d.storeError(r, perr))
-			return
+		flag := uint64(0)
+		if passkey {
+			flag = 1
 		}
-		answer = append(answer, passkey)
+		answer = append(answer, flag)
 	}
 	d.write(w, r, http.StatusOK, answer)
-}
-
-// holdsPasskey is the password login's third element: 1 when the account has at least one passkey
-// registered for this rp_id (a passkey login would find one), else 0.
-func (d Deps) holdsPasskey(ctx context.Context, userID id.ID) (uint64, error) {
-	creds, err := d.Repo.ListWebauthnCredentials(ctx, userID, d.rpID())
-	if err != nil {
-		return 0, err
-	}
-	if len(creds) > 0 {
-		return 1, nil
-	}
-	return 0, nil
 }
 
 // rpID is the instance's relying party, auth.webauthn.rp_id: a passkey counts as a factor only
@@ -345,21 +333,34 @@ func holdsFactor(ctx context.Context, repo store.Repository, userID id.ID, rpID 
 // It is one function because every route that ends a login has to make the same decision; one
 // that answered differently would be a way around the factor the other enforces.
 func (d Deps) loginNeeds(ctx context.Context, userID id.ID) (uint8, error) {
+	needs, _, err := d.loginState(ctx, userID)
+	return needs, err
+}
+
+// loginState is loginNeeds plus whether the account holds a passkey for this rp_id (the password
+// login's third element, wave B task 3), both from one read of the credentials.
+func (d Deps) loginState(ctx context.Context, userID id.ID) (uint8, bool, error) {
 	t, err := d.Repo.GetTOTP(ctx, userID)
+	confirmed := false
 	switch {
 	case err == nil && t.ConfirmedAt != nil:
-		return needsCode, nil
+		confirmed = true
 	case err != nil && !errors.Is(err, store.ErrNotFound):
-		return 0, err
+		return 0, false, err
 	}
 	creds, err := d.Repo.ListWebauthnCredentials(ctx, userID, d.rpID())
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if len(creds) > 0 {
-		return needsPasskey, nil
+	passkey := len(creds) > 0
+	switch {
+	case confirmed:
+		return needsCode, passkey, nil
+	case passkey:
+		return needsPasskey, true, nil
+	default:
+		return needsNothing, false, nil
 	}
-	return needsNothing, nil
 }
 
 // loginLedger is the key a login attempt's failures are counted under. A found
