@@ -331,9 +331,28 @@ func (f groupEventHandlerFuncForTest) HandleGroupEvent(ctx context.Context, even
 	return f(ctx, event)
 }
 
-func TestInteractionEventForGroupMissingFromNativeStoreIsUndeliverable(t *testing.T) {
+// Helper status 2 is forbidden: the group row exists but is outside interaction scope, and the
+// descriptors do not list it (gone, or another community). Nothing can answer the event.
+func TestInteractionEventForGroupOutsideInteractionScopeIsUndeliverable(t *testing.T) {
 	event := native.GroupEvent{DeliveryID: 3, Group: id.New(), Community: id.New()}
 	inspector := &interactionEventDescriptorInspector{err: &helper.StatusError{Status: 2}}
+	router := newGroupEventRouter(inspector, newInteractionEventHandler(inspector,
+		interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
+			t.Fatal("out-of-scope group reached dispatcher")
+			return "", nil
+		}), &interactionResumingSender{}), nil, 0, 0)
+	err := router.HandleGroupEvent(context.Background(), event)
+	var undeliverable service.UndeliverableGroupEvent
+	if !errors.As(err, &undeliverable) || !undeliverable.Undeliverable() {
+		t.Fatalf("HandleGroupEvent = %v; an event whose group is outside interaction scope must be undeliverable", err)
+	}
+}
+
+// Helper status 7 is a missing group row, which a later membership pass may still create: the
+// event stays pending (the poller's age limit still bounds it).
+func TestInteractionEventForMissingGroupRowStaysPending(t *testing.T) {
+	event := native.GroupEvent{DeliveryID: 3, Group: id.New(), Community: id.New()}
+	inspector := &interactionEventDescriptorInspector{err: &helper.StatusError{Status: 7}}
 	router := newGroupEventRouter(inspector, newInteractionEventHandler(inspector,
 		interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
 			t.Fatal("missing group reached dispatcher")
@@ -341,7 +360,8 @@ func TestInteractionEventForGroupMissingFromNativeStoreIsUndeliverable(t *testin
 		}), &interactionResumingSender{}), nil, 0, 0)
 	err := router.HandleGroupEvent(context.Background(), event)
 	var undeliverable service.UndeliverableGroupEvent
-	if !errors.As(err, &undeliverable) || !undeliverable.Undeliverable() {
-		t.Fatalf("HandleGroupEvent = %v; an event whose group left the native store must be undeliverable, not pending forever", err)
+	var status *helper.StatusError
+	if err == nil || errors.As(err, &undeliverable) || !errors.As(err, &status) || status.Status != 7 {
+		t.Fatalf("HandleGroupEvent = %v; a missing group row must stay pending", err)
 	}
 }

@@ -16,26 +16,31 @@ import (
 )
 
 const (
-	interactionStatusForbidden   = 2
-	interactionStatusExpired     = 3
-	interactionStatusConflict    = 4
-	interactionStatusUnavailable = 5
-	interactionStatusBusy        = 6
-	interactionStatusInternal    = 9
-	interactionReplayLimit       = 4096
+	interactionStatusInvalid         = 1
+	interactionStatusForbidden       = 2
+	interactionStatusExpired         = 3
+	interactionStatusConflict        = 4
+	interactionStatusUnavailable     = 5
+	interactionStatusBusy            = 6
+	interactionStatusNotFound        = 7
+	interactionStatusUpgradeRequired = 8
+	interactionStatusInternal        = 9
+	interactionReplayLimit           = 4096
 )
 
 var ErrInteractionRequestIDConflict = errors.New("bot interaction request id reused with different input")
 var ErrInteractionDispatcherBusy = errors.New("bot interaction dispatcher replay cache is full")
 
-// ErrInteractionReadReplayNotAuthorized is a definitive denial: the recomputed read answered
-// status 2 (forbidden), which handlers use for an actor who lacks the permission or is no longer
-// a member. The event handler acknowledges such an event as undeliverable.
+// ErrInteractionReadReplayNotAuthorized is a definitive refusal of a recomputed read (Jonas
+// 2026-10-30): status 1 invalid, 2 forbidden (the actor lacks the permission or is no longer a
+// member), 3 expired, 7 not_found or 8 upgrade_required. Replaying the same immutable request
+// would answer the same, so the event handler acknowledges the event as undeliverable.
 var ErrInteractionReadReplayNotAuthorized = errors.New("interaction read replay is no longer authorized")
 
-// ErrInteractionReadReplayPending is any other refusal: invalid, expired, conflict, unavailable,
-// busy, not_found, upgrade_required, internal, or a response that does not match the request.
-// None of these proves the actor lost access, so the event stays pending and is retried.
+// ErrInteractionReadReplayPending is a refusal that may clear on retry: 4 conflict,
+// 5 unavailable, 6 busy, 9 internal (including a handler error, which Dispatch answers as
+// internal), or a response that does not match the request. The event stays pending; the
+// poller's GroupEventMaxPendingAge still bounds how long.
 var ErrInteractionReadReplayPending = errors.New("interaction read replay is not currently confirmed")
 
 // InteractionNative is the authenticated native event and group-inspection
@@ -331,11 +336,14 @@ func (d *InteractionDispatcher) inspectInteractionEventGroup(ctx context.Context
 }
 
 // ReauthorizeReadReplay reruns a registered read handler and discards its
-// response. It is used before resuming a durable response whose send has not
-// yet been accepted. A revoked or expired read returns
-// ErrInteractionReadReplayNotAuthorized without changing the response already
-// bound to that event; the event handler then acknowledges the event as
-// undeliverable rather than leaving it at the head of the shared queue.
+// response, leaving the response already bound to the event unchanged. It is
+// used before resuming a durable response whose send has not yet been accepted.
+// It returns nil when the read is still authorized (status 0), and
+// ErrInteractionReadReplayNotAuthorized only for a deterministic refusal (status
+// 1 invalid, 2 forbidden, 3 expired, 7 not_found, 8 upgrade_required); the event
+// handler then acknowledges the event as undeliverable. Status 4 conflict,
+// 5 unavailable, 6 busy, 9 internal, a mismatched response, a Dispatch error and
+// a cancelled context return an error that keeps the event pending.
 func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event native.GroupEvent) error {
 	if d == nil || event.Body == nil {
 		return protocol.ErrInvalid
@@ -372,7 +380,10 @@ func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event
 	switch response.Status {
 	case 0:
 		return nil
-	case interactionStatusForbidden:
+	case interactionStatusInvalid, interactionStatusForbidden, interactionStatusExpired, interactionStatusNotFound, interactionStatusUpgradeRequired:
+		// Dispatch itself never answers a read with status 3: ValidateRequestContext checks
+		// expiry only for mutating operations. A read handler may still return it, and an
+		// expired read can never become valid again, so the rule is kept as harmless.
 		return ErrInteractionReadReplayNotAuthorized
 	default:
 		return fmt.Errorf("%w: status %d", ErrInteractionReadReplayPending, response.Status)

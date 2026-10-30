@@ -128,11 +128,15 @@ func inspectInteractionEventGroup(ctx context.Context, inspector interactionEven
 		found = &descriptors[i]
 	}
 	if found == nil {
-		// Neither the generic store nor the interaction descriptors hold this group any more:
-		// nothing can answer the event, and leaving it pending would block every later event.
+		// Helper status 2 is forbidden, not not-found: the group row exists, but it is outside
+		// interaction scope (another community, or a kind-3 row the descriptors no longer list
+		// because the group is gone). Nothing can answer the event, and leaving it pending would
+		// block every later event. A missing row is status 7 and returned above: it stays pending.
 		return native.GroupInfo{}, undeliverableGroupEventError{err}
 	}
 	if found.State == 4 {
+		// Defence in depth: the descriptor list does not report gone groups today, but if it
+		// ever does, a gone group can never answer either.
 		return native.GroupInfo{}, undeliverableGroupEventError{errors.New("native interaction event group is gone")}
 	}
 	b := found.Binding
