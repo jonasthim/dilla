@@ -146,7 +146,7 @@
     "name": "gap99-voice-preview-nobody-phone",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=general >> nth=1" }, { "wait": 1200 }, { "click": "main d-icon[name='phone-off'] >> nth=0" }, { "wait": 1200 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"voice general\"s]" }, { "wait": 1500 }] }
+    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"voice general\"s]" }, { "wait": 2500 }, { "click": "role=button[name=\"leave\"i]" }, { "wait": 1500 }] }
   },
   {
     "name": "gap75-focused-tile-fullscreen",
