@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ var doctorLookPath = exec.LookPath
 func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("dillabot doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", "/etc/dilla/bot.toml", "path to the bot service TOML config")
+	configPath := flags.String("config", defaultConfigPath, "path to the bot service TOML config")
 	youtube := flags.Bool("youtube", false, "also check local YouTube extraction and playback tools")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -51,20 +52,22 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		fmt.Fprintln(stdout, "FAIL config: configuration or protected runtime credential is invalid")
+		fmt.Fprintln(stdout, doctorConfigFailure(*configPath, err))
 		return 1
 	}
+	fmt.Fprintf(stdout, "config OK: read %s\n", *configPath)
 
 	checks := []botDoctorCheck{
 		{name: "runtime_credential", status: "OK: protected owner-only credential is available"},
 	}
 	var youtubeResult strings.Builder
+	searchPath := "PATH searched: " + os.Getenv("PATH")
 	if checkYouTubeDependencies(&youtubeResult, doctorLookPath) {
-		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "OK: " + strings.TrimSpace(youtubeResult.String())})
+		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "OK: " + strings.TrimSpace(youtubeResult.String()) + " (" + searchPath + ")"})
 	} else if *youtube {
-		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "FAIL: " + strings.TrimSpace(youtubeResult.String())})
+		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "FAIL: " + strings.TrimSpace(youtubeResult.String()) + " (" + searchPath + ")"})
 	} else {
-		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "WARN: " + strings.TrimSpace(youtubeResult.String())})
+		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "WARN: " + strings.TrimSpace(youtubeResult.String()) + " (" + searchPath + ")"})
 	}
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		checks = append(checks, botDoctorCheck{name: "native_helper", status: "FAIL: executable helper is unavailable or unsafe"})
@@ -108,6 +111,22 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// doctorConfigFailure tells a missing config file, an invalid config and an
+// unusable runtime credential apart. It names the config path the operator
+// passed (or the default) and never includes secret material.
+func doctorConfigFailure(path string, err error) string {
+	switch {
+	case errors.Is(err, errConfigMissing):
+		return "FAIL config: no such file at " + path + " (pass --config=PATH; the installer writes " + defaultConfigPath + ")"
+	case errors.Is(err, errConfigUnreadable):
+		return "FAIL config: cannot read " + path + " (check its owner and mode)"
+	case errors.Is(err, errCredentialBad):
+		return "FAIL runtime_credential: the credential file named in " + path + " is missing, unreadable, not an owner-only 0600 file, or not a valid runtime credential"
+	default:
+		return "FAIL config: " + path + " is not a valid Bot configuration"
+	}
 }
 
 // checkYouTubeDependencies is a local prerequisite check only. It does not
