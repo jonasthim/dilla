@@ -114,19 +114,32 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: 'http://localhost:8497' }, secondDir);
   try {
     await guard.attach(second);
+    // Wave B task 3: where the browser has conditional mediation, the login step offers passkeys in the username field's
+    // autofill and draws no button. Checked in a page of its own, closed before the sign-in page opens.
+    const look = await second.newPage();
+    await look.goto('/welcome');
+    await expectHeading(look, COPY.connectTitle, { instance });
+    await look.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+    await expectHeading(look, SIGNIN.loginTitle, { instance });
+    await expect(look.getByLabel(copy(SIGNIN.username), { exact: true })).toHaveAttribute('autocomplete', 'username webauthn');
+    await look.close();
+
     const page2 = second.pages()[0] ?? (await second.newPage());
     const authenticator2 = await addAuthenticator(page2);
     expect(await copyCredentials(authenticator, authenticator2)).toBe(1);
+    // Chromium's virtual authenticator answers no autofill (conditional) request without a person picking from the popup,
+    // so this page is a browser without conditional mediation: the login keeps "Sign in with a passkey" (Jonas, fix round
+    // 2), which runs the ordinary ceremony. The autofill path is covered by the unit tests (SignInFactor.test.tsx).
+    await page2.addInitScript(() => {
+      const pkc = (window as unknown as { PublicKeyCredential?: { isConditionalMediationAvailable?: () => Promise<boolean> } }).PublicKeyCredential;
+      if (pkc) pkc.isConditionalMediationAvailable = async () => false;
+    });
     await page2.goto('/welcome');
     await expectHeading(page2, COPY.connectTitle, { instance });
     await page2.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
     await expectHeading(page2, SIGNIN.loginTitle, { instance });
     await expect(page2.getByLabel(copy(SIGNIN.password), { exact: true })).toHaveValue('');
-    // Wave B task 3 fix round 1 (Jonas): no passkey button; the username field's autofill offers the passkey (WebAuthn
-    // conditional mediation). The virtual authenticator answers the open conditional request once the field has focus.
-    const username2 = page2.getByLabel(copy(SIGNIN.username), { exact: true });
-    await expect(username2).toHaveAttribute('autocomplete', 'username webauthn');
-    await username2.focus();
+    await button(page2, 'factorSignin.usePasskey').click();
     // web3.8 (R7): the passkey was used on the login step, so the key is step 2.
     await expectHeading(page2, SIGNIN.keyTitle);
     await expect(page2.getByText(copy(SIGNIN.step, { n: 2, total: 3 }), { exact: true })).toBeVisible();
