@@ -232,10 +232,10 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 		return time.Time{}, false, nil
 	}
 	now := p.now()
-	if now.Unix() <= 0 || event.DeliveryID > math.MaxInt64 || event.SourceSequence > math.MaxInt64 {
+	nowUnix, ok := checkedUint64(now.Unix())
+	if !ok || nowUnix == 0 || event.DeliveryID > math.MaxInt64 || event.SourceSequence > math.MaxInt64 {
 		return time.Time{}, false, errors.New("invalid group event failure clock or event")
 	}
-	nowUnix := uint64(now.Unix())
 	key := []byte(groupEventFailureKey + p.binding.Installation.String())
 	current, err := state.StateGet(ctx, groupEventFailureArea, key)
 	if err != nil {
@@ -245,9 +245,11 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 	if !current.Tombstone && len(current.Value) > 0 {
 		var stored groupEventFailureRecord
 		if cborx.Unmarshal(current.Value, &stored) == nil && stored.Version == groupEventFailureVersion &&
-			stored.First > 0 && stored.First <= math.MaxInt64 && stored.Attempts > 0 && stored.Attempts < math.MaxInt64 && stored.matches(event) &&
-			time.Unix(int64(stored.First), 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
-			next.First, next.Attempts = stored.First, stored.Attempts+1
+			stored.First > 0 && stored.Attempts > 0 && stored.Attempts < math.MaxInt64 && stored.matches(event) {
+			if storedFirst, inRange := checkedInt64(stored.First); inRange &&
+				time.Unix(storedFirst, 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
+				next.First, next.Attempts = stored.First, stored.Attempts+1
+			}
 		}
 	}
 	value, err := cborx.Marshal(next)
@@ -257,7 +259,11 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 	if _, err := state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: groupEventFailureArea, Key: key, ExpectedRevision: current.Revision, Value: value}}); err != nil {
 		return time.Time{}, false, err
 	}
-	first := time.Unix(int64(next.First), 0)
+	firstUnix, ok := checkedInt64(next.First)
+	if !ok {
+		return time.Time{}, false, errors.New("invalid group event first-failure time")
+	}
+	first := time.Unix(firstUnix, 0)
 	age := now.Sub(first)
 	if next.Attempts < groupEventMinFailedPasses || age < InteractionEventMaxPendingAge {
 		return first, false, nil

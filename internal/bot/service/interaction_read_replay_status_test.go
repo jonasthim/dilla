@@ -14,7 +14,6 @@ import (
 func TestReadReplayReauthorizationRefusesDeterministicStatusesAndKeepsTheRestPending(t *testing.T) {
 	refused := map[uint64]bool{1: true, 2: true, 3: true, 7: true, 8: true}
 	for status := uint64(1); status <= 9; status++ {
-		status := status
 		t.Run(protocolStatusName(status), func(t *testing.T) {
 			d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
 				protocol.OpOverviewGet: {RecomputeOnReplay: true, Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
