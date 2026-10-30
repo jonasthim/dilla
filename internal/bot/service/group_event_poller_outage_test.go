@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -20,10 +21,16 @@ type durableGroupEventQueue struct {
 	state    map[string]native.StateValue
 	stateErr error
 	// interaction lists the groups the native descriptors prove are private interaction groups.
-	interaction []id.ID
+	interaction    []id.ID
+	interactionErr error
+	// conflicts makes the next state writes fail as if another writer had won the revision.
+	conflicts int
 }
 
 func (q *durableGroupEventQueue) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	if q.interactionErr != nil {
+		return nil, q.interactionErr
+	}
 	out := make([]native.InteractionGroupDescriptor, 0, len(q.interaction))
 	for _, g := range q.interaction {
 		out = append(out, native.InteractionGroupDescriptor{Group: g, State: 2})
@@ -45,11 +52,19 @@ func (q *durableGroupEventQueue) StateTransaction(_ context.Context, _ id.ID, ch
 	if q.state == nil {
 		q.state = map[string]native.StateValue{}
 	}
+	if q.conflicts > 0 {
+		q.conflicts--
+		return nil, errors.New("state revision conflict")
+	}
 	revs := make([]uint64, 0, len(changes))
 	for _, ch := range changes {
 		k := fmt.Sprintf("%d/%s", ch.Area, ch.Key)
 		if q.state[k].Revision != ch.ExpectedRevision {
 			return nil, errors.New("state revision conflict")
+		}
+		// The helper accepts only deterministic CBOR arrays (native.validStateValue).
+		if cborx.ExpectMajor(ch.Value, cborx.MajorArray) != nil || cborx.CheckDeterministic(ch.Value) != nil {
+			return nil, errors.New("state value is not a deterministic CBOR array")
 		}
 		q.state[k] = native.StateValue{Revision: ch.ExpectedRevision + 1, Value: append([]byte(nil), ch.Value...)}
 		revs = append(revs, ch.ExpectedRevision+1)

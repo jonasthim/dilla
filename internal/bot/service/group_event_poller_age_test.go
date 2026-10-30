@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -168,4 +170,140 @@ func TestGroupEventPollerRetriesASkipWhoseAcknowledgementFailed(t *testing.T) {
 	if err != nil || q.acked != 2 || calls != 2 || len(result.Skipped) != 1 || result.Skipped[0].DeliveryID != 1 {
 		t.Fatalf("retry: err=%v acked=%d calls=%d skipped=%v", err, q.acked, calls, result.Skipped)
 	}
+}
+
+func failingHead(fail error) groupEventHandlerFunc {
+	return func(_ context.Context, e native.GroupEvent) error {
+		if e.DeliveryID == 1 {
+			return fail
+		}
+		return nil
+	}
+}
+
+// pollUntil runs failing passes at each time and reports the pass that first skipped event 1.
+func pollUntil(t *testing.T, q *durableGroupEventQueue, handler GroupEventHandler, times ...time.Time) int {
+	t.Helper()
+	for i, at := range times {
+		result, _ := pollAt(t, context.Background(), q, at, handler)
+		if len(result.Skipped) > 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// I-A: a first-failure time far in the future (the clock went backwards) restarts the age at now.
+func TestGroupEventPollerResetsAFirstFailureFromTheFuture(t *testing.T) {
+	q := ageTestQueue()
+	fail := errors.New("transient")
+	start := time.Unix(1_800_000_000, 0)
+	future := start.Add(365 * 24 * time.Hour)
+	if got := pollUntil(t, q, failingHead(fail), future); got != -1 {
+		t.Fatal("skipped on the first pass")
+	}
+	// The clock is corrected a year back: the age restarts at start, and the skip comes an hour later.
+	got := pollUntil(t, q, failingHead(fail), start, start.Add(10*time.Minute), start.Add(20*time.Minute),
+		start.Add(InteractionEventMaxPendingAge-time.Second), start.Add(InteractionEventMaxPendingAge))
+	if got != 4 || q.acked != 2 {
+		t.Fatalf("skipped at pass %d acked=%d; want the skip exactly one hour after the reset", got, q.acked)
+	}
+	// Within the tolerance a slightly future first failure is kept, not reset.
+	q2 := ageTestQueue()
+	if pollUntil(t, q2, failingHead(fail), start.Add(4*time.Minute)) != -1 {
+		t.Fatal("skipped on the first pass")
+	}
+	if got := pollUntil(t, q2, failingHead(fail), start, start.Add(time.Minute),
+		start.Add(4*time.Minute+InteractionEventMaxPendingAge-time.Second), start.Add(4*time.Minute+InteractionEventMaxPendingAge)); got != 3 {
+		t.Fatalf("skipped at pass %d; a first failure within the 5-minute tolerance must be kept", got)
+	}
+}
+
+// I-B: a forward clock jump alone never skips; at least three failed passes are required.
+func TestGroupEventPollerNeedsThreeFailedPassesBesidesTheAge(t *testing.T) {
+	q := ageTestQueue()
+	fail := errors.New("transient")
+	start := time.Unix(1_800_000_000, 0)
+	if got := pollUntil(t, q, failingHead(fail), start, start.Add(2*time.Hour)); got != -1 {
+		t.Fatalf("skipped at pass %d after a 2 h jump with two failed passes", got)
+	}
+	if got := pollUntil(t, q, failingHead(fail), start.Add(2*time.Hour+time.Second)); got != 0 || q.acked != 2 {
+		t.Fatalf("third failed pass past the age: skipped=%d acked=%d", got, q.acked)
+	}
+}
+
+// m1: an unreadable or unknown-version record is replaced, so the limit still applies.
+func TestGroupEventPollerReplacesAnUnreadableFailureRecord(t *testing.T) {
+	for name, value := range map[string][]byte{
+		"not a record":    mustCBOR(t, []any{"garbage"}),
+		"unknown version": mustCBOR(t, []uint64{99, 1, 2}),
+		"version 1":       mustCBOR(t, []uint64{1, 1, 1_000}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := ageTestQueue()
+			key := fmt.Sprintf("%d/%s", groupEventFailureArea, groupEventFailureKey+q.binding.Installation.String())
+			q.state = map[string]native.StateValue{key: {Revision: 7, Value: value}}
+			fail := errors.New("transient")
+			start := time.Unix(1_800_000_000, 0)
+			got := pollUntil(t, q, failingHead(fail), start, start.Add(time.Minute), start.Add(2*time.Minute), start.Add(InteractionEventMaxPendingAge))
+			if got != 3 || q.acked != 2 {
+				t.Fatalf("skipped at pass %d acked=%d; an unreadable record must be replaced and the limit applied", got, q.acked)
+			}
+		})
+	}
+}
+
+// m2: a reused delivery ID with a different group or source sequence does not inherit the age.
+func TestGroupEventPollerDoesNotLetAReusedDeliveryIDInheritAnAge(t *testing.T) {
+	q := ageTestQueue()
+	fail := errors.New("transient")
+	start := time.Unix(1_800_000_000, 0)
+	pollUntil(t, q, failingHead(fail), start, start.Add(time.Minute), start.Add(2*time.Minute))
+	// The helper journal is rebuilt; delivery 1 now names another event.
+	q.events[0].SourceSequence = 9
+	if got := pollUntil(t, q, failingHead(fail), start.Add(2*time.Hour), start.Add(2*time.Hour+time.Minute), start.Add(2*time.Hour+2*time.Minute)); got != -1 {
+		t.Fatalf("a new event under a reused delivery ID was skipped at pass %d with the old age", got)
+	}
+	q.events[0].Group = id.New()
+	q.interaction = append(q.interaction, q.events[0].Group)
+	if got := pollUntil(t, q, failingHead(fail), start.Add(3*time.Hour), start.Add(3*time.Hour+time.Minute), start.Add(3*time.Hour+2*time.Minute)); got != -1 {
+		t.Fatalf("a new group under a reused delivery ID was skipped at pass %d with the old age", got)
+	}
+}
+
+// m3: if the interaction-group lookup fails, the event gets the 24-hour limit.
+func TestGroupEventPollerUsesTwentyFourHoursWhenTheKindLookupFails(t *testing.T) {
+	q := ageTestQueue()
+	q.interactionErr = errors.New("helper busy")
+	fail := errors.New("transient")
+	start := time.Unix(1_800_000_000, 0)
+	if got := pollUntil(t, q, failingHead(fail), start, start.Add(time.Hour), start.Add(2*time.Hour), start.Add(TextEventMaxPendingAge-time.Second)); got != -1 {
+		t.Fatalf("skipped at pass %d before 24 h although the kind was unknown", got)
+	}
+	if got := pollUntil(t, q, failingHead(fail), start.Add(TextEventMaxPendingAge)); got != 0 {
+		t.Fatal("not skipped at 24 h")
+	}
+}
+
+// m3: a lost revision race keeps the event pending; the next pass recovers.
+func TestGroupEventPollerRecoversFromAFailureRecordWriteConflict(t *testing.T) {
+	q := ageTestQueue()
+	fail := errors.New("transient")
+	start := time.Unix(1_800_000_000, 0)
+	q.conflicts = 1
+	if _, err := pollAt(t, context.Background(), q, start, failingHead(fail)); !errors.Is(err, fail) || q.acked != 0 {
+		t.Fatalf("conflicting pass: err=%v acked=%d", err, q.acked)
+	}
+	if got := pollUntil(t, q, failingHead(fail), start.Add(time.Minute), start.Add(2*time.Minute), start.Add(3*time.Minute), start.Add(time.Minute+InteractionEventMaxPendingAge)); got != 3 || q.acked != 2 {
+		t.Fatalf("skipped at pass %d acked=%d; the next pass must start the record", got, q.acked)
+	}
+}
+
+func mustCBOR(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := cborx.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

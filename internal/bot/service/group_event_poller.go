@@ -16,7 +16,8 @@ import (
 // long since its first failed handling attempt, the poller acknowledges it as undeliverable,
 // whatever the cause, so a cause no handler classifies (a terminal send after restore, a resync
 // that never finishes, a future bug) cannot stall every Bot reply indefinitely. The first-failure
-// time is durable in the helper's state store. Jonas 2026-10-30:
+// time and the count of failed passes are durable in the helper's state store; a skip also needs
+// at least groupEventMinFailedPasses failed passes. Jonas 2026-10-30:
 //
 //   - InteractionEventMaxPendingAge (one hour) for an event from a private interaction group: a command
 //     whose reply is an hour late is worthless, and it blocks every other user's commands.
@@ -37,7 +38,13 @@ type groupEventKindSource interface {
 const (
 	groupEventFailureArea    = uint64(8)
 	groupEventFailureKey     = "dilla.bot.group-event-failure.v1/"
-	groupEventFailureVersion = uint64(1)
+	groupEventFailureVersion = uint64(2)
+	// groupEventMinFailedPasses failed passes are required besides the age limit, so a forward
+	// clock jump alone can never skip an event.
+	groupEventMinFailedPasses = 3
+	// groupEventClockTolerance is how far in the future a stored first-failure time may be before
+	// the clock is taken to have gone backwards and the record restarts at now.
+	groupEventClockTolerance = 5 * time.Minute
 )
 
 // groupEventFailureState is the helper state store; *native.Client implements it. Without it the
@@ -172,7 +179,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 					return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: errors.Join(err, ageErr)}
 				}
 				skipped = &SkippedGroupEvent{DeliveryID: event.DeliveryID, FirstFailure: first,
-					Cause: fmt.Errorf("%w (first failure %s): %w", ErrGroupEventPendingTooLong, first.UTC().Format(time.RFC3339), err)}
+					Cause: fmt.Errorf("%w: %w", ErrGroupEventPendingTooLong, err)}
 			}
 		}
 		if err := p.native.AcknowledgeGroupEvents(ctx, event.DeliveryID); err != nil {
@@ -195,46 +202,67 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 	return result, nil
 }
 
-// failureAge records the first failed handling time of delivery durably (only the queue head can
-// fail, so one record per installation suffices) and reports whether it is older than
-// its limit (maxPendingAge). Any state error keeps the event pending.
+// groupEventFailureRecord is the durable failure history of the current head event. Only the
+// head can fail, so one record per installation suffices; it is bound to the event's delivery
+// ID, group and source sequence, so a reused delivery ID never inherits an older event's age.
+type groupEventFailureRecord struct {
+	_        struct{} `cbor:",toarray"`
+	Version  uint64
+	Delivery uint64
+	Group    id.ID
+	Sequence uint64
+	First    uint64 // unix seconds of the first failed pass
+	Attempts uint64 // failed passes, at least 1
+}
+
+func (r groupEventFailureRecord) matches(event native.GroupEvent) bool {
+	return r.Delivery == event.DeliveryID && r.Group == event.Group && r.Sequence == event.SourceSequence
+}
+
+// failureAge records one failed handling pass of event durably and reports whether the event may
+// now be skipped: it needs BOTH its age limit (maxPendingAge) since the first failure AND at least
+// groupEventMinFailedPasses failed passes, so a forward clock jump alone never skips an event,
+// while real downtime still counts towards the age. A first-failure time more than
+// groupEventClockTolerance in the future (the clock went backwards) restarts the record at now.
+// A record that does not decode, or has an unknown version, is replaced by a fresh one. Every
+// write carries a revision check; any state error keeps the event pending.
 func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEvent) (time.Time, bool, error) {
-	delivery := event.DeliveryID
 	state, ok := p.native.(groupEventFailureState)
 	if !ok {
 		return time.Time{}, false, nil
 	}
 	now := p.now()
-	if now.Unix() <= 0 || delivery > math.MaxInt64 {
-		return time.Time{}, false, errors.New("invalid group event failure clock or delivery")
+	if now.Unix() <= 0 || event.DeliveryID > math.MaxInt64 || event.SourceSequence > math.MaxInt64 {
+		return time.Time{}, false, errors.New("invalid group event failure clock or event")
 	}
+	nowUnix := uint64(now.Unix())
 	key := []byte(groupEventFailureKey + p.binding.Installation.String())
 	current, err := state.StateGet(ctx, groupEventFailureArea, key)
 	if err != nil {
 		return time.Time{}, false, err
 	}
+	next := groupEventFailureRecord{Version: groupEventFailureVersion, Delivery: event.DeliveryID, Group: event.Group, Sequence: event.SourceSequence, First: nowUnix, Attempts: 1}
 	if !current.Tombstone && len(current.Value) > 0 {
-		var record []uint64
-		if err := cborx.Unmarshal(current.Value, &record); err != nil || len(record) != 3 || record[0] != groupEventFailureVersion || record[2] == 0 || record[2] > math.MaxInt64 {
-			return time.Time{}, false, errors.New("invalid group event failure record")
-		}
-		if record[1] == delivery {
-			first := time.Unix(int64(record[2]), 0)
-			age := now.Sub(first)
-			if age < InteractionEventMaxPendingAge {
-				return first, false, nil
-			}
-			return first, age >= p.maxPendingAge(ctx, event), nil
+		var stored groupEventFailureRecord
+		if cborx.Unmarshal(current.Value, &stored) == nil && stored.Version == groupEventFailureVersion &&
+			stored.First > 0 && stored.First <= math.MaxInt64 && stored.Attempts > 0 && stored.Attempts < math.MaxInt64 && stored.matches(event) &&
+			time.Unix(int64(stored.First), 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
+			next.First, next.Attempts = stored.First, stored.Attempts+1
 		}
 	}
-	value, err := cborx.Marshal([]uint64{groupEventFailureVersion, delivery, uint64(now.Unix())})
+	value, err := cborx.Marshal(next)
 	if err != nil {
 		return time.Time{}, false, err
 	}
 	if _, err := state.StateTransaction(ctx, id.New(), []native.StateChange{{Area: groupEventFailureArea, Key: key, ExpectedRevision: current.Revision, Value: value}}); err != nil {
 		return time.Time{}, false, err
 	}
-	return now, false, nil
+	first := time.Unix(int64(next.First), 0)
+	age := now.Sub(first)
+	if next.Attempts < groupEventMinFailedPasses || age < InteractionEventMaxPendingAge {
+		return first, false, nil
+	}
+	return first, age >= p.maxPendingAge(ctx, event), nil
 }
 
 var _ groupEventFailureState = (*native.Client)(nil)
