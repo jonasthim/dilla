@@ -118,11 +118,17 @@ describe('utility response decoders', () => {
     expect(caps.supportedOperations).toContain(80);
   });
 
-  it('rejects unsupported, duplicate, unsorted, or malformed capability entries', () => {
+  it('drops an operation this client does not know and keeps the rest of the report', () => {
+    const caps = decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n, 70n, 199n, 255n]]));
+    expect(caps.supportedOperations).toEqual([3, 70]);
+  });
+
+  it('rejects duplicate, unsorted, or malformed capability entries', () => {
     for (const value of [
       [1n, id(7), id(8), 1n, [70n, 70n]],
       [1n, id(7), id(8), 1n, [71n, 70n]],
-      [1n, id(7), id(8), 1n, [999n]],
+      [1n, id(7), id(8), 1n, [256n]],
+      [1n, id(7), id(8), 1n, ['70']],
       [2n, id(7), id(8), 1n, [3n]],
     ]) expect(() => decodeBotUtilityCapabilities(data(value))).toThrow(BotUtilitiesError);
   });
