@@ -340,6 +340,19 @@ Disjoint (lane): auth screens only. Parallel with 2, 4, 5. Model: **opus** (sign
 - [ ] **Step 4: Gates**; e2e `second-factor required-factor signin-order signup passkey enrol`.
 - [ ] **Step 5:** Commit `feat(ui,web): six-digit code boxes and the Signal sign-in and new-account steps`.
 
+### Task 3b: New-account flow to the prototype's six steps
+
+Added 2026-10-30 (Jonas, Task 3 Q5: "Match the prototype"). After Task 3, in lane b3. Model: opus; review opus +
+security review. The prototype's new-account flow is invite → account → save recovery key → second factor → code →
+done, creating the account on its second step; today's app adds a "What this browser keeps" step, creates the
+account there, and has separate QR and backup-code steps. Match the prototype's steps, copy and layout (values
+from the prototype source), move account creation to where the prototype creates it, and fold the QR (kept per Q6)
+and backup codes into its steps. Keep every guard: the recovery key is saved and confirmed before the account can
+be used, the second factor is required (MFA required, 2026-10-15), nothing secret is logged or persisted beyond
+today, and a flow abandoned at any step leaves the same state today's flow does (or a stricter one). Tests: each
+step, abandon-and-reopen at every step (the forced factor screen), paste/autofill on the code step; e2e `signup
+enrol required-factor second-factor phone`; app parity for all six steps, desktop and phone.
+
 ### Task 4: Voice — your own voice menu, the rest of the person menu, the AFK page
 
 Disjoint (lane): `packages/web/src/screens/voice/*`, `packages/ui/src/PersonContextMenu`, `packages/ui/src/CallStage`
