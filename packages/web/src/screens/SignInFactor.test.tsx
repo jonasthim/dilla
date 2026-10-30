@@ -32,11 +32,14 @@ const conditionalGet = vi.fn<(o: ConditionalCall) => Promise<unknown>>();
 let conditionalOn = true;
 let pending: { resolve: (v: unknown) => void; reject: (e: unknown) => void; signal: AbortSignal } | null = null;
 conditionalGet.mockImplementation((o) => new Promise((resolve, reject) => {
-  pending = { resolve, reject, signal: o.signal };
-  o.signal.addEventListener('abort', () => { reject(new DOMException('aborted', 'AbortError')); });
+  const mine = { resolve, reject, signal: o.signal };
+  pending = mine;
+  o.signal.addEventListener('abort', () => { if (pending === mine) pending = null; reject(new DOMException('aborted', 'AbortError')); });
 }));
 /** The person picks a passkey from the username field's autofill (or the browser ends the request with `error`). */
 async function pickPasskey(error?: unknown): Promise<void> {
+  // The autofill request starts when the username field gains focus (commit review fix).
+  if (pending === null) act(() => { screen.getByRole('textbox', { name: 'Username' }).focus(); });
   await waitFor(() => { expect(pending).not.toBeNull(); });
   const open = pending!;
   pending = null;
@@ -121,6 +124,9 @@ const worker = (opts: { needs?: 0 | 1 | 2; passkeyNeeds?: 0 | 1 } = {}): Script 
       return Promise.resolve(null);
     case 'signInBackupCode': case 'signInKey':
       move(fake, readyMe);
+      return Promise.resolve(null);
+    case 'signInBack':
+      move(fake, { phase: 'signin-login', signIn: { username: null, factor: null } });
       return Promise.resolve(null);
     case 'signInCancel':
       move(fake, { phase: 'needs-signup', signIn: null });
@@ -378,8 +384,12 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
   it('fix round 1: is offered in the username field\'s autofill, only where passkeys and conditional mediation can be used', async () => {
     const on = setup('signin-login', worker());
     // No button: the field asks the browser's autofill for passkeys.
-    expect(screen.queryByRole('button', { name: 'Sign in with a passkey' })).toBeNull();
+    expect(screen.queryByRole('button', { name: en['factorSignin.usePasskey'] })).toBeNull();
     expect(field('Username')).toHaveAttribute('autocomplete', 'username webauthn');
+    // Nothing is asked of the instance until the field is focused: each begin is metered on the login bucket.
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(on.fake.callsOf('signInPasskeyBegin')).toEqual([]);
+    act(() => { field('Username').focus(); });
     await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(1); });
     expect(conditionalGet.mock.calls[0]?.[0].mediation).toBe('conditional');
     expect(on.fake.callsOf('signInPasskeyBegin')).toEqual([{ m: 'signInPasskeyBegin' }]);
@@ -400,18 +410,54 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     expect(conditionalGet).not.toHaveBeenCalled();
   });
 
-  it('fix round 1: sending the password aborts the autofill request; a refused password opens a new one', async () => {
+  it('fix round 2: a browser without conditional mediation shows "Sign in with a passkey", and it works', async () => {
+    conditionalOn = false;
+    const { fake, user } = setup('signin-login', worker({ needs: 0, passkeyNeeds: 0 }));
+    const passkey = await screen.findByRole('button', { name: en['factorSignin.usePasskey'] });
+    expect(passkey).toHaveAttribute('type', 'button');
+    get.mockResolvedValue(assertion());
+    await user.click(passkey);
+    await waitFor(() => { expect(h1()).toHaveTextContent('Add this browser'); });
+    expect(get.mock.calls[0]?.[0].publicKey.userVerification).toBe('required');
+    expect(fake.callsOf('signInPasskey')).toHaveLength(1);
+    expect(conditionalGet).not.toHaveBeenCalled();
+  });
+
+  it('fix round 2: with conditional mediation there is no button, also once the check has answered', async () => {
+    setup('signin-login', worker());
+    act(() => { field('Username').focus(); });
+    await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(1); });
+    expect(screen.queryByRole('button', { name: en['factorSignin.usePasskey'] })).toBeNull();
+  });
+
+  it('commit review fix: sending the password aborts the autofill request; a refused one starts none until the field is focused', async () => {
     const script: Script = (c, f) => c.m === 'signInLogin'
       ? (move(f, { phase: 'signin-login', error: { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null } }),
         Promise.reject(refusal({ code: 'E_UNAUTHENTICATED', status: 401 })))
       : worker()(c, f);
-    const { user } = setup('signin-login', script);
+    const { fake, user } = setup('signin-login', script);
+    await login(user);
     await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(1); });
     const first = conditionalGet.mock.calls[0]?.[0].signal;
-    await login(user);
-    expect(first.aborted).toBe(true);
+    expect(first?.aborted).toBe(true);
+    expect(fake.callsOf('signInLogin')).toHaveLength(1);
+    // The refusal by itself starts nothing.
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(fake.callsOf('signInPasskeyBegin')).toHaveLength(1);
+    act(() => { screen.getByLabelText('Password').focus(); });
+    act(() => { field('Username').focus(); });
     await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(2); });
     expect(conditionalGet.mock.calls[1]?.[0].signal.aborted).toBe(false);
+  });
+
+  it('commit review fix: a passkey picked from the autofill drops the typed password at once', async () => {
+    const { user } = setup('signin-login', worker({ needs: 1, passkeyNeeds: 1 }));
+    await user.type(screen.getByLabelText('Password'), 'half typed');
+    await pickPasskey();
+    await waitFor(() => { expect(h1()).toHaveTextContent('Enter your code'); });
+    await user.click(button('Back'));
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(screen.getByLabelText('Password')).toHaveValue('');
   });
 
   it('signs in with a passkey on its own: the instance options, user verification required, then the key as step 2', async () => {
@@ -478,8 +524,9 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
       ? 'dilla.test does not know this passkey. It may belong to another account or another server.'
       : en['factorSignin.passkey.failed']);
     expect(document.activeElement).toBe(field('Username'));
-    // The ceremony is spent: the autofill offers passkeys again with a new one.
-    await waitFor(() => { expect(conditionalGet).toHaveBeenCalledTimes(2); });
+    // The ceremony is spent; a new one waits for the field to be focused again (it has focus already, so none yet).
+    await act(async () => { await Promise.resolve(); });
+    expect(conditionalGet).toHaveBeenCalledTimes(1);
   });
 
   it('fix round 1: an autofill request the browser cancels says nothing; one it fails shows the failed text, once', async () => {

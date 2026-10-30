@@ -98,7 +98,10 @@ screen (`factorSignin.passkey.title`, no code field) holds `factorSignin.passkey
 passkey and backup-code options. The backup-code form (`factorSignin.backup.title`) has one field, with a
 format check (`factorSignin.backup.format`) and a ghost `factor.back` that returns to the form it came from.
 Step 1 offers passkeys in the username field's own autofill (`autocomplete="username webauthn"` and a conditional
-`navigator.credentials.get`, wave B task 3 fix round 1; no button; aborted when the password is sent or the step left), only where the instance offers
+`navigator.credentials.get`, wave B task 3 fix round 1; started only when the username field gains focus, since each start is a passkey-login
+begin metered on the address's login bucket; aborted when the password is sent or the step left, and not restarted until
+the field is focused again; a picked passkey drops the typed password; a browser without conditional mediation
+shows the ghost button `factorSignin.usePasskey` instead, fix round 2), only where the instance offers
 passkeys and the browser can use them. A passkey-only account in a browser that cannot run passkeys never sees
 the passkey screen: step 2 opens as the backup-code form, with `Cancel` in place of `Back` and the line
 `factorSignin.passkey.unusable` above the body.

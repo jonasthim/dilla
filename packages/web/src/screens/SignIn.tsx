@@ -181,10 +181,22 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
   const [firstChannels] = useSlices(firstServer === null ? [] : [`channels:${firstServer.id}` as const]);
   // The login step's conditional passkey request, aborted when the password is sent (fix round 1).
   const conditionalAbort = useRef<AbortController | null>(null);
-  // Restarts the conditional request after a passkey the instance refused (the ceremony is spent).
-  const [conditionalRound, setConditionalRound] = useState(0);
+  // Commit review fix: the autofill request starts only when the username field gains focus. Each start costs a
+  // passkey-login begin, which the instance meters on the address's login bucket (the password login's), so nothing starts
+  // on its own: not on showing the step, not after a refused password or passkey, until the field is focused again.
+  const [autofillArmed, setAutofillArmed] = useState(false);
   // Back is on its way to the worker; a second press sends nothing (fix round 1).
   const [goingBack, setGoingBack] = useState(false);
+  // Fix round 2 (Jonas): whether this browser offers passkeys in the username autofill; null until known. Without it the
+  // login step keeps the "Sign in with a passkey" button, the only way in for an account with no password.
+  const [autofill, setAutofill] = useState<boolean | null>(null);
+  const passkeysOn = passkeysUsable(account?.instance ?? null);
+  useEffect(() => {
+    if (!passkeysOn) return undefined;
+    let live = true;
+    void conditionalMediationAvailable().then((on) => { if (live) setAutofill(on); });
+    return () => { live = false; };
+  }, [passkeysOn]);
   const [focusRequest, setFocusRequest] = useState<{ target: 'heading' | Field; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -220,6 +232,8 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
               : enrolling ? busyStep ?? 'key'
                 : 'login';
 
+  // The autofill request is armed again only by focusing the username field on a fresh login step.
+  useEffect(() => { if (shown !== 'login') setAutofillArmed(false); }, [shown]);
   // A cancel and a fresh ceremony start clean.
   useEffect(() => { if (phase !== 'signin-key') setNoBackup(null); }, [phase]);
   // The backup-code form and its held code belong to the code and passkey steps; a refused code, an expiry or a cancel
@@ -305,9 +319,10 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
     conditionalAbort.current?.abort();
     begin('login', 'login');
     // web3.8 (R6): the login carries no key; the factor step or the key step follows it.
-    // A refused password keeps the login step: its autofill passkey request (aborted above) starts again.
-    const call = client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password })
-      .catch((e: unknown) => { setConditionalRound(n => n + 1); throw e; });
+    // A refused password keeps the login step; its autofill request (aborted above) starts again only when the username
+    // field is focused again.
+    setAutofillArmed(false);
+    const call = client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password });
     run('login', call, () => {
       setPassword('');
     });
@@ -351,6 +366,8 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
   /** The passkey on its own: the instance's options go to the browser and its answer back; the page makes no challenge. */
   const submitPasskey = (from: Shown) => {
     if (blocked) return;
+    // A passkey signs in without the password: none stays in page memory.
+    setPassword('');
     setBanner(null);
     setErrors({});
     begin('passkey', from);
@@ -374,17 +391,19 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
     void go();
   };
   /** The login step's autofill passkey: sent exactly as the button's was, then the code (needs 1) or the key follows. A
-   *  refusal shows its banner on the login, focus goes to the username field, and a new conditional request starts. */
+   *  refusal shows its banner on the login and puts focus on the username field; a new request waits for the field to be
+   *  focused again. The password typed so far is dropped at once: the passkey signs in without it. */
   const conditionalCredential = (ceremonyId: string, response: string) => {
     if (blocked) return;
+    setPassword('');
     setBanner(null);
     setErrors({});
+    setAutofillArmed(false);
     begin('passkey', 'login');
     void client.call({ m: 'signInPasskey', ceremonyId, response })
       .then(() => undefined, (e: unknown) => {
         apply(errorOf(e), 'passkey');
         requestFocus('username');
-        setConditionalRound(n => n + 1);
       })
       .finally(() => setBusy(null));
   };
@@ -428,6 +447,7 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
   const goBack = () => {
     if (blocked) return;
     setGoingBack(true);
+    setPassword('');
     setBanner(null);
     setErrors({});
     setCode('');
@@ -604,14 +624,21 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
       <p>{t('signin.login.body', { instance: name })}</p>
       <TextField id={FIELD_ID.username} label={t('signin.login.username')} value={username}
         onChange={change('username', (value) => { setUsername(value); setKey(''); })} error={errorText('username')}
-        required autoComplete={passkeysUsable(instance) ? 'username webauthn' : 'username'} spellCheck={false} maxLength={32} />
+        required autoComplete={passkeysUsable(instance) ? 'username webauthn' : 'username'} spellCheck={false} maxLength={32}
+        onFocus={() => { if (!blocked) setAutofillArmed(true); }} />
       <TextField id={FIELD_ID.password} type="password" label={t('signin.login.password')} value={password}
         onChange={change('password', setPassword)} error={errorText('password')} required autoComplete="current-password" />
-      {/* Fix round 1 (Jonas): passkeys come from the username field's autofill; no button. */}
-      {passkeysUsable(instance) ? (
-        <ConditionalPasskey key={conditionalRound} abortRef={conditionalAbort}
+      {/* Fix round 1 (Jonas): passkeys come from the username field's autofill; no button. Fix round 2: a browser without
+          conditional mediation keeps the button (an accepted deviation for those browsers only). */}
+      {passkeysUsable(instance) && autofillArmed ? (
+        <ConditionalPasskey abortRef={conditionalAbort}
           begin={() => client.call({ m: 'signInPasskeyBegin' }) as Promise<{ ceremonyId: string; options: string }>}
           onCredential={conditionalCredential} onFailed={conditionalFailed} />
+      ) : null}
+      {passkeysUsable(instance) && autofill === false ? (
+        <Button id={FIELD_ID.passkey} variant="ghost" type="button" onClick={() => { submitPasskey('login'); }} {...blockedProps}>
+          {t(busy === 'passkey' ? 'factorSignin.passkey.working' : 'factorSignin.usePasskey')}
+        </Button>
       ) : null}
       <p role="status">{enrolling ? t('signin.key.working') : busy === 'passkey' ? t('factorSignin.passkey.working') : null}</p>
     </>);

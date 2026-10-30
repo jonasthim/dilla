@@ -35,7 +35,7 @@ function Step({ n, title, footer, children }: { n: number; title: string; footer
     </form>
   );
 }
-function Login({ refused }: { refused?: boolean }) {
+function Login({ refused, passkeyButton }: { refused?: boolean; passkeyButton?: boolean }) {
   const [username, setUsername] = useState(refused ? 'ada' : 'mira');
   const [password, setPassword] = useState(refused ? 'hunter22' : 'two-ropes');
   return (
@@ -45,6 +45,7 @@ function Login({ refused }: { refused?: boolean }) {
       <TextField id="s-username" label={t('signin.login.username')} value={username} onChange={setUsername} autoComplete="username" spellCheck={false} />
       <TextField id="s-password" type="password" label={t('signin.login.password')} value={password} onChange={setPassword}
         autoComplete="current-password" error={refused ? t('signin.error.loginFailed') : undefined} />
+      {passkeyButton ? <Button variant="ghost" type="button">{t('factorSignin.usePasskey')}</Button> : null}
     </Step>
   );
 }
@@ -69,6 +70,9 @@ function Key({ value, error, working }: { value: string; error?: string; working
 
 export const Login_: Story = { name: 'Login', render: () => <Login /> };
 export const LoginRefused: Story = { render: () => <Login refused /> };
+// Fix round 2 (Jonas): in a browser without conditional mediation the login keeps "Sign in with a passkey" (SignIn.tsx,
+// autofill === false); an accepted deviation for those browsers only.
+export const LoginNoAutofill: Story = { render: () => <Login passkeyButton /> };
 // Wave B task 3: the code step exactly as packages/web/src/screens/SignIn.tsx composes it (shown === 'totp'): the body as the
 // code's description, the six boxes with focus (SignIn's focus request), the links row, the empty status region, Verify
 // (blocked until six digits) and the Back / new-account row. "Use a passkey" shows after a passkey that needs the code
