@@ -158,6 +158,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       try { prior = await interactions.read(attempt.requestId, operation); }
       catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (prior !== null) {
+        if (prior.status === 5 && prior.revision === null) throw new VoiceMusicError('unavailable', 'The Bot could not load that track.');
         if (prior.status === 5) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The Bot reported an ambiguous persisted outcome.'));
         if (prior.status !== 0) throw responseError(prior.status, operation === 12 && isSpotifyInput(args[0]));
         try {
@@ -217,6 +218,10 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
         if (attempt !== undefined) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
         throw error;
       }
+    }
+    if (result.status === 5 && result.revision === null) {
+      if (attempt !== undefined) attempts.delete(attempt.requestId);
+      throw new VoiceMusicError('unavailable', 'The Bot could not load that track.');
     }
     if (result.status === 5) {
       record.sent = true;

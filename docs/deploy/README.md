@@ -721,12 +721,15 @@ sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml --youtube
 That lock pins `yt-dlp` 2026.10.21 and its matching `yt-dlp-ejs` 0.8.0 with wheel hashes.
 `--youtube` checks that exact yt-dlp version, Node 22 or newer, Python 3.10 or newer, `bwrap`,
 `ffmpeg`, and FFmpeg's `libopus` encoder are locally available. The recorded host smoke used Node
-24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. This doctor check does not inspect the
-installed EJS package, test unprivileged namespace support, contact YouTube, or qualify playback;
+24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. `--youtube` also runs
+`yt-dlp --version` through the real isolated metadata runner to test sandbox startup without
+contacting YouTube. `youtube_sandbox` reports OK or FAIL with a failure class and stderr
+collapsed to one printable line and truncated to 512 bytes. It does not inspect the
+installed EJS package or qualify playback;
 the pinned pair must be installed together from the requirements file. YouTube remains optional,
 so a missing dependency appears as a `WARN` in the normal doctor and does not block service
 installation. `--youtube` makes these checks required and returns a failure if a dependency is
-missing or outside the checked minimum/version.
+missing, outside the checked minimum/version, or unable to start inside the sandbox.
 
 The earlier 2026.8.19 pin resolved a video and captured a bounded PCM sample on 2026-10-22, but a
 later integrated Bot run found yt-dlp 2025.09.26 failed and a direct test with 2026.10.21 succeeded.

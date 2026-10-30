@@ -18,7 +18,7 @@ function musicSnapshot(revision: number, paused: boolean, queue: { id: string; p
     BigInt(state.positionMs ?? 0), paused ? 1n : 0n, BigInt(state.volume ?? 70), state.shuffle ? 1n : 0, BigInt(state.repeat ?? 0), state.control === false ? 0n : 1n]);
 }
 function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean; invalidRefreshAfterEnqueue?: boolean; seededQueue?: boolean; seedSchedule?: boolean;
-  malformedAnnouncementReceipt?: boolean; ambiguousOperations?: number[]; unknownUploads?: number[]; disabledSchedule?: boolean; invalidMusicReceipt?: boolean;
+  failedOperations?: number[]; malformedAnnouncementReceipt?: boolean; ambiguousOperations?: number[]; unknownUploads?: number[]; disabledSchedule?: boolean; invalidMusicReceipt?: boolean;
   djControl?: boolean; readFailureOperations?: number[] } = {}) {
   let musicRevision = 1; let paused = true; let badSnapshotOnce = false; let positionMs = 0; let volume = 70; let shuffle = false; let repeat = 0; let installationId = INSTALLATION; let botUserId: string | null = null; let installRevision = '9'; let botState = 3;
   let currentTrack: { id: string; provider: string; canonical: string; title: string; artist: string } | null = { id: CURRENT_ITEM, provider: 'youtube', canonical: 'mnopqrstuvw', title: 'Current track', artist: 'Listener' };
@@ -49,6 +49,7 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
           if (options.djControl === false) status = 2;
           else if (String(command.revision) !== String(musicRevision)) status = 4;
         }
+        if (options.failedOperations?.includes(operation)) status = 5;
         if (operation === 10) { revision = String(musicRevision); data = badSnapshotOnce ? Uint8Array.of(0xff) : musicSnapshot(musicRevision, paused, queue,
           { positionMs, volume, shuffle, repeat, current: currentTrack, control: options.djControl !== false }); badSnapshotOnce = false; }
         if (operation === 11) data = encode([1n, [['yt:abcdefghijk', 'youtube', 'abcdefghijk', 'First result', 'Listener', '', 120_000n, '']]]);
@@ -200,7 +201,18 @@ describe('Bot slash command provider', () => {
     expect(enqueueRequests[0]?.args).toEqual(['https://youtube.com/watch?v=abcdefghijk']);
   });
 
-  it('keeps status 5 uncertain and reconciles the same enqueue instead of uploading a second effect', async () => {
+  it('reports status 5 without a revision as failure and clears the play attempt', async () => {
+    const f = fixture({ failedOperations: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const context = commandContext(f.client); const invocation = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
+    const expected = { status: 'failure', message: "Glenn couldn't load that track. Try again or try another link." };
+    expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject(expected);
+    expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject(expected);
+    expect(f.requests.filter(row => row.operation === 14)).toHaveLength(0);
+    expect(f.musicState.queue).toHaveLength(0);
+  });
+
+  it('keeps status 5 with a revision uncertain and reconciles the same enqueue instead of uploading a second effect', async () => {
     const f = fixture({ ambiguousOperations: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const context = commandContext(f.client); const invocation = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };

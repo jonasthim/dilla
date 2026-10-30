@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"net/url"
 	"strings"
@@ -54,6 +55,7 @@ type SpotifyMusicTrackResolver interface {
 // MusicInteractions updates only encrypted queue state. It does not control
 // audio; a playback supervisor must consume these revisions separately.
 type MusicInteractions struct {
+	Logger          *slog.Logger
 	Store           musicStateStore
 	Authority       MusicInteractionAuthority
 	Resolver        MusicTrackResolver
@@ -97,28 +99,59 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 	return result
 }
 
-//nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
-func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (InteractionResult, error) {
+func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (result InteractionResult, failure error) {
+	reason := "dependency_or_context"
+	var diagnostic error
+	defer func() {
+		if result.Status == 0 && failure == nil {
+			return
+		}
+		logger := h.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		status := result.Status
+		if failure != nil {
+			status = interactionStatusInternal
+		}
+		if diagnostic == nil {
+			diagnostic = failure
+		}
+		detail := ""
+		if diagnostic != nil {
+			detail = youtube.DiagnosticText(diagnostic.Error())
+		}
+		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "op", op, "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
+	}()
 	if h.Store == nil || h.Authority == nil || h.CommunityID.IsZero() || req.CommunityID != h.CommunityID || req.ChannelID == nil || req.ChannelID.IsZero() {
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")
 	}
 	channel := *req.ChannelID
+	reason = "current_call_lookup"
 	call, err := h.Authority.CurrentCall(ctx, channel)
 	if err != nil {
 		return InteractionResult{}, err
 	}
+	reason = "no_current_call"
 	if !validMusicCall(call, channel) {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
+	reason = "can_use_lookup"
 	allowed, err := h.Authority.CanUse(ctx, actor, call)
 	if err != nil {
 		return InteractionResult{}, err
 	}
+	reason = "forbidden"
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	if op == protocol.OpMusicSearch {
-		if h.Resolver == nil || len(req.Args) != 1 {
+		reason = "provider_unavailable"
+		if h.Resolver == nil {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		reason = "invalid_args"
+		if len(req.Args) != 1 {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		query, ok := req.Args[0].(string)
@@ -126,24 +159,30 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		tracks, resolveErr := h.Resolver.Resolve(ctx, query)
+		reason, diagnostic = "resolve_failed", resolveErr
 		if resolveErr != nil || len(tracks) > youtube.MaxSearchResults {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
+		reason = "search_encode"
 		data, encodeErr := encodeMusicSearchResults(tracks)
+		diagnostic = encodeErr
 		if encodeErr != nil {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		return InteractionResult{Status: 0, Data: data}, nil
 	}
+	reason = "state_read"
 	snapshot, err := h.Store.Load(ctx, channel)
 	if err != nil {
 		return InteractionResult{}, err
 	}
 	if h.CurrentState != nil {
+		reason = "runtime_state_read"
 		state, revision, err := h.CurrentState(ctx, h.InstallationID, h.CommunityID, channel)
 		if err != nil {
 			return InteractionResult{}, err
 		}
+		reason = "revision_conflict"
 		if revision != snapshot.Revision || state.Revision != snapshot.Revision {
 			currentRevision := snapshot.Revision
 			return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
@@ -151,10 +190,12 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		snapshot.State = state
 	}
 	if op == protocol.OpMusicState {
+		reason = "can_dj_lookup"
 		canControl, err := h.Authority.CanDJ(ctx, actor, call)
 		if err != nil {
 			return InteractionResult{}, err
 		}
+		reason = "state_encode"
 		data, err := encodeMusicSnapshot(snapshot.State, canControl, h.clock().UnixMilli())
 		if err != nil {
 			return InteractionResult{}, err
@@ -162,32 +203,39 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		revision := snapshot.Revision
 		return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 	}
+	reason = "revision_conflict"
 	if req.Revision == nil || *req.Revision != snapshot.Revision {
 		revision := snapshot.Revision
 		return InteractionResult{Status: interactionStatusConflict, Revision: &revision}, nil
 	}
 	if op == protocol.OpMusicStop {
+		reason = "can_dj_lookup"
 		allowed, err = h.Authority.CanDJ(ctx, actor, call)
 		if err != nil {
 			return InteractionResult{}, err
 		}
+		reason = "forbidden"
 		if !allowed {
+			reason = "can_emergency_stop_lookup"
 			allowed, err = h.Authority.CanEmergencyStop(ctx, actor, call)
 			if err != nil {
 				return InteractionResult{}, err
 			}
 		}
 	} else {
+		reason = "can_dj_lookup"
 		allowed, err = h.Authority.CanDJ(ctx, actor, call)
 	}
 	if err != nil {
 		return InteractionResult{}, err
 	}
+	reason = "forbidden"
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	var opValue music.Operation
 	if op == protocol.OpMusicEnqueue {
+		reason = "invalid_args"
 		if len(req.Args) != 1 {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
@@ -199,19 +247,23 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		var resolveErr error
 		spotifyInput := isSpotifyCatalogInput(input)
 		if spotifyInput {
+			reason = "provider_unavailable"
 			if h.SpotifyResolver == nil {
 				return InteractionResult{Status: interactionStatusUnavailable}, nil
 			}
 			tracks, resolveErr = h.SpotifyResolver.ResolveSpotify(ctx, input, actor.User)
 		} else {
+			reason = "provider_unavailable"
 			if h.Resolver == nil {
 				return InteractionResult{Status: interactionStatusUnavailable}, nil
 			}
 			tracks, resolveErr = h.Resolver.Resolve(ctx, input)
 		}
+		reason, diagnostic = "resolve_failed", resolveErr
 		if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems || (spotifyInput && len(tracks) > 500) {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
+		reason = "provider_mismatch"
 		for i := range tracks {
 			if spotifyInput && tracks[i].Provider != music.ProviderSpotify || !spotifyInput && tracks[i].Provider != music.ProviderYouTube {
 				return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -226,6 +278,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		opValue = music.Operation{Kind: kind, Tracks: tracks}
 	} else {
 		var ok bool
+		reason = "invalid_operation"
 		opValue, ok = musicOperation(op, req.Args)
 		if !ok {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -242,7 +295,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			base.Volume = v
 		}
 	}
+	reason = "apply_failed"
 	next, err := music.Apply(base, snapshot.Revision, opValue)
+	diagnostic = err
 	if errors.Is(err, music.ErrRevisionConflict) {
 		return InteractionResult{Status: interactionStatusConflict}, nil
 	}
@@ -253,33 +308,41 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{}, err
 	}
 	// Recheck the call binding and role immediately before CAS persistence.
+	reason = "current_call_lookup"
 	current, err := h.Authority.CurrentCall(ctx, channel)
 	if err != nil {
 		return InteractionResult{}, err
 	}
+	reason = "call_changed"
 	if current != call {
 		return InteractionResult{Status: interactionStatusConflict}, nil
 	}
 	if op == protocol.OpMusicStop {
+		reason = "can_dj_lookup"
 		allowed, err = h.Authority.CanDJ(ctx, actor, current)
 		if err != nil {
 			return InteractionResult{}, err
 		}
+		reason = "forbidden"
 		if !allowed {
+			reason = "can_emergency_stop_lookup"
 			allowed, err = h.Authority.CanEmergencyStop(ctx, actor, current)
 			if err != nil {
 				return InteractionResult{}, err
 			}
 		}
 	} else {
+		reason = "can_dj_lookup"
 		allowed, err = h.Authority.CanDJ(ctx, actor, current)
 	}
 	if err != nil {
 		return InteractionResult{}, err
 	}
+	reason = "forbidden"
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	reason = "expired"
 	if req.Expires != nil {
 		now := time.Now
 		if h.Now != nil {
@@ -290,7 +353,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			return InteractionResult{Status: interactionStatusExpired}, nil
 		}
 	}
+	reason = "save_failed"
 	saved, err := h.Store.Save(ctx, channel, snapshot.Revision, next)
+	diagnostic = err
 	if errors.Is(err, persistence.ErrConflict) || errors.Is(err, music.ErrRevisionConflict) {
 		return InteractionResult{Status: interactionStatusConflict}, nil
 	}
@@ -300,6 +365,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if h.OnPersistedSnapshot != nil {
 		startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
 		appliedRevision, handoffErr := h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
+		reason, diagnostic = "snapshot_handoff", handoffErr
 		if handoffErr != nil {
 			if startPlayback {
 				appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)

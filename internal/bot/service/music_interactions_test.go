@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -652,5 +655,241 @@ func TestMusicMutationDefersRevisionCheckUntilAuthorization(t *testing.T) {
 	response := interactionResponse(t, encoded)
 	if response.Status != interactionStatusForbidden || response.Revision != nil {
 		t.Fatalf("unauthorized stale request response=%+v, want forbidden without revision", response)
+	}
+}
+
+func TestMusicEnqueueResolveFailureIsDefiniteUnavailable(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	channel, installation := id.New(), id.New()
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}
+	resolver := LoggingMusicTrackResolver{Resolver: &musicInteractionResolverFake{err: &youtube.ProcessError{Cause: youtube.ErrSandboxUnavailable, Stderr: "namespace\n\x00" + strings.Repeat("x", 700), ExitCode: 1}}, Logger: logger, InstallationID: installation}
+	handoffs := 0
+	h := MusicInteractions{Store: store, Authority: &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}, Resolver: resolver, Logger: logger, InstallationID: installation, CommunityID: id.New(), OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+		handoffs++
+		return 0, nil
+	}}
+	input := "https://youtu.be/abcdefghijk"
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: h.CommunityID, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{input}}, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != interactionStatusUnavailable || result.Revision != nil || store.saves != 0 || handoffs != 0 {
+		t.Fatalf("result=%+v err=%v saves=%d handoffs=%d", result, err, store.saves, handoffs)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("logs: %s", logs.String())
+	}
+	for _, line := range lines {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row["level"] != "WARN" || row["installation_id"] != installation.String() {
+			t.Fatalf("log=%v", row)
+		}
+		stderr, _ := row["stderr"].(string)
+		if len(stderr) != 512 || !strings.HasSuffix(stderr, "…") || strings.ContainsAny(stderr, "\n\x00") {
+			t.Fatalf("stderr=%q (%d bytes)", stderr, len(stderr))
+		}
+		if strings.Contains(line, input) || row["url"] != nil || row["input"] != nil {
+			t.Fatalf("input leaked: %s", line)
+		}
+	}
+	if !strings.Contains(lines[0], `"class":"sandbox_unavailable"`) || !strings.Contains(lines[1], `"reason":"resolve_failed"`) {
+		t.Fatalf("logs: %s", logs.String())
+	}
+}
+
+// Refusal tests drive real handler branches; fault wrappers only replace the
+// external authority/store boundary, not the refusal/logging implementation.
+type musicFaultAuthority struct {
+	MusicInteractionAuthority
+	fault                       string
+	at, calls, djs, emergencies int
+}
+
+func (a *musicFaultAuthority) CurrentCall(ctx context.Context, channel id.ID) (MusicCallBinding, error) {
+	a.calls++
+	if a.fault == "current_call_lookup" && a.calls == a.at {
+		return MusicCallBinding{}, errors.New("lookup failed")
+	}
+	return a.MusicInteractionAuthority.CurrentCall(ctx, channel)
+}
+func (a *musicFaultAuthority) CanUse(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
+	if a.fault == "can_use_lookup" {
+		return false, errors.New("lookup failed")
+	}
+	return a.MusicInteractionAuthority.CanUse(ctx, actor, call)
+}
+func (a *musicFaultAuthority) CanDJ(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
+	a.djs++
+	if a.fault == "can_dj_lookup" && a.djs == a.at {
+		return false, errors.New("lookup failed")
+	}
+	return a.MusicInteractionAuthority.CanDJ(ctx, actor, call)
+}
+func (a *musicFaultAuthority) CanEmergencyStop(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
+	a.emergencies++
+	if a.fault == "can_emergency_stop_lookup" && a.emergencies == a.at {
+		return false, errors.New("lookup failed")
+	}
+	return a.MusicInteractionAuthority.CanEmergencyStop(ctx, actor, call)
+}
+
+type musicFaultStore struct {
+	musicStateStore
+	loadErr, saveErr error
+}
+
+func (s musicFaultStore) Load(ctx context.Context, channel id.ID) (persistence.Snapshot, error) {
+	if s.loadErr != nil {
+		return persistence.Snapshot{}, s.loadErr
+	}
+	return s.musicStateStore.Load(ctx, channel)
+}
+func (s musicFaultStore) Save(ctx context.Context, channel id.ID, expected uint64, state music.State) (persistence.Snapshot, error) {
+	if s.saveErr != nil {
+		return persistence.Snapshot{}, s.saveErr
+	}
+	return s.musicStateStore.Save(ctx, channel, expected, state)
+}
+
+func TestMusicRefusalsLogReason(t *testing.T) {
+	tests := []struct {
+		name, reason string
+		status       uint64
+	}{
+		{"dependency", "dependency_or_context", 9}, {"call lookup", "current_call_lookup", 9}, {"call recheck", "current_call_lookup", 9},
+		{"no call", "no_current_call", 5}, {"can use lookup", "can_use_lookup", 9}, {"cannot use", "forbidden", 2},
+		{"search no resolver", "provider_unavailable", 5}, {"search no args", "invalid_args", 5}, {"search arg type", "invalid_args", 5},
+		{"search resolve", "resolve_failed", 5}, {"search too many", "resolve_failed", 5}, {"search encode", "search_encode", 5},
+		{"state read", "state_read", 9}, {"runtime read", "runtime_state_read", 9}, {"runtime revision", "revision_conflict", 4},
+		{"state dj lookup", "can_dj_lookup", 9}, {"state encode", "state_encode", 9}, {"revision", "revision_conflict", 4},
+		{"dj lookup", "can_dj_lookup", 9}, {"dj recheck", "can_dj_lookup", 9}, {"stop dj lookup", "can_dj_lookup", 9}, {"stop dj recheck", "can_dj_lookup", 9},
+		{"emergency lookup", "can_emergency_stop_lookup", 9}, {"emergency recheck", "can_emergency_stop_lookup", 9},
+		{"cannot dj", "forbidden", 2}, {"dj revoked", "forbidden", 2},
+		{"enqueue no args", "invalid_args", 5}, {"enqueue arg type", "invalid_args", 5}, {"youtube unavailable", "provider_unavailable", 5}, {"spotify unavailable", "provider_unavailable", 5},
+		{"enqueue resolve", "resolve_failed", 5}, {"enqueue empty", "resolve_failed", 5}, {"enqueue too many", "resolve_failed", 5},
+		{"provider mismatch", "provider_mismatch", 5}, {"spotify mismatch", "provider_mismatch", 5}, {"invalid op", "invalid_operation", 5},
+		{"invalid track", "apply_failed", 5}, {"apply revision", "apply_failed", 4},
+		{"call changed", "call_changed", 4}, {"expired", "expired", 3}, {"save failed", "save_failed", 9}, {"save conflict", "save_failed", 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			channel, community, installation := id.New(), id.New(), id.New()
+			store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}
+			authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+			fault := &musicFaultAuthority{MusicInteractionAuthority: authority, at: 1}
+			resolver := &musicInteractionResolverFake{tracks: []music.Track{{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track"}}}
+			h := MusicInteractions{Store: store, Authority: fault, Resolver: resolver, CommunityID: community, InstallationID: installation, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+			req := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"https://youtu.be/abcdefghijk"}}
+			op := protocol.OpMusicEnqueue
+			if strings.HasPrefix(tc.name, "search") {
+				op = protocol.OpMusicSearch
+			}
+			switch tc.name {
+			case "dependency":
+				h.Store = nil
+			case "call lookup":
+				fault.fault = "current_call_lookup"
+			case "call recheck":
+				fault.fault, fault.at = "current_call_lookup", 2
+			case "no call":
+				authority.call.Active = false
+			case "can use lookup":
+				fault.fault = "can_use_lookup"
+			case "cannot use":
+				authority.user = false
+			case "search no resolver", "youtube unavailable":
+				h.Resolver = nil
+			case "search no args", "enqueue no args":
+				req.Args = nil
+			case "search arg type", "enqueue arg type":
+				req.Args = []any{uint64(1)}
+			case "search resolve", "enqueue resolve":
+				resolver.err = youtube.ErrExtractFailed
+			case "search too many":
+				resolver.tracks = make([]music.Track, youtube.MaxSearchResults+1)
+			case "search encode":
+				resolver.tracks[0].Provider = music.ProviderSpotify
+			case "state read":
+				h.Store = musicFaultStore{musicStateStore: store, loadErr: errors.New("load failed")}
+			case "runtime read":
+				h.CurrentState = func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+					return music.State{}, 0, errors.New("runtime failed")
+				}
+			case "runtime revision":
+				h.CurrentState = func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+					return music.InitialState(), 1, nil
+				}
+			case "state dj lookup":
+				op, fault.fault = protocol.OpMusicState, "can_dj_lookup"
+			case "state encode":
+				op = protocol.OpMusicState
+				h.Now = func() time.Time { return time.Unix(-1, 0) }
+			case "revision":
+				req.Revision = nil
+			case "dj lookup":
+				fault.fault = "can_dj_lookup"
+			case "dj recheck":
+				fault.fault, fault.at = "can_dj_lookup", 2
+			case "stop dj lookup":
+				op, fault.fault = protocol.OpMusicStop, "can_dj_lookup"
+			case "stop dj recheck":
+				op, fault.fault, fault.at = protocol.OpMusicStop, "can_dj_lookup", 2
+			case "emergency lookup":
+				op, fault.fault, authority.dj = protocol.OpMusicStop, "can_emergency_stop_lookup", false
+			case "emergency recheck":
+				op, fault.fault, fault.at, authority.dj, authority.emergency = protocol.OpMusicStop, "can_emergency_stop_lookup", 2, false, true
+			case "cannot dj":
+				authority.dj = false
+			case "dj revoked":
+				revoked := false
+				authority.djAfterFirst = &revoked
+			case "spotify unavailable":
+				req.Args = []any{"spotify:track:1234567890123456789012"}
+			case "enqueue empty":
+				resolver.tracks = nil
+			case "enqueue too many":
+				resolver.tracks = make([]music.Track, youtube.MaxPlaylistItems+1)
+			case "provider mismatch":
+				resolver.tracks[0].Provider = music.ProviderSpotify
+			case "spotify mismatch":
+				req.Args = []any{"spotify:track:1234567890123456789012"}
+				h.SpotifyResolver = &musicSpotifyResolverFake{tracks: resolver.tracks}
+			case "invalid op":
+				op, req.Args = protocol.OpMusicVolume, nil
+			case "invalid track":
+				resolver.tracks[0].DurationMS = -1
+			case "apply revision":
+				store.snapshot.State.Revision = 1
+			case "call changed":
+				other := authority.call
+				other.CallID = id.New()
+				authority.callAfterFirst = &other
+			case "expired":
+				expires := uint64(1)
+				req.Expires = &expires
+			case "save failed":
+				h.Store = musicFaultStore{musicStateStore: store, saveErr: errors.New("save failed")}
+			case "save conflict":
+				h.Store = musicFaultStore{musicStateStore: store, saveErr: persistence.ErrConflict}
+			}
+			result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, req, op)
+			status := result.Status
+			if err != nil {
+				status = interactionStatusInternal
+			}
+			if status != tc.status || store.saves != 0 {
+				t.Fatalf("status=%d err=%v saves=%d", status, err, store.saves)
+			}
+			var row map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &row); err != nil {
+				t.Fatalf("expected one log, got %q: %v", logs.String(), err)
+			}
+			if row["reason"] != tc.reason || row["status"] != float64(tc.status) || row["op"] != float64(op) || row["installation_id"] != installation.String() || row["level"] != "WARN" || row["msg"] != "bot music operation refused" {
+				t.Fatalf("log=%v", row)
+			}
+		})
 	}
 }

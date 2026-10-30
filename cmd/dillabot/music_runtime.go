@@ -259,7 +259,7 @@ func newInstallationMusicQueueStarter(instance, installation, community, channel
 			if youtubeSource != nil {
 				return youtubeSource
 			}
-			return youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node"}
+			return youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node", Logger: slog.Default().With("installation_id", installation.String())}
 		}(),
 		LeaseManager: leases,
 		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
@@ -307,7 +307,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		InstallationID: installation, CommunityID: community,
 	}
 	handlers := &service.MusicInteractions{
-		Store: stateStore, Authority: authority,
+		Store: stateStore, Authority: authority, Logger: logger,
 		InstallationID: installation, CommunityID: community,
 		CurrentState:        registry.CurrentState,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
@@ -316,7 +316,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		handlers.SpotifyResolver = spotifyResolvers[0]
 	}
 	if resolver, err := newYouTubeMetadataResolver(); err == nil {
-		handlers.Resolver = resolver
+		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: resolver, Logger: logger, InstallationID: installation}
 	} else if logger != nil {
 		logger.Info("YouTube music search and enqueue are unavailable", "installation_id", installation.String(), "error", err.Error())
 	}

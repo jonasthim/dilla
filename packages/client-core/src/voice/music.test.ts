@@ -246,7 +246,33 @@ describe('authenticated voice music adapter', () => {
     }
   });
 
-  it('keeps a Spotify status 5 outcome uncertain because the mutation may have persisted', async () => {
+  it('rejects status 5 without a revision as definite unavailable', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '12'.repeat(16) });
+    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
+    const rejected = expect(enqueue).rejects.toMatchObject({ code: 'unavailable' });
+    f.answer(f.getRequest(12), 5, null, encode([]));
+    await rejected;
+    unsubscribe();
+  });
+
+  it.each([null, '2'])('classifies durable status 5 with revision %s when restoring an attempt', async revision => {
+    const f = fixture();
+    const original = f.client.call.bind(f.client);
+    f.client.call = vi.fn((command: Record<string, unknown>) => {
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: [{ requestId: '56'.repeat(16), operation: 12, status: 5, revision, data: encode([]) }], through: null });
+      return original(command as never);
+    }) as CoreClient['call'];
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '56'.repeat(16) });
+    await expect(enqueue).rejects.toMatchObject(revision === null ? { code: 'unavailable' } : { requestId: '56'.repeat(16) });
+    expect(f.commands.filter(command => command.operation === 12)).toHaveLength(0);
+  });
+
+  it('keeps status 5 with a revision uncertain because the mutation may have persisted', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());

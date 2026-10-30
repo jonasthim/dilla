@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -88,6 +89,8 @@ func (r *BoundedPCMReader) Close() error {
 // external path is a bounded CONNECT broker restricted to public YouTube hosts.
 // Bubblewrap and Python 3 are explicit host prerequisites; absence fails closed.
 type PCMStarter struct {
+	// Logger carries installation-scoped sandbox diagnostics. Nil uses slog.Default.
+	Logger      *slog.Logger
 	Bubblewrap  string
 	Python      string
 	YTDLP       string
@@ -106,5 +109,5 @@ func (s PCMStarter) Start(ctx context.Context, source string) (io.ReadCloser, er
 	if err != nil || kind != "video" || canonical != source {
 		return nil, ErrInvalidInput
 	}
-	return s.startIsolated(ctx, canonical)
+	return s.startIsolated(WithDiagnosticLogger(ctx, s.Logger), canonical)
 }

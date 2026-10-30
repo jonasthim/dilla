@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	youtubemusic "github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 )
 
@@ -68,6 +69,11 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "FAIL: " + strings.TrimSpace(youtubeResult.String()) + " (" + searchPath + ")"})
 	} else {
 		checks = append(checks, botDoctorCheck{name: "youtube_dependencies", status: "WARN: " + strings.TrimSpace(youtubeResult.String()) + " (" + searchPath + ")"})
+	}
+	if *youtube {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		checks = append(checks, checkYouTubeSandbox(ctx, doctorLookPath))
+		cancel()
 	}
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		checks = append(checks, botDoctorCheck{name: "native_helper", status: "FAIL: executable helper is unavailable or unsafe"})
@@ -231,4 +237,29 @@ func validatePrivateStateDir(path string) error {
 		return os.ErrPermission
 	}
 	return nil
+}
+
+// checkYouTubeSandbox exercises the real isolated runner without provider access.
+func checkYouTubeSandbox(ctx context.Context, lookPath func(string) (string, error)) botDoctorCheck {
+	check := botDoctorCheck{name: "youtube_sandbox"}
+	paths := make(map[string]string)
+	for _, name := range []string{"bwrap", "python3", "yt-dlp"} {
+		path, err := lookPath(name)
+		if err != nil {
+			check.status = "FAIL: " + name + " unavailable"
+			return check
+		}
+		paths[name] = path
+	}
+	runner := youtubemusic.IsolatedMetadataRunner{Bubblewrap: paths["bwrap"], Python: paths["python3"]}
+	_, err := runner.Run(ctx, paths["yt-dlp"], []string{"--version"}, 2048)
+	if err != nil {
+		check.status = "FAIL: " + youtubemusic.FailureClass(err)
+		if stderr := youtubemusic.FailureStderr(err); stderr != "" {
+			check.status += ": " + stderr
+		}
+	} else {
+		check.status = "OK: isolated yt-dlp --version ran without provider access"
+	}
+	return check
 }

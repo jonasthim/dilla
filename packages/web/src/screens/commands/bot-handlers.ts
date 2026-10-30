@@ -3,6 +3,7 @@ import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInt
   COMMANDS, parseSeekPosition, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestionProvider } from './command-types.ts';
 import { BotCommandDialogs, type BotCommandDialogState, type BotCommandDialogValue } from './BotCommandDialogs.tsx';
+import { t } from '../../strings/index.ts';
 
 const ID = /^[0-9a-f]{32}$/u;
 const MUSIC_COMMAND_IDS = new Set(['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
@@ -11,6 +12,7 @@ const ok = (message: string): CommandResult => ({ status: 'success', message, pr
 const fail = (message: string): CommandResult => ({ status: 'failure', message, private: true });
 const uncertain = (message: string): CommandResult => ({ status: 'uncertain', message, private: true });
 const resultError = (error: unknown): CommandResult => {
+  if (error instanceof Error && 'code' in error && error.code === 'unavailable') return fail(t('music.error.unavailable'));
   if (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)
     return fail(error.message);
   const requestId = typeof error === 'object' && error !== null && 'requestId' in error ? String(error.requestId) : '';
