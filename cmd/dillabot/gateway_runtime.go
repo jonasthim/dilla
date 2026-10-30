@@ -40,18 +40,25 @@ func (e *botGatewayEntry) isPrivate(group *id.ID) bool {
 	defer e.mu.Unlock()
 	return e.private[*group]
 }
+
 type botGatewayRuntime struct {
-	ctx       context.Context
-	api       *client.Client
-	loopback  bool
-	log       *slog.Logger
-	entries   map[id.ID]*botGatewayEntry
-	wake      chan struct{}
+	ctx      context.Context
+	api      *client.Client
+	loopback bool
+	log      *slog.Logger
+	entries  map[id.ID]*botGatewayEntry
+	wake     chan struct{}
 	// interaction carries a participant's message in a private interaction group: a command
 	// waiting for an answer, which reconcileWait polls without the general throttle.
 	interaction chan struct{}
 	pollers     map[id.ID]func(context.Context) error
 	startedAt   uint64
+
+	// pending holds the interaction groups messaged since the last fast poll, per installation
+	// (guarded by pendingMu: the per-installation gateway goroutines write it).
+	pendingMu          sync.Mutex
+	pending            map[id.ID]map[id.ID]bool
+	interactionPollers map[id.ID]func(context.Context, id.ID) error
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
@@ -65,10 +72,54 @@ func (r *botGatewayRuntime) notify() {
 	default:
 	}
 }
-func (r *botGatewayRuntime) notifyInteraction() {
+func (r *botGatewayRuntime) notifyInteraction(installation, group id.ID) {
+	r.pendingMu.Lock()
+	if r.pending == nil {
+		r.pending = map[id.ID]map[id.ID]bool{}
+	}
+	if r.pending[installation] == nil {
+		r.pending[installation] = map[id.ID]bool{}
+	}
+	r.pending[installation][group] = true
+	r.pendingMu.Unlock()
 	select {
 	case r.interaction <- struct{}{}:
 	default:
+	}
+}
+
+// SetInteractionPoller registers the installation's fast path for interaction-group messages;
+// nil removes it while reconciliation rebuilds the installation.
+func (r *botGatewayRuntime) SetInteractionPoller(installation id.ID, poll func(context.Context, id.ID) error) {
+	if r.interactionPollers == nil {
+		r.interactionPollers = map[id.ID]func(context.Context, id.ID) error{}
+	}
+	if poll == nil {
+		delete(r.interactionPollers, installation)
+	} else {
+		r.interactionPollers[installation] = poll
+	}
+}
+
+// PollInteractions reads each messaged interaction group once and dispatches its events. An
+// installation with no fast path registered falls back to the general wake and its full sweep.
+func (r *botGatewayRuntime) PollInteractions(ctx context.Context) {
+	r.pendingMu.Lock()
+	pending := r.pending
+	r.pending = nil
+	r.pendingMu.Unlock()
+	for installation, groups := range pending {
+		poll := r.interactionPollers[installation]
+		if poll == nil {
+			r.notify()
+			continue
+		}
+		for group := range groups {
+			if err := poll(ctx, group); err != nil && ctx.Err() == nil {
+				r.log.Warn("bot interaction command intake deferred", "installation_id", installation.String())
+				r.notify()
+			}
+		}
 	}
 }
 func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token string) error {
@@ -87,6 +138,7 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 			<-e.done
 			delete(r.entries, installation)
 			delete(r.pollers, installation)
+			delete(r.interactionPollers, installation)
 		}
 	}
 	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user})
@@ -122,7 +174,7 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 					// A participant's message in a private interaction group is a command
 					// waiting for an answer; it skips the general throttle.
 					if e.isPrivate(delivery.Frame.GroupID) {
-						r.notifyInteraction()
+						r.notifyInteraction(installation, *delivery.Frame.GroupID)
 					} else {
 						r.notify()
 					}
@@ -154,6 +206,7 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			<-e.done
 			delete(r.entries, installation)
 			delete(r.pollers, installation)
+			delete(r.interactionPollers, installation)
 		}
 	}
 }
@@ -167,6 +220,7 @@ func (r *botGatewayRuntime) Drop(installation id.ID) {
 		<-e.done
 		delete(r.entries, installation)
 		delete(r.pollers, installation)
+		delete(r.interactionPollers, installation)
 	}
 }
 

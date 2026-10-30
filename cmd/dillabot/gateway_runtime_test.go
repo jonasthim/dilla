@@ -185,3 +185,39 @@ ownEcho:
 		}
 	}
 }
+
+// Interaction signals carry their installation and group. Repeated messages in one group coalesce
+// into one narrow poll of that group; an installation without a fast-path poller (mid
+// reconciliation) falls back to the throttled general wake.
+func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, unpolled, a, b := id.New(), id.New(), id.New(), id.New()
+	var polled []id.ID
+	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error { polled = append(polled, group); return nil })
+	for range 10 {
+		runtime.notifyInteraction(installation, a)
+	}
+	runtime.notifyInteraction(installation, b)
+	select {
+	case <-runtime.Interaction():
+	default:
+		t.Fatal("no interaction signal")
+	}
+	runtime.PollInteractions(t.Context())
+	inOrder := len(polled) == 2 && polled[0] == a && polled[1] == b
+	reversed := len(polled) == 2 && polled[0] == b && polled[1] == a
+	if !inOrder && !reversed {
+		t.Fatalf("polled %v, want each messaged group once", polled)
+	}
+	runtime.PollInteractions(t.Context())
+	if len(polled) != 2 {
+		t.Fatalf("a drained signal polled again: %v", polled)
+	}
+	runtime.notifyInteraction(unpolled, a)
+	runtime.PollInteractions(t.Context())
+	select {
+	case <-runtime.Wake():
+	default:
+		t.Fatal("an installation without a fast-path poller did not fall back to the general wake")
+	}
+}

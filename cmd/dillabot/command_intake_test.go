@@ -10,7 +10,50 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/jonasthim/dilla/internal/id"
 )
+
+type namedGroupSync struct {
+	steps *[]string
+	err   error
+}
+
+func (s namedGroupSync) ReconcileInteractionGroupOnce(_ context.Context, _ *client.Session, group id.ID) (service.MembershipResult, error) {
+	*s.steps = append(*s.steps, "interaction_sync:"+group.String())
+	return service.MembershipResult{GroupsSynced: 1}, s.err
+}
+
+// The gateway fast path for a participant's message reads that one interaction group and then
+// dispatches; it never runs the text-channel membership sweep, the trust pass or the sweep of
+// every interaction group, which stay on the throttled general wake and on reconciliation.
+func TestInteractionFastPathSyncsOnlyTheMessagedGroupBeforeDispatch(t *testing.T) {
+	group := id.New()
+	for _, denied := range []bool{false, true} {
+		var steps []string
+		refusal := errors.New("private source denied")
+		sync := namedGroupSync{steps: &steps}
+		if denied {
+			sync.err = refusal
+		}
+		poll := newInteractionIntakePoller(sync, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
+			steps = append(steps, "dispatch")
+			return service.GroupEventPollResult{}, nil
+		}))
+		err := poll(t.Context(), group)
+		want := []string{"interaction_sync:" + group.String(), "dispatch"}
+		if denied {
+			want = want[:1]
+			if !errors.Is(err, refusal) {
+				t.Fatalf("error=%v, want source refusal", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(steps, want) {
+			t.Fatalf("steps=%v, want %v", steps, want)
+		}
+	}
+}
 
 type commandDrainFunc func(context.Context) (service.GroupEventPollResult, error)
 
