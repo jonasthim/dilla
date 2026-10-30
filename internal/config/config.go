@@ -254,7 +254,11 @@ type Rate struct {
 	UnauthBurst          int      `toml:"unauth_burst"`
 	InvalidPerSecond     float64  `toml:"invalid_per_second"`
 	InvalidBurst         int      `toml:"invalid_burst"`
-	PasswordConcurrency  int      `toml:"password_concurrency"`
+	// PasskeyBegin* meter POST /v1/auth/passkey/login/begin per address, apart from `login` (wave B task 3): the sign-in
+	// page opens a passkey ceremony when the username field gains focus, and those begins must not spend password attempts.
+	PasskeyBeginPerSecond float64 `toml:"passkey_begin_per_second"`
+	PasskeyBeginBurst     int     `toml:"passkey_begin_burst"`
+	PasswordConcurrency   int     `toml:"password_concurrency"`
 }
 
 type Retention struct {

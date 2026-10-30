@@ -119,17 +119,18 @@ type rateBucket struct {
 func (c *Config) rateBuckets() map[string]rateBucket {
 	r := c.Limits.Rate
 	return map[string]rateBucket{
-		"message":      {r.MessagePerSecond, r.MessageBurst},
-		"commit":       {r.CommitPerSecond, r.CommitBurst},
-		"proposal":     {r.ProposalPerSecond, r.ProposalBurst},
-		"read":         {r.ReadPerSecond, r.ReadBurst},
-		"write":        {r.WritePerSecond, r.WriteBurst},
-		"login":        {r.LoginPerSecond, r.LoginBurst},
-		"login_failed": {r.LoginFailedPerSecond, r.LoginFailedBurst},
-		"register":     {r.RegisterPerSecond, r.RegisterBurst},
-		"invite":       {r.InvitePerSecond, r.InviteBurst},
-		"unauth":       {r.UnauthPerSecond, r.UnauthBurst},
-		"invalid":      {r.InvalidPerSecond, r.InvalidBurst},
+		"message":       {r.MessagePerSecond, r.MessageBurst},
+		"commit":        {r.CommitPerSecond, r.CommitBurst},
+		"proposal":      {r.ProposalPerSecond, r.ProposalBurst},
+		"read":          {r.ReadPerSecond, r.ReadBurst},
+		"write":         {r.WritePerSecond, r.WriteBurst},
+		"login":         {r.LoginPerSecond, r.LoginBurst},
+		"login_failed":  {r.LoginFailedPerSecond, r.LoginFailedBurst},
+		"register":      {r.RegisterPerSecond, r.RegisterBurst},
+		"invite":        {r.InvitePerSecond, r.InviteBurst},
+		"unauth":        {r.UnauthPerSecond, r.UnauthBurst},
+		"invalid":       {r.InvalidPerSecond, r.InvalidBurst},
+		"passkey_begin": {r.PasskeyBeginPerSecond, r.PasskeyBeginBurst},
 	}
 }
 

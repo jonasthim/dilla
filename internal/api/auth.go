@@ -137,6 +137,13 @@ const classLogin = "login"
 // writer; PasswordLogin only peeks at it.
 const classLoginFailed = "login_failed"
 
+// classPasskeyBegin is the passkey login begin's own per-address bucket (wave B task 3, Jonas). A begin proves
+// nothing and guesses nothing: it only mints a ceremony. The web sign-in opens one when the username field gains
+// focus, so charging it to `login` let a page left open spend the address's password attempts. The finish still
+// spends a `login` token and records a failure like a wrong password, so a passkey is no way around the login
+// throttle.
+const classPasskeyBegin = "passkey_begin"
+
 func secondFactorKey(addr string) string { return "2fa\x00" + addr }
 
 // passwordLoginRequest is [username(tstr), password(tstr)].
@@ -1071,7 +1078,7 @@ func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
-	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+	if ok, wait := d.Throttle.Allow(classPasskeyBegin, addrKey); !ok {
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}

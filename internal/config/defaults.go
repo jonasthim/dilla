@@ -60,6 +60,8 @@ func Default() *Config {
 			InvitePerSecond: 0.1, InviteBurst: 5,
 			UnauthPerSecond: 1.0, UnauthBurst: 20,
 			InvalidPerSecond: 0.2, InvalidBurst: 60,
+			// As strict as the session challenge (1/s, burst 10) or stricter: one begin every 5 s after a burst of 10.
+			PasskeyBeginPerSecond: 0.2, PasskeyBeginBurst: 10,
 			PasswordConcurrency: 0,
 		},
 	}
