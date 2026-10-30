@@ -42,7 +42,7 @@ export interface VoiceContext {
    * it) and whether this user is away there; null for any other channel. `onJoinVoice` on it chooses AFK (useCall).
    */
   afkPage?(channelId: string): { people: readonly VoiceParticipantView[]; away: boolean; /** The community's AFK timeout, from `afkRead`. */ timeoutSeconds: number } | null;
-  /** Wave B task 4: "Come back" leaves the AFK channel (Jonas, Q3): the shell opens the server's first text channel. */
+  /** Wave B task 4: "Come back" leaves the AFK channel (Jonas, Q3): the shell opens a text channel the person can send in (the last opened), or stays. */
   onLeaveAfk?(): void;
   /** Wave B task 4: what the person menu's Profile, Message, Mention, Edit roles and Move to do; absent items are not drawn. */
   people?: VoicePeople;
@@ -626,8 +626,8 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
  * The AFK channel's page (Signal, the prototype's AFK view; wave B task 4). It hosts no call (R-AW1): the moon tile, a title that
  * says who is away ("Nobody is away", "You are away", or the others' names when you are not), the explainer with the server's
  * timeout (phones are never moved: the instance exempts a device that cannot be idle-detected), and one button. "Go AFK" runs the
- * AFK row's path (leave the call, then mark away); once away it reads "Come back" and leaves the page for the server's first
- * text channel (Jonas, Q3); typing or posting there clears the away mark, as it always has.
+ * AFK row's path (leave the call, then mark away); once away it reads "Come back" and leaves the page for a text channel
+ * this person can send in (Jonas, Q3), and stays when there is none.
  */
 export function afkTitle(away: boolean, names: readonly string[]): string {
   if (away) return t('afk.title.you');

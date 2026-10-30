@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dmMenuItems, startDmCall } from '../../test/row-menu.ts';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { PERM } from '@dilla/client-core';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, BOB_DEV, CAROL, CAROL_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, CAROL, CAROL_DEV, CHANNELS, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { REMOVED_HOLD_MS } from './useCall.tsx';
@@ -1669,5 +1670,65 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     fireEvent.contextMenu(li(`${CAROL_DEV}:person`), { clientX: 20, clientY: 20 });
     const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'glenn' }) });
     expect(names(menu)).toEqual(['Profile', 'Mention', 'Mute for me', 'Copy username']);
+  });
+});
+
+describe('wave B task 4 fix round 2: where Mention and Come back go', () => {
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const names = (menu: HTMLElement) => [...menu.querySelectorAll('[role^="menuitem"]')].map(i => i.textContent);
+  const channelsOf = (ids: string[]) => CHANNELS.filter(c => ids.includes(c.id));
+  const NEWS = 'b7'.repeat(16);
+  const EVERYONE = 'ab'.repeat(16);
+  const text = (id: string, name: string, position: number) =>
+    ({ id, communityId: A, kind: 0 as const, mode: 0 as const, name, topic: '', parentId: null, position, slowmode: 0, announcement: false, group: 'active' as const });
+  const room = { [GENV]: { callId: GENV, participants: [
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } };
+  const bobTile = { deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking: false, video: null, screen: null, screenAudio: false };
+  const publishRoles = (app: Awaited<ReturnType<typeof inVoice>>, deny: string[]) => {
+    const bits = PERM.viewChannel | PERM.sendMessages | PERM.readHistory | PERM.connect | PERM.speak;
+    app.client.publish(`roles:${A}`, [{ id: EVERYONE, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: true, allow: bits, deny: 0, members: 0 }]);
+    app.client.publish(`overwrites:${A}`, Object.fromEntries(deny.map(id => [id, [{ kind: 0 as const, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }]])));
+    app.client.publish(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE });
+  };
+  const mentionOf = async (app: Awaited<ReturnType<typeof inVoice>>) => {
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    return screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+  };
+
+  it('a voice-only community: no Mention', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, channelsOf([GENV, MUSIC])));
+    expect(names(await mentionOf(app))).toEqual(['Profile', 'Message', 'Mute for me', 'Copy username']);
+  });
+
+  it('a voice-only community: Come back does not go to a voice channel', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    act(() => app.client.publish(`channels:${A}`, channelsOf([GENV, MUSIC])));
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [{ userId: ME.id, since: 1_900_000_000 }] });
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`);
+  });
+
+  it('the last opened text channel is read-only: Mention falls back to a sendable one', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'lobby', 0), text(NEWS, 'news', 1), ...channelsOf([GENV, MUSIC])]));
+    publishRoles(app, [NEWS]);
+    go(`/c/${A}/${NEWS}`);
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+    go(`/c/${A}/${GENV}`);
+    const menu = await mentionOf(app);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${TEXT}`));
+  });
+
+  it('every text channel is read-only: no Mention', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'lobby', 0), ...channelsOf([GENV, MUSIC])]));
+    publishRoles(app, [TEXT]);
+    expect(names(await mentionOf(app))).not.toContain('Mention');
   });
 });

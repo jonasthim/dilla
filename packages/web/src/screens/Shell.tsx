@@ -8,7 +8,7 @@ import {
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
-import { useChannelBits } from '../core/use-channel-bits.ts';
+import { useChannelBits, useChannelBitsOf } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, goBack, subscribeCommittedTraversal, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route, type SettingsSection } from '../router.ts';
 import { searchSettings } from '../settings/registry.ts';
@@ -513,6 +513,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const candidates = mentionCandidates(conversationMembers, self?.id ?? null);
   // Fallback only: what I may do in the open channel (roles, overwrites, access), null while unknown and for a DM.
   const bits = useChannelBits(channel === null ? null : communityId, channel?.id ?? null);
+  const bitsOf = useChannelBitsOf(communityId);
   const roles = useSlice(`roles:${communityId ?? ''}`);
   const broadcast = channel !== null;
   const [ui, rawDispatch] = useConversationUi(targetId);
@@ -1081,8 +1082,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onVoiceSettings: () => void navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
     afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway, timeoutSeconds: afkHere.timeoutSeconds } : null),
-    // Wave B task 4 (Jonas, Q3): "Come back" leaves the AFK channel for the server's first text channel; typing or posting there
-    // clears the away mark, as it always has.
+    // Wave B task 4 (Jonas, Q3): "Come back" leaves the AFK channel for a text channel the person can send in (the last opened), and
+    // never for a voice or AFK channel: with none it stays. It does not clear the away mark (no server change).
     onLeaveAfk: () => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, null); },
     // Wave B task 4: the person menu's Profile, Message, Mention, Edit roles and Move to. These read later bindings (the voice rows,
     // the composer's mention) only when the menu is built, long after this render's body ran.
@@ -1436,14 +1437,24 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     else if (document.querySelector('.d-app-shell__backdrop') !== null) setMembersOpen(false);
     setMentionTick(n => n + 1);
   } : undefined;
-  // Wave B task 4 fix round 1 (Jonas): Mention on a community route without a composer (the voice view, the AFK page, settings)
-  // goes to the server's last open text channel (else its first), puts "@username " in that channel's draft and focuses its
-  // composer there. `lastText` is kept per community, whenever a text channel route is open.
+  // Wave B task 4 fix rounds 1-2 (Jonas): Mention on a community route without a composer (the voice view, the AFK page, settings)
+  // goes to a text channel this person can send in: the last one opened (kept per community in `lastText`), else the first one in
+  // order; it puts "@username " in that channel's draft and focuses its composer there. Announcement channels they cannot post in,
+  // read-only ones, a timeout and a voice-only server leave no target: Mention is not offered and Come back stays where it is.
   const lastText = useRef(new Map<string, string>());
-  if (communityId !== null && channel !== null && channel.kind === 0 && voiceChannel === null) lastText.current.set(communityId, channel.id);
+  const canSendIn = (c: ChannelSummary): boolean => {
+    if (c.kind !== 0 || c.mode !== 0 || c.group === 'unsupported') return false;
+    if (selfTimeout?.communityId === communityId) return false;
+    const channelBits = bitsOf(c.id);
+    // Unknown bits (a slice still loading) behave as the composer does: sending is not refused here.
+    return channelBits === null ? !everyoneDenied(c.id) && !c.announcement : (channelBits & PERM.sendMessages) !== 0;
+  };
+  useEffect(() => {
+    if (communityId !== null && channel !== null && voiceChannel === null && canSendIn(channel)) lastText.current.set(communityId, channel.id);
+  });
   const textChannelHere = (): ChannelSummary | null => {
     const last = communityId === null ? undefined : lastText.current.get(communityId);
-    return ordered.find(c => c.id === last && c.kind === 0) ?? defaultChannel(ordered);
+    return ordered.find(c => c.id === last && canSendIn(c)) ?? ordered.find(canSendIn) ?? null;
   };
   const openComposerIn = (id: string, username: string | null) => {
     if (username !== null) {
@@ -1456,8 +1467,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     setMentionTick(n => n + 1);
     if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: id });
   };
-  const mentionAnywhere = mentionFromMembers ?? (communityId !== null && textChannelHere() !== null
-    ? (username: string) => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, username); } : undefined);
+  const mentionTarget = communityId === null || mentionFromMembers !== undefined ? null : textChannelHere();
+  const mentionAnywhere = mentionFromMembers ?? (mentionTarget === null ? undefined
+    : (username: string) => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, username); });
   mentionRef.current = mentionAnywhere;
   // Where focus goes when the sheet or drawer closes: the control that opened it (kept from the first open, not from a list row),
   // else the root's message row, else the header's button.
