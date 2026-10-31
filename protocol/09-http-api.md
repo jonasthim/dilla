@@ -1975,3 +1975,7 @@ Human clients offer wires `[5,4,3,2]` to session negotiation and the gateway. Ma
 to negotiate exactly 3. Wire 5 retains the wire-4 HTTP response baseline, including account-kind
 attestation, and adds the ephemeral ops of `02`. `/app-version.json` remains the authoritative
 manifest check following a build notice and the legacy/offline fallback; no endpoint is removed.
+
+HTTP presence activity remains available for legacy and unavailable sockets. Its gateway device
+allowance is the same one charged by op 57, so switching transports cannot refresh activity more
+than once per five seconds. Activity inbox reads and voice AFK policy updates are separate routes.

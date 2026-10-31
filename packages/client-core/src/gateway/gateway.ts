@@ -282,7 +282,7 @@ export class Gateway {
     if (this.current !== 'ready' || this.hello === null) return;
     const interval = Math.min(Math.floor(this.hello.heartbeatMs / 2), GATEWAY.heartbeatMaxMs);
     this.arm('heartbeatTimer', interval, () => {
-      this.send(encodeFrame(Op.heartbeat, 0, null, [this.lastN, 1]));
+      this.send(encodeFrame(Op.heartbeat, 0, null, [this.lastN, 0]));
       if (this.ackTimer === null) {
         this.beatSentAt = this.deps.now();
         this.arm('ackTimer', GATEWAY.ackTimeoutMs, () => this.teardown(CLIENT_CLOSE.heartbeatTimeout, true));
@@ -359,6 +359,19 @@ export class Gateway {
     this.goIdle();
     this.setStatus('idle', null);
     this.lastTyping.clear();
+  }
+
+  private lastActivityAt = -Infinity;
+
+  /** True means the wire-5 path owns this sample, including a coalesced/congested drop.
+   * False lets the caller choose the compatibility HTTP path; nothing is queued for reconnect. */
+  sendPresenceActivity(): boolean {
+    if (this.phase !== 'ready' || (this.acceptedVersions?.wire ?? 0n) < 5n || this.socket?.readyState !== 1) return false;
+    const now = this.deps.now();
+    if (now - this.lastActivityAt < 5000) return true;
+    this.lastActivityAt = now;
+    if (this.socket.bufferedAmount <= 65536) this.send(encodeFrame(Op.presenceActivity, 0, null, []));
+    return true;
   }
 
   sendTyping(channelId: Uint8Array, on: boolean): void {

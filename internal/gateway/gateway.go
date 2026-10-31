@@ -398,7 +398,10 @@ func (g *Gateway) touch(ctx context.Context, device id.ID, now time.Time) {
 // connections and not the number ever opened.
 func (g *Gateway) addLive(c *conn) {
 	g.reg.add(c)
-	g.presence.activity(c.deviceID, c.userID)
+	// Legacy clients retain their connection-time initial presence. Wire 5 only counts real input.
+	if g.connectionWire(c) < 5 {
+		g.presence.activity(c.deviceID, c.userID)
+	}
 	if g.opts.OnPresenceChanged != nil {
 		g.opts.OnPresenceChanged(c.userID)
 	}

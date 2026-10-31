@@ -368,6 +368,17 @@ reconcile. Pre-login, legacy and disconnected clients check every five visible m
 calls use a thirty-second fallback even in hidden tabs. Malformed hints are ignored. Frames
 56–58 never consume replay numbers or appear in the replay ring.
 
+`presence_activity` contains no client identity, input details or timestamp. It is accepted only
+on a ready wire-5 human enrolled session, revalidated from the connection's stored token hash,
+with no factor debt or revocation. It shares one allowance per device per five seconds with the
+HTTP activity route, across sockets and reconnects. Duplicate input is silently coalesced. The
+allowance cache admits at most 8192 devices in a five-second window and refuses excess work
+without refreshing presence. No activity is queued for reconnect. Heartbeat's legacy `active`
+field is ignored for presence; current clients send zero. Wire 5 starts Idle until real input;
+legacy connections retain their initial Online behavior. Ten minutes without accepted input
+means Idle; DND and invisible choices retain precedence. AFK voice admission/speech/activity
+and away-roster rules are unchanged.
+
 Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.
 Invisible is an account choice, exposed to other members as Offline. The frame is sent only to
 current members of a shared community and to the account's own devices. A fresh connection reads

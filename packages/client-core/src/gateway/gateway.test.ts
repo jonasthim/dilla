@@ -86,6 +86,7 @@ class FakeSocket {
   readonly url: string;
   readonly protocols: string[];
   binaryType = 'blob';
+  bufferedAmount = 0;
   readyState = 0;
   readonly sent: Uint8Array[] = [];
   closedWith: { code: number; reason: string } | null = null;
@@ -327,11 +328,11 @@ describe('Gateway heartbeat', () => {
     h.clock.advance(14_999);
     expect(beats()).toHaveLength(0);
     h.clock.advance(1);
-    expect(beats()).toEqual([{ op: Op.heartbeat, n: 0n, groupId: null, payload: [1n, 1n] }]);
+    expect(beats()).toEqual([{ op: Op.heartbeat, n: 0n, groupId: null, payload: [1n, 0n] }]);
     s.receive(encodeFrame(Op.heartbeatAck, 0, null, [1_700_000_000]));
     s.receive(encodeFrame(Op.messageCt, 5, GROUP, [9, 6, DEVICE, new Uint8Array([1]), new Uint8Array(32), 1_700_000_000]));
     h.clock.advance(15_000);
-    expect(beats()[1]?.payload).toEqual([5n, 1n]);
+    expect(beats()[1]?.payload).toEqual([5n, 0n]);
   });
 
   // Task 11 (Jonas, Q3): the ack's delay after its beat is the gateway's round trip.
@@ -889,4 +890,17 @@ it.each([2, 3, 4, 5])('uses the selected wire %i to gate build notices', async w
   s.receive(encode([56, 0, null, ['/assets/new.js']]));
   expect(h.events.filter(e => e.type === 'frame' && e.frame.op === 56)).toHaveLength(wire === 5 ? 1 : 0);
   h.gw.stop(); expect(h.gw.acceptedVersions).toBeNull();
+});
+
+it('coalesces real activity on wire 5, drops congestion and never replays it', async () => {
+  const h = harness(); h.gw.start(); await flush(); const s = h.last(); s.open();
+  s.receive(hello({ wire: [5,4,3,2] })); s.receive(ready({ wire: 5 }));
+  expect(h.gw.sendPresenceActivity()).toBe(true);
+  h.gw.sendPresenceActivity(); h.clock.advance(4999); h.gw.sendPresenceActivity();
+  expect(s.sentFrames().filter(f => f.op === 57)).toHaveLength(1);
+  h.clock.advance(1); h.gw.sendPresenceActivity();
+  expect(s.sentFrames().filter(f => f.op === 57)).toHaveLength(2);
+  s.bufferedAmount = 65537; h.clock.advance(5000); h.gw.sendPresenceActivity();
+  expect(s.sentFrames().filter(f => f.op === 57)).toHaveLength(2);
+  s.serverClose(1006); expect(h.gw.sendPresenceActivity()).toBe(false);
 });

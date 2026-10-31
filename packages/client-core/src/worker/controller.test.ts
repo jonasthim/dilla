@@ -7340,3 +7340,18 @@ describe('threads (web3.7 TB2)', () => {
     expect(thread(w)?.items.at(-1)?.reply?.threadRoot).toBe(ROOT_HEX);
   });
 });
+
+it('prefers wire-5 input activity with a shared local five-second allowance and no HTTP', async () => {
+  let now = 100_000;
+  const w = world({ now: () => now }); await toReady(w);
+  w.gateway.sendPresenceActivity.mockReturnValue(true);
+  w.call(91, { m: 'presenceActivity' }); await settle();
+  w.call(92, { m: 'presenceActivity' }); await settle();
+  expect(w.routes.sendPresenceActivity).not.toHaveBeenCalled();
+  expect(w.gateway.sendPresenceActivity).toHaveBeenCalledTimes(1);
+  // An outage changes the chosen transport only for the next fresh sample.
+  w.gateway.sendPresenceActivity.mockReturnValue(false);
+  now += 5000;
+  w.call(93, { m: 'presenceActivity' }); await settle();
+  expect(w.routes.sendPresenceActivity).toHaveBeenCalledTimes(1);
+});

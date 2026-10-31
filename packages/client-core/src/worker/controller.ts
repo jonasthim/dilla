@@ -1035,6 +1035,7 @@ export class Controller {
   private gateway: Gateway | null = null;
   private sync: SyncEngine | null = null;
   private wasDown = false;
+  private lastPresenceActivityAt = -Infinity;
   private selected: string | null = null;
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
   private readonly communityReloads = new Map<string, number>();
@@ -1484,7 +1485,11 @@ export class Controller {
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
       case 'updateProfile': return this.updateProfile(command);
-      case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
+      case 'presenceActivity':
+        if (this.deps.now() - this.lastPresenceActivityAt < 5000) return Promise.resolve(null);
+        this.lastPresenceActivityAt = this.deps.now();
+        if (this.gateway?.sendPresenceActivity()) return Promise.resolve(null);
+        return this.routes.sendPresenceActivity().then(() => null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
