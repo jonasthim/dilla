@@ -14,16 +14,17 @@ const gatewayWakeThrottle = 5 * time.Second
 
 // interactionSpacing is the least time between two interaction fast-path polls: signals inside
 // the gap coalesce into one poll after it. interactionBurst is how many fast polls may follow one
-// another at that spacing; the allowance refills at one per gatewayWakeThrottle, so a sustained
-// flood of participant messages is polled no faster than the general throttle.
+// another at that spacing; each group refills at two tokens per second. The global spacing and per-poll cap
+// also bound a flood spread over many groups.
 const (
 	interactionSpacing = 250 * time.Millisecond
-	interactionBurst   = 3
+	interactionBurst   = 10
+	interactionRefill  = time.Second / 2
 )
 
-// interactionBudget is one installation's token bucket for interaction fast-path work, charged per
-// group synced (see botGatewayRuntime.PollInteractions for the per-poll cap). The runtime holds
-// one per installation, so one community's flood does not slow another's. It outlives one wait, so
+// interactionBudget is one interaction group's token bucket for fast-path work. Each synced
+// group spends its own token, so one member's flood does not slow another's commands, even in
+// the same installation. It outlives one wait, so
 // a flood cannot reset it by spanning a reconciliation pass.
 type interactionBudget struct {
 	tokens   float64
@@ -36,7 +37,7 @@ func (b *interactionBudget) refill(now time.Time) {
 		b.tokens, b.at, b.used = interactionBurst, now, true
 		return
 	}
-	b.tokens += float64(now.Sub(b.at)) / float64(gatewayWakeThrottle)
+	b.tokens += float64(now.Sub(b.at)) / float64(interactionRefill)
 	if b.tokens > interactionBurst {
 		b.tokens = interactionBurst
 	}
@@ -49,15 +50,14 @@ func (b *interactionBudget) delay(now time.Time) time.Duration {
 	b.refill(now)
 	d := interactionSpacing - now.Sub(b.last)
 	if b.tokens < 1 {
-		if refill := time.Duration((1 - b.tokens) * float64(gatewayWakeThrottle)); refill > d {
+		if refill := time.Duration((1 - b.tokens) * float64(interactionRefill)); refill > d {
 			d = refill
 		}
 	}
 	return d
 }
 
-// spend charges one token per group a poll that began at now synced. The balance may go below
-// zero; the next poll then waits until it has refilled to one.
+// spend charges tokens for a poll that began at now. Each group sync spends one token.
 func (b *interactionBudget) spend(now time.Time, groups int) {
 	b.refill(now)
 	b.tokens -= float64(groups)
@@ -70,7 +70,7 @@ func (b *interactionBudget) spend(now time.Time, groups int) {
 //
 // A participant's message in a private interaction group (interaction) is a command waiting for
 // an answer. It takes the fast path, pollInteraction, which reads only the messaged groups and
-// dispatches their events; nextInteraction says when the installations' own interactionBudgets
+// dispatches their events; nextInteraction says when the groups' own interactionBudgets
 // next allow it, which keeps a flood of messages from turning it into back-to-back work. Every
 // other hint (wake) takes the full text sweep, poll, at most once per gatewayWakeThrottle.
 type reconcileWait struct {
@@ -95,7 +95,7 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 		spacing = w.after(resumeAt.Sub(w.now()))
 	}
 	var general, fast <-chan time.Time
-	// arm (re)times the fast poll for the earliest installation its budget allows; a new signal can
+	// arm (re)times the fast poll for the earliest group its budget allows; a new signal can
 	// bring it forward (another community's command must not wait behind a flooded one).
 	arm := func() {
 		if d, ok := w.nextInteraction(w.now()); ok {
@@ -138,9 +138,8 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 			w.poll(ctx)
 			started = w.now()
 		case <-fast:
-			// An installation polls only with a token in hand and is then charged one token per
-			// group it synced (at most interactionGroupCap per poll), so a flood across many groups
-			// refills no faster than one group per gatewayWakeThrottle.
+			// Each group polls only with its own token in hand; global spacing and
+			// interactionGroupCap bound work even when many groups have fresh allowances.
 			if d, ok := w.nextInteraction(w.now()); ok && d <= 0 {
 				w.pollInteraction(ctx, w.now())
 			}

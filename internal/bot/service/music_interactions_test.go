@@ -155,7 +155,7 @@ func TestMusicInteractionsNotifiesSnapshotBridgeOnlyAfterSuccessfulCommit(t *tes
 		t.Fatalf("successful commit result=%+v err=%v bridge revisions=%v", result, err, commits)
 	}
 	request.Revision = uint64Ptr(0)
-	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
+	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicResume)
 	if err != nil || result.Status != interactionStatusConflict || len(commits) != 1 {
 		t.Fatalf("conflicting commit result=%+v err=%v bridge revisions=%v, want no second notification", result, err, commits)
 	}
@@ -1035,6 +1035,27 @@ func TestMusicSearchUsesSearchProfileAndEnqueueStaysStrict(t *testing.T) {
 			}
 			if store.saves != 0 {
 				t.Fatal("search profile leaked into queue persistence")
+			}
+		})
+	}
+}
+
+func TestMusicStateReadReturnsDurableSnapshotDespiteRuntimeSkew(t *testing.T) {
+	for _, runtimeRevision := range []uint64{0, 2} {
+		t.Run(fmt.Sprint(runtimeRevision), func(t *testing.T) {
+			channel, community := id.New(), id.New()
+			state := music.InitialState()
+			state.Revision = 1
+			stateStore := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: 1}}
+			authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+			h := MusicInteractions{Store: stateStore, Authority: authority, CommunityID: community, CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+				state := music.InitialState()
+				state.Revision = runtimeRevision
+				return state, runtimeRevision, nil
+			}}
+			result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel}, protocol.OpMusicState)
+			if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 {
+				t.Fatalf("runtime=%d read=%+v err=%v", runtimeRevision, result, err)
 			}
 		})
 	}

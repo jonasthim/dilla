@@ -54,7 +54,7 @@ func newMusicAnnounceFixture(requester id.ID, paused bool) *musicAnnounceFixture
 	// The track started 5 s before the request (security review L6: within 30 s).
 	state.Current, state.Paused, state.Revision, state.PositionAtMS = &track, paused, 3, 95_000
 	f.store = &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: 3}}
-	f.authority = &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: f.voice, Active: true}, user: true, dj: true}
+	f.authority = &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), GroupID: id.New(), ChannelID: f.voice, Active: true}, user: true, dj: true}
 	operation, attempt := musicAnnounceIDs(f.community, f.voice, track.ID)
 	f.sender = &rolePanelSendFake{receipt: protocol.SendReceipt{OperationID: operation, AttemptID: attempt, CommunityID: f.community, GroupID: f.group,
 		ExpectedGeneration: 7, Outcome: protocol.ReceiptAccepted, SendResponse: &protocol.OriginalSendResponse{Sequence: 9}}}
@@ -300,7 +300,7 @@ func TestNeutralizeBotMarkersKeepsMembersFromForgingThePlayer(t *testing.T) {
 }
 
 func TestMusicAnnounceRegistrationChecksStoreRevisionRequesterAndSendOutcome(t *testing.T) {
-	for _, kind := range []string{"nonrequester", "revision race", "outside window", "rate limited", "send refused", "paused nonrequester"} {
+	for _, kind := range []string{"nonrequester", "revision race", "outside window", "rate limited", "send refused"} {
 		t.Run(kind, func(t *testing.T) {
 			actor := id.New()
 			f := newMusicAnnounceFixture(actor, false)
@@ -310,9 +310,6 @@ func TestMusicAnnounceRegistrationChecksStoreRevisionRequesterAndSendOutcome(t *
 			caller := actor
 			switch kind {
 			case "nonrequester":
-				caller = id.New()
-			case "paused nonrequester":
-				f.store.snapshot.State.Paused = true
 				caller = id.New()
 			case "revision race":
 				live := f.store.snapshot.State
@@ -353,21 +350,20 @@ func TestMusicAnnounceIdleRegistrationDoesNotPostStartedCard(t *testing.T) {
 	}
 }
 
-func TestMusicAnnouncePausedRegistrationCannotBypassRequesterRate(t *testing.T) {
+func TestMusicAnnouncePausedDJRegistrationBypassesAnnouncementLimiter(t *testing.T) {
 	actor := id.New()
-	f := newMusicAnnounceFixture(actor, true)
+	f := newMusicAnnounceFixture(id.New(), true)
 	f.notices = &MusicSkipNotices{}
-	previous := id.New()
-	f.notices.Register(f.voice, previous, InteractionActor{User: actor})
 	settle, allowed := f.limiter.reserve(actor, "another-track", f.now)
 	if !allowed {
 		t.Fatal("limiter fixture")
 	}
 	settle(true)
-	if result := f.run(t, actor); result.Status != interactionStatusUnavailable {
-		t.Fatalf("rate-limited registration=%+v", result)
+	result := f.run(t, actor)
+	if result.Status != 0 || string(result.Data) != string([]byte{0x80}) || f.sender.calls != 0 {
+		t.Fatalf("DJ registration=%+v sends=%d", result, f.sender.calls)
 	}
-	if f.notices.destinations[f.voice].text != previous {
-		t.Fatal("rate-refused registration replaced destination")
+	if route := f.notices.destinations[f.voice]; route.text != f.text || route.actor.User != actor || route.group != f.authority.call.GroupID {
+		t.Fatalf("DJ destination not registered: %+v", route)
 	}
 }

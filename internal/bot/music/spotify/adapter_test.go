@@ -293,6 +293,10 @@ func TestHelperPlaybackFailureClassifiesOnlyTrackSpecificStatus(t *testing.T) {
 		permanent   bool
 	}{
 		{"playback", "provider_unavailable", true},
+		{"authorization", "provider_connect", false},
+		{"authorization", "provider_connect_timeout", false},
+		{"startup", "build_configuration", false},
+		{"playback", "playback_timeout", false},
 		{"playback", "invalid_request", false},
 		{"authorization", "provider_unavailable", false},
 		{"playback", "credential_unavailable", false},
@@ -316,6 +320,9 @@ func TestHelperPlaybackFailureClassifiesOnlyTrackSpecificStatus(t *testing.T) {
 			}
 			if !errors.Is(failure, ErrPlaybackFailed) {
 				t.Fatalf("lost playback sentinel: %v", failure)
+			}
+			if got := FailureClass(failure); got != tc.code {
+				t.Fatalf("helper status class=%q want=%q: %v", got, tc.code, failure)
 			}
 		})
 	}

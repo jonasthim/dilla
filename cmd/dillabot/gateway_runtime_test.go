@@ -214,7 +214,7 @@ func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
 		t.Fatalf("a drained signal polled again: %v (%d synced)", polled, n)
 	}
 	runtime.notifyInteraction(unpolled, a)
-	runtime.PollInteractions(t.Context(), t0)
+	runtime.PollInteractions(t.Context(), t0.Add(time.Minute))
 	select {
 	case <-runtime.Wake():
 	default:
@@ -281,14 +281,13 @@ func TestInteractionPollSyncsAtMostTheCapAndRequeuesTheRest(t *testing.T) {
 	if !drainSignal(runtime.Interaction()) {
 		t.Fatal("the requeued groups were not re-signalled for the next poll")
 	}
-	// The first poll was charged four groups against a burst of three: the installation's next
-	// poll waits for its budget, then takes the rest.
-	if n := runtime.PollInteractions(t.Context(), t0.Add(interactionSpacing)); n != 0 {
-		t.Fatalf("the installation polled again with a spent budget (%d groups)", n)
+	// Untouched groups retain their own allowance; they wait only for global poll spacing.
+	if n := runtime.PollInteractions(t.Context(), t0); n != 0 {
+		t.Fatalf("polled %d groups without spacing", n)
 	}
 	drainSignal(runtime.Interaction())
-	if n := runtime.PollInteractions(t.Context(), t0.Add(2*gatewayWakeThrottle)); n != groups-interactionGroupCap || len(seen) != groups {
-		t.Fatalf("second poll synced %d, %d distinct in all; want the remaining %d", n, len(seen), groups-interactionGroupCap)
+	if n := runtime.PollInteractions(t.Context(), t0.Add(interactionSpacing)); n != groups-interactionGroupCap || len(seen) != groups {
+		t.Fatalf("second poll synced %d, %d distinct in all; want remaining %d", n, len(seen), groups-interactionGroupCap)
 	}
 	for group, n := range seen {
 		if n != 1 {
@@ -399,5 +398,57 @@ func TestInteractionRetryAfterDeferralCappedAtThirtySeconds(t *testing.T) {
 	runtime.PollInteractions(t.Context(), now)
 	if got := runtime.deferred[installation].Sub(now); got != 30*time.Second {
 		t.Fatalf("deferral=%s", got)
+	}
+}
+
+func TestInteractionPollKeepsQuietGroupAheadOfRequeuedFlood(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, quiet := id.New(), id.New()
+	var polled []id.ID
+	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error { polled = append(polled, group); return nil })
+	var flood []id.ID
+	for range interactionGroupCap {
+		group := id.New()
+		flood = append(flood, group)
+		runtime.notifyInteraction(installation, group)
+	}
+	runtime.notifyInteraction(installation, quiet)
+	now := time.Unix(1800000000, 0)
+	runtime.PollInteractions(t.Context(), now)
+	if len(polled) != interactionGroupCap {
+		t.Fatalf("first batch=%v", polled)
+	}
+	for _, group := range flood {
+		runtime.notifyInteraction(installation, group)
+	}
+	polled = nil
+	runtime.PollInteractions(t.Context(), now.Add(interactionSpacing))
+	if len(polled) != interactionGroupCap || polled[0] != quiet {
+		t.Fatalf("second batch=%v, want quiet group first ahead of returning flood", polled)
+	}
+}
+
+func TestInteractionGroupBudgetExhaustionDoesNotSpendAnotherGroupsAllowance(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, flooded, quiet := id.New(), id.New(), id.New()
+	var polled []id.ID
+	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error { polled = append(polled, group); return nil })
+	now := time.Unix(1800000000, 0)
+	runtime.pendingMu.Lock()
+	runtime.budgetLocked(installation, flooded).spend(now, interactionBurst)
+	runtime.pendingMu.Unlock()
+	runtime.notifyInteraction(installation, flooded)
+	runtime.notifyInteraction(installation, quiet)
+	if delay, pending := runtime.NextInteraction(now); !pending || delay > 0 {
+		t.Fatalf("quiet group blocked: pending=%v delay=%s", pending, delay)
+	}
+	if n := runtime.PollInteractions(t.Context(), now); n != 1 || len(polled) != 1 || polled[0] != quiet {
+		t.Fatalf("polled %v (%d), want only quiet group", polled, n)
+	}
+	if delay, pending := runtime.NextInteraction(now); !pending || delay != interactionRefill {
+		t.Fatalf("flood refill: pending=%v delay=%s, want %s", pending, delay, interactionRefill)
+	}
+	if n := runtime.PollInteractions(t.Context(), now.Add(interactionRefill)); n != 1 || polled[1] != flooded {
+		t.Fatalf("refilled poll=%v (%d)", polled, n)
 	}
 }

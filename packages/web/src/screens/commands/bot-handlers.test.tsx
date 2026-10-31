@@ -47,7 +47,7 @@ function fixture(options: { idleMusic?: boolean; playingMusic?: boolean; announc
         let status = 0; let revision: string | null = null; let data: Uint8Array = encode([]);
         if ([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].includes(operation)) {
           if (options.djControl === false) status = 2;
-          else if (String(command.revision) !== String(musicRevision)) status = 4;
+          else if (operation !== 13 && operation !== 15 && String(command.revision) !== String(musicRevision)) status = 4;
         }
         if (options.failedOperations?.includes(operation)) status = 5;
         if (operation === 25 && options.announceStatus !== undefined) status = options.announceStatus;
@@ -82,6 +82,8 @@ function fixture(options: { idleMusic?: boolean; playingMusic?: boolean; announc
         if (operation === 52) { const id = (command.args as unknown[])[0] as Uint8Array; const index = schedules.findIndex(row => row[0] instanceof Uint8Array && Array.from(row[0]).join(',') === Array.from(id).join(',')); if (index >= 0) schedules.splice(index, 1); announcementRevision++; revision = String(announcementRevision); }
         if (operation === 31) data = encode([fromHex(TEXT), 99n]);
         if (operation === 51 && options.malformedAnnouncementReceipt) data = Uint8Array.of(0xff);
+        if ((operation === 13 || operation === 15) && status === 0) data = musicSnapshot(musicRevision, paused, queue,
+          { positionMs, volume, shuffle, repeat, current: currentTrack, control: options.djControl !== false });
         if (operation === 13 && options.invalidMusicReceipt) data = Uint8Array.of(0xff);
         if (options.ambiguousOperations?.includes(operation)) status = 5;
         responses.push({ deliveryId: String(++delivery), requestId: id, communityId: COMMUNITY, operation, channelId: command.channelId as string | null,
@@ -305,11 +307,11 @@ describe('Bot slash command provider', () => {
     expect(await capture.value!.handlers.pause!({ commandId: 'pause', args: {} }, changed)).toMatchObject({ status: 'failure' });
   });
 
-  it('refuses a caller absent from the authenticated DJ snapshot', async () => {
+  it('refuses a caller through the Bot current DJ authorization without a preliminary snapshot', async () => {
     const f = fixture({ djControl: false }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     expect(await capture.value!.handlers.pause!({ commandId: 'pause', args: {} }, commandContext(f.client))).toMatchObject({ status: 'failure' });
-    expect(f.requests.filter(row => row.operation === 13)).toHaveLength(0);
+    expect(f.requests.filter(row => row.operation === 13)).toHaveLength(1);
     expect(f.musicState.paused).toBe(true);
   });
 
@@ -329,7 +331,7 @@ describe('Bot slash command provider', () => {
     expect(result).toMatchObject({ status: 'success', private: true });
     const mutation = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === operation);
     expect(mutation?.args).toEqual(wireArgs);
-    expect(mutation?.revision).toBe('1');
+    expect(mutation?.revision).toBe(operation === 13 || operation === 15 ? '0' : '1');
     if (commandId === 'pause') expect(f.musicState.paused).toBe(true);
     if (commandId === 'resume') expect(f.musicState.paused).toBe(false);
     if (commandId === 'skip') { expect(f.musicState.currentTrack?.id).toBe(ITEM); expect(f.musicState.queue.map(row => row.id)).toEqual([OTHER_ITEM]); }
@@ -450,7 +452,7 @@ describe('Bot slash command provider', () => {
     expect(f.musicState.paused).toBe(true);
   });
 
-  it('reconciles a durable result after a capability revision change and refreshes current state', async () => {
+  it('reconciles a durable control snapshot after a capability revision change without a state read', async () => {
     const f = fixture({ unknownUploads: [13] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const context = commandContext(f.client); const invoke = { commandId: 'pause', args: {} };
@@ -458,7 +460,7 @@ describe('Bot slash command provider', () => {
     f.setInstallRevision('10');
     expect(await capture.value!.handlers.pause!(invoke, context)).toMatchObject({ status: 'success' });
     expect(f.requests.filter(row => row.operation === 13)).toHaveLength(1);
-    expect(f.requests.filter(row => row.operation === 10).length).toBeGreaterThan(1);
+    expect(f.requests.filter(row => row.operation === 10)).toHaveLength(0);
     expect(f.musicState.paused).toBe(true);
     expect(await capture.value!.handlers.queue!({ commandId: 'queue', args: {} }, commandContext(f.client, { requestId: 'ac'.repeat(16) })))
       .toMatchObject({ status: 'success' });
@@ -839,4 +841,13 @@ describe('historical receipt identity across changed capability revisions', () =
     expect(await capture.value!.handlers.seek!(parsed.invocation, commandContext(f.client))).toMatchObject({ status: 'success' });
     expect(f.requests.find(row => row.operation === 17)?.args).toEqual([milliseconds]); view.unmount();
   });
+});
+
+it.each(['pause', 'skip'] as const)('dispatches %s before any state read or notice registration', async commandId => {
+  const f = fixture({ seededQueue: true }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+  mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+  const result = await capture.value!.handlers[commandId]!({ commandId, args: {} }, commandContext(f.client));
+  expect(result.status).toBe('success');
+  const operations = f.requests.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation);
+  expect(operations).toEqual([commandId === 'pause' ? 13 : 15]);
 });

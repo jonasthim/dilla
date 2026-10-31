@@ -65,6 +65,7 @@ function musicReadSummary(commandId: string, invocation: CommandInvocation, cont
   if (commandId === 'queue') {
     const current = state.track === null ? '' : `Now playing: ${state.track.title} — ${state.track.artist}${state.paused ? ' (paused)' : ''}\n`;
     const rows = state.queue.map((item, index) => `${index + 1}. ${item.track.title} — ${item.track.artist}`);
+    if (state.queueTotal !== undefined) rows.push(`Showing ${state.queue.length} of ${state.queueTotal} queued tracks.`);
     return ok(current === '' && rows.length === 0 ? 'The music queue is empty.' : `${current}${rows.join('\n')}`.trim());
   }
   return fail('Unsupported music read command.');
@@ -228,6 +229,23 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
     const originalChannelId = musicCommandAttemptTarget(client, cid, context.requestId);
     if (originalChannelId !== undefined && channelId !== originalChannelId)
       return uncertain('This music attempt is still pending in its original voice channel. Return to that call to reconcile it; the attempt cannot be retargeted.');
+    // Pause and skip are current-state controls. Authority is checked by the Bot;
+    // dispatch directly so a refresh or announcement cannot delay the audio change.
+    if (invocation.commandId === 'pause' || invocation.commandId === 'skip') {
+      const adapter = createVoiceMusicAdapter(client, cid);
+      markMusicCommandAttempt(client, cid, context.requestId, channelId);
+      try {
+        const attempt = { requestId: childId(context.requestId, `music:${invocation.commandId}`) };
+        if (invocation.commandId === 'pause') await adapter.pause(channelId, true, attempt);
+        else await adapter.skip(channelId, attempt);
+        if (!voiceStillCurrent(context, cid, channelId)) return uncertain('Music was updated, but the active voice call changed before completion.');
+        clearMusicCommandAttempt(client, cid, context.requestId);
+        return ok(invocation.commandId === 'pause' ? 'Music paused.' : 'Skipped the current track.');
+      } catch (error) {
+        if (resultError(error).status !== 'uncertain') clearMusicCommandAttempt(client, cid, context.requestId);
+        return resultError(error);
+      }
+    }
     try {
       let adapter: ReturnType<typeof createVoiceMusicAdapter>;
       try { ({ adapter } = await freshMusicState(context, cid, channelId)); }
@@ -307,8 +325,6 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             void (async () => { await adapter.announce(channelId, context.binding.channelId, attempt('announce')); })().catch(() => undefined);
           return ok('Track added to the music queue.');
         }
-        case 'pause': return await applyControl(() => adapter.pause(channelId, true, attempt('pause')))
-          ? ok('Music paused.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'resume': {
           if (!await registerDestination()) return pendingAttempt
             ? uncertain('This music attempt is still pending; return to its original active call to reconcile it.')
@@ -316,8 +332,6 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
             ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
         }
-        case 'skip': return await applyControl(() => adapter.skip(channelId, attempt('skip')))
-          ? ok('Skipped the current track.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'stop': return await applyControl(() => adapter.stop(channelId, attempt('stop')))
           ? ok('Music stopped.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'seek': {

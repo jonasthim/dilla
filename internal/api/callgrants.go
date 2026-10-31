@@ -200,7 +200,11 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 		errs = append(errs, err)
 	}
 	if whole && complete {
-		h.trackAbsentLocked(ctx, row, parts, cut)
+		botsOnly, err := h.trackAbsentLocked(ctx, row, parts, cut)
+		errs = append(errs, err)
+		if botsOnly {
+			errs = append(errs, h.endOver(ctx, row, "bots_only"))
+		}
 	}
 	return errors.Join(errs...)
 }

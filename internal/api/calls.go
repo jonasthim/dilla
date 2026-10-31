@@ -766,7 +766,7 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The conditional form closes the group first, under its lock and only while the caller is its
-	// only current leaf; endCall then finds it closed and finishes the end. A joiner whose commit
+	// only current non-bot leaf; endCall then finds it closed and finishes the end. A joiner whose commit
 	// comes after the close is refused for the closed group and registers a fresh one.
 	if ifAlone && !closed {
 		if err := h.closeIfAlone(r.Context(), group, s.DeviceID); err != nil {
@@ -797,7 +797,7 @@ func ifAloneParam(r *http.Request) (bool, error) {
 	return true, nil
 }
 
-// closeIfAlone closes the call's group while dev is its only current leaf: through the delivery
+// closeIfAlone closes the call's group while dev is its only current non-bot leaf: through the delivery
 // service, under the group lock, when the call events handed one over; on the store otherwise (no
 // commit lands there without a delivery service).
 func (h *Calls) closeIfAlone(ctx context.Context, group store.GroupRow, dev id.ID) error {
@@ -808,7 +808,11 @@ func (h *Calls) closeIfAlone(ctx context.Context, group store.GroupRow, dev id.I
 	} else {
 		var members []store.MemberRow
 		if members, err = h.repo.ListMembers(ctx, group.GroupID); err == nil {
-			if !ds.SoleLeaf(members, group.Epoch, dev) {
+			var sole bool
+			if sole, err = ds.SoleLeaf(ctx, h.repo, members, group.Epoch, dev); err != nil {
+				return err
+			}
+			if !sole {
 				err = ds.ErrNotAlone
 			} else {
 				err = h.repo.CloseGroup(ctx, group.GroupID, h.clk.Now().Unix())

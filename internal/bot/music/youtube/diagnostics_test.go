@@ -138,6 +138,10 @@ func TestYouTubeProcessClassifiesPermanentVideoFailures(t *testing.T) {
 		permanent  bool
 	}{
 		{"ERROR: Video unavailable", "video_unavailable", true},
+		{"ERROR: [youtube] id: Video unavailable. This content isn't available, try again later.", "rate_limited", false},
+		{"ERROR: Video unavailable. This content isn’t available, try again later.", "rate_limited", false},
+		{"ERROR: Video unavailable. This content isn't available", "rate_limited", false},
+		{"ERROR: Video unavailable. This content isn’t available", "rate_limited", false},
 		{"ERROR: This video is private", "video_private", true},
 		{"ERROR: This video has been removed by the uploader", "video_removed", true},
 		{"ERROR: The uploader has not made this video available in your country", "video_region_restricted", true},

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"math"
+	"net/http"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
@@ -19,6 +20,15 @@ var ErrSendTerminal = errors.New("bot send attempt is already accepted or unknow
 // ciphertext for this exact immutable input. It is never a reason to upload a
 // replacement or fabricate a receipt; the caller may discard its notification.
 var ErrSendNotPrepared = errors.New("bot send has no recoverable prepared ciphertext")
+
+// sendRefusedError marks a definitive resolve refusal after receipt lookup has
+// proved this exact attempt has no receipt. Recovery cannot upload a substitute.
+type sendRefusedError struct{ cause error }
+
+func (e sendRefusedError) Error() string        { return "bot prepared send resolution refused" }
+func (e sendRefusedError) Unwrap() error        { return e.cause }
+func (e sendRefusedError) Is(target error) bool { return target == ErrSendTerminal }
+func (e sendRefusedError) FailureClass() string { return "send_terminal" }
 
 type sendNotPreparedError struct{ cause error }
 
@@ -206,6 +216,11 @@ func (s *SendCoordinator) sendAttempt(ctx context.Context, session sendSession, 
 		}
 		receipt, err := session.ResolveBotMessage(ctx, s.binding.Community, in.OperationID, resolution)
 		if err != nil {
+			var refusal *client.APIError
+			if errors.As(err, &refusal) && refusal.Outcome == client.OutcomeDefinitive &&
+				(refusal.Status == http.StatusNotFound || refusal.Status == http.StatusForbidden || refusal.Code == "E_LEAF_NOT_CURRENT") {
+				return protocol.SendReceipt{}, sendRefusedError{cause: err}
+			}
 			return protocol.SendReceipt{}, err
 		}
 		return s.confirm(ctx, in.OperationID, receipt, upload, resolution)

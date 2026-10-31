@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { encode } from '../cbor';
+import { decode, encode } from '../cbor';
 import type { CoreClient } from '../bridge';
 import { createVoiceMusicAdapter, musicPlayheadMs, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter, type VoiceMusicState } from './music.ts';
 
@@ -26,7 +26,12 @@ function fixture() {
       commands.push(command);
       if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
       if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: events.splice(0), through: null, blocked: false });
+      if (command.m === 'readBotInteractionResponses') {
+        const operations = command.operations as number[]; const requestIds = command.requestIds as string[];
+        const matching = events.filter(row => operations.includes(row.operation) && requestIds.includes(row.requestId));
+        for (let i = events.length - 1; i >= 0; i--) if (matching.includes(events[i])) events.splice(i, 1);
+        return Promise.resolve({ responses: matching, through: null, blocked: false });
+      }
       return Promise.resolve(null);
     }),
     get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: 'cd'.repeat(16) }, deviceId: 'ef'.repeat(16), instance: { id: '12'.repeat(16) } }
@@ -119,7 +124,7 @@ describe('authenticated voice music adapter', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('fix round 2: decodes 11 and 13 slot snapshots and longer track rows, ignoring what it does not know', async () => {
+  it('fix round 2: decodes 11 and 14 slot snapshots and longer track rows, ignoring what it does not know', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
@@ -133,7 +138,7 @@ describe('authenticated voice music adapter', () => {
     const g = fixture();
     const off = g.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(g.getRequest(10)).toBeDefined());
-    g.answer(g.getRequest(10), 0, '1', encode([1n, 1n, track, [], 1_000n, 0n, 75n, 0n, 0n, 1n, 9_000n, 10_000n, 'later']));
+    g.answer(g.getRequest(10), 0, '1', encode([1n, 1n, track, [], 1_000n, 0n, 75n, 0n, 0n, 1n, 9_000n, 10_000n, 0n, 'later']));
     await vi.waitFor(() => expect(g.adapter.state(CHANNEL).status).toBe('available'));
     expect((g.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>).clock?.elapsedMs).toBe(1_000);
     off();
@@ -325,7 +330,7 @@ describe('authenticated voice music adapter', () => {
     let settled = false;
     const command = Promise.resolve(f.adapter.pause(CHANNEL, true)).then(() => { settled = true; });
     await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
-    expect(f.getRequest(13)?.revision).toBe('1');
+    expect(f.getRequest(13)?.revision).toBe('0');
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(settled).toBe(false);
 
@@ -370,9 +375,9 @@ describe('authenticated voice music adapter', () => {
     f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
     await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
 
-    const conflict = Promise.resolve(f.adapter.pause(CHANNEL, true));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)).toHaveLength(1));
-    const firstMutation = f.commands.find(call => call.m === 'humanInteractionRequest' && call.operation === 13)!;
+    const conflict = Promise.resolve(f.adapter.setVolume(CHANNEL, 75));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)).toHaveLength(1));
+    const firstMutation = f.commands.find(call => call.m === 'humanInteractionRequest' && call.operation === 18)!;
     expect(firstMutation.revision).toBe('1');
     f.answer(firstMutation, 4, '2', encode([]));
     await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
@@ -381,9 +386,9 @@ describe('authenticated voice music adapter', () => {
     await expect(conflict).rejects.toThrow(/state changed/);
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
 
-    const retry = Promise.resolve(f.adapter.pause(CHANNEL, true));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)).toHaveLength(2));
-    const secondMutation = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)[1];
+    const retry = Promise.resolve(f.adapter.setVolume(CHANNEL, 75));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)).toHaveLength(2));
+    const secondMutation = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)[1];
     expect(secondMutation.revision).toBe('2');
     f.answer(secondMutation, 0, '3', encode([]));
     await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
@@ -393,4 +398,52 @@ describe('authenticated voice music adapter', () => {
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
     unsubscribe();
   });
+});
+
+it.each([[13, true], [15, false]] as const)('sends immediate control %s without a state read and accepts its authenticated snapshot', async (operation, paused) => {
+  const f = fixture();
+  const command = operation === 13 ? f.adapter.pause(CHANNEL, true) : f.adapter.skip(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(operation)).toBeDefined());
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation)).toEqual([operation]);
+  expect(f.getRequest(operation).revision).toBe('0');
+  f.answer(f.getRequest(operation), 0, '3', snapshot(3n, paused));
+  await command;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused });
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation)).toEqual([operation]);
+});
+
+it('keeps a newer control snapshot when an older control response arrives late', async () => {
+  const f = fixture();
+  const skip = f.adapter.skip(CHANNEL);
+  const pause = f.adapter.pause(CHANNEL, true);
+  await vi.waitFor(() => { expect(f.getRequest(15)).toBeDefined(); expect(f.getRequest(13)).toBeDefined(); });
+  f.answer(f.getRequest(13), 0, '3', snapshot(3n, true));
+  await pause;
+  f.answer(f.getRequest(15), 0, '2', snapshot(2n, false));
+  await skip;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+});
+
+it('keeps a newer control snapshot when an older state read arrives late', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  const pause = f.adapter.pause(CHANNEL, true);
+  await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
+  f.answer(f.getRequest(13), 0, '3', snapshot(3n, true));
+  await pause;
+  f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+  await refresh;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+});
+
+it('exposes the total when only a queue prefix fits the authenticated snapshot', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  const row = decode(snapshot(1n, true));
+  if (!Array.isArray(row)) throw new Error('invalid fixture');
+  f.answer(f.getRequest(10), 0, '1', encode([...row, 0n, 0n, 25n]));
+  await refresh;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', queue: [], queueTotal: 25 });
 });

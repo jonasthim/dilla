@@ -654,3 +654,38 @@ func TestSupervisorResumeWhilePlayingKeepsCurrentPublication(t *testing.T) {
 // nearPlayhead allows the few milliseconds a playing track advances between a test's resume and its pause (Ruling AI:
 // a pause settles the playhead the track reached).
 func nearPlayhead(got, want int64) bool { return got >= want && got < want+1000 }
+
+func TestSupervisorAdoptsStoredSnapshotOnHandoffRevisionMismatchWithoutPlayback(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := tid(4)
+	starter := &supervisorStarter{}
+	s, err := music.NewSupervisor(t.Context(), channel, supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Save(t.Context(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playing, err := music.Apply(first.State, first.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.Save(t.Context(), channel, first.Revision, playing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := s.ApplyPersistedSnapshot(t.Context(), first.State, first.Revision, true)
+	if err != nil || revision != latest.Revision || s.State().Revision != latest.Revision || !s.State().Paused || len(starter.starts) != 0 {
+		t.Fatalf("adoption revision=%d state=%+v starts=%d err=%v", revision, s.State(), len(starter.starts), err)
+	}
+}

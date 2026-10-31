@@ -42,6 +42,8 @@ func (e *botGatewayEntry) isPrivate(group *id.ID) bool {
 	return e.private[*group]
 }
 
+type interactionWork struct{ installation, group id.ID }
+
 type botGatewayRuntime struct {
 	now      func() time.Time
 	ctx      context.Context
@@ -59,12 +61,14 @@ type botGatewayRuntime struct {
 
 	// pending holds the interaction groups messaged since the last fast poll, per installation
 	// (guarded by pendingMu: the per-installation gateway goroutines write it).
-	pendingMu          sync.Mutex
-	pending            map[id.ID]map[id.ID]bool
-	deferred           map[id.ID]time.Time
-	idlePolls          map[id.ID]*service.InteractionPollSchedule
-	budgets            map[id.ID]*interactionBudget // per installation, outliving reconcile passes
-	interactionPollers map[id.ID]func(context.Context, id.ID) error
+	pendingMu           sync.Mutex
+	pending             map[id.ID]map[id.ID]bool
+	deferred            map[id.ID]time.Time
+	idlePolls           map[id.ID]*service.InteractionPollSchedule
+	budgets             map[id.ID]map[id.ID]*interactionBudget // per group, outliving reconcile passes
+	pendingOrder        []interactionWork                      // FIFO: a noisy group rejoins behind existing work
+	lastInteractionPoll time.Time
+	interactionPollers  map[id.ID]func(context.Context, id.ID) error
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
@@ -98,6 +102,9 @@ func (r *botGatewayRuntime) notifyInteraction(installation, group id.ID) {
 	if r.pending[installation] == nil {
 		r.pending[installation] = map[id.ID]bool{}
 	}
+	if !r.pending[installation][group] {
+		r.pendingOrder = append(r.pendingOrder, interactionWork{installation, group})
+	}
 	r.pending[installation][group] = true
 	r.pendingMu.Unlock()
 	select {
@@ -130,21 +137,28 @@ const (
 	interactionGroupFallback = 2 * interactionGroupCap
 )
 
-// budgetLocked is the installation's token bucket; pendingMu must be held. Each installation has
-// its own, so a flood in one community does not slow another community's commands.
-func (r *botGatewayRuntime) budgetLocked(installation id.ID) *interactionBudget {
+// budgetLocked is the group's token bucket; pendingMu must be held. A flood in one
+// interaction group does not spend any other group's allowance.
+func (r *botGatewayRuntime) budgetLocked(installation, group id.ID) *interactionBudget {
 	if r.budgets == nil {
-		r.budgets = map[id.ID]*interactionBudget{}
+		r.budgets = map[id.ID]map[id.ID]*interactionBudget{}
 	}
-	b := r.budgets[installation]
+	if r.budgets[installation] == nil {
+		r.budgets[installation] = map[id.ID]*interactionBudget{}
+	}
+	b := r.budgets[installation][group]
 	if b == nil {
 		b = &interactionBudget{}
-		r.budgets[installation] = b
+		r.budgets[installation][group] = b
 	}
 	return b
 }
 
-// NextInteraction reports how long until the next fast poll may run for some installation with
+func (r *botGatewayRuntime) interactionDelayLocked(installation, group id.ID, now time.Time) time.Duration {
+	return max(r.budgetLocked(installation, group).delay(now), r.deferred[installation].Sub(now), interactionSpacing-now.Sub(r.lastInteractionPoll))
+}
+
+// NextInteraction reports how long until the next fast poll may run for some group with
 // messaged groups, and false when no group is pending.
 func (r *botGatewayRuntime) NextInteraction(now time.Time) (time.Duration, bool) {
 	r.pendingMu.Lock()
@@ -155,8 +169,10 @@ func (r *botGatewayRuntime) NextInteraction(now time.Time) (time.Duration, bool)
 		if len(groups) == 0 {
 			continue
 		}
-		if d := max(r.budgetLocked(installation).delay(now), r.deferred[installation].Sub(now)); !found || d < next {
-			next, found = d, true
+		for group := range groups {
+			if d := r.interactionDelayLocked(installation, group, now); !found || d < next {
+				next, found = d, true
+			}
 		}
 	}
 	return next, found
@@ -169,22 +185,26 @@ func (r *botGatewayRuntime) backgroundYieldReady(now time.Time, suspended id.ID)
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 	for installation, groups := range r.pending {
-		if len(groups) != 0 && (r.interactionPollers[installation] != nil || installation == suspended) &&
-			r.budgetLocked(installation).delay(now) <= 0 && !now.Before(r.deferred[installation]) {
-			return true
+		if r.interactionPollers[installation] == nil && installation != suspended {
+			continue
+		}
+		for group := range groups {
+			if r.interactionDelayLocked(installation, group, now) <= 0 {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// PollInteractions syncs up to interactionGroupCap messaged interaction groups, taken only from
-// installations whose own budget allows a poll at now, and dispatches their events; each
-// installation is charged one token per group it synced. An installation with more than
-// interactionGroupFallback groups pending, or with no fast path registered, falls back to the
-// general wake and its full sweep. Groups left over stay pending and are re-signalled.
+// PollInteractions syncs up to interactionGroupCap groups in notification order.
+// Ineligible groups keep their position while eligible work can pass them. A polled
+// group with more messages rejoins at the tail, so floods cannot starve quieter groups.
+// Past interactionGroupFallback pending groups per installation, or without a poller,
+// work falls back to the throttled general sweep. HTTP refusal deferrals remain shared
+// per installation because its device credentials share the server's rate limits.
 func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time) int {
-	type work struct{ installation, group id.ID }
-	var batch []work
+	var batch []interactionWork
 	fallback := false
 	r.pendingMu.Lock()
 	for installation, groups := range r.pending {
@@ -193,23 +213,25 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 			fallback = true
 		}
 	}
-	for installation, groups := range r.pending {
-		if len(batch) == interactionGroupCap {
-			break
-		}
-		if r.budgetLocked(installation).delay(now) > 0 || now.Before(r.deferred[installation]) {
+	remaining := r.pendingOrder[:0]
+	for _, w := range r.pendingOrder {
+		groups := r.pending[w.installation]
+		if !groups[w.group] {
 			continue
 		}
-		for group := range groups {
-			if len(batch) == interactionGroupCap {
-				break
-			}
-			batch = append(batch, work{installation, group})
-			delete(groups, group)
+		if len(batch) == interactionGroupCap || r.interactionDelayLocked(w.installation, w.group, now) > 0 {
+			remaining = append(remaining, w)
+			continue
 		}
+		batch = append(batch, w)
+		delete(groups, w.group)
 		if len(groups) == 0 {
-			delete(r.pending, installation)
+			delete(r.pending, w.installation)
 		}
+	}
+	r.pendingOrder = remaining
+	if len(batch) > 0 {
+		r.lastInteractionPoll = now
 	}
 	more := len(r.pending) > 0
 	r.pendingMu.Unlock()
@@ -222,7 +244,7 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 		default:
 		}
 	}
-	synced := map[id.ID]int{}
+	synced := 0
 	blocked := map[id.ID]bool{}
 	for _, w := range batch {
 		if blocked[w.installation] {
@@ -234,7 +256,10 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 			r.notify()
 			continue
 		}
-		synced[w.installation]++
+		r.pendingMu.Lock()
+		r.budgetLocked(w.installation, w.group).spend(now, 1)
+		r.pendingMu.Unlock()
+		synced++
 		if err := poll(ctx, w.group); err != nil && ctx.Err() == nil {
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, w.installation, refusal)
@@ -260,14 +285,7 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 			}
 		}
 	}
-	total := 0
-	r.pendingMu.Lock()
-	for installation, n := range synced {
-		r.budgetLocked(installation).spend(now, n)
-		total += n
-	}
-	r.pendingMu.Unlock()
-	return total
+	return synced
 }
 func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token string) error {
 	if e := r.entries[installation]; e != nil {
@@ -289,7 +307,7 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 			delete(r.maintenance, installation)
 		}
 	}
-	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user})
+	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user, Logger: r.log.With("installation_id", installation.String())})
 	if err != nil {
 		return err
 	}
@@ -373,6 +391,13 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.deferred, installation)
 		}
 	}
+	remaining := r.pendingOrder[:0]
+	for _, w := range r.pendingOrder {
+		if keep[w.installation] {
+			remaining = append(remaining, w)
+		}
+	}
+	r.pendingOrder = remaining
 	r.pendingMu.Unlock()
 	for installation := range r.interactionPollers {
 		if !keep[installation] {

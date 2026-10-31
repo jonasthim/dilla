@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	lkproto "github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/webrtc/v4"
 
@@ -19,9 +20,10 @@ import (
 )
 
 var (
-	ErrPoolClosed = errors.New("music livekit: publisher pool is closed")
-	ErrPoolDead   = errors.New("music livekit: publisher room ended; explicit reset required")
-	ErrPoolBusy   = errors.New("music livekit: publisher track is already active")
+	ErrPoolCallEnded = errors.New("music livekit: server call ended")
+	ErrPoolClosed    = errors.New("music livekit: publisher pool is closed")
+	ErrPoolDead      = errors.New("music livekit: publisher room ended; explicit reset required")
+	ErrPoolBusy      = errors.New("music livekit: publisher track is already active")
 )
 
 type poolRoom interface{ Disconnect() }
@@ -122,8 +124,10 @@ func (p *Pool) SetRTTReporter(report func(context.Context, id.ID, uint32) error)
 	p.rtt = report
 }
 
-// SetRoomEndedReporter reports the terminal end of a retained room once per
-// generation. Reports run outside the pool lock, including while the room is idle.
+// SetRoomEndedReporter reports an explicit idle leave or definitive server call
+// end once per generation.
+// Transport disconnects, lifetime expiry and epoch changes may reconnect to the
+// same call and retain its registration. Reports run outside the pool lock.
 func (p *Pool) SetRoomEndedReporter(report func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -432,6 +436,16 @@ func (p *Pool) markDead(generation uint64, cause error) {
 		p.mu.Unlock()
 		return
 	}
+	if errors.Is(cause, ErrPoolDead) && p.connection != nil {
+		if room, ok := p.connection.room.(interface {
+			DisconnectReason() lkproto.DisconnectReason
+		}); ok {
+			switch room.DisconnectReason() {
+			case lkproto.DisconnectReason_ROOM_DELETED, lkproto.DisconnectReason_ROOM_CLOSED:
+				cause = ErrPoolCallEnded
+			}
+		}
+	}
 	conn, cancel, report := p.markDeadLocked(cause)
 	ctx := p.roomCtx
 	p.mu.Unlock()
@@ -447,7 +461,11 @@ func (p *Pool) markDead(generation uint64, cause error) {
 func (p *Pool) markDeadLocked(cause error) (*poolConnection, context.CancelFunc, func()) {
 	p.dead = true
 	p.deadReason = cause
-	return p.connection, p.roomCancel, p.roomEnded
+	var report func()
+	if errors.Is(cause, ErrPoolIdle) || errors.Is(cause, ErrPoolCallEnded) {
+		report = p.roomEnded
+	}
+	return p.connection, p.roomCancel, report
 }
 
 func teardown(conn *poolConnection, cancel context.CancelFunc) {

@@ -70,6 +70,8 @@ func processFailureClass(raw string) string {
 		return "http_403"
 	case contains("name resolution", "name or service not known", "network is unreachable", "connection refused", "connection reset", "timed out", "temporary failure", "unable to download webpage", "unable to download api page"):
 		return "network"
+	case contains("try again later", "content isn't available", "content isn’t available"):
+		return "rate_limited"
 	case contains("video is private", "private video"):
 		return "video_private"
 	case contains("video has been removed", "video was removed", "video has been deleted", "video is no longer available"):

@@ -27,6 +27,8 @@ export interface BotInteractionRequest {
   requestId?: string;
   /** Optional capability-authority scope checked before dispatch and before returning. */
   expectedScope?: BotInteractionScope;
+  /** Local callback before upload, after current installation authorization. Never sent on the wire. */
+  onDispatch?: (scope: BotInteractionScope) => void;
 }
 
 export class BotInteractionUncertainError extends Error {
@@ -212,7 +214,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
       value instanceof Uint8Array ? new Uint8Array(value) : value));
     const expectedScope = input.expectedScope === undefined ? undefined : Object.freeze({ ...input.expectedScope });
     return Object.freeze({ operation: input.operation, channelId: input.channelId ?? null, args,
-      revision: input.revision ?? null, ...(expectedScope === undefined ? {} : { expectedScope }) });
+      revision: input.revision ?? null, onDispatch: input.onDispatch, ...(expectedScope === undefined ? {} : { expectedScope }) });
   };
   const requestFingerprint = (input: BotInteractionRequest): string => {
     const args = input.args.map(value => {
@@ -285,6 +287,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     if (!ID.test(requestId)) throw new Error('Invalid Bot interaction request id.');
     let uploadAccepted = false;
     try {
+    input.onDispatch?.(Object.freeze({ ...scope }));
     const send = client.call({ m: 'humanInteractionRequest', communityId,
       channelId: input.channelId ?? null, requestId, operation: input.operation, args: input.args,
       revision: input.revision ?? null }) as Promise<{ requestId: string; upload: string }>;

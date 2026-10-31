@@ -26,3 +26,14 @@ func TestStartBudgetConsecutiveTotalAndDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestStartBudgetSuccessfulStartResetsConsecutiveSkips(t *testing.T) {
+	b := startBudget{skipped: 1, consecutive: 1, deadline: time.Now().Add(maxStartDuration)}
+	b.succeeded()
+	if b.consecutive != 0 || b.skipped != 1 {
+		t.Fatalf("success budget = %+v", b)
+	}
+	if maxStartDuration != 45*time.Second {
+		t.Fatalf("start duration = %v, want 45s beyond Spotify's 35s connect timeout", maxStartDuration)
+	}
+}

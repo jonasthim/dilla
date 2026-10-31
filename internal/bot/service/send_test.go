@@ -512,3 +512,29 @@ func TestResolvePreparedDistinguishesMissingCiphertextFromRetryableFailure(t *te
 		})
 	}
 }
+
+func TestResolvePreparedDefinitiveRefusalIsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		code     string
+		outcome  client.Outcome
+		terminal bool
+	}{
+		{"closed group", 404, "E_NOT_FOUND", client.OutcomeDefinitive, true},
+		{"forbidden", 403, "E_FORBIDDEN", client.OutcomeDefinitive, true},
+		{"leaf revoked", 403, "E_LEAF_NOT_CURRENT", client.OutcomeDefinitive, true},
+		{"timeout", 504, "unavailable", client.OutcomeDefinitive, false},
+		{"unknown outcome", 403, "E_FORBIDDEN", client.OutcomeUnknown, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			coordinator, native, session, in := sendFixture()
+			cause := &client.APIError{Status: tc.status, Code: tc.code, Outcome: tc.outcome}
+			session.resolveErr = cause
+			_, err := coordinator.ResolvePrepared(t.Context(), session, in)
+			if errors.Is(err, ErrSendTerminal) != tc.terminal || !errors.Is(err, cause) || session.posts != 0 || session.resolves != 1 || native.confirmCalls != 0 {
+				t.Fatalf("terminal=%v want=%v error=%v posts=%d resolves=%d confirms=%d", errors.Is(err, ErrSendTerminal), tc.terminal, err, session.posts, session.resolves, native.confirmCalls)
+			}
+		})
+	}
+}

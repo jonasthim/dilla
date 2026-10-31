@@ -93,7 +93,7 @@ func TestBackgroundYieldsOnlyWhenFastPathCanRun(t *testing.T) {
 	if !r.backgroundYieldReady(now, id.ID{}) {
 		t.Fatal("ready command did not interrupt sweep")
 	}
-	r.budgetLocked(installation).spend(now, interactionBurst)
+	r.budgetLocked(installation, group).spend(now, interactionBurst)
 	if r.backgroundYieldReady(now, id.ID{}) {
 		t.Fatal("budget-delayed command prevented background progress")
 	}

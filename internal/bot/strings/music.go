@@ -3,15 +3,10 @@ package botstrings
 
 import "fmt"
 
-// MusicSkipped publishes only a bounded reason, never queue metadata. The first
-// argument is retained for callers compiled against the original copy helper.
-func MusicSkipped(_ string, reason string) string {
-	switch reason {
-	case "audio unavailable":
-	default:
-		reason = "provider unavailable"
-	}
-	return fmt.Sprintf("Couldn't play a track (%s). Skipping.", reason)
+// MusicSkipped publishes no queue metadata or provider failure details. The
+// arguments remain for compatibility with callers of the original copy helper.
+func MusicSkipped(_, _ string) string {
+	return "Couldn't play a track. Skipping."
 }
 
 // MusicSkippedBatch coalesces one start's skips without exposing their titles.

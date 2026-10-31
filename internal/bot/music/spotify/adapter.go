@@ -98,7 +98,7 @@ func validPhase(v string) bool {
 }
 func validCode(v string) bool {
 	switch v {
-	case "invalid_request", "credential_unavailable", "provider_unavailable", "cancelled", "internal":
+	case "invalid_request", "credential_unavailable", "provider_unavailable", "provider_connect", "provider_connect_timeout", "build_configuration", "playback_timeout", "cancelled", "internal":
 		return true
 	}
 	return false

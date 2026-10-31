@@ -51,7 +51,7 @@ func (c *fakeWaitClock) Advance(d time.Duration) {
 }
 
 // waitHarness runs reconcileWait against the real gateway runtime's interaction queue and
-// per-installation budgets, with fake pollers that count the groups each installation synced.
+// per-group budgets, with fake pollers that count the groups each installation synced.
 type waitHarness struct {
 	clock   *fakeWaitClock
 	runtime *botGatewayRuntime
@@ -158,8 +158,8 @@ func TestInteractionBurstCoalescesIntoOnePoll(t *testing.T) {
 	}
 }
 
-// A sustained flood in one group falls back to the general throttle rate once the burst is used.
-func TestInteractionFloodIsLimitedToTheThrottleRate(t *testing.T) {
+// A sustained flood stays bounded by the group's burst plus two tokens per second.
+func TestInteractionFloodIsLimitedToTheGroupRefillRate(t *testing.T) {
 	a, group := id.New(), id.New()
 	h := startWait(t, a)
 	const flood = 20 * time.Second
@@ -167,16 +167,14 @@ func TestInteractionFloodIsLimitedToTheThrottleRate(t *testing.T) {
 		h.runtime.notifyInteraction(a, group)
 		h.step(interactionSpacing)
 	}
-	limit := interactionBurst + int(flood/gatewayWakeThrottle) + 1
-	if got := h.take(a); got > limit || got < int(flood/gatewayWakeThrottle) {
-		t.Fatalf("groups synced under a %v flood = %d, want between %d and %d", flood, got, int(flood/gatewayWakeThrottle), limit)
+	limit := interactionBurst + int(flood/interactionRefill)
+	if got := h.take(a); got > limit || got < int(flood/interactionRefill) {
+		t.Fatalf("groups synced under a %v flood = %d, want between %d and %d", flood, got, int(flood/interactionRefill), limit)
 	}
 }
 
-// The budget is charged per group synced, not per poll: a flood across many groups syncs groups
-// no faster than the throttle rate after the burst, and what does not fit falls back to the
-// throttled general wake.
-func TestInteractionFloodAcrossManyGroupsIsChargedPerGroup(t *testing.T) {
+// New groups have independent allowances, but the poll spacing and batch cap still bound work.
+func TestInteractionFloodAcrossManyGroupsStaysWithinSchedulingCap(t *testing.T) {
 	a := id.New()
 	h := startWait(t, a)
 	const flood = 20 * time.Second
@@ -186,35 +184,39 @@ func TestInteractionFloodAcrossManyGroupsIsChargedPerGroup(t *testing.T) {
 		}
 		h.step(interactionSpacing)
 	}
-	// The first poll may overdraw the burst by at most one cap; after that, one group per refill.
-	limit := interactionBurst + interactionGroupCap + int(flood/gatewayWakeThrottle)
-	if got := h.take(a); got > limit {
-		t.Fatalf("groups synced on the fast path under a %v many-group flood = %d, want at most %d", flood, got, limit)
+	limit := interactionGroupCap * (1 + int(flood/interactionSpacing))
+	if got := h.take(a); got > limit || got == 0 {
+		t.Fatalf("groups synced on the fast path under a %v many-group flood = %d, want 1..%d", flood, got, limit)
 	}
 }
 
-// Each installation has its own budget: a flood that spends one community's allowance does not
-// delay another community's command.
-func TestOneInstallationsFloodDoesNotDelayAnother(t *testing.T) {
-	a, b := id.New(), id.New()
-	h := startWait(t, a, b)
-	for range 6 {
-		for range interactionGroupCap {
-			h.runtime.notifyInteraction(a, id.New())
-		}
-		h.step(interactionSpacing)
-	}
-	h.take(a)
-	// a's flood has spent its allowance: its next command waits for a refill.
-	h.runtime.notifyInteraction(a, id.New())
-	settle()
-	if d, ok := h.runtime.NextInteraction(h.clock.Now()); !ok || d <= interactionSpacing {
-		t.Fatalf("a's next poll in %v (pending %v), want its spent budget to hold it back", d, ok)
-	}
-	h.runtime.notifyInteraction(b, id.New())
-	h.step(interactionSpacing)
-	if got := h.take(b); got != 1 {
-		t.Fatalf("b's command after a's flood synced %d groups within %v, want 1", got, interactionSpacing)
+// Every group has its own budget, including groups in the same installation.
+func TestOneGroupsFloodDoesNotDelayAnother(t *testing.T) {
+	for _, sameInstallation := range []bool{true, false} {
+		t.Run(map[bool]string{true: "same installation", false: "different installation"}[sameInstallation], func(t *testing.T) {
+			a, b, flooded, quiet := id.New(), id.New(), id.New(), id.New()
+			if sameInstallation {
+				b = a
+			}
+			h := startWait(t, a, b)
+			for range 2 * interactionBurst {
+				h.runtime.notifyInteraction(a, flooded)
+				h.step(interactionSpacing)
+			}
+			quietPolled := make(chan struct{}, 1)
+			h.runtime.SetInteractionPoller(b, func(_ context.Context, group id.ID) error {
+				if group == quiet {
+					quietPolled <- struct{}{}
+				}
+				return nil
+			})
+			h.runtime.notifyInteraction(a, flooded)
+			h.runtime.notifyInteraction(b, quiet)
+			h.step(interactionSpacing)
+			if !drainSignal(quietPolled) {
+				t.Fatalf("quiet command after flood was not polled within %v", interactionSpacing)
+			}
+		})
 	}
 }
 
@@ -298,5 +300,28 @@ func TestYieldedPassResumeHasMinimumSpacing(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestInteractionBudgetBurstAndTwoTokensPerSecond(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	var budget interactionBudget
+	budget.spend(now, 10)
+	if delay := budget.delay(now); delay != 500*time.Millisecond {
+		t.Fatalf("empty burst delay=%s, want 500ms", delay)
+	}
+	if delay := budget.delay(now.Add(250 * time.Millisecond)); delay != 250*time.Millisecond {
+		t.Fatalf("partial refill delay=%s", delay)
+	}
+	if delay := budget.delay(now.Add(500 * time.Millisecond)); delay > 0 {
+		t.Fatalf("refilled token delay=%s", delay)
+	}
+	budget.spend(now.Add(500*time.Millisecond), 1)
+	if delay := budget.delay(now.Add(500 * time.Millisecond)); delay != 500*time.Millisecond {
+		t.Fatalf("second token delay=%s", delay)
+	}
+	budget.refill(now.Add(time.Hour))
+	if budget.tokens != 10 {
+		t.Fatalf("idle burst=%v, want cap10", budget.tokens)
 	}
 }

@@ -408,7 +408,7 @@ func TestMusicSkipNoticesDeduplicateItemsAcrossOverlappingBatches(t *testing.T) 
 	if err := cborx.Unmarshal(in.RequestBody, &body); err != nil {
 		t.Fatal(err)
 	}
-	if got := body[2]; got != "Couldn't play a track (provider unavailable). Skipping." {
+	if got := body[2]; got != "Couldn't play a track. Skipping." {
 		t.Fatalf("already-notified item repeated in overlapping batch: %q", got)
 	}
 	n.Notify(context.Background(), f.voice, noticeSkips("c", "a", "b"))
@@ -479,7 +479,7 @@ func TestMusicSkipNoticeDurableDedupeSurvivesColdCache(t *testing.T) {
 	if err := cborx.Unmarshal(in.RequestBody, &body); err != nil {
 		t.Fatal(err)
 	}
-	if got := body[2]; got != "Couldn't play a track (provider unavailable). Skipping." {
+	if got := body[2]; got != "Couldn't play a track. Skipping." {
 		t.Fatalf("cold-cache overlapping batch repeated reserved item: %q", got)
 	}
 }
@@ -752,5 +752,169 @@ func TestMusicSkipNoticesMissingPreparedCiphertextFreesWorkerCapacity(t *testing
 				t.Fatalf("old job was fabricated or retained: pending=%d uploads=%d resolves=%d confirms=%d", pending, session.posts, session.resolves, helper.confirmCalls)
 			}
 		})
+	}
+}
+
+func TestMusicSkipNoticeResolveRefusalDropsQueueAndJournal(t *testing.T) {
+	coordinator, helper, session, in := sendFixture()
+	f := newMusicAnnounceFixture(id.New(), true)
+	f.community = helper.binding.Community
+	f.group = in.GroupID
+	voice := id.New()
+	in.OperationID, in.AttemptID = musicSkipNoticeIDs(f.community, voice, []string{"revoked"})
+	job := &musicNoticeJob{Voice: voice, Destination: musicNoticeDestination{text: f.text, actor: InteractionActor{User: f.actor}, grant: id.New()}, Items: []string{"revoked"}, Input: &in}
+	state := &musicNoticeState{binding: helper.binding}
+	journalKey := []byte("dilla.bot.music.skip-notices.v1/" + f.community.String())
+	seed := &MusicSkipNotices{state: state, journalKey: journalKey, jobs: []*musicNoticeJob{job}}
+	if err := seed.persist(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	session.resolveErr = &client.APIError{Status: 404, Code: "E_NOT_FOUND", Outcome: client.OutcomeDefinitive}
+	sender := musicNoticeCoordinatorSender{coordinator: coordinator, session: session}
+	var logs bytes.Buffer
+	n := &MusicSkipNotices{}
+	n.SetState(state)
+	h := MusicAnnouncements{Music: &MusicInteractions{Authority: f.authority}, Channels: f.member, Destination: &rolePanelDestinationFake{group: f.group}, Sender: sender, Discovery: &rolePanelDiscoveryFake{generation: 12}, Session: &client.Session{}, CommunityID: f.community}
+	n.Configure(h, slog.New(slog.NewTextHandler(&logs, nil)))
+	defer n.Close()
+	deadline := time.Now().Add(time.Second)
+	for {
+		value, err := state.StateGet(t.Context(), 8, journalKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope []any
+		if err := cborx.Unmarshal(value.Value, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		var journal musicNoticeJournal
+		if err := json.Unmarshal(envelope[1].([]byte), &journal); err != nil {
+			t.Fatal(err)
+		}
+		if len(journal.Pending) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("definitively refused prepared notice remains journaled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	n.Close()
+	if len(n.jobs) != 0 || session.resolves != 1 || session.posts != 0 || helper.confirmCalls != 0 {
+		t.Fatalf("refused notice retained or uploaded: queued=%d resolves=%d posts=%d confirms=%d", len(n.jobs), session.resolves, session.posts, helper.confirmCalls)
+	}
+	if !bytes.Contains(logs.Bytes(), []byte("send_terminal")) {
+		t.Fatalf("terminal disposition missing from logs: %s", logs.String())
+	}
+}
+
+type musicNoticeRetrySender struct {
+	*musicNoticeSender
+	entered chan struct{}
+}
+
+func (s musicNoticeRetrySender) ResolvePrepared(ctx context.Context, _ SendSession, _ SendInput) (protocol.SendReceipt, error) {
+	s.entered <- struct{}{}
+	<-ctx.Done()
+	return protocol.SendReceipt{}, ctx.Err()
+}
+
+func TestMusicSkipNoticeRetryBudgetSurvivesEveryRestart(t *testing.T) {
+	_, helper, _, in := sendFixture()
+	f := newMusicAnnounceFixture(id.New(), true)
+	f.community = helper.binding.Community
+	voice := id.New()
+	in.OperationID, in.AttemptID = musicSkipNoticeIDs(f.community, voice, []string{"uncertain"})
+	job := &musicNoticeJob{Voice: voice, Destination: musicNoticeDestination{text: f.text, actor: InteractionActor{User: f.actor}, grant: id.New()}, Items: []string{"uncertain"}, Input: &in}
+	state := &musicNoticeState{binding: helper.binding}
+	journalKey := []byte("dilla.bot.music.skip-notices.v1/" + f.community.String())
+	seed := &MusicSkipNotices{state: state, journalKey: journalKey, jobs: []*musicNoticeJob{job}}
+	if err := seed.persist(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	sender := musicNoticeRetrySender{musicNoticeSender: &musicNoticeSender{}, entered: make(chan struct{}, 1)}
+	h := MusicAnnouncements{Music: &MusicInteractions{Authority: f.authority}, Channels: f.member, Destination: &rolePanelDestinationFake{group: f.group}, Sender: sender, Discovery: &rolePanelDiscoveryFake{generation: 12}, Session: &client.Session{}, CommunityID: f.community}
+	readJournal := func() musicNoticeJournal {
+		t.Helper()
+		value, err := state.StateGet(t.Context(), 8, journalKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope []any
+		if err := cborx.Unmarshal(value.Value, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		var journal musicNoticeJournal
+		if err := json.Unmarshal(envelope[1].([]byte), &journal); err != nil {
+			t.Fatal(err)
+		}
+		return journal
+	}
+	for attempt := uint32(1); attempt <= 6; attempt++ {
+		n := &MusicSkipNotices{}
+		n.SetState(state)
+		n.Configure(h, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+		select {
+		case <-sender.entered:
+		case <-time.After(time.Second):
+			n.Close()
+			t.Fatalf("attempt %d did not reach resolve", attempt)
+		}
+		journal := readJournal()
+		n.Close()
+		if len(journal.Pending) != 1 || journal.Pending[0].Attempts != attempt {
+			t.Fatalf("attempt %d was not durably reserved before resolve: %+v", attempt, journal.Pending)
+		}
+	}
+	var logs bytes.Buffer
+	exhausted := &MusicSkipNotices{}
+	exhausted.SetState(state)
+	exhausted.Configure(h, slog.New(slog.NewTextHandler(&logs, nil)))
+	defer exhausted.Close()
+	deadline := time.Now().Add(time.Second)
+	for len(readJournal().Pending) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("exhausted notice retained after restart")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	exhausted.Close()
+	select {
+	case <-sender.entered:
+		t.Fatal("restart reset the prepared notice retry budget")
+	default:
+	}
+	if len(exhausted.jobs) != 0 || !bytes.Contains(logs.Bytes(), []byte("retry_exhausted")) {
+		t.Fatalf("exhausted notice not evicted/logged: jobs=%d log=%s", len(exhausted.jobs), logs.String())
+	}
+}
+
+func TestMusicSkipNoticeRegistrationCannotCarryIntoFreshCall(t *testing.T) {
+	n, f, sender := noticeFixture(t)
+	oldGroup := id.New()
+	n.Register(f.voice, f.text, InteractionActor{User: f.actor}, oldGroup)
+	oldRoute := noticeRoute(n, f.voice)
+	f.authority.call.GroupID = id.New()
+	job := &musicNoticeJob{Voice: f.voice, Destination: oldRoute, Items: []string{"old-call"}}
+	if err := n.send(t.Context(), job); err == nil {
+		t.Fatal("fresh call inherited previous call's registration")
+	}
+	n.mu.Lock()
+	_, registered := n.destinations[f.voice]
+	n.mu.Unlock()
+	if registered || job.Input != nil {
+		t.Fatal("stale call grant was retained or prepared")
+	}
+	select {
+	case <-sender.inputs:
+		t.Fatal("old call destination received fresh call notice")
+	default:
+	}
+	n.Register(f.voice, f.text, InteractionActor{User: f.actor}, oldGroup)
+	oldRoute = noticeRoute(n, f.voice)
+	n.Register(f.voice, f.text, InteractionActor{User: f.actor}, f.authority.call.GroupID)
+	current := noticeRoute(n, f.voice)
+	if current.grant == oldRoute.grant || current.group != f.authority.call.GroupID {
+		t.Fatal("fresh call reused old registration grant")
 	}
 }

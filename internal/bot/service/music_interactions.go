@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
@@ -58,8 +59,8 @@ type SpotifyMusicTrackResolver interface {
 	ResolveSpotify(context.Context, string, id.ID) ([]music.Track, error)
 }
 
-// MusicInteractions updates only encrypted queue state. It does not control
-// audio; a playback supervisor must consume these revisions separately.
+// MusicInteractions authorizes encrypted queue mutations and hands committed
+// state or immediate controls to the retained playback supervisor.
 type MusicInteractions struct {
 	Logger          *slog.Logger
 	Store           musicStateStore
@@ -72,6 +73,8 @@ type MusicInteractions struct {
 	// CurrentState exposes the retained supervisor's live state. The handler
 	// accepts it only when its revision still matches the durable store row.
 	CurrentState musicRuntimeStateReader
+	// OnImmediateControl serializes pause/skip with the supervisor, rebasing onto its current revision.
+	OnImmediateControl func(context.Context, id.ID, id.ID, id.ID, music.Operation) (music.State, error)
 	// Now makes the write-boundary expiry check deterministic in tests. Nil uses
 	// the system clock.
 	Now func() time.Time
@@ -107,6 +110,10 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 }
 
 func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (result InteractionResult, failure error) {
+	immediate := op == protocol.OpMusicPause || op == protocol.OpMusicSkip
+	if immediate {
+		ctx = client.WithImmediateControl(ctx)
+	}
 	reason := "dependency_or_context"
 	var diagnostic error
 	var group id.ID
@@ -201,12 +208,25 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		if err != nil {
 			return InteractionResult{}, err
 		}
-		reason = "revision_conflict"
 		if revision != snapshot.Revision || state.Revision != snapshot.Revision {
+			// A playback transition may have committed since the first read. State reads
+			// always have a durable answer, and a missed hand-off adopts without starting.
+			snapshot, err = h.Store.Load(ctx, channel)
+			if err != nil {
+				return InteractionResult{}, err
+			}
+			if revision < snapshot.Revision && h.OnPersistedSnapshot != nil {
+				_, _ = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, snapshot.State, snapshot.Revision, false)
+			}
+		}
+		if revision == snapshot.Revision && state.Revision == snapshot.Revision {
+			snapshot.State = state
+		}
+		if op != protocol.OpMusicState && !immediate && (revision != snapshot.Revision || state.Revision != snapshot.Revision) {
+			reason = "revision_conflict"
 			currentRevision := snapshot.Revision
 			return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
 		}
-		snapshot.State = state
 	}
 	if op == protocol.OpMusicState {
 		reason = "can_dj_lookup"
@@ -223,7 +243,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 	}
 	reason = "revision_conflict"
-	if req.Revision == nil || *req.Revision != snapshot.Revision {
+	if !immediate && (req.Revision == nil || *req.Revision != snapshot.Revision) {
 		revision := snapshot.Revision
 		return InteractionResult{Status: interactionStatusConflict, Revision: &revision}, nil
 	}
@@ -371,6 +391,21 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		if currentTime >= 0 && *req.Expires <= uint64(currentTime) {
 			return InteractionResult{Status: interactionStatusExpired}, nil
 		}
+	}
+	if immediate && h.OnImmediateControl != nil {
+		reason = "immediate_control"
+		state, controlErr := h.OnImmediateControl(ctx, h.InstallationID, h.CommunityID, channel, opValue)
+		if controlErr != nil {
+			return InteractionResult{}, controlErr
+		}
+		// A bounded authenticated snapshot lets the client settle the control in
+		// one Bot operation, including queues whose visible prefix is truncated.
+		data, encodeErr := encodeMusicSnapshot(state, true, h.clock().UnixMilli())
+		if encodeErr != nil {
+			return InteractionResult{}, encodeErr
+		}
+		revision := state.Revision
+		return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 	}
 	reason = "save_failed"
 	saved, err := h.Store.Save(ctx, channel, snapshot.Revision, next)
@@ -526,6 +561,8 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 
 // encodeMusicSnapshot writes snapshot v1. Slots 10 and 11 (Ruling AI) are the Bot's Unix ms at which slot 4's position
 // was the playhead (0: unknown) and the Bot's Unix ms now, so a client can run the playhead on without trusting its clock.
+// Oversized snapshots expose the largest queue prefix that fits and append slot 12 with
+// the original queue count. This explicitly marks truncation without changing durable state.
 func encodeMusicSnapshot(state music.State, canControl bool, nowMS int64) ([]byte, error) {
 	if state.PositionMS < 0 || state.PositionAtMS < 0 || nowMS < 0 {
 		return nil, music.ErrInvalidOperation
@@ -543,10 +580,40 @@ func encodeMusicSnapshot(state music.State, canControl bool, nowMS int64) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	// The final slot is the current actor's DJ/call-membership affordance. Every
+	// Slot 9 is the current actor's DJ/call-membership affordance. Every
 	// mutation still rechecks authority at its own write boundary.
-	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), boolUint(canControl),
-		uint64(state.PositionAtMS), uint64(nowMS)})
+	fields := []any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), boolUint(canControl),
+		uint64(state.PositionAtMS), uint64(nowMS)}
+	data, err := cborx.Marshal(fields)
+	if err != nil || len(data) <= 2400 {
+		return data, err
+	}
+	fields = append(fields, uint64(len(queue)))
+	fields[3] = queue[:0]
+	best, err := cborx.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+	if len(best) > 2400 {
+		return nil, protocol.ErrLimit
+	}
+	// Encoded size grows monotonically with the number of complete queue rows.
+	low, high := 1, len(queue)
+	for low <= high {
+		mid := low + (high-low)/2
+		fields[3] = queue[:mid]
+		candidate, err := cborx.Marshal(fields)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidate) <= 2400 {
+			best = candidate
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	return best, nil
 }
 
 func encodeMusicTrack(t *music.Track) (any, error) {

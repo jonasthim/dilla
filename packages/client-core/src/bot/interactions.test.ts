@@ -547,3 +547,32 @@ it('rejects an in-flight status lookup after the account device/store scope chan
   await expect(pending).rejects.toThrow('changed during authorization');
   expect(sends).toBe(0);
 });
+
+it('binds the authenticated installation before an upload with an uncertain outcome', async () => {
+  const scope = { installationId: INSTALLATION, botUserId: null, revision: '1' };
+  const dispatched = vi.fn();
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { ...scope, state: 3 };
+    if (command.m === 'humanInteractionRequest') {
+      expect(dispatched).toHaveBeenCalledExactlyOnceWith(scope);
+      expect(Object.isFrozen(dispatched.mock.calls[0][0])).toBe(true);
+      return { requestId: REQUEST, upload: 'unknown' };
+    }
+    return null;
+  });
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 13,
+    channelId: '55'.repeat(16), args: [], revision: '0', onDispatch: dispatched })).rejects.toBeInstanceOf(BotInteractionUncertainError);
+  expect(dispatched).toHaveBeenCalledExactlyOnceWith(scope);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+});
+
+it('does not report dispatch before the expected installation has been authorized', async () => {
+  const dispatched = vi.fn();
+  const f = fake(command => command.m === 'getBotCommandStatus'
+    ? { installationId: INSTALLATION, botUserId: null, revision: '1', state: 3 } : null);
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 13,
+    channelId: '55'.repeat(16), args: [], revision: '0', onDispatch: dispatched,
+    expectedScope: { installationId: 'bb'.repeat(16), botUserId: null, revision: '1' } })).rejects.toBeInstanceOf(BotInteractionBindingMismatchError);
+  expect(dispatched).not.toHaveBeenCalled();
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(0);
+});

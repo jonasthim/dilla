@@ -37,7 +37,7 @@ var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
 // supervisor. Only an explicit Resume or a Skip that continues existing playback starts audio.
 func musicSnapshotCommitCallback(registry *musicQueueRegistry, logger *slog.Logger) func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
 	return func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, startPlayback bool) (uint64, error) {
-		return registry.ApplyPersistedSnapshot(ctx, installation, community, channel, state, revision, startPlayback)
+		return registry.schedulePersistedSnapshot(ctx, installation, community, channel, state, revision, startPlayback)
 	}
 }
 
@@ -77,16 +77,16 @@ func (r *musicQueueRuntime) CurrentState(ctx context.Context, channel id.ID) (mu
 		return music.State{}, 0, err
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
+		r.mu.Unlock()
 		return music.State{}, 0, music.ErrSupervisorClosed
 	}
 	supervisor := r.supervisors[channel]
+	r.mu.Unlock()
 	if supervisor == nil {
 		return music.State{}, 0, errors.New("music voice session is unavailable")
 	}
-	state := supervisor.State()
-	return state, state.Revision, nil
+	return supervisor.RefreshState(ctx)
 }
 
 // ApplyPersistedSnapshot hands an exact committed revision to its retained
@@ -320,6 +320,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		Store: stateStore, Authority: authority, Logger: logger,
 		InstallationID: installation, CommunityID: community,
 		CurrentState:        registry.CurrentState,
+		OnImmediateControl:  registry.applyImmediateControl,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
 	}
 	if len(spotifyResolvers) > 0 {
@@ -625,6 +626,42 @@ func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, install
 	}
 	r.mu.Unlock()
 	return retained.queues.ApplyPersistedSnapshot(ctx, channel, state, revision, startPlayback)
+}
+
+func (r *musicQueueRegistry) supervisor(installation, community, channel id.ID) (*music.Supervisor, error) {
+	if r == nil {
+		return nil, errors.New("music voice session is unavailable")
+	}
+	r.mu.Lock()
+	retained := r.runtimes[installation]
+	if retained == nil || retained.community != community || retained.queues == nil {
+		r.mu.Unlock()
+		return nil, errors.New("music voice session is unavailable")
+	}
+	queues := retained.queues
+	r.mu.Unlock()
+	queues.mu.Lock()
+	defer queues.mu.Unlock()
+	if queues.closed || queues.supervisors[channel] == nil {
+		return nil, music.ErrSupervisorClosed
+	}
+	return queues.supervisors[channel], nil
+}
+
+func (r *musicQueueRegistry) schedulePersistedSnapshot(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, start bool) (uint64, error) {
+	s, err := r.supervisor(installation, community, channel)
+	if err != nil {
+		return 0, err
+	}
+	return s.SchedulePersistedSnapshot(ctx, state, revision, start)
+}
+
+func (r *musicQueueRegistry) applyImmediateControl(ctx context.Context, installation, community, channel id.ID, op music.Operation) (music.State, error) {
+	s, err := r.supervisor(installation, community, channel)
+	if err != nil {
+		return music.State{}, err
+	}
+	return s.ApplyImmediate(ctx, op)
 }
 
 // Reconcile returns true only when ownership of nativeClient transfers to the

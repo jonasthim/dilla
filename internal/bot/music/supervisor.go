@@ -171,8 +171,33 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 		return State{}, errors.New("nil music operation context")
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applyLocked(ctx, expected, op, false)
+}
+
+// ApplyImmediate serializes a pause or skip with automatic queue advancement.
+// The caller has already authorized this action against the current call.
+func (s *Supervisor) ApplyImmediate(ctx context.Context, op Operation) (State, error) {
+	if ctx == nil || (op.Kind != OpPause && op.Kind != OpSkip) {
+		return State{}, ErrInvalidOperation
+	}
+	if _, _, err := s.RefreshState(ctx); err != nil {
+		return State{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applyLocked(ctx, s.revision, op, true)
+}
+
+func (s *Supervisor) applyLocked(ctx context.Context, expected uint64, op Operation, async bool) (State, error) {
 	var skipped []SkippedTrack
-	defer func() { s.mu.Unlock(); s.reportSkipped(skipped) }()
+	defer func() {
+		if len(skipped) > 0 {
+			s.mu.Unlock()
+			s.reportSkipped(skipped)
+			s.mu.Lock()
+		}
+	}()
 	if s.closed {
 		return State{}, ErrSupervisorClosed
 	}
@@ -197,7 +222,9 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 	if op.Kind == OpPause || op.Kind == OpStop || op.Kind == OpClear || op.Kind == OpSkip {
 		s.closePlaybackLocked()
 	}
-	if !s.state.Paused && s.state.Current != nil && s.playback == nil {
+	if !s.state.Paused && s.state.Current != nil && s.playback == nil && async {
+		s.scheduleStartLocked()
+	} else if !s.state.Paused && s.state.Current != nil && s.playback == nil {
 		var startErr error
 		skipped, startErr = s.startLocked(ctx, op.Kind == OpResume || op.Kind == OpSkip)
 		if err := startErr; err != nil {
@@ -223,25 +250,31 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	if ctx == nil {
 		return 0, errors.New("nil persisted music snapshot context")
 	}
+	loadCtx, cancelLoad := context.WithTimeout(s.ctx, 5*time.Second)
+	stored, revision, err := s.store.Load(loadCtx, s.channel)
+	cancelLoad()
 	s.mu.Lock()
 	var skipped []SkippedTrack
 	defer func() { s.mu.Unlock(); s.reportSkipped(skipped) }()
 	if s.closed {
 		return s.revision, ErrSupervisorClosed
 	}
-	if expected <= s.revision || committed.Revision != expected {
-		return s.revision, ErrRevisionConflict
-	}
-	// Persisted interactions can be dispatched under a short-lived event
-	// context. Once their mutation has committed, runtime adoption belongs to
-	// this supervisor's lifetime, not the request that carried it.
-	loadCtx, cancelLoad := context.WithTimeout(s.ctx, 5*time.Second)
-	_, revision, err := s.store.Load(loadCtx, s.channel)
-	cancelLoad()
 	if err != nil {
 		return s.revision, err
 	}
+	if committed.Revision != expected {
+		return s.revision, ErrRevisionConflict
+	}
 	if revision != expected {
+		if revision > s.revision {
+			s.adoptLocked(stored, revision)
+		}
+		return s.revision, nil
+	}
+	if expected <= s.revision {
+		if expected == s.revision && !startPlayback {
+			return s.revision, nil
+		}
 		return s.revision, ErrRevisionConflict
 	}
 	state := cloneState(committed)
@@ -268,6 +301,84 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	return s.revision, nil
 }
 
+// RefreshState repairs a missed hand-off from durable state without starting audio.
+// The native read runs outside the state mutex; a newer runtime revision wins a racing read.
+func (s *Supervisor) RefreshState(ctx context.Context) (State, uint64, error) {
+	stored, revision, err := s.store.Load(ctx, s.channel)
+	if err != nil {
+		return State{}, 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return State{}, s.revision, ErrSupervisorClosed
+	}
+	if revision > s.revision {
+		s.adoptLocked(stored, revision)
+	}
+	return cloneState(s.state), s.revision, nil
+}
+
+func (s *Supervisor) adoptLocked(state State, revision uint64) {
+	s.closePlaybackLocked()
+	s.state, s.revision = cloneState(state), revision
+	s.idleCheckLocked()
+	s.signalLocked()
+}
+
+// SchedulePersistedSnapshot adopts first, then schedules provider work off the
+// interaction drain. A later pause/skip invalidates the scheduled start.
+func (s *Supervisor) SchedulePersistedSnapshot(ctx context.Context, state State, revision uint64, start bool) (uint64, error) {
+	adopted, err := s.ApplyPersistedSnapshot(ctx, state, revision, false)
+	if err != nil || !start {
+		return adopted, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return s.revision, ErrSupervisorClosed
+	}
+	if s.revision == revision && !state.Paused && state.Current != nil {
+		// A concurrent read may already have adopted this revision from the
+		// restart-safe store view (paused). This explicit, committed Resume
+		// still owns its hand-off; a newer Pause/Skip revision would fail the
+		// revision check above instead of reviving an obsolete start.
+		if s.state.Paused && s.playback == nil {
+			s.state = cloneState(state)
+			s.signalLocked()
+		}
+		if !s.state.Paused && s.state.Current != nil && s.playback == nil {
+			s.scheduleStartLocked()
+		}
+	}
+	return s.revision, nil
+}
+
+func (s *Supervisor) scheduleStartLocked() {
+	s.startRequest++
+	request := s.startRequest
+	go func() {
+		s.mu.Lock()
+		if s.closed || request != s.startRequest || s.state.Paused || s.state.Current == nil {
+			s.mu.Unlock()
+			return
+		}
+		skips, err := s.startLocked(s.ctx, true)
+		if err != nil && request == s.startRequest && !s.closed {
+			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), 5*time.Second)
+			_ = s.pauseLocked(pauseCtx)
+			cancel()
+		}
+		s.idleCheckLocked()
+		s.signalLocked()
+		s.mu.Unlock()
+		s.reportSkipped(skips)
+		if err != nil && s.onAutomaticPlaybackFailure != nil {
+			s.onAutomaticPlaybackFailure(s.ctx, err)
+		}
+	}()
+}
+
 // WithSkippedTrack reports a failed item only after its removal is durable.
 func WithSkippedTrack(report func(context.Context, []SkippedTrack)) SupervisorOption {
 	return func(s *Supervisor) { s.onSkipped = report }
@@ -278,7 +389,7 @@ func WithPlaybackLog(logger *slog.Logger) SupervisorOption {
 
 const maxConsecutiveStartSkips = 2
 const maxTotalStartSkips = 5
-const maxStartDuration = 30 * time.Second
+const maxStartDuration = 45 * time.Second
 
 type startRun struct {
 	request     uint64
@@ -291,7 +402,9 @@ type startBudget struct {
 	deadline             time.Time
 }
 
-func (b startBudget) exhausted(now time.Time) bool {
+func (b *startBudget) succeeded() { b.consecutive = 0 }
+
+func (b *startBudget) exhausted(now time.Time) bool {
 	return b.consecutive >= maxConsecutiveStartSkips || b.skipped >= maxTotalStartSkips || !now.Before(b.deadline)
 }
 
@@ -413,6 +526,7 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool) ([]SkippedT
 			}
 			return skips, errors.New("music track starter returned invalid playback")
 		}
+		budget.succeeded()
 		successful = true
 		timeout.Stop()
 		go func() { <-p.Done(); cancel() }()
@@ -535,6 +649,7 @@ func (s *Supervisor) RoomOccupied() {
 }
 
 func (s *Supervisor) closePlaybackLocked() {
+	s.startRequest++
 	if s.starting != nil {
 		s.starting.interrupted = true
 		s.starting.cancel()

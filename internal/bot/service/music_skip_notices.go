@@ -29,8 +29,12 @@ const musicNoticeVoiceLimit = 128
 const musicNoticeBatchLimit = 5
 const musicNoticeGap = 10 * time.Second
 
+// Reserve each attempt in the journal before touching native or HTTP state.
+const musicNoticeMaxAttempts = 6
+
 type musicNoticeDestination struct {
 	text  id.ID
+	group id.ID // Active call group at registration; zero only for legacy callers.
 	actor InteractionActor
 	grant id.ID
 }
@@ -40,6 +44,7 @@ type musicNoticeJob struct {
 	Items       []string
 	Reason      string
 	Input       *SendInput
+	Attempts    uint32
 	ready       time.Time
 }
 type musicNoticePreparedResolver interface {
@@ -124,6 +129,14 @@ func (n *MusicSkipNotices) Configure(h MusicAnnouncements, logger *slog.Logger) 
 		n.journalFailed = false
 	}
 	n.send = func(ctx context.Context, job *musicNoticeJob) error {
+		// Reserve a restored/retried attempt even if current configuration is
+		// incomplete; repeated restarts must not reset its recovery budget.
+		reserved := job.Input != nil
+		if reserved {
+			if err := n.persist(ctx, job); err != nil {
+				return err
+			}
+		}
 		sender, ok := h.Sender.(musicNoticeAuthorizedSender)
 		if !ok || h.Music == nil || h.Music.Authority == nil || h.Channels == nil || h.Destination == nil || h.Discovery == nil || h.Session == nil {
 			return errors.New("music notice unavailable")
@@ -140,7 +153,7 @@ func (n *MusicSkipNotices) Configure(h MusicAnnouncements, logger *slog.Logger) 
 			if err != nil {
 				return err
 			}
-			if !validMusicCall(call, job.Voice) {
+			if !validMusicCall(call, job.Voice) || !destination.group.IsZero() && call.GroupID != destination.group {
 				n.Clear(job.Voice)
 				return errors.New("music notice call unavailable")
 			}
@@ -219,8 +232,10 @@ func (n *MusicSkipNotices) Configure(h MusicAnnouncements, logger *slog.Logger) 
 			job.Input = &SendInput{OperationID: operation, AttemptID: attempt, GroupID: group, RequestBody: body, OriginalNow: uint64(created), ExpectedGeneration: discovery.Generation}
 		}
 		// Write the exact input before a native PrepareSend can persist ciphertext.
-		if err := n.persist(ctx, job); err != nil {
-			return err
+		if !reserved {
+			if err := n.persist(ctx, job); err != nil {
+				return err
+			}
 		}
 		resolve := func() (protocol.SendReceipt, error) {
 			resolver, ok := h.Sender.(musicNoticePreparedResolver)
@@ -277,7 +292,7 @@ func (n *MusicSkipNotices) registrationCurrent(job *musicNoticeJob) bool {
 	return !n.closed && known && current == job.Destination
 }
 
-func (n *MusicSkipNotices) Register(voice, text id.ID, actor InteractionActor) {
+func (n *MusicSkipNotices) Register(voice, text id.ID, actor InteractionActor, callGroups ...id.ID) {
 	if n == nil {
 		return
 	}
@@ -295,11 +310,15 @@ func (n *MusicSkipNotices) Register(voice, text id.ID, actor InteractionActor) {
 			break
 		}
 	}
+	var callGroup id.ID
+	if len(callGroups) > 0 {
+		callGroup = callGroups[0]
+	}
 	grant := id.New()
-	if current, known := n.destinations[voice]; known && current.text == text && current.actor == actor {
+	if current, known := n.destinations[voice]; known && current.text == text && current.actor == actor && current.group == callGroup {
 		grant = current.grant
 	}
-	n.destinations[voice] = musicNoticeDestination{text: text, actor: actor, grant: grant}
+	n.destinations[voice] = musicNoticeDestination{text: text, group: callGroup, actor: actor, grant: grant}
 	n.signalLocked()
 }
 
@@ -515,17 +534,33 @@ func (n *MusicSkipNotices) run(ctx context.Context) {
 			}
 			continue
 		}
-		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := n.send(sendCtx, job)
-		cancel()
+		var err error
+		if job.Attempts >= musicNoticeMaxAttempts {
+			err = ErrSendTerminal
+			n.logger.WarnContext(ctx, "bot music skip notice dropped", "channel_id", job.Voice.String(), "reason", "retry_exhausted")
+		} else {
+			job.Attempts++
+			sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err = n.send(sendCtx, job)
+			cancel()
+		}
 		if err != nil {
-			n.logger.WarnContext(ctx, "bot music skip notice failed", "channel_id", job.Voice.String(), "class", music.FailureClass(err))
-			if (job.Input != nil || ctx.Err() != nil) && !errors.Is(err, ErrSendTerminal) && !errors.Is(err, ErrSendNotPrepared) {
+			disposition := "dropped"
+			terminal := errors.Is(err, ErrSendTerminal) || errors.Is(err, ErrSendNotPrepared)
+			if terminal {
+				disposition = "send_terminal"
+			}
+			if !terminal && job.Attempts >= musicNoticeMaxAttempts {
+				disposition = "retry_exhausted"
+			}
+			if (job.Input != nil || ctx.Err() != nil) && !terminal && job.Attempts < musicNoticeMaxAttempts {
+				disposition = "retry"
 				job.ready = n.clock().Add(musicNoticeGap)
 				n.mu.Lock()
 				n.enqueueLocked(job)
 				n.mu.Unlock()
 			}
+			n.logger.WarnContext(ctx, "bot music skip notice failed", "channel_id", job.Voice.String(), "class", music.FailureClass(err), "disposition", disposition)
 		}
 		// If cancellation interrupted the HTTP boundary, keep the pre-send journal
 		// unchanged; it includes this unresolved job even when the queue was full.
@@ -564,11 +599,13 @@ func musicSkipNoticeIDs(community, voice id.ID, items []string) (operation, atte
 
 type musicNoticeRecord struct {
 	Voice, Text id.ID
+	CallGroup   id.ID
 	Grant       id.ID
 	Actor       InteractionActor
 	Items       []string
 	Reason      string
 	Input       SendInput
+	Attempts    uint32
 }
 type musicNoticeJournal struct {
 	Pending []musicNoticeRecord
@@ -631,7 +668,7 @@ func (n *MusicSkipNotices) persist(ctx context.Context, active *musicNoticeJob) 
 	}
 	for _, job := range jobs {
 		if job.Input != nil {
-			journal.Pending = append(journal.Pending, musicNoticeRecord{Voice: job.Voice, Text: job.Destination.text, Grant: job.Destination.grant, Actor: job.Destination.actor, Items: job.Items, Reason: job.Reason, Input: *job.Input})
+			journal.Pending = append(journal.Pending, musicNoticeRecord{Voice: job.Voice, Text: job.Destination.text, CallGroup: job.Destination.group, Grant: job.Destination.grant, Actor: job.Destination.actor, Items: job.Items, Reason: job.Reason, Input: *job.Input, Attempts: job.Attempts})
 		}
 	}
 	n.mu.Unlock()
@@ -720,7 +757,7 @@ func (n *MusicSkipNotices) restore(ctx context.Context, community id.ID) error {
 		n.rememberLocked(key)
 	}
 	for _, record := range journal.Pending {
-		if record.Voice.IsZero() || record.Text.IsZero() || record.Grant.IsZero() || record.Input.OperationID.IsZero() || record.Input.AttemptID.IsZero() || record.Input.GroupID.IsZero() || len(record.Items) == 0 || len(record.Items) > musicNoticeBatchLimit {
+		if record.Voice.IsZero() || record.Text.IsZero() || record.Grant.IsZero() || record.Input.OperationID.IsZero() || record.Input.AttemptID.IsZero() || record.Input.GroupID.IsZero() || len(record.Items) == 0 || len(record.Items) > musicNoticeBatchLimit || record.Attempts > musicNoticeMaxAttempts {
 			return errors.New("invalid music notice journal")
 		}
 		operation, attempt := musicSkipNoticeIDs(community, record.Voice, record.Items)
@@ -728,7 +765,7 @@ func (n *MusicSkipNotices) restore(ctx context.Context, community id.ID) error {
 			return errors.New("music notice journal identity mismatch")
 		}
 		in := record.Input
-		n.jobs = append(n.jobs, &musicNoticeJob{Voice: record.Voice, Destination: musicNoticeDestination{text: record.Text, actor: record.Actor, grant: record.Grant}, Items: record.Items, Reason: record.Reason, Input: &in})
+		n.jobs = append(n.jobs, &musicNoticeJob{Voice: record.Voice, Destination: musicNoticeDestination{text: record.Text, group: record.CallGroup, actor: record.Actor, grant: record.Grant}, Items: record.Items, Reason: record.Reason, Input: &in, Attempts: record.Attempts})
 	}
 	return nil
 }

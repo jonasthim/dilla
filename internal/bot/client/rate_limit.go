@@ -57,10 +57,17 @@ func (r RateLimits) defaults() (RateLimits, error) {
 }
 
 type interactiveContextKey struct{}
+type immediateControlContextKey struct{}
 
 // WithInteractive marks a person's command and its downstream requests.
 func WithInteractive(ctx context.Context) context.Context {
 	return context.WithValue(ctx, interactiveContextKey{}, true)
+}
+
+// WithImmediateControl gives pause and skip requests first use of the next token.
+// It preserves all rate caps and also marks downstream requests as interactive.
+func WithImmediateControl(ctx context.Context) context.Context {
+	return context.WithValue(WithInteractive(ctx), immediateControlContextKey{}, true)
 }
 
 type backgroundYieldContextKey struct{}
@@ -91,16 +98,18 @@ func backgroundYieldError() error { return ErrBackgroundYield }
 // sweep's cooperative yield and the request's interactive priority.
 func WithoutBackgroundYield(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, backgroundYieldContextKey{}, (func() bool)(nil))
+	ctx = context.WithValue(ctx, immediateControlContextKey{}, false)
 	return context.WithValue(ctx, interactiveContextKey{}, false)
 }
 
-// priorityLimiter never reserves future tokens. Interactive waiters take the
-// next available token; background waiters sleep while interactive demand exists.
-// Both priorities spend the same bucket, including its initial burst.
+// priorityLimiter never reserves future tokens. Immediate control waiters take
+// the next token ahead of interactive requests, which precede background work.
+// All three priorities spend the same bucket, including its initial burst.
 type priorityLimiter struct {
 	*rate.Limiter
 	mu          sync.Mutex
 	interactive int
+	immediate   int
 	changed     chan struct{}
 }
 
@@ -115,14 +124,21 @@ func (l *priorityLimiter) notifyLocked() {
 
 func (l *priorityLimiter) Wait(ctx context.Context) error {
 	interactive, _ := ctx.Value(interactiveContextKey{}).(bool)
+	immediate, _ := ctx.Value(immediateControlContextKey{}).(bool)
 	if interactive {
 		l.mu.Lock()
 		l.interactive++
+		if immediate {
+			l.immediate++
+		}
 		l.notifyLocked()
 		l.mu.Unlock()
 		defer func() {
 			l.mu.Lock()
 			l.interactive--
+			if immediate {
+				l.immediate--
+			}
 			l.notifyLocked()
 			l.mu.Unlock()
 		}()
@@ -135,7 +151,7 @@ func (l *priorityLimiter) Wait(ctx context.Context) error {
 			return backgroundYieldError()
 		}
 		l.mu.Lock()
-		if (interactive || l.interactive == 0) && l.Allow() {
+		if (immediate || l.immediate == 0) && (interactive || l.interactive == 0) && l.Allow() {
 			l.mu.Unlock()
 			return nil
 		}
