@@ -281,7 +281,7 @@ describe('authenticated voice music adapter', () => {
     f.client.call = vi.fn((command: Record<string, unknown>) => {
       if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: [{ requestId: '56'.repeat(16), operation: 12, status: 5, revision, data: encode([]) }], through: null });
       return original(command as never);
-    }) as CoreClient['call'];
+    });
     const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '56'.repeat(16) });
     await expect(enqueue).rejects.toMatchObject(revision === null ? { code: 'unavailable' } : { requestId: '56'.repeat(16) });
     expect(f.commands.filter(command => command.operation === 12)).toHaveLength(0);
