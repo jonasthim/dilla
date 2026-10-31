@@ -598,6 +598,19 @@ and run `install.sh` inside it directly.
 
 ### Dilla Bot installation
 
+The Bot's `[rate_limits]` in `/etc/dillabot/bot.toml` also bounds its limiter
+caches: `device_cache_limit` defaults to 1,024, `target_cache_limit` to 2,048
+KeyPackage targets per device, and `global_target_cache_limit` to 16,384 targets
+per client. Zero or absent selects the default; negative or excessively large
+capacities fail configuration validation. A cache entry can be evicted only
+after five minutes idle, with its allowance fully replenished and no request
+waiting on it. Session renewal shares the device budget, including allowance
+spent before an anonymous token was bound to the device. Full caches defer
+before sending an HTTP request (`E_UNAVAILABLE`, retry after 1 second).
+Aggregate cache counts, evictions and capacity-deferral counters contain no
+tokens or identities; the Bot logs deferral milestones without flooding logs.
+
+
 The release includes `install-bot.sh` alongside `install.sh`. Run the Bot installer as root on the
 Linux host after `dillad` is installed and its instance is initialized. The installer downloads and
 checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, and
