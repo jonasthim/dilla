@@ -1,6 +1,6 @@
 # Combined security and realtime acceptance
 
-Status: complete implementation; final browser matrix and remote CI pending. One draft PR contains the full scope. No release or deployment is authorized by this status alone.
+Implementation and independent review are complete. One PR contains the full scope; its checks are the authority for final-head CI status. No release or deployment is authorized by this report alone.
 
 ## Later scope clarification
 
@@ -19,8 +19,10 @@ reported as a regression.
 
 The full WSS-only JavaScript workspace run and lint also pass, including 2,547 client-core
 and 3,012 web tests. The original Chromium image test subsequently passed three unmodified
-repeats; its earlier timing failure remains preserved. The complete final browser runs are
-still required gates.
+repeats; its earlier timing failure remains preserved. The complete browser matrix subsequently
+passed in CI: 255 web tests with ten existing platform skips, and 59 voice tests with thirteen
+existing platform/noise-mode skips. The local full voice run has the same 59/13 result. CI
+completed the full web matrix; the redundant serial local web run was stopped after that result.
 
 ## CI integration correction
 
@@ -31,6 +33,13 @@ or changing assertions. A workflow regression failed before the fix; all 534 CI 
 pass afterward. The local scan also exposed a generated-dist-dependent reader classification:
 the build-tagged webdist Go test belongs to the web-build/go-release gate, rather than the
 ordinary Go gate. The scanner now records that actual owner and keeps checking the dependency.
+
+The replacement run completed all Go test steps, including the full race suite, TURN regression
+and media checks, but reached the unit job's thirty-minute limit before its final static build.
+Native-helper integration and its cold Rust fixture build now have their own required fifteen-minute
+`go-native` job. The ordinary Go job keeps its original tests and thirty-minute limit; no existing
+timeout or assertion was weakened. The scenario harness, all browser jobs and all five CodeQL
+analyses passed in the preceding run. Final delivery requires the new head's complete CI gate.
 
 ## Independent review
 
@@ -45,7 +54,7 @@ Two independent read-only reviews found seven unique Important issues. Regressio
 - Two-engine live-call transport/update probes 2/2; existing Chromium voice suite and correctly configured Firefox voice suite passed applicable cases. Platform/noise-mode skips retain their existing conditions.
 - Compiled-helper production dependency recovery tests run with accepted/absent receipts under both disabled and log-only policies; CI now downloads the same-commit helper and requires these integrations instead of silently skipping them.
 
-The first Firefox runs lacked a reachable audio backend; explicit XDG_RUNTIME_DIR/PULSE_SERVER corrected that environment. Earlier baseline-failure classification is superseded by the corrected passing runs. Initial traces and logs remain in the task evidence archive. The full three-engine web matrix and final CI are still required.
+The first Firefox runs lacked a reachable audio backend; explicit XDG_RUNTIME_DIR/PULSE_SERVER corrected that environment. Earlier baseline-failure classification is superseded by the corrected passing runs. Initial traces and logs remain in the task evidence archive. The full three-engine web matrix passed as recorded above; consult the PR checks for the final CI head.
 
 ## Implementation rulings
 

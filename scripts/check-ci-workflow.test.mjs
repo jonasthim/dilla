@@ -16,7 +16,12 @@ const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'relea
 
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
   const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];
-  const go = REAL_CI.split('\n  go:\n')[1].split('\n  go-ds:\n')[0];
+  const unit = REAL_CI.split('\n  go:\n')[1].split('\n  go-native:\n')[0];
+  const go = REAL_CI.split('\n  go-native:\n')[1]?.split('\n  go-ds:\n')[0] ?? '';
+  assert.ok(go, 'native integrations need a separate bounded job instead of consuming the unit job budget');
+  assert.match(go, /timeout-minutes: 15/);
+  assert.match(unit, /timeout-minutes: 30/);
+  assert.doesNotMatch(unit, /DILLA_BOT_HELPER_INTEGRATION/);
   assert.match(native, /cargo build -p dilla-bot-core --release --locked/);
   assert.match(native, /name: dilla-bot-core\n\s+path: target\/release\/dilla-bot-core/);
   assert.match(go, /needs:.*rust-native/);
@@ -323,6 +328,17 @@ jobs:
           if-no-files-found: error
 
 ${browserJobsFixture()}
+  go-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [rust-wasi, rust-native]
+    steps:
+      - run: cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked
+      - run: go test -race ./internal/bot/native ./cmd/dillabot
+        env:
+          DILLA_BOT_HELPER_INTEGRATION: '1'
+          DILLA_BOT_HELPER_BIN: \${{ github.workspace }}/target/release/dilla-bot-core
+
   go-ds:
     runs-on: ubuntu-latest
     timeout-minutes: 55
@@ -617,14 +633,14 @@ test('a go job without needs: rust-wasi is reported', () => {
 });
 
 test('a go-harness job without needs: rust-wasi is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-wasi, rust-native]\n', '    needs: [changes, rust-native]\n')));
+  const problems = checkWorkflow(fixture(editJob('go-harness', b => b.replace('    needs: [changes, rust-wasi, rust-native]\n', '    needs: [changes, rust-native]\n'))));
   assert.ok(problems.some((p) => p.includes('"go-harness"') && p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
 // The edges are order-independent to GitHub, so the ordering rule must accept either order.
 test('a go-harness job whose needs: lists the two edges in the other order passes', () => {
   assert.deepEqual(
-    checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-native, rust-wasi]'))),
+    checkWorkflow(fixture(editJob('go-harness', b => b.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-native, rust-wasi]')))),
     [],
   );
 });
@@ -658,7 +674,7 @@ test('a node job that stopped running the checker\'s own tests is reported', () 
 // deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
 // cross-plan ordering rule already, so it must own this half of the hand-off too.
 test('a go-harness job without needs: rust-native is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-wasi]')));
+  const problems = checkWorkflow(fixture(editJob('go-harness', b => b.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-wasi]'))));
   assert.ok(problems.some((p) => p.includes('needs: rust-native')), problems.join('\n'));
 });
 
