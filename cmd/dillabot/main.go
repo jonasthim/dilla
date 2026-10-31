@@ -523,8 +523,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		reconcileStage = "spotify_configuration"
 		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
+		spotifyConfigurationKnown := spotifyClientID != ""
 		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
 			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
+			spotifyConfigurationKnown = true
 		} else {
 			if client.IsDeferred(configErr) {
 				pass.incomplete = true
@@ -720,6 +722,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										if spotifyCredentials != nil {
 											spotifyPCM, credentialErr = spotify.NewPCMStarter(cfg.SpotifyHelperExecutable, cfg.StateDir, func(loadCtx context.Context) (string, error) {
 												token, loadErr := spotifyCredentials.Load(loadCtx)
+												if errors.Is(loadErr, service.ErrSpotifyNotLinked) {
+													return "", spotify.ErrProviderUnavailable
+												}
 												return token.AccessToken, loadErr
 											})
 										} else {
@@ -728,6 +733,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										if credentialErr != nil {
 											logger.Warn("bot Spotify PCM provider unavailable", "installation_id", installation.ID.String())
 										}
+									}
+									if spotifyPCM == nil {
+										cause := spotify.ErrInvalidConfig
+										if spotifyConfigurationKnown && spotifyClientID == "" {
+											cause = spotify.ErrProviderUnavailable
+										}
+										spotifyPCM = unavailableProviderPCM{cause: cause}
 									}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
 										joinCallGroup := func(joinCtx context.Context) error {
@@ -753,8 +765,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												return music.WithPlaybackGroup(logCtx, group)
 											}
 											notices := musicRegistry.SkipNotices(installation.ID)
-											starter.OnSkipped = func(skipCtx context.Context, track music.Track, failure error) {
-												notices.Notify(skipCtx, channel, track, failure)
+											starter.OnSkipped = func(skipCtx context.Context, skips []music.SkippedTrack) { notices.Notify(skipCtx, channel, skips) }
+											starter.OnCallEnded = func() { notices.Clear(channel) }
+											if starter.SetCallEnded != nil {
+												starter.SetCallEnded(starter.OnCallEnded)
 											}
 										}
 										return starter, starterErr
@@ -853,6 +867,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
 														Notices: musicRegistry.SkipNotices(installation.ID),
 													}
+													musicAnnouncements.Notices.SetState(nativeClient)
 													musicAnnouncements.Notices.Configure(musicAnnouncements, logger.With("installation_id", installation.ID.String()))
 													for operation, handler := range runtimeMusicAnnounceHandlers(musicInteractions, musicAnnouncements) {
 														handlers[operation] = handler

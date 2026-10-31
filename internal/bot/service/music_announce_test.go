@@ -34,6 +34,7 @@ func (f *musicAnnounceAuthorityFake) BotActorChannelAuthority(_ context.Context,
 }
 
 type musicAnnounceFixture struct {
+	notices                                       *MusicSkipNotices
 	community, actor, voice, text, group, request id.ID
 	item                                          string
 	now                                           time.Time
@@ -71,7 +72,7 @@ func (f *musicAnnounceFixture) run(t *testing.T, actor id.ID) InteractionResult 
 			return live, live.Revision, nil
 		}
 	}
-	h := MusicAnnouncements{Music: musicHandler, Authority: f.member, Channels: f.member, Limiter: f.limiter,
+	h := MusicAnnouncements{Notices: f.notices, Music: musicHandler, Authority: f.member, Channels: f.member, Limiter: f.limiter,
 		Destination: &rolePanelDestinationFake{group: f.group}, Sender: f.sender, Discovery: &rolePanelDiscoveryFake{generation: 7},
 		Session: &client.Session{}, CommunityID: f.community, Now: func() time.Time { return f.now }}
 	zero, expires := uint64(0), uint64(130)
@@ -295,5 +296,78 @@ func TestNeutralizeBotMarkersKeepsMembersFromForgingThePlayer(t *testing.T) {
 	text, err := rolePanelMessage([]rolePanelOption{{Emoji: "x", Name: "[dilla-music:v1:a:b:c]", Role: id.New()}})
 	if err != nil || strings.Contains(text, "[dilla-music:") {
 		t.Fatalf("role panel text %q err %v", text, err)
+	}
+}
+
+func TestMusicAnnounceRegistrationChecksStoreRevisionRequesterAndSendOutcome(t *testing.T) {
+	for _, kind := range []string{"nonrequester", "revision race", "outside window", "rate limited", "send refused", "paused nonrequester"} {
+		t.Run(kind, func(t *testing.T) {
+			actor := id.New()
+			f := newMusicAnnounceFixture(actor, false)
+			f.notices = &MusicSkipNotices{}
+			previous := id.New()
+			f.notices.Register(f.voice, previous, InteractionActor{User: actor})
+			caller := actor
+			switch kind {
+			case "nonrequester":
+				caller = id.New()
+			case "paused nonrequester":
+				f.store.snapshot.State.Paused = true
+				caller = id.New()
+			case "revision race":
+				live := f.store.snapshot.State
+				live.Revision++
+				f.live = &live
+			case "outside window":
+				f.store.snapshot.State.PositionAtMS = 1
+			case "rate limited":
+				settle, allowed := f.limiter.reserve(actor, "other-item", f.now)
+				if !allowed {
+					t.Fatal("limiter fixture")
+				}
+				settle(true)
+			case "send refused":
+				f.sender.receipt.Outcome = protocol.ReceiptClosedNotAccepted
+			}
+			result := f.run(t, caller)
+			if result.Status == 0 {
+				t.Fatal("refused operation acknowledged")
+			}
+			if f.notices.destinations[f.voice].text != previous {
+				t.Fatal("refused operation changed notice destination")
+			}
+		})
+	}
+}
+func TestMusicAnnounceIdleRegistrationDoesNotPostStartedCard(t *testing.T) {
+	actor := id.New()
+	f := newMusicAnnounceFixture(actor, true)
+	f.notices = &MusicSkipNotices{}
+	f.store.snapshot.State.Current = nil
+	result := f.run(t, actor)
+	if result.Status != 0 || !strings.EqualFold(string(result.Data), string([]byte{0x80})) || f.sender.calls != 0 {
+		t.Fatalf("registration=%+v sends=%d", result, f.sender.calls)
+	}
+	if f.notices.destinations[f.voice].text != f.text {
+		t.Fatal("idle destination not registered")
+	}
+}
+
+func TestMusicAnnouncePausedRegistrationCannotBypassRequesterRate(t *testing.T) {
+	actor := id.New()
+	f := newMusicAnnounceFixture(actor, true)
+	f.notices = &MusicSkipNotices{}
+	previous := id.New()
+	f.notices.Register(f.voice, previous, InteractionActor{User: actor})
+	settle, allowed := f.limiter.reserve(actor, "another-track", f.now)
+	if !allowed {
+		t.Fatal("limiter fixture")
+	}
+	settle(true)
+	if result := f.run(t, actor); result.Status != interactionStatusUnavailable {
+		t.Fatalf("rate-limited registration=%+v", result)
+	}
+	if f.notices.destinations[f.voice].text != previous {
+		t.Fatal("rate-refused registration replaced destination")
 	}
 }

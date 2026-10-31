@@ -8,7 +8,7 @@ import { t } from '../../strings/index.ts';
 
 const ID = /^[0-9a-f]{32}$/u;
 // A link being typed or pasted belongs to strict enqueue validation, never text search.
-const MUSIC_LINK_PREFIX = /^(?:https?(?::|\/|$)|\/\/|www\.|(?:(?:music|m)\.)?youtube\.|youtu\.|open\.spotify\.|spotify:)/iu;
+const MUSIC_LINK_PREFIX = /^(?:https?:|\/\/|(?:(?:www|music|m)\.)?youtube\.com\/|youtu\.be\/|open\.spotify\.com\/|spotify:(?:track|album|playlist):[A-Za-z0-9]{22}$)/iu;
 const MUSIC_COMMAND_IDS = new Set(['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
   'queue remove', 'queue move', 'queue clear', 'music help']);
 const ok = (message: string): CommandResult => ({ status: 'success', message, private: true });
@@ -261,9 +261,12 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         return true;
       };
       const registerDestination = async () => {
-        // Register the command's text channel before Resume can publish media.
-        if (context.binding.channelId !== channelId)
-          await runMutation(() => adapter.announce(channelId, context.binding.channelId, attempt('destination')));
+        // Notice registration is best effort, including with older Bots. It must
+        // never create a pending playback mutation or prevent an authorized Resume.
+        if (context.binding.channelId !== channelId) {
+          try { await adapter.announce(channelId, context.binding.channelId, attempt('destination')); }
+          catch { /* Playback remains available without a notice destination. */ }
+        }
         return voiceStillCurrent(context, cid, channelId);
       };
       switch (invocation.commandId) {
@@ -285,16 +288,9 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             { clearMusicCommandAttempt(client, cid, context.requestId); return ok('The track was added, but playback was not resumed because the voice call changed.'); }
           const afterEnqueue = adapter.state(channelId);
           if (afterEnqueue.status === 'available' && afterEnqueue.paused) {
-            try {
-              if (!await registerDestination()) {
-                clearMusicCommandAttempt(client, cid, context.requestId);
-                return ok('The track was added, but playback was not resumed because the conversation or voice call changed.');
-              }
-            } catch (error) {
-              const result = resultError(error);
-              if (result.status === 'uncertain') return result;
+            if (!await registerDestination()) {
               clearMusicCommandAttempt(client, cid, context.requestId);
-              return fail(`Playback did not start (${result.message}). The track is already in the queue.`);
+              return ok('The track was added, but playback was not resumed because the conversation or voice call changed.');
             }
             try { await runMutation(() => adapter.pause(channelId, false, attempt('resume'))); }
             catch (error) {
@@ -314,10 +310,9 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         case 'pause': return await applyControl(() => adapter.pause(channelId, true, attempt('pause')))
           ? ok('Music paused.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'resume': {
-          if (!await registerDestination()) {
-            clearMusicCommandAttempt(client, cid, context.requestId);
-            return fail('The conversation or voice call changed before music resumed.');
-          }
+          if (!await registerDestination()) return pendingAttempt
+            ? uncertain('This music attempt is still pending; return to its original active call to reconcile it.')
+            : fail('The conversation or voice call changed before music resumed.');
           return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
             ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
         }

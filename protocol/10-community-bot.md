@@ -286,16 +286,44 @@ read the stamp only when slots 10 and 11 are present, and ignore later slots.
 Reading the state requires the actor's current View channel permission on the
 voice channel, resolved with its overrides.
 
-Before starting playback, clients use the existing `music.announce` request to
+Before starting playback, clients may use the existing `music.announce` request to
 register the command's text channel. While the queue is idle or paused, the Bot
-checks DJ authority and the named text channel's view, send and history permissions
-and MLS binding, then acknowledges registration without posting. There is no new
-request field. A provider-class start failure removes that item durably and tries
-the next item, ignoring repeat for failed items. Each item is tried at most once
-per Resume; an exhausted queue is empty and paused. Call, room, cancellation and
-busy-slot failures pause without removing the current item. Each skipped item gets
-a title-only notice in the last registered command text channel after authority is
-rechecked. With no destination, the Bot logs the skip and posts nothing.
+loads the queue, checks its live revision, DJ authority, the current track's
+requester when there is one, and the named text channel's view, send and history
+permissions and MLS binding. It acknowledges registration with CBOR `[]` (`0x80`)
+without posting a started card. There is no new request field. A refused
+registration does not block Resume or change an existing destination. Active
+playback retains the normal requester, announcement-window and rate checks;
+registration changes only after an accepted announcement send.
+
+Only classified track-specific start failures remove an item durably and try the
+next item, ignoring repeat for failed items. Provider-wide, deployment, network,
+call, room, cancellation and deadline failures pause without removing the item.
+A start run tries each item at most once and is bounded by skip count, elapsed
+time and a consecutive-provider-failure circuit breaker; an exhausted queue is
+empty and paused. Stop and shutdown can interrupt a run between attempts.
+
+Skipped items from one start run produce one generic public notice through a
+bounded installation worker after the supervisor lock has been released. A
+single-item notice is `Couldn't play a track (provider unavailable). Skipping.`
+(or the fixed reason `audio unavailable`); a batch is
+`Couldn't play 3 tracks. Skipping.` No title, requester, URL, provider detail or
+queue item identifier appears in the public message. The worker posts at most
+one notice per voice channel per ten seconds, drops and safely logs the oldest
+unprepared work on overflow, and posts nothing without a registered destination.
+Community, voice and item-derived operation/attempt identities and per-item
+tracking deduplicate repeated or overlapping batches. The in-memory dedupe cache
+is bounded; durable per-item reservations preserve deduplication after eviction.
+The existing encrypted
+native state journals prepared notices' exact body, timestamp, destination group
+and generation before sending, so timeout and restart recovery resume the same
+immutable attempt. `SendAuthorized` checks current call/DJ and text-channel
+authority immediately before preparation and upload. Call end, registrant leave
+and installation disable clear registration and revoke its grant; an unresolved
+attempt first recovers an existing receipt or uses a resolve-only request to
+close the exact prepared ciphertext without uploading. Ambiguous native journal
+transactions retain their original transaction ID and body until their outcome
+is known, before a newer notification snapshot is written.
 
 After playback starts, `music.announce` posts the one public "started music" message: body
 `Music started.\n[dilla-music:v1:<voice_channel>:<requester>:<queue_item>]`,

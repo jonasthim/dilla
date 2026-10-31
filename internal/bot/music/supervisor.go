@@ -51,7 +51,9 @@ type Supervisor struct {
 	onEmpty                    func()
 	stopLifetime               func() bool
 	onAutomaticPlaybackFailure func(context.Context, error)
-	onSkipped                  func(context.Context, Track, error)
+	onSkipped                  func(context.Context, []SkippedTrack)
+	starting                   *startRun
+	startRequest               uint64
 	logger                     *slog.Logger
 	// Task 10c: leave the voice room after nothing has played for idleFor() (read when the
 	// supervisor goes idle, so a changed setting applies to the next idle period).
@@ -81,7 +83,7 @@ func (s *Supervisor) idleCheckLocked() {
 	if s.idleFor == nil {
 		return
 	}
-	if s.playback != nil || s.closed {
+	if s.playback != nil || s.starting != nil || s.closed {
 		if s.idleTimer != nil {
 			s.idleTimer.Stop()
 			s.idleTimer = nil
@@ -102,7 +104,7 @@ func (s *Supervisor) idleCheckLocked() {
 
 func (s *Supervisor) leaveIdle(gen uint64) {
 	s.mu.Lock()
-	if s.closed || s.idleTimer == nil || s.idleGen != gen || s.playback != nil {
+	if s.closed || s.idleTimer == nil || s.idleGen != gen || s.playback != nil || s.starting != nil {
 		s.mu.Unlock()
 		return
 	}
@@ -169,7 +171,8 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 		return State{}, errors.New("nil music operation context")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var skipped []SkippedTrack
+	defer func() { s.mu.Unlock(); s.reportSkipped(skipped) }()
 	if s.closed {
 		return State{}, ErrSupervisorClosed
 	}
@@ -188,11 +191,16 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 		return cloneState(s.state), err
 	}
 	s.state, s.revision = next, revision
+	if op.Kind == OpResume {
+		s.startRequest++
+	}
 	if op.Kind == OpPause || op.Kind == OpStop || op.Kind == OpClear || op.Kind == OpSkip {
 		s.closePlaybackLocked()
 	}
 	if !s.state.Paused && s.state.Current != nil && s.playback == nil {
-		if err := s.startLocked(ctx, op.Kind == OpResume || op.Kind == OpSkip); err != nil {
+		var startErr error
+		skipped, startErr = s.startLocked(ctx, op.Kind == OpResume || op.Kind == OpSkip)
+		if err := startErr; err != nil {
 			_ = s.pauseLocked(ctx)
 			s.signalLocked()
 			return cloneState(s.state), err
@@ -216,7 +224,8 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 		return 0, errors.New("nil persisted music snapshot context")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var skipped []SkippedTrack
+	defer func() { s.mu.Unlock(); s.reportSkipped(skipped) }()
 	if s.closed {
 		return s.revision, ErrSupervisorClosed
 	}
@@ -236,12 +245,17 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 		return s.revision, ErrRevisionConflict
 	}
 	state := cloneState(committed)
-	if s.playback != nil && (state.Paused || state.Current == nil || s.state.Current == nil || state.Current.ID != s.state.Current.ID) {
+	if state.Paused || state.Current == nil || s.state.Current == nil || state.Current.ID != s.state.Current.ID {
 		s.closePlaybackLocked()
 	}
 	s.state, s.revision = cloneState(state), revision
+	if startPlayback {
+		s.startRequest++
+	}
 	if startPlayback && !state.Paused && state.Current != nil && s.playback == nil {
-		if err := s.startLocked(s.ctx, true); err != nil {
+		var startErr error
+		skipped, startErr = s.startLocked(s.ctx, true)
+		if err := startErr; err != nil {
 			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), 5*time.Second)
 			_ = s.pauseLocked(pauseCtx)
 			cancel()
@@ -255,46 +269,141 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 }
 
 // WithSkippedTrack reports a failed item only after its removal is durable.
-func WithSkippedTrack(report func(context.Context, Track, error)) SupervisorOption {
+func WithSkippedTrack(report func(context.Context, []SkippedTrack)) SupervisorOption {
 	return func(s *Supervisor) { s.onSkipped = report }
 }
 func WithPlaybackLog(logger *slog.Logger) SupervisorOption {
 	return func(s *Supervisor) { s.logger = logger }
 }
 
-func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
-	for !s.state.Paused && s.state.Current != nil {
+const maxConsecutiveStartSkips = 2
+const maxTotalStartSkips = 5
+const maxStartDuration = 30 * time.Second
+
+type startRun struct {
+	request     uint64
+	interrupted bool
+	cancel      context.CancelFunc
+	done        chan struct{}
+}
+type startBudget struct {
+	skipped, consecutive int
+	deadline             time.Time
+}
+
+func (b startBudget) exhausted(now time.Time) bool {
+	return b.consecutive >= maxConsecutiveStartSkips || b.skipped >= maxTotalStartSkips || !now.Before(b.deadline)
+}
+
+func (s *Supervisor) reportSkipped(skips []SkippedTrack) {
+	if len(skips) > 0 && s.onSkipped != nil {
+		s.onSkipped(s.ctx, skips)
+	}
+}
+
+// startLocked returns with s.mu held, but provider startup runs without it.
+// State changes cancel the pending run; no stale result can publish into it.
+func (s *Supervisor) startLocked(ctx context.Context, explicit bool) ([]SkippedTrack, error) {
+	for s.starting != nil {
+		pending := s.starting.done
+		s.mu.Unlock()
+		select {
+		case <-pending:
+		case <-ctx.Done():
+		}
+		s.mu.Lock()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if s.closed || s.state.Paused || s.state.Current == nil || s.playback != nil {
+			return nil, nil
+		}
+	}
+	runCtx, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(context.Canceled) }
+	timeout := time.AfterFunc(maxStartDuration, func() { cancelCause(context.DeadlineExceeded) })
+	successful := false
+	run := &startRun{request: s.startRequest, cancel: cancel, done: make(chan struct{})}
+	s.starting = run
+	defer func() {
+		timeout.Stop()
+		if !successful {
+			cancel()
+		}
+		if s.starting == run {
+			s.starting = nil
+		}
+		close(run.done)
+	}()
+	budget := startBudget{deadline: time.Now().Add(maxStartDuration)}
+	var skips []SkippedTrack
+	for !s.closed && !s.state.Paused && s.state.Current != nil {
+		if err := runCtx.Err(); err != nil {
+			if run.interrupted || run.request != s.startRequest {
+				return skips, nil
+			}
+			return skips, context.Cause(runCtx)
+		}
+		if budget.exhausted(time.Now()) {
+			return skips, s.pauseLocked(ctx)
+		}
+		track := *s.state.Current
+		s.mu.Unlock()
 		var p Playback
 		var err error
 		if starter, ok := s.starter.(interface {
 			StartExplicit(context.Context, Track) (Playback, error)
 		}); explicit && ok {
-			p, err = starter.StartExplicit(ctx, *s.state.Current)
+			p, err = starter.StartExplicit(runCtx, track)
 		} else {
-			p, err = s.starter.Start(ctx, *s.state.Current)
+			p, err = s.starter.Start(runCtx, track)
+		}
+		s.mu.Lock()
+		if run.interrupted || s.closed || s.state.Paused || s.state.Current == nil || s.state.Current.ID != track.ID {
+			if p != nil {
+				s.mu.Unlock()
+				_ = p.Close()
+				s.mu.Lock()
+			}
+			return skips, nil
+		}
+		if runCtx.Err() != nil {
+			if p != nil {
+				s.mu.Unlock()
+				_ = p.Close()
+				s.mu.Lock()
+			}
+			if run.interrupted || run.request != s.startRequest || s.closed || s.state.Paused || s.state.Current == nil || s.state.Current.ID != track.ID {
+				return skips, nil
+			}
+			return skips, context.Cause(runCtx)
 		}
 		if err != nil {
-			var providerFailure interface{ ProviderFailure() bool }
-			if ctx.Err() != nil || !errors.As(err, &providerFailure) || !providerFailure.ProviderFailure() {
-				return err
+			if run.request != s.startRequest {
+				return skips, nil
 			}
-			failed := *s.state.Current
-			// A broken item is removed even in repeat modes; each remaining item is tried once.
+			var permanent interface{ ProviderFailure() bool }
+			if !errors.As(err, &permanent) || !permanent.ProviderFailure() {
+				return skips, err
+			}
 			originalRepeat := s.state.Repeat
-			skipping := cloneState(s.state)
-			skipping.Repeat = RepeatOff
-			next, applyErr := Apply(skipping, s.state.Revision, Operation{Kind: OpSkip, NowMS: time.Now().UnixMilli()})
+			nextBase := cloneState(s.state)
+			nextBase.Repeat = RepeatOff
+			next, applyErr := Apply(nextBase, s.state.Revision, Operation{Kind: OpSkip, NowMS: time.Now().UnixMilli()})
 			if applyErr != nil {
-				return applyErr
+				return skips, applyErr
 			}
 			next.Repeat = originalRepeat
-			revision, saveErr := s.store.Save(ctx, s.channel, s.revision, next)
+			revision, saveErr := s.store.Save(runCtx, s.channel, s.revision, next)
 			if saveErr != nil {
-				return saveErr
+				return skips, saveErr
 			}
 			s.state, s.revision = next, revision
-			if s.onSkipped != nil {
-				s.onSkipped(ctx, failed, err)
+			skips = append(skips, SkippedTrack{Track: track, Failure: err})
+			budget.skipped++
+			budget.consecutive++
+			if budget.exhausted(time.Now()) && s.state.Current != nil {
+				return skips, s.pauseLocked(ctx)
 			}
 			continue
 		}
@@ -302,21 +411,25 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
 			if p != nil {
 				_ = p.Close()
 			}
-			return errors.New("music track starter returned invalid playback")
+			return skips, errors.New("music track starter returned invalid playback")
 		}
+		successful = true
+		timeout.Stop()
+		go func() { <-p.Done(); cancel() }()
 		s.playback = p
 		s.state.PositionMS, s.state.PositionAtMS = 0, time.Now().UnixMilli()
 		go s.monitor(p)
-		return nil
+		return skips, nil
 	}
-	return nil
+	return skips, nil
 }
 
 func (s *Supervisor) monitor(p Playback) {
 	<-p.Done()
 	err := p.Wait()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var skipped []SkippedTrack
+	defer func() { s.mu.Unlock(); s.reportSkipped(skipped) }()
 	if s.closed || s.playback != p {
 		return
 	}
@@ -350,7 +463,9 @@ func (s *Supervisor) monitor(p Playback) {
 	}
 	s.state, s.revision = next, revision
 	if !s.state.Paused && s.state.Current != nil {
-		if err := s.startLocked(s.ctx, false); err != nil {
+		var startErr error
+		skipped, startErr = s.startLocked(s.ctx, false)
+		if err := startErr; err != nil {
 			if s.onAutomaticPlaybackFailure != nil {
 				s.onAutomaticPlaybackFailure(s.ctx, err)
 			}
@@ -420,6 +535,10 @@ func (s *Supervisor) RoomOccupied() {
 }
 
 func (s *Supervisor) closePlaybackLocked() {
+	if s.starting != nil {
+		s.starting.interrupted = true
+		s.starting.cancel()
+	}
 	if s.playback != nil {
 		p := s.playback
 		s.playback = nil
@@ -446,8 +565,8 @@ func (s *Supervisor) WaitForChange(ctx context.Context) error {
 
 func (s *Supervisor) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
@@ -463,6 +582,16 @@ func (s *Supervisor) Close() error {
 		s.idleTimer = nil
 	}
 	s.closePlaybackLocked()
+	var pending <-chan struct{}
+	if s.starting != nil {
+		pending = s.starting.done
+	}
+	s.mu.Unlock()
+	if pending != nil {
+		<-pending
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var err error
 	if closer, ok := s.starter.(io.Closer); ok {
 		err = closer.Close()

@@ -183,9 +183,6 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if err != nil || group.IsZero() {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	if h.Notices != nil {
-		h.Notices.Register(voice, text, actor)
-	}
 	snapshot, err := h.Music.Store.Load(ctx, voice)
 	if err != nil {
 		return InteractionResult{}, err
@@ -203,18 +200,28 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 		}
 		state = live
 	}
-	if state.Current == nil || state.Paused {
-		if h.Notices != nil {
-			return InteractionResult{Data: []byte{0x80}}, nil
-		}
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
-	}
-	if state.Current.RequesterID != actor.User.String() {
+	if state.Current != nil && state.Current.RequesterID != actor.User.String() {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	clock := time.Now
 	if h.Now != nil {
 		clock = h.Now
+	}
+	// Idle/paused requests only register a destination. Do not sample discovery,
+	// spend an announcement slot or post a started card on this path.
+	if state.Current == nil || state.Paused {
+		if h.Notices != nil {
+			if state.Current != nil {
+				settle, allowed := h.Limiter.reserve(actor.User, state.Current.ID, clock())
+				if !allowed {
+					return InteractionResult{Status: interactionStatusUnavailable}, nil
+				}
+				defer settle(false)
+			}
+			h.Notices.Register(voice, text, actor)
+			return InteractionResult{Data: []byte{0x80}}, nil
+		}
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	// Security review L6: only a track that has just started (a stamped playhead within 30 s), and one new track per
 	// requester per minute; a retry of the same track still resumes its first send.
@@ -257,6 +264,9 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	}
 	// The message is in the channel: the requester's minute is spent, whatever happens to this answer.
 	sent = true
+	if h.Notices != nil {
+		h.Notices.Register(voice, text, actor)
+	}
 	data, err := cborx.Marshal([]any{text, receipt.SendResponse.Sequence})
 	if err != nil {
 		return InteractionResult{}, err

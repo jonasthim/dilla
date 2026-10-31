@@ -431,7 +431,7 @@ func (p *Playback) readStatuses(r io.Reader) {
 		}
 		if !st.OK {
 			select {
-			case p.readErr <- fmt.Errorf("%w: %s/%s", ErrPlaybackFailed, st.Phase, *st.Code):
+			case p.readErr <- &helperFailure{phase: st.Phase, code: *st.Code}:
 			default:
 			}
 			return

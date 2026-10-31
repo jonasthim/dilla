@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os/exec"
 	"slices"
@@ -95,14 +96,16 @@ func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel 
 		return 0, errors.New("music runtime dependencies unavailable")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed || r.store == nil {
+		r.mu.Unlock()
 		return 0, music.ErrSupervisorClosed
 	}
 	current := r.supervisors[channel]
 	if current == nil {
+		r.mu.Unlock()
 		return 0, errors.New("music voice session is unavailable")
 	}
+	r.mu.Unlock()
 	return current.ApplyPersistedSnapshot(ctx, committed, expectedRevision, startPlayback)
 }
 
@@ -167,6 +170,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 	}
 	publisher := deps.Publisher
 	var resetConnection, closeConnection, leaveConnection func() error
+	var setCallEnded func(func())
 	if publisher == nil {
 		pool, err := livekit.NewPool(deps.Lifetime)
 		if err != nil {
@@ -178,6 +182,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		}
 		publisher = session.RetainedLiveKitPublisher{Pool: pool}
 		resetConnection, closeConnection, leaveConnection = pool.Reset, pool.Close, pool.LeaveIdle
+		setCallEnded = pool.SetRoomEndedReporter
 	}
 	options := func(ctx context.Context, track music.Track) (session.Options, error) {
 		if ctx == nil || track.CanonicalID == "" {
@@ -186,6 +191,9 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		var pcm session.PCMStarter
 		switch track.Provider {
 		case music.ProviderSpotify:
+			if deps.SpotifyPCM == nil {
+				return session.Options{}, spotify.ErrProviderUnavailable
+			}
 			pcm = deps.SpotifyPCM
 		case music.ProviderYouTube:
 			if deps.YouTubePCM == nil {
@@ -230,7 +238,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 			Encoder: deps.Encoder, Publisher: publisher, Epochs: deps.Epochs,
 		}, nil
 	}
-	return session.QueueStarter{OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection, LeaveConnection: leaveConnection}, nil
+	return session.QueueStarter{SetCallEnded: setCallEnded, OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection, LeaveConnection: leaveConnection}, nil
 }
 
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
@@ -740,15 +748,21 @@ func (r *musicQueueRegistry) Disable(installation id.ID) error {
 
 func (r *musicQueueRegistry) disableLocked(installation id.ID) error {
 	r.noticesMu.Lock()
-	delete(r.notices, installation)
+	notices := r.notices[installation]
 	r.noticesMu.Unlock()
 	if r.runtimes[installation] == nil {
+		if notices != nil {
+			notices.Close()
+		}
 		return nil
 	}
 	retained := r.runtimes[installation]
 	delete(r.runtimes, installation)
 	if retained.queues != nil {
 		_ = retained.queues.Close()
+	}
+	if notices != nil {
+		notices.Close()
 	}
 	return retained.native.Close()
 }
@@ -762,7 +776,14 @@ func (r *musicQueueRegistry) pauseMusicLocked(installation id.ID) error {
 	}
 	queues := retained.queues
 	retained.queues = nil
-	return queues.Close()
+	err := queues.Close()
+	r.noticesMu.Lock()
+	notices := r.notices[installation]
+	r.noticesMu.Unlock()
+	if notices != nil {
+		notices.Close()
+	}
+	return err
 }
 
 func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
@@ -847,4 +868,11 @@ func (r *musicQueueRegistry) SkipNotices(installation id.ID) *service.MusicSkipN
 		r.notices[installation] = &service.MusicSkipNotices{}
 	}
 	return r.notices[installation]
+}
+
+type unavailableProviderPCM struct{ cause error }
+
+func (p unavailableProviderPCM) Check(context.Context) error { return p.cause }
+func (p unavailableProviderPCM) Start(context.Context, string) (io.ReadCloser, error) {
+	return nil, p.cause
 }
