@@ -160,6 +160,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if ctx == nil || o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group {
 		return nil, ErrInvalid
 	}
+	ctx = client.WithoutBackgroundYield(ctx)
 	provider := o.Provider
 	if provider == "" {
 		provider = music.ProviderSpotify

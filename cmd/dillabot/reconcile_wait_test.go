@@ -265,3 +265,19 @@ func TestReconcileWaitResumesPendingInteractionAfterYield(t *testing.T) {
 		}
 	})
 }
+
+func TestYieldedPassResumesWithoutReconcileInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		pending := true
+		polls := 0
+		w := reconcileWait{interval: 30 * time.Second, resume: true, now: time.Now, after: time.After,
+			nextInteraction: func(time.Time) (time.Duration, bool) { return 0, pending },
+			pollInteraction: func(context.Context, time.Time) int { pending = false; polls++; return 1 }}
+		start := time.Now()
+		if !w.wait(ctx, start) || polls != 1 || time.Since(start) != 0 {
+			t.Fatalf("resume waited for interval: polls=%d delay=%s", polls, time.Since(start))
+		}
+	})
+}

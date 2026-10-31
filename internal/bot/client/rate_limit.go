@@ -80,11 +80,18 @@ func backgroundShouldYield(ctx context.Context) bool {
 	return ready != nil && ready()
 }
 
-// A yielded request has not been sent. Use the existing local pacing deferral
-// so callers retain their durable state and retry it on the next sweep.
-func backgroundYieldError() error {
-	retry := uint64(1)
-	return &APIError{Status: http.StatusTooManyRequests, Code: "E_RATE_LIMITED", Outcome: OutcomeDefinitive, RetryAfterMS: &retry}
+// ErrBackgroundYield means a sweep deferred before sending a request. It is
+// retry-safe and distinct from a server refusal or an expired deadline.
+var ErrBackgroundYield = errors.New("bot background work yielded to a command")
+
+func backgroundYieldError() error { return ErrBackgroundYield }
+
+// WithoutBackgroundYield makes a context suitable for background lifetimes.
+// It preserves cancellation, deadlines and other values, clearing only the
+// sweep's cooperative yield and the request's interactive priority.
+func WithoutBackgroundYield(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, backgroundYieldContextKey{}, (func() bool)(nil))
+	return context.WithValue(ctx, interactiveContextKey{}, false)
 }
 
 // priorityLimiter never reserves future tokens. Interactive waiters take the
@@ -263,11 +270,6 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 		}
 	}
 	c.rateMu.Unlock()
-	if keypackage != nil {
-		if err := waitLimiter(ctx, keypackage); err != nil {
-			return err
-		}
-	}
 	limiter := b.write
 	switch class {
 	case "commit":
@@ -279,11 +281,21 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 	case "message":
 		limiter = b.message
 	}
-	return waitLimiter(ctx, limiter)
+	if err := waitLimiter(ctx, limiter); err != nil {
+		return err
+	}
+	// Read admission must finish before spending the scarcer per-target token.
+	if keypackage != nil {
+		return waitLimiter(ctx, keypackage)
+	}
+	return nil
 }
 
 func waitLimiter(ctx context.Context, limiter *priorityLimiter) error {
 	if err := limiter.Wait(ctx); err != nil {
+		if errors.Is(err, ErrBackgroundYield) {
+			return err
+		}
 		if deficit := 1 - limiter.Tokens(); deficit > 0 {
 			retry := uint64(math.Ceil(deficit / float64(limiter.Limit()) * 1000))
 			cause := ctx.Err()

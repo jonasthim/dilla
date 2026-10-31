@@ -43,6 +43,35 @@ func RateLimitError(err error) *APIError {
 	return nil
 }
 
+// IsDeferred recognizes only trees of retry-safe refusals or cooperative
+// yields (and their cancellation causes), never a joined permanent failure.
+func IsDeferred(err error) bool {
+	found := false
+	var transient func(error) bool
+	transient = func(err error) bool {
+		if err == nil {
+			return true
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, cause := range joined.Unwrap() {
+				if !transient(cause) {
+					return false
+				}
+			}
+			return true
+		}
+		if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+			return transient(wrapped.Unwrap())
+		}
+		if errors.Is(err, ErrBackgroundYield) || RateLimitError(err) != nil {
+			found = true
+			return true
+		}
+		return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	}
+	return transient(err) && found
+}
+
 func retryDelay(refusal *APIError, attempt int) time.Duration {
 	if refusal.RetryAfterMS != nil {
 		// Clamp before converting untrusted uint64 milliseconds to a signed duration.

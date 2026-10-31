@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -138,6 +139,7 @@ func NewSupervisor(ctx context.Context, channel id.ID, store QueueStore, starter
 	if ctx == nil || channel.IsZero() || store == nil || starter == nil {
 		return nil, errors.New("invalid music supervisor configuration")
 	}
+	ctx = client.WithoutBackgroundYield(ctx)
 	state, revision, err := store.Load(ctx, channel)
 	if err != nil {
 		return nil, err

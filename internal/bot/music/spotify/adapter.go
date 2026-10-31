@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
 )
 
@@ -107,6 +108,7 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	if a == nil || ctx == nil || a.config.Credential == nil || !validTrackSource(source) {
 		return nil, ErrInvalidConfig
 	}
+	ctx = client.WithoutBackgroundYield(ctx)
 	credentialInfo, err := a.config.Credential.Stat()
 	if err != nil || !credentialInfo.Mode().IsRegular() || credentialInfo.Size() < 1 || credentialInfo.Size() > maxCredential {
 		return nil, ErrInvalidConfig

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/client"
 )
 
 // The worker is embedded so production does not depend on a source checkout.
@@ -84,6 +86,7 @@ func (s PCMStarter) executable(path, name string) (string, error) {
 }
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (_ *isolatedPCM, failure error) {
+	ctx = client.WithoutBackgroundYield(ctx)
 	root, err := newSandboxTempDir()
 	if err != nil {
 		return nil, ErrSandboxUnavailable

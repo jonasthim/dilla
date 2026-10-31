@@ -97,10 +97,12 @@ type interactionGroupSync interface {
 // reply, as on every path.
 func newInteractionIntakePoller(sync interactionGroupSync, trust intakeTrust, session *client.Session, events holdingEventDrainer, report func(service.TrustRefresh)) func(context.Context, id.ID) error {
 	return func(ctx context.Context, group id.ID) error {
-		ctx = client.WithInteractive(ctx)
-		if _, err := sync.ReconcileInteractionGroupOnce(ctx, session, group); err != nil {
+		if _, err := sync.ReconcileInteractionGroupOnce(client.WithInteractive(ctx), session, group); err != nil {
 			return err
 		}
+		// Installation-wide work is background, but this fast-path turn must
+		// not yield to the gateway hint it is currently consuming.
+		ctx = client.WithoutBackgroundYield(ctx)
 		unrefreshed, err := refreshTrust(ctx, trust, session, report)
 		if err != nil {
 			return err

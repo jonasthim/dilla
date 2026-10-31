@@ -54,6 +54,7 @@ type botGatewayRuntime struct {
 	// waiting for an answer, which reconcileWait polls without the general throttle.
 	interaction chan struct{}
 	pollers     map[id.ID]func(context.Context) error
+	maintenance map[id.ID]backgroundMaintenance
 	startedAt   uint64
 
 	// pending holds the interaction groups messaged since the last fast poll, per installation
@@ -67,7 +68,7 @@ type botGatewayRuntime struct {
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: ctx, api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
+	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithoutBackgroundYield(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
 }
 
 // InteractionPollSchedule survives the short-lived reconciler built each tick.
@@ -285,6 +286,7 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 			delete(r.entries, installation)
 			delete(r.pollers, installation)
 			r.SetInteractionPoller(installation, nil)
+			delete(r.maintenance, installation)
 		}
 	}
 	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user})
@@ -353,6 +355,7 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.entries, installation)
 			delete(r.pollers, installation)
 			r.SetInteractionPoller(installation, nil)
+			delete(r.maintenance, installation)
 		}
 	}
 	// The removed installations' gateway goroutines have ended (<-e.done above), so nothing adds
@@ -374,6 +377,12 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 	for installation := range r.interactionPollers {
 		if !keep[installation] {
 			r.SetInteractionPoller(installation, nil)
+			delete(r.maintenance, installation)
+		}
+	}
+	for installation := range r.maintenance {
+		if !keep[installation] {
+			delete(r.maintenance, installation)
 		}
 	}
 	for installation := range r.idlePolls {
@@ -393,6 +402,7 @@ func (r *botGatewayRuntime) Drop(installation id.ID) {
 		delete(r.entries, installation)
 		delete(r.pollers, installation)
 		r.SetInteractionPoller(installation, nil)
+		delete(r.maintenance, installation)
 	}
 }
 
@@ -455,8 +465,13 @@ func (r *botGatewayRuntime) SetTextPoller(installation id.ID, poll func(context.
 	}
 }
 func (r *botGatewayRuntime) PollText(ctx context.Context) {
+	ctx = client.WithBackgroundYield(client.WithoutBackgroundYield(ctx), func() bool { return r.backgroundYieldReady(time.Now(), id.ID{}) })
 	for installation, poll := range r.pollers {
 		if err := poll(ctx); err != nil && ctx.Err() == nil {
+			if errors.Is(err, client.ErrBackgroundYield) {
+				r.log.Info("bot background pass yielded to a command", "stage", "text_sources")
+				return
+			}
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {

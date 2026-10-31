@@ -176,6 +176,9 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 		}
 		var skipped *SkippedGroupEvent
 		handlingErr := handler.HandleGroupEvent(ctx, event)
+		if errors.Is(handlingErr, client.ErrBackgroundYield) && client.IsDeferred(handlingErr) {
+			return result, handlingErr
+		}
 		if refusal := client.RateLimitError(handlingErr); refusal != nil {
 			// A middleware refusal did not execute the operation. Leave the queue and
 			// its durable failure/hold history untouched, even at the age limit.

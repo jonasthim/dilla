@@ -21,16 +21,16 @@ func logBotRateLimit(logger *slog.Logger, installation id.ID, refusal *client.AP
 func reconciliationRateLimit(err error) *client.APIError { return client.RateLimitError(err) }
 
 func cleanupUnreadyInstallation(installation id.ID, ready bool, passErr error, registry *musicQueueRegistry, moderation *autoModerationEventState) {
-	if !ready && reconciliationRateLimit(passErr) == nil {
+	if !ready && !client.IsDeferred(passErr) {
 		_ = registry.Disable(installation)
 		moderation.Disable(installation)
 	}
 }
 
 // A deferred channel read must retain the helper and the existing music handlers.
-func cleanupFailedMusicRestore(installation id.ID, err error, registry *musicQueueRegistry) *client.APIError {
-	if refusal := reconciliationRateLimit(err); refusal != nil {
-		return refusal
+func cleanupFailedMusicRestore(installation id.ID, err error, registry *musicQueueRegistry) error {
+	if client.IsDeferred(err) {
+		return err
 	}
 	_ = registry.Disable(installation)
 	return nil

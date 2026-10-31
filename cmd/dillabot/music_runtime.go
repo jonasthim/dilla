@@ -365,7 +365,7 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 
 // newMusicSupervisor is the per-channel persistence integration point.
 func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.Store, starter session.QueueStarter) (*music.Supervisor, error) {
-	if store == nil || starter.OptionsFor == nil {
+	if ctx == nil || store == nil || starter.OptionsFor == nil {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
 	options := []music.SupervisorOption{music.WithAutomaticPlaybackFailure(func(ctx context.Context, err error) {
@@ -374,7 +374,7 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if starter.IdleLeaveAfter != nil {
 		options = append(options, music.WithIdleLeave(starter.IdleLeaveAfter, nil))
 	}
-	return music.NewSupervisor(ctx, channel, persistedMusicQueue{store: store}, starter, options...)
+	return music.NewSupervisor(client.WithoutBackgroundYield(ctx), channel, persistedMusicQueue{store: store}, starter, options...)
 }
 
 // restoreMusicSupervisors binds one paused queue supervisor to each voice

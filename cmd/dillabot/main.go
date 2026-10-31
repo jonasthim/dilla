@@ -431,22 +431,18 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
 	defer gateways.Close()
 	statuses := newRuntimeStatusTracker(Version)
-	// Background requests defer before sending when the gateway fast path can run.
-	// No nested dispatch while service locks are held: unwind the pass first.
-	ctx = client.WithBackgroundYield(ctx, func() bool {
-		return gateways.backgroundYieldReady(time.Now(), id.ID{})
-	})
+	progress := backgroundProgress{lastComplete: time.Now()}
 	for {
 		started := time.Now()
-		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, statuses, logger); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("bot identity reconciliation degraded", "error", err.Error())
-		} else if err == nil {
-			logger.Info("bot identity reconciliation healthy")
-		}
+		pass := progress.start(started)
+		err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, statuses, logger, pass)
+		progress.finish(pass, time.Now(), err)
+		reportBackgroundPass(logger, pass, err)
 
 		// A gateway notification refreshes text sources only. Full reconciliation includes proof
-		// POSTs for every private group and stays on its own interval.
-		wait := reconcileWait{interval: cfg.ReconcileInterval, wake: gateways.Wake(), interaction: gateways.Interaction(),
+		// POSTs for every private group. A yielded pass retries as soon as pending
+		// interactions drain; completed passes keep their normal interval.
+		wait := reconcileWait{interval: cfg.ReconcileInterval, resume: pass.yielded, wake: gateways.Wake(), interaction: gateways.Interaction(),
 			poll: gateways.PollText, nextInteraction: gateways.NextInteraction, pollInteraction: gateways.PollInteractions, now: time.Now, after: time.After}
 		if !wait.wait(ctx, started) {
 			return nil
@@ -454,18 +450,26 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger, pass *backgroundPass) error {
+	maintained := make(map[id.ID]bool)
+	maintenanceErr := gateways.maintain(ctx, maintained)
 	spotifyGuard, err := service.NewSpotifyAccountGuard(cfg.StateDir)
 	if err != nil {
-		return errors.New("spotify account guard unavailable")
+		return errors.Join(errors.New("spotify account guard unavailable"), maintenanceErr)
 	}
-	installations, err := runtime.ListInstallations(ctx)
+	discoveryStage := "installation_discovery"
+	discoveryCtx := pass.context(ctx, id.ID{}, &discoveryStage, func() bool { return gateways.backgroundYieldReady(time.Now(), id.ID{}) })
+	installations, err := runtime.ListInstallations(discoveryCtx)
 	if err != nil {
+		if errors.Is(err, client.ErrBackgroundYield) {
+			return errors.Join(err, maintenanceErr)
+		}
 		if refusal := reconciliationRateLimit(err); refusal != nil {
 			logBotRateLimit(logger, id.ID{}, refusal)
-			return nil
+			pass.incomplete = true
+			return maintenanceErr
 		}
-		return errors.New("installation discovery failed")
+		return errors.Join(errors.New("installation discovery failed"), maintenanceErr)
 	}
 	activeInstallations := make([]id.ID, 0, len(installations))
 	for _, installation := range installations {
@@ -479,8 +483,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	autoModerationState.RetainOnly(activeInstallations)
 	gateways.RetainOnly(activeInstallations)
 	statuses.RetainOnly(activeInstallations)
-	var eligible, succeeded int
-	for _, installation := range installations {
+	var eligible, succeeded, failed int
+	for _, installation := range pass.order(installations) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -490,6 +494,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		eligible++
+		reconcileStage := "runtime_status"
+		var suspended id.ID
+		ctx := pass.context(ctx, installation.ID, &reconcileStage, func() bool {
+			return gateways.backgroundYieldReady(time.Now(), suspended)
+		})
 		// Task 10c: a manager's Restart. Tear down everything this process holds for the
 		// installation (native helper, music queues and voice rooms, automatic moderation state,
 		// gateway connection); the rest of this pass starts them again from durable state.
@@ -501,34 +510,46 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		musicRegistry.SetMusicDefaults(installation.ID, installation.Widened, installation.MusicVolume, installation.MusicIdleMinutes)
 		if err := statuses.Report(ctx, runtime, installation); err != nil {
-			if refusal := reconciliationRateLimit(err); refusal != nil {
-				logBotRateLimit(logger, installation.ID, refusal)
-				succeeded++
+			if client.IsDeferred(err) {
+				pass.incomplete = true
+				if refusal := reconciliationRateLimit(err); refusal != nil {
+					logBotRateLimit(logger, installation.ID, refusal)
+				}
+				if !errors.Is(err, client.ErrBackgroundYield) {
+					succeeded++
+				} else {
+					gateways.PollInteractions(client.WithoutBackgroundYield(ctx), time.Now())
+				}
 				continue
 			}
 			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
 		}
+		reconcileStage = "spotify_configuration"
 		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
 		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
 			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
 		} else {
-			if refusal := reconciliationRateLimit(configErr); refusal != nil {
-				logBotRateLimit(logger, installation.ID, refusal)
-				succeeded++
+			if client.IsDeferred(configErr) {
+				pass.incomplete = true
+				if refusal := reconciliationRateLimit(configErr); refusal != nil {
+					logBotRateLimit(logger, installation.ID, refusal)
+				}
+				if !errors.Is(configErr, client.ErrBackgroundYield) {
+					succeeded++
+				} else {
+					gateways.PollInteractions(client.WithoutBackgroundYield(ctx), time.Now())
+				}
 				continue
 			}
 			logger.Warn("bot Spotify application setting unavailable", "installation_id", installation.ID.String())
 		}
 		oldTextPoller := gateways.pollers[installation.ID]
 		oldInteractionPoller := gateways.interactionPollers[installation.ID]
-		// A deferred pass restores this poller below. Allow it to yield while the
-		// replacement is being built, but never interrupt first-time setup before
-		// an installation has a fast path capable of consuming the gateway hint.
-		ctx := ctx
+		// Preserve the prior fast path during a deferred rebuild. Its own hint
+		// can interrupt this installation only when that prior path exists;
+		// another ready installation can still interrupt first-time setup.
 		if oldInteractionPoller != nil {
-			ctx = client.WithBackgroundYield(ctx, func() bool {
-				return gateways.backgroundYieldReady(time.Now(), installation.ID)
-			})
+			suspended = installation.ID
 		}
 		gateways.SetTextPoller(installation.ID, nil)
 		gateways.SetInteractionPoller(installation.ID, nil)
@@ -557,7 +578,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		var runtimeOwnedNative bool
 		var musicQueueCount int
-		reconcileStage := "identity"
+		reconcileStage = "identity"
 		result, ensureErr := lifecycle.Ensure(ctx)
 		ready := false
 		membershipReady := false
@@ -638,7 +659,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 										}
 										if pollErr != nil {
-											if reconciliationRateLimit(pollErr) == nil {
+											if !client.IsDeferred(pollErr) {
 												logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
 											}
 											ensureErr = pollErr
@@ -662,7 +683,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
-							var musicDeferred *client.APIError
+							reconcileStage = "music_restore"
+							var musicDeferred error
 							var musicInteractions *service.MusicInteractions
 							var musicProviderStatus service.MusicProviderStatusInteractions
 							var spotifyPCM session.PCMStarter
@@ -728,7 +750,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 								if channelsErr != nil {
 									musicDeferred = cleanupFailedMusicRestore(installation.ID, channelsErr, musicRegistry)
-									logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
+									if !errors.Is(channelsErr, client.ErrBackgroundYield) {
+										logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
+									}
 									ensureErr = errors.Join(ensureErr, channelsErr)
 								} else {
 									var musicErr error
@@ -741,6 +765,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
+							reconcileStage = "interaction_events"
 							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
 							if musicDeferred != nil {
 								// Keep the prior music handlers until their dependencies can be rebuilt.
@@ -837,6 +862,19 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
 														}, intakeEvents, reportUnrefreshed))
 													gateways.SetInteractionPoller(installation.ID, newInteractionIntakePoller(membership, trust, result.Session, intakeEvents, reportUnrefreshed))
+													if gateways.maintenance == nil {
+														gateways.maintenance = make(map[id.ID]backgroundMaintenance)
+													}
+													gateways.maintenance[installation.ID] = backgroundMaintenance{
+														current: func() bool { return musicRegistry.Native(installation.ID, installation.CommunityID) == nativeClient },
+														run: func(maintenanceCtx context.Context) error {
+															var utilityTask func(context.Context) error
+															if utilities != nil {
+																utilityTask = utilities.maintain
+															}
+															return runBackgroundMaintenance(maintenanceCtx, scheduler.RunDue, utilityTask)
+														},
+													}
 												}
 
 												var eventResult service.GroupEventPollResult
@@ -867,7 +905,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							}
 							if interactionErr != nil {
 								reconcileStage = "interaction_events"
-								logger.Error("bot interaction event dispatch paused", "installation_id", installation.ID.String(), "error", interactionErr.Error())
+								if !client.IsDeferred(interactionErr) {
+									logger.Error("bot interaction event dispatch paused", "installation_id", installation.ID.String(), "error", interactionErr.Error())
+								}
 								ensureErr = errors.Join(ensureErr, interactionErr)
 							}
 							if result.Installation.Capabilities&botMusicCapability == 0 {
@@ -884,23 +924,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "configured_pcm_providers", providers)
 							}
-							if scheduleErr == nil {
-								reconcileStage = "scheduled_services"
-								scheduleErr = scheduler.RunDue(ctx)
-							}
-							var utilityErr error
-							if utilities != nil {
-								reconcileStage = "utility_services"
-								utilityErr = utilities.maintain(ctx)
-								if utilityErr != nil && reconciliationRateLimit(utilityErr) == nil {
-									logger.Error("bot utility maintenance paused", "installation_id", installation.ID.String(), "error", utilityErr.Error())
-								}
-							}
+							reconcileStage = "scheduled_services"
+							scheduleErr = errors.Join(scheduleErr, gateways.maintainOne(ctx, installation.ID, maintained))
+							reconcileStage = "moderation_evidence"
 							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, nil, time.Now)
 							if caseErr == nil {
 								caseErr = maintainModerationEvidence(ctx, logger, installation.ID, caseSink)
 							}
-							ensureErr = errors.Join(ensureErr, scheduleErr, utilityErr, caseErr)
+							ensureErr = errors.Join(ensureErr, scheduleErr, caseErr)
 						}
 					}
 				}
@@ -908,6 +939,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry, autoModerationState)
 		if membershipReady && spotifyClientID != "" {
+			reconcileStage = "spotify_link"
 			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
 			if linkErr == nil {
 				linkErr = credentials.ValidateAccount(ctx)
@@ -915,7 +947,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if linkErr == nil {
 				linkErr = credentials.Link(ctx)
 			}
-			if linkErr != nil && !errors.Is(linkErr, service.ErrSpotifyNoPending) {
+			if linkErr != nil && !errors.Is(linkErr, service.ErrSpotifyNoPending) && !errors.Is(linkErr, client.ErrBackgroundYield) {
 				logger.Warn("bot Spotify account link needs attention", "installation_id", installation.ID.String(), "error", linkErr.Error())
 			}
 		}
@@ -923,18 +955,26 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		if !retainedNative && !runtimeOwnedNative {
 			closeErr = nativeClient.Close()
 		}
-		if refusal := reconciliationRateLimit(ensureErr); refusal != nil && closeErr == nil {
+		if client.IsDeferred(ensureErr) && closeErr == nil {
+			pass.incomplete = true
 			if gateways.pollers[installation.ID] == nil {
 				gateways.SetTextPoller(installation.ID, oldTextPoller)
 			}
 			if gateways.interactionPollers[installation.ID] == nil {
 				gateways.SetInteractionPoller(installation.ID, oldInteractionPoller)
 			}
-			logBotRateLimit(logger, installation.ID, refusal)
-			succeeded++
+			if refusal := reconciliationRateLimit(ensureErr); refusal != nil {
+				logBotRateLimit(logger, installation.ID, refusal)
+			}
+			if !errors.Is(ensureErr, client.ErrBackgroundYield) {
+				succeeded++
+			} else {
+				gateways.PollInteractions(client.WithoutBackgroundYield(ctx), time.Now())
+			}
 			continue
 		}
 		if ensureErr != nil || closeErr != nil {
+			failed++
 			attrs := []any{"installation_id", installation.ID.String(), "stage", reconcileStage}
 			var membershipErr *service.MembershipPhaseError
 			if errors.As(ensureErr, &membershipErr) {
@@ -949,13 +989,27 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			logger.Error("bot installation reconciliation failed", attrs...)
 			continue
 		}
+		if pass.interrupted[installation.ID] {
+			gateways.PollInteractions(client.WithoutBackgroundYield(ctx), time.Now())
+			continue
+		}
 		succeeded++
 		logger.Info("bot installation identity and membership reconciled", "installation_id", installation.ID.String(), "ready", ready)
 	}
-	if succeeded != eligible {
-		return fmt.Errorf("%d of %d eligible installations reconciled", succeeded, eligible)
+	var passErr error
+	expected := eligible
+	for installation := range pass.interrupted {
+		if !installation.IsZero() {
+			expected--
+		}
 	}
-	return nil
+	if succeeded != expected || failed > 0 {
+		passErr = fmt.Errorf("%d of %d eligible installations reconciled", succeeded, eligible)
+	}
+	if pass.yielded {
+		passErr = errors.Join(passErr, client.ErrBackgroundYield)
+	}
+	return errors.Join(passErr, maintenanceErr)
 }
 
 func safeMembershipErrorAttrs(err error) []any {

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/client"
 )
 
 const (
@@ -39,6 +41,7 @@ func NewBoundedPCMReader(ctx context.Context, source io.ReadCloser, maxBytes int
 	if ctx == nil || source == nil || maxBytes <= 0 {
 		return nil, ErrPCMReaderInput
 	}
+	ctx = client.WithoutBackgroundYield(ctx)
 	r := &BoundedPCMReader{ctx: ctx, source: source, limit: maxBytes, done: make(chan struct{})}
 	go func() {
 		select {

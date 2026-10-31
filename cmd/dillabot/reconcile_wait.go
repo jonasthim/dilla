@@ -75,6 +75,7 @@ func (b *interactionBudget) spend(now time.Time, groups int) {
 // other hint (wake) takes the full text sweep, poll, at most once per gatewayWakeThrottle.
 type reconcileWait struct {
 	interval        time.Duration
+	resume          bool
 	wake            <-chan struct{}
 	interaction     <-chan struct{}
 	poll            func(context.Context)
@@ -84,8 +85,8 @@ type reconcileWait struct {
 	after           func(time.Duration) <-chan time.Time
 }
 
-// wait returns true when the interval elapsed and false when ctx ended. started is when the
-// previous reconciliation pass began.
+// wait returns true when the interval elapses or a yielded pass can resume,
+// and false when ctx ends. started is when the previous pass began.
 func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 	next := w.after(w.interval)
 	var general, fast <-chan time.Time
@@ -102,6 +103,13 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 	// Re-arm durable pending work when a sweep returns, including a yielded sweep.
 	arm()
 	for {
+		// A yielded pass resumes as soon as its pending interaction batch drains.
+		// Ineligible pending groups retain the existing spacing/flood budget.
+		if w.resume {
+			if _, pending := w.nextInteraction(w.now()); !pending {
+				return true
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return false

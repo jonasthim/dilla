@@ -231,7 +231,7 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 	}
 	// A definitive rate refusal never entered the upload handler. Keep the
 	// prepared attempt pending; receipt resolution would close an unsent attempt.
-	if client.RateLimitError(postErr) != nil {
+	if client.IsDeferred(postErr) {
 		return protocol.SendReceipt{}, postErr
 	}
 	// A lost or malformed HTTP result is not evidence of refusal. Recheck the

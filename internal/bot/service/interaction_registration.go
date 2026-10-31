@@ -292,7 +292,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 	if postErr == nil {
 		return c.acceptInteractionReceipt(ctx, key, revision, in, receipt)
 	}
-	if client.RateLimitError(postErr) != nil {
+	if client.IsDeferred(postErr) {
 		// The middleware did not run registration. Make the exact durable intent
 		// retryable instead of treating it as an ambiguously submitted request.
 		in.Submitted = false
@@ -778,7 +778,7 @@ var _ = fmt.Sprintf
 // A recovery category is context, not an independent failure. Keep definitive
 // rate refusals intact so dispatch/reconciliation can defer them without aging.
 func interactionRegistrationError(category error, detail string, cause error) error {
-	if client.RateLimitError(cause) != nil {
+	if client.IsDeferred(cause) {
 		return cause
 	}
 	return fmt.Errorf("%w: %s: %w", category, detail, cause)
