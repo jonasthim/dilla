@@ -1432,6 +1432,10 @@ jobs:
           name: dilla-bot-core
           path: target/release
       - run: chmod +x target/release/dilla-bot-core
+      # The adapter starts this peer through cargo, then allows 90 s for readiness. Compile before
+      # that runtime deadline so a cold Go runner reports compiler errors here instead of timing out.
+      - name: Compile the Rust peer before its bounded readiness check
+        run: cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked
       - name: Compiled helper and production moderation recovery integration
         run: go test -race ./internal/bot/native ./cmd/dillabot
         env:

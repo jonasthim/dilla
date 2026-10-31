@@ -17,6 +17,21 @@ pass 2/2 in Chromium/Firefox. TypeScript, lint and protocol documentation checks
 images/lightbox failure is preserved for investigation, and no following interrupted test is
 reported as a regression.
 
+The full WSS-only JavaScript workspace run and lint also pass, including 2,547 client-core
+and 3,012 web tests. The original Chromium image test subsequently passed three unmodified
+repeats; its earlier timing failure remains preserved. The complete final browser runs are
+still required gates.
+
+## CI integration correction
+
+Run 41201576813 passed the production moderation recovery test but exposed a cold-runner
+fixture build inside an existing native adapter test's ninety-second readiness wait. CI now
+compiles that Rust peer in an explicit preceding step, without increasing the runtime wait
+or changing assertions. A workflow regression failed before the fix; all 534 CI script tests
+pass afterward. The local scan also exposed a generated-dist-dependent reader classification:
+the build-tagged webdist Go test belongs to the web-build/go-release gate, rather than the
+ordinary Go gate. The scanner now records that actual owner and keeps checking the dependency.
+
 ## Independent review
 
 Two independent read-only reviews found seven unique Important issues. Regression tests reproduced each before the fix: terminal refusal cleanup after restart; disabled/log-only receipt reconciliation; capability-revoked accepted receipts; journal aging of durable moderation failures; removal proof recovery after membership loss; cache-capacity deferral classification; and unresolved build-hint verification. All targeted fixes pass under race; no deferred minors.

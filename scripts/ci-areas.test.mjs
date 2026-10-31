@@ -157,6 +157,9 @@ test('JOB_GATES names exactly the jobs of ci.yml but changes, docs and ci-ok', (
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
 const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
+// This build-tagged Go test runs only in web-build/go-release, both gated by the web area.
+// A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
+const READER_PATH_AREA = { 'internal/web/webdist_test.go': 'web' };
 
 function relativeReads(file, text) {
   const reads = [];
@@ -176,7 +179,7 @@ function relativeReads(file, text) {
 test('every path the code reads from another place is covered by a rule', () => {
   const found = [];
   for (const file of trackedFiles()) {
-    const area = READER_AREA[file.split('/')[0]];
+    const area = READER_PATH_AREA[file] ?? READER_AREA[file.split('/')[0]];
     if (area === undefined || UNRUN_READERS.includes(file) || !/\.(go|rs|ts|tsx|mjs|js)$/.test(file) || !existsSync(join(REPO_ROOT, file))) continue;
     for (const read of relativeReads(file, readFileSync(join(REPO_ROOT, file), 'utf8'))) {
       const target = relative(REPO_ROOT, resolve(REPO_ROOT, dirname(file), read));
