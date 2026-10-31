@@ -329,7 +329,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 			enrolled, observation, enrollErr := l.runtime.EnrollObserved(ctx, l.install, state.EnrollRequest, state.ClaimID, boot.UMKPublic[:], boot.SSKPublic[:], boot.SigUMKSSK[:], registration)
 			if enrollErr != nil {
 				var apiErr *client.APIError
-				if errors.As(enrollErr, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
+				if client.IsDeferred(enrollErr) || errors.As(enrollErr, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
 					state.EnrollAttempted = false
 					_, _ = l.saveState(ctx, revision, state)
 				}

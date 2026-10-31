@@ -89,6 +89,11 @@ type reconcileWait struct {
 // and false when ctx ends. started is when the previous pass began.
 func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 	next := w.after(w.interval)
+	resumeAt := started.Add(time.Second)
+	var spacing <-chan time.Time
+	if w.resume && w.now().Before(resumeAt) {
+		spacing = w.after(resumeAt.Sub(w.now()))
+	}
 	var general, fast <-chan time.Time
 	// arm (re)times the fast poll for the earliest installation its budget allows; a new signal can
 	// bring it forward (another community's command must not wait behind a flooded one).
@@ -103,9 +108,10 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 	// Re-arm durable pending work when a sweep returns, including a yielded sweep.
 	arm()
 	for {
-		// A yielded pass resumes as soon as its pending interaction batch drains.
+		// A yielded pass resumes after its pending interaction batch drains,
+		// at least one second after the previous pass started.
 		// Ineligible pending groups retain the existing spacing/flood budget.
-		if w.resume {
+		if w.resume && !w.now().Before(resumeAt) {
 			if _, pending := w.nextInteraction(w.now()); !pending {
 				return true
 			}
@@ -113,7 +119,13 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 		select {
 		case <-ctx.Done():
 			return false
+		case <-spacing:
+			spacing = nil
 		case <-next:
+			if w.resume && w.now().Before(resumeAt) {
+				next = w.after(resumeAt.Sub(w.now()))
+				continue
+			}
 			return true
 		case <-w.wake:
 			if general == nil {

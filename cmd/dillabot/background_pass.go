@@ -15,10 +15,11 @@ import (
 const backgroundProgressFloor = 60 * time.Second
 
 type backgroundProgress struct {
-	lastComplete time.Time
-	resume       id.ID
-	retry        bool
-	protected    map[id.ID]bool
+	lastNonYielded time.Time
+	interval       time.Duration
+	resume         id.ID
+	retry          bool
+	protected      map[id.ID]bool
 }
 
 type backgroundPass struct {
@@ -35,10 +36,10 @@ type backgroundPass struct {
 }
 
 func (p *backgroundProgress) start(now time.Time) *backgroundPass {
-	return &backgroundPass{forced: now.Sub(p.lastComplete) >= backgroundProgressFloor, resume: p.resume, retry: p.retry, protected: p.protected, interrupted: make(map[id.ID]bool), visited: make(map[id.ID]bool)}
+	return &backgroundPass{forced: now.Sub(p.lastNonYielded) >= p.interval+backgroundProgressFloor, resume: p.resume, retry: p.retry, protected: p.protected, interrupted: make(map[id.ID]bool), visited: make(map[id.ID]bool)}
 }
 
-func (p *backgroundProgress) finish(pass *backgroundPass, now time.Time, err error) {
+func (p *backgroundProgress) finish(pass *backgroundPass, now time.Time, _ error) {
 	next := make(map[id.ID]bool)
 	for installation := range pass.interrupted {
 		next[installation] = true
@@ -53,8 +54,10 @@ func (p *backgroundProgress) finish(pass *backgroundPass, now time.Time, err err
 	if pass.yielded {
 		p.resume = pass.installation
 	}
-	if !pass.yielded && !pass.incomplete && err == nil {
-		p.lastComplete = now
+	// Errors do not indicate starvation by commands; any non-yielded pass
+	// resets the progress floor, even when its work failed or was deferred.
+	if !pass.yielded {
+		p.lastNonYielded = now
 	}
 }
 
@@ -134,6 +137,18 @@ type backgroundMaintenance struct {
 	run     func(context.Context) error
 }
 
+// installationMaintenanceError keeps the installation visible in both logs
+// and error trees while preserving the original retry/refusal classification.
+type installationMaintenanceError struct {
+	installation id.ID
+	cause        error
+}
+
+func (e *installationMaintenanceError) Error() string {
+	return "bot maintenance failed for installation " + e.installation.String() + ": " + e.cause.Error()
+}
+func (e *installationMaintenanceError) Unwrap() error { return e.cause }
+
 func (r *botGatewayRuntime) maintainOne(ctx context.Context, installation id.ID, done map[id.ID]bool) error {
 	task, exists := r.maintenance[installation]
 	if done[installation] || !exists {
@@ -144,7 +159,10 @@ func (r *botGatewayRuntime) maintainOne(ctx context.Context, installation id.ID,
 		return nil
 	}
 	done[installation] = true
-	return runBackgroundMaintenance(ctx, task.run)
+	if err := runBackgroundMaintenance(ctx, task.run); err != nil {
+		return &installationMaintenanceError{installation: installation, cause: err}
+	}
+	return nil
 }
 
 func (r *botGatewayRuntime) maintain(ctx context.Context, done map[id.ID]bool) error {

@@ -30,7 +30,11 @@ func backgroundAPI(t *testing.T) *client.Client {
 	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: instance,
 		RateLimits: client.RateLimits{ReadPerSecond: 1e6, ReadBurst: 1000000},
 		HTTPClient: &http.Client{Transport: spotifyCatalogRoundTripper(func(r *http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(bytes.NewReader(document)), Request: r}, nil
+			body := document
+			if r.URL.Path == "/v1/bot-runtime/installations" {
+				body = []byte{0x80}
+			} // empty current inventory
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 		})}})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +50,7 @@ func backgroundProbe(t *testing.T) func(context.Context) error {
 
 func TestEveryInstallationReconcilesWithinTwoPasses(t *testing.T) {
 	now := time.Now()
-	progress := backgroundProgress{lastComplete: now}
+	progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
 	installations := []client.Installation{{ID: id.New()}, {ID: id.New()}, {ID: id.New()}, {ID: id.New()}}
 	completed := make(map[id.ID]bool)
 	probe := backgroundProbe(t)
@@ -79,16 +83,16 @@ func TestEveryInstallationReconcilesWithinTwoPasses(t *testing.T) {
 	}
 }
 
-func TestBackgroundProgressFloorUsesLastCompletePass(t *testing.T) {
+func TestProgressFloorForcesPassUnderSustainedCommands(t *testing.T) {
 	start := time.Now()
-	progress := backgroundProgress{lastComplete: start}
+	progress := backgroundProgress{lastNonYielded: start, interval: 30 * time.Second}
 	stage := "identity"
 	probe := backgroundProbe(t)
-	for _, elapsed := range []time.Duration{time.Second, 30 * time.Second, 61 * time.Second} {
+	for _, elapsed := range []time.Duration{time.Second, 30 * time.Second, 91 * time.Second} {
 		pass := progress.start(start.Add(elapsed))
 		ctx := pass.context(t.Context(), id.New(), &stage, func() bool { return true })
 		err := probe(ctx)
-		if elapsed < 60*time.Second {
+		if elapsed < 90*time.Second {
 			if !errors.Is(err, client.ErrBackgroundYield) {
 				t.Fatalf("normal pass did not yield: %v", err)
 			}
@@ -100,7 +104,7 @@ func TestBackgroundProgressFloorUsesLastCompletePass(t *testing.T) {
 			progress.finish(pass, start.Add(elapsed), nil)
 		}
 	}
-	if progress.lastComplete != start.Add(61*time.Second) {
+	if progress.lastNonYielded != start.Add(91*time.Second) {
 		t.Fatal("yielded pass reset the progress floor")
 	}
 }
@@ -108,7 +112,7 @@ func TestBackgroundProgressFloorUsesLastCompletePass(t *testing.T) {
 func TestMaintenanceRunsWithCommandsEveryFiveSeconds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
-		progress := backgroundProgress{lastComplete: now}
+		progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
 		installation := id.New()
 		var announcements, utilities []time.Time
 		var pending bool
@@ -194,7 +198,7 @@ func TestBackgroundYieldReadyRacesWithPollerUpdates(t *testing.T) {
 
 func TestInterruptedAdmissionKeepsYieldingUntilNextPass(t *testing.T) {
 	now := time.Now()
-	progress := backgroundProgress{lastComplete: now}
+	progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
 	installation := id.New()
 	stage := "membership"
 	probe := backgroundProbe(t)
@@ -212,7 +216,7 @@ func TestInterruptedAdmissionKeepsYieldingUntilNextPass(t *testing.T) {
 	}
 }
 
-func TestDiscoveryYieldStillRunsRetainedMaintenance(t *testing.T) {
+func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	api := backgroundAPI(t)
 	if _, err := api.Discover(t.Context()); err != nil {
 		t.Fatal(err)
@@ -235,17 +239,25 @@ func TestDiscoveryYieldStillRunsRetainedMaintenance(t *testing.T) {
 		return nil
 	}
 	r.maintenance = map[id.ID]backgroundMaintenance{installation: {run: func(ctx context.Context) error { return runBackgroundMaintenance(ctx, task, task) }}}
-	progress := backgroundProgress{lastComplete: time.Now()}
+	registry := newMusicQueueRegistry()
+	t.Cleanup(func() { _ = registry.Close() })
+	progress := backgroundProgress{lastNonYielded: time.Now(), interval: 30 * time.Second}
 	pass := progress.start(time.Now())
-	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, nil, nil, nil, r, nil, logger, pass)
-	if !errors.Is(err, client.ErrBackgroundYield) || runs != 2 {
-		t.Fatalf("discovery yield skipped RunDue/maintain: runs=%d err=%v", runs, err)
+	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), nil, r, newRuntimeStatusTracker("test"), logger, pass)
+	if runs != 0 {
+		t.Fatalf("removed installation ran RunDue/maintain %d times", runs)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := r.maintenance[installation]; exists {
+		t.Fatal("removed installation retained maintenance")
 	}
 }
 
 func TestDiscoveryOnlyYieldPreservesInterruptedInstallation(t *testing.T) {
 	now := time.Now()
-	progress := backgroundProgress{lastComplete: now}
+	progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
 	installation := id.New()
 	stage := "membership"
 	probe := backgroundProbe(t)
@@ -270,7 +282,7 @@ func TestFirstTimeSetupMayYieldToAnotherInstallation(t *testing.T) {
 	existing := id.New()
 	r.SetInteractionPoller(existing, func(context.Context, id.ID) error { return nil })
 	r.notifyInteraction(existing, id.New())
-	progress := backgroundProgress{lastComplete: time.Now()}
+	progress := backgroundProgress{lastNonYielded: time.Now(), interval: 30 * time.Second}
 	pass := progress.start(time.Now())
 	setup := id.New()
 	stage := "identity"
@@ -305,5 +317,57 @@ func TestStaleMaintenanceDoesNotSkipRecoveredRuntime(t *testing.T) {
 	}
 	if runs != 2 {
 		t.Fatalf("recovered helper skipped RunDue/maintain: %d runs", runs)
+	}
+}
+
+func TestProgressFloorSurvivesPersistentErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		incomplete bool
+	}{
+		{"installation failure", errors.New("installation unavailable"), false},
+		{"maintenance failure", errors.New("maintenance failed"), false},
+		{"Spotify guard", errors.New("Spotify guard unavailable"), false},
+		{"server deferral", &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
+			probe := backgroundProbe(t)
+			for range 3 {
+				failed := progress.start(now)
+				failed.incomplete = tc.incomplete
+				now = now.Add(61 * time.Second)
+				progress.finish(failed, now, tc.err)
+				next := progress.start(now.Add(30 * time.Second))
+				stage := "membership"
+				if err := probe(next.context(t.Context(), id.New(), &stage, func() bool { return true })); !errors.Is(err, client.ErrBackgroundYield) {
+					t.Fatalf("error disabled interactive priority: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestProgressFloorAllowsLongReconcileInterval(t *testing.T) {
+	start := time.Now()
+	progress := backgroundProgress{lastNonYielded: start, interval: 120 * time.Second}
+	pass := progress.start(start.Add(120 * time.Second))
+	stage := "membership"
+	if err := backgroundProbe(t)(pass.context(t.Context(), id.New(), &stage, func() bool { return true })); !errors.Is(err, client.ErrBackgroundYield) {
+		t.Fatalf("normal 120s interval disabled priority: %v", err)
+	}
+}
+
+func TestMaintenanceErrorsCarryInstallationID(t *testing.T) {
+	r := newBotGatewayRuntime(t.Context(), nil, false, nil)
+	installation := id.New()
+	failure := errors.New("announcement publication failed")
+	r.maintenance = map[id.ID]backgroundMaintenance{installation: {run: func(context.Context) error { return failure }}}
+	err := r.maintain(t.Context(), make(map[id.ID]bool))
+	var scoped *installationMaintenanceError
+	if !errors.As(err, &scoped) || scoped.installation != installation || !errors.Is(err, failure) || !strings.Contains(err.Error(), installation.String()) {
+		t.Fatalf("maintenance error lost installation or cause: %v", err)
 	}
 }

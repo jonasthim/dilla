@@ -431,7 +431,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
 	defer gateways.Close()
 	statuses := newRuntimeStatusTracker(Version)
-	progress := backgroundProgress{lastComplete: time.Now()}
+	progress := backgroundProgress{lastNonYielded: time.Now(), interval: cfg.ReconcileInterval}
 	for {
 		started := time.Now()
 		pass := progress.start(started)
@@ -451,25 +451,20 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 }
 
 func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger, pass *backgroundPass) error {
-	maintained := make(map[id.ID]bool)
-	maintenanceErr := gateways.maintain(ctx, maintained)
 	spotifyGuard, err := service.NewSpotifyAccountGuard(cfg.StateDir)
 	if err != nil {
-		return errors.Join(errors.New("spotify account guard unavailable"), maintenanceErr)
+		return errors.New("spotify account guard unavailable")
 	}
-	discoveryStage := "installation_discovery"
-	discoveryCtx := pass.context(ctx, id.ID{}, &discoveryStage, func() bool { return gateways.backgroundYieldReady(time.Now(), id.ID{}) })
-	installations, err := runtime.ListInstallations(discoveryCtx)
+	// Refresh inventory before running retained maintenance. This bounded read
+	// cannot yield: removed installations must be pruned on every pass.
+	installations, err := runtime.ListInstallations(client.WithoutBackgroundYield(ctx))
 	if err != nil {
-		if errors.Is(err, client.ErrBackgroundYield) {
-			return errors.Join(err, maintenanceErr)
-		}
 		if refusal := reconciliationRateLimit(err); refusal != nil {
 			logBotRateLimit(logger, id.ID{}, refusal)
 			pass.incomplete = true
-			return maintenanceErr
+			return nil
 		}
-		return errors.Join(errors.New("installation discovery failed"), maintenanceErr)
+		return errors.New("installation discovery failed")
 	}
 	activeInstallations := make([]id.ID, 0, len(installations))
 	for _, installation := range installations {
@@ -483,6 +478,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	autoModerationState.RetainOnly(activeInstallations)
 	gateways.RetainOnly(activeInstallations)
 	statuses.RetainOnly(activeInstallations)
+	maintained := make(map[id.ID]bool)
+	maintenanceErr := gateways.maintain(ctx, maintained)
 	var eligible, succeeded, failed int
 	for _, installation := range pass.order(installations) {
 		if err := ctx.Err(); err != nil {
