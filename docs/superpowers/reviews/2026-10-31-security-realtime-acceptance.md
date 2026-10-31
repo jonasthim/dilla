@@ -2,6 +2,21 @@
 
 Implementation and independent review are complete. One PR contains the full scope; its checks are the authority for final-head CI status. No release or deployment is authorized by this report alone.
 
+## Post-merge speaking measurement
+
+PR #134 passed all 37 CI jobs and five CodeQL analyses before merge. Merged-main CI then
+twice exposed the existing Firefox speaking test's driver-side polling deadline: its
+100/250 ms polling schedule starts the last probe near 380 ms, leaving too little of the
+400 ms bound for another browser round trip. The first trace returned true in the browser
+at 397.194 ms but reached the test callback after the deadline; the second late probe also
+returned true. Both failed attempts and their traces are retained.
+
+A test-only follow-up uses Playwright's retrying locator assertion for that same attribute
+and selector, with the same 400 ms timeout. This keeps retries in the browser; no product
+code, assertion predicate, skip condition or timeout is changed. Five Firefox and three
+Chromium repetitions pass, along with E2E TypeScript and all 534 CI-contract tests. The
+follow-up still requires green merged-main CI and CodeQL before release and deployment.
+
 ## Later scope clarification
 
 After the draft PR opened, Jonas explicitly chose “Remove web fallbacks; keep Bots working.”
