@@ -215,10 +215,23 @@ func (h *Calls) forgetMembers(call id.ID, room string) {
 			delete(h.admissions, k)
 		}
 	}
+	delete(h.botOnlySince, call)
 	for k := range h.absentSince {
 		if k.call == call {
 			delete(h.absentSince, k)
 		}
+	}
+}
+
+// resetBotOnly drops the first bot-only observation when a reconciliation cannot establish
+// the room's state. call zero resets every room after a failed SFU room listing.
+func (h *Calls) resetBotOnly(call id.ID) {
+	h.memMu.Lock()
+	defer h.memMu.Unlock()
+	if call == (id.ID{}) {
+		clear(h.botOnlySince)
+	} else {
+		delete(h.botOnlySince, call)
 	}
 }
 
@@ -230,31 +243,40 @@ func (h *Calls) forgetMembers(call id.ID, room string) {
 // (flushLeafRemovals), bound to that membership, so a device that rejoined since is never removed. A
 // leaf seen present again is forgotten. Without a delivery service, or for a closed, gone or
 // epoch-unknown group, nothing is tracked: the end of the call or a heal decides those leaves.
-// It reports a bot-only call before queuing any Removes: no human leaf is present or inside its
-// admission window, and at least one managed-bot leaf remains. Bots cannot commit the human's
-// Remove, so the caller must end the call under its existing call lock instead.
+// It reports a bot-only call after two consecutive whole-room observations at least sweepEvery
+// apart: no human leaf is present or inside its admission window, and at least one managed-bot leaf
+// remains. While waiting it queues no Removes: bots cannot commit the human's Remove, so the caller
+// must end the call under its existing call lock instead. Uncertain observations reset the wait.
 func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow, parts []*livekit.ParticipantInfo, cut map[string]bool) (bool, error) {
 	if row.GroupID == nil {
+		h.resetBotOnly(row.CallID)
 		return false, nil
 	}
 	g, err := h.repo.GetGroup(ctx, *row.GroupID)
 	if err != nil || g.ClosedAt != nil || g.EpochUnknown {
+		h.resetBotOnly(row.CallID)
 		return false, err
 	}
 	members, err := h.repo.ListMembers(ctx, g.GroupID)
 	if err != nil {
+		h.resetBotOnly(row.CallID)
 		h.log.WarnContext(ctx, "reading a call group's members for the sweep failed", "group_id", g.GroupID.String(), "err", err)
 		return false, err
 	}
 	bots := make(map[id.ID]bool)
+	unknown := make(map[id.ID]bool)
+	var lookupErr error
 	for _, m := range members {
 		if m.RemovedEpoch != nil || m.AddedEpoch > g.Epoch {
 			continue
 		}
-		if _, known := bots[m.UserID]; !known {
+		if _, known := bots[m.UserID]; !known && !unknown[m.UserID] {
 			bot, err := botaccess.IsBotUser(ctx, h.repo, m.UserID)
 			if err != nil {
-				return false, err
+				unknown[m.UserID] = true
+				lookupErr = errors.Join(lookupErr, err)
+				h.log.WarnContext(ctx, "reading a call member's account kind failed; skipping its absence and keeping the call live", "group_id", g.GroupID.String(), "user_id", m.UserID.String(), "err", err)
+				continue
 			}
 			bots[m.UserID] = bot
 		}
@@ -282,18 +304,26 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 			humanActive = true
 		}
 	}
-	if hasBot && !humanActive {
-		return true, nil
+	if hasBot && !humanActive && lookupErr == nil {
+		if h.botOnlySince == nil {
+			h.botOnlySince = make(map[id.ID]time.Time)
+		}
+		first, seen := h.botOnlySince[row.CallID]
+		if !seen {
+			h.botOnlySince[row.CallID] = now
+		}
+		return seen && now.Sub(first) >= h.sweepEvery, nil
 	}
+	delete(h.botOnlySince, row.CallID)
 	if h.dsvc == nil {
-		return false, nil
+		return false, lookupErr
 	}
 	if h.absentSince == nil {
 		h.absentSince, h.leafProposed = map[memberKey]time.Time{}, map[memberKey]time.Time{}
 	}
 	current := map[memberKey]bool{}
 	for _, m := range members {
-		if m.RemovedEpoch != nil || m.AddedEpoch > g.Epoch {
+		if m.RemovedEpoch != nil || m.AddedEpoch > g.Epoch || unknown[m.UserID] {
 			continue
 		}
 		k := memberKey{call: row.CallID, dev: m.DeviceID, membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}}
@@ -330,7 +360,7 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 			delete(h.leafProposed, k)
 		}
 	}
-	return false, nil
+	return false, lookupErr
 }
 
 // flushLeafRemovals proposes the Removes trackAbsentLocked queued, each bound to its membership

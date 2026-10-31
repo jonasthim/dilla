@@ -112,7 +112,7 @@ var RequiredExports = []string{
 // It deliberately does not include _start: a cdylib has no main.
 var startFunctions = []string{"_initialize"}
 
-// ErrClosed is returned by Acquire after Close.
+// ErrClosed is returned by Acquire or a retained instance's Call after Close.
 var ErrClosed = errors.New("mlswasi: runtime is closed")
 
 // Options configures a Runtime.
@@ -154,6 +154,9 @@ type Runtime struct {
 	priority func(context.Context) int
 	gate     *prioritygate.Gate
 	done     chan struct{}
+	// execution covers guest calls and module replacement, not retained handles.
+	// Shutdown waits for those operations before destroying WASI host state.
+	execution sync.RWMutex
 
 	mu     sync.Mutex
 	closed bool
@@ -247,8 +250,9 @@ func (r *Runtime) newInstance(ctx context.Context) (*Instance, error) {
 	}, nil
 }
 
-// Close rejects queued acquisitions, then waits for acquired instances to be
-// released before closing the runtime. Context cancellation forces shutdown.
+// Close rejects queued acquisitions, waits for active calls, and closes every
+// module, including instances retained by DS group caches. Retained handles must
+// still be Released by their owners, but cannot delay runtime shutdown.
 func (r *Runtime) Close(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
@@ -258,10 +262,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 	r.closed = true
 	close(r.done)
 	r.mu.Unlock()
-	select {
-	case <-r.gate.Close():
-	case <-ctx.Done():
-	}
+	r.gate.Close()
+	r.execution.Lock()
+	defer r.execution.Unlock()
 
 	for range r.poolSize {
 		select {

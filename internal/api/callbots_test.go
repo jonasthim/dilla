@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ func TestASweepEndsACallWhoseOnlyMemberLeftInTheRoomIsABot(t *testing.T) {
 	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: botDev.String()})
 	f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
 	f.calls.SweepRooms(t.Context())
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended != nil {
+		t.Fatalf("first bot-only observation ended the call: %+v, %v", row, err)
+	}
 	f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
 	f.calls.SweepRooms(t.Context())
 	row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID)
@@ -108,4 +112,75 @@ func seedCallBot(t *testing.T, e *env, ch, group id.ID) id.ID {
 	}
 	seedLeaf(t, e, group, botDev, 3, nil)
 	return botDev
+}
+
+func TestWholeRoomGrantSyncNeedsSpacedBotOnlyObservationsAfterListingFailure(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	botDev := seedCallBot(t, f.e, f.ch, f.group)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: botDev.String()})
+	f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
+	sync := func() error {
+		return api.SyncCallGrants(t.Context(), f.e.Repo, api.NewResolver(f.e.Repo), f.stub, f.calls, ownerCommunityOf(t, f.e, f.ch), nil, &f.ch)
+	}
+	live := func() {
+		t.Helper()
+		if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended != nil {
+			t.Fatalf("call ended before two reliable spaced observations: %+v, %v", row, err)
+		}
+	}
+	if err := sync(); err != nil {
+		t.Fatal(err)
+	}
+	live()
+	f.e.Clk.Advance(api.RoomSweepInterval)
+	f.stub.mu.Lock()
+	f.stub.listFail = errors.New("listing unavailable")
+	f.stub.mu.Unlock()
+	if err := sync(); err == nil {
+		t.Fatal("listing failure was not reported")
+	}
+	f.stub.mu.Lock()
+	f.stub.listFail = nil
+	f.stub.mu.Unlock()
+	if err := sync(); err != nil {
+		t.Fatal(err)
+	}
+	live()
+	f.e.Clk.Advance(api.RoomSweepInterval - time.Nanosecond)
+	if err := sync(); err != nil {
+		t.Fatal(err)
+	}
+	live()
+	f.e.Clk.Advance(time.Nanosecond)
+	if err := sync(); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended == nil {
+		t.Fatalf("two reliable spaced whole-room syncs did not end: %+v, %v", row, err)
+	}
+}
+
+func TestBotOnlyObservationResetsAfterRoomListingFailure(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	botDev := seedCallBot(t, f.e, f.ch, f.group)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: botDev.String()})
+	f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
+	f.calls.SweepRooms(t.Context())
+	f.stub.mu.Lock()
+	f.stub.roomsFail = errors.New("rooms unavailable")
+	f.stub.mu.Unlock()
+	f.e.Clk.Advance(api.RoomSweepInterval)
+	f.calls.SweepRooms(t.Context())
+	f.stub.mu.Lock()
+	f.stub.roomsFail = nil
+	f.stub.mu.Unlock()
+	f.calls.SweepRooms(t.Context())
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended != nil {
+		t.Fatalf("first observation after failed room listing ended the call: %+v, %v", row, err)
+	}
+	f.e.Clk.Advance(api.RoomSweepInterval)
+	f.calls.SweepRooms(t.Context())
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended == nil {
+		t.Fatalf("second observation after failed room listing did not end the call: %+v, %v", row, err)
+	}
 }

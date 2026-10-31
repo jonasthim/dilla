@@ -228,10 +228,11 @@ type Calls struct {
 
 	// memMu guards the call-group membership state (callmembers.go): the memberships devices were
 	// admitted to rooms with, the absences the sweep tracks, the Removes it decided and when it last
-	// proposed each.
+	// proposed each, and the first consecutive bot-only observation.
 	memMu        sync.Mutex
 	admissions   map[admitKey][]admission
 	absentSince  map[memberKey]time.Time
+	botOnlySince map[id.ID]time.Time
 	leafProposed map[memberKey]time.Time
 	leafRemovals []leafRemoval
 

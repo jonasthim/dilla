@@ -576,3 +576,32 @@ it('does not report dispatch before the expected installation has been authorize
   expect(dispatched).not.toHaveBeenCalled();
   expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(0);
 });
+
+it.each(['upload-call-failed', 'upload-unresolved', 'response-read-failed'] as const)('distinguishes %s for prior-request receipt recovery', async failure => {
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') {
+      if (failure === 'upload-call-failed') throw new Error('interaction request id conflicts with a prior request');
+      return { requestId: REQUEST, upload: failure === 'upload-unresolved' ? 'unknown' : 'accepted' };
+    }
+    if (command.m === 'readBotInteractionResponses') throw new Error('response read failed');
+    return null;
+  });
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args: ['same'] }))
+    .rejects.toMatchObject({ requestId: REQUEST, uploadCallFailed: failure === 'upload-call-failed' });
+  expect(f.calls.filter(row => row.m === 'readBotInteractionResponses')).toHaveLength(failure === 'response-read-failed' ? 1 : 0);
+});
+
+it('keeps upload timeout distinct from a rejected worker upload call', async () => {
+  vi.useFakeTimers();
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') return new Promise(() => {});
+    return null;
+  });
+  const pending = createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args: ['same'] });
+  const rejected = expect(pending).rejects.toMatchObject({ requestId: REQUEST, uploadCallFailed: false });
+  await vi.advanceTimersByTimeAsync(30_001);
+  await rejected;
+  expect(f.calls.some(row => row.m === 'readBotInteractionResponses')).toBe(false);
+});

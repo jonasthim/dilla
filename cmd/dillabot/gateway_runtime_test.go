@@ -281,7 +281,7 @@ func TestInteractionPollSyncsAtMostTheCapAndRequeuesTheRest(t *testing.T) {
 	if !drainSignal(runtime.Interaction()) {
 		t.Fatal("the requeued groups were not re-signalled for the next poll")
 	}
-	// Untouched groups retain their own allowance; they wait only for global poll spacing.
+	// Untouched groups retain their own allowance; they wait only for their installation's poll spacing.
 	if n := runtime.PollInteractions(t.Context(), t0); n != 0 {
 		t.Fatalf("polled %d groups without spacing", n)
 	}

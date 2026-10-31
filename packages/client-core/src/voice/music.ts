@@ -1,6 +1,6 @@
 import type { CoreClient } from '../bridge';
 import { decode, type CborValue } from '../cbor';
-import { BotInteractionBindingMismatchError, BotInteractionRejectedError, createBotInteractionClient, type BotInteractionResult, type BotInteractionScope } from '../bot/interactions';
+import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError, createBotInteractionClient, type BotInteractionResult, type BotInteractionScope } from '../bot/interactions';
 
 export interface VoiceMusicTrack {
   id: string;
@@ -197,7 +197,10 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
         throw new Error('The destination queue item is no longer available. Refresh the queue and choose it again.');
       const scope = attempt?.expectedScope ?? channelScopes.get(channelId);
       if (!immediate && scope === undefined) throw new Error('The Bot music state has no authenticated installation scope.');
-      record = { channelId, operation, args: Object.freeze(args.map(value => value instanceof Uint8Array ? value.slice() : value)),
+      // Bind every press to the item the person saw, including an empty queue.
+      // An unavailable panel retains the legacy unconditional skip contract.
+      const boundArgs = operation === 15 && before?.status === 'available' ? [before.track?.id ?? ''] : args;
+      record = { channelId, operation, args: Object.freeze(boundArgs.map(value => value instanceof Uint8Array ? value.slice() : value)),
         revision: immediate ? '0' : revisions.get(channelId) ?? '0', scope: scope === undefined ? undefined : Object.freeze({ ...scope }), sent: false, acceptedRevision: null };
       if (attempt !== undefined) {
         attempts.set(attempt.requestId, record);
@@ -227,9 +230,24 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
         result = { requestId: resultValue.requestId, channelId, operation, status: resultValue.status, revision: resultValue.revision, data: resultValue.data };
       } catch (error) {
         if (attempt !== undefined && (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)) attempts.delete(attempt.requestId);
-        if (error instanceof Error && 'requestId' in error) throw error;
-        if (attempt !== undefined) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
-        throw error;
+        if (immediate && attempt !== undefined && !(error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)
+          && (!(error instanceof BotInteractionUncertainError) || error.uploadCallFailed)) {
+          // A reload loses the in-memory args/expiry. The durable send intent
+          // refuses a changed resend; recover its authenticated receipt instead.
+          // An unresolved upload reply or a lost response stays uncertain until retry.
+          let prior: BotInteractionResult | null;
+          try { prior = await interactions.read(attempt.requestId, operation); }
+          catch (readError) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, readError); }
+          if (prior === null) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
+          if (record.scope !== undefined && !sameInteractionIdentity(prior.scope, record.scope))
+            throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The original music attempt is bound to a previous Bot installation.'));
+          record.scope = prior.scope;
+          result = { requestId: prior.requestId, channelId, operation, status: prior.status, revision: prior.revision, data: prior.data };
+        } else {
+          if (error instanceof Error && 'requestId' in error) throw error;
+          if (attempt !== undefined) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
+          throw error;
+        }
       }
     }
     if (result.status === 5 && result.revision === null) {

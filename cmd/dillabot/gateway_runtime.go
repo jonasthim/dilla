@@ -71,12 +71,12 @@ type botGatewayRuntime struct {
 	budgets             map[id.ID]map[id.ID]*interactionBudget // per group, outliving reconcile passes
 	backgroundPending   map[interactionWork]bool               // pendingMu, periodic catch-up behind real hints
 	pendingOrder        []interactionWork                      // FIFO: a noisy group rejoins behind existing work
-	lastInteractionPoll time.Time
+	lastInteractionPoll map[id.ID]time.Time                    // per installation, guarded by pendingMu
 	interactionPollers  map[id.ID]func(context.Context, id.ID) error
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithoutBackgroundYield(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}}
+	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithoutBackgroundYield(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}, lastInteractionPoll: map[id.ID]time.Time{}}
 }
 
 // InteractionPollSchedule survives the short-lived reconciler built each tick.
@@ -237,7 +237,7 @@ func (r *botGatewayRuntime) budgetLocked(installation, group id.ID) *interaction
 }
 
 func (r *botGatewayRuntime) interactionDelayLocked(installation, group id.ID, now time.Time) time.Duration {
-	return max(r.budgetLocked(installation, group).delay(now), r.deferred[installation].Sub(now), interactionSpacing-now.Sub(r.lastInteractionPoll))
+	return max(r.budgetLocked(installation, group).delay(now), r.deferred[installation].Sub(now), interactionSpacing-now.Sub(r.lastInteractionPoll[installation]))
 }
 
 // NextInteraction reports how long until the next fast poll may run for some group with
@@ -319,8 +319,9 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 		}
 	}
 	r.pendingOrder = remaining
-	if len(batch) > 0 {
-		r.lastInteractionPoll = now
+	// Record spacing after selection so one installation may fill this batch.
+	for _, work := range batch {
+		r.lastInteractionPoll[work.installation] = now
 	}
 	more := len(r.pending) > 0
 	r.pendingMu.Unlock()
@@ -530,6 +531,11 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 		if !keep[installation] {
 			delete(r.budgets, installation)
 			delete(r.deferred, installation)
+		}
+	}
+	for installation := range r.lastInteractionPoll {
+		if !keep[installation] {
+			delete(r.lastInteractionPoll, installation)
 		}
 	}
 	remaining := r.pendingOrder[:0]

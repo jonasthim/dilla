@@ -91,7 +91,7 @@ type SourceTrust struct {
 }
 
 // NewSourceTrust binds trust recovery to one opened native identity.
-func NewSourceTrust(n *native.Client) (*SourceTrust, error) {
+func NewSourceTrust(n senderTrustNative) (*SourceTrust, error) {
 	if n == nil {
 		return nil, errors.New("missing native client")
 	}

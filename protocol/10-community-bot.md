@@ -36,7 +36,7 @@ Operation, arguments, channel requirement, mutation:
 - 12 music.enqueue: [input tstr(1..2048 UTF8 bytes)], channel required, mutation
 - 13 music.pause: [], channel required, mutation
 - 14 music.resume: [], channel required, mutation
-- 15 music.skip: [], channel required, mutation
+- 15 music.skip: [] or [expected_current_item:tstr], channel required, mutation
 - 16 music.stop: [], channel required, mutation
 - 17 music.seek: [position_ms uint], channel required, mutation
 - 18 music.volume: [percent uint 0..100], channel required, mutation
@@ -1597,12 +1597,22 @@ playback supervisor's state lock. Their required revision field is advisory;
 clients may send 0 without first reading state. Playback advancement by the Bot
 cannot cause a revision conflict for these controls. The Bot rechecks the live
 call and DJ authority before applying them. Other queue mutations retain their
-revision preconditions.
+revision preconditions. Skip accepts an optional current item ID (32 lowercase
+hex characters, nonzero), or an empty string for a visibly empty player. Under
+the same state lock, a mismatched ID succeeds without advancing or writing the
+queue and returns the current snapshot. Clients bind a skip to the item already
+visible locally; concurrent presses or DJs targeting that item advance once.
+Legacy requests with no argument remain unconditional. Immediate limiter
+priority begins only after the initial CanUse and CanDJ checks pass.
 
 A successful pause or skip may return a snapshot v1 in its response data instead
 of the empty mutation receipt. The response revision must match the snapshot.
 Clients use that authenticated snapshot directly; an empty receipt retains the
 state-read fallback for Bots that do not return a snapshot with a control.
+The production handler delegates durable reconciliation to the supervisor
+without an additional handler or runtime state read. If a reload's resend
+conflicts with the immutable durable request body, the client reconciles its
+existing authenticated receipt; missing or failed receipt reads stay uncertain.
 Provider startup runs outside the interaction drain and the supervisor state
 lock, allowing controls to interrupt an in-progress start.
 

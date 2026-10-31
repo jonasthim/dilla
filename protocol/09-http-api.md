@@ -1523,10 +1523,15 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   token, the signalling proxy admits it listen-only, and a share answers `403 E_FORBIDDEN`. A second
   such track disconnects it from the room.
 - **Ending.** `DELETE` ends the call for everyone and is kept to its participants. Managed bots do
-  not keep a call alive after its last non-bot member leaves: when the room sweep finds a managed-bot
-  leaf but no non-bot leaf present in the room or admitted within the 30-second join window, it ends
+  not keep a call alive after its last non-bot member leaves: when two consecutive reconciliations
+  of the whole room, at least one room-sweep interval apart, find a managed-bot leaf but no non-bot
+  leaf present in the room or admitted within the 30-second join window, the instance ends
   the call with reason `bots_only` and deletes the room instead of proposing Removes that only the
-  bots could commit. Managed bots are not eligible committers. A call also ends
+  bots could commit. Any whole-room grant sync can make these observations, including a room sweep,
+  room resync or channel-wide permission change. A human present or inside the join window, or an
+  uncertain account, group or participant listing, resets the observations. A member whose account
+  kind cannot be read is logged and skipped for absent-leaf tracking; other absent leaves still
+  progress, while the call stays live. Managed bots are not eligible committers. A call also ends
   when the SFU closes its room — 20 seconds after the last participant leaves, or 300 seconds after
   it was opened when nobody joined; a report of the close of a room the SFU has since re-opened
   under the same name, for a start that came after it, ends nothing, and neither does one the

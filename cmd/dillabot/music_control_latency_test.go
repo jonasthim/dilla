@@ -20,13 +20,17 @@ import (
 )
 
 type controlLatencyPlayback struct {
-	done chan struct{}
-	once sync.Once
+	closedAt atomic.Int64
+	done     chan struct{}
+	once     sync.Once
 }
 
 func (p *controlLatencyPlayback) Done() <-chan struct{} { return p.done }
 func (p *controlLatencyPlayback) Wait() error           { return nil }
-func (p *controlLatencyPlayback) Close() error          { p.once.Do(func() { close(p.done) }); return nil }
+func (p *controlLatencyPlayback) Close() error {
+	p.once.Do(func() { p.closedAt.Store(time.Now().UnixNano()); close(p.done) })
+	return nil
+}
 
 type controlLatencyStarter struct {
 	block     bool
@@ -53,9 +57,10 @@ func (s *controlLatencyStarter) Start(ctx context.Context, _ music.Track) (music
 	return s.playback, nil
 }
 
-// The TS request-count regressions pin the web click to a single control request.
-// This test starts at that request's gateway wake and ends at the audio boundary,
+// This Bot-internal bound starts at the gateway wake and ends at the audio boundary,
 // using the real handler, registry, supervisor, persistence store and fast-path timer.
+// TestClientMusicControlsEndToEnd measures the actual client invocation with SQLite
+// and the production source synchronization and durable-event poller.
 func TestImmediateMusicControlsChangeAudioWithinOneSecond(t *testing.T) {
 	testMusicControlLatency(t, false)
 }

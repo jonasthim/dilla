@@ -149,8 +149,8 @@ func (r *botGatewayRuntime) commandBatch(pool *commandWorkers, now time.Time) ([
 		jobs = append(jobs, commandJob{work: work, ctx: ctx, cancel: cancel, poll: poll, background: background})
 	}
 	r.pendingOrder = remaining
-	if len(jobs) > 0 {
-		r.lastInteractionPoll = now
+	for _, job := range jobs {
+		r.lastInteractionPoll[job.work.installation] = now
 	}
 	return jobs, next, pending
 }

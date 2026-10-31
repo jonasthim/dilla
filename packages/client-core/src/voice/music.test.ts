@@ -447,3 +447,79 @@ it('exposes the total when only a queue prefix fits the authenticated snapshot',
   await refresh;
   expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', queue: [], queueTotal: 25 });
 });
+
+
+it('binds two skips to the same visible item without fetching another state', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+  await refresh;
+  const first = f.adapter.skip(CHANNEL);
+  const second = f.adapter.skip(CHANNEL);
+  await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 15)).toHaveLength(2));
+  const skips = f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 15);
+  expect(skips.map(row => row.args)).toEqual([['ef'.repeat(16)], ['ef'.repeat(16)]]);
+  for (const row of skips) f.answer(row, 0, '2', snapshot(2n, false));
+  await Promise.all([first, second]);
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toHaveLength(1);
+});
+
+it('guards a skip of an empty visible state instead of advancing a newly started track', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  const value = decode(snapshot(1n, true)) as unknown[]; value[2] = null;
+  f.answer(f.getRequest(10), 0, '1', encode(value as never)); await refresh;
+  const skip = f.adapter.skip(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(15)).toBeDefined());
+  expect(f.getRequest(15).args).toEqual(['']);
+  f.answer(f.getRequest(15), 0, '1', encode(value as never)); await skip;
+});
+
+it.each([13, 15])('reconciles the saved receipt for immediate operation %s when a reload resend conflicts with its original body', async operation => {
+  const f = fixture(); const requestId = '89'.repeat(16);
+  f.answer({ requestId, operation }, 0, '3', snapshot(3n, operation === 13));
+  const call = f.client.call.bind(f.client);
+  const retryCall = vi.fn((command: Parameters<CoreClient['call']>[0]) => command.m === 'humanInteractionRequest'
+    ? Promise.reject(new Error('interaction request id conflicts with a prior request')) : call(command));
+  f.client.call = retryCall;
+  await (operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId }));
+  expect(retryCall.mock.calls.filter(([row]) => row.m === 'humanInteractionRequest')).toHaveLength(1);
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest')).toEqual([]);
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: operation === 13 });
+});
+
+it.each(['missing', 'failed'] as const)('keeps an immediate retry uncertain when its prior receipt is %s', async outcome => {
+  const f = fixture(); const requestId = '90'.repeat(16); const call = f.client.call.bind(f.client);
+  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => {
+    if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('interaction request id conflicts with a prior request'));
+    if (command.m === 'readBotInteractionResponses' && outcome === 'failed') return Promise.reject(new Error('receipt read failed'));
+    return call(command);
+  });
+  await expect(f.adapter.skip(CHANNEL, { requestId })).rejects.toMatchObject({ requestId });
+  expect(f.commands.some(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toBe(false);
+});
+
+it.each(['upload-unresolved', 'response-read-failed'] as const)('keeps the first immediate %s uncertain until the person reconciles the same attempt', async failure => {
+  const f = fixture(); const requestId = '91'.repeat(16); const call = f.client.call.bind(f.client);
+  let uploads = 0; let reads = 0;
+  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => {
+    if (command.m === 'humanInteractionRequest') {
+      uploads++;
+      f.answer(command, 0, '3', snapshot(3n, true));
+      if (failure === 'upload-unresolved') return Promise.resolve({ requestId, upload: 'unknown' });
+    }
+    if (command.m === 'readBotInteractionResponses') {
+      reads++;
+      if (failure === 'response-read-failed' && reads === 1) return Promise.reject(new Error('response read failed'));
+    }
+    return call(command);
+  });
+  await expect(f.adapter.pause(CHANNEL, true, { requestId })).rejects.toMatchObject({ requestId });
+  expect(reads).toBe(failure === 'response-read-failed' ? 1 : 0);
+  await expect(f.adapter.pause(CHANNEL, true, { requestId })).resolves.toBeUndefined();
+  expect(uploads).toBe(1);
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+  expect(f.commands.some(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toBe(false);
+});

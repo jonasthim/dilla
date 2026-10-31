@@ -32,7 +32,9 @@ export interface BotInteractionRequest {
 }
 
 export class BotInteractionUncertainError extends Error {
-  constructor(readonly requestId: string, message: string) {
+  constructor(readonly requestId: string, message: string,
+    /** The worker upload call rejected; unresolved replies and response loss leave this false. */
+    readonly uploadCallFailed = false) {
     super(message);
     this.name = 'BotInteractionUncertainError';
   }
@@ -286,11 +288,15 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
     generation: number, scope: BotInteractionScope): Promise<BotInteractionResult> => {
     if (!ID.test(requestId)) throw new Error('Invalid Bot interaction request id.');
     let uploadAccepted = false;
+    let uploadCallFailed = false;
     try {
     input.onDispatch?.(Object.freeze({ ...scope }));
-    const send = client.call({ m: 'humanInteractionRequest', communityId,
+    const send = Promise.resolve().then(() => client.call({ m: 'humanInteractionRequest', communityId,
       channelId: input.channelId ?? null, requestId, operation: input.operation, args: input.args,
-      revision: input.revision ?? null }) as Promise<{ requestId: string; upload: string }>;
+      revision: input.revision ?? null })).catch(error => {
+        uploadCallFailed = true;
+        throw error;
+      }) as Promise<{ requestId: string; upload: string }>;
     let uploadTimer: ReturnType<typeof setTimeout> | undefined;
     const sent = await Promise.race([
       send,
@@ -337,7 +343,7 @@ export function createBotInteractionClient(client: CoreClient, communityId: stri
         || error instanceof BotInteractionUnverifiableRequestError) throw error;
       if (!uploadAccepted && isKnownNoEffectWorkerRejection(error)) throw new BotInteractionRejectedError(requestId);
       const detail = error instanceof Error ? error.message : 'The worker interaction transport failed after dispatch.';
-      throw new BotInteractionUncertainError(requestId, `The Bot interaction may have been accepted, but its result could not be confirmed: ${detail}`);
+      throw new BotInteractionUncertainError(requestId, `The Bot interaction may have been accepted, but its result could not be confirmed: ${detail}`, uploadCallFailed && !uploadAccepted);
     }
   };
 

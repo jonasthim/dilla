@@ -851,3 +851,17 @@ it.each(['pause', 'skip'] as const)('dispatches %s before any state read or noti
   const operations = f.requests.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation);
   expect(operations).toEqual([commandId === 'pause' ? 13 : 15]);
 });
+
+it('binds /skip to the current item already visible through the shared music adapter', async () => {
+  const f = fixture({ seededQueue: true }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+  const view = mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+  expect(await capture.value!.handlers.queue!({ commandId: 'queue', args: {} }, commandContext(f.client)))
+    .toMatchObject({ status: 'success' });
+  const reads = f.requests.filter(row => row.operation === 10).length;
+  const current = f.musicState.currentTrack?.id ?? '';
+  expect(await capture.value!.handlers.skip!({ commandId: 'skip', args: {} }, commandContext(f.client, { requestId: 'ad'.repeat(16) })))
+    .toMatchObject({ status: 'success' });
+  expect(f.requests.find(row => row.operation === 15)?.args).toEqual([current]);
+  expect(f.requests.filter(row => row.operation === 10)).toHaveLength(reads);
+  view.unmount();
+});

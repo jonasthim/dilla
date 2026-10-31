@@ -299,3 +299,91 @@ func TestSupervisorCancelledCleanupCannotPauseNewResume(t *testing.T) {
 		t.Fatalf("starts=%d state=%+v", starter.calls, s.State())
 	}
 }
+
+type chainStart struct {
+	track    music.Track
+	playback *supervisorPlayback
+}
+
+type chainStarter struct {
+	failed  map[string]bool
+	started chan chainStart
+}
+
+func (s *chainStarter) Start(_ context.Context, track music.Track) (music.Playback, error) {
+	if s.failed[track.ID] {
+		return nil, &music.StartError{Stage: "provider_pcm", Cause: reviewPermanentFailure{}}
+	}
+	p := &supervisorPlayback{done: make(chan struct{})}
+	s.started <- chainStart{track: track, playback: p}
+	return p, nil
+}
+
+func TestSupervisorAutomaticStartChainCapsFiveTotalSkipsAcrossSuccesses(t *testing.T) {
+	starter := &chainStarter{failed: map[string]bool{"0": true, "2": true, "4": true, "6": true, "8": true}, started: make(chan chainStart, 12)}
+	s, state := reviewSupervisor(t, 12, starter)
+	if _, err := s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"1", "3", "5", "7"} {
+		select {
+		case start := <-starter.started:
+			if start.track.ID != want {
+				t.Fatalf("started %s, want %s", start.track.ID, want)
+			}
+			close(start.playback.done)
+		case <-time.After(time.Second):
+			t.Fatalf("did not start %s: state=%+v", want, s.State())
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for !s.State().Paused && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := s.State()
+	if !got.Paused || got.Current == nil || got.Current.ID != "9" || len(got.Queue) != 2 {
+		t.Fatalf("fifth total skip did not pause chain: %+v", got)
+	}
+	select {
+	case start := <-starter.started:
+		t.Fatalf("started %s beyond total skip cap", start.track.ID)
+	default:
+	}
+	// A new explicit resume gets a fresh budget, even on the same current item.
+	if _, err := s.Apply(t.Context(), got.Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case start := <-starter.started:
+		if start.track.ID != "9" {
+			t.Fatalf("fresh resume started %s, want 9", start.track.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit resume retained exhausted chain budget")
+	}
+}
+
+func TestSupervisorAutomaticStartChainStillCapsTwoConsecutiveSkips(t *testing.T) {
+	starter := &chainStarter{failed: map[string]bool{"0": true, "2": true, "3": true}, started: make(chan chainStart, 6)}
+	s, state := reviewSupervisor(t, 6, starter)
+	if _, err := s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case start := <-starter.started:
+		if start.track.ID != "1" {
+			t.Fatalf("started %s, want 1", start.track.ID)
+		}
+		close(start.playback.done)
+	case <-time.After(time.Second):
+		t.Fatal("first successful playback did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !s.State().Paused && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := s.State()
+	if !got.Paused || got.Current == nil || got.Current.ID != "4" || len(got.Queue) != 1 {
+		t.Fatalf("consecutive skip cap after successful playback: %+v", got)
+	}
+}

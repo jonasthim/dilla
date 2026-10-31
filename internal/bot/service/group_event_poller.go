@@ -142,7 +142,7 @@ type GroupEventPoller struct {
 	now     func() time.Time
 }
 
-func NewGroupEventPoller(n *native.Client) (*GroupEventPoller, error) {
+func NewGroupEventPoller(n groupEventNative) (*GroupEventPoller, error) {
 	if n == nil {
 		return nil, errors.New("missing group event source")
 	}

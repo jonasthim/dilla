@@ -48,12 +48,17 @@ func (r *Runtime) Acquire(ctx context.Context) (*Instance, error) {
 	}
 	select {
 	case inst := <-r.pool:
+		inst.release = release
 		if err := ctx.Err(); err != nil {
-			r.pool <- inst
-			release()
+			inst.Release()
 			return nil, err
 		}
-		inst.release = release
+		select {
+		case <-r.done:
+			inst.Release()
+			return nil, ErrClosed
+		default:
+		}
 		return inst, nil
 	case <-r.done:
 		release()
@@ -86,6 +91,8 @@ func (i *Instance) Release() {
 	}
 
 	r := i.rt
+	r.execution.RLock()
+	defer r.execution.RUnlock()
 	r.mu.Lock()
 	closed := r.closed
 	r.mu.Unlock()
@@ -130,6 +137,13 @@ func (i *Instance) invoke(ctx context.Context, name string, fn api.Function, par
 func (i *Instance) Call(ctx context.Context, export string, req []byte) ([]byte, error) {
 	if i.mod == nil {
 		return nil, ErrReleased
+	}
+	i.rt.execution.RLock()
+	defer i.rt.execution.RUnlock()
+	select {
+	case <-i.rt.done:
+		return nil, ErrClosed
+	default:
 	}
 	if i.poisoned {
 		return nil, ErrTrap

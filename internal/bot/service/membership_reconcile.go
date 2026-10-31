@@ -133,7 +133,7 @@ type interactionIdlePoll struct {
 }
 
 // NewMembershipReconciler binds bounded membership work to one opened installation helper.
-func NewMembershipReconciler(n *native.Client, sourceOptions SourceSyncOptions, welcomePageLimit uint64) (*MembershipReconciler, error) {
+func NewMembershipReconciler(n membershipNative, sourceOptions SourceSyncOptions, welcomePageLimit uint64) (*MembershipReconciler, error) {
 	if n == nil {
 		return nil, errors.New("missing native client")
 	}
