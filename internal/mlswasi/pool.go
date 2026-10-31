@@ -43,6 +43,8 @@ func (r *Runtime) Acquire(ctx context.Context) (*Instance, error) {
 	if err != nil {
 		if errors.Is(err, prioritygate.ErrClosed) {
 			err = ErrClosed
+		} else if errors.Is(err, prioritygate.ErrDepleted) {
+			err = ErrDepleted
 		}
 		return nil, err
 	}
@@ -109,9 +111,10 @@ func (i *Instance) Release() {
 	_ = mod.Close(ctx)
 	replacement, err := r.newInstance(ctx)
 	if err != nil {
-		// The pool shrinks rather than deadlocking; New already proved the
-		// module instantiates, so this is a resource failure, not a bug in the
-		// guest.
+		// This admission still owns the failed resource. Retire its capacity
+		// before the deferred release can admit anyone else, so gate capacity
+		// always tracks the usable pool, including at zero.
+		r.gate.Retire()
 		return
 	}
 	r.pool <- replacement

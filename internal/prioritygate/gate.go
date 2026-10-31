@@ -1,4 +1,4 @@
-// Package prioritygate provides cancellable, prioritized admission to a fixed
+// Package prioritygate provides cancellable, prioritized admission to a bounded
 // number of resources. Running work is never interrupted by higher priority work.
 package prioritygate
 
@@ -9,6 +9,9 @@ import (
 )
 
 var ErrClosed = errors.New("priority gate is closed")
+
+// ErrDepleted means all resources have been permanently retired.
+var ErrDepleted = errors.New("priority gate has no resources")
 
 type waiter struct {
 	ctx      context.Context
@@ -47,6 +50,10 @@ func (g *Gate) Acquire(ctx context.Context, priority int) (func(), error) {
 	if g.closed {
 		g.mu.Unlock()
 		return nil, ErrClosed
+	}
+	if g.capacity == 0 {
+		g.mu.Unlock()
+		return nil, ErrDepleted
 	}
 	w := &waiter{ctx: ctx, priority: priority, ready: make(chan struct{})}
 	g.waiters = append(g.waiters, w)
@@ -122,6 +129,26 @@ func (g *Gate) releaseLocked() {
 		return
 	}
 	g.dispatchLocked()
+}
+
+// Retire permanently removes one resource. The caller must still hold that
+// resource's admission and call its release function afterwards. Reducing
+// capacity before releasing prevents a queued caller from being admitted for
+// the lost resource. Retirement never interrupts owners of surviving resources.
+func (g *Gate) Retire() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.capacity == 0 {
+		panic("prioritygate: no resource to retire")
+	}
+	g.capacity--
+	if g.capacity == 0 {
+		for _, w := range g.waiters {
+			w.err = ErrDepleted
+			close(w.ready)
+		}
+		g.waiters = nil
+	}
 }
 
 // Close rejects new and queued acquisitions immediately. Its returned channel

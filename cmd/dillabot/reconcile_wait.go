@@ -14,8 +14,8 @@ const gatewayWakeThrottle = 5 * time.Second
 
 // interactionSpacing is the least time between two interaction fast-path polls: signals inside
 // the gap coalesce into one poll after it. interactionBurst is how many fast polls may follow one
-// another at that spacing; each group refills at two tokens per second. The global spacing and per-poll cap
-// also bound a flood spread over many groups.
+// another at that spacing; each group refills at two tokens per second.
+// Per-installation spacing and the worker cap also bound a flood across groups.
 const (
 	interactionSpacing = 250 * time.Millisecond
 	interactionBurst   = 10
@@ -64,89 +64,36 @@ func (b *interactionBudget) spend(now time.Time, groups int) {
 	b.last = now
 }
 
-// reconcileWait is what the service loop does between two reconciliation passes: it polls text
-// sources when the gateway hints at new input and returns when the interval has passed, so the
-// interval stays the safety net for a lost notification.
-//
-// A participant's message in a private interaction group (interaction) is a command waiting for
-// an answer. It takes the fast path, pollInteraction, which reads only the messaged groups and
-// dispatches their events; nextInteraction says when the groups' own interactionBudgets
-// next allow it, which keeps a flood of messages from turning it into back-to-back work. Every
-// other hint (wake) takes the full text sweep, poll, at most once per gatewayWakeThrottle.
+// reconcileWait polls text sources when the gateway hints at new input. Full
+// reconciliation stays on its interval as a safety net for lost notifications;
+// command workers handle private-source synchronization independently.
 type reconcileWait struct {
-	interval        time.Duration
-	resume          bool
-	wake            <-chan struct{}
-	interaction     <-chan struct{}
-	poll            func(context.Context)
-	nextInteraction func(time.Time) (time.Duration, bool)
-	pollInteraction func(context.Context, time.Time) int
-	now             func() time.Time
-	after           func(time.Duration) <-chan time.Time
+	interval time.Duration
+	wake     <-chan struct{}
+	poll     func(context.Context)
+	now      func() time.Time
+	after    func(time.Duration) <-chan time.Time
 }
 
-// wait returns true when the interval elapses or a yielded pass can resume,
-// and false when ctx ends. started is when the previous pass began.
+// wait returns true when the interval elapses and false when ctx ends.
+// started is when the previous reconciliation pass began.
 func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
-	if w.nextInteraction == nil {
-		w.nextInteraction = func(time.Time) (time.Duration, bool) { return 0, false }
-	}
 	next := w.after(w.interval)
-	resumeAt := started.Add(time.Second)
-	var spacing <-chan time.Time
-	if w.resume && w.now().Before(resumeAt) {
-		spacing = w.after(resumeAt.Sub(w.now()))
-	}
-	var general, fast <-chan time.Time
-	// arm (re)times the fast poll for the earliest group its budget allows; a new signal can
-	// bring it forward (another community's command must not wait behind a flooded one).
-	arm := func() {
-		if d, ok := w.nextInteraction(w.now()); ok {
-			fast = w.after(d)
-		} else {
-			fast = nil
-		}
-	}
-	// A prior wait may have consumed the gateway hint before its interval fired.
-	// Re-arm durable pending work when a sweep returns, including a yielded sweep.
-	arm()
+	var general <-chan time.Time
 	for {
-		// A yielded pass resumes after its pending interaction batch drains,
-		// at least one second after the previous pass started.
-		// Ineligible pending groups retain the existing spacing/flood budget.
-		if w.resume && !w.now().Before(resumeAt) {
-			if _, pending := w.nextInteraction(w.now()); !pending {
-				return true
-			}
-		}
 		select {
 		case <-ctx.Done():
 			return false
-		case <-spacing:
-			spacing = nil
 		case <-next:
-			if w.resume && w.now().Before(resumeAt) {
-				next = w.after(resumeAt.Sub(w.now()))
-				continue
-			}
 			return true
 		case <-w.wake:
 			if general == nil {
 				general = w.after(gatewayWakeThrottle - w.now().Sub(started))
 			}
-		case <-w.interaction:
-			arm()
 		case <-general:
 			general = nil
 			w.poll(ctx)
 			started = w.now()
-		case <-fast:
-			// Each group polls only with its own token in hand; global spacing and
-			// interactionGroupCap bound work even when many groups have fresh allowances.
-			if d, ok := w.nextInteraction(w.now()); ok && d <= 0 {
-				w.pollInteraction(ctx, w.now())
-			}
-			arm()
 		}
 	}
 }

@@ -118,6 +118,9 @@ func (b Binding) valid() bool {
 }
 
 func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload []any, mutation bool, decode func([]any) (any, error)) (any, error) {
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return nil, err
+	}
 	release, err := c.gate.Acquire(ctx, client.RequestPriority(ctx))
 	if err != nil {
 		if errors.Is(err, prioritygate.ErrClosed) {
@@ -126,6 +129,9 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 		return nil, err
 	}
 	defer release()
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	if !c.usable || c.closed {
 		c.mu.Unlock()

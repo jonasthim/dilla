@@ -396,7 +396,7 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if starter.IdleLeaveAfter != nil {
 		options = append(options, music.WithIdleLeave(starter.IdleLeaveAfter, nil))
 	}
-	return music.NewSupervisor(client.WithoutBackgroundYield(ctx), channel, persistedMusicQueue{store: store}, starter, options...)
+	return music.NewSupervisor(client.WithoutCooperativeStop(client.WithBackground(ctx)), channel, persistedMusicQueue{store: store}, starter, options...)
 }
 
 // restoreMusicSupervisors binds one paused queue supervisor to each voice
@@ -461,6 +461,9 @@ type retainedMusicRuntime struct {
 	interactions bool
 	borrowers    uint64 // protected by the registry mutex
 	retired      bool
+	closeDone    chan struct{} // initialized under the registry mutex before retirement
+	closeOnce    sync.Once
+	closeErr     error // published by closing closeDone
 }
 
 // musicQueueRegistry keeps queue supervisors attached to the native helper
@@ -470,6 +473,7 @@ type musicQueueRegistry struct {
 	lifecycle installationLifecycle
 	mu        sync.Mutex
 	runtimes  map[id.ID]*retainedMusicRuntime
+	retiring  map[id.ID][]*retainedMusicRuntime // pending native closes, including older generations
 	closed    bool
 	// defaults are the Music page's settings per installation (Task 10c). They have their own
 	// lock: supervisors read them while holding their own lock, which r.mu holders also take.
@@ -623,7 +627,7 @@ func (r *musicQueueRegistry) AcquireNative(installation, community id.ID, expect
 			closeNative := retained.retired && retained.borrowers == 0
 			r.mu.Unlock()
 			if closeNative {
-				if err := retained.native.Close(); err != nil {
+				if err := r.finishNativeClose(installation, retained); err != nil {
 					slog.Warn("bot retired native helper close failed", "installation_id", installation.String(), "error", err.Error())
 				}
 			}
@@ -869,12 +873,30 @@ func (r *musicQueueRegistry) Disable(installation id.ID) error {
 
 // disable and pauseMusic require the installation lifecycle lock, never mu.
 func (r *musicQueueRegistry) disable(installation id.ID) error {
+	retained, closeNative := r.retire(installation)
+	if closeNative {
+		return r.finishNativeClose(installation, retained)
+	}
+	return nil
+}
+
+// retire detaches a generation and stops its queues before allowing the last
+// borrower to close its native helper. The caller holds the installation
+// lifecycle lock; no native Close runs while holding the registry mutex.
+func (r *musicQueueRegistry) retire(installation id.ID) (*retainedMusicRuntime, bool) {
 	r.mu.Lock()
 	retained := r.runtimes[installation]
 	delete(r.runtimes, installation)
 	var queues *musicQueueRuntime
 	if retained != nil {
 		queues, retained.queues = retained.queues, nil
+		if retained.closeDone == nil {
+			retained.closeDone = make(chan struct{})
+		}
+		if r.retiring == nil {
+			r.retiring = make(map[id.ID][]*retainedMusicRuntime)
+		}
+		r.retiring[installation] = append(r.retiring[installation], retained)
 	}
 	r.mu.Unlock()
 	if queues != nil {
@@ -882,7 +904,7 @@ func (r *musicQueueRegistry) disable(installation id.ID) error {
 	}
 	r.closeNotices(installation)
 	if retained == nil {
-		return nil
+		return nil, false
 	}
 	// Mark retired only after supervisors stop using the helper. A borrower may
 	// finish during queue shutdown, but cannot close the helper until this point.
@@ -890,10 +912,33 @@ func (r *musicQueueRegistry) disable(installation id.ID) error {
 	retained.retired = true
 	closeNative := retained.borrowers == 0
 	r.mu.Unlock()
-	if closeNative {
-		return retained.native.Close()
-	}
-	return nil
+	return retained, closeNative
+}
+
+// finishNativeClose is shared by immediate retirement and the last borrower.
+// It closes the helper once and removes only that completed generation, even
+// when a replacement is retained under the same installation. Completion covers
+// both the helper exit (releasing state.lock) and removal from pending closes.
+func (r *musicQueueRegistry) finishNativeClose(installation id.ID, retained *retainedMusicRuntime) error {
+	retained.closeOnce.Do(func() {
+		retained.closeErr = retained.native.Close()
+		r.mu.Lock()
+		pending := r.retiring[installation]
+		for n, current := range pending {
+			if current == retained {
+				pending = slices.Delete(pending, n, n+1)
+				break
+			}
+		}
+		if len(pending) == 0 {
+			delete(r.retiring, installation)
+		} else {
+			r.retiring[installation] = pending
+		}
+		r.mu.Unlock()
+		close(retained.closeDone)
+	})
+	return retained.closeErr
 }
 
 func (r *musicQueueRegistry) closeNotices(installation id.ID) {

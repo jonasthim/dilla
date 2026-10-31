@@ -189,7 +189,7 @@ func (c *Client) Run(ctx context.Context, credential CredentialFunc) error {
 	if ctx == nil || credential == nil {
 		return ErrProtocol
 	}
-	ctx = client.WithoutBackgroundYield(ctx)
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	c.mu.Lock()
 	if c.running || c.closed {
 		c.mu.Unlock()

@@ -144,7 +144,7 @@ func NewSupervisor(ctx context.Context, channel id.ID, store QueueStore, starter
 	if ctx == nil || channel.IsZero() || store == nil || starter == nil {
 		return nil, errors.New("invalid music supervisor configuration")
 	}
-	ctx = client.WithoutBackgroundYield(ctx)
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	state, revision, err := store.Load(ctx, channel)
 	if err != nil {
 		return nil, err

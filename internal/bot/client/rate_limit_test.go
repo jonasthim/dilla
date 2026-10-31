@@ -424,7 +424,7 @@ func TestImmediateControlCancellationAndBackgroundLifetimeClearPriority(t *testi
 		if limiter.immediate != 0 || limiter.interactive != 0 {
 			t.Fatal("cancelled control waiter retained priority")
 		}
-		lifetime := WithoutBackgroundYield(WithImmediateControl(t.Context()))
+		lifetime := WithBackground(WithImmediateControl(t.Context()))
 		if immediate, _ := lifetime.Value(immediateControlContextKey{}).(bool); immediate {
 			t.Fatal("background lifetime inherited immediate control")
 		}

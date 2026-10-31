@@ -56,7 +56,7 @@ type botGatewayRuntime struct {
 	entries        map[id.ID]*botGatewayEntry
 	wake           chan struct{}
 	// interaction carries a participant's message in a private interaction group: a command
-	// waiting for an answer, which reconcileWait polls without the general throttle.
+	// waiting for an answer. It wakes the dedicated command workers directly.
 	interaction chan struct{}
 	pollers     map[id.ID]func(context.Context) error
 	maintenance map[id.ID]backgroundMaintenance
@@ -73,10 +73,11 @@ type botGatewayRuntime struct {
 	pendingOrder        []interactionWork                      // FIFO: a noisy group rejoins behind existing work
 	lastInteractionPoll map[id.ID]time.Time                    // per installation, guarded by pendingMu
 	interactionPollers  map[id.ID]func(context.Context, id.ID) error
+	pollerVersions      map[id.ID]uint64
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithoutBackgroundYield(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}, lastInteractionPoll: map[id.ID]time.Time{}}
+	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithBackground(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}, lastInteractionPoll: map[id.ID]time.Time{}}
 }
 
 // InteractionPollSchedule survives the short-lived reconciler built each tick.
@@ -92,8 +93,7 @@ func (r *botGatewayRuntime) InteractionPollSchedule(installation id.ID) *service
 	return r.idlePolls[installation]
 }
 
-func (r *botGatewayRuntime) Wake() <-chan struct{}        { return r.wake }
-func (r *botGatewayRuntime) Interaction() <-chan struct{} { return r.interaction }
+func (r *botGatewayRuntime) Wake() <-chan struct{} { return r.wake }
 func (r *botGatewayRuntime) notify() {
 	select {
 	case r.wake <- struct{}{}:
@@ -103,15 +103,14 @@ func (r *botGatewayRuntime) notify() {
 func (r *botGatewayRuntime) notifyInteraction(installation, group id.ID) {
 	r.pendingMu.Lock()
 	r.queueInteractionLocked(installation, group)
-	var cancel context.CancelFunc
+	var stop context.CancelFunc
 	if r.commands != nil && r.commands.background[installation] {
-		cancel = r.commands.active[installation]
+		stop = r.commands.active[installation]
 	}
 	r.pendingMu.Unlock()
-	// A periodic catch-up turn must release its source/native lease before
-	// the command takes over, without waiting for its HTTP timeout.
-	if cancel != nil {
-		cancel()
+	// Stop at the next safe boundary; never abort an active helper/HTTP call.
+	if stop != nil {
+		stop()
 	}
 	r.signalCommands()
 }
@@ -156,6 +155,11 @@ func (r *botGatewayRuntime) notifyBackgroundInteraction(installation, group id.I
 	r.signalCommands()
 }
 func (r *botGatewayRuntime) queueBackgroundInteractionLocked(installation, group id.ID) {
+	if r.commands != nil {
+		if turn := r.commands.activeJobs[installation]; turn != nil && turn.work.group == group {
+			return
+		}
+	}
 	if r.pending[installation][group] {
 		return
 	}
@@ -175,7 +179,7 @@ func (r *botGatewayRuntime) queueBackgroundInteractionLocked(installation, group
 }
 
 // SetInteractionPoller registers the installation's fast path for interaction-group messages;
-// nil removes it while reconciliation rebuilds the installation.
+// nil retires it when the installation is removed or restarted.
 func (r *botGatewayRuntime) SetInteractionPoller(installation id.ID, poll func(context.Context, id.ID) error) {
 	r.pendingMu.Lock()
 	if r.interactionPollers == nil {
@@ -186,13 +190,18 @@ func (r *botGatewayRuntime) SetInteractionPoller(installation id.ID, poll func(c
 	} else {
 		r.interactionPollers[installation] = poll
 	}
-	var cancel context.CancelFunc
-	if r.commands != nil {
-		cancel = r.commands.active[installation]
+	if r.pollerVersions == nil {
+		r.pollerVersions = make(map[id.ID]uint64)
+	}
+	r.pollerVersions[installation]++
+	var retiring *commandTurn
+	if poll == nil && r.commands != nil {
+		retiring = r.commands.activeJobs[installation]
 	}
 	r.pendingMu.Unlock()
-	if cancel != nil {
-		cancel()
+	// Publishing a new callback never interrupts or restarts an active command.
+	if retiring != nil {
+		retiring.retire()
 	}
 	r.signalCommands()
 }
@@ -210,17 +219,6 @@ func (r *botGatewayRuntime) signalCommands() {
 	}
 }
 
-// interactionGroupCap is the most interaction groups one fast poll syncs; the rest stay pending
-// for the next poll the budget allows. Past interactionGroupFallback pending groups, the fast path
-// syncs none and hands the work to the throttled general wake, whose one full sweep covers every
-// group: a member writing into many groups cannot turn the fast path into N single-group syncs.
-const (
-	interactionGroupCap      = 4
-	interactionGroupFallback = 2 * interactionGroupCap
-)
-
-// budgetLocked is the group's token bucket; pendingMu must be held. A flood in one
-// interaction group does not spend any other group's allowance.
 func (r *botGatewayRuntime) budgetLocked(installation, group id.ID) *interactionBudget {
 	if r.budgets == nil {
 		r.budgets = map[id.ID]map[id.ID]*interactionBudget{}
@@ -240,143 +238,6 @@ func (r *botGatewayRuntime) interactionDelayLocked(installation, group id.ID, no
 	return max(r.budgetLocked(installation, group).delay(now), r.deferred[installation].Sub(now), interactionSpacing-now.Sub(r.lastInteractionPoll[installation]))
 }
 
-// NextInteraction reports how long until the next fast poll may run for some group with
-// messaged groups, and false when no group is pending.
-func (r *botGatewayRuntime) NextInteraction(now time.Time) (time.Duration, bool) {
-	r.pendingMu.Lock()
-	defer r.pendingMu.Unlock()
-	var next time.Duration
-	found := false
-	for installation, groups := range r.pending {
-		if len(groups) == 0 {
-			continue
-		}
-		for group := range groups {
-			if d := r.interactionDelayLocked(installation, group, now); !found || d < next {
-				next, found = d, true
-			}
-		}
-	}
-	return next, found
-}
-
-// backgroundYieldReady is checked on the service goroutine between requests.
-// suspended is a prior fast path temporarily removed during a reconcile pass;
-// that path is restored when local pacing defers the pass.
-func (r *botGatewayRuntime) backgroundYieldReady(now time.Time, suspended id.ID) bool {
-	r.pendingMu.Lock()
-	defer r.pendingMu.Unlock()
-	if r.commands != nil {
-		return false
-	}
-	for installation, groups := range r.pending {
-		if r.interactionPollers[installation] == nil && installation != suspended {
-			continue
-		}
-		for group := range groups {
-			if r.interactionDelayLocked(installation, group, now) <= 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// PollInteractions syncs up to interactionGroupCap groups in notification order.
-// Ineligible groups keep their position while eligible work can pass them. A polled
-// group with more messages rejoins at the tail, so floods cannot starve quieter groups.
-// Past interactionGroupFallback pending groups per installation, or without a poller,
-// work falls back to the throttled general sweep. HTTP refusal deferrals remain shared
-// per installation because its device credentials share the server's rate limits.
-func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time) int {
-	if r.commandsRunning() {
-		r.signalCommands()
-		return 0
-	}
-	var batch []interactionWork
-	fallback := false
-	r.pendingMu.Lock()
-	for installation, groups := range r.pending {
-		if len(groups) > interactionGroupFallback {
-			delete(r.pending, installation)
-			fallback = true
-		}
-	}
-	remaining := r.pendingOrder[:0]
-	for _, w := range r.pendingOrder {
-		groups := r.pending[w.installation]
-		if !groups[w.group] {
-			continue
-		}
-		if len(batch) == interactionGroupCap || r.interactionDelayLocked(w.installation, w.group, now) > 0 {
-			remaining = append(remaining, w)
-			continue
-		}
-		batch = append(batch, w)
-		delete(groups, w.group)
-		if len(groups) == 0 {
-			delete(r.pending, w.installation)
-		}
-	}
-	r.pendingOrder = remaining
-	// Record spacing after selection so one installation may fill this batch.
-	for _, work := range batch {
-		r.lastInteractionPoll[work.installation] = now
-	}
-	more := len(r.pending) > 0
-	r.pendingMu.Unlock()
-	if fallback {
-		r.notify()
-	}
-	if more {
-		select {
-		case r.interaction <- struct{}{}:
-		default:
-		}
-	}
-	synced := 0
-	blocked := map[id.ID]bool{}
-	for _, w := range batch {
-		if blocked[w.installation] {
-			r.notifyInteraction(w.installation, w.group)
-			continue
-		}
-		poll := r.InteractionPoller(w.installation)
-		if poll == nil {
-			r.notify()
-			continue
-		}
-		r.pendingMu.Lock()
-		r.budgetLocked(w.installation, w.group).spend(now, 1)
-		r.pendingMu.Unlock()
-		synced++
-		if err := poll(ctx, w.group); err != nil && ctx.Err() == nil {
-			if refusal := client.RateLimitError(err); refusal != nil {
-				logBotRateLimit(r.log, w.installation, refusal)
-				blocked[w.installation] = true
-				completed := now
-				if r.now != nil {
-					completed = r.now()
-				}
-				r.pendingMu.Lock()
-				if r.deferred == nil {
-					r.deferred = map[id.ID]time.Time{}
-				}
-				delay := time.Second
-				if refusal.RetryAfterMS != nil {
-					delay = time.Duration(min(*refusal.RetryAfterMS, uint64((1<<63-1)/int64(time.Millisecond)))) * time.Millisecond
-				}
-				r.deferred[w.installation] = completed.Add(min(max(delay, interactionSpacing), 30*time.Second))
-				r.pendingMu.Unlock()
-				r.notifyInteraction(w.installation, w.group)
-			} else {
-				r.log.Warn("bot interaction command intake deferred", "installation_id", w.installation.String())
-				r.notify()
-			}
-		}
-	}
-	return synced
-}
 func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token string) error {
 	if e := r.entry(installation); e != nil {
 		select {
@@ -499,13 +360,14 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 		<-e.done
 	}
 	r.pendingMu.Lock()
-	var cancellations []context.CancelFunc
+	var retiring []*commandTurn
 	for installation := range r.interactionPollers {
 		if !keep[installation] {
 			delete(r.interactionPollers, installation)
+			delete(r.pollerVersions, installation)
 			if r.commands != nil {
-				if cancel := r.commands.active[installation]; cancel != nil {
-					cancellations = append(cancellations, cancel)
+				if turn := r.commands.activeJobs[installation]; turn != nil {
+					retiring = append(retiring, turn)
 				}
 			}
 		}
@@ -519,6 +381,16 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 		for work := range r.commands.retry {
 			if !keep[work.installation] {
 				delete(r.commands.retry, work)
+			}
+		}
+		for work := range r.commands.failures {
+			if !keep[work.installation] {
+				delete(r.commands.failures, work)
+			}
+		}
+		for work := range r.commands.blockedLease {
+			if !keep[work.installation] {
+				delete(r.commands.blockedLease, work)
 			}
 		}
 	}
@@ -546,16 +418,27 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 	}
 	r.pendingOrder = remaining
 	r.pendingMu.Unlock()
-	for _, cancel := range cancellations {
-		cancel()
+	for _, turn := range retiring {
+		turn.retire()
 	}
 	r.signalCommands()
 }
 func (r *botGatewayRuntime) Close() { r.stopCommandWorkers(); r.RetainOnly(nil) }
 
-// Drop retires the callback immediately; its native lease protects any cancelling operation.
+// Drop stops intake and waits for its borrowed helper to be returned before a
+// manager can reopen the same state directory.
 func (r *botGatewayRuntime) Drop(installation id.ID) {
 	r.SetInteractionPoller(installation, nil)
+	r.pendingMu.Lock()
+	var running *commandTurn
+	if r.commands != nil {
+		running = r.commands.activeJobs[installation]
+	}
+	r.pendingMu.Unlock()
+	if running != nil {
+		running.retire()
+		<-running.done
+	}
 	r.SetTextPoller(installation, nil)
 	r.SetMaintenance(installation, backgroundMaintenance{})
 	if e := r.entry(installation); e != nil {
@@ -631,7 +514,7 @@ func (r *botGatewayRuntime) TextPoller(installation id.ID) func(context.Context)
 	return r.pollers[installation]
 }
 func (r *botGatewayRuntime) PollText(ctx context.Context) {
-	ctx = client.WithBackgroundYield(client.WithoutBackgroundYield(ctx), func() bool { return r.backgroundYieldReady(time.Now(), id.ID{}) })
+	ctx = client.WithBackground(ctx)
 	r.mu.Lock()
 	pollers := make(map[id.ID]func(context.Context) error, len(r.pollers))
 	for installation, poll := range r.pollers {
@@ -640,10 +523,6 @@ func (r *botGatewayRuntime) PollText(ctx context.Context) {
 	r.mu.Unlock()
 	for installation, poll := range pollers {
 		if err := poll(ctx); err != nil && ctx.Err() == nil {
-			if errors.Is(err, client.ErrBackgroundYield) {
-				r.log.Info("bot background pass yielded to a command", "stage", "text_sources")
-				return
-			}
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {

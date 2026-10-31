@@ -58,7 +58,7 @@ func (s *controlLatencyStarter) Start(ctx context.Context, _ music.Track) (music
 }
 
 // This Bot-internal bound starts at the gateway wake and ends at the audio boundary,
-// using the real handler, registry, supervisor, persistence store and fast-path timer.
+// using the real handler, registry, supervisor, persistence store and command workers.
 // TestClientMusicControlsEndToEnd measures the actual client invocation with SQLite
 // and the production source synchronization and durable-event poller.
 func TestImmediateMusicControlsChangeAudioWithinOneSecond(t *testing.T) {
@@ -129,14 +129,11 @@ func testMusicControlLatency(t *testing.T, duringSweep bool) {
 				}
 				return nil
 			})
-			wait := reconcileWait{interval: time.Minute, wake: make(chan struct{}), interaction: runtime.Interaction(), poll: func(context.Context) {}, nextInteraction: runtime.NextInteraction, pollInteraction: runtime.PollInteractions, now: time.Now, after: time.After}
+			runtime.StartCommandWorkers()
+			t.Cleanup(runtime.Close)
 			var sweepDone <-chan struct{}
 			if duringSweep {
-				runtime.StartCommandWorkers()
-				t.Cleanup(runtime.Close)
 				sweepDone = blockedSweep(t, runtime)
-			} else {
-				go wait.wait(ctx, time.Now())
 			}
 			if starter.block {
 				revision := saved.Revision
@@ -166,7 +163,7 @@ func testMusicControlLatency(t *testing.T, duringSweep bool) {
 				t.Fatal("start never entered")
 			}
 			// Drain this group's entire allowance. A control still reaches audio inside
-			// one second at the per-group 2/s fairness bound, including fast-path wake.
+			// one second at the per-group 2/s fairness bound, including command worker scheduling.
 			runtime.pendingMu.Lock()
 			budget := runtime.budgetLocked(installation, group)
 			budget.refill(time.Now())

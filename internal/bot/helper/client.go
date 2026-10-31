@@ -418,9 +418,18 @@ func intToUint64(value int) uint64 {
 }
 
 func (c *Client) acquire(ctx context.Context) (func(), error) {
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return nil, err
+	}
 	release, err := c.gate.Acquire(ctx, client.RequestPriority(ctx))
 	if errors.Is(err, prioritygate.ErrClosed) {
 		err = ErrClosed
+	}
+	if err == nil {
+		if stopped := client.CooperativeCheckpoint(ctx); stopped != nil {
+			release()
+			return nil, stopped
+		}
 	}
 	return release, err
 }

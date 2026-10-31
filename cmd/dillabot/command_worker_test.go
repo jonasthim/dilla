@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -298,7 +299,9 @@ func TestMaintenanceProgressWhileCommandWorkerBlocked(t *testing.T) {
 	r := commandRuntime(t)
 	installation, group := id.New(), id.New()
 	entered := make(chan struct{})
-	r.SetInteractionPoller(installation, func(ctx context.Context, _ id.ID) error { close(entered); <-ctx.Done(); return ctx.Err() })
+	release := make(chan struct{})
+	defer close(release)
+	r.SetInteractionPoller(installation, func(context.Context, id.ID) error { close(entered); <-release; return nil })
 	r.notifyInteraction(installation, group)
 	select {
 	case <-entered:
@@ -483,7 +486,7 @@ func TestCommandWorkerPreservesCommandAndCatchupPriority(t *testing.T) {
 	}
 }
 
-func TestGatewayCommandCancelsBlockedPeriodicCatchup(t *testing.T) {
+func TestGatewayCommandCooperativelyStopsPeriodicCatchup(t *testing.T) {
 	r := commandRuntime(t)
 	installation, catchup, command := id.New(), id.New(), id.New()
 	blocked, answered := make(chan struct{}), make(chan struct{})
@@ -491,8 +494,12 @@ func TestGatewayCommandCancelsBlockedPeriodicCatchup(t *testing.T) {
 	r.SetInteractionPoller(installation, func(ctx context.Context, group id.ID) error {
 		if group == catchup {
 			once.Do(func() { close(blocked) })
-			<-ctx.Done()
-			return ctx.Err()
+			for {
+				if err := client.CooperativeCheckpoint(ctx); err != nil {
+					return err
+				}
+				time.Sleep(time.Millisecond)
+			}
 		}
 		close(answered)
 		return nil
@@ -509,4 +516,136 @@ func TestGatewayCommandCancelsBlockedPeriodicCatchup(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("command waited behind periodic catch-up")
 	}
+}
+
+func TestCommandWorkerShutdownBoundsUnresponsiveTransportGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		r := newBotGatewayRuntime(ctx, nil, true, nil)
+		r.StartCommandWorkers()
+		installation, group := id.New(), id.New()
+		entered, closed := make(chan struct{}), make(chan struct{})
+		r.SetInteractionPoller(installation, func(ctx context.Context, _ id.ID) error {
+			close(entered)
+			<-ctx.Done() // models a transport which never returns on its own
+			return ctx.Err()
+		})
+		r.notifyInteraction(installation, group)
+		<-entered
+		cancel()
+		go func() { r.Close(); close(closed) }()
+		synctest.Wait()
+		time.Sleep(commandRetirementGrace - time.Millisecond)
+		select {
+		case <-closed:
+			t.Fatal("transport cancelled before grace elapsed")
+		default:
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		select {
+		case <-closed:
+		default:
+			t.Fatal("unresponsive transport outlived retirement grace")
+		}
+	})
+}
+
+func TestRetiredCommandDoesNotRequeueIntoReplacement(t *testing.T) {
+	r := newBotGatewayRuntime(t.Context(), nil, true, nil)
+	pool := newCommandBatchTestPool(t)
+	installation, group := id.New(), id.New()
+	r.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
+	r.notifyInteraction(installation, group)
+	jobs, _, _ := r.commandBatch(pool, time.Now())
+	if len(jobs) != 1 {
+		t.Fatalf("jobs=%d", len(jobs))
+	}
+	job := jobs[0]
+	job.turn.retire()
+	job.cancel()
+	r.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
+	r.finishCommandJob(pool, job, errors.New("old installation failed"), time.Now())
+	if len(r.pendingOrder) != 0 {
+		t.Fatal("retired command queued against replacement")
+	}
+}
+
+func TestCommandWorkerSerializesDifferentGroupsWithinInstallation(t *testing.T) {
+	r := commandRuntime(t)
+	installation, first, second := id.New(), id.New(), id.New()
+	entered := make(chan id.ID, 2)
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	r.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error {
+		entered <- group
+		if group == first {
+			<-release
+		}
+		return nil
+	})
+	r.notifyInteraction(installation, first)
+	select {
+	case group := <-entered:
+		if group != first {
+			t.Fatal(group)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first group did not start")
+	}
+	r.notifyInteraction(installation, second)
+	select {
+	case <-entered:
+		t.Fatal("shared installation cursor used concurrently")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case group := <-entered:
+		if group != second {
+			t.Fatal(group)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second group did not start")
+	}
+}
+
+func TestBackgroundCatchupDeduplicatesPendingAndRunningGroups(t *testing.T) {
+	r := newBotGatewayRuntime(t.Context(), nil, true, nil)
+	pool := newCommandBatchTestPool(t)
+	r.commands = pool
+	installation, first, second := id.New(), id.New(), id.New()
+	r.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
+	for range 50 {
+		r.notifyBackgroundInteraction(installation, first)
+	}
+	if len(r.pendingOrder) != 1 {
+		t.Fatalf("pending catchups=%d, want1", len(r.pendingOrder))
+	}
+	now := time.Now()
+	jobs, _, _ := r.commandBatch(pool, now)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs=%d", len(jobs))
+	}
+	for range 50 {
+		r.notifyBackgroundInteraction(installation, first)
+		r.notifyBackgroundInteraction(installation, second)
+	}
+	if len(r.pendingOrder) != 1 || r.pendingOrder[0].group != second {
+		t.Fatalf("queued catchups=%v, want only second group", r.pendingOrder)
+	}
+	jobs[0].cancel()
+	r.finishCommandJob(pool, jobs[0], nil, now)
+	jobs, _, _ = r.commandBatch(pool, now.Add(interactionSpacing))
+	if len(jobs) != 1 || jobs[0].work.group != second {
+		t.Fatalf("next jobs=%v", jobs)
+	}
+	jobs[0].cancel()
+	r.finishCommandJob(pool, jobs[0], nil, now.Add(interactionSpacing))
 }

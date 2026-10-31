@@ -243,7 +243,7 @@ func TestPendingTrustHoldsBusySenderAndRefreshesOtherSenders(t *testing.T) {
 	}
 	defer release()
 	result, err := trust.refreshPendingLeaves(t.Context(), session)
-	if err != nil || !result.Unrefreshed[busy] || result.Unrefreshed[available] || result.Recovered != 1 {
+	if err != nil || !result.Busy[busy] || result.Unrefreshed[busy] || result.Busy[available] || result.Unrefreshed[available] || result.Recovered != 1 {
 		t.Fatalf("busy sender isolation: result=%+v err=%v", result, err)
 	}
 	if len(n.trusted) != 1 || n.trusted[0] != available {

@@ -165,3 +165,91 @@ func TestConcurrentAdmissionCancellationAndClose(t *testing.T) {
 		<-done
 	}
 }
+
+func TestRetirementPreservesPriorityAtReducedCapacity(t *testing.T) {
+	g := New(2)
+	failed, err := g.Acquire(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	surviving, err := g.Acquire(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer surviving()
+	type result struct {
+		priority int
+		release  func()
+		err      error
+	}
+	admitted := make(chan result, 2)
+	for n, priority := range []int{0, 2} {
+		go func() {
+			release, err := g.Acquire(t.Context(), priority)
+			admitted <- result{priority, release, err}
+		}()
+		waitQueued(t, g, n+1)
+	}
+	g.Retire()
+	failed()
+	failed()            // Releasing a retired admission must still be idempotent.
+	waitQueued(t, g, 2) // No caller can consume the lost resource.
+	surviving()
+	for _, want := range []int{2, 0} {
+		select {
+		case got := <-admitted:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.priority != want {
+				t.Errorf("priority = %d, want %d", got.priority, want)
+			}
+			got.release()
+		case <-time.After(3 * time.Second):
+			t.Fatal("surviving capacity did not admit work")
+		}
+	}
+	<-g.Close()
+}
+
+func TestRetirementOfFinalResourceRejectsWaitersAndPreservesClose(t *testing.T) {
+	g := New(1)
+	release, err := g.Acquire(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := make(chan error, 1)
+	go func() { _, err := g.Acquire(t.Context(), 2); queued <- err }()
+	waitQueued(t, g, 1)
+	g.Retire()
+	if err := <-queued; !errors.Is(err, ErrDepleted) {
+		t.Fatalf("queued acquisition = %v, want ErrDepleted", err)
+	}
+	if _, err := g.Acquire(t.Context(), 2); !errors.Is(err, ErrDepleted) {
+		t.Fatalf("new acquisition = %v, want ErrDepleted", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := g.Acquire(ctx, 2); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled acquisition = %v, want context.Canceled", err)
+	}
+	done := g.Close()
+	select {
+	case <-done:
+		t.Fatal("Close completed before retired owner released")
+	default:
+	}
+	release()
+	release()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not complete")
+	}
+	if _, err := g.Acquire(t.Context(), 2); !errors.Is(err, ErrClosed) {
+		t.Fatalf("closed depleted gate acquisition = %v, want ErrClosed", err)
+	}
+	if g.Close() != done {
+		t.Fatal("Close is not idempotent")
+	}
+}

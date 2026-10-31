@@ -86,7 +86,7 @@ func (s PCMStarter) executable(path, name string) (string, error) {
 }
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (_ *isolatedPCM, failure error) {
-	ctx = client.WithoutBackgroundYield(ctx)
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	root, err := newSandboxTempDir()
 	if err != nil {
 		return nil, ErrSandboxUnavailable

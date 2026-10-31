@@ -131,10 +131,13 @@ func (t *SourceTrust) trustPendingLeaves(ctx context.Context, session senderHist
 type TrustRefresh struct {
 	Recovered   uint32
 	Unrefreshed map[id.ID]bool
+	// Busy holds senders already being refreshed by another pass, without aging their events.
+	Busy map[id.ID]bool
 }
 
 // RefreshPendingLeaves is TrustPendingLeaves for command intake: a failure scoped to one sender
-// (its signed device-list history is stale or another pass is refreshing it) leaves that sender unrefreshed and the pass continues
+// (its signed device-list history is stale) leaves that sender unrefreshed. A sender
+// owned by another refresh is reported separately in Busy. The pass continues
 // with the others. Every other failure (reading the pending leaves, a server or API failure, a
 // native-core refusal or limit, group revalidation, the clock) stays fatal to the pass.
 func (t *SourceTrust) RefreshPendingLeaves(ctx context.Context, session *client.Session) (TrustRefresh, error) {
@@ -157,6 +160,9 @@ func senderScopedTrustFailure(err error) bool {
 
 func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySession, isolate bool) (TrustRefresh, error) {
 	var out TrustRefresh
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return out, err
+	}
 	leaves, err := t.native.PendingLeaves(ctx)
 	if err != nil {
 		return out, trustPhaseError(TrustPhasePendingLeaves, err)
@@ -164,11 +170,11 @@ func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySe
 	var recovered uint64
 	refreshedUsers := make(map[id.ID]bool, len(leaves))
 	for _, leaf := range leaves {
-		if err = ctx.Err(); err != nil {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
 			return TrustRefresh{}, err
 		}
-		if out.Unrefreshed[leaf.User] {
-			continue // this sender's history is stale; its leaves stay pending (held by the core)
+		if out.Unrefreshed[leaf.User] || out.Busy[leaf.User] {
+			continue // this sender is stale or busy; its leaves stay pending in the core
 		}
 		// TrustSender validates the signed list against every current leaf for this user and
 		// updates the shared cached list. A second pending row from this snapshot would still
@@ -187,13 +193,23 @@ func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySe
 		}
 		n, e := t.trustSender(ctx, session, leaf.Group, uint64(leaf.Leaf), leaf.User, leaf.CachedVersion)
 		if e != nil {
+			if errors.Is(e, client.ErrCooperativeStop) {
+				return TrustRefresh{}, e
+			}
 			if !isolate || ctx.Err() != nil || !senderScopedTrustFailure(e) && !errors.Is(e, ErrSourceTrustBusy) {
 				return TrustRefresh{}, e
 			}
-			if out.Unrefreshed == nil {
-				out.Unrefreshed = map[id.ID]bool{}
+			if errors.Is(e, ErrSourceTrustBusy) {
+				if out.Busy == nil {
+					out.Busy = map[id.ID]bool{}
+				}
+				out.Busy[leaf.User] = true
+			} else {
+				if out.Unrefreshed == nil {
+					out.Unrefreshed = map[id.ID]bool{}
+				}
+				out.Unrefreshed[leaf.User] = true
 			}
-			out.Unrefreshed[leaf.User] = true
 			continue
 		}
 		refreshedUsers[leaf.User] = true
@@ -260,7 +276,7 @@ func (t *SourceTrust) trustProposedAdds(ctx context.Context, session senderHisto
 		return err
 	}
 	for _, add := range adds {
-		if err = ctx.Err(); err != nil {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
 			return err
 		}
 		if e := t.trustProposedAdd(ctx, session, group, proposals, add); e != nil {
@@ -318,7 +334,7 @@ func readSenderHistory(ctx context.Context, session senderHistorySession, user i
 	}
 	var rowsUsed, bytesUsed uint64
 	for attempt := 0; attempt < 2; attempt++ {
-		if err := ctx.Err(); err != nil {
+		if err := client.CooperativeCheckpoint(ctx); err != nil {
 			return nil, nil, 0, err
 		}
 		candidateRaw, err := session.OwnDeviceList(ctx, user)
@@ -348,7 +364,7 @@ func readSenderHistory(ctx context.Context, session senderHistorySession, user i
 			rowsUsed++
 		} else {
 			for after < version {
-				if err = ctx.Err(); err != nil {
+				if err = client.CooperativeCheckpoint(ctx); err != nil {
 					return nil, nil, 0, err
 				}
 				page, pageErr := session.DeviceListHistory(ctx, user, after)

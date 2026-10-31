@@ -185,7 +185,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		r.active = false
 		r.mu.Unlock()
 	}()
-	if err := ctx.Err(); err != nil {
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
 		return out, err
 	}
 	own, err := session.Community(ctx, r.binding.Community)
@@ -316,7 +316,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		out.More = uint64(len(welcomes)) == r.pageLimit
 	}
 	for _, g := range groups {
-		if err = ctx.Err(); err != nil {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
 			return out, err
 		}
 		if g.State != 2 || g.Community == nil || *g.Community != r.binding.Community {
@@ -378,18 +378,52 @@ func (r *MembershipReconciler) ReconcileInteractionGroupOnce(ctx context.Context
 	return r.reconcileInteractionGroupOnce(ctx, session, group)
 }
 
+// ReconcileInteractionGroupBackgroundOnce catches up one active interaction group
+// at background priority, retaining the installation's idle polling schedule.
+func (r *MembershipReconciler) ReconcileInteractionGroupBackgroundOnce(ctx context.Context, session *client.Session, group id.ID) (MembershipResult, error) {
+	if session == nil {
+		return MembershipResult{}, errors.New("missing device session")
+	}
+	return r.reconcileInteractionGroupBackgroundOnce(ctx, session, group)
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroupBackgroundOnce(ctx context.Context, session membershipSession, group id.ID) (MembershipResult, error) {
+	if group.IsZero() {
+		return MembershipResult{}, errors.New("invalid interaction group")
+	}
+	return r.reconcileInteractionGroups(client.WithBackground(ctx), session, &group, false)
+}
+
+// InteractionGroupDelay reports the remaining background idle delay without any
+// helper or HTTP work. A changed descriptor is immediately due.
+func (r *MembershipReconciler) InteractionGroupDelay(descriptor native.InteractionGroupDescriptor) time.Duration {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	schedule := r.idlePolls
+	r.mu.Unlock()
+	schedule.mu.Lock()
+	idle := schedule.groups[descriptor.Group]
+	schedule.mu.Unlock()
+	if idle.descriptor != descriptor {
+		return 0
+	}
+	return max(0, idle.next.Sub(r.source.options.now()))
+}
+
 func (r *MembershipReconciler) reconcileInteractionGroupOnce(ctx context.Context, session membershipSession, group id.ID) (MembershipResult, error) {
 	if group.IsZero() {
 		return MembershipResult{}, errors.New("invalid interaction group")
 	}
-	return r.reconcileInteractionGroups(client.WithInteractive(ctx), session, &group)
+	return r.reconcileInteractionGroups(client.WithInteractive(ctx), session, &group, true)
 }
 
 func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Context, session membershipSession) (MembershipResult, error) {
-	return r.reconcileInteractionGroups(ctx, session, nil)
+	return r.reconcileInteractionGroups(ctx, session, nil, false)
 }
 
-func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, session membershipSession, only *id.ID) (MembershipResult, error) {
+func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, session membershipSession, only *id.ID, bypassIdle bool) (MembershipResult, error) {
 	var out MembershipResult
 	if r == nil || session == nil {
 		return out, errors.New("invalid interaction membership reconciliation")
@@ -397,7 +431,7 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 	r.mu.Lock()
 	schedule := r.idlePolls
 	r.mu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
 		return out, err
 	}
 	groups, err := r.native.Groups(ctx)
@@ -440,6 +474,9 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 	}
 	schedule.mu.Unlock()
 	for i, g := range interactionGroups {
+		if err := client.CooperativeCheckpoint(ctx); err != nil {
+			return out, err
+		}
 		if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
 			return out, client.ErrProtocol
 		}
@@ -457,7 +494,7 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		schedule.mu.Lock()
 		idle := schedule.groups[g.Group]
 		schedule.mu.Unlock()
-		if only == nil && idle.descriptor == g && now.Before(idle.next) {
+		if !bypassIdle && idle.descriptor == g && now.Before(idle.next) {
 			continue
 		}
 		res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})

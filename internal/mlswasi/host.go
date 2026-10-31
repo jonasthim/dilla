@@ -115,6 +115,10 @@ var startFunctions = []string{"_initialize"}
 // ErrClosed is returned by Acquire or a retained instance's Call after Close.
 var ErrClosed = errors.New("mlswasi: runtime is closed")
 
+// ErrDepleted is returned by Acquire when replacing poisoned instances has
+// failed and no usable instances remain. The runtime must be recreated.
+var ErrDepleted = errors.New("mlswasi: runtime has no usable instances")
+
 // Options configures a Runtime.
 type Options struct {
 	// CacheDir persists wazero's ahead-of-time compilation results between
@@ -142,7 +146,7 @@ type Options struct {
 	Priority func(context.Context) int
 }
 
-// Runtime owns one wazero runtime, one compiled module and a fixed pool of
+// Runtime owns one wazero runtime, one compiled module and a bounded pool of
 // instances.
 type Runtime struct {
 	rt       wazero.Runtime

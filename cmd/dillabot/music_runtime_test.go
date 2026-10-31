@@ -1037,7 +1037,7 @@ func (c boundaryCalls) StartCall(ctx context.Context, _ id.ID) (client.Call, err
 	return c.call, c.probe.probe(ctx)
 }
 
-func TestMusicSupervisorAutoAdvanceDoesNotInheritSweepYield(t *testing.T) {
+func TestMusicSupervisorAutoAdvanceDoesNotInheritCooperativeStop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/cbor")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1062,7 +1062,7 @@ func TestMusicSupervisorAutoAdvanceDoesNotInheritSweepYield(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pending atomic.Bool
-	sweepCtx := client.WithBackgroundYield(t.Context(), pending.Load)
+	sweepCtx := client.WithCooperativeStop(t.Context(), pending.Load)
 	//nolint:staticcheck // SA1012: deliberately invalid lifetime tests rejection before context normalization.
 	if _, err := newMusicSupervisor(nil, channel, store, starter); err == nil {
 		t.Fatal("nil supervisor lifetime was accepted")

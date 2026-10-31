@@ -82,38 +82,6 @@ func RequestPriority(ctx context.Context) int {
 	return 0
 }
 
-type backgroundYieldContextKey struct{}
-
-// WithBackgroundYield lets the single-threaded service defer a sweep between
-// requests when gateway work is ready. Interactive contexts bypass the check.
-// ready must be safe to call on the requesting goroutine.
-func WithBackgroundYield(ctx context.Context, ready func() bool) context.Context {
-	return context.WithValue(ctx, backgroundYieldContextKey{}, ready)
-}
-
-func backgroundShouldYield(ctx context.Context) bool {
-	if interactive, _ := ctx.Value(interactiveContextKey{}).(bool); interactive {
-		return false
-	}
-	ready, _ := ctx.Value(backgroundYieldContextKey{}).(func() bool)
-	return ready != nil && ready()
-}
-
-// ErrBackgroundYield means a sweep deferred before sending a request. It is
-// retry-safe and distinct from a server refusal or an expired deadline.
-var ErrBackgroundYield = errors.New("bot background work yielded to a command")
-
-func backgroundYieldError() error { return ErrBackgroundYield }
-
-// WithoutBackgroundYield makes a context suitable for background lifetimes.
-// It preserves cancellation, deadlines and other values, clearing only the
-// sweep's cooperative yield and the request's interactive priority.
-func WithoutBackgroundYield(ctx context.Context) context.Context {
-	ctx = context.WithValue(ctx, backgroundYieldContextKey{}, (func() bool)(nil))
-	ctx = context.WithValue(ctx, immediateControlContextKey{}, false)
-	return context.WithValue(ctx, interactiveContextKey{}, false)
-}
-
 // priorityLimiter never reserves future tokens. Immediate control waiters take
 // the next token first. Ordinary interactive requests precede background work,
 // with one background grant after eight ordinary grants while background waits.
@@ -171,8 +139,8 @@ func (l *priorityLimiter) Wait(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if backgroundShouldYield(ctx) {
-			return backgroundYieldError()
+		if err := CooperativeCheckpoint(ctx); err != nil {
+			return err
 		}
 		l.mu.Lock()
 		backgroundTurn := l.background > 0 && l.interactiveRun >= 8
@@ -197,8 +165,8 @@ func (l *priorityLimiter) Wait(ctx context.Context) error {
 			l.mu.Unlock()
 			return context.DeadlineExceeded
 		}
-		// Check for new gateway work even while waiting for a slow class token.
-		if ready, _ := ctx.Value(backgroundYieldContextKey{}).(func() bool); !interactive && ready != nil {
+		// A waiting admission is a safe boundary; observe cooperative stops promptly.
+		if ready, _ := ctx.Value(cooperativeStopKey{}).(func() bool); ready != nil {
 			delay = min(delay, 25*time.Millisecond)
 		}
 		l.mu.Unlock()
@@ -285,8 +253,8 @@ func requestClass(method, path string) string {
 }
 
 func (c *Client) waitRate(ctx context.Context, token, method, path string) error {
-	if backgroundShouldYield(ctx) {
-		return backgroundYieldError()
+	if err := CooperativeCheckpoint(ctx); err != nil {
+		return err
 	}
 	key := tokenKey(token)
 	c.rateMu.Lock()
@@ -341,7 +309,7 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 
 func waitLimiter(ctx context.Context, limiter *priorityLimiter) error {
 	if err := limiter.Wait(ctx); err != nil {
-		if errors.Is(err, ErrBackgroundYield) {
+		if errors.Is(err, ErrCooperativeStop) {
 			return err
 		}
 		if deficit := 1 - limiter.Tokens(); deficit > 0 {
