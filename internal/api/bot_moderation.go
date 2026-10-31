@@ -105,6 +105,9 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 		if !errors.Is(priorErr, store.ErrNotFound) {
 			return priorErr
 		}
+		if r.URL.Query().Get("receipt_only") == "1" {
+			return server.Errorf(server.CodeNotFound, "moderation receipt not found")
+		}
 		now := d.Clock.Now().Unix()
 		nowUnix, ok := checkedUint64(now)
 		if !ok || now <= 0 || now > math.MaxInt64-int64(botModerationRequestLifetime/time.Second) ||

@@ -37,6 +37,11 @@ type moderationActionSession interface {
 	AcceptBotModerationAction(context.Context, id.ID, id.ID, id.ID, uint64, string, []string, uint64, uint64) (client.ModerationActionReceipt, error)
 }
 
+type moderationReceiptSession interface {
+	LookupModerationRemoval(context.Context, id.ID, []byte) (client.ModerationRemovalReceipt, error)
+	LookupBotModerationAction(context.Context, id.ID, id.ID, id.ID, uint64, string, []string, uint64, uint64) (client.ModerationActionReceipt, error)
+}
+
 // ModerationRemovalBackend sends signed removals and installation-bound warn
 // or timeout decisions. The server rechecks the active installation capability,
 // current moderation permission and hierarchy for every accepted action.
@@ -113,21 +118,25 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 		if err != nil {
 			return AcceptedModerationAction{}, err
 		}
-		receipt, err := b.session.AcceptModerationRemoval(ctx, group, signed)
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && apiErr.Code == "E_REMOVAL_PROOF_EXPIRED" {
-			currentUnix := time.Now().Unix()
-			if currentUnix <= 0 || currentUnix > math.MaxInt64-30 {
-				return AcceptedModerationAction{}, err
+		var receipt client.ModerationRemovalReceipt
+		if action.receiptOnly {
+			lookup, ok := b.session.(moderationReceiptSession)
+			if !ok {
+				return AcceptedModerationAction{}, ErrModerationActionRefused
 			}
-			current := uint64(currentUnix)
-			signed, signErr := b.native.SignRemoval(ctx, request, group, action.SourceRevision, current+30, current)
-			if signErr != nil {
-				return AcceptedModerationAction{}, signErr
-			}
+			receipt, err = lookup.LookupModerationRemoval(ctx, group, signed)
+		} else {
 			receipt, err = b.session.AcceptModerationRemoval(ctx, group, signed)
 		}
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && apiErr.Code == "E_REMOVAL_PROOF_EXPIRED" {
+			return AcceptedModerationAction{}, ErrModerationActionRefused
+		}
+
 		if err != nil {
+			if action.receiptOnly && errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && (apiErr.Code == "E_NOT_FOUND" || apiErr.Code == "E_FORBIDDEN") {
+				return AcceptedModerationAction{}, ErrModerationActionRefused
+			}
 			if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && apiErr.Code == "E_FORBIDDEN" {
 				return AcceptedModerationAction{}, ErrModerationActionRefused
 			}
@@ -174,10 +183,21 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 		}
 		timeoutMillis = uint64(timeout)
 	}
-	accepted, err := b.session.AcceptBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision,
-		string(action.Decision.Action), rules, timeoutMillis, uint64(now+windowSeconds))
+	var err error
+	if action.receiptOnly {
+		lookup, ok := b.session.(moderationReceiptSession)
+		if !ok {
+			return AcceptedModerationAction{}, ErrModerationActionRefused
+		}
+		accepted, err = lookup.LookupBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision, string(action.Decision.Action), rules, timeoutMillis, uint64(now+windowSeconds))
+	} else {
+		accepted, err = b.session.AcceptBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision, string(action.Decision.Action), rules, timeoutMillis, uint64(now+windowSeconds))
+	}
 	if err != nil {
 		var apiErr *client.APIError
+		if action.receiptOnly && errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && (apiErr.Code == "E_NOT_FOUND" || apiErr.Code == "E_FORBIDDEN") {
+			return AcceptedModerationAction{}, ErrModerationActionRefused
+		}
 		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive && apiErr.Code == "E_FORBIDDEN" {
 			return AcceptedModerationAction{}, ErrModerationActionRefused
 		}

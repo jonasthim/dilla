@@ -211,3 +211,20 @@ func TestBotAutomaticWarningUsesWarningEventAndStableReceipt(t *testing.T) {
 		t.Fatalf("warning event page=%+v err=%v", page, err)
 	}
 }
+
+func TestBotModerationReceiptOnlyCannotCreateAnEffect(t *testing.T) {
+	f := newBotModerationFixture(t, 0)
+	expires := uint64(f.deps.Clock.Now().Unix() + 20)
+	request := operationid.Automatic(f.group, 1)
+	body, _ := cborx.Marshal([]any{request, f.group, uint64(1), "warn", []any{"message_rate"}, uint64(0), expires})
+	path := "/v1/bot-runtime/installations/" + f.installation.String() + "/moderation/actions?receipt_only=1"
+	absent := doCBORAuth(f.h, http.MethodPost, path, body, f.token)
+	if absent.Code != 404 {
+		t.Fatalf("receipt lookup created effect: status=%d", absent.Code)
+	}
+	accepted := f.submit(t, "warn", 1, expires, 0, f.installation)
+	prior := doCBORAuth(f.h, http.MethodPost, path, body, f.token)
+	if prior.Code != 200 || !bytes.Equal(accepted.Body.Bytes(), prior.Body.Bytes()) {
+		t.Fatalf("receipt lookup=%d", prior.Code)
+	}
+}
