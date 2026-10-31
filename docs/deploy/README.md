@@ -51,12 +51,13 @@ sequenceDiagram
     Note over Media: Existing rooms survive the API restart
     Rollout->>Media: Restart after API checks
     Note over Media: A media restart closes its rooms
-    loop On load, on visibility or network return, and while active
+    API-->>Tab: Verified build entry on gateway ready/resume
+    loop On load, visibility/network return, reconnect or a new build hint
         Tab->>API: GET /app-version.json (no-store)
         API-->>Tab: Current JavaScript entry path
     end
     alt Entry differs from the tab's loaded entry
-        Note over Tab: Wait for an open modal form to close
+        Note over Tab: Wait for modal forms and live/recovering calls to finish
         Tab->>Store: Save encrypted view, drafts, files, and call choice
         Tab->>API: Reload the page
         API-->>Tab: Serve the new web build
@@ -74,14 +75,14 @@ sequenceDiagram
     end
 ```
 
-Once a browser has loaded a release with the update watcher, it checks `/app-version.json` when
-the page opens or becomes visible, every 30 seconds while visible, and every 3 seconds during a
-voice call even if the tab is hidden. A changed entry triggers a per-tab encrypted checkpoint of
-the current view, drafts, selected attachments and call choice, followed by a reload and restore.
-An open modal form delays the reload until it closes. A browser without working checkpoint storage
-offers a manual reload instead. Screen sharing needs another click after rejoining because the
-browser requires a user gesture. A tab loaded before this watcher exists cannot update itself;
-tell those members to reload once after the first deployment.
+The current browser verifies `/app-version.json` on startup, foreground, network return and
+gateway reconnect, and when wire 5 supplies a new build entry. It never polls versions periodically.
+An unresolved new hint retries with bounded backoff; verification stops those retries. A changed
+entry waits for open modal forms and live/recovering calls, then checkpoints the view, drafts and
+selected attachments before reloading and restoring them. Pre-login pages and browsers without
+working checkpoint storage offer a manual reload. Screen sharing needs another click after
+rejoining because the browser requires a user gesture. An older tab retains its older updater
+until it reloads; reload it once to receive the current WSS-only activity and coarse-stats producers.
 
 The media sidecar keeps the SFU room alive during an API restart, but the API's signalling and TURN
 connections reset. The browser attempts to rejoin voice after a lost connection. Restarting the
