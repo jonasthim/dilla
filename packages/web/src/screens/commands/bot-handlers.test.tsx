@@ -123,7 +123,7 @@ function mountMusicPicker(client: CoreClient, initialText = '/play') {
   function Picker() {
     const provider = useBotCommandProvider(client, COMMUNITY);
     return createElement(CommandComposer, { definitions: COMMANDS, initialText, contextKey: 'music-search',
-      onExecute: () => Promise.resolve({ status: 'success' as const }), onCancel: () => undefined, onSendLiteral: () => undefined,
+      onExecute: () => Promise.resolve({ status: 'success' as const, private: true }), onCancel: () => undefined, onSendLiteral: () => undefined,
       suggest: async (command, option, query) => await provider.suggest(command, option, query, { communityId: COMMUNITY, channelId: TEXT }) ?? [] });
   }
   return render(createElement(Picker));
