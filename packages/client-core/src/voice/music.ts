@@ -18,7 +18,7 @@ export interface VoiceMusicTrack {
 export interface VoiceMusicQueueItem { id: string; track: VoiceMusicTrack; }
 export interface VoiceMusicSearchResult extends VoiceMusicTrack { input: string; }
 export interface VoiceMusicPermissions { control: boolean; manageQueue: boolean; }
-export type VoiceMusicErrorCode = 'forbidden' | 'conflict' | 'spotify-unavailable' | 'spotify-busy' | 'unavailable';
+export type VoiceMusicErrorCode = 'forbidden' | 'conflict' | 'spotify-unavailable' | 'spotify-busy' | 'unavailable' | 'operation-unavailable';
 export class VoiceMusicError extends Error {
   constructor(readonly code: VoiceMusicErrorCode, message: string) {
     super(message);
@@ -158,7 +158,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       try { prior = await interactions.read(attempt.requestId, operation); }
       catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (prior !== null) {
-        if (prior.status === 5 && prior.revision === null) throw new VoiceMusicError('unavailable', 'The Bot could not load that track.');
+        if (prior.status === 5 && prior.revision === null) throw definiteMusicFailure(operation);
         if (prior.status === 5) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The Bot reported an ambiguous persisted outcome.'));
         if (prior.status !== 0) throw responseError(prior.status, operation === 12 && isSpotifyInput(args[0]));
         try {
@@ -221,7 +221,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     }
     if (result.status === 5 && result.revision === null) {
       if (attempt !== undefined) attempts.delete(attempt.requestId);
-      throw new VoiceMusicError('unavailable', 'The Bot could not load that track.');
+      throw definiteMusicFailure(operation);
     }
     if (result.status === 5) {
       record.sent = true;
@@ -342,7 +342,7 @@ function responseError(status: number, spotifyInput = false): Error {
   if (spotifyInput && status === 6) return new VoiceMusicError('spotify-busy', 'Spotify playback is already active in another voice channel.');
   return status === 2 ? new VoiceMusicError('forbidden', 'You do not have permission to control this Bot.')
     : status === 4 ? new VoiceMusicError('conflict', 'Music state changed. Refresh and try again.')
-      : new VoiceMusicError('unavailable', 'The Bot could not complete the music request.');
+      : new VoiceMusicError('operation-unavailable', 'The Bot could not do that right now. Try again.');
 }
 function isSpotifyInput(value: unknown): boolean {
   if (typeof value !== 'string') return false;
@@ -461,4 +461,10 @@ function validatedInput(value: string, limit: number, label: string): string {
     throw new Error(`Invalid music ${label}.`);
   }
   return trimmed;
+}
+
+function definiteMusicFailure(operation: number): VoiceMusicError {
+  return operation === 12
+    ? new VoiceMusicError('unavailable', 'The Bot could not load that track.')
+    : new VoiceMusicError('operation-unavailable', 'The Bot could not do that right now. Try again.');
 }

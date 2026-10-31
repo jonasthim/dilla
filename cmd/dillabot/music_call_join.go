@@ -66,6 +66,14 @@ func (e *errMusicCallJoinConflict) Error() string {
 }
 func (e *errMusicCallJoinConflict) Retryable() bool { return true }
 
+// An unusable pending upload outside JOINING cannot be replayed or safely forgotten.
+type errMusicCallJoinUnusable struct{}
+
+func (*errMusicCallJoinUnusable) Error() string {
+	return "music call-group unusable_pending: pending join intent cannot be resumed"
+}
+func (*errMusicCallJoinUnusable) Retryable() bool { return false }
+
 var errMusicCallJoinDiscarded = errors.New("music call-group non-resumable join discarded")
 
 func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
@@ -197,6 +205,13 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		}
 		break
 	}
+	if intent != nil && intent.State == 0 && len(intent.Result) == 0 && localState != 1 {
+		// The interaction handler logs this terminal failure once with operation context.
+		return &errMusicCallJoinUnusable{}
+	}
+	// session.QueueStarter is owned by one music.Supervisor per channel; the
+	// supervisor serializes starts. No competing join can stage a new upload
+	// between this snapshot, discard and forget.
 	if (intent == nil || len(intent.Result) == 0) && !nonResumable.IsZero() && localState == 1 {
 		if err = core.DiscardGroup(ctx, nonResumable, group); err != nil {
 			return musicCallJoinStageError("discard_non_resumable", err)

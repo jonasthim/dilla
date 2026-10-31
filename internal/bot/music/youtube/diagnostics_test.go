@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,7 +70,7 @@ func TestIsolatedMetadataRunnerRetainsSandboxStderr(t *testing.T) {
 	if !errors.Is(err, ErrSandboxUnavailable) || !errors.As(err, &process) || process.ExitCode != 42 || FailureStderr(err) != "namespace blocked" {
 		t.Fatalf("error=%v diagnostics=%q", err, FailureStderr(err))
 	}
-	if !strings.Contains(logs.String(), `"installation_id":"test-installation"`) || !strings.Contains(logs.String(), `"class":"sandbox_unavailable"`) || !strings.Contains(logs.String(), `"stderr":"namespace blocked"`) {
+	if logs.Len() != 0 {
 		t.Fatalf("startup log=%s", logs.String())
 	}
 }
@@ -80,5 +81,51 @@ func TestSandboxStderrCaptureIsBounded(t *testing.T) {
 	n, err := capture.Write([]byte(input))
 	if err != nil || n != len(input) || len(capture.String()) > 4096 || len(DiagnosticText(capture.String())) != 512 {
 		t.Fatalf("write=%d err=%v captured=%d", n, err, len(capture.String()))
+	}
+}
+
+func TestProcessErrorRedactsRawUserContent(t *testing.T) {
+	query := "private  query & song"
+	raw := query + " " + url.QueryEscape(query) + " " + url.PathEscape(query) + " https://elsewhere.test/private [youtube] ZYXwvutsrqp: failed [youtube:search] " + query + ": failed"
+	err := newProcessError(ErrExtractFailed, raw, 1, query)
+	want := "[redacted] [redacted] [redacted] [redacted] [youtube] [redacted]: failed [youtube:search] [redacted]: failed"
+	if got := FailureStderr(err); got != want {
+		t.Fatalf("stderr=%q", got)
+	}
+	for _, input := range []string{"https://youtu.be/aqz-KE-bpKQ", "https://youtube.com/playlist?list=PLsecret123"} {
+		_, canonical, _ := NormalizeInput(input)
+		id := "aqz-KE-bpKQ"
+		if strings.Contains(input, "playlist") {
+			id = "PLsecret123"
+		}
+		err := newProcessError(ErrExtractFailed, input+" "+canonical+" "+id, 1, input)
+		if got := FailureStderr(err); got != "[redacted] [redacted] [redacted]" {
+			t.Fatalf("stderr=%q", got)
+		}
+	}
+	// Redaction must precede whitespace normalization and truncation.
+	err = newProcessError(ErrExtractFailed, strings.Repeat("x", 500)+" "+query, 1, query)
+	if strings.Contains(FailureStderr(err), "private") {
+		t.Fatal("truncated query leaked")
+	}
+}
+
+func TestRedactionDoesNotRewriteMarkersOrURLSchemes(t *testing.T) {
+	for _, query := range []string{"redacted", "https", "a"} {
+		err := newProcessError(ErrExtractFailed, query+" https://example.test/private [youtube] ZYXwvutsrqp: failed", 1, query)
+		want := "[redacted] [redacted] [youtube] [redacted]: f"
+		// Compare the content-bearing prefix; a one-letter query also redacts that
+		// letter in ordinary diagnostic words.
+		if got := FailureStderr(err); !strings.HasPrefix(got, want) {
+			t.Fatalf("query=%q stderr=%q", query, got)
+		}
+	}
+}
+
+func TestRedactionCoversSearchContainingColon(t *testing.T) {
+	query := "find this: private song"
+	err := newProcessError(ErrExtractFailed, "[youtube:search] "+query+": failed", 1, query)
+	if got := FailureStderr(err); got != "[youtube:search] [redacted]: failed" {
+		t.Fatalf("stderr=%q", got)
 	}
 }

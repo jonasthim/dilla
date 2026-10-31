@@ -48,7 +48,7 @@ func (s *Session) AcceptBotModerationAction(ctx context.Context, installation, r
 		return ModerationActionReceipt{}, ErrInvalidConfig
 	}
 	path := "bot-runtime/installations/" + installation.String() + "/moderation/actions"
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, body, MaxModerationActionBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, path, nil, body, MaxModerationActionBody, true)
 	if err != nil {
 		return ModerationActionReceipt{}, err
 	}

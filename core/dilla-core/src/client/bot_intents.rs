@@ -297,6 +297,22 @@ pub(super) fn discard_pending_external_joins(
     Ok(())
 }
 
+/// Discard every pending Bot upload whose staged MLS state is being forgotten.
+/// Create, join and commit abort all use the same empty-argument discard hash.
+pub(super) fn discard_pending_for_forgotten_group(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<(), StorageError> {
+    let mut e = Encoder::new();
+    e.array(2).uint(2).array(0);
+    let hash = sha256(&e.into_vec());
+    c.execute(
+        "UPDATE app_bot_intents SET state=2,result=NULL,resolution_hash=?2 WHERE group_id=?1 AND kind IN (2,5,9) AND state=0",
+        params![group_id.as_slice(), hash.as_slice()],
+    )?;
+    Ok(())
+}
+
 fn intent_kind(
     core: &ClientCore,
     operation_id: &[u8; 16],

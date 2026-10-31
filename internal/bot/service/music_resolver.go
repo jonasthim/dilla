@@ -22,9 +22,5 @@ func (r LoggingMusicTrackResolver) Resolve(ctx context.Context, input string) ([
 		logger = slog.Default()
 	}
 	ctx = youtube.WithDiagnosticLogger(ctx, logger.With("installation_id", r.InstallationID.String()))
-	tracks, err := r.Resolver.Resolve(ctx, input)
-	if err != nil {
-		logger.WarnContext(ctx, "bot YouTube metadata resolve failed", "installation_id", r.InstallationID.String(), "class", youtube.FailureClass(err), "stderr", youtube.FailureStderr(err))
-	}
-	return tracks, err
+	return r.Resolver.Resolve(ctx, input)
 }

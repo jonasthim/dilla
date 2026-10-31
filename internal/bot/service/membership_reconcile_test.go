@@ -754,3 +754,52 @@ func TestInteractionIdlePollingBacksOffButGatewayBypasses(t *testing.T) {
 		t.Fatal("background safety poll did not resume")
 	}
 }
+
+type slowInteractionInfoSession struct {
+	*membershipFakeSession
+	entered, release chan struct{}
+}
+
+func (s slowInteractionInfoSession) BotInteractionGroupInfo(ctx context.Context, _, _ id.ID) (client.GroupInfo, error) {
+	close(s.entered)
+	select {
+	case <-s.release:
+		return client.GroupInfo{}, context.Canceled
+	case <-ctx.Done():
+		return client.GroupInfo{}, ctx.Err()
+	}
+}
+
+func TestGatewayCommandNotBlockedBySlowBackgroundHTTP(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	group := membershipID(21)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community, BotUser: membershipID(23), ParticipantUser: membershipID(22), ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	// Separate reconciler/native/session handles, as used by the gateway and sweep.
+	n2, s2 := *n, *s
+	gateway, err := newMembershipReconciler(&n2, sourceSyncOptions{}, membershipOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.UseInteractionPollSchedule(r.idlePolls)
+	slow := slowInteractionInfoSession{s, make(chan struct{}), make(chan struct{})}
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = r.reconcileInteractionGroupsOnce(t.Context(), slow) }()
+	<-slow.entered
+	command := make(chan error, 1)
+	go func() { _, err := gateway.reconcileInteractionGroupOnce(t.Context(), &s2, group); command <- err }()
+	select {
+	case err := <-command:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(time.Second):
+		t.Error("gateway command blocked by background HTTP")
+	}
+	close(slow.release)
+	<-done
+
+}

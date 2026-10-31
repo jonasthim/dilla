@@ -6,10 +6,13 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/config"
 )
 
 func TestClientRateLimitRetry(t *testing.T) {
@@ -110,6 +113,12 @@ func TestRequestRateClassesMirrorServer(t *testing.T) {
 		{"POST", "communities/x/bot/receipts/y/resolve", "write"},
 		{"POST", "bot-runtime/installations/x/interaction-groups/y/cursor", "write"},
 		{"PUT", "devices/x/credential", "write"},
+		{"POST", "groups/x/commit", "commit"},
+		{"POST", "groups/x/resync", "commit"},
+		{"POST", "groups/x/heal", "commit"},
+		{"POST", "groups/x/proposal", "proposal"},
+		{"GET", "devices/x/keypackage", "keypackage"},
+		{"POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
 	} {
 		if got := requestClass(tc.method, tc.path); got != tc.want {
 			t.Errorf("%s %s class=%s want=%s", tc.method, tc.path, got, tc.want)
@@ -123,7 +132,7 @@ func TestDeviceLimiterSurvivesSessionRenewal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, token := range []string{"old", "renewed"} {
+		for _, token := range []string{"old"} {
 			if _, err := c.SessionForDevice(token, testID(1)); err != nil {
 				t.Fatal(err)
 			}
@@ -132,6 +141,9 @@ func TestDeviceLimiterSurvivesSessionRenewal(t *testing.T) {
 			if err := c.waitRate(t.Context(), "old", "POST", "groups/x/cursor"); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if _, err := c.SessionForDevice("renewed", testID(1)); err != nil {
+			t.Fatal(err)
 		}
 		start := time.Now()
 		if err := c.waitRate(t.Context(), "renewed", "POST", "groups/x/cursor"); err != nil {
@@ -206,5 +218,149 @@ func TestRateLimitConfigDefaultsAndOverrides(t *testing.T) {
 		if _, err := bad.defaults(); err == nil {
 			t.Fatalf("accepted invalid limits %+v", bad)
 		}
+	}
+}
+
+func TestRetryBeyondDeadlineReturnsImmediately(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		start := time.Now()
+		if err := waitRetry(ctx, 2*time.Second); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error=%v", err)
+		}
+		if time.Since(start) != 0 {
+			t.Fatal("slept despite impossible retry")
+		}
+	})
+}
+
+func TestRenewalDropsRetiredTokenMaps(t *testing.T) {
+	c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"old", "renewed", "latest"} {
+		if _, err := c.SessionForDevice(token, testID(1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.waitRate(t.Context(), token, "POST", "groups/x/cursor"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(c.devices) != 1 || len(c.buckets) != 1 {
+		t.Fatalf("devices=%d buckets=%d", len(c.devices), len(c.buckets))
+	}
+	if c.buckets["device/"+testID(1).String()].write.Tokens() > 18 {
+		t.Fatal("renewal reset budget")
+	}
+}
+
+// Pin both sides of the table: specialized routes are explicitly metered in the
+// server registrations, rather than handled by routeClass's read/write fallback.
+func TestSpecializedRateTableMatchesServerRegistrations(t *testing.T) {
+	for _, tc := range []struct{ file, route, meter, method, path, want string }{
+		{"groups.go", "POST /v1/groups/{id}/commit", "dsClassCommit", "POST", "groups/x/commit", "commit"},
+		{"groups.go", "POST /v1/groups/{id}/resync", "dsClassCommit", "POST", "groups/x/resync", "commit"},
+		{"groups.go", "POST /v1/groups/{id}/proposal", "dsClassProposal", "POST", "groups/x/proposal", "proposal"},
+		{"heal.go", "POST /v1/groups/{id}/heal", "dsClassCommit", "POST", "groups/x/heal", "commit"},
+		{"bot_interaction_group_heal.go", "mux.Handle(\"POST \"+base", "dsClassCommit", "POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
+	} {
+		raw, err := os.ReadFile("../../api/" + tc.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		needle := tc.route
+		if strings.HasPrefix(needle, "POST ") {
+			needle = "\"" + needle + "\""
+		}
+		_, registration, ok := strings.Cut(string(raw), needle)
+		end := strings.Index(registration, "mux.Handle(")
+		if end >= 0 {
+			registration = registration[:end]
+		}
+		if !ok || !strings.Contains(registration, tc.meter) {
+			t.Fatalf("server registration changed: %s", tc.route)
+		}
+		if got := requestClass(tc.method, tc.path); got != tc.want {
+			t.Fatalf("%s: %s", tc.path, got)
+		}
+	}
+	raw, err := os.ReadFile("../../api/keypackages.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "allowDS(h.Limiter, dsClassKeyPackage, keyPackageBucket(session.DeviceID, deviceID))") {
+		t.Fatal("server keypackage meter changed")
+	}
+	defaults, _ := (RateLimits{}).defaults()
+	server := config.Default().Limits.Rate
+	for _, pair := range [][2]float64{{defaults.CommitPerSecond, server.CommitPerSecond}, {defaults.ProposalPerSecond, server.ProposalPerSecond}, {defaults.KeyPackagePerSecond, server.ProposalPerSecond}} {
+		if pair[0] <= 0 || pair[0] >= pair[1] {
+			t.Fatalf("client rate must stay below server: %v", pair)
+		}
+	}
+}
+
+func TestSpecializedBudgetsAreIndependentAndKeyPackagesArePerTarget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		for _, tc := range []struct {
+			method, path string
+			n            int
+		}{
+			{"POST", "groups/x/cursor", 20}, {"POST", "groups/x/commit", 30}, {"POST", "groups/x/proposal", 8},
+			{"GET", "devices/a/keypackage", 8}, {"GET", "devices/b/keypackage", 8},
+		} {
+			for range tc.n {
+				if err := c.waitRate(t.Context(), "token", tc.method, tc.path); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if time.Since(start) != 0 {
+			t.Fatal("independent budgets competed")
+		}
+		if err := c.waitRate(t.Context(), "token", "GET", "devices/a/keypackage"); err != nil {
+			t.Fatal(err)
+		}
+		if time.Since(start) < 2500*time.Millisecond {
+			t.Fatal("keypackage target limit ignored")
+		}
+	})
+}
+
+func TestRetiredSessionDoesNotRecreateTokenBuckets(t *testing.T) {
+	c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99), HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 204, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.discovered.Store(true)
+	retired, err := c.SessionForDevice("old", testID(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"renewed", "latest"} {
+		current, err := c.SessionForDevice(token, testID(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []*Session{retired, current} {
+			if err := s.AdvanceCursor(t.Context(), testID(2), 1, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(c.devices) != 1 || len(c.buckets) != 1 {
+		t.Fatalf("devices=%d buckets=%d", len(c.devices), len(c.buckets))
+	}
+	if c.buckets["device/"+testID(1).String()].write.Tokens() > 17 {
+		t.Fatal("overlapping sessions reset budget")
 	}
 }

@@ -63,6 +63,11 @@ func NormalizeInput(value string) (kind string, canonical string, err error) {
 		}
 	}
 
+	for _, host := range []string{"youtube.com/", "www.youtube.com/", "m.youtube.com/", "music.youtube.com/", "youtu.be/"} {
+		if strings.HasPrefix(value, host) {
+			return normalizeURL("https://" + value)
+		}
+	}
 	if strings.Contains(value, "://") || strings.HasPrefix(value, "//") {
 		k, normalized, parseErr := normalizeURL(value)
 		if parseErr != nil {
@@ -101,7 +106,7 @@ func normalizeURL(raw string) (string, string, error) {
 		return "", "", ErrInvalidInput
 	}
 	values, err := url.ParseQuery(u.RawQuery)
-	if err != nil {
+	if err != nil || strings.HasSuffix(u.RawQuery, "&") {
 		return "", "", ErrInvalidInput
 	}
 	if host == "youtu.be" {
@@ -124,13 +129,20 @@ func normalizeURL(raw string) (string, string, error) {
 		}
 		return "video", videoURL(values.Get("v")), nil
 	}
-	if match := strings.TrimPrefix(u.Path, "/live/"); match != u.Path && idPattern.MatchString(match) && len(values) == 0 {
-		return "video", videoURL(match), nil
+	shareQuery := func(playlist bool) bool {
+		for key, vals := range values {
+			if len(vals) != 1 || (key != "si" && key != "feature" && (!playlist || key != "list")) {
+				return false
+			}
+		}
+		return true
 	}
-	if match := strings.TrimPrefix(u.Path, "/shorts/"); match != u.Path && idPattern.MatchString(match) && len(values) == 0 {
-		return "video", videoURL(match), nil
+	for _, prefix := range []string{"/live/", "/shorts/", "/embed/"} {
+		if match := strings.TrimPrefix(u.EscapedPath(), prefix); match != u.EscapedPath() && idPattern.MatchString(match) && shareQuery(false) {
+			return "video", videoURL(match), nil
+		}
 	}
-	if u.Path == "/playlist" && len(values) == 1 && values.Has("list") && playlistPattern.MatchString(values.Get("list")) && u.RawQuery == "list="+values.Get("list") {
+	if u.Path == "/playlist" && shareQuery(true) && playlistPattern.MatchString(values.Get("list")) {
 		return "playlist", "https://www.youtube.com/playlist?list=" + values.Get("list"), nil
 	}
 	return "", "", ErrInvalidInput
@@ -266,6 +278,7 @@ func (r MetadataResolver) Resolve(ctx context.Context, input string) ([]music.Tr
 	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
+	ctx = context.WithValue(ctx, diagnosticInputKey{}, input)
 	output, err := r.runner.Run(ctx, r.YTDLP, args, MaxMetadataBytes)
 	if err != nil {
 		return nil, err

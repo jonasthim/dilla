@@ -33,21 +33,22 @@ type QueueStore interface {
 // Supervisor owns the persisted queue and at most one active track for a voice
 // channel. Loading restores metadata only; audio begins only on OpResume.
 type Supervisor struct {
-	mu           sync.Mutex
-	ctx          context.Context
-	channel      id.ID
-	store        QueueStore
-	starter      TrackStarter
-	state        State
-	revision     uint64
-	playback     Playback
-	closed       bool
-	changed      chan struct{}
-	emptyTimer   Timer
-	grace        time.Duration
-	afterFunc    func(time.Duration, func()) Timer
-	onEmpty      func()
-	stopLifetime func() bool
+	mu                         sync.Mutex
+	ctx                        context.Context
+	channel                    id.ID
+	store                      QueueStore
+	starter                    TrackStarter
+	state                      State
+	revision                   uint64
+	playback                   Playback
+	closed                     bool
+	changed                    chan struct{}
+	emptyTimer                 Timer
+	grace                      time.Duration
+	afterFunc                  func(time.Duration, func()) Timer
+	onEmpty                    func()
+	stopLifetime               func() bool
+	onAutomaticPlaybackFailure func(context.Context, error)
 	// Task 10c: leave the voice room after nothing has played for idleFor() (read when the
 	// supervisor goes idle, so a changed setting applies to the next idle period).
 	idleFor   func() time.Duration
@@ -112,6 +113,12 @@ func (s *Supervisor) leaveIdle(gen uint64) {
 type Timer interface{ Stop() bool }
 
 type SupervisorOption func(*Supervisor)
+
+// WithAutomaticPlaybackFailure reports startup failures during EOF advancement.
+// Explicit starts return their errors to the interaction handler for logging.
+func WithAutomaticPlaybackFailure(report func(context.Context, error)) SupervisorOption {
+	return func(s *Supervisor) { s.onAutomaticPlaybackFailure = report }
+}
 
 // WithEmptyRoomGrace schedules onEmpty after grace. onEmpty is only a callback;
 // the caller must perform the actual call leave operation.
@@ -305,6 +312,9 @@ func (s *Supervisor) monitor(p Playback) {
 	s.state, s.revision = next, revision
 	if !s.state.Paused && s.state.Current != nil {
 		if err := s.startLocked(s.ctx, false); err != nil {
+			if s.onAutomaticPlaybackFailure != nil {
+				s.onAutomaticPlaybackFailure(s.ctx, err)
+			}
 			_ = s.pauseLocked(s.ctx)
 		}
 	}

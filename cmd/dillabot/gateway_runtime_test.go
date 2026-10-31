@@ -385,3 +385,19 @@ func TestInteractionRateLimitStopsBatchAndDefersFromCompletion(t *testing.T) {
 		t.Fatalf("not all deferred groups resumed: %d calls", calls)
 	}
 }
+
+func TestInteractionRetryAfterDeferralCappedAtThirtySeconds(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, group := id.New(), id.New()
+	retry := ^uint64(0)
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+		return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+	})
+	now := time.Unix(1800000000, 0)
+	runtime.now = func() time.Time { return now }
+	runtime.notifyInteraction(installation, group)
+	runtime.PollInteractions(t.Context(), now)
+	if got := runtime.deferred[installation].Sub(now); got != 30*time.Second {
+		t.Fatalf("deferral=%s", got)
+	}
+}

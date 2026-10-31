@@ -212,6 +212,16 @@ describe('Bot slash command provider', () => {
     expect(f.musicState.queue).toHaveLength(0);
   });
 
+
+  it('reports neutral copy for status 5 on pause', async () => {
+    const f = fixture({ failedOperations: [13] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const invocation = { commandId: 'pause', args: {} };
+    expect(await capture.value!.handlers.pause!(invocation, commandContext(f.client))).toMatchObject({
+      status: 'failure', message: "Glenn couldn't do that right now. Try again.",
+    });
+  });
+
   it('keeps status 5 with a revision uncertain and reconciles the same enqueue instead of uploading a second effect', async () => {
     const f = fixture({ ambiguousOperations: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());

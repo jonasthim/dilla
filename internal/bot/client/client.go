@@ -71,8 +71,9 @@ type Runtime struct {
 	token string
 }
 type Session struct {
-	c     *Client
-	token string
+	c             *Client
+	token         string
+	deviceRateKey string
 }
 
 func (*Session) String() string   { return "bot client.Session{token:[redacted]}" }
@@ -214,6 +215,26 @@ func (c *Client) endpoint(path string, q url.Values) *url.URL {
 	u.RawPath = ""
 	u.RawQuery = q.Encode()
 	return &u
+}
+
+type deviceRateContextKey struct{}
+
+func (s *Session) rateContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.deviceRateKey == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, deviceRateContextKey{}, s.deviceRateKey)
+}
+
+func (s *Session) do(ctx context.Context, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, error) {
+	return s.c.do(s.rateContext(ctx), s.token, method, path, query, body, maxBytes, mutation)
+}
+
+func (s *Session) doObserved(ctx context.Context, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+	return s.c.doObserved(s.rateContext(ctx), s.token, method, path, query, body, maxBytes, mutation)
 }
 
 func (c *Client) do(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, error) {

@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// RateLimitError recognizes only definitive middleware refusals. Retrying them
+// RateLimitError recognizes definitive rate refusals. Call start can also return
+// 429 after writes and is retry-safe; future in-handler 429s must be audited. Retrying them
 // preserves the exact request binding; ambiguous outcomes keep their old behavior.
 func RateLimitError(err error) *APIError {
 	var refusal *APIError
@@ -57,7 +58,11 @@ func retryDelay(refusal *APIError, attempt int) time.Duration {
 }
 
 func waitRetry(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(max(delay, time.Millisecond))
+	delay = max(delay, time.Millisecond)
+	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
+		return context.DeadlineExceeded
+	}
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -68,6 +73,6 @@ func waitRetry(ctx context.Context, delay time.Duration) error {
 }
 
 func (s *Session) interactionProofRequest(ctx context.Context, path string, request []byte, maxBytes int64, mutation bool) ([]byte, error) {
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, request, maxBytes, mutation)
+	raw, _, err := s.do(ctx, http.MethodPost, path, nil, request, maxBytes, mutation)
 	return raw, err
 }

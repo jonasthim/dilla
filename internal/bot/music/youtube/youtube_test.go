@@ -15,6 +15,12 @@ import (
 
 func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {
 	cases := []struct{ input, kind, canonical string }{
+		{"https://youtube.com/shorts/aqz-KE-bpKQ?si=shared", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/live/aqz-KE-bpKQ?si=shared&feature=share", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/embed/aqz-KE-bpKQ", "video", videoURL("aqz-KE-bpKQ")},
+		{"youtube.com/watch?v=aqz-KE-bpKQ", "video", videoURL("aqz-KE-bpKQ")},
+		{"youtu.be/aqz-KE-bpKQ?si=shared", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/playlist?list=PLabc_123&si=shared", "playlist", "https://www.youtube.com/playlist?list=PLabc_123"},
 		{"instrumental study music", "search", "ytsearch5:instrumental study music"},
 		{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "video", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"},
 		{"https://youtu.be/aqz-KE-bpKQ", "video", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"},

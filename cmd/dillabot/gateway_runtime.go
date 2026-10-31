@@ -233,7 +233,7 @@ func (r *botGatewayRuntime) PollInteractions(ctx context.Context, now time.Time)
 				if refusal.RetryAfterMS != nil {
 					delay = time.Duration(min(*refusal.RetryAfterMS, uint64((1<<63-1)/int64(time.Millisecond)))) * time.Millisecond
 				}
-				r.deferred[w.installation] = completed.Add(max(delay, interactionSpacing))
+				r.deferred[w.installation] = completed.Add(min(max(delay, interactionSpacing), 30*time.Second))
 				r.pendingMu.Unlock()
 				r.notifyInteraction(w.installation, w.group)
 			} else {

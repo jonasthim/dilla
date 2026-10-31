@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -677,7 +679,7 @@ func TestMusicEnqueueResolveFailureIsDefiniteUnavailable(t *testing.T) {
 		t.Fatalf("result=%+v err=%v saves=%d handoffs=%d", result, err, store.saves, handoffs)
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if len(lines) != 2 {
+	if len(lines) != 1 {
 		t.Fatalf("logs: %s", logs.String())
 	}
 	for _, line := range lines {
@@ -696,7 +698,7 @@ func TestMusicEnqueueResolveFailureIsDefiniteUnavailable(t *testing.T) {
 			t.Fatalf("input leaked: %s", line)
 		}
 	}
-	if !strings.Contains(lines[0], `"class":"sandbox_unavailable"`) || !strings.Contains(lines[1], `"reason":"resolve_failed"`) {
+	if !strings.Contains(lines[0], `"reason":"resolve_failed"`) {
 		t.Fatalf("logs: %s", logs.String())
 	}
 }
@@ -921,5 +923,45 @@ func TestMusicEnqueueRejectedInputIsUnavailableWithoutRevision(t *testing.T) {
 	}
 	if _, err = os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("metadata runner was called: %v", err)
+	}
+}
+
+func TestMusicSandboxFailureRedactsContentAndLogsOnce(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "private  query & song"
+	raw := query + " " + url.QueryEscape(query) + " " + url.PathEscape(query) + " https://example.test/secret [youtube] ZYXwvutsrqp: failed"
+	shim := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nprintf '%s\\n' '"+raw+"' >&2\nexit 42\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := youtube.NewMetadataResolver(tool, tool, shim, python)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	channel, community := id.New(), id.New()
+	h := MusicInteractions{Store: &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}, Authority: &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true},
+		Resolver: LoggingMusicTrackResolver{Resolver: resolver, Logger: logger}, Logger: logger, CommunityID: community}
+	result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{query}}, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != 5 {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if strings.Count(logs.String(), "\n") != 1 {
+		t.Fatalf("logs=%s", logs.String())
+	}
+	var row map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &row); err != nil {
+		t.Fatal(err)
+	}
+	if got := row["stderr"]; got != "[redacted] [redacted] [redacted] [redacted] [youtube] [redacted]: failed" {
+		t.Fatalf("stderr=%q", got)
 	}
 }

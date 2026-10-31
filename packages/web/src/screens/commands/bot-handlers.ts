@@ -12,6 +12,7 @@ const ok = (message: string): CommandResult => ({ status: 'success', message, pr
 const fail = (message: string): CommandResult => ({ status: 'failure', message, private: true });
 const uncertain = (message: string): CommandResult => ({ status: 'uncertain', message, private: true });
 const resultError = (error: unknown): CommandResult => {
+  if (error instanceof Error && 'code' in error && error.code === 'operation-unavailable') return fail(t('music.error.operation-unavailable'));
   if (error instanceof Error && 'code' in error && error.code === 'unavailable') return fail(t('music.error.unavailable'));
   if (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)
     return fail(error.message);

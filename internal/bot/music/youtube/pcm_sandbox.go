@@ -84,11 +84,6 @@ func (s PCMStarter) executable(path, name string) (string, error) {
 }
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (_ *isolatedPCM, failure error) {
-	defer func() {
-		if failure != nil {
-			diagnosticLogger(ctx).WarnContext(ctx, "bot YouTube sandbox start failed", "class", FailureClass(failure), "stderr", FailureStderr(failure))
-		}
-	}()
 	root, err := newSandboxTempDir()
 	if err != nil {
 		return nil, ErrSandboxUnavailable
@@ -108,7 +103,18 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}
-	process := &isolatedPCM{stdout: stdout, cmd: cmd, ctx: runCtx, cancel: cancel, broker: broker, root: root, done: make(chan struct{})}
+	var inputs []string
+	if len(workerArgs) > 0 {
+		if workerArgs[0] == "pcm" && len(workerArgs) > 4 {
+			inputs = append(inputs, workerArgs[4])
+		} else if workerArgs[0] == "exec" {
+			inputs = append(inputs, workerArgs[len(workerArgs)-1])
+		}
+	}
+	if input, ok := ctx.Value(diagnosticInputKey{}).(string); ok {
+		inputs = append(inputs, input)
+	}
+	process := &isolatedPCM{diagnosticInputs: inputs, stdout: stdout, cmd: cmd, ctx: runCtx, cancel: cancel, broker: broker, root: root, done: make(chan struct{})}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = stdout.Close()
@@ -213,17 +219,18 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 }
 
 type isolatedPCM struct {
-	stdout   io.ReadCloser
-	cmd      *exec.Cmd
-	ctx      context.Context
-	cancel   context.CancelFunc
-	broker   *egressBroker
-	root     string
-	done     chan struct{}
-	once     sync.Once
-	err      error
-	exitCode int
-	ctxErr   error
+	diagnosticInputs []string
+	stdout           io.ReadCloser
+	cmd              *exec.Cmd
+	ctx              context.Context
+	cancel           context.CancelFunc
+	broker           *egressBroker
+	root             string
+	done             chan struct{}
+	once             sync.Once
+	err              error
+	exitCode         int
+	ctxErr           error
 }
 
 func (p *isolatedPCM) wait() {
@@ -342,5 +349,5 @@ func (p *isolatedPCM) failure(cause error) error {
 	if stderr != nil {
 		text = stderr.String()
 	}
-	return &ProcessError{Cause: cause, Stderr: text, ExitCode: p.exitCode}
+	return newProcessError(cause, text, p.exitCode, p.diagnosticInputs...)
 }

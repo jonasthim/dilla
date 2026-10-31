@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/url"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -96,9 +99,47 @@ func WithDiagnosticLogger(ctx context.Context, logger *slog.Logger) context.Cont
 	}
 	return context.WithValue(ctx, diagnosticLoggerKey{}, logger)
 }
-func diagnosticLogger(ctx context.Context) *slog.Logger {
-	if logger, ok := ctx.Value(diagnosticLoggerKey{}).(*slog.Logger); ok {
-		return logger
+
+type diagnosticInputKey struct{}
+
+var diagnosticURL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s]+`)
+var diagnosticYouTubeToken = regexp.MustCompile(`(\[youtube[^\]]*\]\s+)[^\r\n]*?:`)
+
+// Redact raw text before normalization or truncation can split a private value.
+func newProcessError(cause error, raw string, exitCode int, inputs ...string) *ProcessError {
+	var secrets []string
+	for _, input := range inputs {
+		if input == "" {
+			continue
+		}
+		secrets = append(secrets, input)
+		if kind, canonical, err := NormalizeInput(input); err == nil {
+			secrets = append(secrets, canonical)
+			if kind == "search" {
+				secrets = append(secrets, strings.TrimPrefix(canonical, "ytsearch5:"))
+			} else {
+				u, _ := url.Parse(canonical)
+				secrets = append(secrets, u.Query().Get("v"), u.Query().Get("list"))
+			}
+		}
 	}
-	return slog.Default()
+	var encoded []string
+	for _, secret := range secrets {
+		if secret != "" {
+			encoded = append(encoded, secret, url.QueryEscape(secret), url.PathEscape(secret))
+		}
+	}
+	sort.Slice(encoded, func(i, j int) bool { return len(encoded[i]) > len(encoded[j]) })
+	patterns := []string{diagnosticURL.String()}
+	for _, secret := range encoded {
+		patterns = append(patterns, regexp.QuoteMeta(secret))
+	}
+	pattern := regexp.MustCompile(strings.Join(patterns, "|"))
+	// Replace URLs and known secrets in one pass so short queries cannot rewrite
+	// markers or strip a URL scheme before the URL matcher sees it.
+	raw = pattern.ReplaceAllString(raw, "[redacted]")
+	// Known search text (which can contain colons) is gone before the generic
+	// extractor token fallback handles IDs belonging to other playlist videos.
+	raw = diagnosticYouTubeToken.ReplaceAllString(raw, "${1}[redacted]:")
+	return &ProcessError{Cause: cause, Stderr: DiagnosticText(raw), ExitCode: exitCode}
 }

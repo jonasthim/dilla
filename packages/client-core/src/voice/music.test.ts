@@ -260,6 +260,21 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
+
+  it('uses neutral unavailable copy for pause without a current call', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const pause = f.adapter.pause(CHANNEL, true);
+    await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
+    const rejected = expect(pause).rejects.toMatchObject({ code: 'operation-unavailable', message: "The Bot could not do that right now. Try again." });
+    f.answer(f.getRequest(13), 5, null, encode([]));
+    await rejected;
+    unsubscribe();
+  });
+
   it.each([null, '2'])('classifies durable status 5 with revision %s when restoring an attempt', async revision => {
     const f = fixture();
     const original = f.client.call.bind(f.client);

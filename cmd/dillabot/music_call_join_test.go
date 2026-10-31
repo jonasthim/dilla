@@ -3,14 +3,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
+	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -270,5 +277,78 @@ func TestMusicCallJoinBackoffHonorsCancellation(t *testing.T) {
 	cancel()
 	if err := waitMusicCallJoin(ctx, 2*time.Second); !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait=%v", err)
+	}
+}
+
+type unusableMusicJoinCore struct{ musicJoinCoreFake }
+
+func (f *unusableMusicJoinCore) GroupIntentResult(context.Context, id.ID) (*native.GroupIntentResult, error) {
+	return &native.GroupIntentResult{Kind: 5, Group: f.group, State: 0}, nil
+}
+func TestMusicCallJoinUnusablePendingOutsideJoiningIsTerminal(t *testing.T) {
+	calls := &musicJoinCallsFake{channel: id.New(), group: id.New()}
+	core := &unusableMusicJoinCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	waits := 0
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, id.New(), id.New(), calls.channel, 1, func(context.Context, time.Duration) error { waits++; return nil })
+	var terminal *errMusicCallJoinUnusable
+	if !errors.As(err, &terminal) || terminal.Retryable() || waits != 0 || calls.reads != 1 || core.discards != 0 || core.forgets != 0 {
+		t.Fatalf("error=%v waits=%d reads=%d discards=%d forgets=%d", err, waits, calls.reads, core.discards, core.forgets)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("logs=%s", logs.String())
+	}
+}
+
+type joinFailureMusicAuthority struct{ channel id.ID }
+
+func (a joinFailureMusicAuthority) CurrentCall(context.Context, id.ID) (service.MusicCallBinding, error) {
+	return service.MusicCallBinding{CallID: a.channel, ChannelID: a.channel, Active: true}, nil
+}
+func (joinFailureMusicAuthority) CanUse(context.Context, service.InteractionActor, service.MusicCallBinding) (bool, error) {
+	return true, nil
+}
+func (joinFailureMusicAuthority) CanDJ(context.Context, service.InteractionActor, service.MusicCallBinding) (bool, error) {
+	return true, nil
+}
+func (joinFailureMusicAuthority) CanEmergencyStop(context.Context, service.InteractionActor, service.MusicCallBinding) (bool, error) {
+	return true, nil
+}
+
+func TestMusicCallJoinUnusablePendingLogsOnceAtInteraction(t *testing.T) {
+	channel, community, installation := id.New(), id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "track", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(t.Context(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := &musicJoinCallsFake{channel: channel, group: id.New()}
+	core := &unusableMusicJoinCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(previous)
+	h := service.MusicInteractions{Store: store, Authority: joinFailureMusicAuthority{channel}, CommunityID: community, InstallationID: installation, Logger: logger,
+		OnPersistedSnapshot: func(ctx context.Context, _, _, _ id.ID, _ music.State, revision uint64, _ bool) (uint64, error) {
+			return revision, retryMusicCallGroupJoin(ctx, calls, core, installation, community, channel, 1, func(context.Context, time.Duration) error { t.Fatal("terminal error retried"); return nil })
+		}}
+	result, err := h.Handlers()[protocol.OpMusicResume].Handle(t.Context(), service.InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel, Revision: &saved.Revision, Args: []any{}})
+	if err != nil || result.Status != 5 {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), "unusable_pending") {
+		t.Fatalf("logs=%s", logs.String())
 	}
 }

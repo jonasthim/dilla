@@ -35,15 +35,8 @@ var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
 // musicSnapshotCommitCallback hands a committed revision to the retained
 // supervisor. Only an explicit Resume or a Skip that continues existing playback starts audio.
 func musicSnapshotCommitCallback(registry *musicQueueRegistry, logger *slog.Logger) func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
-	if logger == nil {
-		logger = slog.Default()
-	}
 	return func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, startPlayback bool) (uint64, error) {
-		appliedRevision, err := registry.ApplyPersistedSnapshot(ctx, installation, community, channel, state, revision, startPlayback)
-		if err != nil {
-			logger.Warn("persisted music queue snapshot could not refresh retained runtime", "installation_id", installation.String(), "community_id", community.String(), "channel_id", channel.String(), "revision", revision, "error", err.Error())
-		}
-		return appliedRevision, err
+		return registry.ApplyPersistedSnapshot(ctx, installation, community, channel, state, revision, startPlayback)
 	}
 }
 
@@ -375,7 +368,9 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if store == nil || starter.OptionsFor == nil {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
-	var options []music.SupervisorOption
+	options := []music.SupervisorOption{music.WithAutomaticPlaybackFailure(func(ctx context.Context, err error) {
+		slog.WarnContext(ctx, "bot automatic music playback failed", "channel_id", channel.String(), "class", youtube.FailureClass(err), "stderr", youtube.FailureStderr(err))
+	})}
 	if starter.IdleLeaveAfter != nil {
 		options = append(options, music.WithIdleLeave(starter.IdleLeaveAfter, nil))
 	}

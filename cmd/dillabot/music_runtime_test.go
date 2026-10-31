@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -264,7 +265,7 @@ func TestMusicSnapshotCommitCallbackRefreshesPausedMetadataAndToleratesMissingRu
 		t.Fatalf("retained state=%+v, want paused revision %d", state, saved.Revision)
 	}
 	// Reconcile may tear down a runtime between the commit and this callback.
-	// That condition is logged and leaves the committed snapshot for later restore.
+	// The caller logs that condition; the committed snapshot remains for later restore.
 	_, _ = musicSnapshotCommitCallback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(context.Background(), installation, community, channel, saved.State, saved.Revision, false)
 }
 
@@ -926,5 +927,68 @@ func TestPrivateCommandHelperSurvivesMusicDisableAndClosesOnInstallationRemoval(
 				t.Fatal("removed installation retained its command helper")
 			}
 		})
+	}
+}
+
+type eofRuntimePublisherStarter struct{ publisher *liveRuntimePublisher }
+
+func (p eofRuntimePublisherStarter) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
+	return p.publisher, nil
+}
+
+func TestAutomaticPlaybackFailureLogsOnce(t *testing.T) {
+	community, channel := id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	publisher := &liveRuntimePublisher{done: make(chan struct{})}
+	calls := 0
+	starter := session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+		calls++
+		if calls > 1 {
+			return session.Options{}, &youtube.ProcessError{Cause: youtube.ErrExtractFailed, Stderr: "[youtube] [redacted]: failed"}
+		}
+		group := id.New()
+		return session.Options{Community: community, Channel: channel, Provider: music.ProviderYouTube, Track: "abcdefghijk",
+			Call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://example.invalid", Token: "test"}, Group: group,
+			PCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: eofRuntimePublisherStarter{publisher}, Epochs: runtimeEpochs{}}, nil
+	}}
+	supervisor, err := newMusicSupervisor(t.Context(), channel, store, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	tracks := []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}, {ID: "b", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "B", RequesterID: "member"}}
+	state, err := supervisor.Apply(t.Context(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	close(publisher.done)
+	deadline := time.Now().Add(time.Second)
+	for !supervisor.State().Paused && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !supervisor.State().Paused {
+		t.Fatal("automatic startup failure did not pause queue")
+	}
+	if strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), `"stderr":"[youtube] [redacted]: failed"`) {
+		t.Fatalf("logs=%s", logs.String())
+	}
+}
+
+func TestSnapshotCallbackLeavesFailureLoggingToInteraction(t *testing.T) {
+	var logs bytes.Buffer
+	_, err := musicSnapshotCommitCallback(nil, slog.New(slog.NewJSONHandler(&logs, nil)))(t.Context(), id.New(), id.New(), id.New(), music.InitialState(), 1, true)
+	if err == nil || logs.Len() != 0 {
+		t.Fatalf("error=%v logs=%s", err, logs.String())
 	}
 }

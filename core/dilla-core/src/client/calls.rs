@@ -357,7 +357,7 @@ impl ClientCore {
         let row = self.call_row(id)?;
         if row.state == STATE_GONE {
             return self.write(|_, u| {
-                u.with_conn(|c| super::bot_intents::discard_pending_external_joins(c, id))?;
+                u.with_conn(|c| super::bot_intents::discard_pending_for_forgotten_group(c, id))?;
                 Ok(())
             });
         }
@@ -367,7 +367,7 @@ impl ClientCore {
                 g.delete(ctx.provider)?;
             }
             u.with_conn(|c| {
-                super::bot_intents::discard_pending_external_joins(c, id)?;
+                super::bot_intents::discard_pending_for_forgotten_group(c, id)?;
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],

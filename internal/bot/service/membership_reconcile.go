@@ -413,7 +413,6 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		return out, errors.New("native interaction group set exceeds bound")
 	}
 	r.idlePolls.mu.Lock()
-	defer r.idlePolls.mu.Unlock()
 	// Discard removed groups so the schedule stays bounded by the current set.
 	active := make(map[id.ID]bool, len(interactionGroups))
 	for _, g := range interactionGroups {
@@ -424,6 +423,7 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 			delete(r.idlePolls.groups, group)
 		}
 	}
+	r.idlePolls.mu.Unlock()
 	for i, g := range interactionGroups {
 		if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
 			return out, client.ErrProtocol
@@ -439,7 +439,9 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 			continue
 		}
 		now := r.source.options.now()
+		r.idlePolls.mu.Lock()
 		idle := r.idlePolls.groups[g.Group]
+		r.idlePolls.mu.Unlock()
 		if only == nil && idle.descriptor == g && now.Before(idle.next) {
 			continue
 		}
@@ -449,6 +451,7 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		}
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
+		r.idlePolls.mu.Lock()
 		if r.idlePolls.groups == nil {
 			r.idlePolls.groups = make(map[id.ID]interactionIdlePoll)
 		}
@@ -458,6 +461,7 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		} else {
 			delete(r.idlePolls.groups, g.Group)
 		}
+		r.idlePolls.mu.Unlock()
 	}
 	return out, nil
 }

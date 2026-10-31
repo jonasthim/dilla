@@ -1049,3 +1049,57 @@ fn bot_call_group_forget_rolls_back_intent_and_mls_together() {
     bot.call_group_forget(&GROUP).expect("retry forget");
     assert_eq!(result(&bot, &OP_JOIN), Some((5, GROUP, 2, None)));
 }
+
+#[test]
+fn bot_call_group_forget_discards_create_and_commit_only_for_forgotten_group() {
+    for commit in [false, true] {
+        let connection = conn();
+        let mut bot = ready_bot(connection.clone());
+        bot.bot_group_create(&OPERATION, &GROUP, &CHANNEL, 1, 1, &[0x88; 32])
+            .expect("create call");
+        let op = if commit {
+            bot.bot_group_registered(&OPERATION, &GROUP, 1)
+                .expect("register call");
+            bot.bot_commit_build(&OP_COMMIT, &GROUP, &[0x80])
+                .expect("stage commit");
+            OP_COMMIT
+        } else {
+            OPERATION
+        };
+        bot.bot_group_create(&OP_JOIN, &GROUP_TWO, &[0x79; 16], 1, 1, &[0x88; 32])
+            .expect("other create");
+        bot.bot_group_registered(&OP_JOIN, &GROUP_TWO, 1)
+            .expect("other active group");
+        bot.bot_commit_build(&[0x5e; 16], &GROUP_TWO, &[0x80])
+            .expect("other live commit");
+        let other = result(&bot, &[0x5e; 16]);
+        let before = result(&bot, &op);
+        connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_forget BEFORE UPDATE OF state ON app_groups BEGIN SELECT RAISE(ABORT,'injected forget failure'); END").unwrap();
+        bot.call_group_forget(&GROUP)
+            .expect_err("forget rolls back");
+        assert_eq!(result(&bot, &op), before);
+        connection
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_forget")
+            .unwrap();
+        bot.call_group_forget(&GROUP).expect("forget");
+        assert_eq!(
+            result(&bot, &op),
+            Some((if commit { 9 } else { 2 }, GROUP, 2, None))
+        );
+        assert_eq!(
+            result(&bot, &[0x5e; 16]),
+            other,
+            "other active group's live record untouched"
+        );
+        // A late discard/abort is idempotent with the same resolution hash.
+        if commit {
+            bot.bot_commit_abort(&op, &GROUP).expect("late abort");
+        } else {
+            bot.bot_group_discard(&op, &GROUP).expect("late discard");
+        }
+        bot.call_group_forget(&GROUP)
+            .expect("gone forget remains idempotent");
+    }
+}
