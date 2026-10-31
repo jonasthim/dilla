@@ -5,10 +5,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -314,5 +318,79 @@ func TestGatewayCommandIntakeReadsPrivateSourcesBeforeDispatch(t *testing.T) {
 				t.Fatalf("steps=%v, want %v", steps, want)
 			}
 		})
+	}
+}
+
+// probeIntakePriority makes an actual client request at each intake boundary.
+// A background context would defer locally before reaching the transport.
+type probeIntakePriority struct {
+	api   *client.Client
+	calls int
+}
+
+func (p *probeIntakePriority) probe(ctx context.Context) error {
+	p.calls++
+	_, err := p.api.Discover(ctx)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusServiceUnavailable {
+		return fmt.Errorf("priority was lost: %w", err)
+	}
+	return nil
+}
+func (p *probeIntakePriority) ReconcileInteractionGroupOnce(ctx context.Context, _ *client.Session, _ id.ID) (service.MembershipResult, error) {
+	return service.MembershipResult{}, p.probe(ctx)
+}
+func (p *probeIntakePriority) RefreshPendingLeaves(ctx context.Context, _ *client.Session) (service.TrustRefresh, error) {
+	return service.TrustRefresh{}, p.probe(ctx)
+}
+func (p *probeIntakePriority) DrainHolding(ctx context.Context, _ map[id.ID]bool) (service.GroupEventPollResult, error) {
+	return service.GroupEventPollResult{}, p.probe(ctx)
+}
+func TestInteractionFastPathPropagatesPriorityThroughIntake(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	api, err := client.New(client.Config{BaseURL: server.URL, InstanceID: id.New(), AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &probeIntakePriority{api: api}
+	poll := newInteractionIntakePoller(probe, probe, nil, probe, noUnrefreshed(t))
+	ctx := client.WithBackgroundYield(t.Context(), func() bool { return true })
+	if err := poll(ctx, id.New()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.calls != 3 {
+		t.Fatalf("priority checked at %d intake boundaries", probe.calls)
+	}
+}
+
+func TestInteractionEventPropagatesPriorityThroughReply(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	api, err := client.New(client.Config{BaseURL: server.URL, InstanceID: id.New(), AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &probeIntakePriority{api: api}
+	event := native.GroupEvent{DeliveryID: 1, Group: id.New()}
+	handler := newInteractionEventHandler(
+		interactionGroupInspectorFunc(func(ctx context.Context, group id.ID) (native.GroupInfo, error) {
+			return native.GroupInfo{ID: group, Kind: 3}, probe.probe(ctx)
+		}),
+		interactionDispatcherFunc(func(ctx context.Context, _ native.GroupEvent) (string, error) { return "reply", probe.probe(ctx) }),
+		interactionResponseSenderFunc(func(ctx context.Context, _ native.GroupEvent, _ string) (bool, error) { return true, probe.probe(ctx) }),
+	)
+	ctx := client.WithBackgroundYield(t.Context(), func() bool { return true })
+	if err := handler.HandleGroupEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if probe.calls != 3 {
+		t.Fatalf("priority checked at %d event boundaries", probe.calls)
 	}
 }

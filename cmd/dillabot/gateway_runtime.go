@@ -108,6 +108,8 @@ func (r *botGatewayRuntime) notifyInteraction(installation, group id.ID) {
 // SetInteractionPoller registers the installation's fast path for interaction-group messages;
 // nil removes it while reconciliation rebuilds the installation.
 func (r *botGatewayRuntime) SetInteractionPoller(installation id.ID, poll func(context.Context, id.ID) error) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
 	if r.interactionPollers == nil {
 		r.interactionPollers = map[id.ID]func(context.Context, id.ID) error{}
 	}
@@ -157,6 +159,21 @@ func (r *botGatewayRuntime) NextInteraction(now time.Time) (time.Duration, bool)
 		}
 	}
 	return next, found
+}
+
+// backgroundYieldReady is checked on the service goroutine between requests.
+// suspended is a prior fast path temporarily removed during a reconcile pass;
+// that path is restored when local pacing defers the pass.
+func (r *botGatewayRuntime) backgroundYieldReady(now time.Time, suspended id.ID) bool {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	for installation, groups := range r.pending {
+		if len(groups) != 0 && (r.interactionPollers[installation] != nil || installation == suspended) &&
+			r.budgetLocked(installation).delay(now) <= 0 && !now.Before(r.deferred[installation]) {
+			return true
+		}
+	}
+	return false
 }
 
 // PollInteractions syncs up to interactionGroupCap messaged interaction groups, taken only from
@@ -267,7 +284,7 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 			<-e.done
 			delete(r.entries, installation)
 			delete(r.pollers, installation)
-			delete(r.interactionPollers, installation)
+			r.SetInteractionPoller(installation, nil)
 		}
 	}
 	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user})
@@ -335,7 +352,7 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			<-e.done
 			delete(r.entries, installation)
 			delete(r.pollers, installation)
-			delete(r.interactionPollers, installation)
+			r.SetInteractionPoller(installation, nil)
 		}
 	}
 	// The removed installations' gateway goroutines have ended (<-e.done above), so nothing adds
@@ -356,7 +373,7 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 	r.pendingMu.Unlock()
 	for installation := range r.interactionPollers {
 		if !keep[installation] {
-			delete(r.interactionPollers, installation)
+			r.SetInteractionPoller(installation, nil)
 		}
 	}
 	for installation := range r.idlePolls {
@@ -375,7 +392,7 @@ func (r *botGatewayRuntime) Drop(installation id.ID) {
 		<-e.done
 		delete(r.entries, installation)
 		delete(r.pollers, installation)
-		delete(r.interactionPollers, installation)
+		r.SetInteractionPoller(installation, nil)
 	}
 }
 

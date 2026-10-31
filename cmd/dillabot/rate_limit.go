@@ -26,3 +26,12 @@ func cleanupUnreadyInstallation(installation id.ID, ready bool, passErr error, r
 		moderation.Disable(installation)
 	}
 }
+
+// A deferred channel read must retain the helper and the existing music handlers.
+func cleanupFailedMusicRestore(installation id.ID, err error, registry *musicQueueRegistry) *client.APIError {
+	if refusal := reconciliationRateLimit(err); refusal != nil {
+		return refusal
+	}
+	_ = registry.Disable(installation)
+	return nil
+}

@@ -98,6 +98,9 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 			fast = nil
 		}
 	}
+	// A prior wait may have consumed the gateway hint before its interval fired.
+	// Re-arm durable pending work when a sweep returns, including a yielded sweep.
+	arm()
 	for {
 		select {
 		case <-ctx.Done():

@@ -8,6 +8,8 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 
@@ -54,9 +56,112 @@ func (r RateLimits) defaults() (RateLimits, error) {
 	return r, nil
 }
 
+type interactiveContextKey struct{}
+
+// WithInteractive marks a person's command and its downstream requests.
+func WithInteractive(ctx context.Context) context.Context {
+	return context.WithValue(ctx, interactiveContextKey{}, true)
+}
+
+type backgroundYieldContextKey struct{}
+
+// WithBackgroundYield lets the single-threaded service defer a sweep between
+// requests when gateway work is ready. Interactive contexts bypass the check.
+// ready must be safe to call on the requesting goroutine.
+func WithBackgroundYield(ctx context.Context, ready func() bool) context.Context {
+	return context.WithValue(ctx, backgroundYieldContextKey{}, ready)
+}
+
+func backgroundShouldYield(ctx context.Context) bool {
+	if interactive, _ := ctx.Value(interactiveContextKey{}).(bool); interactive {
+		return false
+	}
+	ready, _ := ctx.Value(backgroundYieldContextKey{}).(func() bool)
+	return ready != nil && ready()
+}
+
+// A yielded request has not been sent. Use the existing local pacing deferral
+// so callers retain their durable state and retry it on the next sweep.
+func backgroundYieldError() error {
+	retry := uint64(1)
+	return &APIError{Status: http.StatusTooManyRequests, Code: "E_RATE_LIMITED", Outcome: OutcomeDefinitive, RetryAfterMS: &retry}
+}
+
+// priorityLimiter never reserves future tokens. Interactive waiters take the
+// next available token; background waiters sleep while interactive demand exists.
+// Both priorities spend the same bucket, including its initial burst.
+type priorityLimiter struct {
+	*rate.Limiter
+	mu          sync.Mutex
+	interactive int
+	changed     chan struct{}
+}
+
+func newPriorityLimiter(limit rate.Limit, burst int) *priorityLimiter {
+	return &priorityLimiter{Limiter: rate.NewLimiter(limit, burst), changed: make(chan struct{})}
+}
+
+func (l *priorityLimiter) notifyLocked() {
+	close(l.changed)
+	l.changed = make(chan struct{})
+}
+
+func (l *priorityLimiter) Wait(ctx context.Context) error {
+	interactive, _ := ctx.Value(interactiveContextKey{}).(bool)
+	if interactive {
+		l.mu.Lock()
+		l.interactive++
+		l.notifyLocked()
+		l.mu.Unlock()
+		defer func() {
+			l.mu.Lock()
+			l.interactive--
+			l.notifyLocked()
+			l.mu.Unlock()
+		}()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if backgroundShouldYield(ctx) {
+			return backgroundYieldError()
+		}
+		l.mu.Lock()
+		if (interactive || l.interactive == 0) && l.Allow() {
+			l.mu.Unlock()
+			return nil
+		}
+		changed := l.changed
+		delay := time.Duration(math.Ceil(max(0, 1-l.Tokens()) / float64(l.Limit()) * float64(time.Second)))
+		// A background waiter with available tokens still yields to interactive demand.
+		if delay <= 0 {
+			delay = time.Millisecond
+		}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < delay {
+			l.mu.Unlock()
+			return context.DeadlineExceeded
+		}
+		// Check for new gateway work even while waiting for a slow class token.
+		if ready, _ := ctx.Value(backgroundYieldContextKey{}).(func() bool); !interactive && ready != nil {
+			delay = min(delay, 25*time.Millisecond)
+		}
+		l.mu.Unlock()
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-changed:
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+}
+
 type deviceLimiter struct {
-	write, read, message, commit, proposal *rate.Limiter
-	keypackages                            map[string]*rate.Limiter
+	write, read, message, commit, proposal *priorityLimiter
+	keypackages                            map[string]*priorityLimiter
 }
 
 func tokenKey(token string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(token))) }
@@ -125,6 +230,9 @@ func requestClass(method, path string) string {
 }
 
 func (c *Client) waitRate(ctx context.Context, token, method, path string) error {
+	if backgroundShouldYield(ctx) {
+		return backgroundYieldError()
+	}
 	key := tokenKey(token)
 	c.rateMu.Lock()
 	if device, ok := ctx.Value(deviceRateContextKey{}).(string); ok {
@@ -135,22 +243,22 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 	b := c.buckets[key]
 	if b == nil {
 		b = &deviceLimiter{
-			commit:      rate.NewLimiter(rate.Limit(c.rates.CommitPerSecond), c.rates.CommitBurst),
-			proposal:    rate.NewLimiter(rate.Limit(c.rates.ProposalPerSecond), c.rates.ProposalBurst),
-			keypackages: make(map[string]*rate.Limiter),
-			write:       rate.NewLimiter(rate.Limit(c.rates.WritePerSecond), c.rates.WriteBurst),
-			read:        rate.NewLimiter(rate.Limit(c.rates.ReadPerSecond), c.rates.ReadBurst),
-			message:     rate.NewLimiter(rate.Limit(c.rates.MessagePerSecond), c.rates.MessageBurst),
+			commit:      newPriorityLimiter(rate.Limit(c.rates.CommitPerSecond), c.rates.CommitBurst),
+			proposal:    newPriorityLimiter(rate.Limit(c.rates.ProposalPerSecond), c.rates.ProposalBurst),
+			keypackages: make(map[string]*priorityLimiter),
+			write:       newPriorityLimiter(rate.Limit(c.rates.WritePerSecond), c.rates.WriteBurst),
+			read:        newPriorityLimiter(rate.Limit(c.rates.ReadPerSecond), c.rates.ReadBurst),
+			message:     newPriorityLimiter(rate.Limit(c.rates.MessagePerSecond), c.rates.MessageBurst),
 		}
 		c.buckets[key] = b
 	}
 	class := requestClass(method, path)
-	var keypackage *rate.Limiter
+	var keypackage *priorityLimiter
 	if class == "keypackage" {
 		target := strings.Split(strings.Trim(path, "/"), "/")[1]
 		keypackage = b.keypackages[target]
 		if keypackage == nil {
-			keypackage = rate.NewLimiter(rate.Limit(c.rates.KeyPackagePerSecond), c.rates.KeyPackageBurst)
+			keypackage = newPriorityLimiter(rate.Limit(c.rates.KeyPackagePerSecond), c.rates.KeyPackageBurst)
 			b.keypackages[target] = keypackage
 		}
 	}
@@ -174,7 +282,7 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 	return waitLimiter(ctx, limiter)
 }
 
-func waitLimiter(ctx context.Context, limiter *rate.Limiter) error {
+func waitLimiter(ctx context.Context, limiter *priorityLimiter) error {
 	if err := limiter.Wait(ctx); err != nil {
 		if deficit := 1 - limiter.Tokens(); deficit > 0 {
 			retry := uint64(math.Ceil(deficit / float64(limiter.Limit()) * 1000))

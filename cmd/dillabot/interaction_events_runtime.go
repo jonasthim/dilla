@@ -54,6 +54,7 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	if ctx == nil || h.native == nil || h.dispatcher == nil || h.sender == nil || event.DeliveryID == 0 || event.Group.IsZero() {
 		return errors.New("missing or invalid native interaction event dependency")
 	}
+	ctx = client.WithInteractive(ctx)
 	group, err := inspectInteractionEventGroup(ctx, h.native, event)
 	if err != nil {
 		return err

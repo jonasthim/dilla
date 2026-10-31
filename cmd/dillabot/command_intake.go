@@ -97,6 +97,7 @@ type interactionGroupSync interface {
 // reply, as on every path.
 func newInteractionIntakePoller(sync interactionGroupSync, trust intakeTrust, session *client.Session, events holdingEventDrainer, report func(service.TrustRefresh)) func(context.Context, id.ID) error {
 	return func(ctx context.Context, group id.ID) error {
+		ctx = client.WithInteractive(ctx)
 		if _, err := sync.ReconcileInteractionGroupOnce(ctx, session, group); err != nil {
 			return err
 		}

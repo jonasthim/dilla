@@ -431,6 +431,11 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
 	defer gateways.Close()
 	statuses := newRuntimeStatusTracker(Version)
+	// Background requests defer before sending when the gateway fast path can run.
+	// No nested dispatch while service locks are held: unwind the pass first.
+	ctx = client.WithBackgroundYield(ctx, func() bool {
+		return gateways.backgroundYieldReady(time.Now(), id.ID{})
+	})
 	for {
 		started := time.Now()
 		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, statuses, logger); err != nil && !errors.Is(err, context.Canceled) {
@@ -516,6 +521,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		oldTextPoller := gateways.pollers[installation.ID]
 		oldInteractionPoller := gateways.interactionPollers[installation.ID]
+		// A deferred pass restores this poller below. Allow it to yield while the
+		// replacement is being built, but never interrupt first-time setup before
+		// an installation has a fast path capable of consuming the gateway hint.
+		ctx := ctx
+		if oldInteractionPoller != nil {
+			ctx = client.WithBackgroundYield(ctx, func() bool {
+				return gateways.backgroundYieldReady(time.Now(), installation.ID)
+			})
+		}
 		gateways.SetTextPoller(installation.ID, nil)
 		gateways.SetInteractionPoller(installation.ID, nil)
 		nativeClient, retainedNative := musicRegistry.Native(installation.ID, installation.CommunityID).(*native.Client)
@@ -648,6 +662,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
+							var musicDeferred *client.APIError
 							var musicInteractions *service.MusicInteractions
 							var musicProviderStatus service.MusicProviderStatusInteractions
 							var spotifyPCM session.PCMStarter
@@ -712,7 +727,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									runtimeOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
 								if channelsErr != nil {
-									_ = musicRegistry.Disable(installation.ID)
+									musicDeferred = cleanupFailedMusicRestore(installation.ID, channelsErr, musicRegistry)
 									logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
 									ensureErr = errors.Join(ensureErr, channelsErr)
 								} else {
@@ -727,6 +742,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 							}
 							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
+							if musicDeferred != nil {
+								// Keep the prior music handlers until their dependencies can be rebuilt.
+								interactionErr = errors.Join(interactionErr, musicDeferred)
+							}
 							var scheduler *announcements.Scheduler
 							var utilities *utilityRuntime
 							var scheduleErr error

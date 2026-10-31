@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -243,4 +244,24 @@ func TestReconcileIntervalEndsTheWait(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the reconcile interval did not end the wait")
 	}
+}
+
+func TestReconcileWaitResumesPendingInteractionAfterYield(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		r := newBotGatewayRuntime(ctx, nil, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		installation, group := id.New(), id.New()
+		calls := 0
+		r.SetInteractionPoller(installation, func(context.Context, id.ID) error { calls++; cancel(); return nil })
+		r.notifyInteraction(installation, group)
+		<-r.Interaction() // an earlier wait consumed the hint before its reconcile timer fired
+		w := reconcileWait{interval: 30 * time.Second, interaction: r.Interaction(), nextInteraction: r.NextInteraction,
+			pollInteraction: r.PollInteractions, now: time.Now, after: time.After}
+		start := time.Now()
+		w.wait(ctx, start)
+		if calls != 1 || time.Since(start) > 250*time.Millisecond {
+			t.Fatalf("pending command after yield: calls=%d latency=%s", calls, time.Since(start))
+		}
+	})
 }

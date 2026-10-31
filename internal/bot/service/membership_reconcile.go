@@ -368,7 +368,7 @@ func (r *MembershipReconciler) reconcileInteractionGroupOnce(ctx context.Context
 	if group.IsZero() {
 		return MembershipResult{}, errors.New("invalid interaction group")
 	}
-	return r.reconcileInteractionGroups(ctx, session, &group)
+	return r.reconcileInteractionGroups(client.WithInteractive(ctx), session, &group)
 }
 
 func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Context, session membershipSession) (MembershipResult, error) {
