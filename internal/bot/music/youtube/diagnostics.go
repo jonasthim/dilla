@@ -48,6 +48,14 @@ func DiagnosticText(value string) string {
 	return value[:end] + "…"
 }
 
+// metadataError exposes only a fixed validation reason, never extractor output.
+// It preserves the public sentinel for callers using errors.Is.
+type metadataError struct{ reason string }
+
+func (e *metadataError) Error() string    { return "youtube: invalid_metadata:" + e.reason }
+func (e *metadataError) Unwrap() error    { return ErrMetadataInvalid }
+func invalidMetadata(reason string) error { return &metadataError{reason: reason} }
+
 func FailureClass(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -59,6 +67,10 @@ func FailureClass(err error) string {
 	case errors.Is(err, ErrExtractFailed):
 		return "extract_failed"
 	case errors.Is(err, ErrMetadataInvalid):
+		var metadata *metadataError
+		if errors.As(err, &metadata) {
+			return "invalid_metadata:" + metadata.reason
+		}
 		return "metadata_invalid"
 	case errors.Is(err, ErrInvalidInput):
 		return "invalid_input"

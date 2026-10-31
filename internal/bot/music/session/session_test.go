@@ -448,3 +448,30 @@ func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
 	}
 	defer playback.Close()
 }
+
+func TestStartClosesAudioAndLeaseOnLateCallFailure(t *testing.T) {
+	for _, stage := range []string{"call_group_join", "call_token", "call_fields"} {
+		t.Run(stage, func(t *testing.T) {
+			lease, pcm := &leaseStub{}, &pcmStub{}
+			enc := &encoderStub{done: make(chan struct{})}
+			pub := &pubStub{done: make(chan struct{})}
+			o := options(&pcmStart{lease: lease}, enc, pub, lease)
+			o.PCM = plainPCMStart{source: pcm}
+			failure := errors.New("late call failure")
+			o.Call, o.Group = client.Call{}, id.ID{}
+			o.PrepareCall = func(context.Context) (client.Call, error) {
+				if lease.released.Load() != 0 || enc.closed.Load() != 0 {
+					t.Fatal("resources closed before call preparation")
+				}
+				return client.Call{}, &music.StartError{Stage: stage, Cause: failure}
+			}
+			_, err := Start(context.Background(), o)
+			if !errors.Is(err, failure) {
+				t.Fatalf("start = %v", err)
+			}
+			if pcm.closed.Load() != 1 || enc.closed.Load() != 1 || lease.released.Load() != 1 || pub.closed.Load() != 0 {
+				t.Fatalf("cleanup pcm=%d encoder=%d lease=%d publisher=%d", pcm.closed.Load(), enc.closed.Load(), lease.released.Load(), pub.closed.Load())
+			}
+		})
+	}
+}

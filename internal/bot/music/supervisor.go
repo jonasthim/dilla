@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -50,6 +51,8 @@ type Supervisor struct {
 	onEmpty                    func()
 	stopLifetime               func() bool
 	onAutomaticPlaybackFailure func(context.Context, error)
+	onSkipped                  func(context.Context, Track, error)
+	logger                     *slog.Logger
 	// Task 10c: leave the voice room after nothing has played for idleFor() (read when the
 	// supervisor goes idle, so a changed setting applies to the next idle period).
 	idleFor   func() time.Duration
@@ -204,7 +207,7 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 // component. It never writes that mutation again. startPlayback must be true
 // only for a live, explicit Resume or a Skip from an already-playing queue;
 // restored or metadata-only snapshots cannot start audio. A failed start is
-// durably paused at a new CAS revision so the persisted queue cannot claim
+// skipped for a provider failure, or durably paused at a new CAS revision so the persisted queue cannot claim
 // playback is active. Because the external mutation is already committed, the
 // request context does not own runtime adoption; bounded reads and playback
 // use the supervisor's lifetime context instead.
@@ -251,36 +254,61 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 	return s.revision, nil
 }
 
+// WithSkippedTrack reports a failed item only after its removal is durable.
+func WithSkippedTrack(report func(context.Context, Track, error)) SupervisorOption {
+	return func(s *Supervisor) { s.onSkipped = report }
+}
+func WithPlaybackLog(logger *slog.Logger) SupervisorOption {
+	return func(s *Supervisor) { s.logger = logger }
+}
+
 func (s *Supervisor) startLocked(ctx context.Context, explicit bool) error {
-	if s.state.Paused || s.state.Current == nil {
+	for !s.state.Paused && s.state.Current != nil {
+		var p Playback
+		var err error
+		if starter, ok := s.starter.(interface {
+			StartExplicit(context.Context, Track) (Playback, error)
+		}); explicit && ok {
+			p, err = starter.StartExplicit(ctx, *s.state.Current)
+		} else {
+			p, err = s.starter.Start(ctx, *s.state.Current)
+		}
+		if err != nil {
+			var providerFailure interface{ ProviderFailure() bool }
+			if ctx.Err() != nil || !errors.As(err, &providerFailure) || !providerFailure.ProviderFailure() {
+				return err
+			}
+			failed := *s.state.Current
+			// A broken item is removed even in repeat modes; each remaining item is tried once.
+			originalRepeat := s.state.Repeat
+			skipping := cloneState(s.state)
+			skipping.Repeat = RepeatOff
+			next, applyErr := Apply(skipping, s.state.Revision, Operation{Kind: OpSkip, NowMS: time.Now().UnixMilli()})
+			if applyErr != nil {
+				return applyErr
+			}
+			next.Repeat = originalRepeat
+			revision, saveErr := s.store.Save(ctx, s.channel, s.revision, next)
+			if saveErr != nil {
+				return saveErr
+			}
+			s.state, s.revision = next, revision
+			if s.onSkipped != nil {
+				s.onSkipped(ctx, failed, err)
+			}
+			continue
+		}
+		if p == nil || p.Done() == nil {
+			if p != nil {
+				_ = p.Close()
+			}
+			return errors.New("music track starter returned invalid playback")
+		}
+		s.playback = p
+		s.state.PositionMS, s.state.PositionAtMS = 0, time.Now().UnixMilli()
+		go s.monitor(p)
 		return nil
 	}
-	var p Playback
-	var err error
-	// Automatic EOF advancement may reuse a live connection, but must never
-	// authorize a replacement after the server removed or expired that connection.
-	if starter, ok := s.starter.(interface {
-		StartExplicit(context.Context, Track) (Playback, error)
-	}); explicit && ok {
-		p, err = starter.StartExplicit(ctx, *s.state.Current)
-	} else {
-		p, err = s.starter.Start(ctx, *s.state.Current)
-	}
-	if err != nil {
-		return err
-	}
-	if p == nil || p.Done() == nil {
-		if p != nil {
-			_ = p.Close()
-		}
-		return errors.New("music track starter returned invalid playback")
-	}
-	s.playback = p
-	// Ruling AI (fix round 2): the provider has just started this track from its beginning, so the playhead is 0 from this
-	// moment (a slow provider start would otherwise run the client's playhead ahead of the audio). Same revision: the
-	// next commit persists it, and snapshots read this live state (MusicInteractions.CurrentState).
-	s.state.PositionMS, s.state.PositionAtMS = 0, time.Now().UnixMilli()
-	go s.monitor(p)
 	return nil
 }
 
@@ -293,6 +321,15 @@ func (s *Supervisor) monitor(p Playback) {
 		return
 	}
 	s.playback = nil
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if err != nil {
+		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err))
+	} else {
+		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof")
+	}
 	defer s.idleCheckLocked()
 	if err != nil {
 		_ = s.pauseLocked(s.ctx)

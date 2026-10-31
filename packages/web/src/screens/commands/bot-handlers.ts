@@ -3,9 +3,12 @@ import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInt
   COMMANDS, parseSeekPosition, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestionProvider } from './command-types.ts';
 import { BotCommandDialogs, type BotCommandDialogState, type BotCommandDialogValue } from './BotCommandDialogs.tsx';
+import { commandComposerCopy as copy } from './copy.ts';
 import { t } from '../../strings/index.ts';
 
 const ID = /^[0-9a-f]{32}$/u;
+// A link being typed or pasted belongs to strict enqueue validation, never text search.
+const MUSIC_LINK_PREFIX = /^(?:https?(?::|\/|$)|\/\/|www\.|(?:(?:music|m)\.)?youtube\.|youtu\.|open\.spotify\.|spotify:)/iu;
 const MUSIC_COMMAND_IDS = new Set(['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
   'queue remove', 'queue move', 'queue clear', 'music help']);
 const ok = (message: string): CommandResult => ({ status: 'success', message, private: true });
@@ -257,12 +260,18 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         clearMusicCommandAttempt(client, cid, context.requestId);
         return true;
       };
+      const registerDestination = async () => {
+        // Register the command's text channel before Resume can publish media.
+        if (context.binding.channelId !== channelId)
+          await runMutation(() => adapter.announce(channelId, context.binding.channelId, attempt('destination')));
+        return voiceStillCurrent(context, cid, channelId);
+      };
       switch (invocation.commandId) {
         case 'play': {
           const input = invocation.args['query-or-url']?.trim() ?? '';
           if (!input) return fail('Choose a track or provide a supported Spotify or YouTube URL.');
           let selected = input;
-          const url = /^(?:https?:\/\/|spotify:)/iu.test(input);
+          const url = MUSIC_LINK_PREFIX.test(input);
           if (!url) {
             const found = await adapter.search(channelId, input, attempt('search'));
             if (!context.isCurrent() || requireCommunity(context, cid) !== channelId) return uncertain('Search finished after the conversation or voice call changed.');
@@ -276,6 +285,17 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             { clearMusicCommandAttempt(client, cid, context.requestId); return ok('The track was added, but playback was not resumed because the voice call changed.'); }
           const afterEnqueue = adapter.state(channelId);
           if (afterEnqueue.status === 'available' && afterEnqueue.paused) {
+            try {
+              if (!await registerDestination()) {
+                clearMusicCommandAttempt(client, cid, context.requestId);
+                return ok('The track was added, but playback was not resumed because the conversation or voice call changed.');
+              }
+            } catch (error) {
+              const result = resultError(error);
+              if (result.status === 'uncertain') return result;
+              clearMusicCommandAttempt(client, cid, context.requestId);
+              return fail(`Playback did not start (${result.message}). The track is already in the queue.`);
+            }
             try { await runMutation(() => adapter.pause(channelId, false, attempt('resume'))); }
             catch (error) {
               if (resultError(error).status === 'uncertain') return resultError(error);
@@ -284,9 +304,8 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             }
           }
           clearMusicCommandAttempt(client, cid, context.requestId);
-          // Jonas 2026-10-28: a /play that started the music is announced where it ran: Glenn posts "{name} started music in
-          // {room}" with the live player card. The Bot checks the requester, the track and this channel's permissions; the
-          // command's own private result does not wait for it.
+          // Destination registration is separate from the public started-music
+          // card, which remains best effort after playback has actually started.
           const afterPlay = adapter.state(channelId);
           if (fresh.track === null && afterPlay.status === 'available' && afterPlay.track !== null && !afterPlay.paused && context.binding.channelId !== channelId)
             void (async () => { await adapter.announce(channelId, context.binding.channelId, attempt('announce')); })().catch(() => undefined);
@@ -294,8 +313,14 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         }
         case 'pause': return await applyControl(() => adapter.pause(channelId, true, attempt('pause')))
           ? ok('Music paused.') : uncertain('Music was updated, but the active voice call changed before completion.');
-        case 'resume': return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
-          ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        case 'resume': {
+          if (!await registerDestination()) {
+            clearMusicCommandAttempt(client, cid, context.requestId);
+            return fail('The conversation or voice call changed before music resumed.');
+          }
+          return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
+            ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        }
         case 'skip': return await applyControl(() => adapter.skip(channelId, attempt('skip')))
           ? ok('Skipped the current track.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'stop': return await applyControl(() => adapter.stop(channelId, attempt('stop')))
@@ -587,17 +612,20 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       const trimmed = query.trim();
       const key = `${binding.communityId}:${option.name}`;
       const generation = (staleSearch.current.get(key) ?? 0) + 1; staleSearch.current.set(key, generation);
-      if (trimmed.length < 2 || /^(?:https?:\/\/|spotify:)/iu.test(trimmed)) return [];
+      if (trimmed.length < 2 || MUSIC_LINK_PREFIX.test(trimmed)) return [];
       const channelId = currentCallChannel(client);
       if (channelId === null) return [];
       await new Promise(resolve => setTimeout(resolve, 250));
-      if (staleSearch.current.get(key) !== generation) return [];
+      if (staleSearch.current.get(key) !== generation || currentCallChannel(client) !== channelId) return [];
       try {
         const adapter = createVoiceMusicAdapter(client, communityId);
         const rows = await adapter.search(channelId, trimmed, { requestId: childId(randomId(), `suggest:${trimmed}`) });
-        if (staleSearch.current.get(key) !== generation) return [];
+        if (staleSearch.current.get(key) !== generation || currentCallChannel(client) !== channelId) return [];
         return rows.slice(0, 25).map(row => ({ id: row.id, value: row.input, label: row.title, description: row.artist }));
-      } catch { return []; }
+      } catch {
+        if (staleSearch.current.get(key) !== generation || currentCallChannel(client) !== channelId) return [];
+        return Object.assign([], { notice: copy.musicSearchFailed });
+      }
     }
     return [];
   }, [client, communityId]);

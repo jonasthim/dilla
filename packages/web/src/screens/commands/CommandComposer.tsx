@@ -187,7 +187,8 @@ export function CommandComposer(props: CommandComposerProps): React.JSX.Element 
         if (suggestionsGeneration.current.get(option.name) !== generation || contextNow.current !== requestedContext) return;
         setFields(previous => {
           const current = previous[option.name];
-          return current?.text === field.text ? { ...previous, [option.name]: { ...current, suggestions: [] } } : previous;
+          return current?.text === field.text
+            ? { ...previous, [option.name]: { ...current, suggestions: Object.assign([], { notice: copy.suggestionsFailed }) } } : previous;
         });
       });
     }

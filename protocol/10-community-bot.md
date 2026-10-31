@@ -256,7 +256,9 @@ For `music.search`, successful data is `[1, tracks]`, with at most five YouTube
 track tuples. Each tuple is `[queue_item_id, provider, canonical_track_id, title,
 artist, album, duration_ms, requester_id]`, matching the track tuple in
 `music.state`; search tuples use the resolver's stable `yt:<video-id>` ID and an
-empty requester ID. YouTube `canonical_track_id` is the raw 11-character video
+empty requester ID. A flat search suggestion may report duration 0 when unknown;
+enqueue resolves complete metadata and still requires a valid duration.
+YouTube `canonical_track_id` is the raw 11-character video
 ID stored in the queue; the playback adapter converts it to the validated watch
 URL used by the provider. The entire data array is at most 2400 encoded bytes; if the
 provider results do not fit, the server returns the largest prefix that fits.
@@ -284,7 +286,18 @@ read the stamp only when slots 10 and 11 are present, and ignore later slots.
 Reading the state requires the actor's current View channel permission on the
 voice channel, resolved with its overrides.
 
-`music.announce` posts the one public "started music" message: body
+Before starting playback, clients use the existing `music.announce` request to
+register the command's text channel. While the queue is idle or paused, the Bot
+checks DJ authority and the named text channel's view, send and history permissions
+and MLS binding, then acknowledges registration without posting. There is no new
+request field. A provider-class start failure removes that item durably and tries
+the next item, ignoring repeat for failed items. Each item is tried at most once
+per Resume; an exhausted queue is empty and paused. Call, room, cancellation and
+busy-slot failures pause without removing the current item. Each skipped item gets
+a title-only notice in the last registered command text channel after authority is
+rechecked. With no destination, the Bot logs the skip and posts nothing.
+
+After playback starts, `music.announce` posts the one public "started music" message: body
 `Music started.\n[dilla-music:v1:<voice_channel>:<requester>:<queue_item>]`,
 sent through the Bot's MLS group with a durable receipt, into the named text
 channel's group. The Bot accepts it only from the requester of the current,

@@ -2,7 +2,9 @@ package youtube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,7 +55,7 @@ func TestNormalizeInputRejectsUnsafeURLsAndExtractorSyntax(t *testing.T) {
 }
 
 func TestResolveBuildsBoundedQueueDescriptors(t *testing.T) {
-	body := `{"_type":"playlist","extractor_key":"Youtube","playlist_count":2,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one","duration":12.345,"availability":"public"},{"_type":"url","ie_key":"Youtube","id":"BaW_jenozKc","title":"two"}]}`
+	body := `{"_type":"playlist","extractor_key":"Youtube","playlist_count":2,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one","duration":12.345,"availability":"public"},{"_type":"url","ie_key":"Youtube","id":"BaW_jenozKc","title":"two","duration":1}]}`
 	runner := runnerFunc(func(_ context.Context, executable string, args []string, limit int) ([]byte, error) {
 		if executable != "/qualified/yt-dlp" || limit != MaxMetadataBytes {
 			t.Fatalf("runner executable/limit = %q/%d", executable, limit)
@@ -68,7 +70,7 @@ func TestResolveBuildsBoundedQueueDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tracks) != 2 || tracks[0].ID != "yt:aqz-KE-bpKQ" || tracks[0].Provider != "youtube" || tracks[0].DurationMS != 12345 || tracks[1].DurationMS != 0 {
+	if len(tracks) != 2 || tracks[0].ID != "yt:aqz-KE-bpKQ" || tracks[0].Provider != "youtube" || tracks[0].DurationMS != 12345 || tracks[1].DurationMS != 1000 {
 		t.Fatalf("resolved descriptors = %#v", tracks)
 	}
 }
@@ -413,5 +415,120 @@ func TestNormalizeInputAcceptsShareAndAddressBarForms(t *testing.T) {
 		if _, _, err := NormalizeInput(input); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("accepted %q", input)
 		}
+	}
+}
+
+// The fixture is a field projection of a real pinned yt-dlp response, not a
+// handcrafted response. See testdata/README.md for the exact command.
+func TestResolveRecordedPinnedYTDLPVideo(t *testing.T) {
+	body, err := os.ReadFile("testdata/yt-dlp-2026.10.21-aqz-KE-bpKQ.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{
+		"https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+		"https://youtu.be/aqz-KE-bpKQ?si=shared",
+		"https://youtube.com/shorts/aqz-KE-bpKQ?si=shared",
+	} {
+		t.Run(input, func(t *testing.T) {
+			resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(_ context.Context, _ string, args []string, _ int) ([]byte, error) {
+				if got := args[len(args)-1]; got != videoURL("aqz-KE-bpKQ") {
+					t.Fatalf("canonical=%q", got)
+				}
+				return body, nil
+			})}
+			tracks, err := resolver.Resolve(t.Context(), input)
+			if err != nil || len(tracks) != 1 {
+				t.Fatalf("Resolve real fixture: tracks=%v err=%v", tracks, err)
+			}
+			if tracks[0].CanonicalID != "aqz-KE-bpKQ" || tracks[0].DurationMS != 635000 || tracks[0].Artist != "Blender" {
+				t.Fatalf("descriptor=%#v", tracks[0])
+			}
+		})
+	}
+}
+
+func TestResolveMetadataFieldFailureClasses(t *testing.T) {
+	body, err := os.ReadFile("testdata/yt-dlp-2026.10.21-aqz-KE-bpKQ.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, field string
+		value       any
+		reason      string
+	}{
+		{"missing duration", "duration", nil, "missing_duration"},
+		{"zero duration", "duration", 0, "invalid_duration"},
+		{"negative duration", "duration", -1, "invalid_duration"},
+		{"nonnumeric duration", "duration", "private-value", "invalid_duration"},
+		{"duration limit", "duration", 86401, "duration_limit"},
+		{"private", "availability", "private", "availability"},
+		{"live", "live_status", "is_live", "live"},
+		{"live flag", "is_live", true, "live"},
+		{"upcoming", "live_status", "is_upcoming", "live"},
+		{"post live", "live_status", "post_live", "live"},
+		{"extractor", "extractor_key", "Generic", "extractor"},
+		{"type", "_type", "url", "type"},
+		{"id", "id", "private-value", "id"},
+		{"title", "title", "private-value\n", "title"},
+		{"uploader", "uploader", "private-value\n", "uploader"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var data map[string]any
+			if err := json.Unmarshal(body, &data); err != nil {
+				t.Fatal(err)
+			}
+			data[tc.field] = tc.value
+			encoded, err := json.Marshal(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return encoded, nil })}
+			tracks, err := resolver.Resolve(t.Context(), videoURL("aqz-KE-bpKQ"))
+			if !errors.Is(err, ErrMetadataInvalid) || len(tracks) != 0 {
+				t.Fatalf("tracks=%v err=%v", tracks, err)
+			}
+			wrapped := fmt.Errorf("resolve: %w", err)
+			want := "invalid_metadata:" + tc.reason
+			if got := FailureClass(wrapped); got != want {
+				t.Fatalf("class=%q want=%q", got, want)
+			}
+			if !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "private-value") || FailureStderr(wrapped) != "" {
+				t.Fatalf("unsafe metadata diagnostics: %v", err)
+			}
+		})
+	}
+	t.Run("absent duration", func(t *testing.T) {
+		var data map[string]any
+		if err := json.Unmarshal(body, &data); err != nil {
+			t.Fatal(err)
+		}
+		delete(data, "duration")
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return encoded, nil })}
+		_, err = resolver.Resolve(t.Context(), videoURL("aqz-KE-bpKQ"))
+		if !errors.Is(err, ErrMetadataInvalid) || FailureClass(err) != "invalid_metadata:missing_duration" {
+			t.Fatalf("missing duration err=%v class=%s", err, FailureClass(err))
+		}
+	})
+}
+
+func TestResolveRecordedReportedVideo(t *testing.T) {
+	body, err := os.ReadFile("testdata/yt-dlp-2026.10.21-LvH_ft4XR1Q.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return body, nil })}
+	tracks, err := resolver.Resolve(t.Context(), videoURL("LvH_ft4XR1Q"))
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("reported video fixture tracks=%v err=%v", tracks, err)
+	}
+	if tracks[0].CanonicalID != "LvH_ft4XR1Q" || tracks[0].DurationMS != 69000 {
+		t.Fatalf("descriptor=%#v", tracks[0])
 	}
 }

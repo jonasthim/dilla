@@ -1,10 +1,11 @@
 import { createElement, useEffect } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
+import { COMMANDS, decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
 import type { CommandExecutionContext } from './command-types.ts';
 import { useBotCommandProvider } from './bot-handlers.ts';
+import { CommandComposer } from './CommandComposer.tsx';
 
 const COMMUNITY = '11'.repeat(16); const TEXT = '22'.repeat(16); const VOICE = '33'.repeat(16); const OTHER_VOICE = '34'.repeat(16); const USER = '44'.repeat(16);
 const INSTALLATION = '55'.repeat(16); const ITEM = '66'.repeat(16); const OTHER_ITEM = '67'.repeat(16); const CURRENT_ITEM = '65'.repeat(16); const PARENT = '77'.repeat(16);
@@ -17,11 +18,11 @@ function musicSnapshot(revision: number, paused: boolean, queue: { id: string; p
     queue.map(row => [row.id, row.provider, row.canonical, row.title, row.artist, '', 120_000n, '']),
     BigInt(state.positionMs ?? 0), paused ? 1n : 0n, BigInt(state.volume ?? 70), state.shuffle ? 1n : 0, BigInt(state.repeat ?? 0), state.control === false ? 0n : 1n]);
 }
-function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean; invalidRefreshAfterEnqueue?: boolean; seededQueue?: boolean; seedSchedule?: boolean;
+function fixture(options: { idleMusic?: boolean; failRegistrationOnce?: boolean; failResume?: boolean; invalidRefreshAfterEnqueue?: boolean; seededQueue?: boolean; seedSchedule?: boolean;
   failedOperations?: number[]; malformedAnnouncementReceipt?: boolean; ambiguousOperations?: number[]; unknownUploads?: number[]; disabledSchedule?: boolean; invalidMusicReceipt?: boolean;
-  djControl?: boolean; readFailureOperations?: number[] } = {}) {
+  djControl?: boolean; readFailureOperations?: number[]; beforeSearchReply?: () => Promise<void> } = {}) {
   let musicRevision = 1; let paused = true; let badSnapshotOnce = false; let positionMs = 0; let volume = 70; let shuffle = false; let repeat = 0; let installationId = INSTALLATION; let botUserId: string | null = null; let installRevision = '9'; let botState = 3;
-  let currentTrack: { id: string; provider: string; canonical: string; title: string; artist: string } | null = { id: CURRENT_ITEM, provider: 'youtube', canonical: 'mnopqrstuvw', title: 'Current track', artist: 'Listener' };
+  let currentTrack: { id: string; provider: string; canonical: string; title: string; artist: string } | null = options.idleMusic ? null : { id: CURRENT_ITEM, provider: 'youtube', canonical: 'mnopqrstuvw', title: 'Current track', artist: 'Listener' };
   let queue: { id: string; provider: string; canonical: string; title: string; artist: string }[] = options.seededQueue
     ? [{ id: ITEM, provider: 'youtube', canonical: 'abcdefghijk', title: 'Queued track', artist: 'Listener' },
       { id: OTHER_ITEM, provider: 'youtube', canonical: 'zyxwvutsrqp', title: 'Second track', artist: 'Listener' }] : [];
@@ -34,7 +35,6 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
   const dispatchedOperations = new Set<number>();
   let delivery = 0;
   const client = {
-    // eslint-disable-next-line @typescript-eslint/require-await -- models CoreClient.call while resolving each worker command.
     call: vi.fn(async (command: Wire): Promise<unknown> => {
       if (command.m === 'getBotCommandStatus') return { installationId, botUserId, state: botState, revision: installRevision };
       if (command.m === 'listSelfRoles') return [{ id: '88'.repeat(16), name: 'Reader' }];
@@ -52,11 +52,11 @@ function fixture(options: { failRegistrationOnce?: boolean; failResume?: boolean
         if (options.failedOperations?.includes(operation)) status = 5;
         if (operation === 10) { revision = String(musicRevision); data = badSnapshotOnce ? Uint8Array.of(0xff) : musicSnapshot(musicRevision, paused, queue,
           { positionMs, volume, shuffle, repeat, current: currentTrack, control: options.djControl !== false }); badSnapshotOnce = false; }
-        if (operation === 11) data = encode([1n, [['yt:abcdefghijk', 'youtube', 'abcdefghijk', 'First result', 'Listener', '', 120_000n, '']]]);
+        if (operation === 11) { await options.beforeSearchReply?.(); data = encode([1n, [['yt:abcdefghijk', 'youtube', 'abcdefghijk', 'First result', 'Listener', '', 120_000n, '']]]); }
         if (operation === 12 && status === 0) { queue.push({ id: ITEM, provider: 'youtube', canonical: 'abcdefghijk', title: 'First result', artist: 'Listener' }); musicRevision++; revision = String(musicRevision); if (options.invalidRefreshAfterEnqueue) badSnapshotOnce = true; }
         if (operation === 13 && status === 0) { paused = true; musicRevision++; revision = String(musicRevision); }
         if (operation === 14 && options.failResume) status = 2;
-        else if (operation === 14 && status === 0) { paused = false; musicRevision++; revision = String(musicRevision); }
+        else if (operation === 14 && status === 0) { if (currentTrack === null) currentTrack = queue.shift() ?? null; paused = false; musicRevision++; revision = String(musicRevision); }
         if (operation === 15 && status === 0) { currentTrack = queue.shift() ?? null; musicRevision++; revision = String(musicRevision); }
         if (operation === 16 && status === 0) { queue = []; currentTrack = null; paused = true; positionMs = 0; musicRevision++; revision = String(musicRevision); }
         if (operation === 17 && status === 0) { positionMs = Number((command.args as unknown[])[0]); musicRevision++; revision = String(musicRevision); }
@@ -119,6 +119,15 @@ function mountProvider(client: CoreClient, capture: { value?: ReturnType<typeof 
   function Probe() { const value = useBotCommandProvider(client, COMMUNITY); useEffect(() => { capture.value = value; }); return createElement('div', null, value.dialogs); }
   return render(createElement(Probe));
 }
+function mountMusicPicker(client: CoreClient, initialText = '/play') {
+  function Picker() {
+    const provider = useBotCommandProvider(client, COMMUNITY);
+    return createElement(CommandComposer, { definitions: COMMANDS, initialText, contextKey: 'music-search',
+      onExecute: () => Promise.resolve({ status: 'success' as const, private: true }), onCancel: () => undefined, onSendLiteral: () => undefined,
+      suggest: async (command, option, query) => await provider.suggest(command, option, query, { communityId: COMMUNITY, channelId: TEXT }) ?? [] });
+  }
+  return render(createElement(Picker));
+}
 
 describe('Bot slash command provider', () => {
   it('plays the first worker search result, then resumes with distinct stable child request IDs', async () => {
@@ -133,6 +142,77 @@ describe('Bot slash command provider', () => {
     expect(writes.map(row => row.requestId)).toHaveLength(new Set(writes.map(row => row.requestId)).size);
     expect(writes.every(row => row.requestId !== context.requestId)).toBe(true);
     expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 12)).toHaveLength(1);
+  });
+
+  it.each(['play', 'resume'] as const)('registers the command text channel before %s starts playback', async commandId => {
+    const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const args: Record<string, string> = commandId === 'play' ? { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } : {};
+    expect(await capture.value!.handlers[commandId]!({ commandId, args }, commandContext(f.client))).toMatchObject({ status: 'success' });
+    const writes = f.requests.filter(row => row.m === 'humanInteractionRequest' && [12, 25, 14].includes(row.operation as number));
+    expect(writes.map(row => row.operation)).toEqual(commandId === 'play' ? [12, 25, 14] : [25, 14]);
+    const destination = writes.find(row => row.operation === 25);
+    expect(destination).toMatchObject({ channelId: VOICE, args: [TEXT], revision: '0' });
+    expect(new Set(writes.map(row => row.requestId)).size).toBe(writes.length);
+  });
+
+  it('registers before initial playback and posts the public music card after playback starts', async () => {
+    const f = fixture({ idleMusic: true }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const result = await capture.value!.handlers.play!({ commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } }, commandContext(f.client));
+    expect(result).toMatchObject({ status: 'success', private: true });
+    await waitFor(() => expect(f.requests.filter(row => row.operation === 25)).toHaveLength(2));
+    const writes = f.requests.filter(row => row.m === 'humanInteractionRequest' && [12, 25, 14].includes(row.operation as number));
+    expect(writes.map(row => row.operation)).toEqual([12, 25, 14, 25]);
+    const notices = writes.filter(row => row.operation === 25);
+    expect(notices.map(row => row.args)).toEqual([[TEXT], [TEXT]]);
+    expect(notices[0]?.requestId).not.toBe(notices[1]?.requestId);
+    expect(f.musicState.paused).toBe(false);
+    expect(f.musicState.currentTrack?.id).toBe(ITEM);
+  });
+
+  it.each(['play', 'resume'] as const)('keeps %s paused when destination registration is refused', async commandId => {
+    const f = fixture({ failedOperations: [25] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const args: Record<string, string> = commandId === 'play' ? { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } : {};
+    const invocation = { commandId, args }; const context = commandContext(f.client);
+    const result = await capture.value!.handlers[commandId]!(invocation, context);
+    expect(result).toMatchObject({ status: 'failure', private: true });
+    if (commandId === 'play') expect(result.message).toContain('already in the queue');
+    expect(f.requests.filter(row => row.operation === 14)).toHaveLength(0);
+    expect(f.musicState.paused).toBe(true);
+    await capture.value!.handlers[commandId]!(invocation, context);
+    expect(f.requests.filter(row => row.operation === 12)).toHaveLength(commandId === 'play' ? 1 : 0);
+  });
+
+  it.each([['play', 'voice'], ['resume', 'voice'], ['play', 'conversation'], ['resume', 'conversation']] as const)
+    ('does not resume %s after the %s changes during destination registration', async (commandId, change) => {
+      const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+      const call = f.client.call.bind(f.client); let changed = false;
+      f.client.call = (async (command: Wire) => {
+        const value = await call(command as never);
+        if (command.m === 'humanInteractionRequest' && command.operation === 25) { changed = true; if (change === 'voice') f.setJoinedVoice(OTHER_VOICE); }
+        return value;
+      });
+      mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+      const context = commandContext(f.client, { getCall: () => ({ channelId: changed && change === 'voice' ? OTHER_VOICE : VOICE, session: {} } as never),
+        isCurrent: () => !(changed && change === 'conversation') });
+      const args: Record<string, string> = commandId === 'play' ? { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } : {};
+      await capture.value!.handlers[commandId]!({ commandId, args }, context);
+      expect(f.requests.filter(row => row.operation === 25)).toHaveLength(1);
+      expect(f.requests.filter(row => row.operation === 14)).toHaveLength(0);
+      expect(f.musicState.paused).toBe(true);
+  });
+
+  it.each(['play', 'resume'] as const)('does not register a text destination when %s runs in the voice channel', async commandId => {
+    const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const binding: Binding = { communityId: COMMUNITY, channelId: VOICE, bits: PERM.manageCommunity };
+    const context = commandContext(f.client, { binding, getCurrentBinding: () => binding });
+    const args: Record<string, string> = commandId === 'play' ? { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } : {};
+    expect(await capture.value!.handlers[commandId]!({ commandId, args }, context)).toMatchObject({ status: 'success' });
+    expect(f.requests.filter(row => row.operation === 25)).toHaveLength(0);
+    expect(f.requests.filter(row => row.operation === 14)).toHaveLength(1);
   });
 
   it('refuses music controls without a current joined call and sends no Bot interaction', async () => {
@@ -357,12 +437,67 @@ describe('Bot slash command provider', () => {
       const option = { name: 'query-or-url', kind: 'text' as const, description: 'query', required: true, freeText: true };
       await expect(provider.suggest('play', option, 'a', binding)).resolves.toEqual([]);
       expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toHaveLength(0);
-      const suggestions = provider.suggest('play', option, 'harbor', binding);
+      const suggestions = provider.suggest('play', option, '  harbor music  ', binding);
       await vi.advanceTimersByTimeAsync(249);
       expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(1);
       await expect(suggestions).resolves.toEqual([{ id: 'yt:abcdefghijk', value: 'https://www.youtube.com/watch?v=abcdefghijk', label: 'First result', description: 'Listener' }]);
-      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toHaveLength(1);
+      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toEqual([
+        expect.objectContaining({ channelId: VOICE, args: ['harbor music'] }),
+      ]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('never searches complete or partially typed music links in autocomplete', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture(); mountMusicPicker(f.client);
+      const field = screen.getByRole('combobox', { name: 'query-or-url' });
+      for (const query of ['http', 'https', 'https:', 'https:/', '//youtu.be/LvH_', 'www.youtube.com/watch?v=LvH_',
+        'youtube.com/watch?v=LvH_', 'youtu.be/LvH_', 'music.youtube.com/watch?v=LvH_', 'm.youtube.com/watch?v=LvH_', 'open.spotify.com/track/', 'spotify:track:',
+        'https://www.youtube.com/watch?v=LvH_', 'https://youtu.be/LvH_ft4XR1Q?si=shared']) {
+        fireEvent.change(field, { target: { value: query } });
+        await act(() => vi.advanceTimersByTimeAsync(250));
+      }
+      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('sends URL-like play inputs unchanged to strict enqueue without searching', async () => {
+    const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
+    const input = 'youtu.be/LvH_ft4XR1Q?si=shared';
+    await capture.value!.handlers.play!({ commandId: 'play', args: { 'query-or-url': input } }, commandContext(f.client));
+    expect(f.requests.filter(row => row.operation === 11)).toEqual([]);
+    expect(f.requests.find(row => row.operation === 12)).toMatchObject({ args: [input] });
+  });
+
+  it('shows a refused music search in the picker without exposing provider diagnostics', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture({ failedOperations: [11] }); mountMusicPicker(f.client, '/play harbor');
+      await act(() => vi.advanceTimersByTimeAsync(250));
+      expect(f.requests.find(row => row.operation === 11)).toMatchObject({ args: ['harbor'] });
+      expect(screen.getByRole('note')).toHaveTextContent('Music search failed. Try again.');
+      expect(screen.queryByRole('option')).toBeNull();
+      expect(screen.getByRole('combobox', { name: 'query-or-url' })).toHaveValue('harbor');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('discards a search refusal after the active voice call changes', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const response = new Promise<void>(resolve => { release = resolve; });
+      const f = fixture({ failedOperations: [11], beforeSearchReply: () => response });
+      const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+      mountProvider(f.client, capture); await vi.waitFor(() => expect(capture.value).toBeDefined());
+      const pending = capture.value!.suggest('play', { name: 'query-or-url', kind: 'text', description: 'query', required: true }, 'harbor', { communityId: COMMUNITY, channelId: TEXT });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(f.requests.filter(row => row.operation === 11)).toHaveLength(1);
+      f.setJoinedVoice(OTHER_VOICE);
+      release();
+      await expect(pending).resolves.toEqual([]);
     } finally { vi.useRealTimers(); }
   });
 

@@ -10,6 +10,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/counter"
 	"github.com/jonasthim/dilla/internal/bot/music/runtime"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -37,10 +38,11 @@ func (liveKitPoolBackend) connect(ctx context.Context, call client.Call, disconn
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	logger := newSDKLogger(ctx)
 	room, err := lksdk.ConnectToRoomWithToken(call.LiveKitURL, call.Token,
-		&lksdk.RoomCallback{OnDisconnected: disconnected}, lksdk.WithAutoSubscribe(false))
+		&lksdk.RoomCallback{OnDisconnected: disconnected}, lksdk.WithAutoSubscribe(false), lksdk.WithLogger(logger))
 	if err != nil {
-		return nil, err
+		return nil, logger.wrap(err)
 	}
 	return room, nil
 }
@@ -205,34 +207,33 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		return nil, ErrBinding
 	}
 	initial, err := epochs.CallMediaEpoch(ctx, boundGroup)
-	if err != nil {
-		_ = source.Close()
-		return nil, errors.New("music livekit: call media key lookup failed")
+	if err == nil {
+		err = validateSenderEpoch(initial)
 	}
-	if err := validateSenderEpoch(initial); err != nil {
+	if err = startStage(ctx, "media_epoch", err); err != nil {
 		_ = source.Close()
 		return nil, err
 	}
 	state, ok := epochs.(counter.State)
 	if !ok {
 		_ = source.Close()
-		return nil, ErrBinding
+		return nil, startStage(ctx, "counter_reserve", ErrBinding)
 	}
 	sender, err := senderForReservedEpoch(ctx, state, boundGroup, initial)
-	if err != nil {
+	if err = startStage(ctx, "counter_reserve", err); err != nil {
 		_ = source.Close()
 		return nil, err
 	}
-
 	binding := bindingFor(call, boundGroup)
 	roomCtx, conn, generation, err := p.acquireRoom(ctx, call, binding)
-	if err != nil {
-		_ = source.Close()
-		return nil, err
+	if err == nil {
+		err = revalidateEpoch(roomCtx, boundGroup, epochs, initial)
+		if err != nil {
+			p.markDead(generation, err)
+		}
 	}
-	if err := revalidateEpoch(roomCtx, boundGroup, epochs, initial); err != nil {
+	if err = startStage(ctx, "room_connect", err); err != nil {
 		_ = source.Close()
-		p.markDead(generation, err)
 		return nil, err
 	}
 
@@ -244,14 +245,14 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		stopParent()
 		trackCancel()
 		_ = source.Close()
-		return nil, p.currentError()
+		return nil, startStage(ctx, "track_publish", p.currentError())
 	}
 	if p.active != nil || p.connecting {
 		p.mu.Unlock()
 		stopParent()
 		trackCancel()
 		_ = source.Close()
-		return nil, ErrPoolBusy
+		return nil, startStage(ctx, "track_publish", ErrPoolBusy)
 	}
 	p.connecting = true // reserves the single publication slot during PublishTrack.
 	startDone := make(chan struct{})
@@ -263,7 +264,7 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		_ = source.Close()
 		terminal := p.lifecycleError(err)
 		p.finishStarting(generation, startDone)
-		return nil, terminal
+		return nil, startStage(ctx, "track_publish", terminal)
 	}
 
 	unpublish, err := p.backend.publish(conn.room, source, sender)
@@ -271,9 +272,9 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		stopParent()
 		trackCancel()
 		_ = source.Close()
-		p.markDead(generation, errors.New("track publication failed"))
+		p.markDead(generation, err)
 		p.finishStarting(generation, startDone)
-		return nil, errors.New("music livekit: track publication failed")
+		return nil, startStage(ctx, "track_publish", err)
 	}
 	if err := trackCtx.Err(); err != nil {
 		_ = unpublish()
@@ -283,7 +284,7 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		p.markDead(generation, err)
 		terminal := p.lifecycleError(err)
 		p.finishStarting(generation, startDone)
-		return nil, terminal
+		return nil, startStage(ctx, "track_publish", terminal)
 	}
 	s := &Session{
 		source: source, cancel: trackCancel, done: make(chan struct{}),
@@ -297,11 +298,12 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		terminal := p.lifecycleError(ErrPoolDead)
 		close(s.done)
 		p.finishStarting(generation, startDone)
-		return nil, terminal
+		return nil, startStage(ctx, "track_publish", terminal)
 	}
 	p.active = s
 	p.finishStartingLocked(generation, startDone)
 	p.mu.Unlock()
+	_ = startStage(ctx, "track_publish", nil)
 	go s.monitorPooled(trackCtx, boundGroup, epochs, initial)
 	return s, nil
 }
@@ -337,7 +339,7 @@ func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBi
 		b := binding
 		p.bound = &b
 	}
-	roomCtx, cancel := context.WithTimeout(context.Background(), p.lifetime)
+	roomCtx, cancel := context.WithTimeout(music.WithPlaybackLogger(context.Background(), music.PlaybackLogger(ctx)), p.lifetime)
 	p.roomCtx, p.roomCancel = roomCtx, cancel
 	p.generation++
 	gen := p.generation
@@ -359,8 +361,9 @@ func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBi
 		}
 		p.finishConnectLocked(gen, connectDone)
 		p.mu.Unlock()
-		p.markDead(gen, ErrRoomConnection)
-		return nil, nil, 0, ErrRoomConnection
+		err = connectionFailure(err)
+		p.markDead(gen, err)
+		return nil, nil, 0, err
 	}
 	conn := &poolConnection{room: room}
 	if p.closed || p.dead || p.generation != gen || roomCtx.Err() != nil || connectErr != nil {
@@ -422,7 +425,9 @@ func (p *Pool) markDead(generation uint64, cause error) {
 		return
 	}
 	conn, cancel := p.markDeadLocked(cause)
+	ctx := p.roomCtx
 	p.mu.Unlock()
+	logRoomEnded(ctx, cause)
 	teardown(conn, cancel)
 }
 
@@ -485,7 +490,9 @@ func (p *Pool) LeaveIdle() error {
 	// that begins after the check finds the pool dead and waits for Reset rather than racing a
 	// disconnect of the room it just reused. The disconnect itself runs outside the lock.
 	conn, cancel := p.markDeadLocked(ErrPoolIdle)
+	ctx := p.roomCtx
 	p.mu.Unlock()
+	logRoomEnded(ctx, ErrPoolIdle)
 	teardown(conn, cancel)
 	return p.Reset()
 }

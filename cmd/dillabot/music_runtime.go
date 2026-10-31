@@ -188,6 +188,9 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		case music.ProviderSpotify:
 			pcm = deps.SpotifyPCM
 		case music.ProviderYouTube:
+			if deps.YouTubePCM == nil {
+				return session.Options{}, session.ErrInvalid
+			}
 			pcm = session.YouTubePCM{Source: deps.YouTubePCM}
 		default:
 			return session.Options{}, session.ErrInvalid
@@ -198,18 +201,23 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		if track.Provider == music.ProviderSpotify && deps.LeaseManager == nil {
 			return session.Options{}, session.ErrInvalid
 		}
-		if deps.JoinCallGroup != nil {
-			if err := deps.JoinCallGroup(ctx); err != nil {
-				return session.Options{}, err
+		prepareCall := func(ctx context.Context) (client.Call, error) {
+			var joinErr error
+			if deps.JoinCallGroup != nil {
+				joinErr = deps.JoinCallGroup(ctx)
 			}
-		}
-		call, err := deps.Calls.StartCall(ctx, deps.Channel)
-		if err != nil {
-			return session.Options{}, err
-		}
-		if call.CallID.IsZero() || call.GroupID.IsZero() || call.CallID != deps.Channel ||
-			call.LiveKitURL == "" || call.Token == "" {
-			return session.Options{}, session.ErrInvalid
+			if err := music.StartStage(ctx, "call_group_join", joinErr); err != nil {
+				return client.Call{}, err
+			}
+			call, err := deps.Calls.StartCall(ctx, deps.Channel)
+			if err = music.StartStage(ctx, "call_token", err); err != nil {
+				return client.Call{}, err
+			}
+			if call.CallID.IsZero() || call.GroupID.IsZero() || call.CallID != deps.Channel || call.LiveKitURL == "" || call.Token == "" {
+				return client.Call{}, music.StartStage(ctx, "call_fields", session.ErrInvalid)
+			}
+			_ = music.StartStage(ctx, "call_fields", nil)
+			return call, nil
 		}
 		var acquire session.LeaseAcquire
 		if track.Provider == music.ProviderSpotify {
@@ -217,7 +225,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		}
 		return session.Options{
 			Community: deps.Community, Channel: deps.Channel, Provider: track.Provider,
-			Track: track.CanonicalID, Call: call, Group: call.GroupID,
+			Track: track.CanonicalID, PrepareCall: prepareCall,
 			Acquire: acquire, PCM: pcm,
 			Encoder: deps.Encoder, Publisher: publisher, Epochs: deps.Epochs,
 		}, nil
@@ -299,6 +307,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		Store:          runtimeMusicAuthorityStore{runtime: runtime, session: session, installation: installation, community: community},
 		InstallationID: installation, CommunityID: community,
 	}
+
 	handlers := &service.MusicInteractions{
 		Store: stateStore, Authority: authority, Logger: logger,
 		InstallationID: installation, CommunityID: community,
@@ -368,8 +377,8 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if ctx == nil || store == nil || starter.OptionsFor == nil {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
-	options := []music.SupervisorOption{music.WithAutomaticPlaybackFailure(func(ctx context.Context, err error) {
-		slog.WarnContext(ctx, "bot automatic music playback failed", "channel_id", channel.String(), "class", youtube.FailureClass(err), "stderr", youtube.FailureStderr(err))
+	options := []music.SupervisorOption{music.WithSkippedTrack(starter.OnSkipped), music.WithPlaybackLog(starter.Logger), music.WithAutomaticPlaybackFailure(func(ctx context.Context, err error) {
+		slog.WarnContext(ctx, "bot automatic music playback failed", "channel_id", channel.String(), "class", music.FailureClass(err), "stderr", youtube.FailureStderr(err))
 	})}
 	if starter.IdleLeaveAfter != nil {
 		options = append(options, music.WithIdleLeave(starter.IdleLeaveAfter, nil))
@@ -448,6 +457,8 @@ type musicQueueRegistry struct {
 	// lock: supervisors read them while holding their own lock, which r.mu holders also take.
 	defaultsMu sync.Mutex
 	defaults   map[id.ID]musicDefaults
+	noticesMu  sync.Mutex
+	notices    map[id.ID]*service.MusicSkipNotices
 }
 
 // musicDefaults is one installation's default volume and idle-leave time, already checked.
@@ -728,6 +739,9 @@ func (r *musicQueueRegistry) Disable(installation id.ID) error {
 }
 
 func (r *musicQueueRegistry) disableLocked(installation id.ID) error {
+	r.noticesMu.Lock()
+	delete(r.notices, installation)
+	r.noticesMu.Unlock()
 	if r.runtimes[installation] == nil {
 		return nil
 	}
@@ -822,3 +836,15 @@ func unavailableMusicQueueStarter() session.QueueStarter {
 }
 
 var _ livekit.EpochSource = (*native.Client)(nil)
+
+func (r *musicQueueRegistry) SkipNotices(installation id.ID) *service.MusicSkipNotices {
+	r.noticesMu.Lock()
+	defer r.noticesMu.Unlock()
+	if r.notices == nil {
+		r.notices = make(map[id.ID]*service.MusicSkipNotices)
+	}
+	if r.notices[installation] == nil {
+		r.notices[installation] = &service.MusicSkipNotices{}
+	}
+	return r.notices[installation]
+}

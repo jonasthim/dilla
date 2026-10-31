@@ -82,3 +82,18 @@ func (p *credentialPlayback) Close() error {
 }
 
 var _ io.ReadCloser = (*credentialPlayback)(nil)
+
+// Check verifies a linked credential before taking a playback slot or joining a call.
+func (s *PCMStarter) Check(ctx context.Context) error {
+	if s == nil || s.loadToken == nil {
+		return ErrCredentialUnavailable
+	}
+	token, err := s.loadToken(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || token == "" {
+		return ErrCredentialUnavailable
+	}
+	return nil
+}
