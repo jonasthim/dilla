@@ -47,7 +47,7 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-const WIRE_PREFERENCE = [4n, 3n, 2n] as const;
+const WIRE_PREFERENCE = [5n, 4n, 3n, 2n] as const;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
   versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
@@ -262,7 +262,8 @@ export class Gateway {
       // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33), the structure notice of
       // web-3.1 (op 54), and the away roster notice (op 55, AW4).
       else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.presence || frame.op === Op.typing
-        || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged || frame.op === Op.afkAway) {
+        || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged || frame.op === Op.afkAway
+        || (frame.op === Op.appBuild && (this.acceptedVersions?.wire ?? 0) >= 5)) {
         this.emit({ type: 'frame', frame });
       }
       else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);

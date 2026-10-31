@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase, FactorSetupOrigin } from '@dilla/client-core';
+import { Banner } from '@dilla/ui';
+import { t } from './strings/index.ts';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
 import { errorOf, type UiError } from './core/errors.ts';
@@ -59,6 +61,13 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     spotifyCallbackScrubbed.current = true;
   }, [route.name, callbackSearch]);
   const account = useSlice('account');
+  const updateSignedIn = account?.phase === 'ready';
+  const [preLoginUpdate, setPreLoginUpdate] = useState(false);
+  useEffect(() => {
+    if (props.update === undefined || updateSignedIn) return;
+    return props.update.watch({ currentEntry: props.update.currentEntry, fetch: window.fetch.bind(window),
+      intervalMs: 300_000, changed: () => setPreLoginUpdate(true) });
+  }, [props.update, updateSignedIn]);
   const checkpointOwner = useRef<CheckpointScope | null>(null);
   useEffect(() => {
     if (props.update === undefined) return;
@@ -271,7 +280,8 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   else if (phase === 'other-tab') body = <OtherTab phase={tabPhase === 'paused' ? 'other-tab' : tabPhase} onUse={() => takeThisTab()}
     onRetry={() => takeThisTab()} onConfirm={() => takeThisTab(true)} onKeep={keepCall} />;
   else body = screenBody();
-  return <>{body}{pausedView}{route.name === 'spotifyCallback' ? <SpotifyCallback search={spotifyCallbackSearch.current} /> : null}</>;
+  return <>{preLoginUpdate && account?.phase !== 'ready' ? <Banner tone="info"
+    action={{ label: t('update.reloadNow'), onAction: () => props.update?.reload() }}>{t('update.beforeLogin')}</Banner> : null}{body}{pausedView}{route.name === 'spotifyCallback' ? <SpotifyCallback search={spotifyCallbackSearch.current} /> : null}</>;
 
   function screenBody(): ReactNode {
     if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;

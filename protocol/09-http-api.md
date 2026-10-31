@@ -1967,3 +1967,11 @@ can be built on; it is not itself served.
 | 1 | bot operator |
 
 Every other bit is reserved, MUST be written as 0 and MUST be ignored on read.
+
+
+### Wire-5 ephemeral transport compatibility
+
+Human clients offer wires `[5,4,3,2]` to session negotiation and the gateway. Managed Bots continue
+to negotiate exactly 3. Wire 5 retains the wire-4 HTTP response baseline, including account-kind
+attestation, and adds the ephemeral ops of `02`. `/app-version.json` remains the authoritative
+manifest check following a build notice and the legacy/offline fallback; no endpoint is removed.

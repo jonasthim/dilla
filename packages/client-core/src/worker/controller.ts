@@ -2524,7 +2524,8 @@ export class Controller {
       const { generation } = this.connectionState;
       this.connectionState = e.status === 'idle' && e.closeCode === CLIENT_CLOSE.version
         ? { status, generation, reason: 'version' }
-        : { status, generation };
+        : { status, generation, ...(status === 'online' && this.gateway?.acceptedVersions !== undefined && this.gateway.acceptedVersions !== null
+          ? { wireVersion: Number(this.gateway.acceptedVersions.wire) } : {}) };
       this.slices.set('connection', this.connectionState);
       if (status === 'online') this.safely(() => { this.sendOfflineSelf(); });
       if (status === 'offline') for (const community of this.slices.get('communities') ?? []) {
@@ -2540,6 +2541,8 @@ export class Controller {
       }
     } else if (e.type === 'ready') {
       this.onReady(e.info);
+    } else if (e.type === 'frame' && e.frame.op === Op.appBuild) {
+      this.setConnection({ appBuild: e.frame.payload[0] as string });
     } else if (e.type === 'frame' && e.frame.op === Op.presence) {
       this.incomingPresence(e.frame.payload);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {

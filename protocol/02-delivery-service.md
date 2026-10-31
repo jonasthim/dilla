@@ -354,6 +354,19 @@ dense on every device of its audience; `group_id` is null.
 | 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 | 54 | `community_changed` | S→C | `[community_id(bstr 16)]` |
 | 55 | `afk_away` | S→C | `[community_id(bstr 16), user_id(bstr 16), since_ts(uint)]` |
+| 56 | `app_build` | S→C, wire ≥5 | `[entry(tstr)]` |
+| 57 | `presence_activity` | C→S, wire ≥5 | `[]` |
+| 58 | `call_stats` | C→S, wire ≥5 | `[call_id(bstr 16), report(array)]` |
+
+`app_build` follows ready/resumed and names the entry from the verified, currently served web
+handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, and contains no `..`.
+It is a hint: the page verifies `/app-version.json` once, deduplicates notices and in-flight
+checks, and defers automatic reload throughout a live or recovering call. The existing draft/file
+checkpoint precedes any automatic update. No staged file or unverified directory is advertised.
+Healthy wire 5 suppresses periodic version HTTP; startup, foreground, online and reconnect still
+reconcile. Pre-login, legacy and disconnected clients check every five visible minutes; live
+calls use a thirty-second fallback even in hidden tabs. Malformed hints are ignored. Frames
+56–58 never consume replay numbers or appear in the replay ring.
 
 Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.
 Invisible is an account choice, exposed to other members as Offline. The frame is sent only to

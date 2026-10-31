@@ -878,3 +878,15 @@ describe('Gateway revocation and stop', () => {
     }
   });
 });
+
+
+it.each([2, 3, 4, 5])('uses the selected wire %i to gate build notices', async wire => {
+  const h = harness(); h.gw.start(); await flush();
+  const s = h.last(); s.open(); s.receive(hello({ wire: [wire] })); s.receive(ready({ wire }));
+  expect(h.gw.acceptedVersions?.wire).toBe(BigInt(wire));
+  s.receive(encode([56, 0, null, ['/assets/../bad.js']]));
+  expect(h.gw.status).toBe('ready');
+  s.receive(encode([56, 0, null, ['/assets/new.js']]));
+  expect(h.events.filter(e => e.type === 'frame' && e.frame.op === 56)).toHaveLength(wire === 5 ? 1 : 0);
+  h.gw.stop(); expect(h.gw.acceptedVersions).toBeNull();
+});

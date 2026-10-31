@@ -22,6 +22,8 @@ import (
 // Options configures a Gateway. Every duration and byte count has a default; withDefaults fills
 // them and enforces the ring-vs-queue contract.
 type Options struct {
+	// CurrentAppEntry returns the verified served web entry, never a staged file.
+	CurrentAppEntry func() string
 	// OnPresenceChanged publishes an account's newly derived presence to shared communities.
 	OnPresenceChanged func(id.ID)
 	// Store is deliberately narrow: the gateway calls exactly three storage methods, and holding
@@ -343,6 +345,7 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		c.currentWriter().stop()
 		return nil, err
 	}
+	g.sendAppBuild(c)
 	// The connection joins the live registry only once `ready` is on its writer. reg.add before
 	// sendReady publishes the connection while sendReady is still doing three store round-trips,
 	// so a DeliverGroup landing in that window takes n = 1 and `ready` then carries n = 2 —

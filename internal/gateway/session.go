@@ -546,6 +546,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		return nil, false
 	}
 	c.send(Frame{Op: OpResumed, Payload: p, Replay: true})
+	g.sendAppBuild(c)
 	for _, frame := range out.frames {
 		w.enqueueRaw(frame)
 	}

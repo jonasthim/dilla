@@ -54,3 +54,51 @@ it('checks in the background while a call is active', async () => {
     if (original) Object.defineProperty(document, 'visibilityState', original);
   }
 });
+
+
+it('uses build notices with no periodic HTTP for fifteen minutes on a healthy wire 5 socket', async () => {
+  vi.useFakeTimers();
+  let state = { ready: true, entry: '/assets/old.js' };
+  let notify = () => {};
+  const unsubscribe = vi.fn();
+  const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/old.js' }))));
+  const changed = vi.fn();
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 300_000,
+    voiceIntervalMs: 30_000, shouldCheck: () => true,
+    realtime: { state: () => state, subscribe: listener => { notify = listener; return unsubscribe; } } });
+  await vi.advanceTimersByTimeAsync(900_000);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  notify(); notify();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  // A notice is a hint: verify against the manifest before announcing it.
+  fetch.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/new.js' }))));
+  state = { ready: true, entry: '/assets/new.js' }; notify(); notify();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(changed).toHaveBeenCalledExactlyOnceWith('/assets/new.js');
+  stop(); expect(unsubscribe).toHaveBeenCalledOnce();
+});
+
+it('reconciles reconnects and falls back during outages without parallel verification', async () => {
+  vi.useFakeTimers();
+  let state = { ready: true, entry: null as string | null };
+  let notify = () => {};
+  const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/old.js' }))));
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed: vi.fn(), intervalMs: 300_000,
+    voiceIntervalMs: 30_000, shouldCheck: () => true,
+    realtime: { state: () => state, subscribe: listener => { notify = listener; return () => {}; } } });
+  await vi.advanceTimersByTimeAsync(0);
+  state = { ready: false, entry: null }; notify();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  state = { ready: true, entry: '/assets/old.js' }; notify(); notify();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(fetch).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(900_000);
+  expect(fetch).toHaveBeenCalledTimes(3);
+  state = { ready: true, entry: '/assets/../bad.js' }; notify();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(fetch).toHaveBeenCalledTimes(3);
+  stop();
+});
