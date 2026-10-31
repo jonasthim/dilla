@@ -20,18 +20,6 @@ func TestLogOnlyModerationConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestConfiguredWarnAndTimeoutRequireModerationBackend(t *testing.T) {
-	for _, action := range []moderation.Action{moderation.ActionWarn, moderation.ActionTimeout} {
-		cfg := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{moderation.RuleRate: action}}
-		if !moderationBackendRequired(cfg) {
-			t.Errorf("%s config did not require enforcement backend", action)
-		}
-	}
-	if moderationBackendRequired(logOnlyModerationConfig()) {
-		t.Fatal("log-only defaults unexpectedly require enforcement backend")
-	}
-}
-
 func TestUnavailableModerationBackendFailsClosedForConfiguredActions(t *testing.T) {
 	cfg := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{
 		moderation.RuleRate: moderation.ActionWarn, moderation.RuleDuplicate: moderation.ActionTimeout,

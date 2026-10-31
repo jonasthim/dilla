@@ -343,6 +343,33 @@ The source sequence and group determine a stable operation ID; an exact replay
 returns the original receipt, including after the request acceptance window.
 Timeouts update the member timeout row, which applies to every upload class.
 
+Both this route and `POST /v1/groups/{group}/moderation/removals` accept
+`?receipt_only=1` for reconciliation. They validate the same authenticated
+installation/device and exact operation payload (including the signed removal
+proof). An existing matching receipt returns its original result. An absent
+receipt returns `404 E_NOT_FOUND` before any new effect, regardless of whether
+the source would otherwise still be eligible. Unknown transport results remain
+retryable; a lookup is never promoted into a new acceptance request.
+
+The Bot checkpoints rolling observations, source deduplication, the processed
+frontier and any pending decision in one protected native state transaction
+before acknowledging a delivery. There are 256 fixed actor shards (each bounded
+by the native 256 KiB value limit) and 1,024 reusable pending slots per
+installation. Full or unpersistable state defers intake before acknowledgement;
+logs expose only the refusal stage and counter. Activation barriers are persisted
+before a configuration update is acknowledged and reused after restart. A legacy
+installation without a checkpoint seeds one conservative barrier. Pending
+old-policy decisions can reconcile existing receipts but cannot authorize new
+effects after disablement, policy change or source expiry. Accepted case receipts
+are saved before evidence attachment, allowing local evidence recovery after
+revocation. Protected case format v3 adds an explicit enforcement-refused flag;
+v2 records remain readable. Checkpoint-only native transactions in this new
+area-8 namespace retain their latest 64 transaction receipts; configuration and
+command receipts keep their existing retention. An older checkpoint retry is
+still guarded by CAS revisions and recovered through row/frontier reconciliation.
+Rolling/dedup snapshots omit observations outside their evaluation windows.
+None of these state formats changes MLS or wire versions.
+
 The server can verify the source message and authorization, but it cannot inspect
 the encrypted message or independently attest that a listed rule matched. Rule
 IDs and the runtime-generated action are inputs from the authenticated bot
